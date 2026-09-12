@@ -47,6 +47,13 @@ below is built on top of them:
 - **TEE-backed `KeyCustody` is a hard gate before *any* go-live**, including
   the initial private beta — not a "revisit later" risk acceptance. See §5,
   Stage 12.
+- **AMD SEV-SNP, not TDX or AWS Nitro Enclaves**, and built as a confidential
+  VM plus a separate minimal `key-custody-service` process rather than a
+  full enclave-split rewrite. See Stage 12 for the reasoning — mainly
+  SEV-SNP's VMPL feature fitting the process-split design, both now being
+  available across all three major clouds (removing the vendor-lock-in
+  concern that ruled out Nitro), and a 2025 SEV-SNP vulnerability
+  (StackWarp) that's since been patched by AMD.
 - **Launch to a small private group first.** Legal/compliance work (§5,
   Stage 14) explicitly does not need to be finished before that — it's a
   blocker on going public, not on the private beta.
@@ -562,36 +569,68 @@ hardening, and worth **starting now, in parallel with Stages 2–11**, since
 it's on the critical path to inviting anyone at all (unlike Stage 14, which
 your answer explicitly said can wait):
 
-- **What it is**: a new implementation of the existing `KeyCustody` trait
-  (`docs/DESIGN.md` §6.2 — `register_wallet`, `seal`/`unseal_and_register`,
-  `derive_subaddress`, `scan_tx_outputs`) that runs against a hardware-backed
-  enclave rather than `PlainKeyCustody`'s in-process `RwLock<HashMap<...>>`.
-  `docs/DESIGN.md` §6.1 already names AWS Nitro Enclaves or AMD SEV-SNP as
-  the preferred options, and explicitly rules out SGX ("secret-scalar EC
+- **Technology: AMD SEV-SNP**, decided over both Intel TDX and AWS Nitro
+  Enclaves. `docs/DESIGN.md` §6.1 already rules out SGX ("secret-scalar EC
   multiplication — exactly what scanning does — is precisely what SGX's
-  published side-channel attacks target").
-- **The shape of the work**: the host process's view of a tenant's key
-  material needs to stop being plaintext-in-memory. Concretely: `seal`
-  needs to produce bytes only the enclave can `unseal` (§6.2 point 2 already
-  requires this — `PlainKeyCustody` deliberately doesn't seal today, so this
-  is genuinely new, not a small extension of it); `derive_subaddress` and
-  `scan_tx_outputs` need to execute *inside* the enclave boundary, with only
-  their (non-secret) results crossing back out; and the host↔enclave
-  message boundary itself (vsock for Nitro, an attested channel for
-  SEV-SNP) needs to exist. `PlainKeyCustody`'s existing test suite
-  (`src/key_custody/plain.rs`, per §6.3) is the right behavioral contract to
-  extend against the new backend — same trait, same expected outputs — so
-  this isn't "invent a new way to test key custody," it's "prove a second
-  implementation of the trait we already have a spec for."
-- **Depends on picking Nitro vs. SEV-SNP first** — flagged as an open
-  question below, because it also constrains Stage 1: Nitro Enclaves means
-  the hosted engine runs on AWS EC2 specifically; SEV-SNP means a cloud
-  offering confidential VMs (Azure, GCP, or specific bare-metal providers).
-  Stage 1's "provision the box" step shouldn't be finalized independently of
-  this choice.
-- This is genuinely more engineering than anything else in this plan short
-  of the plugin itself — worth sizing it honestly as its own effort rather
-  than a line item, once the Nitro/SEV-SNP choice is made.
+  published side-channel attacks target"); between the two real remaining
+  options, SEV-SNP and TDX are both, as of 2026, sold as confidential VMs by
+  AWS, Azure, and GCP — so unlike this doc's earlier framing, the choice no
+  longer decides which cloud we're locked into (that was true of AWS Nitro
+  Enclaves specifically, which is why it's no longer in the running: it's
+  AWS-proprietary infrastructure, not a CPU feature, and would have locked
+  Stage 1's hosting to one vendor for no compensating benefit). SEV-SNP wins
+  on a concrete architectural fit: it has **VMPL** (VM Privilege Levels),
+  letting a guest partition itself into hardware-enforced privilege tiers —
+  which maps directly onto this plan's split-process design below, isolating
+  the key-custody component even from a compromise of the guest's *own*
+  kernel, not just from the hypervisor outside it. TDX has an analogous
+  "TD partitioning" concept but it's newer and less available/battle-tested
+  across providers. Worth being honest that this isn't a slam-dunk: SEV-SNP
+  had a real, serious isolation-breaking vulnerability in 2025 (StackWarp,
+  CVE-2025-29943 — patched by AMD in July 2025), and both SEV-SNP and TDX
+  were broken alike by "TEE.fail," a ~$1,000 DDR5 memory-bus physical
+  interposer attack — but that's a physical-access attack against the
+  actual hardware, a much higher bar than `docs/DESIGN.md` §6.1's actual
+  threat model (rogue admin, compromised hypervisor, remote exploit), so it
+  doesn't change the recommendation. Whichever cloud is chosen, confirm its
+  SEV-SNP instances have AMD's July 2025 microcode patch before treating
+  this as production-ready.
+- **Architecture: a confidential VM plus a process-level split, not a full
+  enclave rewrite.** This is the other correction from this doc's earlier
+  framing, which had assumed Nitro Enclaves' split-VM model (a separate
+  enclave image, vsock IPC, no direct network/disk from inside it) was the
+  only shape this could take. SEV-SNP protects a *whole guest VM's* memory
+  from the host/hypervisor — so the existing `moneropay-core` binary can run
+  largely as-is inside that VM, already covering "a compromised host can't
+  read tenant keys." What a confidential VM alone does *not* cover is a
+  remote exploit of the same big, internet-facing process (the HTTP layer,
+  JSON parsing, webhook delivery, every dependency) reading its own memory —
+  so key custody still needs to live in a separate, minimal process inside
+  that VM: a small `key-custody-service` owning the actual view keys and
+  exposing only the `KeyCustody` trait's operations (`register_wallet`,
+  `seal`/`unseal_and_register`, `derive_subaddress`, `scan_tx_outputs`) over
+  a local Unix socket, with the main engine process as a client rather than
+  a keyholder. Ordinary OS process isolation (separate user, seccomp, no
+  shared memory) is the floor this needs regardless; SEV-SNP's VMPL is an
+  optional hardware-enforced upgrade to that same boundary, worth using if
+  the implementation effort is reasonable, not a blocking requirement.
+- **The shape of the work**: a new `KeyCustody` implementation (the
+  `key-custody-service`, talked to over a socket instead of in-process) is
+  real new code, but meaningfully less than an enclave-split model would
+  have needed — no vsock plumbing, no attested-image build pipeline, just a
+  second small binary and a socket protocol. `seal` needs to produce bytes
+  only that service can `unseal` (§6.2 point 2 already requires this —
+  `PlainKeyCustody` deliberately doesn't seal today, so this part is
+  genuinely new regardless of the hardware). `PlainKeyCustody`'s existing
+  test suite (`src/key_custody/plain.rs`, per §6.3) is the right behavioral
+  contract to run against the new implementation — same trait, same
+  expected outputs — so this isn't "invent a new way to test key custody,"
+  it's "prove a second implementation of the trait we already have a spec
+  for."
+- Still genuinely more engineering than anything else in this plan short of
+  the plugin itself — worth sizing it honestly as its own effort, but
+  smaller than this doc previously estimated now that it doesn't require
+  Nitro's split-VM model.
 
 ### Stage 13 — Hosted-specific hardening (gate before public launch, not before private beta)
 
@@ -679,25 +718,18 @@ option or stays a deliberately-unadvertised "advanced users" path.
 
 ## 7. Open questions for you
 
-Axum, beta scope, and high-level monetization are all settled as of your
-last answer — thank you. What's newly open, both surfaced by committing to
-Stage 12 (TEE-backed `KeyCustody`) as a hard gate:
+Axum, beta scope, high-level monetization, and the TEE technology/
+architecture choice (SEV-SNP, confidential VM + process split) are all
+settled as of your last two answers — thank you. What's left:
 
-1. **Nitro vs. SEV-SNP**: `docs/DESIGN.md` §6.1 names both as acceptable,
-   SGX as explicitly not. This isn't just a `KeyCustody` implementation
-   choice — it decides which cloud Stage 1's hosted engine can run on at
-   all (AWS specifically for Nitro Enclaves; Azure/GCP confidential VMs or
-   specific bare-metal for SEV-SNP), so I'd rather have this settled before
-   Stage 1's infra work starts than have it discovered as a blocker
-   mid-provisioning. Do you have a leaning, or existing cloud-provider
-   relationships/credits that make one of these an easy default?
-2. **How deep should Stage 12 go in this document?** I've sketched it at
+1. **How deep should Stage 12 go in this document?** I've sketched it at
    the same level as everything else here — what it is, why, what it
-   depends on — but a real enclave implementation (attestation, the
-   host↔enclave message boundary, key sealing) is a meaningfully bigger and
-   more specialized effort than the WooCommerce-side stages. Worth a
-   dedicated design document of its own once Nitro vs. SEV-SNP is picked,
-   or is the current level of detail enough to start from?
+   depends on — but a real confidential-VM deployment plus a new
+   `key-custody-service` (attestation, the socket protocol, key sealing) is
+   a meaningfully bigger and more specialized effort than the WooCommerce-
+   side stages. Worth a dedicated design document of its own now that the
+   technology is settled, or is the current level of detail enough to start
+   from?
 
 ## 8. What I'd build first if you say go
 
@@ -709,8 +741,7 @@ Two independent tracks, both startable immediately:
   `/finish` pair against a stubbed wallet form, no real dashboard yet) —
   proves the connect mechanism end to end before any WooCommerce-specific
   code, mock or real, exists.
-- **Track B (go-live gate)**: resolve question #1 above, then start Stage
-  12's `KeyCustody` implementation — it has no dependency on Track A and,
-  per your answer, is the thing most likely to actually gate when a private
-  beta can start, so it shouldn't be sequenced after the WooCommerce work
-  by default.
+- **Track B (go-live gate)**: Stage 12's `key-custody-service` on SEV-SNP —
+  it has no dependency on Track A and, per your answer, is the thing most
+  likely to actually gate when a private beta can start, so it shouldn't be
+  sequenced after the WooCommerce work by default.
