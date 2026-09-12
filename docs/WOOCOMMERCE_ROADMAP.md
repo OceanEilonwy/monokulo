@@ -42,6 +42,18 @@ below is built on top of them:
   admin API) — is a real future feature, sketched briefly in §6, but out of
   scope for this MVP. Nothing in this plan should be built in a way that
   makes it hard to add later, but nothing here builds it either.
+- **Stay on axum — confirmed, no open pain point.** §3.2's recommendation
+  stands with no caveats.
+- **TEE-backed `KeyCustody` is a hard gate before *any* go-live**, including
+  the initial private beta — not a "revisit later" risk acceptance. See §5,
+  Stage 12.
+- **Launch to a small private group first.** Legal/compliance work (§5,
+  Stage 14) explicitly does not need to be finished before that — it's a
+  blocker on going public, not on the private beta.
+- **Not-for-profit.** The service doesn't charge for real (email-linked)
+  accounts. The only place money changes hands is the parked anonymous-
+  access feature (§6), and even there the fee's purpose is deterring abuse,
+  not generating revenue.
 
 ## 1. Guiding principle: don't paint Shopify into a corner
 
@@ -120,8 +132,9 @@ What's missing, all of which this plan builds:
 - `PlainKeyCustody` (the only `KeyCustody` implementation) keeps every
   tenant's view key in plaintext in one process's memory — a real
   consideration once "hosted" means *many unrelated merchants* on the same
-  box, flagged explicitly in `docs/DESIGN.md` §6.1 and revisited in §5,
-  Stage 11.
+  box, flagged explicitly in `docs/DESIGN.md` §6.1 and — per your answer,
+  now a hard go-live gate rather than a deferred concern — addressed head-on
+  in §5, Stage 12.
 
 ## 3. Two decisions this update settles
 
@@ -276,8 +289,7 @@ first-class alternative to creating a new one.**
   bounded, not eliminated — this is inherent to the feature, not a flaw in
   this particular design. It also means "how many free anonymous tenants is
   acceptable" becomes a real operational number someone has to pick and
-  watch (§5, Stage 11 already has a monitoring stage this folds into), not
-  a one-time decision.
+  watch, not a one-time decision.
 
 **Resolution: Option A.** Every tenant on the hosted instance is
 account-linked; the admin API is network-isolated behind the control plane
@@ -540,18 +552,51 @@ block the plugin working — a hosted instance could launch with a couple of
 hand-maintained rates and swap the provider under it later with zero plugin
 changes, since the plugin never sees exchange rates directly.
 
-### Stage 12 — Hosted-specific hardening (gate before public launch, not before private beta)
+### Stage 12 — TEE-backed `KeyCustody` (hard go-live gate)
 
-- `docs/DESIGN.md` §6.1 already names this exact risk: "Hosted multi-tenant:
-  a host-level compromise... would otherwise expose every tenant's view key
-  at once," and v1 ships only `PlainKeyCustody` (plaintext, in-process, no
-  isolation). That was an acceptable default when every deployment was
-  single-tenant and self-hosted (attacker who compromises the box already
-  owns the one wallet on it regardless). Once this plan puts *many unrelated
-  merchants'* view keys in one process, that tradeoff changes shape — worth
-  a real decision (accept it for a small beta with strong host hardening and
-  revisit before scaling up, vs. prioritizing a TEE-backed `KeyCustody`
-  sooner) rather than an accidental default.
+Per your answer, this is no longer the "accept the risk for a small beta,
+revisit later" framing the previous draft had — it's a requirement before
+*any* real user, including the initial private group, is onboarded. Worth
+treating as its own real engineering track, not a bullet inside general
+hardening, and worth **starting now, in parallel with Stages 2–11**, since
+it's on the critical path to inviting anyone at all (unlike Stage 14, which
+your answer explicitly said can wait):
+
+- **What it is**: a new implementation of the existing `KeyCustody` trait
+  (`docs/DESIGN.md` §6.2 — `register_wallet`, `seal`/`unseal_and_register`,
+  `derive_subaddress`, `scan_tx_outputs`) that runs against a hardware-backed
+  enclave rather than `PlainKeyCustody`'s in-process `RwLock<HashMap<...>>`.
+  `docs/DESIGN.md` §6.1 already names AWS Nitro Enclaves or AMD SEV-SNP as
+  the preferred options, and explicitly rules out SGX ("secret-scalar EC
+  multiplication — exactly what scanning does — is precisely what SGX's
+  published side-channel attacks target").
+- **The shape of the work**: the host process's view of a tenant's key
+  material needs to stop being plaintext-in-memory. Concretely: `seal`
+  needs to produce bytes only the enclave can `unseal` (§6.2 point 2 already
+  requires this — `PlainKeyCustody` deliberately doesn't seal today, so this
+  is genuinely new, not a small extension of it); `derive_subaddress` and
+  `scan_tx_outputs` need to execute *inside* the enclave boundary, with only
+  their (non-secret) results crossing back out; and the host↔enclave
+  message boundary itself (vsock for Nitro, an attested channel for
+  SEV-SNP) needs to exist. `PlainKeyCustody`'s existing test suite
+  (`src/key_custody/plain.rs`, per §6.3) is the right behavioral contract to
+  extend against the new backend — same trait, same expected outputs — so
+  this isn't "invent a new way to test key custody," it's "prove a second
+  implementation of the trait we already have a spec for."
+- **Depends on picking Nitro vs. SEV-SNP first** — flagged as an open
+  question below, because it also constrains Stage 1: Nitro Enclaves means
+  the hosted engine runs on AWS EC2 specifically; SEV-SNP means a cloud
+  offering confidential VMs (Azure, GCP, or specific bare-metal providers).
+  Stage 1's "provision the box" step shouldn't be finalized independently of
+  this choice.
+- This is genuinely more engineering than anything else in this plan short
+  of the plugin itself — worth sizing it honestly as its own effort rather
+  than a line item, once the Nitro/SEV-SNP choice is made.
+
+### Stage 13 — Hosted-specific hardening (gate before public launch, not before private beta)
+
+Everything here *other* than key custody, which now has its own gate above:
+
 - Backups of the engine's SQLite file (it holds every tenant's sealed key
   material and full order history) with a tested restore procedure, not
   just a cron job nobody's verified.
@@ -559,19 +604,29 @@ changes, since the plugin never sees exchange rates directly.
   box is compromised — losing a view key is a privacy incident (who paid
   whom, how much, when), never a funds-loss one, per the engine's core
   design guarantee, and that distinction should be in the runbook explicitly
-  since it changes the severity and disclosure conversation.
+  since it changes the severity and disclosure conversation. With Stage 12
+  done, this incident class should already be much harder to trigger, but
+  the runbook is still worth having.
 
-### Stage 13 — Legal/compliance (parallel track, start early)
+### Stage 14 — Legal/compliance (parallel track, waits until the end)
 
 Running a hosted service that touches merchants' payment flows, even
 non-custodially (no spend key ever exists, per the engine's core design
 guarantee), is worth a real look at money-transmission/licensing exposure in
 whatever jurisdiction(s) this launches from, before public marketing rather
-than after. Flagging this as a workstream to start now, in parallel with
-engineering — not a blocker on Stages 1–11's code, but a blocker on Stage
-10's *public* distribution step specifically.
+than after. Per your answer: since launch is to a small private group first,
+this explicitly does **not** need to be finished before that — it's a
+blocker on going public/wider, not on inviting the initial beta group, so it
+can genuinely wait until the end rather than running in parallel with
+everything else the way it's often treated. Worth someone owning it as a
+background task regardless, so it isn't a surprise scramble once public
+launch is actually on the table. One added wrinkle worth a note here: if the
+business is structured as a not-for-profit (per your answer on
+monetization), that structure itself may need to exist before the §6
+anonymous-access fee can be collected at all — worth folding into whatever
+this workstream produces, not treating as a separate step.
 
-### Stage 14 — Shopify readiness check (not building yet)
+### Stage 15 — Shopify readiness check (not building yet)
 
 Once Stages 1–10 are live, worth a short exercise confirming the split in §1
 held up in practice: does adding a `"shopify"` platform to
@@ -605,35 +660,57 @@ one level up, at the control plane's own `users` table (or a sibling table
 for anonymous identities, so real accounts and anonymous ones aren't
 conflated).
 
-Left open deliberately, for whenever this gets picked up: how such a key is
-issued without becoming the same unlimited-free-resource problem Option B/C
-had (some throttle — rate limiting, a PoW challenge, or simply "one
-anonymous identity per some proof of effort" — still has to exist
-somewhere, just at the control-plane layer instead of the engine's); whether
-an anonymous identity can later be upgraded to a real email-linked account
-without migrating its tenants; and whether it's exposed as a first-class
-signup option or stays a deliberately-unadvertised "advanced users" path.
+One question this already has an answer to, per your latest note: the
+throttle on abuse is a **fee**, not a rate limit or a PoW challenge — this
+tier is the one place in an otherwise not-for-profit, free service where
+money changes hands, specifically because charging something is a more
+reliable deterrent against unlimited free tenant creation than any
+technical throttle this doc considered under Options B/C. Worth noting the
+nice thematic fit for whenever this is built: the fee for anonymous access
+to a Monero payment gateway is presumably itself charged in Monero, which
+keeps the anonymous path anonymous end-to-end rather than quietly
+requiring a credit card (and the identity that comes with one) to reach it.
+
+Still open for whenever this gets picked up: whether an anonymous identity
+can later be upgraded to a real email-linked account without migrating its
+tenants; what the fee amount/structure actually is (one-time per identity?
+per tenant? recurring?); and whether it's exposed as a first-class signup
+option or stays a deliberately-unadvertised "advanced users" path.
 
 ## 7. Open questions for you
 
-1. **Axum vs. Rocket**: was there something specific about axum that
-   prompted considering Rocket — a concrete pain point, not just "is there a
-   framework that makes this easier" — that I should know about before
-   settling on "stay on axum" for good?
-2. **Beta scope**: launch Stages 1–10 to a small private list first, or aim
-   straight for a public wordpress.org listing? Affects how hard Stage
-   12/13 need to be finished before "done."
-3. **Monetization, at a high level, even if not now**: is a future paid tier
-   actually planned, or is a flat per-account model (or something else
-   entirely) the intent? Doesn't block anything in this plan, but it's the
-   thing that'll eventually decide how urgent §6's parked feature becomes
-   and how it should be shaped when it is picked up.
+Axum, beta scope, and high-level monetization are all settled as of your
+last answer — thank you. What's newly open, both surfaced by committing to
+Stage 12 (TEE-backed `KeyCustody`) as a hard gate:
+
+1. **Nitro vs. SEV-SNP**: `docs/DESIGN.md` §6.1 names both as acceptable,
+   SGX as explicitly not. This isn't just a `KeyCustody` implementation
+   choice — it decides which cloud Stage 1's hosted engine can run on at
+   all (AWS specifically for Nitro Enclaves; Azure/GCP confidential VMs or
+   specific bare-metal for SEV-SNP), so I'd rather have this settled before
+   Stage 1's infra work starts than have it discovered as a blocker
+   mid-provisioning. Do you have a leaning, or existing cloud-provider
+   relationships/credits that make one of these an easy default?
+2. **How deep should Stage 12 go in this document?** I've sketched it at
+   the same level as everything else here — what it is, why, what it
+   depends on — but a real enclave implementation (attestation, the
+   host↔enclave message boundary, key sealing) is a meaningfully bigger and
+   more specialized effort than the WooCommerce-side stages. Worth a
+   dedicated design document of its own once Nitro vs. SEV-SNP is picked,
+   or is the current level of detail enough to start from?
 
 ## 8. What I'd build first if you say go
 
-Stage 2 (workspace restructuring — small, mechanical, unblocks everything
-else) followed by Stage 3 and the first half of Stage 6 (a bare
-`POST /connect/woocommerce/start` + `/finish` pair against a stubbed wallet
-form, no real dashboard yet) — that proves the connect mechanism end to end
-before any WooCommerce-specific code, mock or real, exists, and it's fully
-decoupled from every open question above.
+Two independent tracks, both startable immediately:
+
+- **Track A (WooCommerce protocol)**: Stage 2 (workspace restructuring —
+  small, mechanical, unblocks everything else) followed by Stage 3 and the
+  first half of Stage 6 (a bare `POST /connect/woocommerce/start` +
+  `/finish` pair against a stubbed wallet form, no real dashboard yet) —
+  proves the connect mechanism end to end before any WooCommerce-specific
+  code, mock or real, exists.
+- **Track B (go-live gate)**: resolve question #1 above, then start Stage
+  12's `KeyCustody` implementation — it has no dependency on Track A and,
+  per your answer, is the thing most likely to actually gate when a private
+  beta can start, so it shouldn't be sequenced after the WooCommerce work
+  by default.
