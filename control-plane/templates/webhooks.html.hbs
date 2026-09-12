@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Webhooks - MoneroPay Cloud</title>
+</head>
+<body>
+<h1>Webhooks</h1>
+<table>
+<thead>
+<tr><th>Webhook ID</th><th>URL</th><th>Enabled</th><th>Created</th></tr>
+</thead>
+<tbody>
+{{#each webhooks}}
+<tr>
+<td>{{this.webhook_id}}</td>
+<td>{{this.url}}</td>
+<td>{{this.enabled}}</td>
+<td>{{this.created_at}}</td>
+</tr>
+{{/each}}
+</tbody>
+</table>
+</body>
+</html>

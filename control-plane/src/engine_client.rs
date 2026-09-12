@@ -78,6 +78,51 @@ impl EngineClient {
             .await?;
         parse_response(response).await
     }
+
+    /// `GET {base_url}/api/v1/admin/tenant/orders` — lists `sk`'s tenant's
+    /// orders (WBS 1.3.3). No query params sent (no pagination/status
+    /// filtering yet — this task's scope is a plain list; see
+    /// `src/http/admin.rs::ListOrdersQuery` at the repo root for what a
+    /// later enhancement could add).
+    pub async fn list_orders(&self, sk: &str) -> Result<Vec<OrderView>, EngineClientError> {
+        let response = self
+            .http
+            .get(format!("{}/api/v1/admin/tenant/orders", self.base_url))
+            .bearer_auth(sk)
+            .send()
+            .await?;
+        parse_response(response).await
+    }
+
+    /// `GET {base_url}/api/v1/admin/tenant/orders/{payment_id}` — fetches one
+    /// order's full detail (WBS 1.3.3). The engine returns its own `404` for
+    /// an unknown `payment_id` or one belonging to a different tenant —
+    /// surfaced here as `EngineClientError::EngineError { status: 404, .. }`,
+    /// same as every other non-success status; callers distinguish it from a
+    /// real internal error the same way `http/connections.rs` already
+    /// distinguishes the engine's `400` from everything else.
+    pub async fn get_order_detail(&self, sk: &str, payment_id: &str) -> Result<OrderDetailResponse, EngineClientError> {
+        let response = self
+            .http
+            .get(format!("{}/api/v1/admin/tenant/orders/{payment_id}", self.base_url))
+            .bearer_auth(sk)
+            .send()
+            .await?;
+        parse_response(response).await
+    }
+
+    /// `GET {base_url}/api/v1/admin/tenant/webhooks` — lists `sk`'s tenant's
+    /// registered webhooks (WBS 1.3.3). Read-only: this task builds no
+    /// create/delete client methods, per its own scope.
+    pub async fn list_webhooks(&self, sk: &str) -> Result<Vec<WebhookView>, EngineClientError> {
+        let response = self
+            .http
+            .get(format!("{}/api/v1/admin/tenant/webhooks", self.base_url))
+            .bearer_auth(sk)
+            .send()
+            .await?;
+        parse_response(response).await
+    }
 }
 
 async fn parse_response<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, EngineClientError> {
@@ -136,6 +181,56 @@ pub struct TenantView {
     pub zero_conf_max_piconero: Option<u64>,
     pub order_expiry_seconds: i64,
     pub allowed_origins: Vec<String>,
+}
+
+/// Mirrors the engine's own `OrderView` (`src/http/admin.rs` at the repo
+/// root) field-for-field.
+#[derive(Debug, Deserialize)]
+pub struct OrderView {
+    pub payment_id: String,
+    pub merchant_order_id: Option<String>,
+    pub address: String,
+    pub fiat_currency: String,
+    pub fiat_amount: String,
+    pub xmr_amount_piconero: u64,
+    pub amount_received_piconero: u64,
+    pub status: String,
+    pub confirmations: u64,
+    pub double_spend_detected_at: Option<i64>,
+    pub refund_address: Option<String>,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub updated_at: i64,
+}
+
+/// Mirrors the engine's own `PaymentView`.
+#[derive(Debug, Deserialize)]
+pub struct PaymentView {
+    pub txid: String,
+    pub output_index: i64,
+    pub amount_piconero: u64,
+    pub first_seen_at: i64,
+    pub block_height: Option<i64>,
+    pub voided_at: Option<i64>,
+}
+
+/// Mirrors the engine's own `OrderDetailResponse` — a flattened `OrderView`
+/// plus its `payments` list, matching the engine's own
+/// `#[serde(flatten)] order: OrderView` wire shape exactly.
+#[derive(Debug, Deserialize)]
+pub struct OrderDetailResponse {
+    #[serde(flatten)]
+    pub order: OrderView,
+    pub payments: Vec<PaymentView>,
+}
+
+/// Mirrors the engine's own `WebhookView`.
+#[derive(Debug, Deserialize)]
+pub struct WebhookView {
+    pub webhook_id: String,
+    pub url: String,
+    pub enabled: bool,
+    pub created_at: i64,
 }
 
 #[cfg(test)]

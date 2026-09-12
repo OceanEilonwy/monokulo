@@ -36,6 +36,7 @@ mod connections;
 mod dashboard;
 mod login;
 mod logout;
+mod orders;
 mod signup;
 #[cfg(test)]
 mod tests;
@@ -83,7 +84,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/connections", post(connections::create_connection))
         .route("/dashboard/signup", axum::routing::get(dashboard::signup_form).post(dashboard::signup_submit))
         .route("/dashboard/login", axum::routing::get(dashboard::login_form).post(dashboard::login_submit))
-        .route("/dashboard/connect", axum::routing::get(dashboard::connect_form).post(dashboard::connect_submit));
+        .route("/dashboard/connect", axum::routing::get(dashboard::connect_form).post(dashboard::connect_submit))
+        .route("/dashboard/connections/{id}/orders", axum::routing::get(orders::orders_list))
+        .route("/dashboard/connections/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
+        .route("/dashboard/connections/{id}/webhooks", axum::routing::get(orders::webhooks_list));
 
     // Test-only route exercising `AuthedUser` - see its doc comment.
     // Compiled only under `#[cfg(test)]`, so it never exists in the real

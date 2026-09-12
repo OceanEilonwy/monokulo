@@ -14,6 +14,9 @@ use serde::Serialize;
 const SIGNUP_TEMPLATE: &str = include_str!("../templates/signup.html.hbs");
 const LOGIN_TEMPLATE: &str = include_str!("../templates/login.html.hbs");
 const CONNECT_TEMPLATE: &str = include_str!("../templates/connect.html.hbs");
+const ORDERS_TEMPLATE: &str = include_str!("../templates/orders.html.hbs");
+const ORDER_DETAIL_TEMPLATE: &str = include_str!("../templates/order_detail.html.hbs");
+const WEBHOOKS_TEMPLATE: &str = include_str!("../templates/webhooks.html.hbs");
 
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateError {
@@ -43,6 +46,86 @@ pub struct ConnectViewModel {
     pub public_key: Option<String>,
 }
 
+/// One row of the orders list page (WBS 1.3.3) - just the fields the table
+/// shows, not the full engine `OrderView`.
+#[derive(Debug, Serialize)]
+pub struct OrderRowViewModel {
+    pub payment_id: String,
+    pub status: String,
+    pub fiat_amount: String,
+    pub fiat_currency: String,
+    pub created_at: i64,
+}
+
+/// The view model `GET /dashboard/connections/{id}/orders` takes.
+#[derive(Debug, Serialize)]
+pub struct OrdersViewModel {
+    pub connection_id: String,
+    pub orders: Vec<OrderRowViewModel>,
+}
+
+/// One payment row inside the order detail page's `payments` table -
+/// mirrors the engine's own `PaymentView` field-for-field.
+#[derive(Debug, Serialize)]
+pub struct PaymentRowViewModel {
+    pub txid: String,
+    pub output_index: i64,
+    pub amount_piconero: u64,
+    pub first_seen_at: i64,
+    pub block_height: Option<i64>,
+    pub voided_at: Option<i64>,
+}
+
+/// The full order detail shown by `GET
+/// /dashboard/connections/{id}/orders/{payment_id}` on a successful lookup -
+/// every `OrderView` field plus the `payments` list from
+/// `OrderDetailResponse`.
+#[derive(Debug, Serialize)]
+pub struct OrderDetailData {
+    pub payment_id: String,
+    pub merchant_order_id: Option<String>,
+    pub address: String,
+    pub fiat_currency: String,
+    pub fiat_amount: String,
+    pub xmr_amount_piconero: u64,
+    pub amount_received_piconero: u64,
+    pub status: String,
+    pub confirmations: u64,
+    pub double_spend_detected_at: Option<i64>,
+    pub refund_address: Option<String>,
+    pub created_at: i64,
+    pub expires_at: i64,
+    pub updated_at: i64,
+    pub payments: Vec<PaymentRowViewModel>,
+}
+
+/// The view model `GET /dashboard/connections/{id}/orders/{payment_id}`
+/// takes - `order` is `None` for an unknown `payment_id` (or one belonging
+/// to a different tenant), rendering a "not found" state instead of the
+/// detail table.
+#[derive(Debug, Serialize)]
+pub struct OrderDetailViewModel {
+    pub connection_id: String,
+    pub order: Option<OrderDetailData>,
+}
+
+/// One row of the webhooks list page (WBS 1.3.3) - mirrors the engine's own
+/// `WebhookView` field-for-field.
+#[derive(Debug, Serialize)]
+pub struct WebhookRowViewModel {
+    pub webhook_id: String,
+    pub url: String,
+    pub enabled: bool,
+    pub created_at: i64,
+}
+
+/// The view model `GET /dashboard/connections/{id}/webhooks` takes.
+#[derive(Debug, Serialize)]
+pub struct WebhooksViewModel {
+    pub connection_id: String,
+    pub webhooks: Vec<WebhookRowViewModel>,
+}
+
 pub struct TemplateEngine {
     handlebars: Handlebars<'static>,
 }
@@ -54,6 +137,9 @@ impl TemplateEngine {
         handlebars.register_template_string("signup", SIGNUP_TEMPLATE)?;
         handlebars.register_template_string("login", LOGIN_TEMPLATE)?;
         handlebars.register_template_string("connect", CONNECT_TEMPLATE)?;
+        handlebars.register_template_string("orders", ORDERS_TEMPLATE)?;
+        handlebars.register_template_string("order_detail", ORDER_DETAIL_TEMPLATE)?;
+        handlebars.register_template_string("webhooks", WEBHOOKS_TEMPLATE)?;
         Ok(TemplateEngine { handlebars })
     }
 
@@ -67,6 +153,18 @@ impl TemplateEngine {
 
     pub fn render_connect(&self, data: &ConnectViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("connect", data)?)
+    }
+
+    pub fn render_orders(&self, data: &OrdersViewModel) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("orders", data)?)
+    }
+
+    pub fn render_order_detail(&self, data: &OrderDetailViewModel) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("order_detail", data)?)
+    }
+
+    pub fn render_webhooks(&self, data: &WebhooksViewModel) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("webhooks", data)?)
     }
 }
 

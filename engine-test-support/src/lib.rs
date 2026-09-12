@@ -65,19 +65,94 @@ impl Drop for TestEngineHandle {
     }
 }
 
-/// Boots a real `moneropay-core` engine - in-memory `Store`, `PlainKeyCustody`,
-/// an empty fixed exchange-rate table, and no configured Monero networks -
-/// bound to an OS-assigned ephemeral port on `127.0.0.1`, served in a
-/// background task. Returns only once the listener is actually bound, so the
-/// returned address is immediately connectable.
-///
-/// This packages the same construction `tests/e2e_stagenet.rs` and `main.rs`
-/// use (`Store` -> `PlainKeyCustody` -> `AppState` -> `build_router`), but
-/// binds a real `tokio::net::TcpListener` and drives it with `axum::serve`
-/// instead of exercising the router in-process via
-/// `tower::ServiceExt::oneshot` - the whole point is a genuine socket that an
-/// independent `reqwest::Client` (standing in for a separately-deployed
-/// caller, e.g. the control plane) can connect to.
+/// Configuration for spawning a test engine: which Monero networks are
+/// configured (`state.configured_networks`) and what fixed exchange rates are
+/// seeded into its `FixedRateProvider`. Added for WBS 1.3.3 (order-seeding
+/// tests need a real exchange rate, not just a configured network) as a
+/// generalization of the narrower `spawn_test_engine_with_networks` added for
+/// WBS 1.2.1 - rather than a third near-duplicate spawn function per new
+/// dimension of test setup, [`spawn_test_engine`] and
+/// [`spawn_test_engine_with_networks`] are now both thin wrappers over
+/// [`TestEngineConfig::spawn`], with no change to either's signature or
+/// behavior.
+#[derive(Debug, Default, Clone)]
+pub struct TestEngineConfig {
+    networks: Vec<Network>,
+    rates: HashMap<String, u64>,
+}
+
+impl TestEngineConfig {
+    /// Starts from the same defaults `spawn_test_engine` has always used: no
+    /// configured networks, no exchange rates.
+    pub fn new() -> Self {
+        TestEngineConfig::default()
+    }
+
+    /// Sets `configured_networks` to `networks` - see
+    /// `spawn_test_engine_with_networks`'s doc comment for why a test
+    /// needing a real tenant (via `create_tenant`) needs at least one.
+    pub fn with_networks(mut self, networks: &[Network]) -> Self {
+        self.networks = networks.to_vec();
+        self
+    }
+
+    /// Seeds a fixed exchange rate (piconero per one whole unit of
+    /// `currency`, e.g. per $1.00) into the spawned engine's
+    /// `FixedRateProvider`. Needed by any test that creates a real order via
+    /// the engine's public `POST /api/v1/t/{pk}/orders` - that handler
+    /// rejects any `fiat_currency` with no configured rate (see
+    /// `src/http/public.rs::create_order` at the repo root).
+    pub fn with_rate(mut self, currency: &str, piconero_per_unit: u64) -> Self {
+        self.rates.insert(currency.to_string(), piconero_per_unit);
+        self
+    }
+
+    /// Boots a real `moneropay-core` engine - in-memory `Store`,
+    /// `PlainKeyCustody`, `configured_networks`/exchange rates from this
+    /// config - bound to an OS-assigned ephemeral port on `127.0.0.1`, served
+    /// in a background task. Returns only once the listener is actually
+    /// bound, so the returned address is immediately connectable.
+    ///
+    /// This packages the same construction `tests/e2e_stagenet.rs` and
+    /// `main.rs` use (`Store` -> `PlainKeyCustody` -> `AppState` ->
+    /// `build_router`), but binds a real `tokio::net::TcpListener` and drives
+    /// it with `axum::serve` instead of exercising the router in-process via
+    /// `tower::ServiceExt::oneshot` - the whole point is a genuine socket
+    /// that an independent `reqwest::Client` (standing in for a
+    /// separately-deployed caller, e.g. the control plane) can connect to.
+    pub async fn spawn(self) -> TestEngineHandle {
+        let store = Store::open_in_memory().expect("failed to open in-memory store for test engine").into_shared();
+        let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        let exchange_rate: Arc<dyn ExchangeRateProvider> = Arc::new(FixedRateProvider::new(self.rates));
+
+        let app_state = AppState {
+            store,
+            key_custody,
+            exchange_rate,
+            wallet_handles: Arc::new(RwLock::new(HashMap::new())),
+            rate_limiter: Arc::new(RateLimiter::new(10_000)),
+            configured_networks: Arc::new(self.networks.iter().copied().collect::<HashSet<Network>>()),
+        };
+        let router = build_router(app_state, MAX_BODY_BYTES);
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind an ephemeral local port for the test engine");
+        let addr = listener.local_addr().expect("bound listener has no local address");
+
+        let server_task = tokio::spawn(async move {
+            axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
+                .await
+                .expect("test engine server error");
+        });
+
+        TestEngineHandle { addr, server_task }
+    }
+}
+
+/// Boots a real `moneropay-core` engine with no configured Monero networks
+/// and no exchange rates - see [`TestEngineConfig::spawn`] for what "boots"
+/// means concretely. Equivalent to `TestEngineConfig::new().spawn()`.
 ///
 /// No tenant is created and `configured_networks` is empty, so any route that
 /// depends on the scanner or a real `[monero_node]` isn't meaningfully usable
@@ -86,7 +161,7 @@ impl Drop for TestEngineHandle {
 /// that needs a tenant should create one against the returned address via the
 /// engine's own admin API (`POST /api/v1/admin/tenants`).
 pub async fn spawn_test_engine() -> TestEngineHandle {
-    spawn_test_engine_with_networks(&[]).await
+    TestEngineConfig::new().spawn().await
 }
 
 /// Same as [`spawn_test_engine`], but with `configured_networks` set to the
@@ -99,34 +174,12 @@ pub async fn spawn_test_engine() -> TestEngineHandle {
 /// kept deliberately network-less (see its own doc comment: it's the
 /// common case, and most callers only need dependency-free routes), so this
 /// is a separate, explicit opt-in rather than a behavior change to the
-/// existing function.
+/// existing function. Equivalent to
+/// `TestEngineConfig::new().with_networks(networks).spawn()`; a test that
+/// also needs a seeded exchange rate (e.g. to create a real order) should
+/// use [`TestEngineConfig`] directly instead.
 pub async fn spawn_test_engine_with_networks(networks: &[Network]) -> TestEngineHandle {
-    let store = Store::open_in_memory().expect("failed to open in-memory store for test engine").into_shared();
-    let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-    let exchange_rate: Arc<dyn ExchangeRateProvider> = Arc::new(FixedRateProvider::new(HashMap::new()));
-
-    let app_state = AppState {
-        store,
-        key_custody,
-        exchange_rate,
-        wallet_handles: Arc::new(RwLock::new(HashMap::new())),
-        rate_limiter: Arc::new(RateLimiter::new(10_000)),
-        configured_networks: Arc::new(networks.iter().copied().collect::<HashSet<Network>>()),
-    };
-    let router = build_router(app_state, MAX_BODY_BYTES);
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("failed to bind an ephemeral local port for the test engine");
-    let addr = listener.local_addr().expect("bound listener has no local address");
-
-    let server_task = tokio::spawn(async move {
-        axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
-            .await
-            .expect("test engine server error");
-    });
-
-    TestEngineHandle { addr, server_task }
+    TestEngineConfig::new().with_networks(networks).spawn().await
 }
 
 #[cfg(test)]

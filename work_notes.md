@@ -42,6 +42,82 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 1.3.3 done: order list/detail + webhook list pages — read-only, per the
+  WBS's own "what" bullet (only the engine's `GET` admin routes). Three new
+  `EngineClient` methods (`list_orders`, `get_order_detail`,
+  `list_webhooks`), mirroring the engine's real `OrderView`/
+  `OrderDetailResponse`/`PaymentView`/`WebhookView` field-for-field, same
+  convention as `create_tenant`/`get_tenant`. New `control-plane/src/
+  http/orders.rs` adds three routes behind `AuthedUser`:
+  `GET /dashboard/connections/{id}/orders`,
+  `GET /dashboard/connections/{id}/orders/{payment_id}`,
+  `GET /dashboard/connections/{id}/webhooks`.
+  - **Ownership design**: a user can have more than one `store_connections`
+    row, so every route is scoped by `{id}` in the path.
+    `load_owned_connection` looks the row up by `id` and filters it through
+    `row.user_id == user.id` in one step — a mismatch and a nonexistent id
+    both collapse to the same `Ok(None)`, mapped to a bare `404` by every
+    caller, exactly like the account-enumeration defense `login`/
+    `AuthedUser` already apply to accounts, just applied to object-level
+    access here. Verified this is a real, load-bearing check, not
+    decoration: temporarily changed `load_owned_connection` to skip the
+    `user_id` filter and re-ran the cross-user test — it failed (`200` where
+    it expected `404`), then reverted and reconfirmed green.
+  - **First real `crypto::decrypt` consumer outside a test**: each handler
+    decrypts the connection's stored `sk_...` via `crypto::decrypt` +
+    `state.encryption_key` before calling `EngineClient`. A decryption
+    failure (shouldn't happen for a row this service itself wrote) maps to
+    a plain `500`, never unwrapped/panicked.
+  - **Engine-404 vs. internal-error split**: `order_detail` distinguishes
+    the engine's own `404` (unknown `payment_id`, or one belonging to a
+    different tenant) — rendered as a real `404` with a clear "Order not
+    found" page — from every other `EngineClientError`, which stays a
+    generic `500`. Same "caller-caused vs. our problem" split
+    `connections.rs`'s `CreateConnectionError::BadRequest`/`Internal`
+    already established, just keyed off `404` instead of `400` here.
+  - **`engine-test-support` extended again**, generalizing rather than
+    adding a third near-duplicate spawn function: a new
+    `TestEngineConfig` (builder: `with_networks`/`with_rate`, `.spawn()`
+    does the actual construction) now backs both `spawn_test_engine`
+    (`TestEngineConfig::new().spawn()`) and
+    `spawn_test_engine_with_networks` (`TestEngineConfig::new()
+    .with_networks(networks).spawn()`) — neither's signature or behavior
+    changed; both crates' own smoke tests (`engine-test-support`'s
+    `client_library_route_is_reachable_over_a_real_socket`,
+    `engine_client.rs`'s and `connections.rs`'s real-engine tests) still
+    pass unchanged. This task's own tests use
+    `TestEngineConfig::new().with_networks(&[Mainnet]).with_rate("USD",
+    ...).spawn()` — needed because seeding a real order means calling the
+    engine's *public* `POST /api/v1/t/{pk}/orders`, which 400s without a
+    configured exchange rate for the requested `fiat_currency` (the same
+    kind of gap `spawn_test_engine_with_networks` closed for
+    `configured_networks` at 1.2.1).
+  - Three new templates (`orders.html.hbs`, `order_detail.html.hbs`,
+    `webhooks.html.hbs`), following the existing minimal, no-CSS style,
+    registered in `templates.rs` alongside new view-model structs
+    (`OrdersViewModel`, `OrderDetailViewModel`/`OrderDetailData`,
+    `WebhooksViewModel`, plus their row types).
+  - **Tests** (`control-plane/src/http/orders.rs`'s own `#[cfg(test)] mod
+    tests`, 6 new): a real order seeded via a raw `reqwest` call against the
+    spawned engine's public API (using the connection's `pk_`, no `Origin`
+    header so the tenant's empty `allowed_origins` never comes into play)
+    then shown by `GET .../orders` (its `payment_id` appears in the
+    response) and `GET .../orders/{payment_id}` (full detail, including the
+    fiat currency); an unknown `payment_id` renders a real `404` "not
+    found" page; `GET .../webhooks` on a connection with none registered
+    renders a valid, empty table (`200`, not an error); a second signed-up
+    user hitting the first user's connection id gets `404` (verified
+    load-bearing, see above — not their orders, and not a `403` that would
+    confirm the id exists); all three routes reject an unauthenticated
+    request with `401` before any ownership check runs (checked with a
+    connection id that doesn't even exist, since `AuthedUser` must reject
+    before the handler ever looks anything up).
+  - Counts: control-plane 57 passed (was 51, +6), engine-test-support 1
+    passed (unchanged), engine 269/8 ignored (unchanged), shared 25
+    (unchanged), mock-woocommerce 1 (unchanged). `/signup`, `/login`,
+    `/logout`, `/connections`, `/dashboard/connect` and their existing
+    tests untouched. No webhook create/delete or order mutation built —
+    out of scope per the WBS's own "what" bullet for this task.
 - 1.3.2 done: `GET`/`POST /dashboard/connect` — the browser form for wallet
   provisioning, behind `AuthedUser` (works via either bearer or cookie,
   same as everything else). Core logic factored out of the JSON

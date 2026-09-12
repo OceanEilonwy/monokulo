@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Order detail - MoneroPay Cloud</title>
+</head>
+<body>
+{{#if order}}
+<h1>Order {{order.payment_id}}</h1>
+<table>
+<tr><th>Merchant order ID</th><td>{{order.merchant_order_id}}</td></tr>
+<tr><th>Address</th><td>{{order.address}}</td></tr>
+<tr><th>Fiat amount</th><td>{{order.fiat_amount}} {{order.fiat_currency}}</td></tr>
+<tr><th>XMR amount (piconero)</th><td>{{order.xmr_amount_piconero}}</td></tr>
+<tr><th>Amount received (piconero)</th><td>{{order.amount_received_piconero}}</td></tr>
+<tr><th>Status</th><td>{{order.status}}</td></tr>
+<tr><th>Confirmations</th><td>{{order.confirmations}}</td></tr>
+<tr><th>Double-spend detected at</th><td>{{order.double_spend_detected_at}}</td></tr>
+<tr><th>Refund address</th><td>{{order.refund_address}}</td></tr>
+<tr><th>Created at</th><td>{{order.created_at}}</td></tr>
+<tr><th>Expires at</th><td>{{order.expires_at}}</td></tr>
+<tr><th>Updated at</th><td>{{order.updated_at}}</td></tr>
+</table>
+<h2>Payments</h2>
+<table>
+<thead>
+<tr><th>Txid</th><th>Output index</th><th>Amount (piconero)</th><th>First seen</th><th>Block height</th><th>Voided at</th></tr>
+</thead>
+<tbody>
+{{#each order.payments}}
+<tr>
+<td>{{this.txid}}</td>
+<td>{{this.output_index}}</td>
+<td>{{this.amount_piconero}}</td>
+<td>{{this.first_seen_at}}</td>
+<td>{{this.block_height}}</td>
+<td>{{this.voided_at}}</td>
+</tr>
+{{/each}}
+</tbody>
+</table>
+{{else}}
+<h1>Order not found</h1>
+<p>This order does not exist.</p>
+{{/if}}
+</body>
+</html>
