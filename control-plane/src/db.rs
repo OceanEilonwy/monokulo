@@ -23,6 +23,7 @@ use rusqlite::{Connection, OptionalExtension, params};
 const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_sessions.sql")),
+    (3, include_str!("../migrations/0003_store_connections.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -73,6 +74,21 @@ pub struct UserRow {
 pub struct SessionRow {
     pub token_hash: String,
     pub user_id: String,
+    pub created_at: i64,
+}
+
+/// A row from `store_connections`. `tenant_secret_token_encrypted` holds the
+/// engine's raw `sk_...` secret token as of WBS 1.2.2 - see the migration's
+/// own doc comment (`migrations/0003_store_connections.sql`) for why the
+/// column is named for its not-yet-implemented encrypted form (WBS 1.2.3).
+pub struct StoreConnectionRow {
+    pub id: String,
+    pub user_id: String,
+    pub platform: String,
+    pub site_url: String,
+    pub tenant_public_key: String,
+    pub tenant_secret_token_encrypted: String,
+    pub moneropay_endpoint: String,
     pub created_at: i64,
 }
 
@@ -180,6 +196,70 @@ impl Db {
         let affected = self.conn.execute("DELETE FROM sessions WHERE token = ?1", params![token_hash])?;
         Ok(affected > 0)
     }
+
+    /// Inserts a new `store_connections` row linking `user_id` to a tenant
+    /// already provisioned on a real engine instance (WBS 1.2.2).
+    ///
+    /// `tenant_secret_token_encrypted` is stored exactly as given - as of
+    /// this task, that's the engine's raw `sk_...` secret token,
+    /// UNENCRYPTED. See `migrations/0003_store_connections.sql`'s doc
+    /// comment: the column is named for its final, encrypted-at-rest form
+    /// (WBS 1.2.3, not yet implemented), not its current plaintext content.
+    #[allow(clippy::too_many_arguments)]
+    pub fn create_store_connection(
+        &self,
+        id: &str,
+        user_id: &str,
+        platform: &str,
+        site_url: &str,
+        tenant_public_key: &str,
+        tenant_secret_token_encrypted: &str,
+        moneropay_endpoint: &str,
+        created_at: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO store_connections
+                (id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![
+                id,
+                user_id,
+                platform,
+                site_url,
+                tenant_public_key,
+                tenant_secret_token_encrypted,
+                moneropay_endpoint,
+                created_at
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Direct row lookup by id - used by tests to confirm what actually
+    /// landed in `store_connections` after `POST /connections` (e.g. that
+    /// `tenant_secret_token_encrypted` really holds a real `sk_...` value).
+    pub fn get_store_connection_by_id(&self, id: &str) -> Result<Option<StoreConnectionRow>> {
+        self.conn
+            .query_row(
+                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at
+                 FROM store_connections WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(StoreConnectionRow {
+                        id: row.get(0)?,
+                        user_id: row.get(1)?,
+                        platform: row.get(2)?,
+                        site_url: row.get(3)?,
+                        tenant_public_key: row.get(4)?,
+                        tenant_secret_token_encrypted: row.get(5)?,
+                        moneropay_endpoint: row.get(6)?,
+                        created_at: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(DbError::from)
+    }
 }
 
 #[cfg(test)]
@@ -243,6 +323,38 @@ mod tests {
         assert!(db.delete_session("hashed-token").unwrap());
         assert!(db.find_session("hashed-token").unwrap().is_none());
         assert!(!db.delete_session("hashed-token").unwrap());
+    }
+
+    #[test]
+    fn creating_a_store_connection_then_reading_it_back_round_trips() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user("user-1", "a@example.com", "hash", 1000).unwrap();
+        db.create_store_connection(
+            "conn-1",
+            "user-1",
+            "woocommerce",
+            "https://shop.example.com",
+            "pk_abc",
+            "sk_abc",
+            "http://127.0.0.1:8080",
+            3000,
+        )
+        .unwrap();
+
+        let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
+        assert_eq!(row.user_id, "user-1");
+        assert_eq!(row.platform, "woocommerce");
+        assert_eq!(row.site_url, "https://shop.example.com");
+        assert_eq!(row.tenant_public_key, "pk_abc");
+        assert_eq!(row.tenant_secret_token_encrypted, "sk_abc");
+        assert_eq!(row.moneropay_endpoint, "http://127.0.0.1:8080");
+        assert_eq!(row.created_at, 3000);
+    }
+
+    #[test]
+    fn looking_up_an_unknown_store_connection_id_returns_none_rather_than_an_error() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(db.get_store_connection_by_id("nonexistent").unwrap().is_none());
     }
 
     #[test]

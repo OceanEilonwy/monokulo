@@ -31,6 +31,12 @@ use serde::{Deserialize, Serialize};
 /// (e.g. `http://127.0.0.1:PORT` in tests, a real domain in production).
 /// `base_url` is always given explicitly by the caller — this type never
 /// guesses or defaults it.
+///
+/// `Clone` is free: `reqwest::Client` is internally `Arc`-backed (cloning
+/// shares the same connection pool, it doesn't open a new one) and
+/// `base_url` is a plain `String`. This is what lets `EngineClient` live on
+/// `AppState`, which axum clones per-request.
+#[derive(Clone)]
 pub struct EngineClient {
     base_url: String,
     http: reqwest::Client,
@@ -39,6 +45,14 @@ pub struct EngineClient {
 impl EngineClient {
     pub fn new(base_url: impl Into<String>) -> Self {
         EngineClient { base_url: base_url.into(), http: reqwest::Client::new() }
+    }
+
+    /// The engine base URL this client was constructed with — e.g. so a
+    /// caller storing a `store_connections` row can record which engine
+    /// endpoint a tenant lives on without threading the URL through
+    /// separately.
+    pub fn base_url(&self) -> &str {
+        &self.base_url
     }
 
     /// `POST {base_url}/api/v1/admin/tenants` — provisions a new tenant on

@@ -42,6 +42,80 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 1.2.2 done: `store_connections` table + `POST /connections`, the first
+  endpoint wiring together 1.1.x session auth and 1.2.1's `EngineClient`.
+  Migration 3 (`control-plane/migrations/0003_store_connections.sql`) adds
+  the table exactly as specced, with an explicit doc comment (mirrored on
+  `Db::create_store_connection`) that `tenant_secret_token_encrypted`
+  currently holds the engine's raw `sk_...` value, UNENCRYPTED — named for
+  its WBS-1.2.3 final form so that task doesn't need a rename migration.
+  Added `Db::create_store_connection` and `Db::get_store_connection_by_id`
+  (`StoreConnectionRow`), following the existing `UserRow`/`SessionRow`
+  pattern.
+  - `EngineClient` gained `#[derive(Clone)]` (free — `reqwest::Client` is
+    `Arc`-backed internally, `base_url` is a plain `String`) and a
+    `base_url(&self) -> &str` accessor, so a handler can record which
+    engine endpoint a tenant lives on without threading the URL through
+    separately. `AppState` gained `pub engine_client: EngineClient`;
+    `build_router`'s only real call sites (`main.rs`, `http/tests.rs`'s
+    `test_app_state`, `connections.rs`'s own test helper) all updated.
+    `main.rs` hardcodes `EngineClient::new("http://127.0.0.1:8080")` with a
+    `// TODO: real config` comment — there's no config-file system in
+    `control-plane` yet (a later task), so this is type-level wiring only,
+    not a claim that `main.rs` actually reaches a real engine today.
+  - `POST /connections` (new `control-plane/src/http/connections.rs`) sits
+    behind `AuthedUser`. Request:
+    `{platform, site_url, view_key_hex, spend_pubkey_hex, network?,
+    allowed_origins, confirmations_required?, zero_conf_max_piconero?,
+    order_expiry_seconds?}` — the wallet fields map straight through into
+    `engine_client::CreateTenantRequest`. On success: inserts a
+    `store_connections` row (new UUID id, the authed user's id,
+    `platform`/`site_url` from the request, `tenant_public_key`/
+    `tenant_secret_token_encrypted` from the engine's response,
+    `moneropay_endpoint` = `state.engine_client.base_url()`) and returns
+    `201 {"connection_id": "...", "public_key": "pk_..."}` —
+    **`secret_token` is deliberately never returned**, per the roadmap: the
+    control plane keeps it for its own future server-to-server use
+    (webhook registration, dashboard proxying), never re-shown to the
+    merchant after this one-time creation.
+  - **Error-shape judgment call**: added a new `ApiError::BadRequest(String)`
+    variant (the only variant that carries a real, caller-visible message —
+    every other variant stays fixed/generic on purpose, per the existing
+    doc comment) rather than collapsing an engine-rejected request into
+    the generic `Internal`/500. `EngineClientError::EngineError { status,
+    .. }` maps to `ApiError::BadRequest(message)` specifically when
+    `status == 400` (the engine's own `ApiError::BadRequest` — confirmed by
+    reading `src/http/admin.rs::create_tenant` at the repo root, which
+    returns exactly that for bad hex or an unconfigured network); any other
+    engine status, or a transport-level failure reaching the engine at all,
+    stays `Internal` — that's this service's problem, not something the
+    caller caused or should see details about.
+  - **Tests** (`control-plane/src/http/connections.rs`'s own
+    `#[cfg(test)] mod tests`, using
+    `engine_test_support::spawn_test_engine_with_networks(&[Mainnet])`,
+    same fixed-scalar view-key/spend-pubkey construction as
+    `engine_client.rs`'s own test): a full round trip (signup → login →
+    `POST /connections` with valid wallet fields) asserts `201`, a
+    non-empty `connection_id`, a `public_key` starting `pk_`, and that
+    neither `secret_token` nor `tenant_secret_token_encrypted` appears
+    anywhere in the response body; then reads the `store_connections` row
+    back directly via `Db::get_store_connection_by_id` and asserts
+    `user_id`/`platform`/`site_url` match and
+    `tenant_secret_token_encrypted` is a real value starting `sk_`. A
+    second test asserts `POST /connections` with no `Authorization` header
+    is rejected `401` by `AuthedUser` before ever touching the engine
+    client. Verified the round trip is genuine (not a false-positive pass)
+    by temporarily corrupting the stored-row `public_key` assertion and
+    re-running — it failed showing the actual `pk_...` the live engine
+    returned, then reverted.
+  - Also added 2 `Db`-level tests for `create_store_connection`/
+    `get_store_connection_by_id` (round-trip; unknown-id lookup returns
+    `None`).
+  - Counts: control-plane 25 passed (was 21, +4), engine 269/8 ignored
+    (unchanged), shared 25 (unchanged), engine-test-support 1 (unchanged),
+    mock-woocommerce 1 (unchanged). `/signup`, `/login`, `/logout` and
+    their tests untouched. No encryption of the stored `sk_` implemented —
+    that's WBS 1.2.3, left for a separate task.
 - 1.2.1 done: `control-plane/src/engine_client.rs` — a `reqwest`-based
   `EngineClient` the control plane uses to call a *separately-running*
   engine's admin API (a different role from `control_plane::http`, which is

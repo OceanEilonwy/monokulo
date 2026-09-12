@@ -19,6 +19,7 @@
 //! repo root) resolves `Bearer sk_...`. `/logout` (1.1.3) reuses the same
 //! extractor to find out which session to revoke.
 
+mod connections;
 mod login;
 mod logout;
 mod signup;
@@ -33,17 +34,20 @@ use axum::routing::post;
 use serde_json::json;
 
 use crate::db::{SharedDb, UserRow};
+use crate::engine_client::EngineClient;
 
 #[derive(Clone)]
 pub struct AppState {
     pub db: SharedDb,
+    pub engine_client: EngineClient,
 }
 
 pub fn build_router(state: AppState) -> Router {
     let router = Router::new()
         .route("/signup", post(signup::signup))
         .route("/login", post(login::login))
-        .route("/logout", post(logout::logout));
+        .route("/logout", post(logout::logout))
+        .route("/connections", post(connections::create_connection));
 
     // Test-only route exercising `AuthedUser` - see its doc comment.
     // Compiled only under `#[cfg(test)]`, so it never exists in the real
@@ -94,25 +98,33 @@ async fn test_whoami(AuthedUser(user, _): AuthedUser) -> Json<serde_json::Value>
 }
 
 /// `Conflict` (signup, duplicate email), `Unauthorized` (login, or a
-/// missing/invalid session), or `Internal` for anything else. Every
-/// message is fixed and generic — `Internal` never describes *why* the
-/// underlying operation failed, and `Unauthorized` never distinguishes
-/// "wrong password" from "unknown email" from "invalid session token" — so
-/// a client can't use error-message differences to fingerprint internals
-/// or enumerate accounts beyond what each variant already, unavoidably,
-/// signals.
+/// missing/invalid session), `BadRequest` (a request the *caller* got
+/// wrong in some caller-visible way — currently just the engine rejecting
+/// `POST /connections`'s wallet fields, e.g. bad hex or an unconfigured
+/// network), or `Internal` for anything else. Every message on
+/// `Conflict`/`Unauthorized`/`Internal` is fixed and generic — `Internal`
+/// never describes *why* the underlying operation failed, and
+/// `Unauthorized` never distinguishes "wrong password" from "unknown
+/// email" from "invalid session token" — so a client can't use
+/// error-message differences to fingerprint internals or enumerate
+/// accounts beyond what each variant already, unavoidably, signals.
+/// `BadRequest` is the one variant that *does* carry a real message,
+/// deliberately: it's surfacing the engine's own validation error back to
+/// the caller who made the mistake, not leaking internal state.
 pub enum ApiError {
     Conflict,
     Unauthorized,
+    BadRequest(String),
     Internal,
 }
 
 impl IntoResponse for ApiError {
     fn into_response(self) -> Response {
         let (status, message) = match self {
-            ApiError::Conflict => (StatusCode::CONFLICT, "email already in use"),
-            ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized"),
-            ApiError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error"),
+            ApiError::Conflict => (StatusCode::CONFLICT, "email already in use".to_string()),
+            ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
+            ApiError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            ApiError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string()),
         };
         (status, Json(json!({ "error": message }))).into_response()
     }

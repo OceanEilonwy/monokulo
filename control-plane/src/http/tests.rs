@@ -9,11 +9,16 @@ use http_body_util::BodyExt;
 use tower::ServiceExt;
 
 use crate::db::Db;
+use crate::engine_client::EngineClient;
 
 use super::{AppState, build_router};
 
+/// A dummy, never-dialed engine URL — these tests exercise `/signup`,
+/// `/login`, `/logout`, and the `AuthedUser` extractor, none of which ever
+/// reach the engine client. See `connections.rs`'s own tests for the
+/// `/connections` handler, which does need a real spawned engine.
 fn test_app_state() -> AppState {
-    AppState { db: Db::open_in_memory().unwrap().into_shared() }
+    AppState { db: Db::open_in_memory().unwrap().into_shared(), engine_client: EngineClient::new("http://127.0.0.1:1") }
 }
 
 fn test_router() -> Router {
