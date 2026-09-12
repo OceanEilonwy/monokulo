@@ -42,6 +42,30 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 1.4.2 done: `mock-woocommerce` is now a real driver — `run_connect_flow`
+  is the synthetic browser (cookie-persisting `reqwest::Client`, auto-
+  following redirects) walking the whole WBS 1.4.1 flow: connect-start →
+  signup → login-with-`next` → confirm → auto-followed straight into the
+  driver's own locally-bound callback server. The callback handler is
+  where the real "plugin-side" logic lives (nonce check, then a separate
+  server-to-server `/finish` call) — deliberately placed there rather than
+  in the outer driver, since that's exactly where the real WordPress
+  plugin's callback will live at WBS 1.5.3. `main.rs` is a thin CLI
+  wrapper (control-plane URL from arg/env/default), exiting 0 with
+  credentials printed or non-zero on failure, matching the WBS's own
+  acceptance criterion. No shared `control-plane-test-support` crate yet
+  (only `engine-test-support` exists) — a small private harness lives in
+  this crate's own tests for now, correctly judged not worth generalizing
+  until a second consumer needs it. Nonce-mismatch handling is proven
+  load-bearing with a strong test: a substituted-nonce callback is
+  rejected before `/finish` is ever called, then the *same* token is
+  proven still-unconsumed by successfully finishing it directly
+  afterward. mock-woocommerce grew from 1 → 3 tests (2 real + 1
+  placeholder). Independently re-verified (full `lib.rs` review, `cargo
+  test --workspace` re-run twice) before commit.
+- 1.4.1 done: (see the WBS 1.4.1 commit for the full writeup — generic
+  connect start/finish endpoints, the open-redirect-safe `next` handling,
+  and atomic single-use token consumption.)
 - 1.3.3 done: order list/detail + webhook list pages — read-only, per the
   WBS's own "what" bullet (only the engine's `GET` admin routes). Three new
   `EngineClient` methods (`list_orders`, `get_order_detail`,
