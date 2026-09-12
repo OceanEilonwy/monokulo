@@ -6,10 +6,38 @@ private-beta go-live with a working WooCommerce integration and the SEV-SNP
 key-custody gate in place. Excludes Stage 14 (legal/compliance — not
 engineering work) and Stage 15 (Shopify — explicitly not being built yet).
 
-Two tracks run in parallel with each other; within each track, order is
-strict (each item depends on the one above it unless noted). "Outcome" is
-what becomes true when the task is done; "test" is how that's checked —
-every leaf is sized to be unit- or integration-testable on its own.
+Two tracks *can* run in parallel with each other on paper; within each
+track, order is strict (each item depends on the one above it unless
+noted). "Outcome" is what becomes true when the task is done; "test" is how
+that's checked — every leaf is sized to be unit- or integration-testable on
+its own.
+
+## How we're actually working through this
+
+On a Pro subscription, usage is one shared, account-wide pool (rolling
+~5-hour windows) — running things in parallel doesn't add throughput, it
+just spends the same budget faster and risks leaving several branches
+half-finished when a limit hits, instead of one branch fully done. So,
+despite the two tracks above being independent on paper:
+
+- **Sequential, not parallel.** Work Track A to a reasonable stopping point
+  before starting Track B, rather than both at once. Track A first: it's
+  larger, has no external infra dependency, and every leaf is testable in a
+  plain dev environment — a better fit for focused sessions than Track B's
+  cloud provisioning and attestation waiting.
+- **Foundations (0.x) first, in one pass** — small, mechanical, unblocks
+  everything downstream.
+- **Each leaf (or a small related group) is one unit of delegated work**:
+  implement, test, commit, then move on — never leave a leaf half-done
+  across a stopping point. This is exactly what "minimal testable chunk"
+  in this doc's own design was for.
+- **`work_notes.md`** (repo root) is the running hand-off brief: what's
+  done, current state, and any judgment calls made without waiting for
+  input. Read that alongside this file for where things actually stand,
+  since this file is the plan and doesn't change as work completes.
+- Track B's cloud/attestation steps (2.2.x) are a good candidate for a
+  background job specifically because they involve real waiting — better
+  than idling a foreground session on them.
 
 - **0. Foundations** (blocks both tracks below)
   - 0.1 Add the Cargo workspace and empty crate skeletons
