@@ -78,9 +78,10 @@ pub struct SessionRow {
 }
 
 /// A row from `store_connections`. `tenant_secret_token_encrypted` holds the
-/// engine's raw `sk_...` secret token as of WBS 1.2.2 - see the migration's
-/// own doc comment (`migrations/0003_store_connections.sql`) for why the
-/// column is named for its not-yet-implemented encrypted form (WBS 1.2.3).
+/// engine's `sk_...` secret token encrypted at rest (WBS 1.2.3, via
+/// `crate::crypto::encrypt`) - `Db` itself is crypto-unaware and just stores
+/// whatever string it's given; see `http/connections.rs` for where the real
+/// encrypt/decrypt calls happen.
 pub struct StoreConnectionRow {
     pub id: String,
     pub user_id: String,
@@ -200,11 +201,11 @@ impl Db {
     /// Inserts a new `store_connections` row linking `user_id` to a tenant
     /// already provisioned on a real engine instance (WBS 1.2.2).
     ///
-    /// `tenant_secret_token_encrypted` is stored exactly as given - as of
-    /// this task, that's the engine's raw `sk_...` secret token,
-    /// UNENCRYPTED. See `migrations/0003_store_connections.sql`'s doc
-    /// comment: the column is named for its final, encrypted-at-rest form
-    /// (WBS 1.2.3, not yet implemented), not its current plaintext content.
+    /// `tenant_secret_token_encrypted` is stored exactly as given, with no
+    /// crypto awareness at this layer (WBS 1.2.3) - the caller
+    /// (`http/connections.rs`) is responsible for passing an already
+    /// `crate::crypto::encrypt`-ed value, never the engine's raw `sk_...`
+    /// secret token.
     #[allow(clippy::too_many_arguments)]
     pub fn create_store_connection(
         &self,

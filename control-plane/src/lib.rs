@@ -8,6 +8,7 @@
 //! `http::AppState`/`http::build_router` the same way the engine's own
 //! `main.rs` wires up `moneropay_core::http::{AppState, build_router}`.
 
+pub mod crypto;
 pub mod db;
 pub mod engine_client;
 pub mod http;

@@ -7,6 +7,28 @@ use control_plane::db::Db;
 use control_plane::engine_client::EngineClient;
 use control_plane::http::{AppState, build_router};
 
+/// Reads the AES-256-GCM key (WBS 1.2.3) used to encrypt the engine's
+/// `sk_...` secret token at rest (see `control_plane::crypto`) from
+/// `CONTROL_PLANE_ENCRYPTION_KEY`, expected as 64 hex characters (32 bytes).
+///
+/// Deliberately no hardcoded fallback key: unlike the engine-URL placeholder
+/// above (a stub value for a service that isn't really deployed yet), a
+/// checked-in "temporary" encryption key would be a real credential leak the
+/// moment this ever runs against a real database. A clear startup panic
+/// telling the operator exactly what to set is the right placeholder
+/// behavior instead.
+fn encryption_key_from_env() -> [u8; 32] {
+    let hex_key = std::env::var("CONTROL_PLANE_ENCRYPTION_KEY").expect(
+        "CONTROL_PLANE_ENCRYPTION_KEY must be set to 64 hex characters (32 bytes) - \
+         e.g. generate one with `openssl rand -hex 32`",
+    );
+    let bytes = hex::decode(&hex_key).expect(
+        "CONTROL_PLANE_ENCRYPTION_KEY must be valid hex (64 hex characters decoding to exactly 32 bytes)",
+    );
+    <[u8; 32]>::try_from(bytes.as_slice())
+        .expect("CONTROL_PLANE_ENCRYPTION_KEY must decode to exactly 32 bytes (64 hex characters)")
+}
+
 #[tokio::main]
 async fn main() {
     let db = Db::open_file("control_plane.db").expect("failed to open control-plane database").into_shared();
@@ -14,7 +36,8 @@ async fn main() {
     // (a later WBS task adds one); until then, this is a placeholder engine
     // URL, not a real deployment wiring.
     let engine_client = EngineClient::new("http://127.0.0.1:8080");
-    let app_state = AppState { db, engine_client };
+    let encryption_key = encryption_key_from_env();
+    let app_state = AppState { db, engine_client, encryption_key };
     let router = build_router(app_state);
 
     let bind = "127.0.0.1:8081";

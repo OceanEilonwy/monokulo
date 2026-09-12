@@ -42,6 +42,30 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 1.2.3 done: `sk_` at-rest encryption, completing WBS 1.2. AES-256-GCM
+  (`aes-gcm` crate) in a new `control_plane::crypto` module — pure
+  key-as-parameter functions (`Db` and the crypto module itself stay
+  ignorant of *where* the key comes from), encoded as
+  `hex(nonce || ciphertext+tag)` in the same `TEXT` column, no schema
+  change. `main.rs` sources the key from `CONTROL_PLANE_ENCRYPTION_KEY`
+  (64 hex chars) with three distinct, precise panic messages rather than
+  a checked-in placeholder — correctly treated as a materially different
+  case from the earlier placeholder engine URL (a stub secret is a real
+  future credential leak; a stub URL isn't). `http/connections.rs` now
+  encrypts before calling `Db::create_store_connection`. Genuinely good
+  engineering under a real obstacle: `aes-gcm` 0.11's API had changed
+  significantly from older docs/examples (moved to the `hybrid-array`-based
+  `aead` 0.6 crate) — resolved by reading the actual vendored source rather
+  than guessing. Tamper-detection is proven, not just asserted possible: a
+  test flips a real ciphertext byte and confirms `AuthenticationFailed`
+  (plus separate tests for truncated input, non-hex input, and a wrong
+  key). The updated `/connections` test proves genuine encryption via a
+  stronger check than a literal-string comparison: it decrypts the stored
+  value with the known test key, then authenticates *as that tenant*
+  against the real spawned engine (`EngineClient::get_tenant`) — only the
+  real `sk_...` could pass that. control-plane 31 passed (was 25, +6).
+  Independently re-verified (full crypto.rs/main.rs/mod.rs diff review,
+  `cargo test --workspace` re-run) before commit.
 - 1.2.2 done: `store_connections` table + `POST /connections`, the first
   endpoint wiring together 1.1.x session auth and 1.2.1's `EngineClient`.
   Migration 3 (`control-plane/migrations/0003_store_connections.sql`) adds

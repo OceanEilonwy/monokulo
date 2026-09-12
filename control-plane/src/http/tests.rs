@@ -18,7 +18,11 @@ use super::{AppState, build_router};
 /// reach the engine client. See `connections.rs`'s own tests for the
 /// `/connections` handler, which does need a real spawned engine.
 fn test_app_state() -> AppState {
-    AppState { db: Db::open_in_memory().unwrap().into_shared(), engine_client: EngineClient::new("http://127.0.0.1:1") }
+    AppState {
+        db: Db::open_in_memory().unwrap().into_shared(),
+        engine_client: EngineClient::new("http://127.0.0.1:1"),
+        encryption_key: [7u8; 32],
+    }
 }
 
 fn test_router() -> Router {

@@ -40,6 +40,12 @@ use crate::engine_client::EngineClient;
 pub struct AppState {
     pub db: SharedDb,
     pub engine_client: EngineClient,
+    /// AES-256-GCM key (WBS 1.2.3) used to encrypt the engine's `sk_...`
+    /// secret token before it's stored in `store_connections` — see
+    /// `crate::crypto` and `http/connections.rs`. Sourced from an
+    /// environment variable in the real binary (`main.rs`); tests just
+    /// construct a fixed key directly.
+    pub encryption_key: [u8; 32],
 }
 
 pub fn build_router(state: AppState) -> Router {

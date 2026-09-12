@@ -11,9 +11,13 @@
 //! Per `docs/WOOCOMMERCE_ROADMAP.md`'s design, the control plane keeps that
 //! token for its own server-to-server use (future webhook registration,
 //! dashboard proxying) — it is never re-shown to the merchant after this
-//! one-time creation. It is still stored, in `store_connections`, for that
-//! future use (see that table's own doc comment on why it's unencrypted
-//! for now — WBS 1.2.3).
+//! one-time creation. It is still stored, in `store_connections` — as of
+//! WBS 1.2.3, encrypted at rest via [`crate::crypto::encrypt`] under
+//! `AppState::encryption_key`, not the engine's raw `sk_...` value (see that
+//! table's migration and `Db::create_store_connection`'s doc comments for
+//! the history of why it used to be plaintext). `Db` itself never sees a
+//! real key or does any crypto — encryption happens here, at the HTTP
+//! handler layer, so `Db` stays a dumb persistence layer.
 
 use axum::extract::State;
 use axum::http::StatusCode;
@@ -21,6 +25,7 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
+use crate::crypto;
 use crate::engine_client::{CreateTenantRequest, EngineClientError};
 use crate::now_unix;
 
@@ -76,6 +81,7 @@ pub async fn create_connection(
         })?;
 
     let id = Uuid::new_v4().to_string();
+    let encrypted_secret_token = crypto::encrypt(&state.encryption_key, &created.secret_token);
     state
         .db
         .lock()
@@ -86,7 +92,7 @@ pub async fn create_connection(
             &req.platform,
             &req.site_url,
             &created.public_key,
-            &created.secret_token,
+            &encrypted_secret_token,
             state.engine_client.base_url(),
             now_unix(),
         )
@@ -103,6 +109,7 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    use crate::crypto;
     use crate::db::Db;
     use crate::engine_client::EngineClient;
 
@@ -114,10 +121,17 @@ mod tests {
     const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
     const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
+    /// Fixed test encryption key (WBS 1.2.3) — no environment variable
+    /// needed in tests, see `crate::crypto`'s and `main.rs`'s doc comments
+    /// on why the real key is sourced from `CONTROL_PLANE_ENCRYPTION_KEY`
+    /// instead.
+    const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
+
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
         let engine = engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
-        let state = AppState { db: Db::open_in_memory().unwrap().into_shared(), engine_client };
+        let state =
+            AppState { db: Db::open_in_memory().unwrap().into_shared(), engine_client, encryption_key: TEST_ENCRYPTION_KEY };
         (state, engine)
     }
 
@@ -173,7 +187,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_logged_in_user_posting_valid_wallet_fields_creates_a_real_tenant_and_a_store_connections_row() {
-        let (state, _engine) = test_state_with_real_engine().await;
+        let (state, engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
         let session_token =
@@ -201,10 +215,38 @@ mod tests {
         assert_eq!(row.platform, "woocommerce");
         assert_eq!(row.site_url, "https://shop.example.com");
         assert_eq!(row.tenant_public_key, public_key);
+
+        // WBS 1.2.3: the stored value must be genuinely encrypted now, not
+        // the engine's raw `sk_...` token.
         assert!(
-            row.tenant_secret_token_encrypted.starts_with("sk_"),
-            "expected a real sk_ value stored (unencrypted, see WBS 1.2.3), got: {}",
+            !row.tenant_secret_token_encrypted.starts_with("sk_"),
+            "expected an encrypted value, not a raw sk_ token, got: {}",
             row.tenant_secret_token_encrypted
+        );
+
+        // Prove it's not just "doesn't look like sk_" - it must be
+        // recoverable back to the exact original secret token the engine
+        // issued for this tenant. There's no API that hands the test that
+        // raw value directly (the whole point of 1.2.2/1.2.3 is that it's
+        // never re-shown after creation) - so authenticate against the
+        // *real* engine with the decrypted value and confirm it resolves to
+        // exactly this tenant (matching `public_key`). Only the one true
+        // `sk_...` secret token for this tenant can do that: a wrong or
+        // corrupted decryption would either fail to decrypt at all, or fail
+        // the engine's own authentication, or resolve to a different
+        // (or no) tenant.
+        let decrypted = crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
+            .expect("decrypting the stored value with the correct key must succeed");
+        assert!(decrypted.starts_with("sk_"), "decrypted value should be a real sk_ token, got: {decrypted}");
+
+        let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+        let tenant_view = engine_client
+            .get_tenant(&decrypted)
+            .await
+            .expect("the decrypted token should be the tenant's genuine, functioning sk_ credential");
+        assert_eq!(
+            tenant_view.public_key, public_key,
+            "decrypting the stored value must recover the exact secret token this specific tenant was issued"
         );
 
         let user = state
