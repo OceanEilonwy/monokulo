@@ -31,13 +31,17 @@ below is built on top of them:
   creation, and webhook receipt exactly as a real plugin would, so the
   protocol gets full e2e coverage (including real stagenet payments) before
   any WordPress-specific code exists. See §5, Stage 5.
-- **The hosted engine's admin API stays open and anonymous**, matching how it
-  already behaves for self-hosters — advanced users can talk to the raw
-  engine directly, with no account required, same as today. This reverses
-  what an earlier draft of this document assumed (network-isolating the
-  admin API behind the control plane); §4 below is the debate that led here,
-  written up in full since you asked for the reasoning, not just the
-  conclusion.
+- **The hosted engine's admin API is locked behind the control plane**
+  (§4's Option A) — every tenant on the hosted instance is account-linked,
+  full stop. §4 below is kept as the debate that led here, written up in
+  full since you asked for the reasoning, not just the conclusion, plus the
+  resolution and what it changes downstream.
+- **A control-plane-layer anonymous "pay by Monero" API is parked, not
+  built now.** The idea — advanced users get an anonymous account *at the
+  control-plane layer itself* (not direct anonymous access to the engine's
+  admin API) — is a real future feature, sketched briefly in §6, but out of
+  scope for this MVP. Nothing in this plan should be built in a way that
+  makes it hard to add later, but nothing here builds it either.
 
 ## 1. Guiding principle: don't paint Shopify into a corner
 
@@ -95,9 +99,10 @@ What already exists and needs no new engine code:
   `src/store.rs`, `src/webhook_delivery.rs`).
 - `POST /api/v1/admin/tenants` already accepts a wallet's view key + public
   spend key and returns `{tenant_id, public_key, secret_token}` — this *is*
-  the "create a hosted account" primitive; it just has no signup UI or email
-  identity wrapped around it yet, and (per §0/§4) is staying anonymous rather
-  than gaining one at the engine layer.
+  the "create a hosted account" primitive; the control plane calls it
+  server-to-server rather than replacing it, and (per §0/§4) it stops being
+  directly reachable from outside once the hosted instance is network-
+  isolated.
 - The hosted-vs-self-hosted split is already a config-time decision (`[wallet]`
   present or absent), not a code fork.
 - `/pay/v1/{pk}/{payment_id}` is already a complete, styled, working checkout
@@ -274,24 +279,28 @@ first-class alternative to creating a new one.**
   watch (§5, Stage 11 already has a monitoring stage this folds into), not
   a one-time decision.
 
-**My read**: Option C is the only one of the three that actually honors the
-stated goal while giving the business something to build a future paid tier
-on for the people who *do* want an account — Option A quietly drops the
-goal, Option B is the goal taken completely literally with no throttle at
-all. But C's central bet — that tuned rate limiting plus an optional PoW
-challenge is enough friction to keep hosting costs sane — is a real
-prediction about abuser behavior, not a proof, and it's worth you weighing in
-on directly rather than me picking it unilaterally given you asked for a
-debate specifically. If C is right, the concrete follow-up decision is just
-picking starting numbers (rate limit ceiling, whether PoW is on from day
-one or held in reserve for when load actually shows abuse) — I'd default to
-launching with today's existing defaults unchanged and watching real usage
-before tightening anything, so as not to add friction that turns out to be
-unnecessary.
+**Resolution: Option A.** Every tenant on the hosted instance is
+account-linked; the admin API is network-isolated behind the control plane
+exactly as this section originally proposed. The reasoning: Option A is the
+only one of the three with a clean, permanent answer to "who does this
+tenant belong to," which is worth more than the marginal convenience of
+letting the *raw engine* stay anonymously reachable — especially once
+there's a real business (accounts, support, eventually billing) sitting on
+top of it. It also has a nice, unplanned side effect on the rest of this
+document: the "adopt an existing tenant" branch that Option C required
+(§5, old Stage 3/6) disappears — under Option A no tenant can exist on the
+hosted instance without the control plane having created it, so there's
+only ever one provisioning path, not two. That's real code that doesn't
+need to be written; see the Stage 3/4/6 edits below.
 
-This also *simplifies* Stage 1 below relative to the previous draft of this
-document, which had proposed network-isolating the admin API — that's no
-longer needed under B or C, only under A.
+The part of the original goal this drops — a *fully* anonymous path to the
+raw engine — isn't abandoned, just relocated: §6 sketches an anonymous
+account *at the control-plane layer* as a parked future feature, which gets
+the "no email, no signup friction" property back without reopening the
+"anyone can create unlimited tenants on infrastructure we pay for, with no
+way to ever attach billing to it" problem Option B/C's *For* cases couldn't
+avoid. That's a deliberate choice to solve "anonymous" and "accountable" as
+two separable concerns rather than one axis with no good midpoint.
 
 ## 5. Ordered plan
 
@@ -306,15 +315,17 @@ Deploy `moneropay-core` itself, unmodified, as a running service:
 - TLS termination and the public domain (`https://pay.<yourdomain>` or
   similar — used as `moneropay_endpoint` in the control plane's data model
   in §1).
-- The admin API stays public, per §4 — no network-isolation work needed here
-  under Option B or C. If C is the direction, this stage is where
-  `rate_limit_per_ip_per_min` gets set deliberately for the hosted case
-  (rather than inherited blindly from the self-hosted default) and where the
-  PoW challenge config gets decided (on from day one vs. held in reserve).
+- **Network-isolate the admin API**, per §4's Option A. Today `POST
+  /api/v1/admin/tenants` (and the rest of `/api/v1/admin/*`) is
+  intentionally open on a self-hosted deployment (DDoS-layer-only, per
+  `docs/DESIGN.md` §10.1/§12) — correct there, since "the operator" and "the
+  person hitting the API" are the same trusted party. On the hosted instance
+  that's no longer true, so bind `/api/v1/admin/*` to a private interface
+  (or a reverse-proxy rule) reachable only from the control plane's network,
+  while `/api/v1/t/{pk}/...` and `/pay/v1/...` stay public exactly as
+  designed. No engine code change — purely a deployment-topology decision.
 - Basic monitoring: process up/down, node sync height, disk space (the SQLite
-  file), webhook delivery queue depth, and (per §4) anonymous-vs-account-
-  linked tenant creation volume, so "is Option C's bet holding up" is an
-  answerable question rather than a guess.
+  file), webhook delivery queue depth.
 
 This stage is almost entirely ops work, not new code — the payoff of the
 engine already having been designed for multi-tenancy.
@@ -346,21 +357,18 @@ first stage that's genuinely new code rather than restructuring:
   credentials" endpoint — fleshed out fully in Stage 6, but the *shape*
   should exist before any WooCommerce-specific code is written, precisely
   so Shopify can reuse it later.
-- **Tenant provisioning, two paths** (per §4's Option C):
-  - *Create*: takes the wallet fields a merchant enters (primary address,
-    private view key, public spend key, network — the same ones the CLI
-    wizard already collects), calls the engine's `POST
-    /api/v1/admin/tenants`, stores the resulting `pk_`/`sk_` against a new
-    `store_connections` row.
-  - *Adopt*: takes an existing `pk_`/`sk_` pair, calls `GET
-    /api/v1/admin/tenant` with that `sk_` to validate it and fetch its
-    details, stores a `store_connections` row pointing at it without
-    minting anything new.
-  - Either way, `sk_` at rest is encrypted with a key the control plane
-    holds (a KMS key or an environment-provided secret, never committed) —
-    used server-to-server only (webhook registration, future account-
-    management features), never re-shown to the merchant after the initial
-    connect flow.
+- **Tenant provisioning**: one path, per §4's Option A resolution — takes
+  the wallet fields a merchant enters (primary address, private view key,
+  public spend key, network — the same ones the CLI wizard already
+  collects), calls the engine's `POST /api/v1/admin/tenants`, stores the
+  resulting `pk_`/`sk_` against a new `store_connections` row. There's no
+  "adopt an existing tenant" branch to build: under Option A no tenant can
+  exist on the hosted instance the control plane didn't create, so this is
+  the only provisioning path, not one of two.
+  `sk_` at rest is encrypted with a key the control plane holds (a KMS key
+  or an environment-provided secret, never committed) — used server-to-
+  server only (webhook registration, future account-management features),
+  never re-shown to the merchant after the initial connect flow.
 
 ### Stage 4 — Dashboard UI
 
@@ -369,15 +377,12 @@ The web surface a merchant actually sees:
 - Signup/login pages.
 - "Connect a store" — for the MVP, effectively one button ("Connect
   WooCommerce"), but written as a list so a second platform is an entry, not
-  a redesign. Includes the "I already have a `pk_`/`sk_`" adopt-path from
-  Stage 3 as a secondary option on the same screen, for advanced users who
-  provisioned anonymously and want to add WooCommerce/dashboard convenience
-  after the fact.
+  a redesign.
 - A wallet-connection form (address + view key + public spend key,
-  currency/threshold defaults) for the create-path — this is the one
-  inherently non-custodial step that a competitor holding customer funds
-  doesn't have, and it's worth keeping the copy on this page honest about
-  *why* it's needed (never pretend it can go away).
+  currency/threshold defaults) — this is the one inherently non-custodial
+  step that a competitor holding customer funds doesn't have, and it's
+  worth keeping the copy on this page honest about *why* it's needed (never
+  pretend it can go away).
 - Order list and detail (wrapping `GET /api/v1/admin/tenant/orders` and the
   detail route) and webhook management (list/rotate) — this is the GUI that
   replaces `local_admin.rs`'s CLI flags (`--show-tenant`, `--rotate-secret`)
@@ -432,14 +437,12 @@ exercises the identical flow a real plugin will:
 1. The (mock, then real) plugin generates and stores a nonce locally, then
    redirects to
    `https://cloud.moneropay.example/connect/woocommerce?site_url=<store>&return_url=<settings page>&nonce=<random>`.
-2. On our dashboard: sign up or log in if not already (Stage 3/4), or, for
-   the adopt-path, paste an existing `pk_`/`sk_` directly.
-3. Dashboard shows "Connect Monero payments for `<site_url>`" and either the
-   wallet form (create) or the paste-your-keys form (adopt) from Stage 4. On
-   submit, the control plane provisions or validates the tenant (Stage 3),
-   registers a webhook (`POST /api/v1/admin/tenant/webhooks`, pointed at the
-   URL the plugin defines — Stage 8) using the `sk_`, and stores the
-   `store_connections` row.
+2. On our dashboard: sign up or log in if not already (Stage 3/4).
+3. Dashboard shows "Connect Monero payments for `<site_url>`" and the wallet
+   form from Stage 4. On submit, the control plane provisions the tenant
+   (Stage 3), registers a webhook (`POST /api/v1/admin/tenant/webhooks`,
+   pointed at the URL the plugin defines — Stage 8) using the `sk_`, and
+   stores the `store_connections` row.
 4. Redirects back to `return_url` carrying a short-lived, single-use, signed
    connect token — **not** the raw `sk_` — to avoid a secret ever sitting in
    a browser history, a referrer header, or an access log.
@@ -485,11 +488,10 @@ the server-to-server "finish" call (PHP's `wp_remote_post`), landing on the
 same control-plane endpoints Stage 5's mock already validated.
 
 End-to-end merchant-visible steps once this and Stage 7 are done: install
-plugin → click Connect → sign up/log in on our site (or paste existing keys)
+plugin → click Connect → sign up/log in on our site → paste wallet keys once
 → done. That's the ceiling on "one click" that a genuinely non-custodial
 system can offer — the one step a custodial competitor skips (entering your
-own wallet, for the create-path) is real and should stay visible, not
-disguised.
+own wallet) is real and should stay visible, not disguised.
 
 ### Stage 9 — Real WooCommerce plugin: order status sync
 
@@ -553,9 +555,6 @@ changes, since the plugin never sees exchange rates directly.
 - Backups of the engine's SQLite file (it holds every tenant's sealed key
   material and full order history) with a tested restore procedure, not
   just a cron job nobody's verified.
-- If §4's Option C is the direction taken: confirm the anonymous-tenant
-  monitoring from Stage 1 is actually in place and being watched, not just
-  planned.
 - Basic incident runbook: what happens, and what we tell merchants, if the
   box is compromised — losing a view key is a privacy incident (who paid
   whom, how much, when), never a funds-loss one, per the engine's core
@@ -585,35 +584,56 @@ WooCommerce plugin already uses, and — per §4/§5 Stage 5's approach — the
 same "prove it with a mock first" method should apply there too, before any
 Shopify-side app code is written.
 
-## 6. Open questions for you
+## 6. Parked for later: an anonymous "pay by Monero" account at the control
+plane layer
 
-1. **§4's debate**: which of Option A/B/C do you want to run with? I'm
-   leaning C, but flagged it as a real prediction rather than a settled
-   answer on purpose.
-2. **Axum vs. Rocket**: was there something specific about axum that
+Not being built as part of this MVP — recorded here so the idea isn't lost,
+and so a future pass doesn't have to rediscover why it's shaped this way.
+
+The problem it would solve: §4's Option A gives the business a clean
+accounts story, but it does mean *every* hosted tenant needs an email and a
+password, even for someone who'd rather not have an account at all. The
+fix isn't to reopen the engine's admin API (that's exactly what Option A
+closed, for good reason) — it's to let the *control plane* mint a
+lightweight, anonymous identity of its own: something like a bearer API key
+handed out with no email required, scoped to one (or a few) tenants,
+functionally "an account with no login and no recovery story." The control
+plane still creates the underlying engine tenant exactly the way Stage 3
+does today (so Option A's "every tenant is control-plane-linked" guarantee
+never breaks) — the only thing that changes is what counts as "an account"
+one level up, at the control plane's own `users` table (or a sibling table
+for anonymous identities, so real accounts and anonymous ones aren't
+conflated).
+
+Left open deliberately, for whenever this gets picked up: how such a key is
+issued without becoming the same unlimited-free-resource problem Option B/C
+had (some throttle — rate limiting, a PoW challenge, or simply "one
+anonymous identity per some proof of effort" — still has to exist
+somewhere, just at the control-plane layer instead of the engine's); whether
+an anonymous identity can later be upgraded to a real email-linked account
+without migrating its tenants; and whether it's exposed as a first-class
+signup option or stays a deliberately-unadvertised "advanced users" path.
+
+## 7. Open questions for you
+
+1. **Axum vs. Rocket**: was there something specific about axum that
    prompted considering Rocket — a concrete pain point, not just "is there a
    framework that makes this easier" — that I should know about before
    settling on "stay on axum" for good?
-3. **Anonymous-tier starting numbers**, if Option C: keep
-   `rate_limit_per_ip_per_min` at today's self-hosted default for launch and
-   only tighten it (or turn on the PoW challenge) if real abuse shows up, or
-   start more conservative on day one? I'd default to the former (don't add
-   friction pre-emptively) unless you see a reason to expect abuse
-   immediately.
-4. **Beta scope**: launch Stages 1–10 to a small private list first, or aim
+2. **Beta scope**: launch Stages 1–10 to a small private list first, or aim
    straight for a public wordpress.org listing? Affects how hard Stage
    12/13 need to be finished before "done."
-5. **Monetization, at a high level, even if not now**: is a future paid tier
-   actually planned (which makes §4's tension real and worth designing
-   around now), or is anonymous-and-free the permanent model (in which case
-   the control plane's job is purely convenience/UX, never billing, and some
-   of Stage 3's "future account-management features" framing can simplify)?
+3. **Monetization, at a high level, even if not now**: is a future paid tier
+   actually planned, or is a flat per-account model (or something else
+   entirely) the intent? Doesn't block anything in this plan, but it's the
+   thing that'll eventually decide how urgent §6's parked feature becomes
+   and how it should be shaped when it is picked up.
 
-## 7. What I'd build first if you say go
+## 8. What I'd build first if you say go
 
 Stage 2 (workspace restructuring — small, mechanical, unblocks everything
-else) followed by Stage 3's `create` path and the first half of Stage 6 (a
-bare `POST /connect/woocommerce/start` + `/finish` pair against a stubbed
-wallet form, no real dashboard yet) — that proves the connect mechanism
-end to end before any WooCommerce-specific code, mock or real, exists, and
-it's fully decoupled from every open question above except #1 and #2.
+else) followed by Stage 3 and the first half of Stage 6 (a bare
+`POST /connect/woocommerce/start` + `/finish` pair against a stubbed wallet
+form, no real dashboard yet) — that proves the connect mechanism end to end
+before any WooCommerce-specific code, mock or real, exists, and it's fully
+decoupled from every open question above.
