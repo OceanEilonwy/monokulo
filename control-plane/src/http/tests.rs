@@ -46,6 +46,14 @@ fn whoami_request(bearer: Option<&str>) -> Request<Body> {
     builder.body(Body::empty()).unwrap()
 }
 
+fn logout_request(bearer: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder().method("POST").uri("/logout");
+    if let Some(token) = bearer {
+        builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
 async fn body_json(response: axum::response::Response) -> serde_json::Value {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     serde_json::from_slice(&bytes).unwrap()
@@ -180,5 +188,67 @@ async fn the_protected_test_route_rejects_a_missing_authorization_header() {
 async fn the_protected_test_route_rejects_an_unknown_bearer_token() {
     let router = test_router();
     let response = router.oneshot(whoami_request(Some("garbage-token-nobody-issued"))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn logging_out_a_valid_session_returns_no_content() {
+    let router = test_router();
+
+    let signup =
+        router.clone().oneshot(signup_request("henry@example.com", "correct horse battery staple")).await.unwrap();
+    assert_eq!(signup.status(), StatusCode::CREATED);
+
+    let login =
+        router.clone().oneshot(login_request("henry@example.com", "correct horse battery staple")).await.unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let session_token =
+        body_json(login).await.as_object().unwrap().get("session_token").unwrap().as_str().unwrap().to_string();
+
+    let response = router.oneshot(logout_request(Some(&session_token))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
+async fn after_logging_out_the_same_session_token_no_longer_reaches_a_protected_route() {
+    let router = test_router();
+
+    let signup =
+        router.clone().oneshot(signup_request("iris@example.com", "correct horse battery staple")).await.unwrap();
+    assert_eq!(signup.status(), StatusCode::CREATED);
+
+    let login =
+        router.clone().oneshot(login_request("iris@example.com", "correct horse battery staple")).await.unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let session_token =
+        body_json(login).await.as_object().unwrap().get("session_token").unwrap().as_str().unwrap().to_string();
+
+    // Prove the session actually works before logout, so the post-logout
+    // 401 below demonstrates revocation rather than a token that never
+    // worked in the first place.
+    let before = router.clone().oneshot(whoami_request(Some(&session_token))).await.unwrap();
+    assert_eq!(before.status(), StatusCode::OK);
+
+    let logout_response = router.clone().oneshot(logout_request(Some(&session_token))).await.unwrap();
+    assert_eq!(logout_response.status(), StatusCode::NO_CONTENT);
+
+    // The same token, reused against the same protected route, must now be
+    // rejected - the session was genuinely deleted, not just "the logout
+    // call returned 204".
+    let after = router.oneshot(whoami_request(Some(&session_token))).await.unwrap();
+    assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn logout_rejects_a_missing_authorization_header() {
+    let router = test_router();
+    let response = router.oneshot(logout_request(None)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn logout_rejects_an_unknown_bearer_token() {
+    let router = test_router();
+    let response = router.oneshot(logout_request(Some("garbage-token-nobody-issued"))).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }

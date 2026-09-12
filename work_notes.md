@@ -42,6 +42,26 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 1.1.3 done: `POST /logout` — reuses the existing `AuthedUser` extractor
+  rather than duplicating its `Bearer`-header parsing; extended `AuthedUser`
+  from a one-field tuple struct (`AuthedUser(UserRow)`) to two fields
+  (`AuthedUser(UserRow, String)`), the second being the session's
+  `token_hash` already computed inside the extractor — exactly what
+  `Db::delete_session` needs, and the only thing missing before. Updated
+  the one existing call site (`test_whoami`'s destructuring) to match; no
+  behavior change there. Handler calls `Db::delete_session` and returns
+  `204` unconditionally, including the (currently unreachable without
+  concurrency) case where the row was already gone — no session-expiry
+  concept exists yet to make that reachable in practice, and a client
+  logging out an already-logged-out session isn't an error worth
+  surfacing. 4 new HTTP tests: logout returns 204; logout then reusing the
+  *same* token against `/_test/whoami` now gets 401 (proves the session
+  row is actually gone, not just that `/logout` responded); missing/
+  unknown bearer both still 401 via the same extractor. control-plane 20
+  passed (was 16); engine 269/8 ignored and shared 25 both unchanged.
+  Touched: `control-plane/src/http/mod.rs` (extractor shape + route table),
+  new `control-plane/src/http/logout.rs`, `control-plane/src/http/tests.rs`.
+  `/signup` and `/login` untouched.
 - 1.1.2 done: `POST /login` + session auth. Good independent judgment call
   worth recording: session tokens are hashed at rest exactly like tenant
   `sk_` tokens (same reasoning — high-entropy, machine-generated, a fast

@@ -16,10 +16,11 @@
 //! issues a session token; the [`AuthedUser`] extractor below resolves a
 //! `Authorization: Bearer <session_token>` header back to a user, the same
 //! pattern as the engine's own `AuthedTenant` (see `src/http/mod.rs` at the
-//! repo root) resolves `Bearer sk_...`. Logout (1.1.3) is a separate,
-//! later task.
+//! repo root) resolves `Bearer sk_...`. `/logout` (1.1.3) reuses the same
+//! extractor to find out which session to revoke.
 
 mod login;
+mod logout;
 mod signup;
 #[cfg(test)]
 mod tests;
@@ -39,7 +40,10 @@ pub struct AppState {
 }
 
 pub fn build_router(state: AppState) -> Router {
-    let router = Router::new().route("/signup", post(signup::signup)).route("/login", post(login::login));
+    let router = Router::new()
+        .route("/signup", post(signup::signup))
+        .route("/login", post(login::login))
+        .route("/logout", post(logout::logout));
 
     // Test-only route exercising `AuthedUser` - see its doc comment.
     // Compiled only under `#[cfg(test)]`, so it never exists in the real
@@ -53,7 +57,13 @@ pub fn build_router(state: AppState) -> Router {
 /// Resolves `Authorization: Bearer <session_token>` to the user that
 /// session belongs to. `401` for a missing/malformed header or an
 /// unknown/invalid token - never distinguishes the two.
-pub struct AuthedUser(pub UserRow);
+///
+/// Also carries the presented session's `token_hash` (the same hash
+/// `Db::find_session`/`Db::delete_session` key on) alongside the resolved
+/// user - `/logout` (WBS 1.1.3) needs to know exactly which session row to
+/// delete, and re-deriving it would mean re-parsing the `Bearer` header a
+/// second time outside this extractor.
+pub struct AuthedUser(pub UserRow, pub String);
 
 impl FromRequestParts<AppState> for AuthedUser {
     type Rejection = ApiError;
@@ -70,7 +80,7 @@ impl FromRequestParts<AppState> for AuthedUser {
         let db = state.db.lock().unwrap();
         let session = db.find_session(&token_hash).map_err(|_| ApiError::Unauthorized)?.ok_or(ApiError::Unauthorized)?;
         let user = db.get_user_by_id(&session.user_id).map_err(|_| ApiError::Unauthorized)?.ok_or(ApiError::Unauthorized)?;
-        Ok(AuthedUser(user))
+        Ok(AuthedUser(user, token_hash))
     }
 }
 
@@ -79,7 +89,7 @@ impl FromRequestParts<AppState> for AuthedUser {
 /// [`AuthedUser`] to exercise, since no real protected endpoint exists yet.
 /// Not a real API surface - do not build on it.
 #[cfg(test)]
-async fn test_whoami(AuthedUser(user): AuthedUser) -> Json<serde_json::Value> {
+async fn test_whoami(AuthedUser(user, _): AuthedUser) -> Json<serde_json::Value> {
     Json(json!({ "user_id": user.id }))
 }
 
