@@ -130,8 +130,12 @@ mod tests {
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
         let engine = engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
-        let state =
-            AppState { db: Db::open_in_memory().unwrap().into_shared(), engine_client, encryption_key: TEST_ENCRYPTION_KEY };
+        let state = AppState {
+            db: Db::open_in_memory().unwrap().into_shared(),
+            engine_client,
+            encryption_key: TEST_ENCRYPTION_KEY,
+            templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
+        };
         (state, engine)
     }
 

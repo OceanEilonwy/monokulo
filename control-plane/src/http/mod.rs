@@ -18,23 +18,41 @@
 //! pattern as the engine's own `AuthedTenant` (see `src/http/mod.rs` at the
 //! repo root) resolves `Bearer sk_...`. `/logout` (1.1.3) reuses the same
 //! extractor to find out which session to revoke.
+//!
+//! `/dashboard/signup` and `/dashboard/login` (`dashboard` module, WBS
+//! 1.3.1) are a second, browser-facing surface over the same underlying
+//! account/login logic — plain HTML forms instead of JSON, ending in a
+//! `session` cookie instead of a JSON-body bearer token. [`AuthedUser`]
+//! accepts either: a `Bearer` header (the JSON API's own clients) or a
+//! `session` cookie (the browser flow) — same hash-and-look-up logic either
+//! way, so this stays one auth system, not two.
 
 mod connections;
+mod dashboard;
 mod login;
 mod logout;
 mod signup;
 #[cfg(test)]
 mod tests;
 
+use std::sync::Arc;
+
 use axum::Router;
 use axum::extract::FromRequestParts;
 use axum::http::{StatusCode, header, request::Parts};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
+use axum_extra::extract::CookieJar;
 use serde_json::json;
 
 use crate::db::{SharedDb, UserRow};
 use crate::engine_client::EngineClient;
+use crate::templates::TemplateEngine;
+
+/// Name of the cookie the browser-facing login flow (`dashboard::login_submit`)
+/// sets and [`AuthedUser`] reads back — a plain constant so the two sides
+/// can't drift apart on the name.
+pub(crate) const SESSION_COOKIE_NAME: &str = "session";
 
 #[derive(Clone)]
 pub struct AppState {
@@ -46,6 +64,10 @@ pub struct AppState {
     /// environment variable in the real binary (`main.rs`); tests just
     /// construct a fixed key directly.
     pub encryption_key: [u8; 32],
+    /// Renders the two fixed browser-facing pages (WBS 1.3.1). `Arc`-wrapped
+    /// since it's built once (parsing the two built-in templates) and only
+    /// ever read afterward — cheap to clone into every `AppState` clone.
+    pub templates: Arc<TemplateEngine>,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -53,7 +75,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/signup", post(signup::signup))
         .route("/login", post(login::login))
         .route("/logout", post(logout::logout))
-        .route("/connections", post(connections::create_connection));
+        .route("/connections", post(connections::create_connection))
+        .route("/dashboard/signup", axum::routing::get(dashboard::signup_form).post(dashboard::signup_submit))
+        .route("/dashboard/login", axum::routing::get(dashboard::login_form).post(dashboard::login_submit));
 
     // Test-only route exercising `AuthedUser` - see its doc comment.
     // Compiled only under `#[cfg(test)]`, so it never exists in the real
@@ -64,28 +88,37 @@ pub fn build_router(state: AppState) -> Router {
     router.with_state(state)
 }
 
-/// Resolves `Authorization: Bearer <session_token>` to the user that
-/// session belongs to. `401` for a missing/malformed header or an
-/// unknown/invalid token - never distinguishes the two.
+/// Resolves a session token to the user that session belongs to - either
+/// from `Authorization: Bearer <session_token>` (the JSON API, WBS 1.1.2) or
+/// from a `session` cookie (the browser flow, WBS 1.3.1's
+/// `dashboard::login_submit`), checked in that order: a request carrying an
+/// `Authorization` header is treated as an API client and only that header
+/// is consulted, falling back to the cookie only when the header is absent
+/// entirely. `401` for a missing/malformed header, missing cookie, or an
+/// unknown/invalid token - never distinguishes any of these from each
+/// other. Both paths converge on the exact same "hash the token, look up
+/// the session" logic below - there is one auth system here, not two
+/// parallel ones.
 ///
 /// Also carries the presented session's `token_hash` (the same hash
 /// `Db::find_session`/`Db::delete_session` key on) alongside the resolved
 /// user - `/logout` (WBS 1.1.3) needs to know exactly which session row to
-/// delete, and re-deriving it would mean re-parsing the `Bearer` header a
-/// second time outside this extractor.
+/// delete, and re-deriving it would mean re-parsing the credential a second
+/// time outside this extractor.
 pub struct AuthedUser(pub UserRow, pub String);
 
 impl FromRequestParts<AppState> for AuthedUser {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let header_value = parts
-            .headers
-            .get(header::AUTHORIZATION)
-            .and_then(|v| v.to_str().ok())
-            .ok_or(ApiError::Unauthorized)?;
-        let token = header_value.strip_prefix("Bearer ").ok_or(ApiError::Unauthorized)?;
-        let token_hash = shared::auth::hash_secret_token(token);
+        let token = if let Some(header_value) = parts.headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok())
+        {
+            header_value.strip_prefix("Bearer ").ok_or(ApiError::Unauthorized)?.to_string()
+        } else {
+            let jar = CookieJar::from_headers(&parts.headers);
+            jar.get(SESSION_COOKIE_NAME).map(|cookie| cookie.value().to_string()).ok_or(ApiError::Unauthorized)?
+        };
+        let token_hash = shared::auth::hash_secret_token(&token);
 
         let db = state.db.lock().unwrap();
         let session = db.find_session(&token_hash).map_err(|_| ApiError::Unauthorized)?.ok_or(ApiError::Unauthorized)?;

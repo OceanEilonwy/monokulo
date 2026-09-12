@@ -6,6 +6,7 @@
 use control_plane::db::Db;
 use control_plane::engine_client::EngineClient;
 use control_plane::http::{AppState, build_router};
+use control_plane::templates::TemplateEngine;
 
 /// Reads the AES-256-GCM key (WBS 1.2.3) used to encrypt the engine's
 /// `sk_...` secret token at rest (see `control_plane::crypto`) from
@@ -37,7 +38,9 @@ async fn main() {
     // URL, not a real deployment wiring.
     let engine_client = EngineClient::new("http://127.0.0.1:8080");
     let encryption_key = encryption_key_from_env();
-    let app_state = AppState { db, engine_client, encryption_key };
+    let templates =
+        std::sync::Arc::new(TemplateEngine::new().expect("built-in signup/login templates must parse"));
+    let app_state = AppState { db, engine_client, encryption_key, templates };
     let router = build_router(app_state);
 
     let bind = "127.0.0.1:8081";

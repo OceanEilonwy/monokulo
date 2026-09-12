@@ -12,6 +12,7 @@ pub mod crypto;
 pub mod db;
 pub mod engine_client;
 pub mod http;
+pub mod templates;
 
 pub fn now_unix() -> i64 {
     std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64

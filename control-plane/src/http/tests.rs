@@ -22,6 +22,7 @@ fn test_app_state() -> AppState {
         db: Db::open_in_memory().unwrap().into_shared(),
         engine_client: EngineClient::new("http://127.0.0.1:1"),
         encryption_key: [7u8; 32],
+        templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
     }
 }
 
@@ -260,4 +261,225 @@ async fn logout_rejects_an_unknown_bearer_token() {
     let router = test_router();
     let response = router.oneshot(logout_request(Some("garbage-token-nobody-issued"))).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+// -- WBS 1.3.1: browser-facing signup/login pages ---------------------------
+
+fn form_request(uri: &str, fields: &[(&str, &str)]) -> Request<Body> {
+    let body = fields
+        .iter()
+        .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+    Request::builder()
+        .method("POST")
+        .uri(uri)
+        .header("content-type", "application/x-www-form-urlencoded")
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Minimal `application/x-www-form-urlencoded` percent-encoding for test
+/// fixtures only - real clients (browsers) do this themselves; there's no
+/// reason to pull in a whole crate just to build a test request body.
+fn urlencoding_encode(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+            b' ' => out.push('+'),
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
+}
+
+async fn body_text(response: axum::response::Response) -> String {
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+#[tokio::test]
+async fn get_dashboard_signup_returns_html() {
+    let router = test_router();
+    let request = Request::builder().method("GET").uri("/dashboard/signup").body(Body::empty()).unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response.headers().get("content-type").unwrap().to_str().unwrap().to_string();
+    assert!(content_type.contains("text/html"), "expected text/html, got {content_type}");
+    let html = body_text(response).await;
+    assert!(html.contains("<form"));
+    assert!(html.contains("/dashboard/signup"));
+}
+
+#[tokio::test]
+async fn get_dashboard_login_returns_html() {
+    let router = test_router();
+    let request = Request::builder().method("GET").uri("/dashboard/login").body(Body::empty()).unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let content_type = response.headers().get("content-type").unwrap().to_str().unwrap().to_string();
+    assert!(content_type.contains("text/html"), "expected text/html, got {content_type}");
+    let html = body_text(response).await;
+    assert!(html.contains("<form"));
+    assert!(html.contains("/dashboard/login"));
+}
+
+#[tokio::test]
+async fn posting_valid_form_encoded_signup_data_redirects_to_the_login_page() {
+    let router = test_router();
+    let response = router
+        .oneshot(form_request(
+            "/dashboard/signup",
+            &[("email", "form-signup@example.com"), ("password", "correct horse battery staple")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::FOUND, "expected a 302 redirect");
+    let location = response.headers().get("location").unwrap().to_str().unwrap();
+    assert_eq!(location, "/dashboard/login");
+}
+
+#[tokio::test]
+async fn posting_a_duplicate_email_to_dashboard_signup_rerenders_the_form_with_an_error() {
+    let router = test_router();
+
+    let first = router
+        .clone()
+        .oneshot(form_request(
+            "/dashboard/signup",
+            &[("email", "dupe-form@example.com"), ("password", "first password here")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::FOUND);
+
+    let second = router
+        .oneshot(form_request(
+            "/dashboard/signup",
+            &[("email", "dupe-form@example.com"), ("password", "a different password")],
+        ))
+        .await
+        .unwrap();
+    // Still a 200 re-render of the form, not a redirect and not a bare JSON 409.
+    assert_eq!(second.status(), StatusCode::OK);
+    let html = body_text(second).await;
+    assert!(html.contains("already registered"), "expected a visible duplicate-email error, got: {html}");
+    assert!(html.contains("<form"), "the signup form must still be present: {html}");
+}
+
+#[tokio::test]
+async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
+    let router = test_router();
+
+    let signup = router
+        .clone()
+        .oneshot(form_request(
+            "/dashboard/signup",
+            &[("email", "form-login@example.com"), ("password", "correct horse battery staple")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(signup.status(), StatusCode::FOUND);
+
+    let response = router
+        .oneshot(form_request(
+            "/dashboard/login",
+            &[("email", "form-login@example.com"), ("password", "correct horse battery staple")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let set_cookie = response.headers().get("set-cookie").unwrap().to_str().unwrap();
+    assert!(set_cookie.starts_with("session="), "expected a `session` cookie, got: {set_cookie}");
+    assert!(set_cookie.to_lowercase().contains("httponly"), "expected HttpOnly, got: {set_cookie}");
+    assert!(set_cookie.to_lowercase().contains("samesite=lax"), "expected SameSite=Lax, got: {set_cookie}");
+}
+
+#[tokio::test]
+async fn the_session_cookie_from_dashboard_login_authenticates_against_a_protected_route() {
+    let router = test_router();
+
+    let signup = router
+        .clone()
+        .oneshot(form_request(
+            "/dashboard/signup",
+            &[("email", "cookie-auth@example.com"), ("password", "correct horse battery staple")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(signup.status(), StatusCode::FOUND);
+
+    let login = router
+        .clone()
+        .oneshot(form_request(
+            "/dashboard/login",
+            &[("email", "cookie-auth@example.com"), ("password", "correct horse battery staple")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let set_cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    // Extract just `session=<value>` from the full `Set-Cookie` line (which
+    // also carries `; HttpOnly; SameSite=Lax; Path=/`) - that's what a
+    // browser would send back in a `Cookie` request header.
+    let session_pair = set_cookie.split(';').next().unwrap().to_string();
+    assert!(session_pair.starts_with("session="));
+
+    // Prove the cookie path through `AuthedUser` is real, not just present
+    // in the code: use it (as a `Cookie` header, no `Authorization` header
+    // at all) against the existing bearer-only protected test route.
+    let whoami_request = Request::builder()
+        .method("GET")
+        .uri("/_test/whoami")
+        .header("cookie", session_pair)
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(whoami_request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "the session cookie must authenticate via AuthedUser");
+    let body = body_json(response).await;
+    assert!(body.as_object().unwrap().get("user_id").and_then(|v| v.as_str()).is_some_and(|s| !s.is_empty()));
+}
+
+#[tokio::test]
+async fn posting_a_wrong_password_to_dashboard_login_rerenders_the_form_with_a_generic_error() {
+    let router = test_router();
+
+    let signup = router
+        .clone()
+        .oneshot(form_request(
+            "/dashboard/signup",
+            &[("email", "wrong-pw-form@example.com"), ("password", "the real password")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(signup.status(), StatusCode::FOUND);
+
+    let response = router
+        .oneshot(form_request(
+            "/dashboard/login",
+            &[("email", "wrong-pw-form@example.com"), ("password", "not the real password")],
+        ))
+        .await
+        .unwrap();
+    // Still a 200 re-render, not a redirect and not a bare JSON 401.
+    assert_eq!(response.status(), StatusCode::OK);
+    assert!(response.headers().get("set-cookie").is_none(), "no session cookie on a failed login");
+    let html = body_text(response).await;
+    assert!(html.contains("Invalid email or password"), "expected a generic login error, got: {html}");
+}
+
+#[tokio::test]
+async fn an_unknown_email_at_dashboard_login_gets_the_same_generic_error_as_a_wrong_password() {
+    let router = test_router();
+    let response = router
+        .oneshot(form_request(
+            "/dashboard/login",
+            &[("email", "nobody-has-this-account@example.com"), ("password", "whatever")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_text(response).await;
+    assert!(html.contains("Invalid email or password"), "expected the same generic login error, got: {html}");
 }
