@@ -56,6 +56,28 @@ struct FinishResponseBody {
     endpoint: String,
 }
 
+/// The result of [`create_order`]: a real order seeded on the engine, plus
+/// the checkout URL a WooCommerce customer would be redirected to next
+/// (`GET /pay/v1/{pk}/{payment_id}` at the repo root's
+/// `src/http/public.rs::payment_page` - see [`create_order`]'s own doc
+/// comment).
+#[derive(Debug)]
+pub struct CreatedOrder {
+    pub payment_id: String,
+    pub checkout_url: String,
+}
+
+/// Field-for-field mirror of the engine's own
+/// `src/http/public.rs::CreateOrderResponse` - only `payment_id` is actually
+/// needed to build [`CreatedOrder`], but the rest is deserialized too so a
+/// malformed/unexpected response body fails clearly via `serde_json` rather
+/// than silently ignoring extra fields no differently than a real caller
+/// would notice.
+#[derive(Debug, Deserialize)]
+struct CreateOrderResponseBody {
+    payment_id: String,
+}
+
 /// Every way [`run_connect_flow`] (or the callback handler it waits on) can
 /// fail. [`ConnectFlowError::NonceMismatch`] is the one that matters most for
 /// this task's own purpose - see the module doc comment.
@@ -214,6 +236,48 @@ async fn expect_ok(response: reqwest::Response, step: &str) -> Result<(), Connec
     let status = response.status().as_u16();
     let body = response.text().await.unwrap_or_default();
     Err(ConnectFlowError::UnexpectedResponse { step: step.to_string(), status, body })
+}
+
+/// WBS 1.4.3: creates a real order directly against the engine's own public,
+/// unauthenticated `POST /api/v1/t/{public_key}/orders` (`src/http/
+/// public.rs::create_order` at the repo root - no `sk_`/`Authorization`
+/// header involved, exactly like a real WooCommerce checkout page's
+/// server-to-server call would be, since a merchant's `pk_` is not a
+/// secret), then builds the checkout redirect target
+/// (`{engine_base_url}/pay/v1/{public_key}/{payment_id}`, matching
+/// `src/http/mod.rs`'s own route table for `public::payment_page`) from the
+/// real `payment_id` the engine handed back - not a plausibly-shaped guess.
+///
+/// `engine_base_url` is the engine's own externally-reachable address (e.g.
+/// `ConnectedCredentials::endpoint` from [`run_connect_flow`]), *not* the
+/// control plane - order creation talks to the engine directly, the same
+/// way a real WooCommerce site's checkout page would call the engine with
+/// the `pk_` it was configured with.
+pub async fn create_order(
+    engine_base_url: &str,
+    public_key: &str,
+    fiat_amount: &str,
+    fiat_currency: &str,
+) -> Result<CreatedOrder, ConnectFlowError> {
+    let client = reqwest::Client::new();
+    let response = client
+        .post(format!("{engine_base_url}/api/v1/t/{public_key}/orders"))
+        .json(&serde_json::json!({
+            "fiat_amount": fiat_amount,
+            "fiat_currency": fiat_currency,
+        }))
+        .send()
+        .await?;
+
+    if !response.status().is_success() {
+        let status = response.status().as_u16();
+        let body = response.text().await.unwrap_or_default();
+        return Err(ConnectFlowError::UnexpectedResponse { step: "create order".to_string(), status, body });
+    }
+
+    let parsed: CreateOrderResponseBody = response.json().await?;
+    let checkout_url = format!("{engine_base_url}/pay/v1/{public_key}/{}", parsed.payment_id);
+    Ok(CreatedOrder { payment_id: parsed.payment_id, checkout_url })
 }
 
 /// Server-to-server `POST {control_plane_base_url}/connect/{platform}/finish`,
@@ -439,6 +503,62 @@ mod tests {
             .await
             .expect("the returned secret_token should be the tenant's genuine, functioning sk_ credential");
         assert_eq!(tenant_view.public_key, credentials.public_key);
+    }
+
+    /// A fixed, arbitrary exchange rate for a test-only currency - same
+    /// convention `control-plane/src/http/orders.rs`'s own tests use (only
+    /// its non-zero-ness matters, since the engine's `compute_xmr_amount` is
+    /// exact integer arithmetic regardless of the rate's real-world
+    /// plausibility).
+    const TEST_CURRENCY: &str = "USD";
+    const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
+
+    /// WBS 1.4.3: runs the full connect flow to get real, working
+    /// credentials against a real engine (reusing [`run_connect_flow`]
+    /// rather than duplicating tenant-creation logic), then calls
+    /// [`create_order`] against that same engine with those credentials -
+    /// proving order creation is genuinely wired to the real public API, not
+    /// just plausibly shaped. The final assertion fetches the returned
+    /// `checkout_url` directly with a plain `reqwest::get` (standing in for
+    /// the customer's browser being redirected there) and confirms it's a
+    /// real, working checkout page, not just a well-formed string - only
+    /// possible because this engine was spawned with `with_rate` in
+    /// addition to `with_networks`, unlike this crate's other tests, which
+    /// never create an order.
+    #[tokio::test]
+    async fn create_order_against_a_real_engine_yields_a_working_checkout_redirect() {
+        let engine = engine_test_support::TestEngineConfig::new()
+            .with_networks(&[monero::Network::Mainnet])
+            .with_rate(TEST_CURRENCY, TEST_RATE_PICONERO_PER_UNIT)
+            .spawn()
+            .await;
+        let control_plane = spawn_test_control_plane(engine.addr).await;
+        let control_plane_base_url = format!("http://{}", control_plane.addr);
+
+        let credentials = run_connect_flow(&control_plane_base_url)
+            .await
+            .expect("the connect flow should succeed end to end against a real engine + control plane");
+        assert_eq!(credentials.endpoint, format!("http://{}", engine.addr));
+
+        let order = create_order(&credentials.endpoint, &credentials.public_key, "10.00", TEST_CURRENCY)
+            .await
+            .expect("order creation should succeed against a real engine with a configured rate");
+
+        assert!(!order.payment_id.is_empty(), "expected a non-empty payment_id");
+        assert_eq!(
+            order.checkout_url,
+            format!("http://{}/pay/v1/{}/{}", engine.addr, credentials.public_key, order.payment_id),
+            "checkout_url should be shaped exactly like the engine's own /pay/v1/{{pk}}/{{payment_id}} route"
+        );
+
+        // Strong proof, not just a plausibly-shaped URL: actually fetch it,
+        // the same way a customer's browser would be redirected there next,
+        // and confirm it's a genuine, working checkout page.
+        let checkout_response =
+            reqwest::get(&order.checkout_url).await.expect("fetching the checkout_url should succeed");
+        assert_eq!(checkout_response.status(), reqwest::StatusCode::OK);
+        let body = checkout_response.text().await.expect("checkout page response should have a body");
+        assert!(body.contains("<html"), "expected the checkout page to be real HTML, got: {body}");
     }
 
     /// The load-bearing nonce-mismatch proof: a raw HTTP call bypassing
