@@ -1338,6 +1338,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shared",
  "thiserror",
  "tokio",
  "toml",
@@ -1995,6 +1996,11 @@ dependencies = [
 [[package]]
 name = "shared"
 version = "0.1.0"
+dependencies = [
+ "hex",
+ "rand 0.10.2",
+ "sha2",
+]
 
 [[package]]
 name = "shlex"

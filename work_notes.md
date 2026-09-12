@@ -42,6 +42,14 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 0.2 done: `shared::auth` now holds the token generation/hashing logic
+  moved from `src/auth.rs` (SHA-256, unchanged). `src/auth.rs` is a thin
+  `pub use shared::auth::*;` re-export so `src/http/admin.rs` and
+  `src/store.rs` (the only call sites) needed no changes. Root `Cargo.toml`
+  depends on `shared` by path now. Tests moved intact: engine 285
+  passed/8 ignored (was 287 — the 2 moved tests now run from `shared`,
+  which is at 3 passed total including its own placeholder). Independently
+  re-verified (diff + full `cargo test --workspace` re-run) before commit.
 - 0.1 done: root `Cargo.toml` gained a `[workspace]` table
   (`members = ["shared", "control-plane", "mock-woocommerce"]` — the root
   package is included implicitly since it already has `[package]`; no
