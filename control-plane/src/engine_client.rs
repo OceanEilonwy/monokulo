@@ -123,6 +123,24 @@ impl EngineClient {
             .await?;
         parse_response(response).await
     }
+
+    /// `POST {base_url}/api/v1/admin/tenant/webhooks` — registers a webhook for
+    /// `sk`'s tenant (WBS 1.4.4), authenticated the same way `get_tenant` is.
+    /// `extra_headers` is never sent — no caller of this method needs it yet, and the
+    /// engine's own `CreateWebhookRequest` treats it as optional. Returns
+    /// `(webhook_id, signing_secret)` rather than a named struct since that's the
+    /// entirety of what `http/connect.rs::finish` needs back.
+    pub async fn create_webhook(&self, sk: &str, url: &str) -> Result<(String, String), EngineClientError> {
+        let response = self
+            .http
+            .post(format!("{}/api/v1/admin/tenant/webhooks", self.base_url))
+            .bearer_auth(sk)
+            .json(&CreateWebhookRequest { url: url.to_string() })
+            .send()
+            .await?;
+        let parsed: CreateWebhookResponse = parse_response(response).await?;
+        Ok((parsed.webhook_id, parsed.signing_secret))
+    }
 }
 
 async fn parse_response<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, EngineClientError> {
@@ -233,6 +251,21 @@ pub struct WebhookView {
     pub created_at: i64,
 }
 
+/// Mirrors the engine's own `CreateWebhookRequest` (`src/http/admin.rs` at the repo
+/// root) field-for-field — `extra_headers` omitted, see `create_webhook`'s doc
+/// comment.
+#[derive(Serialize)]
+struct CreateWebhookRequest {
+    url: String,
+}
+
+/// Mirrors the engine's own `CreateWebhookResponse`.
+#[derive(Debug, Deserialize)]
+struct CreateWebhookResponse {
+    webhook_id: String,
+    signing_secret: String,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -289,5 +322,35 @@ mod tests {
             .expect("get_tenant against a real engine should succeed");
 
         assert_eq!(fetched.public_key, created.public_key);
+    }
+
+    /// `create_webhook` against a real engine — proves the request/response shape
+    /// actually matches `src/http/admin.rs::create_webhook`/`CreateWebhookResponse`
+    /// at the repo root, not just a plausible guess: a real `webhook_id`/
+    /// `signing_secret` come back, and the webhook is genuinely visible afterward via
+    /// `list_webhooks` (which this task doesn't touch, but already exists from WBS
+    /// 1.3.3) with the exact URL that was registered.
+    #[tokio::test]
+    async fn create_webhook_then_list_webhooks_round_trips_against_a_real_engine() {
+        let engine = engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let client = EngineClient::new(format!("http://{}", engine.addr));
+
+        let created = client
+            .create_tenant(test_create_tenant_request())
+            .await
+            .expect("create_tenant against a real engine should succeed");
+
+        let (webhook_id, signing_secret) = client
+            .create_webhook(&created.secret_token, "https://merchant.example/hook")
+            .await
+            .expect("create_webhook against a real engine should succeed");
+        assert!(!webhook_id.is_empty());
+        assert!(!signing_secret.is_empty());
+
+        let webhooks =
+            client.list_webhooks(&created.secret_token).await.expect("list_webhooks against a real engine should succeed");
+        assert_eq!(webhooks.len(), 1);
+        assert_eq!(webhooks[0].webhook_id, webhook_id);
+        assert_eq!(webhooks[0].url, "https://merchant.example/hook");
     }
 }

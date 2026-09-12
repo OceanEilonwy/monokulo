@@ -628,10 +628,12 @@ checksum = "92773504d58c093f6de2459af4af33faa518c13451eb8f2b5698ed3d36e7c813"
 name = "engine-test-support"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "axum",
  "monero",
  "moneropay-core",
  "reqwest",
+ "serde_json",
  "tokio",
 ]
 
@@ -1308,6 +1310,7 @@ dependencies = [
  "reqwest",
  "serde",
  "serde_json",
+ "shared",
  "thiserror",
  "tokio",
  "url",

@@ -42,6 +42,108 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 1.4.4 done: webhook registration folded into `/finish`, plus a real
+  receiver in `mock-woocommerce` and a genuinely forced end-to-end delivery
+  test, completing Track 1.4 short of 1.4.5 (deliberately not built here).
+  - **Part A (control-plane)**: `POST /connect/{platform}/finish` now
+    accepts `{"token", "webhook_url"?}` (`webhook_url` optional, for
+    backward compatibility with every pre-existing caller/test). When
+    present, `finish` calls a new `EngineClient::create_webhook(sk, url) ->
+    Result<(webhook_id, signing_secret), EngineClientError>` (mirrors the
+    engine's real `CreateWebhookRequest`/`CreateWebhookResponse`
+    field-for-field, same convention as every other `EngineClient` method)
+    and returns `webhook_signing_secret` in the response
+    (`#[serde(skip_serializing_if)]`, so a caller with no webhook sees the
+    exact same wire shape as before this task). A failed registration
+    collapses the *whole* `/finish` call to `401`, per this task's own spec
+    - documented in `finish`'s own doc comment as a deliberate policy
+      choice, not just pattern reuse, along with the accepted tradeoff (the
+      connect token is already consumed by that point, so the plugin must
+      restart the whole flow rather than retry).
+    - Also threaded `ConfirmForm::order_expiry_seconds` (new, optional,
+      `#[serde(default)]`) through to `CreateConnectionFields` - previously
+      hardcoded to `None` at the confirm step. Needed as a real way to give
+      a tenant a short expiry through this flow (see Part C), and is a
+      genuine, narrow gap this task's own scope justified filling rather
+      than a JSON-endpoint-only capability (`POST /connections` already had
+      it).
+  - **Part B (mock-woocommerce)**: new `shared` dependency (plain library
+    dep, no circularity). Added a real, long-lived `WebhookReceiver`
+    (`POST /moneropay/webhook`) - deliberately *not* tied to the short-lived
+    callback server's lifetime, since a delivery can arrive well after the
+    connect flow itself has returned. Verifies `X-MoneroPay-Signature` via
+    `shared::webhook_sign::verify_signature` against the raw `axum::body::
+    Bytes` *before* any JSON parsing, rejects (without recording) a missing/
+    invalid signature or one arriving before the receiver's `signing_secret`
+    is even known yet, and dedupes recorded events on `event_id` (real
+    at-least-once delivery per `docs/DESIGN.md` §11).
+    `run_connect_flow` now always spawns this receiver and passes its URL
+    as `webhook_url` to `/finish`, storing the real `webhook_signing_secret`
+    and the still-running receiver in an extended `ConnectedCredentials` -
+    all 3 pre-existing tests needed zero changes to their assertions (only
+    gained new fields). A new `run_connect_flow_with_order_expiry_seconds`
+    sibling (generalizing rather than duplicating, same judgment call
+    `TestEngineConfig` already modeled) exists for Part C's test.
+  - **Part C (engine background loops)**: investigated thoroughly before
+    touching anything - **zero engine-crate changes were needed**.
+    `moneropay_core::webhook_delivery::run_delivery_tick` was already public
+    (already used by `main.rs`); the one genuine gap was a
+    `MoneroDaemonClient` for `run_scan_tick` to drive, since the engine's own
+    `daemon::fake::FakeDaemonClient` is `#[cfg(test)]`-gated and therefore
+    invisible to any downstream crate, dev-dependency or not. Fixed
+    entirely inside `engine-test-support` by implementing the (ungated,
+    public) `MoneroDaemonClient` trait fresh with a trivial `NoopDaemonClient`
+    (height stuck at 0, empty blocks/mempool) - confirmed by directly reading
+    `src/scanner.rs` that `run_scan_tick`'s non-terminal-order recompute sweep
+    (`docs/DESIGN.md` §7.6, the one that reaches `expired`) is keyed off
+    `network` alone via `non_terminal_order_ids`, entirely independent of the
+    `tenants`/watchlist parameter that gates real chain-scanning, so an inert
+    daemon and an empty `tenants` list are sufficient to force a real expiry
+    purely from wall-clock time. `TestEngineConfig::with_background_loops()`
+    (opt-in, off by default - every existing caller/test unaffected) spawns
+    both the scanner-tick and delivery-tick loops on a 150ms interval.
+    Verified directly in `engine-test-support`'s own new test
+    (`background_loops_genuinely_deliver_a_real_expired_webhook`) purely
+    through the engine's public/admin HTTP API, with no `mock-woocommerce`/
+    `control-plane` involved, before relying on it anywhere else.
+  - **The forced-delivery test**
+    (`mock-woocommerce`'s `a_genuinely_forced_order_expired_webhook_is_delivered_and_verified`):
+    real engine (`with_background_loops`) + real control-plane +
+    `run_connect_flow_with_order_expiry_seconds(url, 1)` + a real order via
+    `create_order` with no payment ever made, then polls (not a fixed sleep)
+    the receiver until the real `order.expired` delivery lands. Genuine, not
+    a shortcut: nothing in the test touches either database directly, mints
+    an event/delivery row itself, or calls any scanner/delivery function by
+    hand - every step is a real HTTP call or an already-independently-proven
+    background loop. The final assertion re-verifies the *exact* raw bytes +
+    signature the receiver actually recorded (not a re-serialized
+    reconstruction) against `credentials.webhook_signing_secret` - a value
+    obtained from a completely different channel (`/finish`'s own JSON
+    response) than the receiver's internal state, plus a negative check that
+    a wrong secret does not verify the same bytes.
+  - Also added: 3 new control-plane tests (`engine_client.rs`'s
+    `create_webhook_then_list_webhooks_round_trips_against_a_real_engine`;
+    `connect.rs`'s `finish_with_a_webhook_url_registers_a_real_webhook_and_
+    carries_the_signing_secret` and `finish_with_a_rejected_webhook_url_
+    fails_the_whole_call`); 4 more mock-woocommerce tests beyond the forced-
+    delivery one (a direct signature-verification unit test reusing
+    `shared::webhook_sign`'s own documented cross-language known vector
+    rather than inventing a new one; dedupe-on-retry; reject-invalid-
+    signature; reject-before-secret-is-known).
+  - Counts: control-plane 80 passed (+3 from this task; the pre-task
+    baseline was already 77, not the 57 last recorded in this log under
+    1.3.3 - 1.4.1/1.4.2/1.4.3 added tests without updating a "Counts:" line
+    here, not this task's doing), engine-test-support 2 passed (was 1, +1),
+    mock-woocommerce 8 passed (was 3, +5), engine 269/8 ignored (unchanged,
+    confirmed no engine-crate file was touched), shared 26 (unchanged,
+    untouched). `cargo build --workspace` and `cargo test --workspace` both
+    clean, no warnings.
+  - Files touched: `control-plane/src/engine_client.rs`,
+    `control-plane/src/http/connect.rs`, `engine-test-support/Cargo.toml`,
+    `engine-test-support/src/lib.rs`, `mock-woocommerce/Cargo.toml`,
+    `mock-woocommerce/src/lib.rs`. No `docs/`, no migrations, no engine
+    (`src/`) file.
+
 - 1.4.2 done: `mock-woocommerce` is now a real driver — `run_connect_flow`
   is the synthetic browser (cookie-persisting `reqwest::Client`, auto-
   following redirects) walking the whole WBS 1.4.1 flow: connect-start →

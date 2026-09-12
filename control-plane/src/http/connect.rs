@@ -28,8 +28,9 @@
 //!    [`AuthedUser`]: the plugin calls this server-to-server, with no
 //!    control-plane session at all. Redeems the token exactly once (see
 //!    [`crate::db::Db::consume_connect_token`]'s atomicity doc comment) and
-//!    returns `{public_key, secret_token, endpoint}` - never a webhook
-//!    signing secret; that's WBS 1.4.4, a separate later task.
+//!    returns `{public_key, secret_token, endpoint}` plus, as of WBS 1.4.4,
+//!    a `webhook_signing_secret` when the request carried a `webhook_url` -
+//!    see [`finish`]'s own doc comment for the registration/failure policy.
 
 use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
@@ -132,6 +133,14 @@ pub struct ConfirmForm {
     pub spend_pubkey_hex: String,
     pub network: String,
     pub allowed_origins: String,
+    /// Not shown on the confirm screen (no UI field for it yet) — carried purely so
+    /// a caller who needs a non-default tenant `order_expiry_seconds` (e.g. WBS
+    /// 1.4.4's forced-expiry test) has a real way to set it through this flow rather
+    /// than only via the JSON `POST /connections` surface. `#[serde(default)]` keeps
+    /// every existing form submission (none of which send this field) parsing
+    /// exactly as before, defaulting to the engine's own default.
+    #[serde(default)]
+    pub order_expiry_seconds: Option<i64>,
 }
 
 /// `POST /connect/{platform}` (behind [`AuthedUser`], WBS 1.4.1 step 4): the
@@ -164,7 +173,7 @@ pub async fn confirm_submit(
         allowed_origins,
         confirmations_required: None,
         zero_conf_max_piconero: None,
-        order_expiry_seconds: None,
+        order_expiry_seconds: form.order_expiry_seconds,
     };
 
     let outcome = match connections::create_connection_for_user(&state, &user, fields).await {
@@ -224,6 +233,14 @@ pub async fn confirm_submit(
 #[derive(Deserialize)]
 pub struct FinishRequest {
     pub token: String,
+    /// The plugin's own webhook receiver URL (WBS 1.4.4) — it can only be known once
+    /// the plugin holds real credentials, hence this arriving here rather than at
+    /// the earlier confirm step. `Option` for backward compatibility: a caller that
+    /// omits it (or an older plugin build) simply gets no webhook registered, and
+    /// `FinishResponse::webhook_signing_secret` is absent from the response, exactly
+    /// as it always has been for every caller before this field existed.
+    #[serde(default)]
+    pub webhook_url: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -231,21 +248,33 @@ pub struct FinishResponse {
     pub public_key: String,
     pub secret_token: String,
     pub endpoint: String,
+    /// Present only when `webhook_url` was supplied and registration succeeded.
+    /// `skip_serializing_if` keeps the wire shape for a caller with no webhook
+    /// exactly what it always was — a bare `{public_key, secret_token, endpoint}` —
+    /// rather than growing a permanent `null` field for every existing caller.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub webhook_signing_secret: Option<String>,
 }
 
-/// `POST /connect/{platform}/finish` (WBS 1.4.1 step 5) - deliberately *not*
-/// behind [`AuthedUser`]: this is a server-to-server call from the plugin,
-/// which has no control-plane session at all (it's the browser, not the
-/// plugin's backend, that ever holds one). Redeems the connect token exactly
-/// once (see [`crate::db::Db::consume_connect_token`]) and returns the real
-/// credentials - never a webhook signing secret yet (WBS 1.4.4, separate).
+/// `POST /connect/{platform}/finish` (WBS 1.4.1 step 5, extended by 1.4.4) -
+/// deliberately *not* behind [`AuthedUser`]: this is a server-to-server call
+/// from the plugin, which has no control-plane session at all (it's the
+/// browser, not the plugin's backend, that ever holds one). Redeems the
+/// connect token exactly once (see [`crate::db::Db::consume_connect_token`])
+/// and returns the real credentials - plus, when `webhook_url` was supplied,
+/// registers a real webhook against the engine (via
+/// [`crate::engine_client::EngineClient::create_webhook`]) and returns its
+/// `signing_secret`.
 ///
 /// Every failure mode - unknown token, already-consumed token, expired
-/// token, or a connection/decrypt failure that should never actually happen
-/// for a row this service itself wrote - collapses to a bare `401`. That's
-/// deliberate: none of these should be distinguishable to whoever is holding
-/// an invalid token, same enumeration-defense principle used everywhere
-/// else in this crate.
+/// token, a connection/decrypt failure that should never actually happen for
+/// a row this service itself wrote, or (new in 1.4.4) a failed webhook
+/// registration - collapses to a bare `401`. That's deliberate for the first
+/// three, same enumeration-defense principle used everywhere else in this
+/// crate; for webhook registration specifically it is a considered policy
+/// choice, not just "reuse the existing pattern" - see the doc comment
+/// immediately above the webhook-registration branch below for the tradeoff
+/// this accepts and why.
 pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest>) -> Response {
     let token_hash = shared::auth::hash_secret_token(&req.token);
 
@@ -276,8 +305,39 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    Json(FinishResponse { public_key: row.tenant_public_key, secret_token, endpoint: state.engine_client.base_url().to_string() })
-        .into_response()
+    // Webhook registration (WBS 1.4.4): only attempted when the caller supplied a
+    // `webhook_url`. On failure this collapses the *entire* `/finish` call to `401`,
+    // exactly like every other failure mode above - deliberately, per this task's own
+    // spec, even though the token has by this point already been irreversibly
+    // consumed (see `consume_connect_token`'s atomicity doc comment) and a
+    // registration failure here is `EngineClientError`-shaped, not enumeration-shaped
+    // (unlike the branches above, this one has nothing to hide from a legitimate
+    // caller - a network blip or a rejected URL isn't a secret). The accepted
+    // tradeoff: a plugin whose *webhook* registration fails (a transient network
+    // issue between the control plane and the engine, say, with credential retrieval
+    // itself having fully succeeded) gets no credentials at all and cannot retry with
+    // the same token - it must restart the whole connect flow from `GET
+    // /connect/{platform}` to mint a fresh one. This was judged the safer default
+    // over the alternative (return credentials anyway, with no webhook and no way to
+    // signal that clearly in a shape existing callers already parse) rather than
+    // because the collapse-to-401 pattern was merely convenient to reuse - flagged
+    // here explicitly in case a real deployment prefers "credentials now, webhook
+    // registration retried separately" instead.
+    let webhook_signing_secret = match &req.webhook_url {
+        Some(url) => match state.engine_client.create_webhook(&secret_token, url).await {
+            Ok((_webhook_id, signing_secret)) => Some(signing_secret),
+            Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
+        },
+        None => None,
+    };
+
+    Json(FinishResponse {
+        public_key: row.tenant_public_key,
+        secret_token,
+        endpoint: state.engine_client.base_url().to_string(),
+        webhook_signing_secret,
+    })
+    .into_response()
 }
 
 #[cfg(test)]
@@ -540,6 +600,128 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    /// WBS 1.4.4: a `webhook_url` supplied to `/finish` genuinely registers a
+    /// webhook against the real engine - not just a plausibly-shaped response.
+    /// Also exercises this task's other addition, `ConfirmForm::order_expiry_seconds`
+    /// (threaded all the way to `CreateTenantRequest`), in the same round trip: the
+    /// created tenant's `order_expiry_seconds` is fetched back via `get_tenant` and
+    /// must match exactly what the confirm form sent, proving the field genuinely
+    /// reaches the engine rather than being silently dropped.
+    #[tokio::test]
+    async fn finish_with_a_webhook_url_registers_a_real_webhook_and_carries_the_signing_secret() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let cookie = signed_up_and_logged_in_session_cookie(&router, "webhook-register@example.com", "correct horse battery staple").await;
+
+        let post_response = router
+            .clone()
+            .oneshot(form_request(
+                "/connect/woocommerce",
+                Some(&cookie),
+                &[
+                    ("site_url", "https://shop.example.com"),
+                    ("return_url", "https://shop.example.com/settings"),
+                    ("nonce", "nonce-webhook"),
+                    ("view_key_hex", TEST_VIEW_KEY_HEX),
+                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                    ("network", "mainnet"),
+                    ("allowed_origins", ""),
+                    ("order_expiry_seconds", "1"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(post_response.status(), StatusCode::FOUND);
+        let location = post_response.headers().get("location").unwrap().to_str().unwrap().to_string();
+        let token = parse_query_params(&location).get("token").unwrap().clone();
+
+        let finish_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/connect/woocommerce/finish")
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "token": token, "webhook_url": "https://merchant.example/hook" }).to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(finish_response.status(), StatusCode::OK);
+        let body = body_json(finish_response).await;
+        let obj = body.as_object().unwrap();
+        let secret_token = obj.get("secret_token").unwrap().as_str().unwrap().to_string();
+        let signing_secret =
+            obj.get("webhook_signing_secret").expect("expected webhook_signing_secret in the response").as_str().unwrap();
+        assert!(!signing_secret.is_empty());
+
+        // Strong proof, not just a well-shaped response: the webhook genuinely
+        // exists on the real engine, under this tenant, with the exact URL
+        // submitted - and the tenant's order_expiry_seconds genuinely reached the
+        // engine too.
+        let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+        let webhooks = engine_client.list_webhooks(&secret_token).await.expect("list_webhooks against the real engine should succeed");
+        assert_eq!(webhooks.len(), 1);
+        assert_eq!(webhooks[0].url, "https://merchant.example/hook");
+
+        let tenant_view = engine_client.get_tenant(&secret_token).await.expect("get_tenant against the real engine should succeed");
+        assert_eq!(tenant_view.order_expiry_seconds, 1, "order_expiry_seconds must have reached the engine's real tenant record");
+    }
+
+    /// A `webhook_url` the engine rejects (WBS 1.4.4's collapse-to-401 policy, see
+    /// `finish`'s own doc comment) fails the *entire* `/finish` call, not just the
+    /// webhook part - the caller never sees `public_key`/`secret_token` at all, and
+    /// (since the token was already consumed by this point) can't simply retry the
+    /// same token once it supplies a valid URL.
+    #[tokio::test]
+    async fn finish_with_a_rejected_webhook_url_fails_the_whole_call() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "webhook-reject@example.com", "correct horse battery staple").await;
+
+        let post_response = router
+            .clone()
+            .oneshot(form_request(
+                "/connect/woocommerce",
+                Some(&cookie),
+                &[
+                    ("site_url", "https://shop.example.com"),
+                    ("return_url", "https://shop.example.com/settings"),
+                    ("nonce", "nonce-webhook-reject"),
+                    ("view_key_hex", TEST_VIEW_KEY_HEX),
+                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                    ("network", "mainnet"),
+                    ("allowed_origins", ""),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(post_response.status(), StatusCode::FOUND);
+        let location = post_response.headers().get("location").unwrap().to_str().unwrap().to_string();
+        let token = parse_query_params(&location).get("token").unwrap().clone();
+
+        // `ftp://` is neither `http` nor `https` - the engine's own
+        // `create_webhook` rejects it with a real `400`, which `EngineClient`
+        // surfaces as an `Err`, which this handler collapses to `401`.
+        let finish_response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/connect/woocommerce/finish")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::json!({ "token": token, "webhook_url": "ftp://not-http.example/hook" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(finish_response.status(), StatusCode::UNAUTHORIZED);
     }
 
     #[tokio::test]
