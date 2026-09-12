@@ -1,12 +1,19 @@
-//! `control-plane`: accounts, store connections, connect flow, dashboard
-//! backend. Empty skeleton for now — see `docs/WOOCOMMERCE_WBS.md` Track A.
+//! Thin binary wrapper — all real logic lives in the library (`src/lib.rs`),
+//! same split as the engine's own `main.rs`/`lib.rs`. No config file, CLI
+//! parsing, or deployment wiring yet (that's for a later WBS task); this is
+//! just enough to actually run the one endpoint that exists so far.
 
-fn main() {}
+use control_plane::db::Db;
+use control_plane::http::{AppState, build_router};
 
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn compiles() {
-        assert!(true);
-    }
+#[tokio::main]
+async fn main() {
+    let db = Db::open_file("control_plane.db").expect("failed to open control-plane database").into_shared();
+    let app_state = AppState { db };
+    let router = build_router(app_state);
+
+    let bind = "127.0.0.1:8081";
+    let listener = tokio::net::TcpListener::bind(bind).await.expect("failed to bind server address");
+    println!("control-plane listening on {bind}");
+    axum::serve(listener, router).await.expect("server error");
 }

@@ -42,6 +42,33 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 1.1.1 done: `control-plane` has its first real code — restructured into
+  `lib.rs`/`main.rs` (mirroring the engine's own split) plus `db.rs` (its own
+  SQLite database, entirely separate from the engine's, same `Store`-style
+  pattern: `Db` wrapping one `rusqlite::Connection`, `Arc<Mutex<..>>`-shared,
+  migrated via `shared::migrations::apply`) and `http/` (`AppState`,
+  `build_router`, tested via `tower::ServiceExt::oneshot` — no bound socket
+  needed for control-plane testing its own router, that's a different need
+  from `engine-test-support`). `POST /signup` hashes with
+  `shared::password::hash_password`, returns `201 {user_id}` or
+  `409 {"error":"email already in use"}` on a duplicate email (detected via
+  `rusqlite`'s `ConstraintViolation` error code, same shape the engine's own
+  code checks elsewhere) — any other failure is a fixed, generic `500`, no
+  message ever varies with the underlying cause. 7 new tests, all reviewed
+  directly and independently re-run: valid signup, duplicate-email conflict,
+  and a direct DB-row check confirming the stored value is a real
+  `$argon2...` PHC hash (verified via `shared::password::verify_password`),
+  never the plaintext.
+  - **Fixed while reviewing** (not the delegated agent's fault, a real
+    latent gap it correctly flagged rather than silently working around):
+    `shared/Cargo.toml` was missing an explicit `rand_core` dependency with
+    the `getrandom` feature — `argon2`'s `password_hash::rand_core::OsRng`
+    needs it, and it was only compiling as part of `cargo test --workspace`
+    by accident, via feature unification with some other member's
+    dependency graph. `cargo test -p shared` in isolation failed outright.
+    Added `rand_core = { version = "0.6", features = ["getrandom"] }`
+    directly to `shared/Cargo.toml`; confirmed both `-p shared` alone and
+    `--workspace` build cleanly now.
 - **Foundations (0.1-0.6) complete.** Track A starts next (control-plane
   accounts, WBS 1.1).
 - 0.6 done: real-engine test harness landed as its **own new crate**,

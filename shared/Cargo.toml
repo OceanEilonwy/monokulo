@@ -8,6 +8,12 @@ argon2 = "0.5"
 hex = "0.4.3"
 hmac = "0.13.0"
 rand = "0.10.2"
+# argon2's password-hash re-export needs rand_core's `OsRng`, which is behind
+# rand_core's own "getrandom" feature. Declared explicitly here (rather than
+# relying on another workspace member's dependency graph enabling it via
+# Cargo's feature unification during a workspace-wide build) so `cargo test
+# -p shared` builds correctly in isolation, not just as part of `--workspace`.
+rand_core = { version = "0.6", features = ["getrandom"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.11.0"
 thiserror = "2.0.20"
