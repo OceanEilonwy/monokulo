@@ -42,6 +42,27 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- **Foundations (0.1-0.6) complete.** Track A starts next (control-plane
+  accounts, WBS 1.1).
+- 0.6 done: real-engine test harness landed as its **own new crate**,
+  `engine-test-support/`, not inside `shared` — correctly identified a real
+  circular-dependency problem (`moneropay-core` depends on `shared`, so a
+  harness needing `moneropay-core` can't live in `shared` without a cycle)
+  and resolved it exactly as the WBS's own hedge anticipated ("in `shared`,
+  or a dev-only sibling crate"). Layering:
+  `engine-test-support -> moneropay-core -> shared`. Public API:
+  `spawn_test_engine() -> TestEngineHandle` (in-memory `Store`,
+  `PlainKeyCustody`, empty `FixedRateProvider`, no configured networks,
+  bound to a real `127.0.0.1:<ephemeral-port>` via `axum::serve` in a
+  background task; `Drop` aborts the task). No `#[cfg(test)]`/feature gate
+  needed on the crate itself — being reached only via `[dev-dependencies]`
+  is what keeps it out of real builds. `mock-woocommerce` now depends on it
+  as a dev-dependency. Smoke test does a genuine `reqwest` round trip
+  (confirmed: real TCP, not `tower::ServiceExt::oneshot`) against
+  `/static/moneropay-client.js` (verified dependency-free — no tenant/node/
+  scanner needed). Engine/shared test counts unaffected (269/24); new
+  crate at 1 passed. Independently re-verified (full file read, workspace
+  member diff, test re-run) before commit.
 - 0.5 done: `shared::migrations::apply` now holds the generic transactional
   migration runner (moved from `src/store.rs`'s `apply_migration_list`,
   renamed since it's namespaced now — pure move, `unchecked_transaction`

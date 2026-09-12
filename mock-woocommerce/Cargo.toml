@@ -5,3 +5,11 @@ edition = "2021"
 
 [dependencies]
 moneropay-core = { path = ".." }
+
+# Test-only: lets mock-woocommerce's own (future) integration tests start a
+# real, network-bound moneropay-core engine instance via
+# engine_test_support::spawn_test_engine() rather than reimplementing that
+# construction. Dev-dependency, not a regular one - it exists purely for
+# tests and must never be linked into a normal build.
+[dev-dependencies]
+engine-test-support = { path = "../engine-test-support" }
