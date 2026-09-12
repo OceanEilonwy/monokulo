@@ -64,33 +64,15 @@ fn configure_connection(conn: &Connection) -> rusqlite::Result<()> {
 /// migration on the next boot, which for anything containing `CREATE TABLE` or
 /// `DROP TABLE` (0003 and 0004 both do) fails outright and leaves the server unable
 /// to start against its own database.
+///
+/// The actual mechanism (transactional per-migration apply, tracked in
+/// `schema_migrations`) lives in `shared::migrations::apply` (WBS 0.5) - moved there
+/// so the control-plane database can reuse it without a second, hand-rolled copy.
+/// This wrapper just supplies the engine's own migration list, which - being
+/// `include_str!("../migrations/...")` paths relative to this crate - can't live in
+/// `shared` itself.
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
-    apply_migration_list(conn, MIGRATIONS)
-}
-
-/// Split out from `apply_migrations` purely so a test can drive it with a
-/// deliberately-failing migration - the all-or-nothing property is invisible from
-/// the outside otherwise, since every real migration succeeds.
-fn apply_migration_list(conn: &Connection, migrations: &[(i64, &str)]) -> rusqlite::Result<()> {
-    conn.execute_batch("CREATE TABLE IF NOT EXISTS schema_migrations (version INTEGER PRIMARY KEY)")?;
-    for (version, sql) in migrations {
-        let already_applied: bool = conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE version = ?1)",
-            params![version],
-            |row| row.get(0),
-        )?;
-        if !already_applied {
-            // `unchecked_transaction` rather than `Connection::transaction` only
-            // because every `Store` method takes `&self`, not `&mut self` - the
-            // single-writer discipline this module documents makes the borrow-level
-            // check it forgoes redundant.
-            let tx = conn.unchecked_transaction()?;
-            tx.execute_batch(sql)?;
-            tx.execute("INSERT INTO schema_migrations (version) VALUES (?1)", params![version])?;
-            tx.commit()?;
-        }
-    }
-    Ok(())
+    shared::migrations::apply(conn, MIGRATIONS)
 }
 
 pub type SharedStore = Arc<Mutex<Store>>;
@@ -2249,48 +2231,6 @@ mod tests {
     }
 
     #[test]
-    fn a_failing_migration_leaves_neither_its_schema_changes_nor_its_version_row() {
-        // Each migration body and its `schema_migrations` insert were two separate
-        // statements, so a crash between them re-ran the migration on the next boot
-        // - which, for any migration containing CREATE TABLE or DROP TABLE (0003
-        // and 0004 both do), fails outright and leaves the server unable to start
-        // against its own database. Wrapping the pair in a transaction makes a
-        // half-applied migration impossible; this drives that with a migration that
-        // succeeds partway and then fails.
-        let conn = Connection::open_in_memory().unwrap();
-        let migrations: &[(i64, &str)] = &[
-            (1, "CREATE TABLE ok_table (id INTEGER PRIMARY KEY);"),
-            (2, "CREATE TABLE half_applied (id INTEGER PRIMARY KEY); THIS IS NOT VALID SQL;"),
-        ];
-        let err = apply_migration_list(&conn, migrations).unwrap_err();
-        let _ = err;
-
-        let applied: Vec<i64> = {
-            let mut stmt = conn.prepare("SELECT version FROM schema_migrations ORDER BY version").unwrap();
-            let rows = stmt.query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
-            rows
-        };
-        assert_eq!(applied, vec![1], "the migration that succeeded is recorded; the one that failed is not");
-
-        let half_applied_exists: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='half_applied')",
-                [],
-                |row| row.get(0),
-            )
-            .unwrap();
-        assert!(
-            !half_applied_exists,
-            "the failed migration's CREATE TABLE must have rolled back - otherwise re-running it next boot fails with 'table already exists'"
-        );
-
-        // And the retry a restart would perform now succeeds against a fixed
-        // migration, rather than tripping over its own leftovers.
-        let fixed: &[(i64, &str)] = &[migrations[0], (2, "CREATE TABLE half_applied (id INTEGER PRIMARY KEY);")];
-        apply_migration_list(&conn, fixed).unwrap();
-    }
-
-    #[test]
     fn migration_0004_rebuilds_order_payments_without_losing_existing_rows() {
         // 0004 changes a constraint, which SQLite can only do by rebuilding the
         // table and copying every row across - the one kind of migration that can
@@ -2299,7 +2239,7 @@ mod tests {
         // schema version, put real data in it, then apply the rest.
         let conn = Connection::open_in_memory().unwrap();
         configure_connection(&conn).unwrap();
-        apply_migration_list(&conn, &MIGRATIONS[..3]).unwrap();
+        shared::migrations::apply(&conn, &MIGRATIONS[..3]).unwrap();
         let store = Store { conn };
 
         let tenant = new_tenant(&store);
@@ -2315,7 +2255,7 @@ mod tests {
             ))
             .unwrap();
 
-        apply_migration_list(&store.conn, MIGRATIONS).unwrap();
+        shared::migrations::apply(&store.conn, MIGRATIONS).unwrap();
 
         let payments = store.get_all_payments(&order.id).unwrap();
         assert_eq!(payments.len(), 1, "the pre-upgrade payment must survive the table rebuild");

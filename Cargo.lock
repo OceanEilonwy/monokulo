@@ -2040,6 +2040,7 @@ dependencies = [
  "hex",
  "hmac",
  "rand 0.10.2",
+ "rusqlite",
  "sha2",
  "thiserror",
  "url",

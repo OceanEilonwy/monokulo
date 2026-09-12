@@ -42,6 +42,27 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 0.5 done: `shared::migrations::apply` now holds the generic transactional
+  migration runner (moved from `src/store.rs`'s `apply_migration_list`,
+  renamed since it's namespaced now — pure move, `unchecked_transaction`
+  usage and all-or-nothing semantics unchanged). Engine keeps its own
+  `MIGRATIONS` list (the `include_str!(...)` paths, meaningless outside
+  the engine crate), the `apply_migrations` wrapper (now a one-line call
+  into `shared::migrations::apply`), and `configure_connection`
+  (`PRAGMA foreign_keys` etc.) — confirmed the required ordering
+  (`configure_connection` then `apply_migrations`, outside any
+  transaction) is untouched at both call sites. Good judgment call on
+  which tests moved: the generic-mechanism test
+  (`a_failing_migration_leaves_neither_its_schema_changes_nor_its_version_row`,
+  built on an ad-hoc migration list) moved to `shared`; two tests that
+  drive the *real* `MIGRATIONS`/`Store` schema
+  (`reopening_an_existing_database_file_does_not_reapply_migrations`,
+  `migration_0004_rebuilds_order_payments_without_losing_existing_rows`)
+  correctly stayed in `store.rs` since they test engine schema content,
+  not the runner itself — only their call site was updated to
+  `shared::migrations::apply(...)`. Engine 269 passed/8 ignored (was 270,
+  −1 moved), `shared` 24 passed (was 23, +1). Independently re-verified
+  (diff read in full, ordering confirmed, tests re-run) before commit.
 - 0.4 done: `shared::password` — new, genuinely new logic (not a move),
   Argon2id via the `argon2` crate for the control plane's future human
   account passwords, explicitly separate from `shared::auth`'s SHA-256

@@ -8,6 +8,7 @@ argon2 = "0.5"
 hex = "0.4.3"
 hmac = "0.13.0"
 rand = "0.10.2"
+rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.11.0"
 thiserror = "2.0.20"
 url = "2.5.8"
