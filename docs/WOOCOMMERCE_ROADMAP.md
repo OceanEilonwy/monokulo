@@ -5,6 +5,9 @@ current self-hosted `moneropay-core` CLI tool to a hosted service that a
 merchant can sign up for and get a working "Pay with Monero" option in their
 WooCommerce checkout in a handful of clicks.
 
+For the task-by-task execution breakdown (small, sequenced, individually
+testable chunks), see `docs/WOOCOMMERCE_WBS.md`.
+
 ## 0. Decisions already made
 
 These came out of discussion before this document was written, and everything
