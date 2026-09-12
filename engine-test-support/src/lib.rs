@@ -86,6 +86,21 @@ impl Drop for TestEngineHandle {
 /// that needs a tenant should create one against the returned address via the
 /// engine's own admin API (`POST /api/v1/admin/tenants`).
 pub async fn spawn_test_engine() -> TestEngineHandle {
+    spawn_test_engine_with_networks(&[]).await
+}
+
+/// Same as [`spawn_test_engine`], but with `configured_networks` set to the
+/// given list instead of empty. Added for WBS 1.2.1 (`control-plane`'s
+/// engine admin-API client): `POST /api/v1/admin/tenants`
+/// (`src/http/admin.rs::create_tenant` at the repo root) rejects any
+/// request for a network not in `state.configured_networks`, so a test that
+/// needs a real tenant actually created — not just the route reachable —
+/// needs at least one network configured. `spawn_test_engine` itself is
+/// kept deliberately network-less (see its own doc comment: it's the
+/// common case, and most callers only need dependency-free routes), so this
+/// is a separate, explicit opt-in rather than a behavior change to the
+/// existing function.
+pub async fn spawn_test_engine_with_networks(networks: &[Network]) -> TestEngineHandle {
     let store = Store::open_in_memory().expect("failed to open in-memory store for test engine").into_shared();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let exchange_rate: Arc<dyn ExchangeRateProvider> = Arc::new(FixedRateProvider::new(HashMap::new()));
@@ -96,7 +111,7 @@ pub async fn spawn_test_engine() -> TestEngineHandle {
         exchange_rate,
         wallet_handles: Arc::new(RwLock::new(HashMap::new())),
         rate_limiter: Arc::new(RateLimiter::new(10_000)),
-        configured_networks: Arc::new(HashSet::<Network>::new()),
+        configured_networks: Arc::new(networks.iter().copied().collect::<HashSet<Network>>()),
     };
     let router = build_router(app_state, MAX_BODY_BYTES);
 

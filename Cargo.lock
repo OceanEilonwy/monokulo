@@ -267,7 +267,10 @@ name = "control-plane"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "engine-test-support",
  "http-body-util",
+ "monero",
+ "reqwest",
  "rusqlite",
  "serde",
  "serde_json",

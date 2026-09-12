@@ -42,6 +42,63 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 1.2.1 done: `control-plane/src/engine_client.rs` — a `reqwest`-based
+  `EngineClient` the control plane uses to call a *separately-running*
+  engine's admin API (a different role from `control_plane::http`, which is
+  the control plane's own router). `EngineClient::new(base_url)` takes the
+  engine's externally-reachable URL explicitly, no default/guessing.
+  `create_tenant(CreateTenantRequest) -> Result<CreateTenantResponse,
+  EngineClientError>` does `POST {base_url}/api/v1/admin/tenants` with no
+  auth header (confirmed the engine leaves that endpoint open by design);
+  `get_tenant(sk) -> Result<TenantView, EngineClientError>` does
+  `GET {base_url}/api/v1/admin/tenant` with `Authorization: Bearer sk_...`,
+  matching `AuthedTenant`'s real parsing at the repo root. Request/response
+  structs are control-plane's own, matched field-for-field against the
+  engine's real `src/http/admin.rs` types (`CreateTenantRequest`/
+  `CreateTenantResponse`/`TenantView`) rather than imported — the two
+  crates only ever talk over HTTP. `EngineClientError` (`thiserror`)
+  covers a failed request (`#[from] reqwest::Error`) and a non-success
+  status (`EngineError { status, message }`, `message` pulled from the
+  engine's own `{"error": "..."}` body shape, falling back to the raw body
+  if that ever doesn't parse). Added `reqwest = { version = "0.13.4",
+  default-features = false, features = ["rustls", "json"] }` to
+  `control-plane/Cargo.toml`, matching the engine's own pin exactly.
+  - **`configured_networks` problem**: `engine-test-support::spawn_test_engine`
+    (0.6) configures no Monero networks, but `create_tenant`'s handler
+    rejects any request for a network not in `state.configured_networks` —
+    so a test that needs a *real* tenant created (not just the route
+    reachable) can't use `spawn_test_engine` as-is. Extended
+    `engine-test-support` with a new `spawn_test_engine_with_networks(&[Network])`
+    that `spawn_test_engine()` now delegates to (passing `&[]`) — same
+    engine construction, just a configurable `configured_networks` set
+    instead of a hardcoded empty one. No behavior change to
+    `spawn_test_engine` itself or its signature; its existing WBS 0.6 smoke
+    test (`client_library_route_is_reachable_over_a_real_socket`) passes
+    unchanged, still 1 passed for the crate. This felt like the cleanest
+    fix in scope — 0.6 just hadn't anticipated a caller needing a
+    successful `create_tenant`, and the gap is narrow and additive.
+  - **Test**: `control-plane/src/engine_client.rs`'s own `#[cfg(test)] mod
+    tests`, one integration test
+    (`create_tenant_then_get_tenant_round_trips_against_a_real_engine`):
+    spawns a real engine via `spawn_test_engine_with_networks(&[Network::Mainnet])`,
+    points an `EngineClient` at `http://{engine.addr}`, calls `create_tenant`
+    with a valid-format (fixed-scalar, same construction as the engine's own
+    `src/http/tests.rs::valid_view_key_hex`/`valid_spend_pubkey_hex`, values
+    pre-computed via a throwaway example rather than pulling `monero` into
+    `control-plane`'s main dependencies) view key + spend pubkey, asserts a
+    real `tenant_id`/`pk_.../sk_...` come back, then calls `get_tenant` with
+    the returned `sk_` and asserts its `public_key` matches. Verified this is
+    a genuine round trip (not a false-positive pass) by temporarily
+    corrupting the final assertion and re-running — it failed showing the
+    *actual* `pk_...` value the live engine returned, then reverted.
+    `monero = "0.22.0"` and `engine-test-support = { path =
+    "../engine-test-support" }` added to `control-plane`'s
+    `[dev-dependencies]` only (not main dependencies).
+  - Counts: control-plane 21 passed (was 20, +1), engine-test-support 1
+    passed (unchanged), engine 269/8 ignored (unchanged), shared 25
+    (unchanged), mock-woocommerce 1 (unchanged). `/connections` and
+    `store_connections` (1.2.2) deliberately not built here — separate
+    task. `/signup`, `/login`, `/logout` untouched.
 - 1.1.3 done: `POST /logout` — reuses the existing `AuthedUser` extractor
   rather than duplicating its `Bearer`-header parsing; extended `AuthedUser`
   from a one-field tuple struct (`AuthedUser(UserRow)`) to two fields

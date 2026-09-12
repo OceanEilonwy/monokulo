@@ -9,6 +9,7 @@
 //! `main.rs` wires up `moneropay_core::http::{AppState, build_router}`.
 
 pub mod db;
+pub mod engine_client;
 pub mod http;
 
 pub fn now_unix() -> i64 {
