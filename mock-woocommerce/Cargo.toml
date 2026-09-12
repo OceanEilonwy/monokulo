@@ -1,0 +1,7 @@
+[package]
+name = "mock-woocommerce"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+moneropay-core = { path = ".." }

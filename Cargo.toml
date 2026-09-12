@@ -1,3 +1,6 @@
+[workspace]
+members = ["shared", "control-plane", "mock-woocommerce"]
+
 [package]
 name = "moneropay-core"
 version = "0.1.0"

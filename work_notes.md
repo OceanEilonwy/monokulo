@@ -42,10 +42,62 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
-_(empty — nothing implemented yet; entries appended here as each WBS item
-lands, newest last)_
+- 0.1 done: root `Cargo.toml` gained a `[workspace]` table
+  (`members = ["shared", "control-plane", "mock-woocommerce"]` — the root
+  package is included implicitly since it already has `[package]`; no
+  separate "." entry needed or accepted). Added `shared/` (lib crate,
+  empty placeholder + trivial test), `control-plane/` (bin crate, `fn
+  main() {}` + trivial test), and `mock-woocommerce/` (bin crate, `fn
+  main() {}` + trivial test, with `moneropay-core = { path = ".." }` as a
+  real dependency for later integration tests). `cargo build --workspace`
+  and `cargo test --workspace` both succeed: engine 287 passed/8 ignored
+  (unchanged from pre-workspace baseline), shared/control-plane/
+  mock-woocommerce each 1 passed. No existing engine file touched other
+  than the new `[workspace]` table in `Cargo.toml`.
 
 ## Judgment calls & open questions for the user
 
-_(empty so far — record anything decided without waiting for input here,
-with enough context that the user can override it later if it was wrong)_
+- **Important: this worktree is built on an older baseline than your main
+  checkout, and it matters for one specific area.** While reviewing 0.1's
+  work I found that the docs (`docs/WOOCOMMERCE_WBS.md`,
+  `docs/WOOCOMMERCE_ROADMAP.md`) and my briefing to the 0.1 agent both
+  contained a claim — "the engine's `Cargo.toml` already has an `[[test]]`
+  section and optional `e2e` feature gating `monero-wallet`/
+  `monero-daemon-rpc`/etc." — that came from reading
+  `/home/henry/Downloads/mokulo/Cargo.toml` (your main checkout) during the
+  earlier gap-analysis pass, *not* this worktree. Your main checkout has
+  uncommitted local changes (`git status` there shows `Cargo.toml`,
+  `e2e/.gitignore`, `e2e/README.md`, `e2e/stagenet-wallets.json`,
+  `src/cli.rs`, `src/config.rs`, `src/http/mod.rs`, `src/lib.rs`,
+  `src/main.rs`, `tests/e2e_stagenet.rs`, `tests/support/mod.rs` modified,
+  plus new untracked `src/e2e_wallet.rs`, `src/http/e2e_dev.rs`,
+  `static/e2e-shop.html`) that this worktree — branched from the last
+  *commit*, per how `EnterWorktree` works — never received, since
+  uncommitted changes in one working tree aren't visible from another.
+  - **What I checked to scope the actual impact**: re-read this worktree's
+    real `src/lib.rs`, `src/http/mod.rs` (router table, `AuthedTenant`'s
+    `Bearer` parsing), and `Cargo.toml` directly. The router paths, the
+    `Authorization: Bearer sk_...` auth format, the migration runner, the
+    `KeyCustody` trait, the rate limiter, HMAC signing, and the absence of
+    `argon2`/`governor` — everything this WBS's implementation tasks
+    actually depend on — are identical in both places. The only thing
+    that's genuinely different is your in-progress e2e-tooling refactor
+    (feature-gating the real-transaction-construction dependencies, a
+    `--e2e` dev-server mode, a demo shop page) — unrelated to the
+    WooCommerce/control-plane/SEV-SNP work, as far as I can tell.
+  - **What I did about it**: nothing destructive — I left your main
+    checkout completely untouched and am continuing to build in this
+    worktree, since copying or guessing at unfinished WIP from outside it
+    seemed riskier than proceeding on the last committed state. I fixed the
+    incorrect claim in the 0.1 agent's task (it correctly reported the
+    `[[test]]`/`e2e`-feature structure wasn't actually present, which I'd
+    initially mis-read as *it* being wrong — it wasn't, I was, for briefing
+    it off the wrong checkout).
+  - **What you'll want to do when you're back**: decide whether to commit
+    that e2e-tooling WIP, and if so, merge/rebase this branch
+    (`worktree-woocommerce-roadmap-doc`, currently local-only — recall push
+    to `origin` is denied under current credentials) on top of it once it
+    lands. Until then I'll keep treating this worktree's committed baseline
+    as ground truth and will flag it again if a later task's diff would
+    touch any of the files listed above, since those are the ones a future
+    merge will need to reconcile.

@@ -236,6 +236,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
+name = "control-plane"
+version = "0.1.0"
+
+[[package]]
 name = "core-foundation"
 version = "0.10.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1078,6 +1082,13 @@ dependencies = [
  "libc",
  "wasi",
  "windows-sys 0.61.2",
+]
+
+[[package]]
+name = "mock-woocommerce"
+version = "0.1.0"
+dependencies = [
+ "moneropay-core",
 ]
 
 [[package]]
@@ -1980,6 +1991,10 @@ dependencies = [
  "digest 0.10.7",
  "keccak",
 ]
+
+[[package]]
+name = "shared"
+version = "0.1.0"
 
 [[package]]
 name = "shlex"
