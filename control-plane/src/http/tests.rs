@@ -653,3 +653,38 @@ async fn submitting_an_invalid_view_key_rerenders_the_form_with_a_visible_error(
     assert!(html.contains("class=\"error\""), "expected a visible error message, got: {html}");
     assert!(!html.contains("pk_"), "a rejected submission must not show a public key");
 }
+
+// -- WBS 1.4.1: `next`-redirect support on dashboard::login_submit ----------
+//
+// The pure open-redirect-rejection proof lives in `dashboard.rs`'s own
+// `#[cfg(test)] mod tests` (`is_safe_redirect_path`'s direct unit tests) -
+// these are the HTTP-level complement: a real login request carrying a
+// malicious `next` must not redirect anywhere attacker-controlled, and a
+// real login with no `next` at all must behave exactly as it always has
+// (the existing tests above already cover that implicitly, since none of
+// them ever send a `next` field and all still pass unchanged).
+
+#[tokio::test]
+async fn a_successful_login_with_a_malicious_next_falls_back_to_the_default_confirmation_not_a_redirect() {
+    let router = test_router();
+
+    let email = "malicious-next@example.com";
+    let password = "correct horse battery staple";
+    let signup = router.clone().oneshot(form_request("/dashboard/signup", &[("email", email), ("password", password)])).await.unwrap();
+    assert_eq!(signup.status(), StatusCode::FOUND);
+
+    for malicious_next in ["//evil.example.com", "https://evil.example.com", "/\\evil.example.com"] {
+        let response = router
+            .clone()
+            .oneshot(form_request("/dashboard/login", &[("email", email), ("password", password), ("next", malicious_next)]))
+            .await
+            .unwrap();
+        // Not a redirect at all - a malicious `next` must be silently
+        // ignored, falling back to the exact same inline confirmation a
+        // `next`-less login gets, never followed anywhere.
+        assert_eq!(response.status(), StatusCode::OK, "a malicious next ({malicious_next}) must not produce a redirect");
+        assert!(response.headers().get("location").is_none(), "must not carry a Location header at all for {malicious_next}");
+        let html = body_text(response).await;
+        assert!(html.contains("You're logged in"), "expected the default confirmation, got: {html}");
+    }
+}

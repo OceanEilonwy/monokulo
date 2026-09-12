@@ -36,6 +36,19 @@ pub fn generate_session_token() -> String {
     format!("sess_{}", random_hex(32))
 }
 
+/// A single-use connect-flow token (WBS 1.4.1,
+/// `docs/WOOCOMMERCE_ROADMAP.md` Stage 6) - handed to a (mock, then real)
+/// platform plugin via a redirect query param once the wallet-connection
+/// confirm form succeeds, then redeemed exactly once via
+/// `POST /connect/{platform}/finish`. Same generation primitive as
+/// `generate_session_token`/`generate_secret_token` - a high-entropy random
+/// hex string - with its own `conn_` prefix: a distinct credential type
+/// (short-lived, single-use, never itself an admin credential) from either
+/// of those.
+pub fn generate_connect_token() -> String {
+    format!("conn_{}", random_hex(32))
+}
+
 /// A webhook's HMAC signing secret. Unlike `sk_`, this is stored reversibly (see
 /// `webhooks.signing_secret` in the schema) since it's needed on every delivery, not
 /// just checked once - "shown once" for this value is an API convention, not a
@@ -76,6 +89,14 @@ mod tests {
         let t1 = generate_session_token();
         let t2 = generate_session_token();
         assert!(t1.starts_with("sess_"));
+        assert_ne!(t1, t2);
+    }
+
+    #[test]
+    fn generated_connect_tokens_have_the_expected_prefix_and_are_unique() {
+        let t1 = generate_connect_token();
+        let t2 = generate_connect_token();
+        assert!(t1.starts_with("conn_"));
         assert_ne!(t1, t2);
     }
 

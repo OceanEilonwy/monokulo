@@ -17,6 +17,7 @@ const CONNECT_TEMPLATE: &str = include_str!("../templates/connect.html.hbs");
 const ORDERS_TEMPLATE: &str = include_str!("../templates/orders.html.hbs");
 const ORDER_DETAIL_TEMPLATE: &str = include_str!("../templates/order_detail.html.hbs");
 const WEBHOOKS_TEMPLATE: &str = include_str!("../templates/webhooks.html.hbs");
+const CONNECT_PLATFORM_TEMPLATE: &str = include_str!("../templates/connect_platform.html.hbs");
 
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateError {
@@ -35,6 +36,21 @@ pub struct FormViewModel {
     pub error: Option<String>,
 }
 
+/// The view model the login template takes (WBS 1.4.1 extends the plain
+/// `FormViewModel` used elsewhere with `next`): `error` means the same thing
+/// `FormViewModel::error` does. `next`, when present, is rendered as a
+/// hidden form field so a successful login can redirect back to it (see
+/// `dashboard::login_submit`) instead of the default inline confirmation -
+/// this is the raw, caller-supplied query value, not yet validated as a safe
+/// redirect target here (that validation happens in `login_submit`, right
+/// before it's ever used as a redirect location, never here at render
+/// time).
+#[derive(Debug, Default, Serialize)]
+pub struct LoginViewModel {
+    pub error: Option<String>,
+    pub next: Option<String>,
+}
+
 /// The view model the wallet-connection template (WBS 1.3.2) takes: either
 /// `error` is set (re-rendering the form after the engine rejected the
 /// request) or `public_key` is set (a successful connection, showing the
@@ -44,6 +60,22 @@ pub struct FormViewModel {
 pub struct ConnectViewModel {
     pub error: Option<String>,
     pub public_key: Option<String>,
+}
+
+/// The view model the generic platform-connect confirm form (WBS 1.4.1,
+/// `GET`/`POST /connect/{platform}`) takes - the same wallet-connection
+/// fields the `/dashboard/connect` form (`ConnectViewModel`) has, plus the
+/// three values that must survive the round trip as hidden fields
+/// (`return_url`/`nonce`) or be shown to the merchant (`site_url`), and
+/// `platform` so the form's own `action` can post back to the same
+/// `/connect/{platform}` path it was reached at.
+#[derive(Debug, Default, Serialize)]
+pub struct PlatformConnectViewModel {
+    pub platform: String,
+    pub site_url: String,
+    pub return_url: String,
+    pub nonce: String,
+    pub error: Option<String>,
 }
 
 /// One row of the orders list page (WBS 1.3.3) - just the fields the table
@@ -140,6 +172,7 @@ impl TemplateEngine {
         handlebars.register_template_string("orders", ORDERS_TEMPLATE)?;
         handlebars.register_template_string("order_detail", ORDER_DETAIL_TEMPLATE)?;
         handlebars.register_template_string("webhooks", WEBHOOKS_TEMPLATE)?;
+        handlebars.register_template_string("connect_platform", CONNECT_PLATFORM_TEMPLATE)?;
         Ok(TemplateEngine { handlebars })
     }
 
@@ -147,8 +180,12 @@ impl TemplateEngine {
         Ok(self.handlebars.render("signup", data)?)
     }
 
-    pub fn render_login(&self, data: &FormViewModel) -> Result<String, TemplateError> {
+    pub fn render_login(&self, data: &LoginViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("login", data)?)
+    }
+
+    pub fn render_platform_connect(&self, data: &PlatformConnectViewModel) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("connect_platform", data)?)
     }
 
     pub fn render_connect(&self, data: &ConnectViewModel) -> Result<String, TemplateError> {
@@ -192,7 +229,7 @@ mod tests {
     #[test]
     fn login_template_renders_with_no_error() {
         let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_login(&FormViewModel::default()).unwrap();
+        let html = engine.render_login(&LoginViewModel::default()).unwrap();
         assert!(html.contains("<form"));
         assert!(html.to_lowercase().contains("log in"));
     }
@@ -200,9 +237,81 @@ mod tests {
     #[test]
     fn login_template_shows_the_error_when_present() {
         let engine = TemplateEngine::new().unwrap();
-        let html =
-            engine.render_login(&FormViewModel { error: Some("invalid email or password".to_string()) }).unwrap();
+        let html = engine
+            .render_login(&LoginViewModel { error: Some("invalid email or password".to_string()), next: None })
+            .unwrap();
         assert!(html.contains("invalid email or password"));
+    }
+
+    #[test]
+    fn login_template_includes_a_hidden_next_field_when_present() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine
+            .render_login(&LoginViewModel { error: None, next: Some("/connect/woocommerce?nonce=abc".to_string()) })
+            .unwrap();
+        assert!(html.contains(r#"type="hidden" name="next""#), "expected a hidden next field, got: {html}");
+        // Handlebars auto-escapes HTML-significant characters (including
+        // `=`, as `&#x3D;`) in attribute values by default - correct, safe
+        // behavior (never `{{{next}}}`/triple-stash - see
+        // `connect.html.hbs`'s own precedent), so check for the value's
+        // *content* surviving, not a byte-for-byte unescaped match.
+        assert!(html.contains("/connect/woocommerce?nonce"), "expected the next value's content present, got: {html}");
+        assert!(html.contains("abc"), "expected the next value's content present, got: {html}");
+    }
+
+    #[test]
+    fn login_template_escapes_special_characters_in_next_rather_than_injecting_them_raw() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine
+            .render_login(&LoginViewModel {
+                error: None,
+                next: Some("/connect/woocommerce?a=1&b=2".to_string()),
+            })
+            .unwrap();
+        assert!(html.contains("&amp;"), "expected the & in next to be HTML-escaped, got: {html}");
+        assert!(!html.contains("a=1&b=2"), "a raw, unescaped & would be a template-injection smell, got: {html}");
+    }
+
+    #[test]
+    fn login_template_has_no_hidden_next_field_when_absent() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine.render_login(&LoginViewModel::default()).unwrap();
+        assert!(!html.contains(r#"name="next""#), "expected no hidden next field, got: {html}");
+    }
+
+    #[test]
+    fn connect_platform_template_renders_the_confirm_form() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine
+            .render_platform_connect(&PlatformConnectViewModel {
+                platform: "woocommerce".to_string(),
+                site_url: "https://shop.example.com".to_string(),
+                return_url: "https://shop.example.com/settings".to_string(),
+                nonce: "nonce-abc".to_string(),
+                error: None,
+            })
+            .unwrap();
+        assert!(html.contains("https://shop.example.com"));
+        assert!(html.contains(r#"action="/connect/woocommerce""#));
+        assert!(html.contains(r#"name="return_url" value="https://shop.example.com/settings""#));
+        assert!(html.contains(r#"name="nonce" value="nonce-abc""#));
+        assert!(html.contains("view_key_hex"));
+    }
+
+    #[test]
+    fn connect_platform_template_shows_the_error_when_present() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine
+            .render_platform_connect(&PlatformConnectViewModel {
+                platform: "woocommerce".to_string(),
+                site_url: "https://shop.example.com".to_string(),
+                return_url: "https://shop.example.com/settings".to_string(),
+                nonce: "nonce-abc".to_string(),
+                error: Some("bad view key hex".to_string()),
+            })
+            .unwrap();
+        assert!(html.contains("bad view key hex"));
+        assert!(html.contains("<form"), "the form must still be present on error");
     }
 
     #[test]

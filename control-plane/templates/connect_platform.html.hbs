@@ -1,0 +1,29 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Connect Monero payments - MoneroPay Cloud</title>
+</head>
+<body>
+<h1>Connect Monero payments for {{site_url}}</h1>
+{{#if error}}
+<p class="error">{{error}}</p>
+{{/if}}
+<form method="post" action="/connect/{{platform}}">
+<input type="hidden" name="site_url" value="{{site_url}}">
+<input type="hidden" name="return_url" value="{{return_url}}">
+<input type="hidden" name="nonce" value="{{nonce}}">
+<label>View key (hex) <input type="text" name="view_key_hex" required></label><br>
+<label>Spend public key (hex) <input type="text" name="spend_pubkey_hex" required></label><br>
+<label>Network
+<select name="network">
+<option value="mainnet">mainnet</option>
+<option value="stagenet">stagenet</option>
+<option value="testnet">testnet</option>
+</select>
+</label><br>
+<label>Allowed origins (comma-separated) <input type="text" name="allowed_origins"></label><br>
+<button type="submit">Connect</button>
+</form>
+</body>
+</html>

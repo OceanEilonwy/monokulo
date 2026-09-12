@@ -31,7 +31,21 @@
 //! applied to `/connections`: a form-post wrapper, behind [`AuthedUser`],
 //! over `connections::create_connection_for_user` — the exact logic
 //! `/connections` itself calls, not a reimplementation of it.
+//!
+//! `/connect/{platform}` and `/connect/{platform}/finish` (`connect` module,
+//! WBS 1.4.1) are the generic, platform-agnostic "one-click install" flow
+//! (`docs/WOOCOMMERCE_ROADMAP.md` Stage 6): a plugin sends the merchant's
+//! browser to `GET /connect/{platform}`, which redirects to
+//! `/dashboard/login` (carrying a validated `next`, see
+//! `dashboard::login_submit`) if there's no session yet, or a confirm form
+//! if there is; confirming calls the same `connections::create_connection_for_user`
+//! every other surface uses, then redirects to the plugin's `return_url`
+//! with a short-lived, single-use connect token instead of a raw `sk_...`.
+//! `POST /connect/{platform}/finish` is deliberately *not* behind
+//! [`AuthedUser`] — it's called server-to-server by the plugin, which has no
+//! control-plane session at all — and redeems that token exactly once.
 
+mod connect;
 mod connections;
 mod dashboard;
 mod login;
@@ -45,7 +59,7 @@ use std::sync::Arc;
 
 use axum::Router;
 use axum::extract::FromRequestParts;
-use axum::http::{StatusCode, header, request::Parts};
+use axum::http::{HeaderMap, StatusCode, header, request::Parts};
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use axum_extra::extract::CookieJar;
@@ -87,7 +101,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/connect", axum::routing::get(dashboard::connect_form).post(dashboard::connect_submit))
         .route("/dashboard/connections/{id}/orders", axum::routing::get(orders::orders_list))
         .route("/dashboard/connections/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
-        .route("/dashboard/connections/{id}/webhooks", axum::routing::get(orders::webhooks_list));
+        .route("/dashboard/connections/{id}/webhooks", axum::routing::get(orders::webhooks_list))
+        .route("/connect/{platform}", axum::routing::get(connect::start).post(connect::confirm_submit))
+        .route("/connect/{platform}/finish", post(connect::finish));
 
     // Test-only route exercising `AuthedUser` - see its doc comment.
     // Compiled only under `#[cfg(test)]`, so it never exists in the real
@@ -121,20 +137,38 @@ impl FromRequestParts<AppState> for AuthedUser {
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
-        let token = if let Some(header_value) = parts.headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok())
-        {
-            header_value.strip_prefix("Bearer ").ok_or(ApiError::Unauthorized)?.to_string()
-        } else {
-            let jar = CookieJar::from_headers(&parts.headers);
-            jar.get(SESSION_COOKIE_NAME).map(|cookie| cookie.value().to_string()).ok_or(ApiError::Unauthorized)?
-        };
-        let token_hash = shared::auth::hash_secret_token(&token);
-
-        let db = state.db.lock().unwrap();
-        let session = db.find_session(&token_hash).map_err(|_| ApiError::Unauthorized)?.ok_or(ApiError::Unauthorized)?;
-        let user = db.get_user_by_id(&session.user_id).map_err(|_| ApiError::Unauthorized)?.ok_or(ApiError::Unauthorized)?;
-        Ok(AuthedUser(user, token_hash))
+        resolve_authed_user(state, &parts.headers).map(|(user, hash)| AuthedUser(user, hash)).ok_or(ApiError::Unauthorized)
     }
+}
+
+/// The actual "resolve a session to its user" logic [`AuthedUser`]'s
+/// extractor uses - factored out so a handler that needs to know *whether*
+/// the caller has a valid session, without failing the request outright when
+/// they don't, can reuse the exact same header/cookie parsing and lookup
+/// instead of a parallel reimplementation. `GET /connect/{platform}`
+/// (`http/connect.rs`, WBS 1.4.1) is the first such caller: an unauthenticated
+/// request there is a normal, expected case handled with a redirect to
+/// `/dashboard/login`, not a bare `401` - genuinely different handling from
+/// [`AuthedUser`]'s own rejection, but it must resolve a *valid* session
+/// identically, or the two code paths could quietly drift apart on what
+/// counts as "logged in."
+///
+/// `None` covers every reason a session doesn't resolve (missing/malformed
+/// header, missing cookie, unknown/invalid token, a database error looking
+/// either up) - never distinguished further, same as [`AuthedUser`] itself.
+pub(crate) fn resolve_authed_user(state: &AppState, headers: &HeaderMap) -> Option<(UserRow, String)> {
+    let token = if let Some(header_value) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
+        header_value.strip_prefix("Bearer ")?.to_string()
+    } else {
+        let jar = CookieJar::from_headers(headers);
+        jar.get(SESSION_COOKIE_NAME)?.value().to_string()
+    };
+    let token_hash = shared::auth::hash_secret_token(&token);
+
+    let db = state.db.lock().unwrap();
+    let session = db.find_session(&token_hash).ok().flatten()?;
+    let user = db.get_user_by_id(&session.user_id).ok().flatten()?;
+    Some((user, token_hash))
 }
 
 /// Test-only dummy protected route (see WBS 1.1.2): its only purpose is

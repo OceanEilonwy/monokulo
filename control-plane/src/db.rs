@@ -24,6 +24,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (1, include_str!("../migrations/0001_init.sql")),
     (2, include_str!("../migrations/0002_sessions.sql")),
     (3, include_str!("../migrations/0003_store_connections.sql")),
+    (4, include_str!("../migrations/0004_connect_tokens.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -262,6 +263,55 @@ impl Db {
             .map_err(DbError::from)
     }
 
+    /// Inserts a new single-use connect token (WBS 1.4.1) - `token_hash` is
+    /// already hashed by the caller (`shared::auth::hash_secret_token`),
+    /// never the raw token; see `http/connect.rs::confirm_submit`.
+    pub fn create_connect_token(&self, token_hash: &str, connection_id: &str, nonce: &str, created_at: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO connect_tokens (token_hash, connection_id, nonce, created_at) VALUES (?1, ?2, ?3, ?4)",
+            params![token_hash, connection_id, nonce, created_at],
+        )?;
+        Ok(())
+    }
+
+    /// Atomically checks and consumes a connect token (WBS 1.4.1): the
+    /// single `UPDATE ... WHERE token_hash = ? AND consumed_at IS NULL AND
+    /// created_at >= ?` statement, checked by its affected-row count (same
+    /// "did this actually change something" pattern [`Self::delete_session`]'s
+    /// boolean return already uses), is the one database write that can
+    /// never let two concurrent `/finish` calls for the same token both
+    /// succeed - a naive "SELECT to check, then UPDATE" would race between
+    /// the check and the write. `cutoff` (`now - ttl_seconds`) folds the TTL
+    /// check into that same atomic statement, so an expired token is
+    /// rejected exactly like an already-consumed one - not a separate check
+    /// that could itself race against a concurrent consume.
+    ///
+    /// Returns the `connection_id` the token pointed at on success; `None`
+    /// for an unknown, already-consumed, or expired token - deliberately
+    /// indistinguishable to the caller (`http/connect.rs::finish` maps all
+    /// three to a bare `401`), the same enumeration-defense principle used
+    /// everywhere else in this crate.
+    pub fn consume_connect_token(&self, token_hash: &str, now: i64, ttl_seconds: i64) -> Result<Option<String>> {
+        let cutoff = now - ttl_seconds;
+        let affected = self.conn.execute(
+            "UPDATE connect_tokens SET consumed_at = ?1 WHERE token_hash = ?2 AND consumed_at IS NULL AND created_at >= ?3",
+            params![now, token_hash, cutoff],
+        )?;
+        if affected == 0 {
+            return Ok(None);
+        }
+        // The row still exists (just consumed by the write above, not
+        // deleted) - reading `connection_id` back here is safe from the same
+        // race the UPDATE above already closed off: only the caller that
+        // just won the atomic consume reaches this line for this token_hash.
+        let connection_id = self.conn.query_row(
+            "SELECT connection_id FROM connect_tokens WHERE token_hash = ?1",
+            params![token_hash],
+            |row| row.get(0),
+        )?;
+        Ok(Some(connection_id))
+    }
+
     /// Direct row lookup by the tenant's public key rather than the
     /// connection's own id - for callers (currently just
     /// `http/dashboard.rs`'s WBS 1.3.2 tests) that only have the `pk_...`
@@ -413,6 +463,67 @@ mod tests {
     fn looking_up_an_unknown_public_key_returns_none_rather_than_an_error() {
         let db = Db::open_in_memory().unwrap();
         assert!(db.get_store_connection_by_public_key("pk_nonexistent").unwrap().is_none());
+    }
+
+    fn seed_connection_for_connect_token_tests(db: &Db) -> String {
+        db.create_user("user-ct", "connect-tokens@example.com", "hash", 1000).unwrap();
+        db.create_store_connection(
+            "conn-ct",
+            "user-ct",
+            "woocommerce",
+            "https://shop.example.com",
+            "pk_ct",
+            "sk_ct",
+            "http://127.0.0.1:8080",
+            1000,
+        )
+        .unwrap();
+        "conn-ct".to_string()
+    }
+
+    #[test]
+    fn creating_a_connect_token_then_consuming_it_returns_its_connection_id() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        db.create_connect_token("hashed-connect-token", &connection_id, "nonce-1", 2000).unwrap();
+
+        let resolved = db.consume_connect_token("hashed-connect-token", 2001, 600).unwrap();
+        assert_eq!(resolved, Some(connection_id));
+    }
+
+    #[test]
+    fn consuming_the_same_connect_token_twice_only_succeeds_once() {
+        // The load-bearing single-use proof at the `Db` layer - see
+        // `Db::consume_connect_token`'s own doc comment on why the
+        // underlying `UPDATE` must be atomic for this to hold under
+        // concurrency, not just under this single-threaded test.
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        db.create_connect_token("hashed-connect-token", &connection_id, "nonce-1", 2000).unwrap();
+
+        let first = db.consume_connect_token("hashed-connect-token", 2001, 600).unwrap();
+        assert_eq!(first, Some(connection_id), "the first consume must actually succeed");
+
+        let second = db.consume_connect_token("hashed-connect-token", 2002, 600).unwrap();
+        assert_eq!(second, None, "a second consume of the same token must fail");
+    }
+
+    #[test]
+    fn consuming_an_expired_connect_token_fails_as_if_it_never_existed() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        db.create_connect_token("hashed-connect-token", &connection_id, "nonce-1", 1000).unwrap();
+
+        // created_at = 1000, ttl = 600 seconds - "now" = 1601 is one second
+        // past the token's expiry window.
+        let resolved = db.consume_connect_token("hashed-connect-token", 1601, 600).unwrap();
+        assert_eq!(resolved, None, "expired token must not be consumable");
+    }
+
+    #[test]
+    fn consuming_an_unknown_connect_token_returns_none() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.consume_connect_token("nonexistent-connect-token", 2000, 600).unwrap(), None);
     }
 
     #[test]

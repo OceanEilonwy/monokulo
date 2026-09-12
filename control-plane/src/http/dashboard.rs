@@ -16,14 +16,14 @@
 //! A plain HTML `<form>` posts `application/x-www-form-urlencoded`, not
 //! JSON - hence `axum::extract::Form` here instead of `axum::extract::Json`.
 
-use axum::extract::{Form, State};
+use axum::extract::{Form, Query, State};
 use axum::http::{StatusCode, header};
 use axum::response::{Html, IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use serde::Deserialize;
 
-use crate::templates::{ConnectViewModel, FormViewModel};
+use crate::templates::{ConnectViewModel, FormViewModel, LoginViewModel};
 
 use super::AppState;
 use super::AuthedUser;
@@ -41,6 +41,58 @@ pub struct SignupForm {
 pub struct LoginForm {
     pub email: String,
     pub password: String,
+    /// Carried through from `GET /dashboard/login?next=...`'s hidden form
+    /// field (see `LoginQuery`/`login_form` below) - `None` whenever no
+    /// `next` was ever in play, which keeps every existing caller that never
+    /// sends this field working unchanged (see module doc comment on
+    /// `login_submit`). Never trusted as a redirect target as-is - see
+    /// [`is_safe_redirect_path`].
+    pub next: Option<String>,
+}
+
+/// Query parameters `GET /dashboard/login` accepts (WBS 1.4.1) - just the
+/// optional `next` value the generic connect flow (`http/connect.rs`)
+/// redirects here with when the browser has no session yet. Rendered
+/// straight into the login page's hidden `next` field, unvalidated - see
+/// [`is_safe_redirect_path`]'s own doc comment on why validating it only
+/// matters, and only happens, at the point it's actually used as a redirect
+/// location (`login_submit`), not here at render time.
+#[derive(Deserialize)]
+pub struct LoginQuery {
+    pub next: Option<String>,
+}
+
+/// Validates that `next` is safe to use as an internal redirect target -
+/// this is the one thing standing between `login_submit` and an
+/// open-redirect vulnerability, since `next` is otherwise fully
+/// attacker-controlled (anyone can link a victim straight to
+/// `/dashboard/login?next=<anything>`, not just the connect flow that
+/// legitimately sets it).
+///
+/// Requires `next` to be a same-origin, relative path:
+/// - starts with exactly one `/` (a bare relative path);
+/// - never starts with `//` - a protocol-relative URL (`//evil.example.com`
+///   resolves, in every browser, to `https://evil.example.com`) is the
+///   classic bypass a plain "starts with /" check misses entirely;
+/// - never contains a backslash - some browsers normalize a leading
+///   backslash to a forward slash while parsing a URL, so `/\evil.example.com`
+///   can behave identically to `//evil.example.com` even though it doesn't
+///   start with two literal `/` characters;
+/// - never contains a `:` before the first `/`, `?`, or `#` - rules out a
+///   `next` value that is actually an absolute URL carrying its own scheme
+///   (`https://evil.example.com`, `javascript:...`), which wouldn't be
+///   caught by the checks above since those only look at the very start of
+///   the string.
+///
+/// A `next` that fails any of these is not an error - the caller
+/// (`login_submit`) just falls back to its existing default behavior, same
+/// as if `next` had never been provided at all.
+fn is_safe_redirect_path(next: &str) -> bool {
+    if !next.starts_with('/') || next.starts_with("//") || next.contains('\\') {
+        return false;
+    }
+    let path_part = next.split(['?', '#']).next().unwrap_or(next);
+    !path_part.contains(':')
 }
 
 /// `POST /dashboard/connect`'s form fields (WBS 1.3.2) - the browser
@@ -69,10 +121,10 @@ fn render_signup(state: &AppState, error: Option<&str>) -> Response {
     Html(html).into_response()
 }
 
-fn render_login(state: &AppState, error: Option<&str>) -> Response {
+fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>) -> Response {
     let html = state
         .templates
-        .render_login(&FormViewModel { error: error.map(str::to_string) })
+        .render_login(&LoginViewModel { error: error.map(str::to_string), next: next.map(str::to_string) })
         .expect("the built-in login template must always render");
     Html(html).into_response()
 }
@@ -95,8 +147,10 @@ fn render_connect_success(state: &AppState, public_key: &str) -> Response {
 
 /// `303`-free, deliberate `302 Found` redirect (axum's own `Redirect::to`
 /// issues `303 See Other` instead - see its doc comment - and the WBS spec
-/// for this task calls out `302` specifically).
-fn redirect_302(location: &str) -> Response {
+/// for this task calls out `302` specifically). `pub(super)` since the
+/// generic connect flow (`http/connect.rs`, WBS 1.4.1) issues the exact same
+/// kind of redirect and shouldn't reimplement it.
+pub(super) fn redirect_302(location: &str) -> Response {
     (StatusCode::FOUND, [(header::LOCATION, location)]).into_response()
 }
 
@@ -118,10 +172,20 @@ pub async fn signup_submit(State(state): State<AppState>, Form(form): Form<Signu
     }
 }
 
-pub async fn login_form(State(state): State<AppState>) -> Response {
-    render_login(&state, None)
+pub async fn login_form(State(state): State<AppState>, Query(query): Query<LoginQuery>) -> Response {
+    render_login(&state, None, query.next.as_deref())
 }
 
+/// `POST /dashboard/login`. WBS 1.4.1 adds `next`-redirect support on top of
+/// WBS 1.3.1's original behavior: if a *validated* `next` was carried
+/// through the form (see [`is_safe_redirect_path`]), a successful login
+/// redirects there instead of rendering the inline "you're logged in"
+/// confirmation below - this is what lets the generic connect flow
+/// (`http/connect.rs`) send an unauthenticated browser to log in and land
+/// back exactly where it started. When `next` is absent (the overwhelming
+/// majority of logins - anyone reaching `/dashboard/login` directly, not via
+/// the connect flow) or fails validation, behavior is *exactly* what it was
+/// before this task: the same inline confirmation, unchanged.
 pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginForm>) -> Response {
     match login::authenticate(&state, &form.email, &form.password) {
         Ok((_user, raw_token)) => {
@@ -143,6 +207,12 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
                 .build();
             let jar = CookieJar::new().add(cookie);
 
+            // A validated `next` wins over the default confirmation - see
+            // this function's own doc comment and [`is_safe_redirect_path`].
+            if let Some(next) = form.next.as_deref().filter(|next| is_safe_redirect_path(next)) {
+                return (jar, redirect_302(next)).into_response();
+            }
+
             // No real dashboard content page exists yet (WBS 1.3.3, a later
             // task), so a redirect to one would land on a 404. Rendering a
             // minimal inline confirmation here instead is the honest
@@ -156,8 +226,10 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
             );
             (jar, body).into_response()
         }
-        Err(LoginError::Unauthorized) => render_login(&state, Some("Invalid email or password.")),
-        Err(LoginError::Internal) => render_login(&state, Some("Something went wrong. Please try again.")),
+        Err(LoginError::Unauthorized) => render_login(&state, Some("Invalid email or password."), form.next.as_deref()),
+        Err(LoginError::Internal) => {
+            render_login(&state, Some("Something went wrong. Please try again."), form.next.as_deref())
+        }
     }
 }
 
@@ -209,5 +281,52 @@ pub async fn connect_submit(
         Err(CreateConnectionError::Internal) => {
             render_connect_form(&state, Some("Something went wrong. Please try again."))
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::is_safe_redirect_path;
+
+    // The load-bearing open-redirect proof (WBS 1.4.1): every one of these
+    // must be *rejected* - if any were accepted, `login_submit` would follow
+    // an attacker-controlled `next` value after a real, successful login.
+    #[test]
+    fn a_protocol_relative_next_is_rejected() {
+        assert!(!is_safe_redirect_path("//evil.example.com"));
+        assert!(!is_safe_redirect_path("//evil.example.com/path"));
+    }
+
+    #[test]
+    fn an_absolute_url_next_is_rejected() {
+        assert!(!is_safe_redirect_path("https://evil.example.com"));
+        assert!(!is_safe_redirect_path("http://evil.example.com/dashboard"));
+    }
+
+    #[test]
+    fn a_backslash_smuggled_next_is_rejected() {
+        // Some browsers normalize a leading backslash to a forward slash
+        // while parsing a URL, so this can behave identically to
+        // `//evil.example.com` even though it doesn't start with two
+        // literal `/` characters.
+        assert!(!is_safe_redirect_path("/\\evil.example.com"));
+    }
+
+    #[test]
+    fn a_next_with_no_leading_slash_is_rejected() {
+        assert!(!is_safe_redirect_path("evil.example.com"));
+        assert!(!is_safe_redirect_path("dashboard/connect"));
+    }
+
+    #[test]
+    fn a_javascript_scheme_next_is_rejected() {
+        assert!(!is_safe_redirect_path("/javascript:alert(1)"));
+    }
+
+    #[test]
+    fn a_genuine_relative_path_is_accepted() {
+        assert!(is_safe_redirect_path("/connect/woocommerce"));
+        assert!(is_safe_redirect_path("/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&nonce=abc"));
+        assert!(is_safe_redirect_path("/dashboard/connect"));
     }
 }
