@@ -20,7 +20,10 @@ use rusqlite::{Connection, OptionalExtension, params};
 /// `schema_migrations` (created by `shared::migrations::apply`), so
 /// re-running this against an already-migrated database file (e.g. every
 /// process restart) is a safe no-op.
-const MIGRATIONS: &[(i64, &str)] = &[(1, include_str!("../migrations/0001_init.sql"))];
+const MIGRATIONS: &[(i64, &str)] = &[
+    (1, include_str!("../migrations/0001_init.sql")),
+    (2, include_str!("../migrations/0002_sessions.sql")),
+];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
     shared::migrations::apply(conn, MIGRATIONS)
@@ -61,6 +64,15 @@ pub struct UserRow {
     pub id: String,
     pub email: String,
     pub password_hash: String,
+    pub created_at: i64,
+}
+
+/// A row from `sessions`. `token_hash` is the SHA-256 hash of the raw
+/// bearer token (see the `sessions` migration's own comment on why) - it
+/// is never the raw token a client actually presents.
+pub struct SessionRow {
+    pub token_hash: String,
+    pub user_id: String,
     pub created_at: i64,
 }
 
@@ -111,6 +123,63 @@ impl Db {
             .optional()
             .map_err(DbError::from)
     }
+
+    /// Direct row lookup by id - used to resolve a session's `user_id` back
+    /// to a full user row (see `AuthedUser`'s extractor in `http/mod.rs`).
+    pub fn get_user_by_id(&self, id: &str) -> Result<Option<UserRow>> {
+        self.conn
+            .query_row(
+                "SELECT id, email, password_hash, created_at FROM users WHERE id = ?1",
+                params![id],
+                |row| {
+                    Ok(UserRow {
+                        id: row.get(0)?,
+                        email: row.get(1)?,
+                        password_hash: row.get(2)?,
+                        created_at: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(DbError::from)
+    }
+
+    /// Stores a new session. `token_hash` must already be hashed (see
+    /// [`SessionRow`]'s doc comment) - `Db` never sees, and never needs to
+    /// see, a raw session token.
+    pub fn create_session(&self, token_hash: &str, user_id: &str, created_at: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO sessions (token, user_id, created_at) VALUES (?1, ?2, ?3)",
+            params![token_hash, user_id, created_at],
+        )?;
+        Ok(())
+    }
+
+    /// Looks up a session by its hashed token. `None` for an unknown or
+    /// already-deleted session - callers (the `AuthedUser` extractor) map
+    /// that to 401, same as an unknown tenant secret in the engine's own
+    /// `AuthedTenant`.
+    pub fn find_session(&self, token_hash: &str) -> Result<Option<SessionRow>> {
+        self.conn
+            .query_row(
+                "SELECT token, user_id, created_at FROM sessions WHERE token = ?1",
+                params![token_hash],
+                |row| {
+                    Ok(SessionRow { token_hash: row.get(0)?, user_id: row.get(1)?, created_at: row.get(2)? })
+                },
+            )
+            .optional()
+            .map_err(DbError::from)
+    }
+
+    /// Deletes a session by its hashed token. Returns whether a row was
+    /// actually deleted (`false` if it was already gone), so a future
+    /// logout handler (WBS 1.1.3 - not implemented here) can tell "revoked"
+    /// from "already revoked" if it ever needs to. Nothing calls this yet.
+    pub fn delete_session(&self, token_hash: &str) -> Result<bool> {
+        let affected = self.conn.execute("DELETE FROM sessions WHERE token = ?1", params![token_hash])?;
+        Ok(affected > 0)
+    }
 }
 
 #[cfg(test)]
@@ -142,6 +211,38 @@ mod tests {
     fn looking_up_an_unknown_email_returns_none_rather_than_an_error() {
         let db = Db::open_in_memory().unwrap();
         assert!(db.get_user_by_email("nobody@example.com").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_created_session_can_be_found_by_its_token_hash_and_resolves_to_its_user() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user("user-1", "a@example.com", "hash", 1000).unwrap();
+        db.create_session("hashed-token", "user-1", 2000).unwrap();
+
+        let session = db.find_session("hashed-token").unwrap().unwrap();
+        assert_eq!(session.token_hash, "hashed-token");
+        assert_eq!(session.user_id, "user-1");
+        assert_eq!(session.created_at, 2000);
+
+        let user = db.get_user_by_id(&session.user_id).unwrap().unwrap();
+        assert_eq!(user.email, "a@example.com");
+    }
+
+    #[test]
+    fn looking_up_an_unknown_session_token_returns_none_rather_than_an_error() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(db.find_session("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn deleting_a_session_removes_it_and_reports_whether_a_row_was_actually_deleted() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user("user-1", "a@example.com", "hash", 1000).unwrap();
+        db.create_session("hashed-token", "user-1", 2000).unwrap();
+
+        assert!(db.delete_session("hashed-token").unwrap());
+        assert!(db.find_session("hashed-token").unwrap().is_none());
+        assert!(!db.delete_session("hashed-token").unwrap());
     }
 
     #[test]

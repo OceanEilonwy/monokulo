@@ -42,6 +42,28 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 1.1.2 done: `POST /login` + session auth. Good independent judgment call
+  worth recording: session tokens are hashed at rest exactly like tenant
+  `sk_` tokens (same reasoning — high-entropy, machine-generated, a fast
+  hash is enough), reusing `shared::auth::hash_secret_token` rather than
+  writing a near-duplicate, with a new `generate_session_token()`
+  (`sess_` prefix, same `random_hex` primitive as `sk_`/`pk_`) added
+  alongside it. `sessions` table added via migration 2. Login handles the
+  "unknown email" case by running a real `verify_password` against a fixed
+  dummy Argon2 hash rather than short-circuiting, specifically so it can't
+  be distinguished from "wrong password" by status, body, *or* an obviously
+  cheaper code path — both return an identical 401. New `AuthedUser`
+  extractor mirrors the engine's own `AuthedTenant` exactly (`Authorization:
+  Bearer <token>`, hash it, look up, 401 on anything missing/invalid,
+  never distinguishable). A `#[cfg(test)]`-gated `/_test/whoami` route
+  (confirmed genuinely compiled out of the real binary, not just
+  undocumented) gives the test suite something to exercise the extractor
+  against ahead of any real protected endpoint existing. `delete_session`
+  added to `Db` now (unused) for 1.1.3 to call next. 9 new tests (3 `Db`,
+  6 HTTP) — reviewed the full diff directly, including the enumeration
+  defense and the cfg-gating, before independently re-running
+  `cargo test --workspace` (control-plane 16, shared 25, rest unchanged)
+  and `cargo test -p shared` in isolation (still fine after the earlier fix).
 - 1.1.1 done: `control-plane` has its first real code — restructured into
   `lib.rs`/`main.rs` (mirroring the engine's own split) plus `db.rs` (its own
   SQLite database, entirely separate from the engine's, same `Store`-style

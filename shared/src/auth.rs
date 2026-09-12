@@ -24,6 +24,18 @@ pub fn generate_secret_token() -> String {
     format!("sk_{}", random_hex(32))
 }
 
+/// A control-plane session's bearer token (WBS 1.1.2), shown once at login.
+/// Same underlying generation primitive as `generate_secret_token` - a
+/// high-entropy random hex string - just with a distinct prefix: a
+/// session token and a tenant's `sk_` admin secret are different credential
+/// types (different subject, different lifetime/revocation model) that
+/// happen to share the same "random bearer token" shape, and giving them
+/// different prefixes keeps that visible rather than reusing `sk_` for
+/// something that isn't a tenant secret.
+pub fn generate_session_token() -> String {
+    format!("sess_{}", random_hex(32))
+}
+
 /// A webhook's HMAC signing secret. Unlike `sk_`, this is stored reversibly (see
 /// `webhooks.signing_secret` in the schema) since it's needed on every delivery, not
 /// just checked once - "shown once" for this value is an API convention, not a
@@ -32,8 +44,13 @@ pub fn generate_webhook_secret() -> String {
     format!("whsec_{}", random_hex(32))
 }
 
-/// SHA-256 hex digest of a raw `sk_...` token, for storage in
-/// `tenants.secret_token_hash`. Not Argon2/bcrypt/scrypt on purpose - see module docs.
+/// SHA-256 hex digest of a raw bearer token, for storage at rest (e.g.
+/// `tenants.secret_token_hash`, or the control plane's `sessions.token` -
+/// see WBS 1.1.2). Not Argon2/bcrypt/scrypt on purpose - see module docs.
+/// The name predates the control plane's session tokens, but the hashing
+/// logic itself is generic: it doesn't care what kind of high-entropy,
+/// machine-generated token it's given, so a second near-identical function
+/// for session tokens would be pure duplication.
 pub fn hash_secret_token(raw_token: &str) -> String {
     hex::encode(Sha256::digest(raw_token.as_bytes()))
 }
@@ -52,6 +69,14 @@ mod tests {
         assert!(sk1.starts_with("sk_"));
         assert_ne!(pk1, pk2);
         assert_ne!(sk1, sk2);
+    }
+
+    #[test]
+    fn generated_session_tokens_have_the_expected_prefix_and_are_unique() {
+        let t1 = generate_session_token();
+        let t2 = generate_session_token();
+        assert!(t1.starts_with("sess_"));
+        assert_ne!(t1, t2);
     }
 
     #[test]
