@@ -26,6 +26,7 @@ use serde::{Deserialize, Serialize};
 use uuid::Uuid;
 
 use crate::crypto;
+use crate::db::UserRow;
 use crate::engine_client::{CreateTenantRequest, EngineClientError};
 use crate::now_unix;
 
@@ -50,11 +51,57 @@ pub struct CreateConnectionResponse {
     pub public_key: String,
 }
 
-pub async fn create_connection(
-    State(state): State<AppState>,
-    AuthedUser(user, _token_hash): AuthedUser,
-    Json(req): Json<CreateConnectionRequest>,
-) -> Result<(StatusCode, Json<CreateConnectionResponse>), ApiError> {
+/// The fields needed to provision a connection, independent of whether they
+/// arrived as a JSON body (`POST /connections`, below) or a form post
+/// (`POST /dashboard/connect`, WBS 1.3.2, `http/dashboard.rs`) - identical
+/// shape to [`CreateConnectionRequest`], kept as a separate type so the two
+/// HTTP-layer request shapes (JSON vs. form) can evolve independently of the
+/// shared logic's input.
+pub(super) struct CreateConnectionFields {
+    pub platform: String,
+    pub site_url: String,
+    pub view_key_hex: String,
+    pub spend_pubkey_hex: String,
+    pub network: Option<String>,
+    pub allowed_origins: Vec<String>,
+    pub confirmations_required: Option<u64>,
+    pub zero_conf_max_piconero: Option<u64>,
+    pub order_expiry_seconds: Option<i64>,
+}
+
+/// What a successful connection creation hands back to either caller - the
+/// same two values [`CreateConnectionResponse`] carries, just not tied to
+/// `axum::Json` yet.
+pub(super) struct CreateConnectionOutcome {
+    pub connection_id: String,
+    pub public_key: String,
+}
+
+/// The two ways connection creation can fail - kept separate from
+/// [`ApiError`] so the browser-facing form handler (`http/dashboard.rs`, WBS
+/// 1.3.2) can map an engine rejection to a re-rendered form with a visible
+/// error instead of a bare JSON `400`, while the JSON handler below keeps its
+/// existing `ApiError::BadRequest`/`ApiError::Internal` shape.
+pub(super) enum CreateConnectionError {
+    BadRequest(String),
+    Internal,
+}
+
+/// The actual connection-creation logic - provisioning a real engine tenant
+/// via [`crate::engine_client::EngineClient::create_tenant`], encrypting the
+/// returned `secret_token`, and storing a `store_connections` row - shared by
+/// `POST /connections` (below) and `POST /dashboard/connect`
+/// (`http/dashboard.rs`), so the two surfaces can never drift apart on what
+/// "creating a connection" means. Mirrors `signup::create_account` and
+/// `login::authenticate`'s own extraction for exactly this reason - the only
+/// difference is this one is `async`, since (unlike hashing a password)
+/// provisioning a tenant is a real network call to the engine's admin API
+/// that both callers already `.await` from their own `async` handlers.
+pub(super) async fn create_connection_for_user(
+    state: &AppState,
+    user: &UserRow,
+    req: CreateConnectionFields,
+) -> Result<CreateConnectionOutcome, CreateConnectionError> {
     let created = state
         .engine_client
         .create_tenant(CreateTenantRequest {
@@ -70,14 +117,14 @@ pub async fn create_connection(
         .map_err(|e| match e {
             // The engine's own `ApiError::BadRequest` (bad hex, an
             // unconfigured network, etc.) - a mistake the *caller* made,
-            // worth surfacing verbatim rather than collapsing into a
-            // generic 500. Any other status (or a transport-level failure
-            // reaching the engine at all) is this service's own problem,
-            // not the caller's - that stays `Internal`.
+            // worth surfacing verbatim rather than collapsing into a generic
+            // 500. Any other status (or a transport-level failure reaching
+            // the engine at all) is this service's own problem, not the
+            // caller's - that stays `Internal`.
             EngineClientError::EngineError { status, message } if status == reqwest::StatusCode::BAD_REQUEST => {
-                ApiError::BadRequest(message)
+                CreateConnectionError::BadRequest(message)
             }
-            _ => ApiError::Internal,
+            _ => CreateConnectionError::Internal,
         })?;
 
     let id = Uuid::new_v4().to_string();
@@ -96,9 +143,37 @@ pub async fn create_connection(
             state.engine_client.base_url(),
             now_unix(),
         )
-        .map_err(|_| ApiError::Internal)?;
+        .map_err(|_| CreateConnectionError::Internal)?;
 
-    Ok((StatusCode::CREATED, Json(CreateConnectionResponse { connection_id: id, public_key: created.public_key })))
+    Ok(CreateConnectionOutcome { connection_id: id, public_key: created.public_key })
+}
+
+pub async fn create_connection(
+    State(state): State<AppState>,
+    AuthedUser(user, _token_hash): AuthedUser,
+    Json(req): Json<CreateConnectionRequest>,
+) -> Result<(StatusCode, Json<CreateConnectionResponse>), ApiError> {
+    let fields = CreateConnectionFields {
+        platform: req.platform,
+        site_url: req.site_url,
+        view_key_hex: req.view_key_hex,
+        spend_pubkey_hex: req.spend_pubkey_hex,
+        network: req.network,
+        allowed_origins: req.allowed_origins,
+        confirmations_required: req.confirmations_required,
+        zero_conf_max_piconero: req.zero_conf_max_piconero,
+        order_expiry_seconds: req.order_expiry_seconds,
+    };
+
+    let outcome = create_connection_for_user(&state, &user, fields).await.map_err(|e| match e {
+        CreateConnectionError::BadRequest(message) => ApiError::BadRequest(message),
+        CreateConnectionError::Internal => ApiError::Internal,
+    })?;
+
+    Ok((
+        StatusCode::CREATED,
+        Json(CreateConnectionResponse { connection_id: outcome.connection_id, public_key: outcome.public_key }),
+    ))
 }
 
 #[cfg(test)]

@@ -42,6 +42,26 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 1.3.2 done: `GET`/`POST /dashboard/connect` — the browser form for wallet
+  provisioning, behind `AuthedUser` (works via either bearer or cookie,
+  same as everything else). Core logic factored out of the JSON
+  `/connections` handler into `connections::create_connection_for_user`
+  (async, since — unlike the sync `create_account`/`authenticate`
+  factorings from 1.3.1 — this genuinely awaits a real network call to the
+  engine), called by both surfaces. `platform` hardcoded to `"woocommerce"`
+  for now (no platform-choice UI yet); the three optional wallet-limit
+  fields left `None`. `allowed_origins` arrives as one comma-separated
+  text field, split/trimmed/empty-filtered into a `Vec<String>`. No
+  session → plain `401`, same as everywhere else (no redirect-on-401
+  invented). New `connect.html.hbs` (one template, form/error/confirmation
+  via `{{#if}}`, correctly auto-escaped, no triple-stash). Test reused the
+  strong "decrypt then authenticate against the real engine" proof from
+  1.2.3 rather than a weaker string check. control-plane 51 passed
+  (was 43, +8). Independently re-verified (full diff review of
+  connections.rs's refactor, dashboard.rs's new handlers, the template)
+  and `cargo test --workspace` re-run before commit.
+- (1.3.1 done, see git log for details — dashboard signup/login pages
+  with cookie sessions.)
 - 1.2.3 done: `sk_` at-rest encryption, completing WBS 1.2. AES-256-GCM
   (`aes-gcm` crate) in a new `control_plane::crypto` module — pure
   key-as-parameter functions (`Db` and the crypto module itself stay

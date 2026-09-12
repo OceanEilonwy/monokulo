@@ -23,9 +23,11 @@ use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use serde::Deserialize;
 
-use crate::templates::FormViewModel;
+use crate::templates::{ConnectViewModel, FormViewModel};
 
 use super::AppState;
+use super::AuthedUser;
+use super::connections::{self, CreateConnectionError, CreateConnectionFields};
 use super::login::{self, LoginError};
 use super::signup::{self, CreateAccountError};
 
@@ -41,6 +43,24 @@ pub struct LoginForm {
     pub password: String,
 }
 
+/// `POST /dashboard/connect`'s form fields (WBS 1.3.2) - the browser
+/// equivalent of `POST /connections`'s JSON body, minus `platform` (hardcoded
+/// to `"woocommerce"` below - a real "choose a platform" UI is a later, fuller
+/// dashboard concern) and the three fields the JSON API already treats as
+/// optional (`confirmations_required`/`zero_conf_max_piconero`/
+/// `order_expiry_seconds`), left `None` here so the engine's own defaults
+/// apply. `allowed_origins` arrives as one comma-separated text input rather
+/// than a JSON array, since an HTML form has no native array field - split
+/// into a `Vec<String>` in `connect_submit` below.
+#[derive(Deserialize)]
+pub struct ConnectForm {
+    pub site_url: String,
+    pub view_key_hex: String,
+    pub spend_pubkey_hex: String,
+    pub network: String,
+    pub allowed_origins: String,
+}
+
 fn render_signup(state: &AppState, error: Option<&str>) -> Response {
     let html = state
         .templates
@@ -54,6 +74,22 @@ fn render_login(state: &AppState, error: Option<&str>) -> Response {
         .templates
         .render_login(&FormViewModel { error: error.map(str::to_string) })
         .expect("the built-in login template must always render");
+    Html(html).into_response()
+}
+
+fn render_connect_form(state: &AppState, error: Option<&str>) -> Response {
+    let html = state
+        .templates
+        .render_connect(&ConnectViewModel { error: error.map(str::to_string), public_key: None })
+        .expect("the built-in connect template must always render");
+    Html(html).into_response()
+}
+
+fn render_connect_success(state: &AppState, public_key: &str) -> Response {
+    let html = state
+        .templates
+        .render_connect(&ConnectViewModel { error: None, public_key: Some(public_key.to_string()) })
+        .expect("the built-in connect template must always render");
     Html(html).into_response()
 }
 
@@ -122,5 +158,56 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
         }
         Err(LoginError::Unauthorized) => render_login(&state, Some("Invalid email or password.")),
         Err(LoginError::Internal) => render_login(&state, Some("Something went wrong. Please try again.")),
+    }
+}
+
+/// `GET /dashboard/connect` (WBS 1.3.2) - behind [`AuthedUser`]. A missing or
+/// invalid session gets the exact same `401` `AuthedUser` already returns for
+/// every other protected route in this crate (the JSON API's own
+/// `/connections` included) - no redirect-on-401 behavior exists anywhere in
+/// the dashboard yet, so a bare `401` here is the consistent choice rather
+/// than inventing new behavior for just this one route.
+pub async fn connect_form(State(state): State<AppState>, AuthedUser(_user, _token_hash): AuthedUser) -> Response {
+    render_connect_form(&state, None)
+}
+
+/// `POST /dashboard/connect` (WBS 1.3.2) - the form equivalent of
+/// `POST /connections`, calling the exact same
+/// [`connections::create_connection_for_user`] both surfaces share.
+/// `platform` isn't a visible field yet (hardcoded to `"woocommerce"` below -
+/// a real "choose a platform" UI is a later, fuller dashboard concern per the
+/// WBS's own Stage 4/dashboard notes); `confirmations_required`/
+/// `zero_conf_max_piconero`/`order_expiry_seconds` aren't visible fields
+/// either and are left `None` so the engine's own defaults apply, consistent
+/// with the JSON API already treating them as optional.
+pub async fn connect_submit(
+    State(state): State<AppState>,
+    AuthedUser(user, _token_hash): AuthedUser,
+    Form(form): Form<ConnectForm>,
+) -> Response {
+    // Same split an admin-API/CLI caller would do for a comma-separated
+    // list: trim whitespace around each entry, drop empty entries (so a
+    // blank field submits an empty list rather than `[""]`).
+    let allowed_origins: Vec<String> =
+        form.allowed_origins.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
+
+    let fields = CreateConnectionFields {
+        platform: "woocommerce".to_string(),
+        site_url: form.site_url,
+        view_key_hex: form.view_key_hex,
+        spend_pubkey_hex: form.spend_pubkey_hex,
+        network: Some(form.network),
+        allowed_origins,
+        confirmations_required: None,
+        zero_conf_max_piconero: None,
+        order_expiry_seconds: None,
+    };
+
+    match connections::create_connection_for_user(&state, &user, fields).await {
+        Ok(outcome) => render_connect_success(&state, &outcome.public_key),
+        Err(CreateConnectionError::BadRequest(message)) => render_connect_form(&state, Some(&message)),
+        Err(CreateConnectionError::Internal) => {
+            render_connect_form(&state, Some("Something went wrong. Please try again."))
+        }
     }
 }

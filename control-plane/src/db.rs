@@ -261,6 +261,36 @@ impl Db {
             .optional()
             .map_err(DbError::from)
     }
+
+    /// Direct row lookup by the tenant's public key rather than the
+    /// connection's own id - for callers (currently just
+    /// `http/dashboard.rs`'s WBS 1.3.2 tests) that only have the `pk_...`
+    /// value a confirmation page showed, not the `store_connections.id` a
+    /// browser form flow never hands back to the caller. The engine mints a
+    /// fresh, effectively-unique public key per tenant, so this is expected
+    /// to resolve to at most one row in practice, same as `get_by_id`.
+    pub fn get_store_connection_by_public_key(&self, tenant_public_key: &str) -> Result<Option<StoreConnectionRow>> {
+        self.conn
+            .query_row(
+                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at
+                 FROM store_connections WHERE tenant_public_key = ?1",
+                params![tenant_public_key],
+                |row| {
+                    Ok(StoreConnectionRow {
+                        id: row.get(0)?,
+                        user_id: row.get(1)?,
+                        platform: row.get(2)?,
+                        site_url: row.get(3)?,
+                        tenant_public_key: row.get(4)?,
+                        tenant_secret_token_encrypted: row.get(5)?,
+                        moneropay_endpoint: row.get(6)?,
+                        created_at: row.get(7)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(DbError::from)
+    }
 }
 
 #[cfg(test)]
@@ -356,6 +386,33 @@ mod tests {
     fn looking_up_an_unknown_store_connection_id_returns_none_rather_than_an_error() {
         let db = Db::open_in_memory().unwrap();
         assert!(db.get_store_connection_by_id("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn creating_a_store_connection_then_reading_it_back_by_public_key_round_trips() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user("user-2", "b@example.com", "hash", 1000).unwrap();
+        db.create_store_connection(
+            "conn-2",
+            "user-2",
+            "woocommerce",
+            "https://shop.example.com",
+            "pk_xyz",
+            "sk_xyz",
+            "http://127.0.0.1:8080",
+            3000,
+        )
+        .unwrap();
+
+        let row = db.get_store_connection_by_public_key("pk_xyz").unwrap().unwrap();
+        assert_eq!(row.id, "conn-2");
+        assert_eq!(row.user_id, "user-2");
+    }
+
+    #[test]
+    fn looking_up_an_unknown_public_key_returns_none_rather_than_an_error() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(db.get_store_connection_by_public_key("pk_nonexistent").unwrap().is_none());
     }
 
     #[test]

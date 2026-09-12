@@ -26,6 +26,11 @@
 //! accepts either: a `Bearer` header (the JSON API's own clients) or a
 //! `session` cookie (the browser flow) — same hash-and-look-up logic either
 //! way, so this stays one auth system, not two.
+//!
+//! `/dashboard/connect` (`dashboard` module, WBS 1.3.2) is the same idea
+//! applied to `/connections`: a form-post wrapper, behind [`AuthedUser`],
+//! over `connections::create_connection_for_user` — the exact logic
+//! `/connections` itself calls, not a reimplementation of it.
 
 mod connections;
 mod dashboard;
@@ -77,7 +82,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/logout", post(logout::logout))
         .route("/connections", post(connections::create_connection))
         .route("/dashboard/signup", axum::routing::get(dashboard::signup_form).post(dashboard::signup_submit))
-        .route("/dashboard/login", axum::routing::get(dashboard::login_form).post(dashboard::login_submit));
+        .route("/dashboard/login", axum::routing::get(dashboard::login_form).post(dashboard::login_submit))
+        .route("/dashboard/connect", axum::routing::get(dashboard::connect_form).post(dashboard::connect_submit));
 
     // Test-only route exercising `AuthedUser` - see its doc comment.
     // Compiled only under `#[cfg(test)]`, so it never exists in the real

@@ -483,3 +483,173 @@ async fn an_unknown_email_at_dashboard_login_gets_the_same_generic_error_as_a_wr
     let html = body_text(response).await;
     assert!(html.contains("Invalid email or password"), "expected the same generic login error, got: {html}");
 }
+
+// -- WBS 1.3.2: browser-facing wallet-connection form ------------------------
+//
+// Unlike the rest of this file, these tests need a *real* spawned engine
+// (same reason as `connections.rs`'s own tests: `/dashboard/connect` really
+// provisions a tenant) - so they get their own `AppState` helper instead of
+// `test_app_state()`'s dummy, never-dialed engine URL.
+
+/// Same fixed-scalar construction `connections.rs`'s and `engine_client.rs`'s
+/// own tests use - see those modules for why these particular values pass
+/// the engine's real wallet-material validation.
+const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
+const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+
+async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
+    let engine = engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+    let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+    let state = AppState {
+        db: Db::open_in_memory().unwrap().into_shared(),
+        engine_client,
+        encryption_key: [7u8; 32],
+        templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
+    };
+    (state, engine)
+}
+
+fn connect_get_request(cookie: Option<&str>) -> Request<Body> {
+    let mut builder = Request::builder().method("GET").uri("/dashboard/connect");
+    if let Some(cookie) = cookie {
+        builder = builder.header("cookie", cookie);
+    }
+    builder.body(Body::empty()).unwrap()
+}
+
+fn connect_post_request(cookie: &str, fields: &[(&str, &str)]) -> Request<Body> {
+    let body = fields
+        .iter()
+        .map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v)))
+        .collect::<Vec<_>>()
+        .join("&");
+    Request::builder()
+        .method("POST")
+        .uri("/dashboard/connect")
+        .header("content-type", "application/x-www-form-urlencoded")
+        .header("cookie", cookie)
+        .body(Body::from(body))
+        .unwrap()
+}
+
+/// Signs up and logs in a fresh user through the browser form flow, returning
+/// the `session=<value>` pair (no `HttpOnly`/`SameSite`/`Path` attributes) a
+/// browser would send back as a `Cookie` header - same extraction
+/// `the_session_cookie_from_dashboard_login_authenticates_against_a_protected_route`
+/// above uses.
+async fn signed_up_and_logged_in_session_cookie(router: &Router, email: &str, password: &str) -> String {
+    let signup = router
+        .clone()
+        .oneshot(form_request("/dashboard/signup", &[("email", email), ("password", password)]))
+        .await
+        .unwrap();
+    assert_eq!(signup.status(), StatusCode::FOUND);
+
+    let login = router
+        .clone()
+        .oneshot(form_request("/dashboard/login", &[("email", email), ("password", password)]))
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+    let set_cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    set_cookie.split(';').next().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn get_dashboard_connect_without_a_session_is_rejected() {
+    let (state, _engine) = test_state_with_real_engine().await;
+    let router = build_router(state);
+
+    let response = router.oneshot(connect_get_request(None)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_logged_in_user_submitting_valid_wallet_fields_gets_a_confirmation_page_and_a_real_store_connections_row() {
+    let (state, _engine) = test_state_with_real_engine().await;
+    let router = build_router(state.clone());
+
+    let cookie =
+        signed_up_and_logged_in_session_cookie(&router, "connect-form@example.com", "correct horse battery staple")
+            .await;
+
+    let response = router
+        .oneshot(connect_post_request(
+            &cookie,
+            &[
+                ("site_url", "https://shop.example.com"),
+                ("view_key_hex", TEST_VIEW_KEY_HEX),
+                ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                ("network", "mainnet"),
+                ("allowed_origins", "https://shop.example.com, https://admin.example.com"),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_text(response).await;
+
+    let public_key_start = html.find("pk_").expect("expected a real pk_ value in the confirmation page");
+    let public_key: String =
+        html[public_key_start..].chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+    assert!(public_key.len() > 3, "expected a real pk_... value, got: {public_key}");
+
+    // The secret token must never be shown on the confirmation page.
+    assert!(!html.contains("sk_"), "the confirmation page must never contain the secret token");
+
+    // Confirm the row that actually landed in `store_connections`. The
+    // browser form flow never hands the connection id back to the caller
+    // (unlike the JSON API's response), so look it up by the public key
+    // shown on the confirmation page instead - see
+    // `Db::get_store_connection_by_public_key`'s doc comment for why that
+    // lookup exists.
+    let user = state
+        .db
+        .lock()
+        .unwrap()
+        .get_user_by_email("connect-form@example.com")
+        .unwrap()
+        .expect("the signed-up user should exist");
+    let row = state
+        .db
+        .lock()
+        .unwrap()
+        .get_store_connection_by_public_key(&public_key)
+        .unwrap()
+        .expect("a store_connections row for this public key must exist");
+    assert_eq!(row.user_id, user.id);
+    assert_eq!(row.platform, "woocommerce");
+    assert_eq!(row.site_url, "https://shop.example.com");
+}
+
+#[tokio::test]
+async fn submitting_an_invalid_view_key_rerenders_the_form_with_a_visible_error() {
+    let (state, _engine) = test_state_with_real_engine().await;
+    let router = build_router(state);
+
+    let cookie =
+        signed_up_and_logged_in_session_cookie(&router, "bad-view-key@example.com", "correct horse battery staple")
+            .await;
+
+    let response = router
+        .oneshot(connect_post_request(
+            &cookie,
+            &[
+                ("site_url", "https://shop.example.com"),
+                // Wrong length - not valid hex for a 32-byte view key.
+                ("view_key_hex", "0707"),
+                ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                ("network", "mainnet"),
+                ("allowed_origins", ""),
+            ],
+        ))
+        .await
+        .unwrap();
+
+    // A visible, re-rendered form - not a raw 500 and not a panic.
+    assert_eq!(response.status(), StatusCode::OK);
+    let html = body_text(response).await;
+    assert!(html.contains("<form"), "expected the connect form to be re-rendered, got: {html}");
+    assert!(html.contains("class=\"error\""), "expected a visible error message, got: {html}");
+    assert!(!html.contains("pk_"), "a rejected submission must not show a public key");
+}

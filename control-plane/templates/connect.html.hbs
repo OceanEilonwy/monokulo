@@ -1,0 +1,33 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Connect your store - MoneroPay Cloud</title>
+</head>
+<body>
+{{#if public_key}}
+<h1>Store connected</h1>
+<p>Your public key: <code>{{public_key}}</code></p>
+<p>Keep this value handy - your WooCommerce plugin will need it during setup. Your secret token is stored securely and is never shown here.</p>
+{{else}}
+<h1>Connect your store</h1>
+{{#if error}}
+<p class="error">{{error}}</p>
+{{/if}}
+<form method="post" action="/dashboard/connect">
+<label>Site URL <input type="url" name="site_url" required></label><br>
+<label>View key (hex) <input type="text" name="view_key_hex" required></label><br>
+<label>Spend public key (hex) <input type="text" name="spend_pubkey_hex" required></label><br>
+<label>Network
+<select name="network">
+<option value="mainnet">mainnet</option>
+<option value="stagenet">stagenet</option>
+<option value="testnet">testnet</option>
+</select>
+</label><br>
+<label>Allowed origins (comma-separated) <input type="text" name="allowed_origins"></label><br>
+<button type="submit">Connect</button>
+</form>
+{{/if}}
+</body>
+</html>
