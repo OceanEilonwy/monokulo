@@ -129,9 +129,16 @@ What already exists and needs no new engine code:
   present or absent), not a code fork.
 - `/pay/v1/{pk}/{payment_id}` is already a complete, styled, working checkout
   page with QR code, live status, double-spend banner.
-- Rate limiting (`governor`, per `docs/DESIGN.md` §12/§15) and the SSRF-safe
-  webhook delivery worker already exist and need no new code to serve a
-  hosted deployment — they were designed for exactly this.
+- Rate limiting and the SSRF-safe webhook delivery worker already exist and
+  need no new code to serve a hosted deployment — they were designed for
+  exactly this. Correction from an earlier draft, found on rereading the
+  actual code rather than `docs/DESIGN.md` §15's dependency table: the
+  limiter is a hand-rolled fixed-window per-IP counter
+  (`src/http/rate_limit.rs`), not the `governor` crate that table lists —
+  the table appears to be aspirational/stale rather than a description of
+  what's actually implemented. Doesn't change anything downstream (the
+  limiter is real, tested, and configurable either way), but worth not
+  repeating the wrong dependency name.
 
 What's missing, all of which this plan builds:
 
@@ -161,10 +168,13 @@ members:
 /Cargo.toml            # existing [package] (the engine) + new [workspace]
 /src/...               # unchanged — the engine, exactly as it is today
 /control-plane/        # new crate: accounts, store_connections, connect flow, dashboard backend
-/shared/                # new crate: things both sides want (argon2 config, secret-token
-                        #   generation/hashing from src/auth.rs, HMAC helpers from
-                        #   src/webhook_sign.rs) — pulled out so the control plane isn't
-                        #   duplicating logic the engine already got right
+/shared/                # new crate: logic pulled out of the engine so the control
+                        #   plane isn't duplicating it (secret-token generation/hashing
+                        #   from src/auth.rs, HMAC helpers from src/webhook_sign.rs, the
+                        #   migration runner from src/store.rs — see §5, Stage 2), plus
+                        #   a fresh argon2 password-hashing helper for real user
+                        #   accounts, which is genuinely new (the engine hashes its own
+                        #   sk_ tokens with plain SHA-256 on purpose — see Stage 3)
 /mock-woocommerce/      # new crate: the fake WooCommerce from §5, Stage 5
 /plugins/woocommerce/   # the real PHP plugin (§5, Stage 7) — not a Cargo crate, just
                         #   lives in the same repo since "the whole business is open source"
@@ -194,12 +204,13 @@ engine. Having thought it through:
   Rails, which do have batteries-included OAuth provider packages; no
   mainstream Rust web framework is at that level, so switching frameworks
   buys nothing here.
-- **Rate limiting**: the engine already uses `governor` (`docs/DESIGN.md`
-  §15, implemented in `src/http/rate_limit.rs`), which is framework-agnostic
-  at its core — the axum integration is already done and tested. Using it
-  from Rocket would mean writing a Fairing to call the same `governor`
-  primitives by hand; axum's `tower`-based middleware ("layers") is if
-  anything the more mature integration point for this specific crate today.
+- **Rate limiting**: the engine already has a working, tested per-IP limiter
+  as `axum` middleware (`src/http/rate_limit.rs` — a hand-rolled fixed-window
+  counter, not the `governor` crate `docs/DESIGN.md` §15's table names; that
+  table looks stale against the real dependency list). Whichever crate ends
+  up backing this, it's already integrated and tested against axum; moving
+  to Rocket would mean re-doing that integration as a Fairing for no
+  behavioral gain.
   Net code difference: roughly zero, mildly in axum's favor because it's
   already built.
 - **Logging**: comparable either way (both integrate fine with `tracing`);
@@ -365,15 +376,40 @@ keeping its own copy — so there's exactly one implementation of "how we hash
 a bearer secret" and "how we sign/verify a webhook" in the repo, not one per
 service.
 
+Two more moves belong in this same stage, found on rereading the actual code
+rather than assuming from `docs/DESIGN.md`: `store.rs` already has a small,
+generic, well-tested migration runner (`apply_migration_list`, transactional,
+tracked in a `schema_migrations` table, works against any `&[(i64, &str)]`
+list of SQL) that the control plane's own new database should reuse rather
+than pulling in a different migration framework — move it into `shared`
+alongside the other two. And since `mock-woocommerce` (Stage 5) and the
+control plane's own tests both need to stand up a real, network-reachable
+engine instance for integration tests, add a small test-harness helper now
+(in `shared`, or a dev-only sibling crate) that does what
+`tests/e2e_stagenet.rs` already does — build the router via
+`moneropay_core::http::build_router`, bind it to `127.0.0.1:0` in a
+background task, hand back the real address — rather than each later stage
+reinventing it, or worse, shelling out to the compiled binary as a
+subprocess. This also means `mock-woocommerce`'s `Cargo.toml` needs
+`moneropay-core` itself as a (dev-)dependency, which is worth setting up here
+rather than discovering it's missing three stages later.
+
 ### Stage 3 — Control-plane service: accounts + store connections
 
 New crate (`control-plane/`), new small database (schema in §1). This is the
 first stage that's genuinely new code rather than restructuring:
 
-- **Signup/login**: email + password, `argon2` via the `shared` crate's
-  helper (Stage 2) rather than a second implementation, sessions via a
-  server-side session table (easier to force-revoke than a bare signed
-  cookie once "delete my account" or "log out everywhere" exist).
+- **Signup/login**: email + password, hashed with `argon2` via a `shared`
+  crate helper. Worth being precise about what's reused and what's new here:
+  the engine already hashes *its own* `sk_` tokens, but deliberately with
+  plain SHA-256, not `argon2` — correct for that case (`src/auth.rs`'s own
+  doc comment: a machine-generated, high-entropy token gets no
+  brute-force-resistance benefit from a slow hash, only the cost of one).
+  A human-chosen password is the opposite case and genuinely needs `argon2`
+  or similar — this is a new dependency and a new helper for `shared`, not a
+  reuse of anything that already exists. Sessions via a server-side session
+  table (easier to force-revoke than a bare signed cookie once "delete my
+  account" or "log out everywhere" exist).
 - **Store connection abstraction**: a generic "start a connect flow for
   platform X, site Y" endpoint and a generic "finish it and hand back
   credentials" endpoint — fleshed out fully in Stage 6, but the *shape*
