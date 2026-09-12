@@ -42,6 +42,22 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 0.4 done: `shared::password` — new, genuinely new logic (not a move),
+  Argon2id via the `argon2` crate for the control plane's future human
+  account passwords, explicitly separate from `shared::auth`'s SHA-256
+  token hashing (different threat model, documented in the module's own
+  doc comment). Pinned `argon2 = "0.5"` (resolved to 0.5.3) rather than
+  the `cargo add`-default 0.6.0 — 0.6 ships a rewritten `password-hash`
+  0.6.1 API without `SaltString`/`rand_core`, not the standard
+  SaltString+OsRng+PHC-string pattern; 0.5's API is the well-documented,
+  idiomatic one and was what was actually wanted here. `hash_password`
+  returns a self-describing PHC-format string; `verify_password` returns
+  `false` uniformly for both "wrong password" and "malformed hash string"
+  (no panic, no distinguishable side channel). 4 new tests (round-trip,
+  wrong password, per-call-random-salt via two different hashes of the
+  same password, malformed-input handling). `shared` now 23 passed
+  (was 19); engine unaffected at 270. Independently re-verified before
+  commit.
 - 0.3 done: `shared::webhook_sign` now holds HMAC signing/verification
   *and* the SSRF URL-validation logic (`validate_webhook_url`,
   `is_disallowed_address`, `WebhookUrlError`) moved from `src/webhook_sign.rs`
