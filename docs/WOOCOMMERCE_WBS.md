@@ -181,7 +181,15 @@ every leaf is sized to be unit- or integration-testable on its own.
       - outcome: a standalone binary that drives 1.4.1's flow the way a
         real plugin will, ending up holding real `pk_`/`sk_`
       - what: new `mock-woocommerce` crate — small axum app playing the
-        plugin's settings page, plus a CLI driver
+        plugin's settings page, plus a CLI driver. This is **Rust, not
+        PHP** — it's a stand-in that speaks the same HTTP protocol a real
+        plugin would, not a lightweight WordPress install, so no second
+        language is needed to prove the protocol. PHP only becomes
+        necessary at 1.5, and that's a WordPress platform constraint (only
+        PHP can be loaded as a WordPress plugin — confirmed even the modern
+        Blocks-based checkout still needs a PHP-side `wp_register_script`
+        call to register a payment method at all), not a stylistic choice —
+        see 1.5's note
       - test: run it against a live control plane in CI; exit 0 with valid
         credentials in hand is the pass condition
     - 1.4.3 Mock order creation + checkout redirect
@@ -212,7 +220,15 @@ every leaf is sized to be unit- or integration-testable on its own.
         as its own separate job rather than the default `cargo test` pass —
         worth deciding this now rather than having it silently skipped in CI
         by accident later
-  - 1.5 Real WooCommerce plugin (each step ports something 1.4 already proved)
+  - 1.5 Real WooCommerce plugin, in PHP by necessity (each step ports
+    something 1.4 already proved). PHP is required here because WordPress
+    can only load plugins written in PHP, and — checked directly, not
+    assumed — even the newer Blocks-based checkout still needs a PHP-side
+    `wp_register_script` call before a payment method can register at all;
+    the public REST/Store API can drive an *already-registered* payment
+    method but has no way to add one to the checkout from outside. Kept
+    deliberately thin regardless: registration, one outbound HTTP call, and
+    a webhook receiver — every real decision stays in the Rust engine.
     - 1.5.1 Gateway skeleton registers in WooCommerce
       - outcome: the plugin, installed on a WordPress site, shows "Monero
         (via MoneroPay Cloud)" as a checkout option (disabled state is

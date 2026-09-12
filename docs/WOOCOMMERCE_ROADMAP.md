@@ -454,8 +454,14 @@ in-repo stand-in (`mock-woocommerce/`, an axum service like anything else in
 this workspace) that interacts with the engine and control plane exactly the
 way a real WooCommerce plugin will, so the whole connect → pay → webhook
 protocol gets proven end-to-end in Rust, with fast iteration and full test
-control, before any PHP/WordPress-specific risk is introduced. Concretely it
-implements:
+control, before any PHP/WordPress-specific risk is introduced. Worth being
+explicit since it's easy to misread: this mock is **Rust, not PHP** — it's
+not a lightweight WordPress install, it's a stand-in that speaks the same
+HTTP protocol (connect flow, order creation, webhook receipt) a real plugin
+would, so no second language is needed just to prove the protocol works.
+The only place PHP is genuinely required is Stage 7, and that's a WordPress
+platform constraint, not a preference — see that stage's opening note.
+Concretely this mock implements:
 
 - A fake "merchant site" HTTP endpoint standing in for the plugin's settings
   page — receives the connect-flow redirect (Stage 6 below) the same way the
@@ -514,7 +520,30 @@ exercises the identical flow a real plugin will:
 ### Stage 7 — Real WooCommerce plugin: payment-processing core
 
 Once Stage 5's e2e test is green, port the mock's order-creation logic into
-an actual WordPress plugin:
+an actual WordPress plugin.
+
+**Why PHP, not Rust, for this one piece**: WordPress can only load plugins
+written in PHP — there's no mechanism to run a Rust binary as a WordPress
+plugin, so this isn't a language preference, it's the platform's own
+constraint. It's also not just a classic-checkout limitation worth hoping a
+newer WooCommerce feature routes around: checked directly against
+WooCommerce's own developer docs, even the modern Blocks-based checkout
+still requires a PHP-side `wp_register_script` call, from inside a real
+WordPress plugin, before a payment method's script can register itself at
+all. The public REST/Store API lets an *already-registered* payment method
+process a checkout — it has no mechanism to add a new payment method to the
+checkout's option list from outside. A Rust service imitating WooCommerce's
+REST API from the outside could read and write orders, but could never make
+"Pay with Monero" actually appear as a checkout option for a real merchant
+— exactly the same shape of constraint that made Shopify need a certified
+Payments App rather than a plain OAuth app (§1). Given that, the PHP surface
+here is kept deliberately thin: gateway registration, one outbound HTTP call
+in `process_payment`, and (Stage 9) a webhook receiver doing HMAC
+verification and a status-mapping table. Every actual payment/order/
+scanning decision still lives in the Rust engine; PHP is a thin adapter, not
+a second implementation of anything.
+
+The plugin itself:
 
 - `class WC_Gateway_MoneroPay extends WC_Payment_Gateway`, registered the
   normal WooCommerce way (`woocommerce_payment_gateways` filter).
