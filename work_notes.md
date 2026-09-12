@@ -42,6 +42,26 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 0.3 done: `shared::webhook_sign` now holds HMAC signing/verification
+  *and* the SSRF URL-validation logic (`validate_webhook_url`,
+  `is_disallowed_address`, `WebhookUrlError`) moved from `src/webhook_sign.rs`
+  — same file covered both concerns originally. Same thin-re-export
+  pattern as 0.2; only real call site is `src/webhook_delivery.rs`. Added
+  a new known-vector test (on top of one that already existed and moved
+  over) specifically for the later PHP webhook-receiver task (WBS 1.5.4) to
+  cross-check against:
+  - secret: `known_vector_secret_for_php_crosscheck`
+  - payload: `{"event":"order.paid","order_id":"12345","amount_piconero":"1000000000000"}`
+  - expected signature (hex, lowercase): computed by the test itself from
+    the real `sign_payload` function — see
+    `shared::webhook_sign::tests::known_vector_for_cross_language_php_verification`
+    for the exact value rather than retyping it here (avoids a transcription
+    error propagating into the eventual PHP test).
+  - PHP-side equivalent: `hash_hmac('sha256', PAYLOAD, SECRET)`, compared
+    with `hash_equals()`, not `==` (per the constant-time requirement noted
+    in the WBS at 1.5.4).
+  Engine 270 passed/8 ignored (was 285, −15 moved), `shared` 19 passed
+  (3 + 15 moved + 1 new). Independently re-verified before commit.
 - 0.2 done: `shared::auth` now holds the token generation/hashing logic
   moved from `src/auth.rs` (SHA-256, unchanged). `src/auth.rs` is a thin
   `pub use shared::auth::*;` re-export so `src/http/admin.rs` and

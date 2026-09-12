@@ -1998,8 +1998,11 @@ name = "shared"
 version = "0.1.0"
 dependencies = [
  "hex",
+ "hmac",
  "rand 0.10.2",
  "sha2",
+ "thiserror",
+ "url",
 ]
 
 [[package]]

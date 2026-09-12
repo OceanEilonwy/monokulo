@@ -6,6 +6,7 @@
 //! and a new argon2 password-hashing helper still to come).
 
 pub mod auth;
+pub mod webhook_sign;
 
 #[cfg(test)]
 mod tests {
