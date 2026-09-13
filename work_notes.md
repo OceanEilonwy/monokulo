@@ -42,6 +42,154 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- WBS 2.1.1 done: `key-custody-service`, a new workspace crate holding *only*
+  wire-level DTOs (and their conversions) for every `KeyCustody` trait method's
+  arguments and `Result` - the first step of Track B (SEV-SNP key custody).
+  Deliberately no socket/server/client code - that's 2.1.2, a separate future
+  step, and the WBS is explicit that this step stands alone.
+  - **Read the real trait, not the WBS's paraphrase, and found the paraphrase is
+    stale in a way worth flagging**: the trait's own module-level doc comment
+    (`src/key_custody/mod.rs`, right above the `trait KeyCustody` block) still
+    says "the `major_range`/`minor_range` parameters shared by `derive_subaddress`
+    and `scan_tx_outputs`" - but the real `derive_subaddress` signature today is
+    `(handle, index: SubaddressIndex, network: Network) -> Result<Address, ...>`,
+    with **no** range parameters at all; only `scan_tx_outputs` takes
+    `major_range`/`minor_range`. So the doc comment itself is out of date, not
+    just the WBS document quoting it - the six DTOs here were built against the
+    actual `fn` signatures (confirmed by reading them directly), which is why
+    `DeriveSubaddressRequest` carries `network` but no ranges, and
+    `ScanTxOutputsRequest` carries both ranges but no `network`. Left the stale
+    doc comment in place (out of scope to fix here) but called it out explicitly
+    in `ScanTxOutputsRequest`'s own doc comment so a future reader isn't misled by
+    it a second time.
+  - **`WalletHandle` had no accessor at all** (private `Uuid` field, only
+    `Debug`/`Clone`/`Copy`/`PartialEq`/`Eq`/`Hash`) - exactly the gap the WBS
+    flagged as a possible finding. Added `pub fn as_bytes(&self) -> [u8; 16]` and
+    `pub fn from_bytes([u8; 16]) -> Self` directly on `WalletHandle` in
+    `src/key_custody/mod.rs` (with a doc comment explaining why this doesn't
+    weaken the "opaque handle" framing - a `WalletHandle` was never a secret or
+    unguessable-by-design, just an index into a process-local map), plus one
+    direct test in a new `#[cfg(test)] mod tests` in that same file (mod.rs had
+    none before - `PlainKeyCustody`'s own tests live in `plain.rs`). `from_bytes`
+    is needed both by this step's own round-trip tests and by the future 2.1.2
+    socket *client*, which will need to reconstruct the exact handle value a
+    remote implementation issued so it can hand it back on later calls.
+  - **DTO design, one struct/type-alias pair per trait method** (`RegisterWallet`,
+    `RemoveWallet`, `Seal`, `UnsealAndRegister`, `DeriveSubaddress`,
+    `ScanTxOutputs` - `{Name}Request` struct + `type {Name}Response =
+    Result<TWire, KeyCustodyErrorWire>`). Chose to reuse `std::result::Result`
+    directly for every response rather than a hand-rolled `Ok`/`Err` enum -
+    confirmed first that `serde` does provide a real `Serialize`/`Deserialize`
+    impl for `Result<T, E>` (grepped the vendored `serde` crate source rather than
+    assuming), so a hand-rolled version would just be more code for an identical
+    wire shape. The WBS explicitly allows this ("reuse `Result` directly ... if it
+    serializes the way you want").
+  - **Byte-blob fields are all hex-encoded `String`s**, not raw byte arrays or
+    base64: `[u8; 64]` (`WalletMaterialWire`) doesn't implement `Serialize`
+    directly - checked the vendored `serde` source and confirmed its array impls
+    are macro-generated only up to length 32, nothing further - and hex, not
+    base64, matches this codebase's existing convention (`hex` is already a
+    pervasive dependency here; nothing in this workspace uses base64 anywhere).
+    `WalletHandleWire`'s 16 bytes would fit serde's direct array support but were
+    hex-encoded anyway for consistency with every other byte-blob DTO in this
+    crate.
+  - **`SubaddressIndexWire` carries `major`/`minor` as plain `u32`s, not via
+    `monero`-rs's own `serde` feature** - checked and `cryptonote::subaddress::
+    Index` *does* derive `Serialize`/`Deserialize` upstream, but only behind that
+    crate's own `serde` cargo feature, which this workspace's `monero` dependency
+    doesn't enable (default features are `full`). Deliberately did not turn that
+    feature on in this new crate's `Cargo.toml`: Cargo's feature unification means
+    doing so would silently enable `monero/serde` (and therefore
+    `curve25519-dalek/serde`, `serde-big-array`) for every other workspace member
+    too whenever built together (e.g. plain `cargo build --workspace`) - a
+    non-obvious, action-at-a-distance change to the rest of the tree from what
+    should be a one-crate addition. Two plain `u32` fields cost nothing and avoid
+    it entirely.
+  - **`Address`/`Transaction`/`Network` all reuse an existing encoding rather than
+    inventing one**, per the WBS's own steer: `AddressWire` wraps `Address`'s own
+    base58 `Display`/`FromStr`; `TransactionWire` wraps `monero::consensus::
+    encode::serialize`/`deserialize` (the same functions `src/scanner.rs`'s and
+    `src/key_custody/plain.rs`'s own tests already use to load
+    `tests/fixtures/subaddress_tx.hex`) as hex; `NetworkWire` reuses
+    `moneropay_core::network::network_str`/`parse_network` directly rather than a
+    second string mapping that could drift from the one the config file and admin
+    API already use.
+  - **`WalletMaterialWire` and `SealedMaterialWire` are `ZeroizeOnDrop`**
+    (matching `WalletMaterial`'s own convention exactly) and have a hand-written
+    `Debug` impl that redacts the hex string, rather than deriving `Debug`. Not
+    explicitly asked for by the WBS, but the obvious extension of this codebase's
+    existing rule that raw key material never survives in a plain-`Debug`-able or
+    un-scrubbed form - these two DTOs are the wire copies of exactly the same
+    bytes `WalletMaterial` already treats this way, so there was no real argument
+    for treating the wire form more casually than the in-memory one. Confirmed
+    (didn't just assume) that `String: Zeroize` exists in the pinned `zeroize`
+    version by actually building against it, rather than trusting memory of the
+    crate's API.
+  - **`SealedMaterialWire` is deliberately not assumed to be 64 bytes** even
+    though `PlainKeyCustody::seal` happens to produce exactly `WalletMaterial::
+    to_raw_bytes()`'s 64 bytes today - a future TEE-backed `seal` will produce
+    something sealed *to that enclave*, almost certainly a different length. One
+    test round-trips a 96-byte blob specifically to prove this isn't silently
+    assumed.
+  - **`serde_json` is a dev-dependency only, not a main one** - nothing in
+    `src/lib.rs` actually calls it (no socket/server code exists yet to serialize
+    anything for real), only this crate's own tests do. `key-custody-service`'s
+    main dependencies are `hex`, `moneropay-core` (path), `monero`, `serde`
+    (derive only), `thiserror`, `zeroize` (derive only) - noted in the crate's own
+    `Cargo.toml` comment so 2.1.2 knows to promote `serde_json` (or whatever
+    encoding is chosen then) to a real dependency once something actually sends
+    bytes over a socket.
+  - **`WireConversionError`** (new, local to this crate): covers hex-decode
+    failures, wrong byte lengths, unrecognized network names, unparseable
+    addresses, malformed transaction bytes, and platform `usize`/`u64` overflow -
+    deliberately kept separate from `KeyCustodyErrorWire` (which mirrors
+    `KeyCustodyError` variant-for-variant and carries a real `KeyCustody` method's
+    *application* result across the wire). `WireConversionError` only ever
+    originates locally, turning a possibly-corrupted wire value back into a real
+    type; what a future socket server does with one (close the connection? map it
+    into `KeyCustodyErrorWire::BackendUnavailable`?) is explicitly left as a 2.1.2
+    decision, not resolved here.
+  - **Tests**: 22 in `key-custody-service/src/lib.rs`, plus 1 new in
+    `src/key_custody/mod.rs` for the `WalletHandle` accessor pair (engine crate).
+    Covers, per the WBS's explicit acceptance list: `WalletMaterial`'s real raw
+    key bytes (constructed with every byte value 0..64 present at least once, not
+    a degenerate all-same-byte fixture) extracted and compared byte-for-byte after
+    the round trip - not `assert_eq!` on the wire value, not a `Debug` string,
+    which is exactly the shortcut the WBS warned would let a redaction bug hide as
+    "empty view key" silently; a separate assertion that the `Debug` string really
+    is redacted and really doesn't leak the hex; all four `KeyCustodyError`
+    variants round-tripped (compared by rendered message, since neither
+    `KeyCustodyError` nor `KeyCustodyErrorWire`'s restored form derive
+    `PartialEq` across the crate boundary in a way `assert_eq!` could use
+    directly - `KeyCustodyErrorWire` itself does derive `PartialEq`, used directly
+    for the request/response DTO tests); `MatchedOutput` with both `Some(_)` and
+    `None` amounts; a real, non-trivial `Transaction` deserialized from
+    `tests/fixtures/subaddress_tx.hex` (not an empty/default one) round-tripped
+    through its consensus encoding; a real standard address *and* a real derived
+    subaddress (both built from the same fixture view/spend keys `plain.rs`'s own
+    tests use); every `Network` variant; `Range<u32>`; both directions of every
+    per-method request/response DTO, including a `Vec<MatchedOutputWire>` with
+    more than one element. Several negative tests too (truncated handle hex,
+    wrong-length key material, garbage address text, truncated transaction bytes,
+    unrecognized network name) - not strictly asked for, but cheap given the
+    conversions already return `Result` rather than panicking, and directly
+    useful for whoever builds the 2.1.2 socket server against these.
+  - Full `cargo test --workspace`: engine 311 passed/9 ignored (was 310/9, +1 -
+    the new `WalletHandle` accessor test), key-custody-service 22 passed (new
+    crate), control-plane 80 (unchanged), shared 26 (unchanged), engine-test-support
+    2 (unchanged), mock-woocommerce 8+1 (unchanged). `cargo build --workspace`
+    clean, no warnings. Files touched: `Cargo.toml` (workspace members list),
+    `src/key_custody/mod.rs` (the accessor pair + its test), new
+    `key-custody-service/Cargo.toml` + `key-custody-service/src/lib.rs`. No
+    `cargo fmt` run anywhere, including on the new crate - hand-formatted to match
+    the rest of this codebase's style throughout.
+  - **Not done / explicitly out of scope**: no socket, no server binary, no
+    client adapter implementing `KeyCustody` - that's 2.1.2. No change to
+    `PlainKeyCustody` or the `KeyCustody` trait itself beyond the two new
+    `WalletHandle` methods. No fix to the stale doc-comment prose on the trait
+    itself (documented the discrepancy instead of silently correcting scope this
+    task wasn't asked to touch).
+
 - WBS 1.7.1 done: `CoingeckoRateProvider`, a second `ExchangeRateProvider`
   implementation backed by live rates from Coingecko's public API, plus config
   wiring and a `main.rs` background-refresh loop.

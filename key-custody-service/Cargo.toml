@@ -1,0 +1,23 @@
+[package]
+name = "key-custody-service"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+hex = "0.4.3"
+# For the real KeyCustody/WalletHandle/WalletMaterial/KeyCustodyError/MatchedOutput/
+# SubaddressIndex types this crate's DTOs convert to/from - a path dependency, not a
+# reimplementation, exactly as the WBS's own framing for this crate says.
+moneropay-core = { path = ".." }
+monero = "0.22.0"
+serde = { version = "1.0.229", features = ["derive"] }
+thiserror = "2.0.20"
+zeroize = { version = "1.9.0", features = ["derive"] }
+
+[dev-dependencies]
+# Not a main dependency: nothing in src/lib.rs actually serializes anything yet -
+# this crate is DTOs and conversions only (WBS 2.1.1), no socket/server code. Only
+# this crate's own round-trip tests need a concrete wire encoding to prove against;
+# the eventual socket server/client (WBS 2.1.2) will need serde_json (or whatever
+# encoding is chosen then) as a real dependency to actually use one.
+serde_json = "1.0.151"

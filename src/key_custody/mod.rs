@@ -43,6 +43,34 @@ impl WalletHandle {
     fn new() -> Self {
         WalletHandle(Uuid::new_v4())
     }
+
+    /// Expose the underlying UUID as raw bytes, and the inverse constructor to
+    /// rebuild an equal `WalletHandle` from them.
+    ///
+    /// Added for WBS 2.1.1 (`key-custody-service`'s wire DTOs): a `WalletHandle`
+    /// needs to cross a Unix socket as plain bytes, and - once 2.1.2 builds the
+    /// actual socket client - that client needs to hand back the *same* handle
+    /// value a remote `KeyCustody` implementation issued, on every subsequent call
+    /// for the same wallet, since the server-side registry is keyed by that exact
+    /// value. Neither direction was reachable from outside this module before this
+    /// pair existed - `Uuid` itself is a private field with no accessor.
+    ///
+    /// This is not a weakening of the "opaque handle" framing in this type's own
+    /// doc comment above. `WalletHandle` was never a secret or a capability token
+    /// the way `sk_...`/`pk_...` are - it's an index into a process-local map, and
+    /// nothing about the design relies on a `WalletHandle` value being hard to
+    /// construct or guess; the actual security boundary this module draws is about
+    /// *where key material lives*, never about handles being unforgeable. A caller
+    /// that already holds a `WalletHandle` could already `Clone`/`Copy`/compare it
+    /// freely - `from_bytes` only lets a *different process*, one that has only
+    /// ever seen the wire-encoded form, reconstruct an equal value.
+    pub fn as_bytes(&self) -> [u8; 16] {
+        *self.0.as_bytes()
+    }
+
+    pub fn from_bytes(bytes: [u8; 16]) -> Self {
+        WalletHandle(Uuid::from_bytes(bytes))
+    }
 }
 
 /// The watch-only key material for one tenant's wallet: a private view key and a
@@ -171,8 +199,9 @@ pub struct MatchedOutput {
 /// keys actually live." See the module docs for the threat model this exists to
 /// narrow.
 ///
-/// A note on the `major_range`/`minor_range` parameters shared by
-/// `derive_subaddress` and `scan_tx_outputs`: building a lookup table for a range
+/// A note on the `major_range`/`minor_range` parameters on `scan_tx_outputs`
+/// (`derive_subaddress` takes a single `index` instead, not a range - see its own
+/// signature below): building a lookup table for a range
 /// costs one scalar multiplication per candidate index, because that's how the
 /// underlying primitive works — it derives every spend key in the range up front,
 /// then checks outputs against the resulting table. [`PlainKeyCustody`] amortizes
@@ -238,4 +267,28 @@ pub trait KeyCustody: Send + Sync {
         major_range: Range<u32>,
         minor_range: Range<u32>,
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError>;
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn wallet_handle_as_bytes_and_from_bytes_round_trip_and_stay_distinguishable() {
+        // Pins the accessor pair added for WBS 2.1.1's wire DTOs
+        // (`key-custody-service`): a real `WalletHandle` survives a bytes-out,
+        // bytes-in round trip exactly, and two distinct handles don't collide.
+        let a = WalletHandle::new();
+        let b = WalletHandle::new();
+        assert_ne!(a, b);
+
+        let restored_a = WalletHandle::from_bytes(a.as_bytes());
+        assert_eq!(a, restored_a);
+        assert_ne!(restored_a, b);
+
+        // A handle built directly from known bytes reproduces those same bytes -
+        // the direction the socket client side (WBS 2.1.2) actually needs.
+        let known = [0xAB; 16];
+        assert_eq!(WalletHandle::from_bytes(known).as_bytes(), known);
+    }
 }

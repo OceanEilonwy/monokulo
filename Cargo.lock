@@ -1214,6 +1214,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "key-custody-service"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "monero",
+ "moneropay-core",
+ "serde",
+ "serde_json",
+ "thiserror",
+ "zeroize",
+]
+
+[[package]]
 name = "libc"
 version = "0.2.189"
 source = "registry+https://github.com/rust-lang/crates.io-index"
