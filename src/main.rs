@@ -7,9 +7,10 @@ use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
+use key_custody_service::client::SocketKeyCustody;
 use monero::Network;
 use moneropay_core::cli::{self, Action};
-use moneropay_core::config::Config;
+use moneropay_core::config::{Config, KeyCustodyConfig};
 use moneropay_core::daemon::MoneroDaemonClient;
 use moneropay_core::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use moneropay_core::daemon_rpc::RpcDaemonClient;
@@ -154,7 +155,12 @@ async fn main() {
 
     let db_path = init_wizard::database_path_for(&config_path);
     let store = Store::open_file(&db_path.to_string_lossy()).expect("failed to open database").into_shared();
-    let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+    // `Config::validate` has already confirmed `key_custody.backend` is one of
+    // these two known values (and, for "socket", that `socket_path` is present
+    // and non-empty) - `build_key_custody` below is a plain dispatch on an
+    // already-validated field, not a second round of validation, matching the
+    // `exchange_rate.provider` dispatch a few lines down.
+    let key_custody: Arc<dyn KeyCustody> = build_key_custody(&config.key_custody).await;
     // `Config::validate` has already confirmed `provider` is one of these two
     // known values (and, for "coingecko", that `currencies` is non-empty) - this
     // match is a plain dispatch, not a second round of validation.
@@ -242,6 +248,7 @@ async fn main() {
     let app_state = AppState {
         store: store.clone(),
         key_custody: key_custody.clone(),
+        key_custody_backend: config.key_custody.backend.clone(),
         exchange_rate,
         wallet_handles: wallet_handles.clone(),
         rate_limiter: Arc::new(RateLimiter::new(config.server.rate_limit_per_ip_per_min)),
@@ -331,6 +338,126 @@ where
     });
 }
 
+/// Builds the one `Arc<dyn KeyCustody>` this whole process shares - `"plain"`
+/// (the default, unchanged behavior: key material lives in this process) or
+/// `"socket"` (WBS 2.1.3: forwards every call to a separate `key-custody-server`
+/// process). `Config::validate` has already confirmed `cfg.backend` is one of
+/// these two values, so the `_` arm below covers only "plain" in practice -
+/// written as a catch-all rather than an explicit `"plain" =>` purely so a config
+/// that somehow reaches this function unvalidated (there is no such code path
+/// today, but nothing enforces that at the type level) degrades to the always-
+/// safe in-process default instead of panicking on an unmatched pattern.
+///
+/// There is exactly one `KeyCustody` for the whole running instance - not one per
+/// tenant. `tenants.key_custody_backend` (a column on each tenant row, unrelated
+/// to this config field despite the similar name) looks at first glance like it
+/// might support per-tenant backend choice instead, but it doesn't: it's read
+/// back into `Tenant`/`NewTenant` (`store.rs`) and round-tripped through every
+/// tenant-creation code path, but never *matched on* anywhere in this codebase to
+/// select a `KeyCustody` implementation - grepped for every read site, not just
+/// write sites, to confirm this before writing this comment. `migrations/
+/// 0001_init.sql`'s own comment on the column, and `docs/DESIGN.md` §8.1, agree:
+/// it exists so a *future* migration to a different backend can detect a
+/// mismatch between a stored row's sealing backend and the backend actually
+/// running (`unseal_and_register` given bytes sealed by a different backend
+/// should fail loudly, not misinterpret them - `docs/TESTING.md`'s own gap list
+/// already flags that check as not yet implemented, unrelated to this task). It
+/// was never wired as a dispatch key, and nothing here adds that: this config
+/// option makes the *whole process* pick one backend, same as
+/// `exchange_rate.provider` makes the whole process pick one rate source.
+async fn build_key_custody(cfg: &KeyCustodyConfig) -> Arc<dyn KeyCustody> {
+    match cfg.backend.as_str() {
+        "socket" => {
+            // `Config::validate` already rejected `backend = "socket"` with no
+            // `socket_path` - this `expect` documents that invariant rather than
+            // silently falling back to an empty path `SocketKeyCustody::connect`
+            // would just fail on anyway, one layer down, with a worse error.
+            let socket_path = cfg
+                .socket_path
+                .as_deref()
+                .expect("Config::validate should have required socket_path for backend = \"socket\"");
+            Arc::new(connect_socket_key_custody(socket_path).await)
+        }
+        _ => Arc::new(PlainKeyCustody::default()),
+    }
+}
+
+/// How many times [`connect_socket_key_custody`] retries a failed connect before
+/// giving up, and how long it sleeps between attempts. 10 attempts, 500ms apart,
+/// bound the whole retry window to under 5 seconds - generous next to an ordinary
+/// process-startup race, tight next to how long an operator would tolerate a
+/// service hanging at boot before assuming something is actually wrong.
+const KEY_CUSTODY_CONNECT_ATTEMPTS: u32 = 10;
+const KEY_CUSTODY_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(500);
+
+/// Connects to a `key-custody-server` at `socket_path`, retrying briefly before
+/// giving up - never panicking, never hanging indefinitely.
+///
+/// **The choice this function embodies, and why it's the right one here.**
+/// `key-custody-server`'s own binary doc comment (`key-custody-server/src/bin/
+/// key-custody-server.rs`) deliberately pushes restart-policy ownership onto an
+/// external process supervisor rather than building any self-restart logic into
+/// that binary - "that supervisor is what should own restart policy... not this
+/// binary guessing at them." It would be easy to read that as an argument for
+/// this function failing on the very first failed connect too, on the theory
+/// that *this* process's own supervisor (systemd, a container orchestrator)
+/// should likewise own recovering from "the socket isn't there yet." That
+/// argument proves too much, though: it's about who restarts a process that has
+/// genuinely died, not about how a client should react to an utterly ordinary
+/// startup race between two *independently started* processes that both need to
+/// be up before either is fully useful - exactly the shape the task that added
+/// this config option calls out by name ("normal at boot if two systemd units...
+/// start close together"). A single failed connect attempt cannot tell the
+/// difference between "the server process hasn't been scheduled onto a thread
+/// yet" (typically resolved within milliseconds) and "the server is genuinely
+/// down" - failing fast on the former would mean this process's own supervisor
+/// has to restart *it* too, adding a second restart-and-backoff cycle on top of
+/// whatever the first one already costs, for a race that a few hundred
+/// milliseconds of patience resolves for free. This project's own prior art
+/// agrees: `key-custody-service`'s own integration test harness
+/// (`key-custody-server/tests/socket_key_custody.rs::connect_with_retry`) hit
+/// this exact race between spawning its in-process test server and dialing it,
+/// and solved it the same way - a short, bounded retry loop, not a single
+/// attempt. What this function does *not* do is retry forever, or silently swap
+/// in `PlainKeyCustody` as a fallback: a `key-custody-server` that is still
+/// unreachable after ~5 seconds is past "ordinary scheduling jitter" territory,
+/// and the operator needs a loud, specific, actionable failure - which socket
+/// path, how many attempts, the last real error - not a service that quietly
+/// runs with key material back in this process (defeating the entire point of
+/// choosing this backend) or one that hangs forever with no indication why.
+async fn connect_socket_key_custody(socket_path: &str) -> SocketKeyCustody {
+    let mut last_err = None;
+    for attempt in 1..=KEY_CUSTODY_CONNECT_ATTEMPTS {
+        match SocketKeyCustody::connect(socket_path).await {
+            Ok(client) => return client,
+            Err(e) => {
+                if attempt < KEY_CUSTODY_CONNECT_ATTEMPTS {
+                    eprintln!(
+                        "key-custody-server not reachable yet at {socket_path} (attempt \
+                         {attempt}/{KEY_CUSTODY_CONNECT_ATTEMPTS}): {e} - retrying in \
+                         {KEY_CUSTODY_CONNECT_RETRY_DELAY:?}"
+                    );
+                    tokio::time::sleep(KEY_CUSTODY_CONNECT_RETRY_DELAY).await;
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+    // `last_err` is always `Some` here: the loop only exits without an early
+    // `return` after every one of `KEY_CUSTODY_CONNECT_ATTEMPTS` iterations has
+    // taken the `Err` arm at least once (the `Ok` arm always returns
+    // immediately), so this is a real invariant, not a defensive fallback for a
+    // case that can't happen.
+    let last_err = last_err.expect("loop always records an error before exiting without returning");
+    eprintln!(
+        "failed to connect to key-custody-server at {socket_path} after \
+         {KEY_CUSTODY_CONNECT_ATTEMPTS} attempts (~{:?} total): {last_err}\n\
+         is key-custody-server running, and is this the socket path it was started with?",
+        KEY_CUSTODY_CONNECT_RETRY_DELAY * (KEY_CUSTODY_CONNECT_ATTEMPTS - 1)
+    );
+    std::process::exit(1);
+}
+
 /// Creates the one tenant a self-hosted deployment needs, from `[wallet]` in the
 /// config - but only once, on first boot. Idempotent across restarts by checking
 /// whether any tenant already exists first, rather than tracking a separate
@@ -351,7 +478,14 @@ async fn bootstrap_self_hosted_tenant(store: &SharedStore, key_custody: &Arc<dyn
         .unwrap()
         .create_tenant(
             NewTenant {
-                key_custody_backend: "plain".to_string(),
+                // Not hardcoded "plain": `tenants.key_custody_backend` records
+                // which `KeyCustody` implementation actually produced
+                // `sealed_key_material` (see `migrations/0001_init.sql`'s own
+                // comment on the column), and as of this config option that is
+                // no longer always "plain" - a bootstrap tenant created while
+                // `key_custody.backend = "socket"` is configured was genuinely
+                // sealed by the remote `key-custody-server`, not this process.
+                key_custody_backend: config.key_custody.backend.clone(),
                 sealed_key_material: sealed,
                 primary_address: wallet.primary_address.clone(),
                 network: wallet.network.clone(),

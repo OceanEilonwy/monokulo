@@ -5,8 +5,18 @@ edition = "2021"
 
 [dependencies]
 argon2 = "0.5"
+# WBS 2.1.3: `key_custody`'s `KeyCustody` trait and its domain types (`WalletHandle`,
+# `WalletMaterial`, `KeyCustodyError`, `MatchedOutput`) moved here from
+# `moneropay-core` so that `key-custody-service` (the socket client `main.rs` needs
+# to talk to an out-of-process backend) can depend on them without depending on
+# `moneropay-core` itself - see `key_custody.rs`'s own module doc comment for the
+# full reasoning (a real `cyclic package dependency` Cargo error, not a style
+# preference). `async-trait` is `KeyCustody`'s own trait-object-safety requirement;
+# `uuid`/`zeroize` are `WalletHandle`/`WalletMaterial`'s.
+async-trait = "0.1.92"
 hex = "0.4.3"
 hmac = "0.13.0"
+monero = "0.22.0"
 rand = "0.10.2"
 # argon2's password-hash re-export needs rand_core's `OsRng`, which is behind
 # rand_core's own "getrandom" feature. Declared explicitly here (rather than
@@ -18,3 +28,5 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 sha2 = "0.11.0"
 thiserror = "2.0.20"
 url = "2.5.8"
+uuid = { version = "1.26.0", features = ["v4"] }
+zeroize = { version = "1.9.0", features = ["derive"] }

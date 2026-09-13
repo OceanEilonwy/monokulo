@@ -1,0 +1,28 @@
+[package]
+name = "key-custody-server"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "key-custody-server"
+path = "src/bin/key-custody-server.rs"
+
+[dependencies]
+# Split out of `key-custody-service` for WBS 2.1.3 - see `src/server.rs`'s own
+# module doc comment for the full reasoning. This crate is the one place in the
+# workspace that needs *both* a real `moneropay-core::key_custody::PlainKeyCustody`
+# (the thing this server actually wraps) and `key-custody-service`'s wire
+# protocol/DTO types (what it decodes requests from and encodes responses as) -
+# `moneropay-core` itself must never depend on this crate (only the other way
+# around), or the cycle this split exists to avoid comes right back.
+key-custody-service = { path = "../key-custody-service" }
+moneropay-core = { path = ".." }
+monero = "0.22.0"
+tokio = { version = "1.53.1", features = ["full"] }
+
+[dev-dependencies]
+# `tests/socket_key_custody.rs` moved here alongside `server.rs` (it needs a real
+# server to test against) - `hex`/`serde_json` for building raw wire bytes by
+# hand in the garbage-input tests, matching the rest of the wire-protocol test
+# suite's own conventions.
+hex = "0.4.3"

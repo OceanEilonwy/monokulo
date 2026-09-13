@@ -1,5 +1,5 @@
 [workspace]
-members = ["shared", "control-plane", "mock-woocommerce", "engine-test-support", "key-custody-service"]
+members = ["shared", "control-plane", "mock-woocommerce", "engine-test-support", "key-custody-service", "key-custody-server"]
 
 [package]
 name = "moneropay-core"
@@ -12,6 +12,19 @@ axum = { version = "0.8.9", features = ["macros"] }
 handlebars = "6.4.4"
 hex = "0.4.3"
 hmac = "0.13.0"
+# WBS 2.1.3: `main.rs` needs `SocketKeyCustody` to wire the `[key_custody]
+# backend = "socket"]` config option to a real out-of-process `KeyCustody`. This
+# is the one direction of that split's dependency graph that's actually allowed -
+# `key-custody-service` depends on `shared`, never on `moneropay-core` (see
+# `shared/src/key_custody.rs`'s module doc comment for why the trait itself moved
+# there: `key-custody-service` depending on `moneropay-core` while
+# `moneropay-core` depended on `key-custody-service` back is a real Cargo cycle,
+# confirmed directly, not a style preference). The server side
+# (`key-custody-server`, wrapping a real `PlainKeyCustody`) is deliberately not a
+# dependency of this crate at all - nothing here constructs a `KeyCustodyServer`
+# or runs the standalone binary; that stays a separate process this crate only
+# ever dials as a client.
+key-custody-service = { path = "key-custody-service" }
 monero = "0.22.0"
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 rand = "0.10.2"

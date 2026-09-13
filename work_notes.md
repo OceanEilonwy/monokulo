@@ -42,6 +42,218 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- WBS 2.1.3 done: the engine wired to the socket-based `KeyCustody`
+  implementation behind a config flag - `main.rs` no longer unconditionally
+  constructs `PlainKeyCustody::default()`.
+  - **The real obstacle, found by trying it rather than assuming it would work**:
+    the naive plan ("`main.rs` depends on `key-custody-service` for
+    `SocketKeyCustody`") is impossible as the crate graph stood after 2.1.1/2.1.2.
+    `key-custody-service` depended on `moneropay-core` (for the real
+    `KeyCustody`/`WalletHandle`/etc. types its DTOs convert to/from, and for
+    `server.rs`'s real `PlainKeyCustody`); `main.rs` depending on
+    `key-custody-service` back would be `moneropay-core -> key-custody-service ->
+    moneropay-core`, a real Cargo dependency cycle. Not reasoned about in the
+    abstract - actually attempted (`cargo check` after adding the dependency
+    edge) and confirmed with Cargo's own `error: cyclic package dependency`
+    before doing anything else. Also empirically ruled out the tempting shortcut
+    of making the back-edge `optional`/feature-gated (moneropay-core depending on
+    key-custody-service with `default-features = false`, minus a "server"
+    feature) - Cargo still reports the identical cycle, since the cyclic-package
+    check operates on the manifest's declared edges before any feature
+    activation is resolved, not on which symbols a build actually uses.
+  - **The fix, not a workaround**: moved the `KeyCustody` trait and every type
+    that crosses it (`WalletHandle`, `WalletMaterial`, `KeyCustodyError`,
+    `MatchedOutput`) from `moneropay-core`'s `src/key_custody/mod.rs` to a new
+    `shared/src/key_custody.rs` (`shared` depends on nothing that could cycle
+    back), with `moneropay-core::key_custody` now just `pub use`-re-exporting
+    them - a re-export is the same type, not a wrapper, so every one of the
+    ~30 existing call sites across the engine crate kept compiling completely
+    unchanged, confirmed by `cargo check -p moneropay-core --lib` passing with
+    zero other files touched at that point. `network_str`/`parse_network` moved
+    the same way (`shared/src/network.rs`) for the same reason -
+    `key-custody-service`'s `NetworkWire` needed them too. The one real code
+    change this forced (not just a re-export): `WalletHandle::new()` had to go
+    from private to `pub` (it's still only ever meant to be called from inside a
+    `KeyCustody` implementation, per its own doc comment) - `plain.rs`, now in a
+    different crate from the type's definition, could no longer reach a
+    module-tree-private method across the crate boundary. Confirmed no similar
+    problem existed for `WalletMaterial`'s private fields: grepped `plain.rs` and
+    found it only ever uses the already-`pub` `to_view_pair`/`to_raw_bytes`
+    accessors, never direct field access.
+  - Splitting the trait out wasn't sufficient by itself, though -
+    `key-custody-service`'s `server.rs` (wrapping a real `PlainKeyCustody`) still
+    needed `moneropay-core`, and it lived in the *same* crate as `client.rs`
+    (what `main.rs` actually needs), so the cycle would have just come back
+    through that edge instead. Split `key-custody-service` into two crates:
+    `key-custody-service` keeps `client.rs`/`protocol.rs`/`lib.rs` (DTOs) and now
+    depends only on `shared`, never `moneropay-core`; a new sibling crate
+    `key-custody-server` (`git mv`d `server.rs`, `bin/key-custody-server.rs`, and
+    `tests/socket_key_custody.rs` there, since that test needs a real server)
+    depends on *both* `moneropay-core` (for `PlainKeyCustody`) and
+    `key-custody-service` (for the protocol/DTO types). `moneropay-core` now
+    depends on `key-custody-service` only - never on `key-custody-server` - so
+    the graph is a clean DAG:
+    `key-custody-server -> {moneropay-core, key-custody-service} -> shared`.
+    Verified with `cargo check --workspace --all-targets` clean at every
+    intermediate step, not just at the end. All 39 of 2.1.2's key-custody tests
+    (22 unit + 17 integration) still exist and still pass, just split across the
+    two crates the same way the code that exercises them now is (`key-custody-service`
+    22, `key-custody-server` 17) - nothing was dropped or rewritten, confirmed by
+    diffing the ported test file's content against its pre-move version.
+  - **Config**: new `[key_custody]` section (`src/config.rs::KeyCustodyConfig`),
+    mirroring `ExchangeRateConfig`'s existing "string field selects the backend,
+    `Config::validate_bounds` checks conditionally-required fields" shape rather
+    than a `#[serde(tag = ...)]` enum - the same shape every other conditionally-
+    required section in this file already uses, and an unrecognized value gets
+    the identical "rejected at boot with a clear error" treatment either way.
+    `backend`: `"plain"` (default, unchanged) or `"socket"`; `socket_path:
+    Option<String>`, required and validated non-empty-after-trim only under
+    `"socket"` (`ConfigError::SocketBackendMissingSocketPath`); an unrecognized
+    `backend` is `ConfigError::UnknownKeyCustodyBackend`, exactly mirroring
+    `exchange_rate.provider`'s own unknown-value handling. 4 new `config.rs`
+    tests: default-with-no-section-present, socket-with-path parses/validates,
+    socket-with-no-path (both omitted and empty/whitespace) rejected, unknown
+    backend rejected.
+  - **The `key_custody_backend` question, investigated as asked, not guessed
+    at**: grepped every read site of `tenants.key_custody_backend` (the stored
+    column), not just write sites. Found it is read back from SQLite into
+    `Tenant`/`NewTenant` (`store.rs`'s `row.get("key_custody_backend")` and the
+    `INSERT` binding) but **never matched on or dispatched on anywhere** in this
+    codebase - every prior write site hardcoded the literal `"plain"` regardless
+    of anything. `migrations/0001_init.sql`'s own comment on the column and
+    `docs/DESIGN.md` §8.1 agree on what it's actually *for*: letting a **future**
+    migration to a different backend detect a mismatch and fail loudly on
+    `unseal_and_register` rather than silently misinterpreting bytes sealed by a
+    different backend - `docs/TESTING.md`'s own gap list already flags that
+    specific check ("seal() output is versioned by key_custody_backend...") as
+    not yet implemented, unrelated to this task and not built here either, since
+    it wasn't asked for. It is **not** a per-tenant dispatch key: `main.rs` holds
+    exactly one `Arc<dyn KeyCustody>` for the whole process
+    (`AppState.key_custody`, `register_all_tenants`, `run_scanner_loop` all take
+    a single shared instance), and nothing in the schema or the code anticipates
+    otherwise - a single running instance can only ever use one backend for
+    every tenant it holds, which is exactly what this task's `[key_custody]`
+    config section (one value, process-wide) matches. What *was* a real,
+    previously-latent bug this task's own change would have made concretely
+    wrong: two production write sites (`main.rs::bootstrap_self_hosted_tenant`
+    and `http/admin.rs::create_tenant`) hardcoded `key_custody_backend: "plain"`
+    regardless of which backend actually sealed the material - harmless before
+    this task (only "plain" existed), actively misleading the moment a second
+    backend exists for real (a tenant created under `backend = "socket"` would
+    have its row claim "plain" while `key-custody-server` genuinely sealed it).
+    Fixed both to record the real configured backend: `bootstrap_self_hosted_tenant`
+    now takes it from `config.key_custody.backend` directly; `create_tenant`
+    needed a new `AppState.key_custody_backend: String` field (nothing about
+    `Arc<dyn KeyCustody>` lets a caller ask "which implementation is this," by
+    design, so `main.rs` hands the string down alongside the trait object rather
+    than inventing a downcast/introspection surface this boundary was
+    deliberately never given).
+  - **Startup-failure-handling decision, made deliberately, not left
+    unconsidered**: a bounded retry loop (`main.rs::connect_socket_key_custody`,
+    10 attempts, 500ms apart, ~4.5s total), not a single fail-fast attempt.
+    `key-custody-server`'s own binary doc comment explicitly pushes *its own*
+    restart-policy ownership onto an external process supervisor
+    ("supervisor is what should own restart policy... not this binary guessing
+    at them") - read closely, that's a claim about who restarts a process that
+    has genuinely died, not about how a *client* dialing it should react to an
+    ordinary two-independently-started-processes race at boot, which is exactly
+    the scenario this task named by name. A single failed connect attempt cannot
+    tell "server not scheduled onto a thread yet" (resolves in milliseconds)
+    apart from "server genuinely down," and failing fast on the former just
+    pushes a second restart-and-backoff cycle onto whatever supervises this
+    process, for a race a few hundred milliseconds of patience resolves for
+    free. This project's own prior art agrees, not just reasoning from
+    principle: `key-custody-server/tests/socket_key_custody.rs`'s own
+    `connect_with_retry` helper (2.1.2, written before this task) hit and solved
+    the identical race between spawning an in-process test server and dialing
+    it, the same way. What it deliberately does *not* do: retry forever, or
+    silently fall back to `PlainKeyCustody` - past ~5 seconds this stops being
+    ordinary scheduling jitter, and the operator needs a loud, specific,
+    actionable failure (exact socket path, attempt count, the real last error,
+    a pointed question about whether the server is even running) with a clean
+    `std::process::exit(1)`, never a panic, never an indefinite hang. Verified
+    for real, not just by reading the code: ran the compiled binary against a
+    `socket_path` nothing is listening on (clean exit 1 after ~4.5s with the
+    expected message) and against a real `key-custody-server` process (boots to
+    "moneropay listening on ..." with no key-custody errors, only the expected,
+    unrelated failures from a Monero node this smoke test never started).
+  - **Testing harness**: `engine-test-support` (not a new harness - confirmed
+    this was the right home by reading how `mock-woocommerce`/`control-plane`
+    already depend on it for a real, network-bound engine before adding
+    anything). `TestEngineConfig` gained `with_socket_key_custody(socket_path)`
+    - unlike `main.rs`'s retrying connect, this does *not* retry (a test
+    controls both sides of the race and starts the server first), documented as
+    a deliberate difference in its own doc comment. `key-custody-service` became
+    a real (not dev) dependency of this crate, since `spawn()` itself (not just
+    tests) needs to construct a `SocketKeyCustody`; `key-custody-server` is a
+    dev-dependency, needed only by this crate's own regression test.
+  - **The regression test itself, and an honest account of what "unmodified"
+    could and couldn't mean here**: the WBS's acceptance bar
+    ("the engine's existing integration tests... pass unmodified against this
+    configuration") can't be taken *completely* literally - the existing test
+    that proves this exact scenario against `PlainKeyCustody`
+    (`src/scanner.rs::run_scan_tick_matches_mempool_tx_recomputes_status_and_
+    enqueues_a_webhook`) lives inside `moneropay-core`'s own `#[cfg(test)]`
+    build and constructs `PlainKeyCustody`/`Store` directly in-process - it
+    structurally cannot be "pointed at" a different backend without becoming a
+    different test, and `moneropay-core` itself can never depend on
+    `SocketKeyCustody` at all (see the cycle above). So `engine-test-support`
+    reproduces that exact scenario end to end through the real HTTP API instead
+    (same fixture transaction and view/spend keys `plain.rs`'s and `scanner.rs`'s
+    own tests use - not a new one invented here), run twice - once per backend -
+    and asserts the two runs are pixel-for-pixel identical
+    (`order_creation_and_chain_scanning_behave_identically_through_the_socket_
+    backed_key_custody_path`), not just each individually plausible. First
+    version of this test picked too large a target order amount and got
+    `partial` instead of `unconfirmed` from both backends identically - caught
+    immediately since the assertion checks the *specific* expected outcome too,
+    not just equality between the two runs; fixed by using a trivially-small
+    rate, same reasoning `scanner.rs`'s own `xmr_amount_piconero: 1` comment
+    already documents.
+  - **Files touched**: `Cargo.toml` (workspace members +
+    `key-custody-service` dependency), `shared/Cargo.toml` +
+    new `shared/src/{key_custody,network}.rs` + `shared/src/lib.rs`,
+    `src/key_custody/mod.rs` + `src/network.rs` (trimmed to re-exports),
+    `src/config.rs`, `src/main.rs`, `src/http/mod.rs` + `src/http/admin.rs`
+    (`AppState.key_custody_backend`), `src/http/tests.rs` +
+    `tests/e2e_stagenet.rs` (new `AppState` field), `key-custody-service/
+    Cargo.toml` + `src/lib.rs` + `src/client.rs` (now depends on `shared`, not
+    `moneropay-core`), new `key-custody-server/` crate (`Cargo.toml`,
+    `src/lib.rs`, `git mv`d `server.rs`/`bin/key-custody-server.rs`/
+    `tests/socket_key_custody.rs`), `engine-test-support/Cargo.toml` +
+    `src/lib.rs`. `Cargo.lock` diff is 20 lines, all of it the new
+    `key-custody-server` package entry - no new external crate entered the
+    workspace's dependency graph (monero/uuid/zeroize/async-trait were already
+    resolved elsewhere; only `hex`, already used pervasively, is new to
+    `engine-test-support`, as a dev-dependency).
+  - Full `cargo test --workspace`, before this task (confirmed by actually
+    running it, not trusting this log's prior "Counts" line): engine 311
+    passed/9 ignored, shared 26, control-plane 80, engine-test-support 2,
+    key-custody-service 39 (22 unit + 17 integration, one crate). After: engine
+    312/9 ignored (+4 new `config.rs` tests, -1 `WalletHandle` round-trip test
+    and -2 `network` round-trip tests moved out to `shared`, net +1), shared 29
+    (+3: the 3 tests that moved in), control-plane 80 (unchanged),
+    engine-test-support 3 (+1, the new socket-vs-plain regression test),
+    key-custody-service 22 (unchanged - just the unit tests, integration tests
+    moved out), key-custody-server 17 (the integration tests that moved, now in
+    their own crate - combined with key-custody-service's 22, still 39 total,
+    confirming nothing was lost in the split), mock-woocommerce 8+1
+    (unchanged). `cargo build --workspace --all-targets` clean, zero warnings,
+    confirmed by grepping the full build log for "warning" and finding nothing.
+    No `cargo fmt` run anywhere; every new/moved file hand-formatted to match
+    its crate's existing style, and every edit to an existing file matched the
+    surrounding style by hand.
+  - **Not done / explicitly out of scope**: the `unseal_and_register`
+    backend-mismatch check `docs/TESTING.md` already flags as a gap (versioning
+    `seal()` output by `key_custody_backend` and failing loudly on a mismatch) -
+    genuinely related to this column, but a different, not-yet-asked-for piece
+    of work; noted here so a future reader doesn't assume this task silently
+    fixed it. `init_wizard.rs`'s interactive setup flow was not extended to
+    offer `backend = "socket"` as a choice, matching the same judgment call
+    1.7.1's entry above made for `provider = "coingecko"` - a self-hoster (or a
+    future control-plane-generated config) can still hand-write it into the
+    TOML directly.
+
 - WBS 2.1.2 done: socket-based `KeyCustody` implementation, extending the
   existing `key-custody-service` crate (not a third crate) with the socket
   half 2.1.1 deliberately left unbuilt - `protocol.rs` (envelope + framing),

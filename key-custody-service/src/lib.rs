@@ -1,28 +1,40 @@
 //! Wire-level DTOs for the `KeyCustody` boundary (WBS 2.1.1), plus (as of WBS
 //! 2.1.2) the socket server and client built on top of them.
 //!
-//! *This file* is still deliberately *just* data and conversions - no socket, no
+//! *This file* is still deliberately *just* data and conversions - no socket
 //! server, no client adapter - kept exactly as 2.1.1 left it. That split was the
 //! WBS's own framing, not an accident of scope creep avoidance: getting the wire
 //! format right - and proven to round-trip - was a self-contained problem worth
 //! finishing before any IO code existed to obscure a shape bug. The socket half
-//! that format was always going to need now lives alongside it in this same
-//! crate (not a third crate - see the WBS's own "extend, don't fork" framing for
-//! 2.1.2): `protocol.rs` (request/response envelopes + wire framing), `server.rs`
+//! that format was always going to need lives alongside it in this same crate as
+//! of WBS 2.1.2 (`protocol.rs`, request/response envelopes + wire framing; and
+//! `client.rs`, `SocketKeyCustody`, a `KeyCustody` implementation that forwards
+//! every call over the socket). WBS 2.1.2 originally put `server.rs`
 //! (`KeyCustodyServer`, wrapping a real `PlainKeyCustody`) and its
-//! `bin/key-custody-server.rs` standalone binary, and `client.rs`
-//! (`SocketKeyCustody`, a `KeyCustody` implementation that forwards every call
-//! over the socket). See each module's own doc comment for its share of the
-//! design.
+//! `bin/key-custody-server.rs` standalone binary here too, under the same
+//! "extend, don't fork" framing - WBS 2.1.3 moved both to a new sibling crate,
+//! `key-custody-server`, once `moneropay-core`'s own `main.rs` needed to depend
+//! on *this* crate for `SocketKeyCustody`: this crate depending on
+//! `moneropay-core` (for `server.rs`'s real `PlainKeyCustody`) while
+//! `moneropay-core` depended on this crate (for `client.rs`'s
+//! `SocketKeyCustody`) is a real Cargo dependency cycle, not a style problem -
+//! see `shared::key_custody`'s module doc comment (`shared/src/key_custody.rs`)
+//! for the full account. That's a real split of previously-single-crate scope,
+//! not a revision of this comment's history for its own sake - a future reader
+//! diffing against the 2.1.2 commit should expect `server.rs` and
+//! `bin/key-custody-server.rs` to have moved, not been deleted.
 //!
-//! Every type here exists because `src/key_custody/mod.rs`'s real types don't
-//! (and mostly shouldn't) derive `Serialize`/`Deserialize` themselves:
+//! Every type here exists because `shared::key_custody`'s real types (moved
+//! there from `moneropay-core`'s own `src/key_custody/mod.rs` for the same
+//! reason described above) don't (and mostly shouldn't) derive
+//! `Serialize`/`Deserialize` themselves:
 //! - `KeyCustodyError` is a `thiserror` enum with `String` payloads, not
 //!   `serde`-derived - the engine crate has no reason to carry a wire format for
 //!   an error type nothing outside it currently needs to serialize.
 //! - `WalletHandle` wraps a private `uuid::Uuid` with no public accessor before
-//!   this task - see the `as_bytes`/`from_bytes` pair added to it in
-//!   `src/key_custody/mod.rs` for this exact purpose, documented there.
+//!   WBS 2.1.1 - see the `as_bytes`/`from_bytes` pair added to it (now in
+//!   `shared::key_custody`, originally `moneropay-core`'s own
+//!   `src/key_custody/mod.rs`) for this exact purpose, documented there.
 //! - `WalletMaterial` is `ZeroizeOnDrop` and deliberately *not* `Serialize` - it
 //!   already exposes `to_raw_bytes`/`from_raw_bytes` for exactly this kind of
 //!   boundary-crossing use (its own doc comments say so), so the DTO here wraps
@@ -48,20 +60,25 @@
 //! workspace doesn't already have.
 
 // WBS 2.1.2's socket half, built on the DTOs this file defines - see their own
-// doc comments.
+// doc comments. `server.rs` moved to the separate `key-custody-server` crate as
+// of WBS 2.1.3 - see `shared::key_custody`'s module doc comment for why (it needs
+// a real `PlainKeyCustody`, which only exists in `moneropay-core`, and this crate
+// can no longer depend on `moneropay-core` without recreating the exact Cargo
+// dependency cycle that split was meant to avoid). `client.rs` (`SocketKeyCustody`)
+// stays here: it's what `moneropay-core`'s own `main.rs` needs to depend on this
+// crate for.
 pub mod client;
 pub mod protocol;
-pub mod server;
 
 use std::ops::Range;
 
-use moneropay_core::key_custody::{
-    KeyCustodyError, MatchedOutput, Network, SubaddressIndex, WalletHandle, WalletMaterial,
-};
-use moneropay_core::network::{network_str, parse_network};
 use monero::consensus::encode::{deserialize, serialize};
 use monero::{Address, Transaction};
 use serde::{Deserialize, Serialize};
+use shared::key_custody::{
+    KeyCustodyError, MatchedOutput, Network, SubaddressIndex, WalletHandle, WalletMaterial,
+};
+use shared::network::{network_str, parse_network};
 use zeroize::{Zeroize, ZeroizeOnDrop};
 
 /// Failure converting a wire DTO *back* into a real engine type: malformed hex, a
@@ -396,12 +413,13 @@ impl From<RangeWire> for Range<u32> {
 // Network
 // ---------------------------------------------------------------------------
 
-/// Wire form of `monero::Network`, reusing `moneropay_core::network::
-/// network_str`/`parse_network` rather than a second string mapping that could
-/// drift from the one the config file and admin API already use - the WBS's own
-/// suggestion, and the obviously correct one: those helpers are already the
-/// single source of truth this codebase uses everywhere else a `Network` crosses
-/// a text boundary.
+/// Wire form of `monero::Network`, reusing `shared::network::
+/// network_str`/`parse_network` (re-exported unchanged by `moneropay-core`'s own
+/// `src/network.rs` as of WBS 2.1.3) rather than a second string mapping that
+/// could drift from the one the config file and admin API already use - the
+/// WBS's own suggestion, and the obviously correct one: those helpers are
+/// already the single source of truth this codebase uses everywhere else a
+/// `Network` crosses a text boundary.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub struct NetworkWire(pub String);
 

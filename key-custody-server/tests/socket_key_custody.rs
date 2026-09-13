@@ -45,9 +45,9 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 
+use key_custody_server::server::KeyCustodyServer;
 use key_custody_service::client::SocketKeyCustody;
 use key_custody_service::protocol::{read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse};
-use key_custody_service::server::KeyCustodyServer;
 use key_custody_service::WalletHandleWire;
 use moneropay_core::key_custody::{
     KeyCustody, KeyCustodyError, Network, PlainKeyCustody, SubaddressIndex, WalletHandle,

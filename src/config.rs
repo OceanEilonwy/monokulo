@@ -48,6 +48,14 @@ pub enum ConfigError {
          the key and re-check the value: it is an amount of XMR, e.g. \"0.25\"."
     )]
     ZeroConfCeilingRenamed,
+    #[error("key_custody.backend {0:?} is not implemented - only \"plain\" and \"socket\" exist in this version")]
+    UnknownKeyCustodyBackend(String),
+    #[error(
+        "key_custody.backend is \"socket\" but key_custody.socket_path is missing (or empty) - the engine \
+         would have nothing to connect to. Set it to the Unix socket path a running key-custody-server \
+         process is listening on, e.g. socket_path = \"/run/moneropay/key-custody.sock\"."
+    )]
+    SocketBackendMissingSocketPath,
 }
 
 fn require<T: std::fmt::Display + PartialOrd>(
@@ -80,6 +88,17 @@ pub struct Config {
     pub wallet: Option<WalletBootstrapConfig>,
     #[serde(default)]
     pub exchange_rate: ExchangeRateConfig,
+    /// Which `KeyCustody` implementation `main.rs` constructs at startup - "plain"
+    /// (default, unchanged: key material lives in this process, via
+    /// `key_custody::PlainKeyCustody`) or "socket" (WBS 2.1.3: forwards every call
+    /// over a Unix socket to a separate `key-custody-server` process, via
+    /// `key_custody_service::client::SocketKeyCustody`). `#[serde(default)]` so
+    /// every existing config file - which has never had a `[key_custody]` section,
+    /// since this is the first release where more than one backend exists - keeps
+    /// parsing unchanged and keeps getting the same in-process behavior it always
+    /// has.
+    #[serde(default)]
+    pub key_custody: KeyCustodyConfig,
     #[serde(default)]
     pub payment: PaymentConfig,
     #[serde(default)]
@@ -145,6 +164,16 @@ impl Config {
                 }
             }
             other => return Err(ConfigError::UnknownRateProvider(other.to_string())),
+        }
+        match self.key_custody.backend.as_str() {
+            "plain" => {}
+            "socket" => {
+                let non_empty = self.key_custody.socket_path.as_deref().is_some_and(|p| !p.trim().is_empty());
+                if !non_empty {
+                    return Err(ConfigError::SocketBackendMissingSocketPath);
+                }
+            }
+            other => return Err(ConfigError::UnknownKeyCustodyBackend(other.to_string())),
         }
         require(
             "exchange_rate.cache_seconds",
@@ -396,6 +425,42 @@ impl ExchangeRateConfig {
     /// not for operators).
     pub fn build_coingecko_rate_provider(&self) -> Result<CoingeckoRateProvider, ConfigError> {
         Ok(CoingeckoRateProvider::new("https://api.coingecko.com", self.currencies.clone()))
+    }
+}
+
+/// `[key_custody]` - see `Config::key_custody`'s own doc comment for what
+/// `backend` selects. Mirrors `ExchangeRateConfig`'s own two-backends-behind-a-
+/// string-field shape (`provider`/`"fixed"` vs `"coingecko"`) rather than an
+/// enum with `#[serde(tag = "backend")]`: a plain `String` field is what every
+/// other conditionally-required section in this file already does (see
+/// `Config::validate_bounds`'s `exchange_rate.provider` match just above), and
+/// an unrecognized value gets exactly the same "unknown, rejected at boot with a
+/// clear error" treatment either way - a tagged enum buys nothing extra here
+/// and would be the only config section in this file shaped differently from
+/// the rest for no functional reason.
+#[derive(Debug, Deserialize)]
+#[serde(default)]
+pub struct KeyCustodyConfig {
+    pub backend: String,
+    /// `backend = "socket"` only: filesystem path to the Unix socket a running
+    /// `key-custody-server` process is already listening on (or will be, by the
+    /// time `main.rs`'s bounded connect-retry loop gives up - see
+    /// `main.rs::connect_socket_key_custody`). Required (and validated
+    /// non-empty-after-trimming) under that backend by `Config::validate_bounds`;
+    /// ignored under `"plain"`, so a config that sets it while leaving `backend`
+    /// at the default is harmless, not an error - only the reverse (missing
+    /// under `"socket"`) is one, matching how `exchange_rate.currencies` under
+    /// `provider = "fixed"` is likewise ignored rather than rejected.
+    pub socket_path: Option<String>,
+}
+
+fn default_key_custody_backend() -> String {
+    "plain".to_string()
+}
+
+impl Default for KeyCustodyConfig {
+    fn default() -> Self {
+        KeyCustodyConfig { backend: default_key_custody_backend(), socket_path: None }
     }
 }
 
@@ -776,6 +841,69 @@ mod tests {
 
         config_with("[exchange_rate]\ncache_seconds = 10").validate().unwrap();
         config_with("[exchange_rate]\ncache_seconds = 3600").validate().unwrap();
+    }
+
+    #[test]
+    fn key_custody_defaults_to_plain_with_no_section_present_at_all() {
+        // Every config file written before this WBS item existed has no
+        // `[key_custody]` section at all - it must keep parsing and validating
+        // exactly as before, with the same in-process behavior main.rs has
+        // always had.
+        let config = config_with("");
+        assert_eq!(config.key_custody.backend, "plain");
+        assert!(config.key_custody.socket_path.is_none());
+        config.validate().unwrap();
+    }
+
+    #[test]
+    fn a_socket_backend_with_a_socket_path_parses_and_validates() {
+        let toml = r#"
+            [monero_node.mainnet]
+            host = "127.0.0.1"
+            port = 18081
+
+            [key_custody]
+            backend = "socket"
+            socket_path = "/run/moneropay/key-custody.sock"
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        config.validate().unwrap();
+        assert_eq!(config.key_custody.backend, "socket");
+        assert_eq!(config.key_custody.socket_path.as_deref(), Some("/run/moneropay/key-custody.sock"));
+    }
+
+    #[test]
+    fn a_socket_backend_with_no_socket_path_is_a_clear_rejected_config_not_a_panic_later() {
+        // Both "the key is entirely absent" and "the key is present but empty" are
+        // the same real misconfiguration: `SocketKeyCustody::connect` would have
+        // nothing to dial. Refusing to boot here, with a message naming exactly
+        // what's missing, is the only place this can be caught loudly - main.rs
+        // would otherwise only discover it when the very first connect attempt
+        // failed against an empty path, a far less legible failure.
+        let err = config_with("[key_custody]\nbackend = \"socket\"").validate().unwrap_err();
+        assert!(matches!(err, ConfigError::SocketBackendMissingSocketPath), "got {err}");
+
+        let err = config_with("[key_custody]\nbackend = \"socket\"\nsocket_path = \"\"").validate().unwrap_err();
+        assert!(matches!(err, ConfigError::SocketBackendMissingSocketPath), "got {err}");
+
+        let err = config_with("[key_custody]\nbackend = \"socket\"\nsocket_path = \"   \"").validate().unwrap_err();
+        assert!(matches!(err, ConfigError::SocketBackendMissingSocketPath), "got {err}");
+    }
+
+    #[test]
+    fn an_unimplemented_key_custody_backend_is_refused_rather_than_silently_ignored() {
+        // Mirrors `an_unimplemented_rate_provider_is_refused_rather_than_silently_ignored`
+        // above: `main.rs`'s own dispatch on `key_custody.backend` only ever
+        // matches "socket" explicitly and falls back to plain `PlainKeyCustody`
+        // for everything else, so an unrecognized value here would otherwise boot
+        // successfully and silently serve the in-process backend under a name
+        // promising something else - exactly the "sealed_key_material now means
+        // something the operator didn't ask for" failure mode `key_custody_backend`
+        // (the stored tenant-row column, a separate thing from this config field -
+        // see work_notes.md) exists to eventually catch, except here it's catchable
+        // at boot instead of only after the fact.
+        let err = config_with("[key_custody]\nbackend = \"tee\"").validate().unwrap_err();
+        assert!(matches!(err, ConfigError::UnknownKeyCustodyBackend(b) if b == "tee"));
     }
 
     #[test]

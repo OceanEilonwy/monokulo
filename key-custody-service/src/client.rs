@@ -1,13 +1,18 @@
 //! `SocketKeyCustody`: a `KeyCustody` implementation that forwards every call
-//! over a Unix socket to a [`crate::server::KeyCustodyServer`] (WBS 2.1.2).
+//! over a Unix socket to a `key_custody_server::server::KeyCustodyServer` (WBS
+//! 2.1.2) - that server type moved to the separate `key-custody-server` crate as
+//! of WBS 2.1.3 (see `shared::key_custody`'s module doc comment for why), so it
+//! is no longer a same-crate doc-link from here.
 //!
 //! This is the caller-facing half of the split: everything that already
-//! depends on `moneropay_core::key_custody::KeyCustody` (the HTTP API, the
-//! chain scanner, tenant bootstrap at startup) can hold a `SocketKeyCustody`
-//! exactly where it would otherwise hold a `PlainKeyCustody`, with no other
-//! code change - that's the whole point of drawing the boundary as a trait in
-//! the first place. Wiring the *engine* to actually use this type instead of
-//! `PlainKeyCustody` is WBS 2.1.3, not this step.
+//! depends on `shared::key_custody::KeyCustody` (re-exported unchanged as
+//! `moneropay_core::key_custody::KeyCustody` - the HTTP API, the chain scanner,
+//! tenant bootstrap at startup) can hold a `SocketKeyCustody` exactly where it
+//! would otherwise hold a `PlainKeyCustody`, with no other code change - that's
+//! the whole point of drawing the boundary as a trait in the first place.
+//! `moneropay-core`'s own `main.rs` is wired to actually select this type behind
+//! a config flag as of WBS 2.1.3 - see `src/config.rs`'s `KeyCustodyConfig` and
+//! `main.rs`'s `build_key_custody`.
 //!
 //! **Connection lifetime and concurrency.** `SocketKeyCustody` opens one
 //! persistent connection at `connect` time and reuses it for every call,
@@ -53,11 +58,11 @@
 use std::path::Path;
 use std::time::Duration;
 
-use moneropay_core::key_custody::{
+use monero::{Address, Transaction};
+use shared::key_custody::{
     KeyCustody, KeyCustodyError, MatchedOutput, Network, SubaddressIndex, WalletHandle,
     WalletMaterial,
 };
-use monero::{Address, Transaction};
 use tokio::net::UnixStream;
 use tokio::sync::Mutex;
 

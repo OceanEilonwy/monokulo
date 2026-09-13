@@ -53,7 +53,11 @@ pub async fn create_tenant(
 
     let created = state.store.lock().unwrap().create_tenant(
         NewTenant {
-            key_custody_backend: "plain".into(),
+            // Not hardcoded "plain" - see `AppState::key_custody_backend`'s own
+            // doc comment: this instance may be running with `backend = "socket"`
+            // configured, in which case `sealed` above was genuinely produced by
+            // the remote `key-custody-server`, not this process.
+            key_custody_backend: state.key_custody_backend.clone(),
             sealed_key_material: sealed,
             primary_address: primary_address.to_string(),
             network: network_str(network).to_string(),

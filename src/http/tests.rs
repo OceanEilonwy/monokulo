@@ -46,6 +46,7 @@ fn test_app_state() -> AppState {
     AppState {
         store,
         key_custody,
+        key_custody_backend: "plain".to_string(),
         exchange_rate,
         wallet_handles: Arc::new(RwLock::new(HashMap::new())),
         // Every test tenant is created without an explicit `network`, which

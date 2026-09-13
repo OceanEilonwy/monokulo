@@ -1,7 +1,9 @@
 //! Unix-socket server for `KeyCustody` (WBS 2.1.2).
 //!
 //! This is the "separate OS process" half of the split described in
-//! `src/key_custody/mod.rs`'s module docs: a [`KeyCustodyServer`] holds a real
+//! `shared::key_custody`'s module docs (`shared/src/key_custody.rs` - moved there
+//! from `moneropay-core`'s own `src/key_custody/mod.rs` as of WBS 2.1.3, see that
+//! module's doc comment for why): a [`KeyCustodyServer`] holds a real
 //! [`PlainKeyCustody`] and answers every `KeyCustody` call over a Unix socket
 //! instead of in-process function calls, so that whatever process embeds this
 //! server is the *only* process that ever has a tenant's view key in its own
@@ -17,22 +19,36 @@
 //! WBS, that's future work. This step proves the *mechanism* (a process
 //! boundary plus a socket in between actually works end to end, including under
 //! concurrent load and adversarial/garbage input), not a new custody backend.
+//!
+//! **This module lives in its own crate (`key-custody-server`), separate from
+//! `key-custody-service`'s `client.rs`/`protocol.rs`, as of WBS 2.1.3.** It was
+//! originally part of `key-custody-service` itself (WBS 2.1.2's "extend, don't
+//! fork" framing), and moved out once `moneropay-core`'s own `main.rs` needed to
+//! depend on `key-custody-service` for `SocketKeyCustody`: this module needs a
+//! real `PlainKeyCustody`, which only exists in `moneropay-core`, so as long as it
+//! lived in the same crate as `client.rs`, that crate depending on `moneropay-core`
+//! while `moneropay-core` depended on it back was a real, hard Cargo dependency
+//! cycle (`error: cyclic package dependency`, confirmed directly, not just
+//! reasoned about). `key-custody-server` depends on both `moneropay-core` (for
+//! `PlainKeyCustody`) and `key-custody-service` (for the protocol/DTO types this
+//! module still needs); nothing depends on `key-custody-server` back, so the graph
+//! stays a DAG. See `shared/src/key_custody.rs`'s module doc comment for the full
+//! account, and this session's `work_notes.md` entry for the reasoning trail.
 
 use std::io;
 use std::path::Path;
 use std::sync::Arc;
 
+use key_custody_service::protocol::{read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse};
+use key_custody_service::{
+    AddressWire, KeyCustodyErrorWire, MatchedOutputWire, SealedMaterialWire, WalletHandleWire,
+    WireConversionError,
+};
 use moneropay_core::key_custody::{
     KeyCustody, Network, PlainKeyCustody, SubaddressIndex, WalletHandle, WalletMaterial,
 };
 use monero::Transaction;
 use tokio::net::{UnixListener, UnixStream};
-
-use crate::protocol::{read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse};
-use crate::{
-    AddressWire, KeyCustodyErrorWire, MatchedOutputWire, SealedMaterialWire, WalletHandleWire,
-    WireConversionError,
-};
 
 /// Wraps a real `PlainKeyCustody` behind a Unix socket. Owns nothing about
 /// *where* that socket lives - `listen` takes the path each time it's called,

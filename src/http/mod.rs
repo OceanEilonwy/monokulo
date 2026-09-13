@@ -59,6 +59,21 @@ use rate_limit::{rate_limit_middleware, RateLimiter};
 pub struct AppState {
     pub store: SharedStore,
     pub key_custody: Arc<dyn KeyCustody>,
+    /// The `[key_custody].backend` value that produced `key_custody` above -
+    /// `"plain"` or `"socket"` - so `admin::create_tenant` can record which
+    /// backend actually sealed a *newly created* tenant's key material in
+    /// `tenants.key_custody_backend` (see that column's own comment in
+    /// `migrations/0001_init.sql`) instead of the pre-WBS-2.1.3 hardcoded
+    /// `"plain"` literal, which would otherwise misrepresent every tenant
+    /// created while this instance is running with `backend = "socket"`
+    /// configured. A plain `String`, not a re-derivation from `key_custody`'s
+    /// own concrete type: nothing about `Arc<dyn KeyCustody>` lets a caller ask
+    /// "which implementation is this," by design (see `key_custody`'s own module
+    /// doc comment) - `main.rs` already knows the answer from `Config` at boot,
+    /// so it hands it down alongside the trait object rather than reconstructing
+    /// it via some new downcast/introspection surface this boundary was
+    /// deliberately never given.
+    pub key_custody_backend: String,
     pub exchange_rate: Arc<dyn ExchangeRateProvider>,
     pub wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
     pub rate_limiter: Arc<RateLimiter>,

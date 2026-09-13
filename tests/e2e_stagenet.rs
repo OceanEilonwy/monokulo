@@ -181,6 +181,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     let app_state = AppState {
         store: store.clone(),
         key_custody: key_custody.clone(),
+        key_custody_backend: "plain".to_string(),
         exchange_rate,
         wallet_handles,
         rate_limiter: Arc::new(RateLimiter::new(10_000)),

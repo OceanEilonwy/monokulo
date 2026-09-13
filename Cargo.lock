@@ -630,6 +630,9 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "hex",
+ "key-custody-server",
+ "key-custody-service",
  "monero",
  "moneropay-core",
  "reqwest",
@@ -1214,15 +1217,26 @@ dependencies = [
 ]
 
 [[package]]
+name = "key-custody-server"
+version = "0.1.0"
+dependencies = [
+ "hex",
+ "key-custody-service",
+ "monero",
+ "moneropay-core",
+ "tokio",
+]
+
+[[package]]
 name = "key-custody-service"
 version = "0.1.0"
 dependencies = [
  "async-trait",
  "hex",
  "monero",
- "moneropay-core",
  "serde",
  "serde_json",
+ "shared",
  "thiserror",
  "tokio",
  "zeroize",
@@ -1569,6 +1583,7 @@ dependencies = [
  "hex",
  "hmac",
  "http-body-util",
+ "key-custody-service",
  "monero",
  "monero-daemon-rpc",
  "monero-wallet",
@@ -2293,14 +2308,18 @@ name = "shared"
 version = "0.1.0"
 dependencies = [
  "argon2",
+ "async-trait",
  "hex",
  "hmac",
+ "monero",
  "rand 0.10.2",
  "rand_core 0.6.4",
  "rusqlite",
  "sha2",
  "thiserror",
  "url",
+ "uuid",
+ "zeroize",
 ]
 
 [[package]]
