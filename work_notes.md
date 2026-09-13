@@ -42,6 +42,49 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- Fallback nodes: composed reorg/lagging/all-down tests, plus a real found
+  gap (not a WBS item - the user asked directly, after the fallback-node
+  feature above, whether the test suite covered a fallback presenting
+  different/lagging/split chain state - it didn't, so this closes that).
+  `daemon::fake::FakeDaemonClient` gained `set_online(bool)` (defaults
+  online via `new()`; every `MoneroDaemonClient` method returns `Err`
+  while offline, scripted chain state untouched) so a test can drive a
+  real `FallbackDaemonClient` failover rather than hand-swapping daemons.
+  4 new tests in `src/scanner.rs`, composing `FallbackDaemonClient` with
+  real `FakeDaemonClient`/`DaemonFailingBlockHashAt` doubles through
+  `run_scan_tick` (not just unit-testing the fallback client in isolation
+  the way `daemon_fallback.rs`'s own 6 tests do):
+  - `failing_over_through_a_real_fallback_client_to_a_node_serving_a_different_chain_reconciles_like_a_reorg`
+    - the explicit ask: a real failover (primary goes offline, not
+    swapped by the test) landing on a genuinely diverging fallback
+    reconciles exactly like an ordinary reorg.
+  - `failing_over_to_a_lagging_but_honest_fallback_neither_rewinds_nor_corrupts_the_window`
+    - the more realistic case (a resyncing backup node, not a malicious
+    fork) doesn't rewind or corrupt anything.
+  - `every_fallback_node_being_down_fails_the_tick_cleanly_without_corrupting_stored_state`.
+  - `a_node_that_dies_between_fetching_a_blocks_transactions_and_its_hash_can_pair_them_with_a_different_nodes_hash`
+    - **a genuine, previously-undocumented correctness gap, confirmed
+    real by this test, not just theorized**: `run_scan_tick` fetches a
+    block's transactions and its hash as two separate daemon calls; since
+    `FallbackDaemonClient` fails over per-call, those two calls for the
+    same height aren't guaranteed to land on the same node. If the
+    primary answers the first and dies before the second, the stored
+    (height, hash) pair ends up describing a block that never existed as
+    such on any single chain - transactions from one node, hash from
+    another. Deliberately **not fixed** - the per-call granularity that
+    causes it is also what lets a tick survive a node dying mid-tick,
+    which is a real resilience win; pinning failover to one node per tick
+    would trade this narrow, low-probability inconsistency for aborting
+    the whole tick's remaining work on any transient blip. Documented as
+    an accepted, sharper version of the pre-existing "replication lag
+    across a pool of backend nodes" tradeoff, not silently left unknown.
+  `docs/DESIGN.md` §7.1 and §7.7 updated: §7.7 gained a full "Fallback
+  nodes widen this trust boundary" subsection naming both what's covered
+  and this one open gap, cross-referenced from §7.1's fallback paragraph.
+  Scanner's own test-module coverage-index doc comment (§5 "Dishonest or
+  swapped daemons") extended to list all 4 new tests. Full
+  `cargo test --workspace` clean at 282 engine tests (was 278), 0 failed.
+
 - Fallback Monero nodes (not a WBS item - requested directly by the user
   after diagnosing 1.4.5's stall, as a real production-reliability feature,
   separate from the test-only node swap): `MoneroNodeConfig` gained an

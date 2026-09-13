@@ -275,7 +275,9 @@ Every call starts at whichever node last succeeded and walks forward through the
 on failure, wrapping around; there is no background health-check, since the next real
 call *is* the health check. A self-hoster relying on a single community-run public
 node - the common case this project targets - stays exposed to that node's own
-downtime unless they add at least one fallback.
+downtime unless they add at least one fallback. This trades reliability for a wider
+trust surface - see §7.7's "Fallback nodes widen this trust boundary" for what
+adding a fallback actually costs.
 
 ### 7.2 0-conf and confirmed detection
 
@@ -490,6 +492,45 @@ an assumption.
 - **Payments already recorded.** Never removed on absence, only on affirmative proof
   (§7.5), so a node that "forgets" a transaction cannot make a merchant's money
   disappear from the record.
+
+**Fallback nodes widen this trust boundary, not just its reliability.**
+`daemon_fallback::FallbackDaemonClient` (added for production reliability, not for
+this section's threat model) fails over between a network's configured primary node
+and its `fallbacks` on any single call failure. Everything above about "the node" is
+trusted per network was written for exactly one node; with fallbacks configured it
+now means trusting *whichever* of them answers a given call, with no quorum and no
+cross-check between them - a compromised or eclipsed fallback is exactly as trusted
+as the primary the moment it starts answering. Two consequences worth naming
+explicitly, both pinned by tests rather than left as unverified worry:
+
+- **A fallback presenting a different chain reconciles exactly like a reorg** -
+  the property proven above for a hand-swapped daemon holds identically for a real
+  failover decision
+  (`failing_over_through_a_real_fallback_client_to_a_node_serving_a_different_chain_reconciles_like_a_reorg`),
+  and a fallback that is simply behind rather than diverging neither rewinds the
+  scanned window nor falsely voids anything
+  (`failing_over_to_a_lagging_but_honest_fallback_neither_rewinds_nor_corrupts_the_window`).
+  Total loss of every configured node for a network fails that tick cleanly - an
+  ordinary retryable error, no partial writes -
+  (`every_fallback_node_being_down_fails_the_tick_cleanly_without_corrupting_stored_state`).
+- **A narrower, genuinely new gap**: `run_scan_tick` fetches a block's transactions
+  and its hash as two separate daemon calls (see the comment above
+  `daemon.get_block_hash(height)` in `run_scan_tick`). Failover is per-call, so those
+  two calls for the same height are not guaranteed to land on the same node - if the
+  first succeeds against the primary and the primary dies before the second, the
+  height gets recorded with one node's transactions paired with a *different* node's
+  hash, a pairing that does not correspond to any single node's real block. This is a
+  sharper version of a risk already accepted for one node (the "replication lag
+  across a pool of backend nodes behind a public endpoint" case in `run_scan_tick`'s
+  bootstrap branch), now bounded only by how different two independently operated
+  nodes are allowed to be rather than how out-of-sync one endpoint's own backends
+  are. Confirmed to actually happen, not just theorized, by
+  `a_node_that_dies_between_fetching_a_blocks_transactions_and_its_hash_can_pair_them_with_a_different_nodes_hash`.
+  Not fixed here: the per-call failover granularity that causes it is also what lets
+  a tick survive a node dying *partway through*, which is a real resilience win
+  worth keeping; pinning it to one node per tick would trade this narrow, low-
+  probability inconsistency for aborting the whole tick's remaining work on any
+  mid-tick blip.
 
 **The deployment consequence**: the node is a trusted component. Point this service at
 your own `monerod`, not at a public endpoint you do not control, whenever the payments

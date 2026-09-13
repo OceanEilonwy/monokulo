@@ -1006,6 +1006,14 @@ mod tests {
     //!    `a_transaction_a_daemon_invents_cannot_become_a_payment_unless_it_matches_a_wallet`;
     //!    `an_inflated_reported_height_inflates_confirmations_which_is_an_accepted_trust_boundary`;
     //!    `a_daemon_far_behind_the_recorded_high_water_mark_neither_rescans_nor_discards_its_window`.
+    //!    The same scenarios composed through the real `daemon_fallback::FallbackDaemonClient`
+    //!    rather than a hand-swapped daemon (see `docs/DESIGN.md` §7.7's "Fallback nodes widen
+    //!    this trust boundary"):
+    //!    `failing_over_through_a_real_fallback_client_to_a_node_serving_a_different_chain_reconciles_like_a_reorg`,
+    //!    `failing_over_to_a_lagging_but_honest_fallback_neither_rewinds_nor_corrupts_the_window`,
+    //!    `every_fallback_node_being_down_fails_the_tick_cleanly_without_corrupting_stored_state`,
+    //!    and one genuinely new gap introduced by per-call failover (not merely inherited):
+    //!    `a_node_that_dies_between_fetching_a_blocks_transactions_and_its_hash_can_pair_them_with_a_different_nodes_hash`.
     //! 6. **Many transactions per block.**
     //!    `several_transactions_in_one_block_paying_one_order_are_all_recorded_and_summed`;
     //!    `one_transactions_outputs_are_routed_to_whichever_order_owns_each_index`;
@@ -1037,6 +1045,7 @@ mod tests {
 
     use super::*;
     use crate::daemon::fake::FakeDaemonClient;
+    use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
     use crate::key_custody::{KeyCustodyError, MatchedOutput, Network, PlainKeyCustody, SubaddressIndex, WalletMaterial};
     use crate::store::{NewOrder, NewTenant};
     use monero::consensus::encode::deserialize;
@@ -3457,6 +3466,244 @@ mod tests {
             store.lock().unwrap().max_scanned_height("mainnet").unwrap(),
             Some(47),
             "no daemon is privileged - the stored chain is re-validated against whoever is answering"
+        );
+    }
+
+    #[tokio::test]
+    async fn failing_over_through_a_real_fallback_client_to_a_node_serving_a_different_chain_reconciles_like_a_reorg() {
+        // The composed version of `swapping_to_a_daemon_serving_a_different_chain_
+        // reconciles_exactly_like_a_reorg` above: that test proves the *scanner*
+        // doesn't care which daemon answers, by handing it two raw `FakeDaemonClient`s
+        // directly. It never exercises `daemon_fallback::FallbackDaemonClient` itself -
+        // the actual code path production runs, which decides *when* to move to a
+        // different node in the first place. This test proves the two compose
+        // correctly: a real failover, triggered by the primary going unreachable
+        // (not swapped by the test), landing on a fallback with a genuinely different,
+        // divergent chain, still reconciles exactly like an ordinary reorg.
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let tx = fixture_tx();
+
+        let primary = std::sync::Arc::new(FakeDaemonClient::new());
+        for h in 1..=49 {
+            primary.push_block(&format!("a_{h}"), vec![]);
+        }
+        primary.push_block("a_50", vec![tx.clone()]);
+        let store = store.into_shared();
+        store.lock().unwrap().set_scanned_block("mainnet", 49, "a_49").unwrap();
+
+        let fallback = std::sync::Arc::new(FakeDaemonClient::new());
+        for h in 1..=47 {
+            fallback.push_block(&format!("a_{h}"), vec![]);
+        }
+        for h in 48..=52 {
+            fallback.push_block(&format!("b_{h}"), vec![]);
+        }
+
+        let client = FallbackDaemonClient::new(vec![
+            FallbackNode { label: "primary".to_string(), client: primary.clone() },
+            FallbackNode { label: "fallback".to_string(), client: fallback.clone() },
+        ]);
+
+        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20).await.unwrap();
+        assert_eq!(
+            store.lock().unwrap().get_all_payments(&order_id).unwrap()[0].block_height,
+            Some(50),
+            "the primary is healthy and used first, exactly like a bare RpcDaemonClient would be"
+        );
+
+        // The primary goes unreachable - nothing tells `FallbackDaemonClient` to swap,
+        // it discovers this itself on the next call and moves to the fallback, which
+        // happens to disagree with recorded history from height 48 on.
+        primary.set_online(false);
+        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20).await.unwrap();
+        {
+            let s = store.lock().unwrap();
+            assert_eq!(
+                s.max_scanned_height("mainnet").unwrap(),
+                Some(48),
+                "failover to a genuinely diverging fallback reconciles exactly like the raw-swap test above"
+            );
+            assert!(
+                s.get_all_payments(&order_id).unwrap()[0].voided_at.is_none(),
+                "the fallback not having the transaction proves nothing about it - never void on that"
+            );
+        }
+
+        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20).await.unwrap();
+        assert_eq!(
+            store.lock().unwrap().max_scanned_height("mainnet").unwrap(),
+            Some(52),
+            "scanning continues forward on the fallback's own chain"
+        );
+    }
+
+    #[tokio::test]
+    async fn failing_over_to_a_lagging_but_honest_fallback_neither_rewinds_nor_corrupts_the_window() {
+        // The much more likely real-world case than an actively diverging fallback:
+        // a self-hoster's backup node is simply a bit behind (still catching up after
+        // a restart, or just slower to relay), reporting the *same* history so far,
+        // just less of it. `a_daemon_far_behind_the_recorded_high_water_mark_neither_
+        // rescans_nor_discards_its_window` already proves the scanner's own handling
+        // of this generically; this composes it with a real failover decision instead
+        // of a hand-swapped daemon, since that's what production actually does.
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let tx = fixture_tx();
+
+        let primary = std::sync::Arc::new(FakeDaemonClient::new());
+        for h in 1..=59 {
+            primary.push_block(&format!("a_{h}"), vec![]);
+        }
+        primary.push_block("a_60", vec![tx.clone()]);
+        let store = store.into_shared();
+        store.lock().unwrap().set_scanned_block("mainnet", 59, "a_59").unwrap();
+
+        run_scan_tick(&store, &key_custody, primary.as_ref(), "mainnet", &[(tenant_id.clone(), handle)], 20).await.unwrap();
+        assert_eq!(store.lock().unwrap().max_scanned_height("mainnet").unwrap(), Some(60));
+
+        // A fallback with the identical history, just not caught up yet.
+        let fallback = std::sync::Arc::new(FakeDaemonClient::new());
+        for h in 1..=40 {
+            fallback.push_block(&format!("a_{h}"), vec![]);
+        }
+
+        let client = FallbackDaemonClient::new(vec![
+            FallbackNode { label: "primary".to_string(), client: primary.clone() },
+            FallbackNode { label: "fallback".to_string(), client: fallback.clone() },
+        ]);
+
+        primary.set_online(false);
+        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20).await.unwrap();
+        {
+            let s = store.lock().unwrap();
+            assert_eq!(
+                s.max_scanned_height("mainnet").unwrap(),
+                Some(60),
+                "a lagging fallback must not rewind the window back to where it currently is"
+            );
+            assert!(
+                s.get_all_payments(&order_id).unwrap()[0].voided_at.is_none(),
+                "a lagging fallback not yet having the transaction proves nothing - never void on that"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn a_node_that_dies_between_fetching_a_blocks_transactions_and_its_hash_can_pair_them_with_a_different_nodes_hash(
+    ) {
+        // A real, narrow correctness gap `FallbackDaemonClient` introduces rather
+        // than merely inherits: `run_scan_tick` fetches a block's transactions and
+        // its hash as two *separate* daemon calls (see the long comment above
+        // `daemon.get_block_hash(height)` in `run_scan_tick` on why - a hole would
+        // otherwise be left in the reorg window). Per-call failover means those two
+        // calls for the *same height* are not guaranteed to come from the same node:
+        // if the first call succeeds against the primary and the primary dies before
+        // the second, the second is transparently served by the fallback instead -
+        // pairing one node's transactions with a different node's hash for what is
+        // recorded as a single scanned block.
+        //
+        // This is a sharper version of a risk already accepted for a single node
+        // (see the "genuine replication lag across a pool of backend nodes behind a
+        // public endpoint" comment on `run_scan_tick`'s bootstrap branch, and
+        // `docs/DESIGN.md` §7.7's now-updated note on fallback nodes): there,
+        // inconsistency is bounded by how out-of-sync one public endpoint's own
+        // backends are. Here, it is bounded only by how different two *independently
+        // operated* nodes' chains are allowed to be, which for a fallback added
+        // specifically to survive a primary that has gone badly wrong (not just
+        // "slightly behind") could be a lot. This test exists to pin the actual
+        // behavior down precisely rather than leave it as an unverified worry - see
+        // `docs/DESIGN.md` §7.7 for the accepted-tradeoff writeup this backs.
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let tx = fixture_tx();
+
+        let primary_inner = FakeDaemonClient::new();
+        for h in 1..=50 {
+            primary_inner.push_block(&format!("a_{h}"), vec![]);
+        }
+        // Height 51 exists only on the primary, and only the primary ever has this
+        // transaction - the fallback's own block 51 is a different block entirely.
+        primary_inner.push_block("a_51", vec![tx.clone()]);
+        let store = store.into_shared();
+        store.lock().unwrap().set_scanned_block("mainnet", 50, "a_50").unwrap();
+
+        let fallback = std::sync::Arc::new(FakeDaemonClient::new());
+        fallback.seed_block_at(51, "b_51", vec![]);
+
+        // `get_block_transactions(51)` succeeds normally against the primary; only
+        // its `get_block_hash(51)` call - for that same height, moments later - is
+        // made to fail, which is exactly what fails over to the fallback for that one
+        // call alone.
+        let primary =
+            std::sync::Arc::new(DaemonFailingBlockHashAt { inner: primary_inner, failing_height: AtomicU64::new(51) });
+        let client = FallbackDaemonClient::new(vec![
+            FallbackNode { label: "primary".to_string(), client: primary },
+            FallbackNode { label: "fallback".to_string(), client: fallback.clone() },
+        ]);
+
+        run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20).await.unwrap();
+
+        let s = store.lock().unwrap();
+        assert_eq!(
+            s.get_scanned_block_hash("mainnet", 51).unwrap(),
+            Some("b_51".to_string()),
+            "the recorded hash for height 51 came from the fallback, whose get_block_hash call is what failed over"
+        );
+        assert_eq!(
+            s.get_all_payments(&order_id).unwrap()[0].block_height,
+            Some(51),
+            "but the payment recorded at height 51 came from the primary's block content, fetched moments earlier - \
+             this is the actual inconsistency: the stored (height, hash) pair for 51 does not correspond to any \
+             single node's real block 51, and there is no detection for this today"
+        );
+    }
+
+    #[tokio::test]
+    async fn every_fallback_node_being_down_fails_the_tick_cleanly_without_corrupting_stored_state() {
+        // Total node loss for a network (every configured node, primary and every
+        // fallback, unreachable at once) must surface as an ordinary `Err` for that
+        // tick - not a panic, and not a partially-written, inconsistent store state
+        // that the next successful tick would have to somehow recover from. `main.rs`
+        // already retries via its `supervise` wrapper; this proves there is nothing
+        // for it to clean up.
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let tx = fixture_tx();
+
+        let primary = std::sync::Arc::new(FakeDaemonClient::new());
+        primary.push_block("a_1", vec![tx.clone()]);
+        let store = store.into_shared();
+        run_scan_tick(&store, &key_custody, primary.as_ref(), "mainnet", &[(tenant_id.clone(), handle)], 20).await.unwrap();
+        let payments_before: Vec<(String, Option<i64>)> = store
+            .lock()
+            .unwrap()
+            .get_all_payments(&order_id)
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.txid, p.block_height))
+            .collect();
+        let scanned_before = store.lock().unwrap().max_scanned_height("mainnet").unwrap();
+
+        let fallback = std::sync::Arc::new(FakeDaemonClient::new());
+        primary.set_online(false);
+        fallback.set_online(false);
+        let client = FallbackDaemonClient::new(vec![
+            FallbackNode { label: "primary".to_string(), client: primary.clone() },
+            FallbackNode { label: "fallback".to_string(), client: fallback.clone() },
+        ]);
+
+        let result = run_scan_tick(&store, &key_custody, &client, "mainnet", &[(tenant_id.clone(), handle)], 20).await;
+        assert!(result.is_err(), "every node down must surface as an error, not a silent no-op or a panic");
+        let payments_after: Vec<(String, Option<i64>)> = store
+            .lock()
+            .unwrap()
+            .get_all_payments(&order_id)
+            .unwrap()
+            .into_iter()
+            .map(|p| (p.txid, p.block_height))
+            .collect();
+        assert_eq!(payments_after, payments_before, "a failed tick must not touch previously-recorded payments");
+        assert_eq!(
+            store.lock().unwrap().max_scanned_height("mainnet").unwrap(),
+            scanned_before,
+            "a failed tick must not move the scanned watermark"
         );
     }
 

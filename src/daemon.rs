@@ -80,6 +80,12 @@ pub mod fake {
     #[derive(Default)]
     pub struct FakeDaemonClient {
         state: Mutex<State>,
+        /// Defaults to `false` (see `#[derive(Default)]`) - `new()` immediately sets
+        /// it `true`, so every existing test that never touches this stays online as
+        /// before. Lets a test simulate this node going unreachable (for exercising
+        /// `daemon_fallback::FallbackDaemonClient` failover) without a second,
+        /// differently-implemented test double - see `set_online`.
+        online: std::sync::atomic::AtomicBool,
     }
 
     fn txid_of(tx: &Transaction) -> String {
@@ -93,7 +99,26 @@ pub mod fake {
 
     impl FakeDaemonClient {
         pub fn new() -> Self {
-            Self::default()
+            let client = Self::default();
+            client.online.store(true, std::sync::atomic::Ordering::Relaxed);
+            client
+        }
+
+        /// Simulates this node going unreachable (`online = false`) or coming back
+        /// (`online = true`). While offline, every `MoneroDaemonClient` method
+        /// returns `Err` instead of consulting the scripted chain state, which is
+        /// otherwise left completely untouched - flipping back online resumes
+        /// exactly where the scripted chain was left, nothing lost or reset.
+        pub fn set_online(&self, online: bool) {
+            self.online.store(online, std::sync::atomic::Ordering::Relaxed);
+        }
+
+        fn require_online(&self) -> Result<(), DaemonError> {
+            if self.online.load(std::sync::atomic::Ordering::Relaxed) {
+                Ok(())
+            } else {
+                Err(DaemonError::Request("fake daemon is offline".to_string()))
+            }
         }
 
         /// Mines a new block at the next height, containing `txs`. Each tx is
@@ -200,11 +225,13 @@ pub mod fake {
     #[async_trait::async_trait]
     impl MoneroDaemonClient for FakeDaemonClient {
         async fn get_height(&self) -> Result<u64, DaemonError> {
+            self.require_online()?;
             let state = self.state.lock().unwrap();
             Ok(state.height_override.unwrap_or(state.height))
         }
 
         async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+            self.require_online()?;
             self.state
                 .lock()
                 .unwrap()
@@ -215,6 +242,7 @@ pub mod fake {
         }
 
         async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
+            self.require_online()?;
             Ok(self
                 .state
                 .lock()
@@ -226,10 +254,12 @@ pub mod fake {
         }
 
         async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+            self.require_online()?;
             Ok(self.state.lock().unwrap().mempool.clone())
         }
 
         async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+            self.require_online()?;
             Ok(self
                 .state
                 .lock()
@@ -241,6 +271,7 @@ pub mod fake {
         }
 
         async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+            self.require_online()?;
             let state = self.state.lock().unwrap();
             Ok(key_images
                 .iter()
