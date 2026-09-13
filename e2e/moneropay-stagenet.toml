@@ -3,8 +3,13 @@
 # real public stagenet node. See e2e/README.md for how this is used.
 
 [monero_node.stagenet]
-host = "node.monerodevs.org"
-port = 38089
+# Swapped from node.monerodevs.org after observing real, reproducible
+# multi-minute stalls (a stuck TCP send queue, per `ss -tnp`) against it during
+# WBS 1.4.5's live testing - not reproducible via simple curl requests, so
+# likely specific to long-lived/pooled-connection behavior. stagenet.xmr-tw.org
+# tested reliably fast (~0.9s) at the time of this change.
+host = "stagenet.xmr-tw.org"
+port = 38081
 ssl = false
 
 [wallet]

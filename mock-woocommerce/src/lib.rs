@@ -29,14 +29,14 @@ use std::collections::HashSet;
 use std::net::SocketAddr;
 use std::sync::{Arc, Mutex as StdMutex};
 
-use axum::Router;
 use axum::body::Bytes;
 use axum::extract::{Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use axum::routing::{get, post};
+use axum::Router;
 use serde::Deserialize;
-use tokio::sync::{Mutex, oneshot};
+use tokio::sync::{oneshot, Mutex};
 use uuid::Uuid;
 
 /// The real, working credentials `POST /connect/{platform}/finish` hands
@@ -139,7 +139,9 @@ pub struct WebhookReceiver {
 
 impl std::fmt::Debug for WebhookReceiver {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("WebhookReceiver").field("addr", &self.addr).finish_non_exhaustive()
+        f.debug_struct("WebhookReceiver")
+            .field("addr", &self.addr)
+            .finish_non_exhaustive()
     }
 }
 
@@ -175,8 +177,15 @@ impl Drop for WebhookReceiver {
 /// receiver has been told its own `signing_secret` (see [`ReceiverState`]) - all of
 /// these are indistinguishable `401`s, since none of them are this receiver's own
 /// fault to explain.
-async fn webhook_handler(State(state): State<Arc<StdMutex<ReceiverState>>>, headers: HeaderMap, body: Bytes) -> StatusCode {
-    let Some(presented_signature) = headers.get("X-MoneroPay-Signature").and_then(|v| v.to_str().ok()) else {
+async fn webhook_handler(
+    State(state): State<Arc<StdMutex<ReceiverState>>>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> StatusCode {
+    let Some(presented_signature) = headers
+        .get("X-MoneroPay-Signature")
+        .and_then(|v| v.to_str().ok())
+    else {
         return StatusCode::UNAUTHORIZED;
     };
 
@@ -195,8 +204,16 @@ async fn webhook_handler(State(state): State<Arc<StdMutex<ReceiverState>>>, head
     let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) else {
         return StatusCode::BAD_REQUEST;
     };
-    let event = parsed.get("event").and_then(|v| v.as_str()).unwrap_or_default().to_string();
-    let event_id = parsed.get("event_id").and_then(|v| v.as_str()).unwrap_or_default().to_string();
+    let event = parsed
+        .get("event")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
+    let event_id = parsed
+        .get("event_id")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_string();
 
     // Webhook delivery is at-least-once (`docs/DESIGN.md` §11) - a real retry of an
     // already-recorded delivery is expected, not a bug, and dedupes on `event_id`
@@ -225,10 +242,16 @@ async fn webhook_handler(State(state): State<Arc<StdMutex<ReceiverState>>>, head
 /// receiver holds) is updated once `/finish` succeeds.
 async fn spawn_webhook_receiver() -> Result<WebhookReceiver, ConnectFlowError> {
     let state = Arc::new(StdMutex::new(ReceiverState::default()));
-    let router: Router = Router::new().route("/moneropay/webhook", post(webhook_handler)).with_state(state.clone());
+    let router: Router = Router::new()
+        .route("/moneropay/webhook", post(webhook_handler))
+        .with_state(state.clone());
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(ConnectFlowError::BindFailed)?;
-    let addr = listener.local_addr().map_err(ConnectFlowError::BindFailed)?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(ConnectFlowError::BindFailed)?;
+    let addr = listener
+        .local_addr()
+        .map_err(ConnectFlowError::BindFailed)?;
 
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
@@ -274,7 +297,11 @@ pub enum ConnectFlowError {
     )]
     NonceMismatch,
     #[error("control plane rejected step '{step}' with {status}: {body}")]
-    UnexpectedResponse { step: String, status: u16, body: String },
+    UnexpectedResponse {
+        step: String,
+        status: u16,
+        body: String,
+    },
     #[error("the callback server never reported an outcome - the redirect chain never reached it")]
     CallbackNeverReceived,
 }
@@ -288,7 +315,41 @@ pub enum ConnectFlowError {
 /// material every other test already relies on is the right choice here too,
 /// not just in tests - there is nothing else this driver could plausibly use.
 const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
-const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+const TEST_SPEND_PUBKEY_HEX: &str =
+    "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+
+/// The wallet material [`run_connect_flow_with`] submits through the confirm form -
+/// generalized out of what used to be hardcoded constants so a caller
+/// (`run_connect_flow_with_wallet`, WBS 1.4.5) can provision the tenant with real
+/// wallet material (a real stagenet merchant view key/spend pubkey, say) instead of
+/// this driver's fixed mainnet test scalars. [`Default`] reproduces exactly what
+/// every existing caller (`run_connect_flow`/`run_connect_flow_with_order_expiry_seconds`)
+/// has always submitted, so neither's behavior changes.
+#[derive(Debug, Clone)]
+pub struct ConnectFlowWallet {
+    pub view_key_hex: String,
+    pub spend_pubkey_hex: String,
+    pub network: String,
+    /// Not part of the confirm form's fixed test defaults (the engine's own default
+    /// applies when `None`) - see `control-plane/src/http/connect.rs`'s
+    /// `ConfirmForm::zero_conf_max_piconero` for why this field exists on the form at
+    /// all and what motivated it.
+    pub zero_conf_max_piconero: Option<u64>,
+    /// Same reasoning as `zero_conf_max_piconero` - see `ConfirmForm::confirmations_required`.
+    pub confirmations_required: Option<u64>,
+}
+
+impl Default for ConnectFlowWallet {
+    fn default() -> Self {
+        ConnectFlowWallet {
+            view_key_hex: TEST_VIEW_KEY_HEX.to_string(),
+            spend_pubkey_hex: TEST_SPEND_PUBKEY_HEX.to_string(),
+            network: "mainnet".to_string(),
+            zero_conf_max_piconero: None,
+            confirmations_required: None,
+        }
+    }
+}
 
 /// Percent-encodes `s` for embedding as one query-string value - the same
 /// `form_urlencoded::byte_serialize` encoding `control-plane`'s own
@@ -322,8 +383,10 @@ fn encode_query_value(s: &str) -> String {
 /// handed back once the callback has reported them, plus (WBS 1.4.4) the
 /// real webhook signing secret and this driver's own still-running
 /// [`WebhookReceiver`] - see [`ConnectedCredentials`]'s doc comment.
-pub async fn run_connect_flow(control_plane_base_url: &str) -> Result<ConnectedCredentials, ConnectFlowError> {
-    run_connect_flow_with(control_plane_base_url, None).await
+pub async fn run_connect_flow(
+    control_plane_base_url: &str,
+) -> Result<ConnectedCredentials, ConnectFlowError> {
+    run_connect_flow_with(control_plane_base_url, None, ConnectFlowWallet::default()).await
 }
 
 /// Same as [`run_connect_flow`], but provisions the tenant with a specific
@@ -338,18 +401,38 @@ pub async fn run_connect_flow_with_order_expiry_seconds(
     control_plane_base_url: &str,
     order_expiry_seconds: i64,
 ) -> Result<ConnectedCredentials, ConnectFlowError> {
-    run_connect_flow_with(control_plane_base_url, Some(order_expiry_seconds)).await
+    run_connect_flow_with(
+        control_plane_base_url,
+        Some(order_expiry_seconds),
+        ConnectFlowWallet::default(),
+    )
+    .await
+}
+
+/// Same as [`run_connect_flow`], but provisions the tenant with `wallet` (real view
+/// key/spend pubkey/network, e.g. a real stagenet merchant wallet from
+/// `e2e/stagenet-wallets.json`) instead of this driver's fixed mainnet test scalars.
+/// Exists for WBS 1.4.5's real stagenet connect-flow test, which must provision the
+/// tenant with genuine wallet material a real scanner can actually detect a real
+/// payment against - the fixed test constants this driver otherwise submits have no
+/// corresponding spendable wallet on any real network.
+pub async fn run_connect_flow_with_wallet(
+    control_plane_base_url: &str,
+    wallet: ConnectFlowWallet,
+) -> Result<ConnectedCredentials, ConnectFlowError> {
+    run_connect_flow_with(control_plane_base_url, None, wallet).await
 }
 
 /// The shared implementation behind [`run_connect_flow`]/
-/// [`run_connect_flow_with_order_expiry_seconds`] - a builder-style config
-/// parameter here would be overkill for one optional knob, so this is just a
-/// plain `Option`, following the same "generalize rather than add a
-/// near-duplicate function" judgment `engine_test_support::TestEngineConfig`
-/// already applied to a similar situation.
+/// [`run_connect_flow_with_order_expiry_seconds`]/[`run_connect_flow_with_wallet`] -
+/// a builder-style config parameter here would be overkill for two independent
+/// optional knobs, so this just takes both directly, following the same "generalize
+/// rather than add a near-duplicate function" judgment
+/// `engine_test_support::TestEngineConfig` already applied to a similar situation.
 async fn run_connect_flow_with(
     control_plane_base_url: &str,
     order_expiry_seconds: Option<i64>,
+    wallet: ConnectFlowWallet,
 ) -> Result<ConnectedCredentials, ConnectFlowError> {
     let platform = "woocommerce";
     let site_url = "https://mock-shop.example.com";
@@ -376,9 +459,18 @@ async fn run_connect_flow_with(
         webhook_receiver.state.clone(),
     )
     .await?;
-    let result =
-        run_connect_flow_inner(control_plane_base_url, platform, site_url, &nonce, &email, password, order_expiry_seconds, &callback)
-            .await;
+    let result = run_connect_flow_inner(
+        control_plane_base_url,
+        platform,
+        site_url,
+        &nonce,
+        &email,
+        password,
+        order_expiry_seconds,
+        &wallet,
+        &callback,
+    )
+    .await;
     callback.task.abort();
 
     result.map(|finished| ConnectedCredentials {
@@ -403,6 +495,7 @@ async fn run_connect_flow_inner(
     email: &str,
     password: &str,
     order_expiry_seconds: Option<i64>,
+    wallet: &ConnectFlowWallet,
     callback: &CallbackServer,
 ) -> Result<FinishedCredentials, ConnectFlowError> {
     let callback_url = format!("http://{}/moneropay/callback", callback.addr);
@@ -430,8 +523,11 @@ async fn run_connect_flow_inner(
     // Step 3: sign up a fresh account. Its own redirect goes to a bare
     // /dashboard/login with no `next` (today's real behavior) - that's fine,
     // step 4 supplies `next` itself.
-    let signup_response =
-        client.post(format!("{control_plane_base_url}/dashboard/signup")).form(&[("email", email), ("password", password)]).send().await?;
+    let signup_response = client
+        .post(format!("{control_plane_base_url}/dashboard/signup"))
+        .form(&[("email", email), ("password", password)])
+        .send()
+        .await?;
     expect_ok(signup_response, "dashboard signup").await?;
 
     // Step 4: log in, carrying `next` back to the original connect-start
@@ -439,29 +535,46 @@ async fn run_connect_flow_inner(
     // cookie) all the way to the confirm form.
     let login_response = client
         .post(format!("{control_plane_base_url}/dashboard/login"))
-        .form(&[("email", email), ("password", password), ("next", connect_next_path.as_str())])
+        .form(&[
+            ("email", email),
+            ("password", password),
+            ("next", connect_next_path.as_str()),
+        ])
         .send()
         .await?;
     expect_ok(login_response, "dashboard login").await?;
 
-    // Step 5: confirm the wallet connection with the fixed test wallet
-    // material - auto-followed to this driver's own callback server, whose
-    // handler (`callback_handler`) does the rest and reports back over the
-    // oneshot channel awaited below.
+    // Step 5: confirm the wallet connection with `wallet`'s material (the fixed test
+    // scalars by default - see `ConnectFlowWallet`'s own doc comment - or real wallet
+    // material for a caller using `run_connect_flow_with_wallet`) - auto-followed to
+    // this driver's own callback server, whose handler (`callback_handler`) does the
+    // rest and reports back over the oneshot channel awaited below.
     let order_expiry_seconds_string = order_expiry_seconds.map(|s| s.to_string());
+    let zero_conf_max_piconero_string = wallet.zero_conf_max_piconero.map(|v| v.to_string());
+    let confirmations_required_string = wallet.confirmations_required.map(|v| v.to_string());
     let mut confirm_fields: Vec<(&str, &str)> = vec![
         ("site_url", site_url),
         ("return_url", callback_url.as_str()),
         ("nonce", nonce),
-        ("view_key_hex", TEST_VIEW_KEY_HEX),
-        ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
-        ("network", "mainnet"),
+        ("view_key_hex", wallet.view_key_hex.as_str()),
+        ("spend_pubkey_hex", wallet.spend_pubkey_hex.as_str()),
+        ("network", wallet.network.as_str()),
         ("allowed_origins", ""),
     ];
     if let Some(s) = &order_expiry_seconds_string {
         confirm_fields.push(("order_expiry_seconds", s.as_str()));
     }
-    let confirm_response = client.post(format!("{control_plane_base_url}/connect/{platform}")).form(&confirm_fields).send().await?;
+    if let Some(s) = &zero_conf_max_piconero_string {
+        confirm_fields.push(("zero_conf_max_piconero", s.as_str()));
+    }
+    if let Some(s) = &confirmations_required_string {
+        confirm_fields.push(("confirmations_required", s.as_str()));
+    }
+    let confirm_response = client
+        .post(format!("{control_plane_base_url}/connect/{platform}"))
+        .form(&confirm_fields)
+        .send()
+        .await?;
     expect_ok(confirm_response, "connect confirm").await?;
 
     callback.result_rx_recv().await
@@ -473,7 +586,11 @@ async fn expect_ok(response: reqwest::Response, step: &str) -> Result<(), Connec
     }
     let status = response.status().as_u16();
     let body = response.text().await.unwrap_or_default();
-    Err(ConnectFlowError::UnexpectedResponse { step: step.to_string(), status, body })
+    Err(ConnectFlowError::UnexpectedResponse {
+        step: step.to_string(),
+        status,
+        body,
+    })
 }
 
 /// WBS 1.4.3: creates a real order directly against the engine's own public,
@@ -510,12 +627,22 @@ pub async fn create_order(
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let body = response.text().await.unwrap_or_default();
-        return Err(ConnectFlowError::UnexpectedResponse { step: "create order".to_string(), status, body });
+        return Err(ConnectFlowError::UnexpectedResponse {
+            step: "create order".to_string(),
+            status,
+            body,
+        });
     }
 
     let parsed: CreateOrderResponseBody = response.json().await?;
-    let checkout_url = format!("{engine_base_url}/pay/v1/{public_key}/{}", parsed.payment_id);
-    Ok(CreatedOrder { payment_id: parsed.payment_id, checkout_url })
+    let checkout_url = format!(
+        "{engine_base_url}/pay/v1/{public_key}/{}",
+        parsed.payment_id
+    );
+    Ok(CreatedOrder {
+        payment_id: parsed.payment_id,
+        checkout_url,
+    })
 }
 
 /// Server-to-server `POST {control_plane_base_url}/connect/{platform}/finish`,
@@ -530,10 +657,17 @@ pub async fn create_order(
 /// `webhook_url` (WBS 1.4.4) is this driver's own [`WebhookReceiver`]'s
 /// address - always supplied, unlike control-plane's own optional field of
 /// the same name, since this driver always wants a real webhook registered.
-async fn call_finish(control_plane_base_url: &str, platform: &str, token: &str, webhook_url: &str) -> Result<FinishedCredentials, ConnectFlowError> {
+async fn call_finish(
+    control_plane_base_url: &str,
+    platform: &str,
+    token: &str,
+    webhook_url: &str,
+) -> Result<FinishedCredentials, ConnectFlowError> {
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("{control_plane_base_url}/connect/{platform}/finish"))
+        .post(format!(
+            "{control_plane_base_url}/connect/{platform}/finish"
+        ))
         .json(&serde_json::json!({ "token": token, "webhook_url": webhook_url }))
         .send()
         .await?;
@@ -541,7 +675,11 @@ async fn call_finish(control_plane_base_url: &str, platform: &str, token: &str, 
     if !response.status().is_success() {
         let status = response.status().as_u16();
         let body = response.text().await.unwrap_or_default();
-        return Err(ConnectFlowError::UnexpectedResponse { step: "connect finish".to_string(), status, body });
+        return Err(ConnectFlowError::UnexpectedResponse {
+            step: "connect finish".to_string(),
+            status,
+            body,
+        });
     }
 
     let parsed: FinishResponseBody = response.json().await?;
@@ -591,18 +729,29 @@ struct CallbackState {
 /// outright, *before* ever calling `/finish` - seeing a wrong nonce here is
 /// exactly what a substituted or replayed redirect would produce, so
 /// proceeding anyway would defeat the whole point of round-tripping it.
-async fn callback_handler(State(state): State<CallbackState>, Query(query): Query<CallbackQuery>) -> Response {
-    let outcome: Result<FinishedCredentials, ConnectFlowError> = if query.nonce.as_str() != state.expected_nonce.as_ref() {
-        Err(ConnectFlowError::NonceMismatch)
-    } else {
-        call_finish(&state.control_plane_base_url, &state.platform, &query.token, &state.webhook_url).await
-    };
+async fn callback_handler(
+    State(state): State<CallbackState>,
+    Query(query): Query<CallbackQuery>,
+) -> Response {
+    let outcome: Result<FinishedCredentials, ConnectFlowError> =
+        if query.nonce.as_str() != state.expected_nonce.as_ref() {
+            Err(ConnectFlowError::NonceMismatch)
+        } else {
+            call_finish(
+                &state.control_plane_base_url,
+                &state.platform,
+                &query.token,
+                &state.webhook_url,
+            )
+            .await
+        };
 
     // Tell this driver's own webhook receiver its real signing secret, now that
     // `/finish` has handed one back - see `ReceiverState::signing_secret`'s own doc
     // comment for why the receiver couldn't have known this any earlier.
     if let Ok(finished) = &outcome {
-        state.webhook_state.lock().unwrap().signing_secret = Some(finished.webhook_signing_secret.clone());
+        state.webhook_state.lock().unwrap().signing_secret =
+            Some(finished.webhook_signing_secret.clone());
     }
 
     let response = match &outcome {
@@ -641,8 +790,14 @@ impl CallbackServer {
     /// isn't needed - this is only ever called from within this same module
     /// (production code) or its own test submodule.
     async fn result_rx_recv(&self) -> Result<FinishedCredentials, ConnectFlowError> {
-        let rx = self.result_rx.lock().await.take().expect("result_rx_recv called more than once on the same CallbackServer");
-        rx.await.map_err(|_| ConnectFlowError::CallbackNeverReceived)?
+        let rx = self
+            .result_rx
+            .lock()
+            .await
+            .take()
+            .expect("result_rx_recv called more than once on the same CallbackServer");
+        rx.await
+            .map_err(|_| ConnectFlowError::CallbackNeverReceived)?
     }
 }
 
@@ -669,16 +824,26 @@ async fn spawn_callback_server(
         result_tx: Arc::new(Mutex::new(Some(tx))),
     };
 
-    let router: Router = Router::new().route("/moneropay/callback", get(callback_handler)).with_state(state);
+    let router: Router = Router::new()
+        .route("/moneropay/callback", get(callback_handler))
+        .with_state(state);
 
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.map_err(ConnectFlowError::BindFailed)?;
-    let addr = listener.local_addr().map_err(ConnectFlowError::BindFailed)?;
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .map_err(ConnectFlowError::BindFailed)?;
+    let addr = listener
+        .local_addr()
+        .map_err(ConnectFlowError::BindFailed)?;
 
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
     });
 
-    Ok(CallbackServer { addr, task, result_rx: Mutex::new(Some(rx)) })
+    Ok(CallbackServer {
+        addr,
+        task,
+        result_rx: Mutex::new(Some(rx)),
+    })
 }
 
 #[cfg(test)]
@@ -720,21 +885,27 @@ mod tests {
     async fn spawn_test_control_plane(engine_addr: SocketAddr) -> TestControlPlaneHandle {
         use control_plane::db::Db;
         use control_plane::engine_client::EngineClient;
-        use control_plane::http::{AppState, build_router};
+        use control_plane::http::{build_router, AppState};
         use control_plane::templates::TemplateEngine;
 
         let state = AppState {
-            db: Db::open_in_memory().expect("failed to open in-memory control-plane db for test").into_shared(),
+            db: Db::open_in_memory()
+                .expect("failed to open in-memory control-plane db for test")
+                .into_shared(),
             engine_client: EngineClient::new(format!("http://{engine_addr}")),
             encryption_key: TEST_ENCRYPTION_KEY,
-            templates: Arc::new(TemplateEngine::new().expect("built-in control-plane templates must parse")),
+            templates: Arc::new(
+                TemplateEngine::new().expect("built-in control-plane templates must parse"),
+            ),
         };
         let router = build_router(state);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("failed to bind an ephemeral local port for the test control plane");
-        let addr = listener.local_addr().expect("bound listener has no local address");
+        let addr = listener
+            .local_addr()
+            .expect("bound listener has no local address");
 
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, router).await;
@@ -745,32 +916,48 @@ mod tests {
 
     fn parse_query_params(url: &str) -> HashMap<String, String> {
         let parsed = url::Url::parse(url).unwrap();
-        parsed.query_pairs().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+        parsed
+            .query_pairs()
+            .map(|(k, v)| (k.to_string(), v.to_string()))
+            .collect()
     }
 
     #[tokio::test]
-    async fn run_connect_flow_against_a_real_engine_and_control_plane_yields_genuine_working_credentials() {
-        let engine = engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+    async fn run_connect_flow_against_a_real_engine_and_control_plane_yields_genuine_working_credentials(
+    ) {
+        let engine =
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let control_plane = spawn_test_control_plane(engine.addr).await;
         let control_plane_base_url = format!("http://{}", control_plane.addr);
 
-        let credentials = run_connect_flow(&control_plane_base_url)
-            .await
-            .expect("the connect flow should succeed end to end against a real engine + control plane");
+        let credentials = run_connect_flow(&control_plane_base_url).await.expect(
+            "the connect flow should succeed end to end against a real engine + control plane",
+        );
 
-        assert!(credentials.public_key.starts_with("pk_"), "expected a real pk_ value, got: {}", credentials.public_key);
-        assert!(credentials.secret_token.starts_with("sk_"), "expected a real sk_ value, got: {}", credentials.secret_token);
+        assert!(
+            credentials.public_key.starts_with("pk_"),
+            "expected a real pk_ value, got: {}",
+            credentials.public_key
+        );
+        assert!(
+            credentials.secret_token.starts_with("sk_"),
+            "expected a real sk_ value, got: {}",
+            credentials.secret_token
+        );
         assert_eq!(credentials.endpoint, format!("http://{}", engine.addr));
 
         // Strong proof, not just "starts with sk_": the returned
         // secret_token is genuinely this tenant's working credential against
         // the real spawned engine - same pattern used throughout this
         // workspace's other connect-flow/connection tests.
-        let engine_client = control_plane::engine_client::EngineClient::new(format!("http://{}", engine.addr));
+        let engine_client =
+            control_plane::engine_client::EngineClient::new(format!("http://{}", engine.addr));
         let tenant_view = engine_client
             .get_tenant(&credentials.secret_token)
             .await
-            .expect("the returned secret_token should be the tenant's genuine, functioning sk_ credential");
+            .expect(
+            "the returned secret_token should be the tenant's genuine, functioning sk_ credential",
+        );
         assert_eq!(tenant_view.public_key, credentials.public_key);
 
         // WBS 1.4.4: this flow always registers a real webhook now, at this
@@ -782,8 +969,17 @@ mod tests {
             .await
             .expect("list_webhooks against the real engine should succeed");
         assert_eq!(webhooks.len(), 1);
-        assert_eq!(webhooks[0].url, format!("http://{}/moneropay/webhook", credentials.webhook_receiver.addr));
-        assert!(credentials.webhook_receiver.events().is_empty(), "no event has been delivered yet");
+        assert_eq!(
+            webhooks[0].url,
+            format!(
+                "http://{}/moneropay/webhook",
+                credentials.webhook_receiver.addr
+            )
+        );
+        assert!(
+            credentials.webhook_receiver.events().is_empty(),
+            "no event has been delivered yet"
+        );
     }
 
     /// A fixed, arbitrary exchange rate for a test-only currency - same
@@ -816,16 +1012,24 @@ mod tests {
         let control_plane = spawn_test_control_plane(engine.addr).await;
         let control_plane_base_url = format!("http://{}", control_plane.addr);
 
-        let credentials = run_connect_flow(&control_plane_base_url)
-            .await
-            .expect("the connect flow should succeed end to end against a real engine + control plane");
+        let credentials = run_connect_flow(&control_plane_base_url).await.expect(
+            "the connect flow should succeed end to end against a real engine + control plane",
+        );
         assert_eq!(credentials.endpoint, format!("http://{}", engine.addr));
 
-        let order = create_order(&credentials.endpoint, &credentials.public_key, "10.00", TEST_CURRENCY)
-            .await
-            .expect("order creation should succeed against a real engine with a configured rate");
+        let order = create_order(
+            &credentials.endpoint,
+            &credentials.public_key,
+            "10.00",
+            TEST_CURRENCY,
+        )
+        .await
+        .expect("order creation should succeed against a real engine with a configured rate");
 
-        assert!(!order.payment_id.is_empty(), "expected a non-empty payment_id");
+        assert!(
+            !order.payment_id.is_empty(),
+            "expected a non-empty payment_id"
+        );
         assert_eq!(
             order.checkout_url,
             format!("http://{}/pay/v1/{}/{}", engine.addr, credentials.public_key, order.payment_id),
@@ -835,11 +1039,18 @@ mod tests {
         // Strong proof, not just a plausibly-shaped URL: actually fetch it,
         // the same way a customer's browser would be redirected there next,
         // and confirm it's a genuine, working checkout page.
-        let checkout_response =
-            reqwest::get(&order.checkout_url).await.expect("fetching the checkout_url should succeed");
+        let checkout_response = reqwest::get(&order.checkout_url)
+            .await
+            .expect("fetching the checkout_url should succeed");
         assert_eq!(checkout_response.status(), reqwest::StatusCode::OK);
-        let body = checkout_response.text().await.expect("checkout page response should have a body");
-        assert!(body.contains("<html"), "expected the checkout page to be real HTML, got: {body}");
+        let body = checkout_response
+            .text()
+            .await
+            .expect("checkout page response should have a body");
+        assert!(
+            body.contains("<html"),
+            "expected the checkout page to be real HTML, got: {body}"
+        );
     }
 
     /// The load-bearing nonce-mismatch proof: a raw HTTP call bypassing
@@ -850,7 +1061,8 @@ mod tests {
     /// called `/finish` as a side effect.
     #[tokio::test]
     async fn a_callback_with_a_mismatched_nonce_is_rejected_and_never_consumes_the_token() {
-        let engine = engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let engine =
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let control_plane = spawn_test_control_plane(engine.addr).await;
         let control_plane_base_url = format!("http://{}", control_plane.addr);
 
@@ -870,8 +1082,11 @@ mod tests {
         // inspected directly (status/`Location` header) rather than chased,
         // since the whole point is to intercept the token/nonce before they
         // ever reach a real callback route.
-        let client =
-            reqwest::Client::builder().cookie_store(true).redirect(reqwest::redirect::Policy::none()).build().unwrap();
+        let client = reqwest::Client::builder()
+            .cookie_store(true)
+            .redirect(reqwest::redirect::Policy::none())
+            .build()
+            .unwrap();
 
         let connect_next_path = format!(
             "/connect/{platform}?site_url={}&return_url={}&nonce={}",
@@ -880,7 +1095,11 @@ mod tests {
             encode_query_value(&correct_nonce),
         );
 
-        client.get(format!("{control_plane_base_url}{connect_next_path}")).send().await.unwrap();
+        client
+            .get(format!("{control_plane_base_url}{connect_next_path}"))
+            .send()
+            .await
+            .unwrap();
         client
             .post(format!("{control_plane_base_url}/dashboard/signup"))
             .form(&[("email", email.as_str()), ("password", password)])
@@ -889,7 +1108,11 @@ mod tests {
             .unwrap();
         client
             .post(format!("{control_plane_base_url}/dashboard/login"))
-            .form(&[("email", email.as_str()), ("password", password), ("next", connect_next_path.as_str())])
+            .form(&[
+                ("email", email.as_str()),
+                ("password", password),
+                ("next", connect_next_path.as_str()),
+            ])
             .send()
             .await
             .unwrap();
@@ -908,9 +1131,22 @@ mod tests {
             .send()
             .await
             .unwrap();
-        assert_eq!(confirm_response.status(), reqwest::StatusCode::FOUND, "expected a redirect carrying the connect token");
-        let location = confirm_response.headers().get("location").unwrap().to_str().unwrap().to_string();
-        let token = parse_query_params(&location).get("token").expect("expected a token query param").clone();
+        assert_eq!(
+            confirm_response.status(),
+            reqwest::StatusCode::FOUND,
+            "expected a redirect carrying the connect token"
+        );
+        let location = confirm_response
+            .headers()
+            .get("location")
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .to_string();
+        let token = parse_query_params(&location)
+            .get("token")
+            .expect("expected a token query param")
+            .clone();
 
         // Spawn this crate's own callback server (private, same-crate access
         // only) with the *correct* nonce as what it expects. The webhook_url/
@@ -931,11 +1167,18 @@ mod tests {
         // The attack: the real token, but a substituted nonce.
         let raw_client = reqwest::Client::new();
         let malicious = raw_client
-            .get(format!("http://{}/moneropay/callback?token={}&nonce=an-attacker-substituted-nonce", callback.addr, token))
+            .get(format!(
+                "http://{}/moneropay/callback?token={}&nonce=an-attacker-substituted-nonce",
+                callback.addr, token
+            ))
             .send()
             .await
             .unwrap();
-        assert_eq!(malicious.status(), reqwest::StatusCode::BAD_REQUEST, "a mismatched nonce must be rejected");
+        assert_eq!(
+            malicious.status(),
+            reqwest::StatusCode::BAD_REQUEST,
+            "a mismatched nonce must be rejected"
+        );
 
         let observed = callback.result_rx_recv().await;
         assert!(
@@ -949,7 +1192,9 @@ mod tests {
         // server (no nonce involved at that layer at all), must still
         // succeed - which could only be true if it was never consumed above.
         let finish_response = raw_client
-            .post(format!("{control_plane_base_url}/connect/{platform}/finish"))
+            .post(format!(
+                "{control_plane_base_url}/connect/{platform}/finish"
+            ))
             .json(&serde_json::json!({ "token": token }))
             .send()
             .await
@@ -971,8 +1216,10 @@ mod tests {
     /// module's own instruction. The constants there are private to `shared`, so the
     /// values are reproduced literally rather than imported.
     const KNOWN_VECTOR_SECRET: &str = "known_vector_secret_for_php_crosscheck";
-    const KNOWN_VECTOR_PAYLOAD: &[u8] = br#"{"event":"order.paid","order_id":"12345","amount_piconero":"1000000000000"}"#;
-    const KNOWN_VECTOR_SIGNATURE_HEX: &str = "436a60c6f66d20b611c7e4a3f78ab13167fb26680a65d8b2e5a114c182de80f1";
+    const KNOWN_VECTOR_PAYLOAD: &[u8] =
+        br#"{"event":"order.paid","order_id":"12345","amount_piconero":"1000000000000"}"#;
+    const KNOWN_VECTOR_SIGNATURE_HEX: &str =
+        "436a60c6f66d20b611c7e4a3f78ab13167fb26680a65d8b2e5a114c182de80f1";
 
     /// A direct unit test of signature verification (WBS 1.4.4's own explicit ask),
     /// decoupled from any HTTP round trip - this is exactly the check
@@ -980,17 +1227,26 @@ mod tests {
     /// as JSON.
     #[test]
     fn signature_verification_matches_the_known_cross_language_vector() {
-        assert!(shared::webhook_sign::verify_signature(KNOWN_VECTOR_SECRET, KNOWN_VECTOR_PAYLOAD, KNOWN_VECTOR_SIGNATURE_HEX));
+        assert!(shared::webhook_sign::verify_signature(
+            KNOWN_VECTOR_SECRET,
+            KNOWN_VECTOR_PAYLOAD,
+            KNOWN_VECTOR_SIGNATURE_HEX
+        ));
 
         // A tampered payload (one byte flipped in the trailing amount) must not
         // verify against the same signature - the sanity check that this isn't
         // trivially true for any input.
-        let tampered = br#"{"event":"order.paid","order_id":"12345","amount_piconero":"1000000000000"}"#
-            .iter()
-            .copied()
-            .map(|b| if b == b'1' { b'2' } else { b })
-            .collect::<Vec<u8>>();
-        assert!(!shared::webhook_sign::verify_signature(KNOWN_VECTOR_SECRET, &tampered, KNOWN_VECTOR_SIGNATURE_HEX));
+        let tampered =
+            br#"{"event":"order.paid","order_id":"12345","amount_piconero":"1000000000000"}"#
+                .iter()
+                .copied()
+                .map(|b| if b == b'1' { b'2' } else { b })
+                .collect::<Vec<u8>>();
+        assert!(!shared::webhook_sign::verify_signature(
+            KNOWN_VECTOR_SECRET,
+            &tampered,
+            KNOWN_VECTOR_SIGNATURE_HEX
+        ));
     }
 
     /// Directly sets a spawned [`WebhookReceiver`]'s `signing_secret` - same-module
@@ -1022,15 +1278,28 @@ mod tests {
         // A real delivery, then its retry (at-least-once delivery, `docs/DESIGN.md`
         // §11) - the exact same body and signature both times.
         for _ in 0..2 {
-            let response = client.post(&url).header("X-MoneroPay-Signature", &signature).body(body.clone()).send().await.unwrap();
+            let response = client
+                .post(&url)
+                .header("X-MoneroPay-Signature", &signature)
+                .body(body.clone())
+                .send()
+                .await
+                .unwrap();
             assert_eq!(response.status(), reqwest::StatusCode::OK);
         }
 
         let events = receiver.events();
-        assert_eq!(events.len(), 1, "the retried event_id must not be recorded twice");
+        assert_eq!(
+            events.len(),
+            1,
+            "the retried event_id must not be recorded twice"
+        );
         assert_eq!(events[0].event, "order.expired");
         assert_eq!(events[0].event_id, "evt_dedupe_test");
-        assert_eq!(events[0].payload["payment_id"], serde_json::json!("pay_dedupe_test"));
+        assert_eq!(
+            events[0].payload["payment_id"],
+            serde_json::json!("pay_dedupe_test")
+        );
     }
 
     #[tokio::test]
@@ -1043,15 +1312,25 @@ mod tests {
         let url = format!("http://{}/moneropay/webhook", receiver.addr);
 
         // Wrong secret entirely - genuinely invalid, not just a near miss.
-        let wrong_signature = shared::webhook_sign::sign_payload("not-the-real-secret", body.as_bytes());
-        let rejected = client.post(&url).header("X-MoneroPay-Signature", &wrong_signature).body(body.clone()).send().await.unwrap();
+        let wrong_signature =
+            shared::webhook_sign::sign_payload("not-the-real-secret", body.as_bytes());
+        let rejected = client
+            .post(&url)
+            .header("X-MoneroPay-Signature", &wrong_signature)
+            .body(body.clone())
+            .send()
+            .await
+            .unwrap();
         assert_eq!(rejected.status(), reqwest::StatusCode::UNAUTHORIZED);
 
         // No signature header at all.
         let missing_header = client.post(&url).body(body.clone()).send().await.unwrap();
         assert_eq!(missing_header.status(), reqwest::StatusCode::UNAUTHORIZED);
 
-        assert!(receiver.events().is_empty(), "an unverified request must never be recorded");
+        assert!(
+            receiver.events().is_empty(),
+            "an unverified request must never be recorded"
+        );
     }
 
     #[tokio::test]
@@ -1062,7 +1341,8 @@ mod tests {
         // set. There is nothing correct to verify against in that window, so
         // everything must be rejected, not merely unverified-and-accepted.
         let receiver = spawn_webhook_receiver().await.unwrap();
-        let body = serde_json::json!({ "event": "order.expired", "event_id": "evt_too_early" }).to_string();
+        let body = serde_json::json!({ "event": "order.expired", "event_id": "evt_too_early" })
+            .to_string();
         // Signed with a secret this receiver could not possibly know yet - the
         // point is that even a "plausible" signature is rejected before the real
         // secret exists to check it against.
@@ -1121,11 +1401,18 @@ mod tests {
 
         let credentials = run_connect_flow_with_order_expiry_seconds(&control_plane_base_url, 1)
             .await
-            .expect("the connect flow should succeed end to end against a real engine + control plane");
+            .expect(
+                "the connect flow should succeed end to end against a real engine + control plane",
+            );
 
-        let order = create_order(&credentials.endpoint, &credentials.public_key, "1.00", TEST_CURRENCY)
-            .await
-            .expect("order creation should succeed against a real engine with a configured rate");
+        let order = create_order(
+            &credentials.endpoint,
+            &credentials.public_key,
+            "1.00",
+            TEST_CURRENCY,
+        )
+        .await
+        .expect("order creation should succeed against a real engine with a configured rate");
 
         // Poll rather than a fixed sleep: the background loops tick every ~150ms
         // (`engine_test_support::BACKGROUND_LOOP_INTERVAL`), and this only needs to
@@ -1133,11 +1420,10 @@ mod tests {
         // actually passed and the delivery worker has had one more tick to send it.
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
         let matched = loop {
-            let found = credentials
-                .webhook_receiver
-                .events()
-                .into_iter()
-                .find(|e| e.payload.get("payment_id").and_then(|v| v.as_str()) == Some(order.payment_id.as_str()));
+            let found = credentials.webhook_receiver.events().into_iter().find(|e| {
+                e.payload.get("payment_id").and_then(|v| v.as_str())
+                    == Some(order.payment_id.as_str())
+            });
             if let Some(found) = found {
                 break Some(found);
             }
@@ -1147,7 +1433,8 @@ mod tests {
             tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         };
 
-        let event = matched.expect("expected a real order.expired webhook delivery to arrive within the deadline");
+        let event = matched
+            .expect("expected a real order.expired webhook delivery to arrive within the deadline");
         assert_eq!(event.event, "order.expired");
         assert_eq!(event.payload["status"], serde_json::json!("expired"));
         assert!(event.event_id.starts_with("evt_"));
@@ -1165,10 +1452,18 @@ mod tests {
         // state). The two agreeing proves the receiver that verified this delivery
         // and the credentials this driver came away with are talking about the
         // same real secret, not two coincidentally-successful checks.
-        assert!(shared::webhook_sign::verify_signature(&credentials.webhook_signing_secret, &event.raw_body, &event.signature));
+        assert!(shared::webhook_sign::verify_signature(
+            &credentials.webhook_signing_secret,
+            &event.raw_body,
+            &event.signature
+        ));
         // And a specificity check: an arbitrary wrong secret must not verify the
         // same real bytes/signature - ruling out a `verify_signature` that
         // accidentally always returns `true`.
-        assert!(!shared::webhook_sign::verify_signature("definitely-the-wrong-secret", &event.raw_body, &event.signature));
+        assert!(!shared::webhook_sign::verify_signature(
+            "definitely-the-wrong-secret",
+            &event.raw_body,
+            &event.signature
+        ));
     }
 }

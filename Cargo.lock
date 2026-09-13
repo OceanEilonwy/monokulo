@@ -1305,6 +1305,7 @@ dependencies = [
  "axum",
  "control-plane",
  "engine-test-support",
+ "hex",
  "monero",
  "moneropay-core",
  "reqwest",

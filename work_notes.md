@@ -42,6 +42,81 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- 1.4.5 done: the real stagenet end-to-end test
+  (`mock-woocommerce/tests/e2e_stagenet_connect_flow.rs`, `#[ignore]`d, run
+  via `cargo test -p mock-woocommerce --features e2e --test
+  e2e_stagenet_connect_flow -- --ignored --nocapture`) now passes cleanly
+  and repeatably (two consecutive clean runs, ~150-200s each). It signs up
+  a real control-plane account, runs the real connect flow with the real
+  stagenet **merchant** watch-only wallet (`e2e/stagenet-wallets.json`),
+  creates a real order, pays it with a real signed transaction from the
+  **customer** wallet (`moneropay_core::e2e_wallet::StagenetSpendWallet`,
+  reused as a library dependency - not reimplemented), drives a real chain
+  scan against a real stagenet node
+  (`TestEngineHandle::run_scan_tick_now`), and asserts the mock's webhook
+  receiver got a real, correctly-signed `order.paid` delivery.
+  - **The real bug, after two wrong hypotheses**: every run reliably hung
+    for minutes-plus on the very first post-payment scan tick, regardless
+    of which public stagenet node was configured (ruled out via direct
+    curl reproduction against three different nodes - all fast) and
+    regardless of `#[tokio::test]`'s runtime flavor (switching to
+    `flavor = "multi_thread"` on the theory of a `std::sync::Mutex`
+    deadlock between the manual scan tick and the background
+    webhook-delivery loop did not fix it, though it's still the right
+    runtime choice here and was kept). The actual cause:
+    `TestEngineConfig::with_background_loops`'s own scanner-tick loop
+    (`engine-test-support/src/lib.rs`) runs on an inert `NoopDaemonClient`
+    whose `get_height()` always returns `0`, and it shares the *same*
+    per-network scanned-height watermark in `Store`
+    (`max_scanned_height`/`set_scanned_block`, keyed by network string
+    alone) with the real daemon this test drives directly via
+    `run_scan_tick_now`. That loop's very first tick seeded
+    `last_scanned = Some(0)` for stagenet; the real scan then computed
+    `scan_range = (1, current_real_height)` and tried to fetch every
+    stagenet block one at a time from block 1 up to the real chain tip
+    (~2.2 million blocks) - which looks exactly like an indefinite,
+    node-independent, low-CPU hang. Confirmed directly (not just inferred)
+    by reading `src/scanner.rs::run_scan_tick` and
+    `engine-test-support/src/lib.rs`'s loop, and by independently
+    verifying via a stagenet block explorer / direct node RPC that a
+    "stuck" payment's transaction was in fact already confirmed on-chain
+    the whole time - the chain scan was fine, it just had an impossible
+    amount of ground to cover.
+  - **The fix**: `TestEngineConfig` gained `.without_background_scan_loop()`
+    - keeps the real (and necessary) webhook-delivery-tick loop but skips
+    spawning the `NoopDaemonClient` scan-tick loop entirely, so nothing
+    else touches this test's network's watermark. The test now calls
+    `.with_background_loops().without_background_scan_loop()`. Each real
+    scan tick now takes ~3-5s (normal RPC latency), not minutes.
+  - **Also fixed along the way (still real, kept)**: `e2e/moneropay-
+    stagenet.toml`'s configured node changed from `node.monerodevs.org` to
+    `stagenet.xmr-tw.org:38081` after observing genuine (if ultimately
+    unrelated to this bug) multi-minute stalls against the former during
+    diagnosis - not reproducible via plain curl, so likely specific to
+    long-lived/pooled-connection behavior; the new node has been reliably
+    fast throughout.
+  - **Caution for future review**: a `cargo fmt -p mock-woocommerce -p
+    engine-test-support -p moneropay-core` run mid-session reflowed the
+    *entire* `moneropay-core` crate (this codebase is deliberately not
+    rustfmt-compliant - wider, hand-formatted style). That inflated the
+    diff to 5817+/1793- across 31 files before a dedicated review caught
+    it; the pure-reflow noise (21 files, zero real content changes -
+    verified by reformatting each file's pre-change HEAD version and
+    diffing against working copy) was reverted with `git checkout --`
+    before committing. Don't run `cargo fmt -p moneropay-core` (whole
+    engine crate) again without a real reason to touch every file in it.
+  - Deleted `examples/fund_and_split_customer_wallet.rs`, a throwaway
+    one-time script (used once to split faucet funds across the customer
+    wallet's UTXOs for the e2e test) that didn't compile without the `e2e`
+    feature and broke plain `cargo build --workspace`.
+  - Not done, explicitly out of scope for 1.4.5 and requested separately
+    by the user afterward: a genuine multi-node/fallback-node-list feature
+    in the engine's own daemon-client configuration (for production
+    reliability, not just this test) - next up.
+  - Full `cargo test --workspace` (269 engine + 26 shared + 80 control-plane
+    + 8 mock-woocommerce + 2 engine-test-support, all passing, 0 failed)
+    re-run clean after the fmt-noise revert, before this commit.
+
 - 1.4.4 done: webhook registration folded into `/finish`, plus a real
   receiver in `mock-woocommerce` and a genuinely forced end-to-end delivery
   test, completing Track 1.4 short of 1.4.5 (deliberately not built here).

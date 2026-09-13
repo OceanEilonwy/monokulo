@@ -38,7 +38,7 @@ use moneropay_core::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, Tx
 use moneropay_core::exchange_rate::{ExchangeRateProvider, FixedRateProvider};
 use moneropay_core::http::rate_limit::RateLimiter;
 use moneropay_core::http::{build_router, AppState};
-use moneropay_core::key_custody::{KeyCustody, PlainKeyCustody};
+use moneropay_core::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
 use moneropay_core::network::network_str;
 use moneropay_core::scanner::run_scan_tick;
 use moneropay_core::store::Store;
@@ -85,7 +85,10 @@ impl MoneroDaemonClient for NoopDaemonClient {
         Ok(format!("noop-block-{height}"))
     }
 
-    async fn get_block_transactions(&self, _height: u64) -> Result<Vec<monero::Transaction>, DaemonError> {
+    async fn get_block_transactions(
+        &self,
+        _height: u64,
+    ) -> Result<Vec<monero::Transaction>, DaemonError> {
         Ok(vec![])
     }
 
@@ -97,7 +100,10 @@ impl MoneroDaemonClient for NoopDaemonClient {
         Ok(TxLocation::NotFound)
     }
 
-    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+    async fn is_key_image_spent(
+        &self,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatus>, DaemonError> {
         Ok(vec![KeyImageStatus::Unspent; key_images.len()])
     }
 }
@@ -119,6 +125,59 @@ pub struct TestEngineHandle {
     /// majority of this crate's existing use, which never touches the scanner or
     /// delivery worker at all).
     background_tasks: Vec<tokio::task::JoinHandle<()>>,
+    /// This engine's own store/key-custody/wallet-handles registry - kept so
+    /// [`TestEngineHandle::run_scan_tick_now`] can drive a real, one-off scan tick
+    /// against them directly. See that method's own doc comment for why a caller
+    /// might want this instead of (or alongside) `with_background_loops`'s automatic
+    /// interval.
+    store: moneropay_core::store::SharedStore,
+    key_custody: Arc<dyn KeyCustody>,
+    wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
+}
+
+impl TestEngineHandle {
+    /// Runs exactly one real `run_scan_tick` against this engine's own store/
+    /// key-custody and its *current* `wallet_handles` registry (re-read fresh on
+    /// every call, same as the background loop) - for a caller that wants precise,
+    /// foreground control over exactly when a real scan happens against a real
+    /// `daemon`, rather than relying on `with_background_loops`'s own automatic
+    /// interval.
+    ///
+    /// This matters beyond convenience: observed directly while building WBS 1.4.5's
+    /// real stagenet connect-flow test, running `with_background_loops` *with* a real
+    /// per-network daemon continuously ticking in the background, concurrently with
+    /// that same test's own foreground use of a real daemon (connecting a spend
+    /// wallet, building/broadcasting a transaction), caused real, consistent
+    /// connection failures against the public node - most likely a modest
+    /// concurrent-connections-per-IP limit on that node's own end being exceeded by
+    /// two independent, simultaneously-active real daemon clients. A single caller
+    /// driving scan ticks itself, sequentially, with the *same* daemon client it
+    /// already uses for everything else real-network-related (never two clients
+    /// racing each other against the same real node at once) avoided the problem
+    /// entirely - see that test for the actual pattern.
+    pub async fn run_scan_tick_now(
+        &self,
+        daemon: &dyn MoneroDaemonClient,
+        network: Network,
+        reorg_check_depth: u64,
+    ) -> Result<(), moneropay_core::scanner::ScannerError> {
+        let tenants: Vec<(String, WalletHandle)> = self
+            .wallet_handles
+            .read()
+            .unwrap()
+            .iter()
+            .map(|(id, h)| (id.clone(), *h))
+            .collect();
+        run_scan_tick(
+            &self.store,
+            self.key_custody.as_ref(),
+            daemon,
+            network_str(network),
+            &tenants,
+            reorg_check_depth,
+        )
+        .await
+    }
 }
 
 impl Drop for TestEngineHandle {
@@ -152,6 +211,7 @@ pub struct TestEngineConfig {
     networks: Vec<Network>,
     rates: HashMap<String, u64>,
     background_loops: bool,
+    background_scan_loop: bool,
 }
 
 impl TestEngineConfig {
@@ -213,8 +273,51 @@ impl TestEngineConfig {
     /// `allow_private_urls` is unconditionally `true` for these loops - a test's own
     /// webhook receiver is essentially always `127.0.0.1`, and there is no
     /// SSRF-relevant "real merchant network" for a test harness to protect.
+    ///
+    /// A caller that instead needs genuine payment-*matching* chain scanning against a
+    /// real daemon (WBS 1.4.5's real stagenet connect-flow test) should drive that
+    /// itself via [`TestEngineHandle::run_scan_tick_now`] rather than through this
+    /// method - see that method's own doc comment for why a second, independently-
+    /// ticking real daemon client running concurrently in the background turned out to
+    /// be the wrong shape for that need (real connection contention against the same
+    /// live node). This method's own scan-tick loop always uses the inert
+    /// [`NoopDaemonClient`] (per the "chain scanning... deliberately not exercised"
+    /// paragraph above) regardless of whether `run_scan_tick_now` is also in use -
+    /// the two don't conflict since the `NoopDaemonClient` never touches the network.
+    ///
+    /// CORRECTION (found while debugging WBS 1.4.5's real stagenet test hanging for
+    /// minutes on its very first `run_scan_tick_now` call, regardless of which public
+    /// node it pointed at): the paragraph above is wrong about there being no
+    /// conflict. `run_scan_tick`'s block-scan watermark (`max_scanned_height`/
+    /// `set_scanned_block`) is keyed by `network` alone, in the same `Store` this
+    /// loop's `NoopDaemonClient` tick shares with any real daemon later driven
+    /// through `run_scan_tick_now` for that same network. `NoopDaemonClient::
+    /// get_height` always reports `0`, so this loop's very first tick seeds
+    /// `last_scanned = Some(0)` for the network - and a subsequent real-daemon call
+    /// via `run_scan_tick_now` then computes `scan_range = (1, current_real_height)`
+    /// and tries to fetch every block one at a time from 1 up to the real chain tip
+    /// (millions of blocks on stagenet), which looks exactly like an indefinite hang:
+    /// node-independent, low-CPU (blocked on sequential network round-trips), and
+    /// unaffected by `reorg_check_depth`. See [`without_background_scan_loop`] for the
+    /// fix a caller in that situation needs.
+    ///
+    /// [`without_background_scan_loop`]: TestEngineConfig::without_background_scan_loop
     pub fn with_background_loops(mut self) -> Self {
         self.background_loops = true;
+        self.background_scan_loop = true;
+        self
+    }
+
+    /// Keeps the webhook-delivery-tick loop from [`with_background_loops`] but drops
+    /// its `NoopDaemonClient`-driven scan-tick loop, for a caller that drives scanning
+    /// itself against a real daemon via [`TestEngineHandle::run_scan_tick_now`] - see
+    /// the correction on [`with_background_loops`]'s own doc comment for why running
+    /// both against the same network poisons the real scan's watermark and makes it
+    /// try to walk the entire real chain from block 1.
+    ///
+    /// [`with_background_loops`]: TestEngineConfig::with_background_loops
+    pub fn without_background_scan_loop(mut self) -> Self {
+        self.background_scan_loop = false;
         self
     }
 
@@ -232,50 +335,93 @@ impl TestEngineConfig {
     /// that an independent `reqwest::Client` (standing in for a
     /// separately-deployed caller, e.g. the control plane) can connect to.
     pub async fn spawn(self) -> TestEngineHandle {
-        let store = Store::open_in_memory().expect("failed to open in-memory store for test engine").into_shared();
+        let store = Store::open_in_memory()
+            .expect("failed to open in-memory store for test engine")
+            .into_shared();
         let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-        let exchange_rate: Arc<dyn ExchangeRateProvider> = Arc::new(FixedRateProvider::new(self.rates));
+        let exchange_rate: Arc<dyn ExchangeRateProvider> =
+            Arc::new(FixedRateProvider::new(self.rates));
+
+        // Held separately (not just inline in `AppState`) so the background scan loop
+        // below can clone the same `Arc` and re-read it fresh every tick, exactly like
+        // `main.rs`'s own `run_scanner_loop` does against the real production
+        // `AppState::wallet_handles` - see `with_real_daemon`'s doc comment.
+        let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> =
+            Arc::new(RwLock::new(HashMap::new()));
 
         let app_state = AppState {
             store: store.clone(),
             key_custody: key_custody.clone(),
             exchange_rate,
-            wallet_handles: Arc::new(RwLock::new(HashMap::new())),
+            wallet_handles: wallet_handles.clone(),
             rate_limiter: Arc::new(RateLimiter::new(10_000)),
-            configured_networks: Arc::new(self.networks.iter().copied().collect::<HashSet<Network>>()),
+            configured_networks: Arc::new(
+                self.networks.iter().copied().collect::<HashSet<Network>>(),
+            ),
         };
         let router = build_router(app_state, MAX_BODY_BYTES);
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("failed to bind an ephemeral local port for the test engine");
-        let addr = listener.local_addr().expect("bound listener has no local address");
+        let addr = listener
+            .local_addr()
+            .expect("bound listener has no local address");
 
         let server_task = tokio::spawn(async move {
-            axum::serve(listener, router.into_make_service_with_connect_info::<SocketAddr>())
-                .await
-                .expect("test engine server error");
+            axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<SocketAddr>(),
+            )
+            .await
+            .expect("test engine server error");
         });
 
         let mut background_tasks = Vec::new();
         if self.background_loops {
-            let networks = self.networks.clone();
-            let scan_store = store.clone();
-            let scan_key_custody = key_custody.clone();
-            background_tasks.push(tokio::spawn(async move {
-                let daemon = NoopDaemonClient;
-                loop {
-                    for network in &networks {
-                        // Errors are deliberately swallowed here, exactly like
-                        // `main.rs`'s own supervised loop logs and continues rather
-                        // than dying - a test relying on this loop observes its
-                        // effect (a status transition, a delivered webhook), not its
-                        // per-tick `Result`.
-                        let _ = run_scan_tick(&scan_store, scan_key_custody.as_ref(), &daemon, network_str(*network), &[], 20).await;
+            if self.background_scan_loop {
+                let networks = self.networks.clone();
+                let scan_store = store.clone();
+                let scan_key_custody = key_custody.clone();
+                let scan_wallet_handles = wallet_handles.clone();
+                background_tasks.push(tokio::spawn(async move {
+                    let daemon = NoopDaemonClient;
+                    loop {
+                        // Rebuilt fresh every tick (not a boot-time snapshot) so a tenant
+                        // created at runtime - e.g. via a real connect flow through
+                        // control-plane - is picked up without needing a restart, exactly
+                        // like `main.rs`'s own `run_scanner_loop` re-reads its production
+                        // `wallet_handles` registry every round. Harmless either way here -
+                        // `NoopDaemonClient` never finds a payment match regardless of the
+                        // tenant list - but this keeps the loop's own watchlist-building
+                        // logic faithful to production, for a caller that later swaps in a
+                        // real daemon via `run_scan_tick_now` instead.
+                        let tenants: Vec<(String, WalletHandle)> = scan_wallet_handles
+                            .read()
+                            .unwrap()
+                            .iter()
+                            .map(|(id, h)| (id.clone(), *h))
+                            .collect();
+                        for network in &networks {
+                            // Errors are deliberately swallowed here, exactly like
+                            // `main.rs`'s own supervised loop logs and continues rather
+                            // than dying - a test relying on this loop observes its
+                            // effect (a status transition, a delivered webhook), not its
+                            // per-tick `Result`.
+                            let _ = run_scan_tick(
+                                &scan_store,
+                                scan_key_custody.as_ref(),
+                                &daemon,
+                                network_str(*network),
+                                &tenants,
+                                20,
+                            )
+                            .await;
+                        }
+                        tokio::time::sleep(BACKGROUND_LOOP_INTERVAL).await;
                     }
-                    tokio::time::sleep(BACKGROUND_LOOP_INTERVAL).await;
-                }
-            }));
+                }));
+            }
 
             let delivery_store = store.clone();
             background_tasks.push(tokio::spawn(async move {
@@ -298,7 +444,14 @@ impl TestEngineConfig {
             }));
         }
 
-        TestEngineHandle { addr, server_task, background_tasks }
+        TestEngineHandle {
+            addr,
+            server_task,
+            background_tasks,
+            store,
+            key_custody,
+            wallet_handles,
+        }
     }
 }
 
@@ -331,7 +484,10 @@ pub async fn spawn_test_engine() -> TestEngineHandle {
 /// also needs a seeded exchange rate (e.g. to create a real order) should
 /// use [`TestEngineConfig`] directly instead.
 pub async fn spawn_test_engine_with_networks(networks: &[Network]) -> TestEngineHandle {
-    TestEngineConfig::new().with_networks(networks).spawn().await
+    TestEngineConfig::new()
+        .with_networks(networks)
+        .spawn()
+        .await
 }
 
 #[cfg(test)]
@@ -364,35 +520,48 @@ mod tests {
     /// Same fixed-scalar view-key/spend-pubkey construction every other test in this
     /// workspace uses (see `control-plane/src/engine_client.rs`'s own tests for the
     /// reasoning).
-    const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
-    const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+    const TEST_VIEW_KEY_HEX: &str =
+        "0707070707070707070707070707070707070707070707070707070707070707";
+    const TEST_SPEND_PUBKEY_HEX: &str =
+        "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
     /// Binds a tiny local receiver recording every POST body it gets, alongside the
     /// `X-MoneroPay-Signature` header - just enough to prove a real webhook delivery
     /// actually arrived, without pulling in anything from `mock-woocommerce` (this
     /// crate sits *below* it in the dependency graph, and `with_background_loops`
     /// needs to be provably useful entirely on its own).
-    async fn spawn_recording_receiver() -> (SocketAddr, Arc<std::sync::Mutex<Vec<(Option<String>, serde_json::Value)>>>, tokio::task::JoinHandle<()>)
-    {
+    async fn spawn_recording_receiver() -> (
+        SocketAddr,
+        Arc<std::sync::Mutex<Vec<(Option<String>, serde_json::Value)>>>,
+        tokio::task::JoinHandle<()>,
+    ) {
         use axum::extract::State as AxumState;
         use axum::http::HeaderMap;
 
-        let received: Arc<std::sync::Mutex<Vec<(Option<String>, serde_json::Value)>>> = Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received: Arc<std::sync::Mutex<Vec<(Option<String>, serde_json::Value)>>> =
+            Arc::new(std::sync::Mutex::new(Vec::new()));
         let received_for_state = received.clone();
 
         async fn hook(
-            AxumState(received): AxumState<Arc<std::sync::Mutex<Vec<(Option<String>, serde_json::Value)>>>>,
+            AxumState(received): AxumState<
+                Arc<std::sync::Mutex<Vec<(Option<String>, serde_json::Value)>>>,
+            >,
             headers: HeaderMap,
             body: axum::body::Bytes,
         ) -> axum::http::StatusCode {
-            let signature = headers.get("X-MoneroPay-Signature").and_then(|v| v.to_str().ok()).map(str::to_string);
+            let signature = headers
+                .get("X-MoneroPay-Signature")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
             if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
                 received.lock().unwrap().push((signature, parsed));
             }
             axum::http::StatusCode::OK
         }
 
-        let router = axum::Router::new().route("/hook", axum::routing::post(hook)).with_state(received_for_state);
+        let router = axum::Router::new()
+            .route("/hook", axum::routing::post(hook))
+            .with_state(received_for_state);
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let addr = listener.local_addr().unwrap();
         let task = tokio::spawn(async move {
@@ -476,7 +645,9 @@ mod tests {
                 .lock()
                 .unwrap()
                 .iter()
-                .find(|(_, body)| body.get("payment_id").and_then(|v| v.as_str()) == Some(payment_id.as_str()))
+                .find(|(_, body)| {
+                    body.get("payment_id").and_then(|v| v.as_str()) == Some(payment_id.as_str())
+                })
                 .cloned();
             if let Some(found) = found {
                 break Some(found);
@@ -487,10 +658,13 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(50)).await;
         };
 
-        let (signature, payload) = matched.expect("expected a real order.expired webhook delivery within the deadline");
+        let (signature, payload) =
+            matched.expect("expected a real order.expired webhook delivery within the deadline");
         assert_eq!(payload["event"], serde_json::json!("order.expired"));
         assert_eq!(payload["status"], serde_json::json!("expired"));
-        assert!(payload["event_id"].as_str().is_some_and(|id| id.starts_with("evt_")));
+        assert!(payload["event_id"]
+            .as_str()
+            .is_some_and(|id| id.starts_with("evt_")));
 
         // Strong proof this is a genuine, correctly-signed delivery, not just a
         // request that happened to arrive: recompute the HMAC over the exact payload
@@ -500,7 +674,11 @@ mod tests {
         let signature = signature.expect("a real delivery must carry X-MoneroPay-Signature");
         let raw_payload = payload.to_string();
         assert!(
-            moneropay_core::webhook_sign::verify_signature(&signing_secret, raw_payload.as_bytes(), &signature),
+            moneropay_core::webhook_sign::verify_signature(
+                &signing_secret,
+                raw_payload.as_bytes(),
+                &signature
+            ),
             "the delivered signature must verify against this tenant's real signing_secret"
         );
 

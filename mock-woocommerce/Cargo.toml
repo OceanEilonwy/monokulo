@@ -34,3 +34,22 @@ uuid = { version = "1.26.0", features = ["v4"] }
 control-plane = { path = "../control-plane" }
 engine-test-support = { path = "../engine-test-support" }
 monero = "0.22.0"
+# WBS 1.4.5's real stagenet connect-flow test only (hex-encodes the sent
+# transaction's hash for logging/persisting to e2e/stagenet-wallets.json) -
+# same version moneropay-core itself already pins.
+hex = "0.4.3"
+
+[features]
+# Mirrors moneropay-core's own `e2e` feature exactly (see the root Cargo.toml's
+# `[features]` for the full reasoning) - turning this on pulls in the real
+# transaction-construction dependencies transitively through moneropay-core, so
+# WBS 1.4.5's real stagenet connect-flow test (tests/e2e_stagenet_connect_flow.rs)
+# can use `moneropay_core::e2e_wallet::StagenetSpendWallet`. Never enabled by
+# default - a plain `cargo test --workspace`/`cargo test -p mock-woocommerce` must
+# not link this in.
+e2e = ["moneropay-core/e2e"]
+
+[[test]]
+name = "e2e_stagenet_connect_flow"
+path = "tests/e2e_stagenet_connect_flow.rs"
+required-features = ["e2e"]
