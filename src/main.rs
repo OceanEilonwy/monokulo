@@ -11,6 +11,7 @@ use monero::Network;
 use moneropay_core::cli::{self, Action};
 use moneropay_core::config::Config;
 use moneropay_core::daemon::MoneroDaemonClient;
+use moneropay_core::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use moneropay_core::daemon_rpc::RpcDaemonClient;
 use moneropay_core::exchange_rate::ExchangeRateProvider;
 use moneropay_core::http::rate_limit::RateLimiter;
@@ -163,16 +164,40 @@ async fn main() {
 
     // One daemon client per configured network (§DESIGN.md §7) - a single instance
     // can hold mainnet tenants for real customers alongside stagenet/testnet
-    // tenants for testing, each scanned against its own node.
+    // tenants for testing, each scanned against its own node. Each network's client
+    // is a `FallbackDaemonClient` wrapping its primary node plus any configured
+    // `fallbacks`, so a single flaky/down public node doesn't stop scanning that
+    // network - see `daemon_fallback`'s own doc comment for the failover policy.
     let daemons: HashMap<Network, Arc<dyn MoneroDaemonClient>> = config
         .monero_node
         .iter()
         .map(|(network, node_config)| {
-            let accept_self_signed = node_config.accept_self_signed_certs && !strict_tls;
-            let client: Arc<dyn MoneroDaemonClient> = Arc::new(
-                RpcDaemonClient::new(&node_config.host, node_config.port, node_config.ssl, accept_self_signed)
-                    .unwrap_or_else(|e| panic!("failed to build Monero daemon RPC client for {network:?}: {e}")),
-            );
+            let build = |host: &str, port: u16, ssl: bool, accept_self_signed_certs: bool| {
+                let accept_self_signed = accept_self_signed_certs && !strict_tls;
+                RpcDaemonClient::new(host, port, ssl, accept_self_signed)
+                    .unwrap_or_else(|e| panic!("failed to build Monero daemon RPC client for {network:?}: {e}"))
+            };
+            let mut nodes = vec![FallbackNode {
+                label: format!("{}:{}", node_config.host, node_config.port),
+                client: Arc::new(build(
+                    &node_config.host,
+                    node_config.port,
+                    node_config.ssl,
+                    node_config.accept_self_signed_certs,
+                )),
+            }];
+            for fallback in &node_config.fallbacks {
+                nodes.push(FallbackNode {
+                    label: format!("{}:{}", fallback.host, fallback.port),
+                    client: Arc::new(build(
+                        &fallback.host,
+                        fallback.port,
+                        fallback.ssl,
+                        fallback.accept_self_signed_certs,
+                    )),
+                });
+            }
+            let client: Arc<dyn MoneroDaemonClient> = Arc::new(FallbackDaemonClient::new(nodes));
             (network, client)
         })
         .collect();

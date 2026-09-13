@@ -265,6 +265,18 @@ The real implementation talks to `monerod`'s JSON-RPC and plain-HTTP RPC endpoin
 `reqwest` + `rustls` (never OpenSSL, to keep the static-binary goal intact). `ssl`,
 `host`, `port` from `[monero_node]` config select the connection.
 
+**Fallback nodes** (`daemon_fallback::FallbackDaemonClient`): each configured
+network's real client is this wrapper around an ordered list of plain
+`RpcDaemonClient`s - the primary node from `[monero_node.<network>]` plus any
+`[[monero_node.<network>.fallbacks]]` entries - rather than a single `RpcDaemonClient`
+directly. It implements `MoneroDaemonClient` itself, so nothing downstream (the
+scanner, `run_scan_tick`) knows or cares that more than one node might be involved.
+Every call starts at whichever node last succeeded and walks forward through the rest
+on failure, wrapping around; there is no background health-check, since the next real
+call *is* the health check. A self-hoster relying on a single community-run public
+node - the common case this project targets - stays exposed to that node's own
+downtime unless they add at least one fallback.
+
 ### 7.2 0-conf and confirmed detection
 
 - **Mempool**: poll `get_mempool_transactions` on a fixed interval (config

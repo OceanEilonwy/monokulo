@@ -42,6 +42,39 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- Fallback Monero nodes (not a WBS item - requested directly by the user
+  after diagnosing 1.4.5's stall, as a real production-reliability feature,
+  separate from the test-only node swap): `MoneroNodeConfig` gained an
+  optional `fallbacks: Vec<MoneroFallbackNodeConfig>` field
+  (`#[serde(default)]`, fully backward compatible - every existing
+  single-node config parses unchanged), configured via one or more
+  `[[monero_node.<network>.fallbacks]]` array-of-tables entries alongside
+  the existing `[monero_node.<network>]` primary table. New
+  `src/daemon_fallback.rs::FallbackDaemonClient` implements
+  `MoneroDaemonClient` by wrapping an ordered list of real
+  `RpcDaemonClient`s (primary + fallbacks) and failing over between them:
+  every call starts at whichever node last succeeded (not always the
+  primary - a dead primary shouldn't be retried on every single scan
+  tick forever) and walks forward through the rest on failure, wrapping
+  around; no background health-check polling, since the next real call is
+  the health check. Wired into `main.rs`'s daemon construction - each
+  configured network's `Arc<dyn MoneroDaemonClient>` is now this wrapper
+  instead of a bare `RpcDaemonClient`, transparent to everything
+  downstream (the scanner has no idea more than one node might be
+  involved). 6 new unit tests in `daemon_fallback.rs` (healthy-primary
+  never touches fallback; failover within one call; stickiness - a proven
+  fallback isn't abandoned to retry a still-down primary; recovery once
+  the current node itself fails; every-node-failure returns a clear error
+  rather than panicking; single-node-no-fallbacks behaves like a bare
+  client), plus 3 new `config.rs` tests (parses with no fallbacks; parses
+  multiple in order with correct defaults; empty-host/out-of-range-port
+  fallback entries rejected exactly like a primary node's would be, both
+  cases in one test). `config.rs::validate_bounds` extended to validate
+  each fallback's host/port alongside the primary's. Documented in
+  `docs/DESIGN.md` §7.1. Full `cargo test --workspace` clean at 278
+  engine tests (was 269 after the 1.4.5 commit above; +6 daemon_fallback,
+  +3 config) / 0 failed / 8 ignored before commit.
+
 - 1.4.5 done: the real stagenet end-to-end test
   (`mock-woocommerce/tests/e2e_stagenet_connect_flow.rs`, `#[ignore]`d, run
   via `cargo test -p mock-woocommerce --features e2e --test

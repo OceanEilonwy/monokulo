@@ -138,6 +138,16 @@ impl Config {
                 });
             }
             require("monero_node.<network>.port", node.port, 1, u16::MAX, "between 1 and 65535")?;
+            for fallback in &node.fallbacks {
+                if fallback.host.trim().is_empty() {
+                    return Err(ConfigError::OutOfRange {
+                        field: "monero_node.<network>.fallbacks[].host",
+                        value: format!("{:?} (for {network:?})", fallback.host),
+                        expected: "a non-empty hostname or IP address",
+                    });
+                }
+                require("monero_node.<network>.fallbacks[].port", fallback.port, 1, u16::MAX, "between 1 and 65535")?;
+            }
         }
 
         require("payment.confirmations_required", self.payment.confirmations_required, 1, 720, "at least 1 (0 would treat an unconfirmed transaction as final) and at most 720 (~24h)")?;
@@ -227,6 +237,44 @@ pub struct MoneroNodeConfig {
     /// `reqwest`'s blunt `danger_accept_invalid_certs` underneath, so it also
     /// tolerates other certificate problems (expired, wrong hostname) - it isn't
     /// scoped to "self-signed but otherwise fine" specifically.
+    #[serde(default = "default_true")]
+    pub accept_self_signed_certs: bool,
+    /// Additional nodes tried, in order, whenever this network's primary node
+    /// (the fields above) fails a request - see `daemon_fallback::FallbackDaemonClient`.
+    /// `#[serde(default)]` so every existing single-node config keeps working
+    /// unchanged; a self-hoster opts in by adding one or more
+    /// `[[monero_node.<network>.fallbacks]]` array-of-tables entries alongside the
+    /// primary `[monero_node.<network>]` table, e.g.:
+    ///
+    /// ```toml
+    /// [monero_node.stagenet]
+    /// host = "primary.example"
+    /// port = 38081
+    ///
+    /// [[monero_node.stagenet.fallbacks]]
+    /// host = "backup1.example"
+    /// port = 38081
+    ///
+    /// [[monero_node.stagenet.fallbacks]]
+    /// host = "backup2.example"
+    /// port = 38081
+    /// ```
+    #[serde(default)]
+    pub fallbacks: Vec<MoneroFallbackNodeConfig>,
+}
+
+/// A fallback node entry - the same connection fields as [`MoneroNodeConfig`], minus
+/// its own `fallbacks` list. Deliberately a separate (non-recursive) type: a fallback
+/// of a fallback isn't a coherent idea `FallbackDaemonClient` models (it only ever
+/// walks one flat, ordered list per network - see `daemon_fallback`), so this shape
+/// makes nesting `[[monero_node.<network>.fallbacks.fallbacks]]` a config parse error
+/// instead of something that would silently do nothing.
+#[derive(Debug, Deserialize)]
+pub struct MoneroFallbackNodeConfig {
+    pub host: String,
+    pub port: u16,
+    #[serde(default)]
+    pub ssl: bool,
     #[serde(default = "default_true")]
     pub accept_self_signed_certs: bool,
 }
@@ -633,6 +681,74 @@ mod tests {
         assert!(matches!(
             config_with("[server]\nbind = \"not-an-address\"").validate().unwrap_err(),
             ConfigError::OutOfRange { field: "server.bind", .. }
+        ));
+    }
+
+    #[test]
+    fn a_network_with_no_fallbacks_configured_has_an_empty_fallback_list() {
+        let config = config_with("");
+        let mainnet = config.monero_node.get(Network::Mainnet).unwrap();
+        assert!(mainnet.fallbacks.is_empty());
+    }
+
+    #[test]
+    fn fallback_nodes_parse_in_the_order_they_are_written_and_default_ssl_and_cert_leniency() {
+        let toml = r#"
+            [monero_node.mainnet]
+            host = "primary.example"
+            port = 18081
+
+            [[monero_node.mainnet.fallbacks]]
+            host = "backup1.example"
+            port = 18081
+
+            [[monero_node.mainnet.fallbacks]]
+            host = "backup2.example"
+            port = 18089
+            ssl = true
+            accept_self_signed_certs = false
+        "#;
+        let config = Config::from_str(toml).unwrap();
+        config.validate().unwrap();
+        let mainnet = config.monero_node.get(Network::Mainnet).unwrap();
+        assert_eq!(mainnet.fallbacks.len(), 2);
+        assert_eq!(mainnet.fallbacks[0].host, "backup1.example");
+        assert_eq!(mainnet.fallbacks[0].port, 18081);
+        assert!(!mainnet.fallbacks[0].ssl);
+        assert!(mainnet.fallbacks[0].accept_self_signed_certs, "should default on, same as the primary node");
+        assert_eq!(mainnet.fallbacks[1].host, "backup2.example");
+        assert!(mainnet.fallbacks[1].ssl);
+        assert!(!mainnet.fallbacks[1].accept_self_signed_certs);
+    }
+
+    #[test]
+    fn a_fallback_node_with_an_empty_host_or_out_of_range_port_is_rejected_just_like_a_primary_node() {
+        let toml = r#"
+            [monero_node.mainnet]
+            host = "primary.example"
+            port = 18081
+
+            [[monero_node.mainnet.fallbacks]]
+            host = ""
+            port = 18081
+        "#;
+        assert!(matches!(
+            Config::from_str(toml).unwrap().validate().unwrap_err(),
+            ConfigError::OutOfRange { field: "monero_node.<network>.fallbacks[].host", .. }
+        ));
+
+        let toml = r#"
+            [monero_node.mainnet]
+            host = "primary.example"
+            port = 18081
+
+            [[monero_node.mainnet.fallbacks]]
+            host = "backup.example"
+            port = 0
+        "#;
+        assert!(matches!(
+            Config::from_str(toml).unwrap().validate().unwrap_err(),
+            ConfigError::OutOfRange { field: "monero_node.<network>.fallbacks[].port", .. }
         ));
     }
 

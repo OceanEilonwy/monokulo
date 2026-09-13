@@ -2,6 +2,7 @@ pub mod auth;
 pub mod cli;
 pub mod config;
 pub mod daemon;
+pub mod daemon_fallback;
 pub mod daemon_rpc;
 /// Real-Monero-transaction spend wallet, gated behind the `e2e` Cargo feature -
 /// see this module's own doc comment. Used by `tests/e2e_stagenet.rs` (via

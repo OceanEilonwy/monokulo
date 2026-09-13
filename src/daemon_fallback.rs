@@ -1,0 +1,342 @@
+//! `FallbackDaemonClient`: a `MoneroDaemonClient` that wraps an ordered list of other
+//! `MoneroDaemonClient`s (typically one real `RpcDaemonClient` per configured
+//! `[monero_node.<network>]` primary node plus its `fallbacks`) and fails over
+//! between them, so a single flaky or down public node doesn't stop payment
+//! detection on that network. See `docs/DESIGN.md` §7.1 and `config::MoneroNodeConfig::fallbacks`.
+//!
+//! ## Failover policy
+//!
+//! Every call starts at whichever node index last succeeded (`current`), not always
+//! at index 0 - a live deployment whose primary node has gone down and stayed down
+//! should not re-try it (and pay its connection-timeout cost) on every single scan
+//! tick forever; it should settle onto whichever node is actually answering. If that
+//! node fails, the next node in order is tried, wrapping around, until either one
+//! succeeds (which becomes the new `current`) or every node has been tried once, in
+//! which case the last error is returned. There is no separate health-check
+//! loop or background probing - the next real call is the health check, which keeps
+//! this simple and means it never reports a node "up" based on stale information.
+//!
+//! A single down node therefore costs at most one failed request's worth of latency
+//! per call while it stays down (not a cascading retry storm), and recovery is
+//! automatic: the moment the current node starts failing, the very next call moves
+//! on, and a previously-failed node earlier in priority order is naturally retried
+//! again once the chain of calls wraps back around to it.
+
+use std::sync::atomic::{AtomicUsize, Ordering};
+
+use monero::Transaction;
+
+use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
+
+/// One entry in a [`FallbackDaemonClient`]'s ordered node list - the real client plus
+/// a human-readable label (e.g. `"host:port"`) purely for the `eprintln!` diagnostics
+/// on failover, so an operator's logs say *which* configured node just went down or
+/// recovered rather than an opaque index.
+pub struct FallbackNode {
+    pub label: String,
+    pub client: std::sync::Arc<dyn MoneroDaemonClient>,
+}
+
+pub struct FallbackDaemonClient {
+    nodes: Vec<FallbackNode>,
+    /// Index into `nodes` of whichever node most recently answered successfully -
+    /// where the *next* call starts trying from. Relaxed ordering is enough: this is
+    /// an optimization (skip nodes already known-bad) rather than a correctness
+    /// requirement, since every call still tries every node in order if needed.
+    current: AtomicUsize,
+}
+
+impl FallbackDaemonClient {
+    /// `nodes` must be non-empty (enforced by every real construction path: a
+    /// `[monero_node.<network>]` table always has at least its primary node, even
+    /// with zero `fallbacks`) - see `note_all_failed`'s doc comment for what happens
+    /// if this invariant is ever violated anyway.
+    pub fn new(nodes: Vec<FallbackNode>) -> Self {
+        Self { nodes, current: AtomicUsize::new(0) }
+    }
+
+    fn note_success(&self, idx: usize) {
+        let previous = self.current.swap(idx, Ordering::Relaxed);
+        if previous != idx {
+            eprintln!(
+                "monero daemon fallback: now using node {idx} ({}) after node {previous} ({})",
+                self.nodes[idx].label, self.nodes[previous].label
+            );
+        }
+    }
+
+    fn note_failure(&self, idx: usize, error: &DaemonError) {
+        eprintln!("monero daemon fallback: node {idx} ({}) failed, trying next: {error}", self.nodes[idx].label);
+    }
+
+    /// Only reachable if `nodes` was constructed empty, which every real call site
+    /// avoids (see `new`'s doc comment) - kept as a clear error rather than a panic
+    /// or an infinite loop, since a `MoneroDaemonClient` with no nodes configured at
+    /// all is a real (if avoidable) misconfiguration, not a logic bug worth crashing
+    /// the process over.
+    fn note_all_failed() -> DaemonError {
+        DaemonError::Request("no Monero daemon nodes configured".to_string())
+    }
+}
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for FallbackDaemonClient {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        let start = self.current.load(Ordering::Relaxed);
+        let mut last_err = None;
+        for offset in 0..self.nodes.len() {
+            let idx = (start + offset) % self.nodes.len();
+            match self.nodes[idx].client.get_height().await {
+                Ok(v) => {
+                    self.note_success(idx);
+                    return Ok(v);
+                }
+                Err(e) => {
+                    self.note_failure(idx, &e);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(Self::note_all_failed))
+    }
+
+    async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+        let start = self.current.load(Ordering::Relaxed);
+        let mut last_err = None;
+        for offset in 0..self.nodes.len() {
+            let idx = (start + offset) % self.nodes.len();
+            match self.nodes[idx].client.get_block_hash(height).await {
+                Ok(v) => {
+                    self.note_success(idx);
+                    return Ok(v);
+                }
+                Err(e) => {
+                    self.note_failure(idx, &e);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(Self::note_all_failed))
+    }
+
+    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        let start = self.current.load(Ordering::Relaxed);
+        let mut last_err = None;
+        for offset in 0..self.nodes.len() {
+            let idx = (start + offset) % self.nodes.len();
+            match self.nodes[idx].client.get_block_transactions(height).await {
+                Ok(v) => {
+                    self.note_success(idx);
+                    return Ok(v);
+                }
+                Err(e) => {
+                    self.note_failure(idx, &e);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(Self::note_all_failed))
+    }
+
+    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        let start = self.current.load(Ordering::Relaxed);
+        let mut last_err = None;
+        for offset in 0..self.nodes.len() {
+            let idx = (start + offset) % self.nodes.len();
+            match self.nodes[idx].client.get_mempool_transactions().await {
+                Ok(v) => {
+                    self.note_success(idx);
+                    return Ok(v);
+                }
+                Err(e) => {
+                    self.note_failure(idx, &e);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(Self::note_all_failed))
+    }
+
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+        let start = self.current.load(Ordering::Relaxed);
+        let mut last_err = None;
+        for offset in 0..self.nodes.len() {
+            let idx = (start + offset) % self.nodes.len();
+            match self.nodes[idx].client.locate_transaction(txid).await {
+                Ok(v) => {
+                    self.note_success(idx);
+                    return Ok(v);
+                }
+                Err(e) => {
+                    self.note_failure(idx, &e);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(Self::note_all_failed))
+    }
+
+    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        let start = self.current.load(Ordering::Relaxed);
+        let mut last_err = None;
+        for offset in 0..self.nodes.len() {
+            let idx = (start + offset) % self.nodes.len();
+            match self.nodes[idx].client.is_key_image_spent(key_images).await {
+                Ok(v) => {
+                    self.note_success(idx);
+                    return Ok(v);
+                }
+                Err(e) => {
+                    self.note_failure(idx, &e);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(Self::note_all_failed))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::AtomicBool;
+    use std::sync::Arc;
+
+    /// A `MoneroDaemonClient` whose every method can be toggled between succeeding
+    /// (with a fixed, arbitrary-but-distinguishable value) and failing, plus a call
+    /// counter - enough to prove failover order, stickiness, and recovery without
+    /// needing `daemon::fake::FakeDaemonClient`'s much heavier scripted-chain API
+    /// (which has no notion of a node being "down" at all).
+    struct FlakyDaemonClient {
+        healthy: AtomicBool,
+        calls: AtomicUsize,
+    }
+
+    impl FlakyDaemonClient {
+        fn new(healthy: bool) -> Self {
+            Self { healthy: AtomicBool::new(healthy), calls: AtomicUsize::new(0) }
+        }
+
+        fn set_healthy(&self, healthy: bool) {
+            self.healthy.store(healthy, Ordering::Relaxed);
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.load(Ordering::Relaxed)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MoneroDaemonClient for FlakyDaemonClient {
+        async fn get_height(&self) -> Result<u64, DaemonError> {
+            self.calls.fetch_add(1, Ordering::Relaxed);
+            if self.healthy.load(Ordering::Relaxed) {
+                Ok(1)
+            } else {
+                Err(DaemonError::Request("flaky node is down".to_string()))
+            }
+        }
+
+        async fn get_block_hash(&self, _height: u64) -> Result<String, DaemonError> {
+            unimplemented!("not exercised by these tests")
+        }
+
+        async fn get_block_transactions(&self, _height: u64) -> Result<Vec<Transaction>, DaemonError> {
+            unimplemented!("not exercised by these tests")
+        }
+
+        async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+            unimplemented!("not exercised by these tests")
+        }
+
+        async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
+            unimplemented!("not exercised by these tests")
+        }
+
+        async fn is_key_image_spent(&self, _key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+            unimplemented!("not exercised by these tests")
+        }
+    }
+
+    fn node(label: &str, client: Arc<FlakyDaemonClient>) -> (FallbackNode, Arc<FlakyDaemonClient>) {
+        (FallbackNode { label: label.to_string(), client: client.clone() }, client)
+    }
+
+    #[tokio::test]
+    async fn a_healthy_primary_is_always_used_and_the_fallback_is_never_called() {
+        let (primary_node, primary) = node("primary", Arc::new(FlakyDaemonClient::new(true)));
+        let (fallback_node, fallback) = node("fallback", Arc::new(FlakyDaemonClient::new(true)));
+        let client = FallbackDaemonClient::new(vec![primary_node, fallback_node]);
+
+        for _ in 0..3 {
+            assert_eq!(client.get_height().await.unwrap(), 1);
+        }
+        assert_eq!(primary.call_count(), 3);
+        assert_eq!(fallback.call_count(), 0);
+    }
+
+    #[tokio::test]
+    async fn a_down_primary_fails_over_to_the_fallback_within_the_same_call() {
+        let (primary_node, primary) = node("primary", Arc::new(FlakyDaemonClient::new(false)));
+        let (fallback_node, fallback) = node("fallback", Arc::new(FlakyDaemonClient::new(true)));
+        let client = FallbackDaemonClient::new(vec![primary_node, fallback_node]);
+
+        let result = client.get_height().await;
+        assert_eq!(result.unwrap(), 1);
+        assert_eq!(primary.call_count(), 1);
+        assert_eq!(fallback.call_count(), 1);
+    }
+
+    #[tokio::test]
+    async fn once_failed_over_the_client_becomes_sticky_to_the_working_node() {
+        let (primary_node, primary) = node("primary", Arc::new(FlakyDaemonClient::new(false)));
+        let (fallback_node, fallback) = node("fallback", Arc::new(FlakyDaemonClient::new(true)));
+        let client = FallbackDaemonClient::new(vec![primary_node, fallback_node]);
+
+        client.get_height().await.unwrap();
+        assert_eq!(primary.call_count(), 1);
+        assert_eq!(fallback.call_count(), 1);
+
+        // A second call must not re-try the still-down primary first - it should go
+        // straight to the fallback that already proved healthy.
+        client.get_height().await.unwrap();
+        assert_eq!(primary.call_count(), 1, "the down primary should not be retried once a fallback is sticky");
+        assert_eq!(fallback.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn recovery_of_an_earlier_node_is_picked_back_up_once_the_current_one_fails() {
+        let (primary_node, primary) = node("primary", Arc::new(FlakyDaemonClient::new(false)));
+        let (fallback_node, fallback) = node("fallback", Arc::new(FlakyDaemonClient::new(true)));
+        let client = FallbackDaemonClient::new(vec![primary_node, fallback_node]);
+
+        client.get_height().await.unwrap();
+
+        // The primary comes back; the fallback then goes down. The client should
+        // wrap back around to the now-healthy primary rather than erroring out.
+        primary.set_healthy(true);
+        fallback.set_healthy(false);
+        let result = client.get_height().await;
+        assert_eq!(result.unwrap(), 1);
+        assert_eq!(primary.call_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn every_node_failing_returns_the_last_node_s_error_rather_than_panicking() {
+        let (primary_node, _primary) = node("primary", Arc::new(FlakyDaemonClient::new(false)));
+        let (fallback_node, _fallback) = node("fallback", Arc::new(FlakyDaemonClient::new(false)));
+        let client = FallbackDaemonClient::new(vec![primary_node, fallback_node]);
+
+        let err = client.get_height().await.unwrap_err();
+        assert!(matches!(err, DaemonError::Request(_)));
+    }
+
+    #[tokio::test]
+    async fn a_single_configured_node_with_no_fallbacks_behaves_like_a_bare_client() {
+        let (only_node, only) = node("only", Arc::new(FlakyDaemonClient::new(true)));
+        let client = FallbackDaemonClient::new(vec![only_node]);
+
+        assert_eq!(client.get_height().await.unwrap(), 1);
+        assert_eq!(only.call_count(), 1);
+    }
+}
