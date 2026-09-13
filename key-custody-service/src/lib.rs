@@ -1,12 +1,19 @@
-//! Wire-level DTOs for the `KeyCustody` boundary (WBS 2.1.1).
+//! Wire-level DTOs for the `KeyCustody` boundary (WBS 2.1.1), plus (as of WBS
+//! 2.1.2) the socket server and client built on top of them.
 //!
-//! This crate is deliberately *just* data and conversions - no socket, no server,
-//! no client adapter. That split is the WBS's own framing, not an accident of
-//! scope creep avoidance: 2.1.2 (a Unix-socket server plus a client that
-//! implements `KeyCustody` by forwarding calls over it) needs a stable wire
-//! format to build against, and getting that format right - and proven to
-//! round-trip - is a self-contained problem worth finishing before any IO code
-//! exists to obscure a shape bug.
+//! *This file* is still deliberately *just* data and conversions - no socket, no
+//! server, no client adapter - kept exactly as 2.1.1 left it. That split was the
+//! WBS's own framing, not an accident of scope creep avoidance: getting the wire
+//! format right - and proven to round-trip - was a self-contained problem worth
+//! finishing before any IO code existed to obscure a shape bug. The socket half
+//! that format was always going to need now lives alongside it in this same
+//! crate (not a third crate - see the WBS's own "extend, don't fork" framing for
+//! 2.1.2): `protocol.rs` (request/response envelopes + wire framing), `server.rs`
+//! (`KeyCustodyServer`, wrapping a real `PlainKeyCustody`) and its
+//! `bin/key-custody-server.rs` standalone binary, and `client.rs`
+//! (`SocketKeyCustody`, a `KeyCustody` implementation that forwards every call
+//! over the socket). See each module's own doc comment for its share of the
+//! design.
 //!
 //! Every type here exists because `src/key_custody/mod.rs`'s real types don't
 //! (and mostly shouldn't) derive `Serialize`/`Deserialize` themselves:
@@ -39,6 +46,12 @@
 //! crate, so hex keeps this crate's wire values readable in a log line or a
 //! `curl`'d test payload without adding a new encoding convention this
 //! workspace doesn't already have.
+
+// WBS 2.1.2's socket half, built on the DTOs this file defines - see their own
+// doc comments.
+pub mod client;
+pub mod protocol;
+pub mod server;
 
 use std::ops::Range;
 

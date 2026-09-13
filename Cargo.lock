@@ -1217,12 +1217,14 @@ dependencies = [
 name = "key-custody-service"
 version = "0.1.0"
 dependencies = [
+ "async-trait",
  "hex",
  "monero",
  "moneropay-core",
  "serde",
  "serde_json",
  "thiserror",
+ "tokio",
  "zeroize",
 ]
 

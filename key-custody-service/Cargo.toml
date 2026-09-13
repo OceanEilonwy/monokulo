@@ -3,7 +3,18 @@ name = "key-custody-service"
 version = "0.1.0"
 edition = "2021"
 
+[[bin]]
+name = "key-custody-server"
+path = "src/bin/key-custody-server.rs"
+
 [dependencies]
+# WBS 2.1.2: the socket server (`server.rs`, `bin/key-custody-server.rs`) and
+# client (`client.rs`) need a real async runtime with Unix-socket support -
+# `moneropay-core` itself already depends on `tokio = { features = ["full"] }`,
+# so pulling in anything narrower here would just be a second, slightly
+# different feature set to keep in sync for no real benefit; "full" is what the
+# rest of this workspace already standardizes on.
+async-trait = "0.1.92"
 hex = "0.4.3"
 # For the real KeyCustody/WalletHandle/WalletMaterial/KeyCustodyError/MatchedOutput/
 # SubaddressIndex types this crate's DTOs convert to/from - a path dependency, not a
@@ -11,13 +22,13 @@ hex = "0.4.3"
 moneropay-core = { path = ".." }
 monero = "0.22.0"
 serde = { version = "1.0.229", features = ["derive"] }
-thiserror = "2.0.20"
-zeroize = { version = "1.9.0", features = ["derive"] }
-
-[dev-dependencies]
-# Not a main dependency: nothing in src/lib.rs actually serializes anything yet -
-# this crate is DTOs and conversions only (WBS 2.1.1), no socket/server code. Only
-# this crate's own round-trip tests need a concrete wire encoding to prove against;
-# the eventual socket server/client (WBS 2.1.2) will need serde_json (or whatever
-# encoding is chosen then) as a real dependency to actually use one.
+# WBS 2.1.1 kept this as a dev-dependency only, since nothing in src/lib.rs
+# actually serialized anything for real yet - only that crate's own round-trip
+# tests did. WBS 2.1.2 is exactly the "something actually sends bytes over a
+# socket" step that comment anticipated: `protocol.rs`'s frame encoding, the
+# server, and the client all serialize/deserialize the envelope types for real,
+# so this is now a real dependency, not a test-only one.
 serde_json = "1.0.151"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["full"] }
+zeroize = { version = "1.9.0", features = ["derive"] }

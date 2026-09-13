@@ -42,6 +42,170 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- WBS 2.1.2 done: socket-based `KeyCustody` implementation, extending the
+  existing `key-custody-service` crate (not a third crate) with the socket
+  half 2.1.1 deliberately left unbuilt - `protocol.rs` (envelope + framing),
+  `server.rs` (`KeyCustodyServer`, wrapping a real `PlainKeyCustody`) plus its
+  `bin/key-custody-server.rs` standalone binary, and `client.rs`
+  (`SocketKeyCustody`, a real `KeyCustody` impl that forwards every call over
+  a Unix socket). Read `src/key_custody/mod.rs` (trait), `src/key_custody/
+  plain.rs` (`PlainKeyCustody` + its 12-test suite), and 2.1.1's own
+  `key-custody-service/src/lib.rs` DTOs directly before writing anything, per
+  this project's standing practice.
+  - **Framing**: a 4-byte big-endian `u32` length prefix + that many bytes of
+    `serde_json`-encoded payload, same in both directions
+    (`protocol.rs::{read_frame,write_frame}`). `serde_json` because this whole
+    workspace already depends on it pervasively and nothing here is
+    performance-sensitive (a `KeyCustody` call is bounded by scalar-
+    multiplication cost, not serialization); a length prefix rather than a
+    delimiter because a `TransactionWire`'s hex string has no character
+    `serde_json` promises never to emit. `MAX_FRAME_BYTES` (16 MiB) bounds a
+    corrupted/hostile length prefix from claiming up to 4 GiB - same shape of
+    guard as `plain.rs`'s own `MAX_SCAN_TABLE_ENTRIES`, applied to the framing
+    layer instead of the scan-table layer. `read_frame` distinguishes a clean
+    EOF *before* any byte of a new frame's length prefix (`Ok(None)` - the
+    ordinary way a connection ends between requests) from every other failure
+    (a partial prefix, an oversized length, a short payload read, invalid
+    JSON - all `Err`), so a genuinely broken peer never gets mistaken for an
+    ordinary disconnect.
+  - **Envelope**: `KeyCustodyRequest`/`KeyCustodyResponse`, one variant per
+    trait method, each wrapping 2.1.1's existing `{Name}Request`/
+    `{Name}Response` DTOs verbatim - no new per-method wire shape invented.
+  - **Concurrency, chosen deliberately, not left racy**: `SocketKeyCustody`
+    opens one persistent connection at `connect` time (not a fresh connection
+    per call - a real engine will make many calls/second) and serializes
+    every call onto it with a `tokio::sync::Mutex`, rather than a request-ID/
+    correlation scheme letting several calls be in flight over the wire at
+    once. Chose the simpler option: a correlation scheme is real, permanent
+    wire-format complexity to buy back concurrency this workload doesn't
+    obviously need (every call is already bounded by the same scalar-
+    multiplication costs `plain.rs` documents; a future TEE-backed backend is
+    unlikely to parallelize arbitrarily within one enclave either). Documented
+    in `client.rs`'s module doc comment as a decision to revisit at 2.1.3 if
+    it becomes a real bottleneck, not a permanent commitment.
+  - **A bounded per-call timeout (30s default) plus poison-on-failure**: without
+    a timeout, a wedged or malicious server that withholds a response would
+    hang a call forever - and because the connection is shared, mutex-
+    serialized state, that one hung call would silently stall *every* other
+    concurrent caller too. Beyond the timeout itself, any transport-level
+    failure (timeout, I/O error, decode error, clean close) marks the
+    connection `None` (poisoned) rather than trying to keep using it: after a
+    timeout specifically, the peer might still write a late response for the
+    call that just gave up on it, and a later call reusing the same stream
+    would misread those stale bytes as its own reply - silent framing
+    corruption, not a clean error. Poisoning trades that risk for a simple,
+    loud "this `SocketKeyCustody` is dead, make a new one" - no auto-reconnect
+    in this step, called out explicitly as a documented limitation for 2.1.3
+    to address with real requirements instead of this step guessing at them.
+  - **Server-side decode-failure policy**: a request whose own fields don't
+    convert back into real types (bad handle hex, an unparseable address, a
+    non-consensus-encoded transaction) closes the connection rather than
+    trying to shoehorn it into one of `KeyCustodyErrorWire`'s four variants -
+    none of which mean "your bytes were corrupted in transit," and forcing it
+    into e.g. `UnknownWallet` would mislead a caller matching on that variant
+    for a real reason. This is exactly the decision 2.1.1's own
+    `WireConversionError` doc comment left open for this step; resolved in
+    `server.rs::handle_connection`'s doc comment, treating a decode failure
+    the same way a raw framing error is already treated.
+  - **The two whitebox tests, handled honestly, not silently dropped**:
+    `src/key_custody/plain.rs`'s test suite has 12 tests; 10 port verbatim
+    (same scenario, same assertions, only the concrete `KeyCustody` value
+    changes) in `key-custody-service/tests/socket_key_custody.rs`. The other
+    two each assert on `PlainKeyCustody`'s own private internals in the
+    original:
+    - `repeated_scans_over_same_range_reuse_the_cached_table` asserts
+      `rebuild_count(&custody, handle) == 1` then `== 2` via a private,
+      `#[cfg(test)]`-gated `AtomicU64` field on the private `WalletEntry`
+      struct. Not portable for *two* independent reasons, not just one:
+      (1) it's genuinely unobservable through the `KeyCustody` trait -
+      `scan_tx_outputs` returns the same correct result whether or not the
+      table rebuilt, exactly as `plain.rs`'s own module doc comment says; and
+      (2) even a same-process test harness holding a live
+      `Arc<PlainKeyCustody>` could never reach it, because `wallets` (and
+      therefore anything inside a `WalletEntry`) is private to
+      `src/key_custody/plain.rs`'s own module under Rust's privacy rules -
+      not visible even from `src/key_custody/mod.rs`, its own parent module,
+      let alone from a separate crate - and `rebuild_count` is additionally
+      `#[cfg(test)]`-gated, so it isn't even *compiled into* `WalletEntry`
+      when `moneropay-core` is built as an ordinary path dependency the way
+      this crate builds it. Considered and rejected: adding an accessor to
+      `PlainKeyCustody`/`WalletEntry` purely to satisfy this one assertion -
+      that would mean lifting the `cfg(test)` gate on a permanent-looking
+      struct field (a bigger, unrequested change to `plain.rs`'s production
+      layout) to test something a real socket deployment structurally cannot
+      observe either, which is precisely the kind of "faking a port" the WBS
+      2.1.2 brief warned against. **Kept**: three same-range scans plus a
+      genuinely wider fourth all still return the *correct* result (a broken
+      cache would surface as wrong matches, so this isn't a no-op).
+      **Dropped, with this exact reasoning left as a comment on the test
+      itself**: the caching-efficiency assertion.
+    - `removing_a_wallet_scrubs_its_view_key_rather_than_leaving_it_in_freed_
+      memory` asserts `custody.wallets.read().unwrap().is_empty()` directly,
+      plus two assertions that are pure black-box `KeyCustody` behaviour
+      (`remove_wallet` again returns `UnknownWallet`; a post-removal
+      `scan_tx_outputs` returns `UnknownWallet`). **Kept**: both black-box
+      assertions, verbatim. **Dropped, with the same reasoning as above
+      documented on the test**: `wallets.is_empty()` - same private-field
+      problem, no `cfg(test)` gate this time but a plain private field is
+      exactly as unreachable from another crate regardless of that.
+    - A `KeyCustodyServer::backend()` accessor was tried and removed during
+      this session once it became clear it doesn't actually solve either
+      problem: it only ever exposes `PlainKeyCustody`'s own `pub` surface
+      (i.e. the `KeyCustody` trait impl itself, already reachable through the
+      client), never a private field, no matter which process or module holds
+      the `Arc` - "same process" is necessary but nowhere near sufficient for
+      "same-module field access" in Rust. Worth flagging in case a future
+      reader wonders why that accessor isn't here: it was genuinely
+      considered, built, and then correctly discarded as not fit for purpose,
+      not overlooked.
+  - **Beyond the ported suite, 7 new tests proving the socket mechanism
+    itself** (`tests/socket_key_custody.rs`): one launches the *compiled*
+    `key-custody-server` binary as a real, separate OS process via
+    `env!("CARGO_BIN_EXE_key-custody-server")` and drives a full
+    register→derive→scan→remove round trip against it over a real socket
+    path, killing the child afterward - the one test in the whole file that
+    actually proves the "compromising the main engine process alone never
+    yields the keys" claim has a mechanism behind it, since every other test
+    (ported or new) legitimately runs the server as an in-process background
+    task for speed. The rest: connecting to a socket nothing is listening on
+    is a clean `BackendUnavailable`, not a panic or hang; a server that
+    answers once correctly then closes the connection (simulating a mid-
+    session crash/restart) makes the *next* call on the same client fail
+    cleanly rather than hang or corrupt the next read; a peer that sends a
+    well-framed but non-JSON payload back to `SocketKeyCustody` produces a
+    clean client-side error, not a panic; and two raw-socket cases against a
+    real running server - a length prefix claiming a frame far past
+    `MAX_FRAME_BYTES`, and a valid length prefix followed by non-JSON bytes -
+    both close cleanly without taking the server down, proven by a
+    subsequent well-behaved client still being served normally afterward.
+  - **Dependencies**: `key-custody-service/Cargo.toml` promotes `serde_json`
+    from dev- to a real dependency (2.1.1 had explicitly flagged this as the
+    trigger for doing so) and adds `async-trait` + `tokio` (`features =
+    ["full"]`, matching the engine crate's own choice rather than hand-picking
+    a narrower feature set to keep in sync separately). `Cargo.lock`'s diff is
+    two lines (`async-trait`, `tokio` added to this crate's dependency list) -
+    both were already resolved elsewhere in the workspace, so no new external
+    crate entered the graph.
+  - **Not touched**: `src/key_custody/mod.rs` and `src/key_custody/plain.rs`
+    (the engine crate) - the brief's "ideally you won't need to expose
+    anything new from it" held; nothing new was needed beyond what 2.1.1
+    already added (`WalletHandle::as_bytes`/`from_bytes`). No engine wiring to
+    actually *use* `SocketKeyCustody` in `main.rs` - that's WBS 2.1.3.
+  - Full `cargo test --workspace`: engine 311 passed/9 ignored (unchanged),
+    key-custody-service 22 (unit, unchanged) + 17 (new
+    `tests/socket_key_custody.rs` integration tests) = 39, control-plane 80
+    (unchanged), shared 26 (unchanged), engine-test-support 2 (unchanged),
+    mock-woocommerce 8+1 (unchanged). `cargo build --workspace` clean, no
+    warnings, confirmed by touching every new/changed file in
+    `key-custody-service` and rebuilding before relying on a "no warnings"
+    claim. Files touched: `key-custody-service/Cargo.toml`,
+    `key-custody-service/src/lib.rs` (module declarations + doc comment
+    update only - no DTO changed), new `key-custody-service/src/{protocol,
+    server,client}.rs`, new `key-custody-service/src/bin/key-custody-server.rs`,
+    new `key-custody-service/tests/socket_key_custody.rs`. `Cargo.lock`. No
+    `cargo fmt` run anywhere - every new file hand-formatted to match this
+    crate's existing (2.1.1) style throughout.
+
 - WBS 2.1.1 done: `key-custody-service`, a new workspace crate holding *only*
   wire-level DTOs (and their conversions) for every `KeyCustody` trait method's
   arguments and `Result` - the first step of Track B (SEV-SNP key custody).
