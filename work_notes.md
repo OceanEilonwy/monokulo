@@ -42,6 +42,70 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- Corroborated key-image voiding + bounded false-positive recovery sweep (not a
+  WBS item - the user asked directly whether reconnecting to an honest node would
+  ever undo a wrongful void caused by a single lying node's `is_key_image_spent`
+  answer; traced the code and found the answer was no - the only un-void path
+  (`check_for_reorg_and_reconcile`'s reverse check) only runs when a reorg is
+  *also* independently detected, which a key-image lie alone never triggers - then
+  asked for a sustainable, low-overhead fix, which this implements in full).
+  - **Prevention**: `MoneroDaemonClient` gained a new trait method,
+    `is_key_image_spent_corroborated` (default: delegates to the plain method,
+    so every existing single-node client - `RpcDaemonClient`, every test double -
+    is unaffected). `FallbackDaemonClient` overrides it: polls *every* configured
+    node (not just the sticky `current` one), affirms `SpentInBlockchain` only on
+    unanimous agreement among however many actually answered, and refuses to
+    affirm on disagreement (logged, since it means a configured node is wrong or
+    lying) rather than majority-voting - a missed double-spend just gets re-checked
+    later, a false one permanently voids real money, so the safe direction to be
+    wrong in is clear. `scanner::void_if_double_spend_proven` now calls this
+    instead of the bare method. No hot-path cost: `is_key_image_spent` was already
+    only ever called from this same rare "a payment vanished" path, never from the
+    per-second scan loop.
+  - **Recovery**: new `scanner::revalidate_recent_double_spend_voids`, a bounded
+    sweep (only payments voided within `DOUBLE_SPEND_RECHECK_WINDOW_SECS` = 48h)
+    that re-runs the corroborated check on already-voided payments and reverses
+    (`unvoid_as_false_positive`, new) any that no longer hold up. Deliberately its
+    own, much slower background loop (`main.rs`, every 5 minutes) rather than
+    folded into `run_scan_tick`'s per-second loop - double-spend voids are
+    healthily rare, so cost is proportional to how many voids happened recently,
+    not to how often the sweep runs. Reversing this way (unlike the pre-existing
+    reorg-driven reversal, which deliberately leaves `double_spend_detected_at`
+    set - a real conflicting transaction genuinely existed there for a time even
+    if later reorged away) clears that sticky order-level flag too, but only once
+    *every* voided payment on the order has been cleared - an order with two
+    independently-voided payments where only one turns out to be a false
+    accusation keeps the flag, since the other still genuinely justifies it. Fires
+    a new `order.double_spend_reversed` webhook rather than silently folding into
+    whatever status the recompute lands on.
+  - New `Store` methods: `find_payments_voided_since` (network- and
+    recency-scoped, the sweep's candidate query) and `clear_double_spend_flag`
+    (the only way that flag is ever cleared, deliberately separate from
+    `mark_double_spend_detected`'s own "first occurrence only" stickiness).
+  - **17 new tests**: 7 in `daemon_fallback.rs` (unanimous agreement affirms;
+    disagreement refuses and is per-key-image independent of other key images in
+    the same call; a single node or only-one-reachable node is trusted as-is;
+    every-node-unreachable is an error, not a silent false negative), 2 in
+    `scanner.rs` proving the prevention end-to-end through `run_scan_tick`
+    (a disagreeing fallback actually prevents the wrongful void a lying single
+    node would cause; a genuine, unanimously-corroborated double-spend is still
+    voided - no regression), 6 more in `scanner.rs` for the recovery sweep
+    (reverses a no-longer-supported void; leaves a still-supported one alone;
+    ignores voids outside the recheck window; keeps the flag set when another
+    voided payment on the order still justifies it; aborts cleanly - no partial
+    writes - if the chain height is unreachable; skips one failed per-payment
+    recheck but still processes the rest of the batch), 2 in `store.rs`
+    (`find_payments_voided_since`'s recency bounding; `clear_double_spend_flag`'s
+    idempotency). `docs/DESIGN.md` §7.7 updated in both the original
+    `is_key_image_spent` bullet and the "Fallback nodes widen this trust
+    boundary" section, naming every test above by name. Full
+    `cargo test --workspace` clean at 299 engine tests (was 282), 0 failed.
+  - Explicitly out of scope, matching what was actually asked for: no new config
+    knob for the recheck window (a documented constant instead, to avoid
+    unrequested config-surface growth); single-node deployments get no benefit
+    from the prevention half (nothing to corroborate against) - only the recovery
+    sweep helps them, and only within its bounded window.
+
 - Fallback nodes: composed reorg/lagging/all-down tests, plus a real found
   gap (not a WBS item - the user asked directly, after the fallback-node
   feature above, whether the test suite covered a fallback presenting

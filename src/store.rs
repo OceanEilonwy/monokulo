@@ -943,6 +943,29 @@ impl Store {
         Ok(rows)
     }
 
+    /// Every voided payment on `network` whose void happened at or after `cutoff`
+    /// (compared against `voided_at`, a unix timestamp - not a block height, unlike
+    /// this method's reorg-driven siblings above) - the candidate set for
+    /// `scanner::revalidate_recent_double_spend_voids`'s bounded recheck sweep. A
+    /// caller passes `cutoff = now - window_secs` so the result is bounded by how
+    /// many voids happened *recently*, not by the network's entire history - see
+    /// that function's own doc comment for why an old void is not worth rechecking
+    /// forever. Scoped by network for the same reason every sibling query here is.
+    pub fn find_payments_voided_since(&self, network: &str, cutoff: i64) -> Result<Vec<OrderPaymentRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT op.* FROM order_payments op
+             JOIN orders o ON o.id = op.order_id
+             JOIN tenants t ON t.id = o.tenant_id
+             WHERE op.voided_at IS NOT NULL
+               AND op.voided_at >= ?1
+               AND t.network = ?2",
+        )?;
+        let rows = stmt
+            .query_map(params![cutoff, network], Self::row_to_payment)?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Every non-voided payment on `network` that is still mempool-only - matched
     /// from a transaction the scanner has never seen in a block. These are the rows
     /// a plain (reorg-free) double-spend attacks: the customer's transaction is
@@ -1042,6 +1065,23 @@ impl Store {
         let changed = self.conn.execute(
             "UPDATE orders SET double_spend_detected_at = ?2 WHERE id = ?1 AND double_spend_detected_at IS NULL",
             params![order_id, at],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// Reverses `mark_double_spend_detected` - deliberately the *only* way this flag
+    /// is ever cleared, unlike `unvoid_payment`'s reorg-driven counterpart, which by
+    /// design leaves it set (see that method's own doc comment: a real conflicting
+    /// transaction genuinely existed there, even if later reorged away). This exists
+    /// for `scanner::unvoid_as_false_positive`, whose whole premise is that the
+    /// original accusation may never have been true at all - see that function's own
+    /// doc comment for why it only calls this once every voided payment on the order
+    /// has been cleared, never as a side effect of clearing just one of several.
+    /// Returns `false` if the flag was already unset (idempotent).
+    pub fn clear_double_spend_flag(&self, order_id: &str) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE orders SET double_spend_detected_at = NULL WHERE id = ?1 AND double_spend_detected_at IS NOT NULL",
+            params![order_id],
         )?;
         Ok(changed > 0)
     }
@@ -2334,6 +2374,50 @@ mod tests {
         // And a network scope violation is still impossible either way.
         assert!(store.find_payments_at_or_after_height("stagenet", 50).unwrap().is_empty());
         assert!(store.find_voided_payments_at_or_after_height("stagenet", 50).unwrap().is_empty());
+    }
+
+    #[test]
+    fn find_payments_voided_since_is_bounded_by_recency_not_by_every_void_ever() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, &tenant.tenant.id, 1);
+        store.record_payment_match(&order.id, "tx_old", 0, 100, "[]", 1000, Some(50)).unwrap();
+        store.record_payment_match(&order.id, "tx_recent", 1, 100, "[]", 1000, Some(50)).unwrap();
+        store.void_payment(&order.id, "tx_old", 0, 1000).unwrap();
+        store.void_payment(&order.id, "tx_recent", 1, 5000).unwrap();
+
+        let recent_only = store.find_payments_voided_since("mainnet", 3000).unwrap();
+        assert_eq!(recent_only.len(), 1);
+        assert_eq!(recent_only[0].txid, "tx_recent");
+
+        let both = store.find_payments_voided_since("mainnet", 0).unwrap();
+        assert_eq!(both.len(), 2, "a cutoff at or before every void returns all of them");
+
+        assert!(
+            store.find_payments_voided_since("mainnet", 5001).unwrap().is_empty(),
+            "a cutoff after every void returns nothing"
+        );
+        assert!(
+            store.find_payments_voided_since("stagenet", 0).unwrap().is_empty(),
+            "network scope violation must still be impossible"
+        );
+    }
+
+    #[test]
+    fn clear_double_spend_flag_only_reports_a_real_change_and_is_idempotent() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, &tenant.tenant.id, 1);
+
+        assert!(!store.clear_double_spend_flag(&order.id).unwrap(), "nothing to clear yet");
+
+        store.mark_double_spend_detected(&order.id, 1000).unwrap();
+        assert!(store.get_order_by_id(&order.id).unwrap().unwrap().double_spend_detected_at.is_some());
+
+        assert!(store.clear_double_spend_flag(&order.id).unwrap());
+        assert!(store.get_order_by_id(&order.id).unwrap().unwrap().double_spend_detected_at.is_none());
+
+        assert!(!store.clear_double_spend_flag(&order.id).unwrap(), "already clear - idempotent");
     }
 
     #[test]

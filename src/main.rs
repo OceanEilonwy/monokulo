@@ -20,7 +20,7 @@ use moneropay_core::init_wizard;
 use moneropay_core::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle, WalletMaterial};
 use moneropay_core::local_admin;
 use moneropay_core::network::network_str;
-use moneropay_core::scanner::run_scan_tick;
+use moneropay_core::scanner::{revalidate_recent_double_spend_voids, run_scan_tick};
 use moneropay_core::store::{NewTenant, SharedStore, Store};
 use moneropay_core::webhook_delivery::run_delivery_tick;
 
@@ -231,6 +231,16 @@ async fn main() {
     let reorg_check_depth = config.payment.reorg_check_depth;
     let poll_interval = Duration::from_millis(config.payment.mempool_poll_interval_ms);
     let daemons = Arc::new(daemons);
+
+    // Cloned before the scanner loop's own `move` closure below consumes the
+    // originals - its own, much slower loop (see `run_double_spend_revalidation_loop`'s
+    // doc comment for why it is never folded into the scan-tick loop itself).
+    let revalidation_store = store.clone();
+    let revalidation_daemons = daemons.clone();
+    supervise("double-spend revalidation", move || {
+        run_double_spend_revalidation_loop(revalidation_store.clone(), revalidation_daemons.clone())
+    });
+
     supervise("chain scanner", move || {
         run_scanner_loop(
             store.clone(),
@@ -408,5 +418,34 @@ async fn run_scanner_loop(
             }
         }
         tokio::time::sleep(poll_interval).await;
+    }
+}
+
+/// How often [`revalidate_recent_double_spend_voids`] sweeps each network - much
+/// slower than the scan-tick/webhook-delivery loops above, since it exists to catch
+/// a rare event (a wrongly-voided payment) within a wide, forgiving window
+/// (`scanner::DOUBLE_SPEND_RECHECK_WINDOW_SECS`), not to react quickly. See that
+/// function's own doc comment for why this is deliberately not folded into
+/// `run_scanner_loop`'s tight per-second cadence.
+const DOUBLE_SPEND_REVALIDATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
+
+async fn run_double_spend_revalidation_loop(
+    store: SharedStore,
+    daemons: Arc<HashMap<Network, Arc<dyn MoneroDaemonClient>>>,
+) {
+    loop {
+        for (network, daemon) in daemons.iter() {
+            match revalidate_recent_double_spend_voids(&store, daemon.as_ref(), network_str(*network), now_unix()).await {
+                Ok(recovered) if !recovered.is_empty() => {
+                    println!(
+                        "double-spend revalidation on {network:?} reversed {} previously-voided payment(s): {recovered:?}",
+                        recovered.len()
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("double-spend revalidation failed for {network:?}: {e}"),
+            }
+        }
+        tokio::time::sleep(DOUBLE_SPEND_REVALIDATION_INTERVAL).await;
     }
 }

@@ -470,7 +470,12 @@ an assumption.
   voided; a false "unspent" delays (never prevents) detection of a real double-spend,
   since the check is re-run on every subsequent reorg and mempool sweep. Nothing else
   the scanner holds can corroborate a key-image status — key images are exactly the
-  data a light client cannot derive for itself.
+  data a light client cannot derive for itself. **Partially closed when a fallback
+  node is configured** - see "Fallback nodes widen this trust boundary" below for
+  both the prevention (`is_key_image_spent_corroborated`) and recovery
+  (`revalidate_recent_double_spend_voids`) halves of the fix. A self-hoster running a
+  single node still has no corroboration source and is fully exposed to this trust
+  boundary as originally described.
 - **Block contents.** A node that omits a transaction from a block hides a payment;
   one that invents transactions cannot manufacture a payment, because a payment row
   exists only where `KeyCustody` matched an output against the tenant's own view key,
@@ -531,6 +536,40 @@ explicitly, both pinned by tests rather than left as unverified worry:
   worth keeping; pinning it to one node per tick would trade this narrow, low-
   probability inconsistency for aborting the whole tick's remaining work on any
   mid-tick blip.
+- **`is_key_image_spent` is fixed, not just documented, once a fallback is
+  configured** - the one item on this list where "widens the trust boundary" turned
+  out to have a real answer rather than only a tradeoff to accept. Two parts,
+  addressing prevention and recovery separately since a single-node deployment can
+  only ever benefit from the second:
+  - **Prevention**: `MoneroDaemonClient::is_key_image_spent_corroborated` (default:
+    delegates to the plain call, unchanged for every single-node client) is what
+    `void_if_double_spend_proven` calls instead of the bare method.
+    `FallbackDaemonClient`'s override polls *every* configured node - not just the
+    "sticky" one everything else uses - and affirms `SpentInBlockchain` only when
+    all of them agree; a genuine disagreement is logged and treated as *not* spent,
+    since a missed double-spend is merely re-checked again later while a false one
+    permanently voids real money. Proven to actually prevent the exact attack a
+    single lying node used to cause
+    (`a_fallback_daemon_that_disagrees_with_the_primary_prevents_the_wrongful_void_a_single_lying_node_would_cause`),
+    without weakening genuine detection when every node honestly agrees - the
+    overwhelmingly common case even with a fallback configured
+    (`a_fallback_daemon_still_voids_a_real_double_spend_every_node_agrees_on`).
+  - **Recovery**: `scanner::revalidate_recent_double_spend_voids`, a separate,
+    slow (every few minutes, see `main.rs`) background sweep bounded to voids from
+    the last `DOUBLE_SPEND_RECHECK_WINDOW_SECS` (48h) - the *only* other path,
+    alongside `check_for_reorg_and_reconcile`'s reverse check, that can ever reverse
+    a void, and the only one that does not require a reorg to also be independently
+    detected first. Reversing via this path clears the order's sticky
+    `double_spend_detected_at` flag (once every voided payment on the order has
+    been cleared, not as a side effect of clearing just one of several -
+    `revalidate_recent_double_spend_voids_keeps_the_flag_set_while_another_voided_payment_still_justifies_it`)
+    and fires a distinct `order.double_spend_reversed` webhook, unlike the
+    reorg-driven reversal path, which deliberately leaves both alone (a real
+    conflicting transaction genuinely existed there for a time in that story, even
+    though it was later reorged away - this path exists specifically because the
+    original accusation may never have been true at all). Exists specifically for
+    the single-node deployment, which has nothing to corroborate against and so
+    cannot benefit from prevention alone.
 
 **The deployment consequence**: the node is a trusted component. Point this service at
 your own `monerod`, not at a public endpoint you do not control, whenever the payments

@@ -38,6 +38,21 @@ pub trait MoneroDaemonClient: Send + Sync {
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError>;
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError>;
     async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError>;
+
+    /// Like `is_key_image_spent`, but for a client that knows about more than one
+    /// node (see `daemon_fallback::FallbackDaemonClient::is_key_image_spent_corroborated`)
+    /// - corroborates the answer across all of them before ever affirming
+    /// `SpentInBlockchain`, since a false positive here permanently voids a real
+    /// payment (`docs/DESIGN.md` §7.7). The default here, inherited by every
+    /// single-node client (`RpcDaemonClient`, every test double), simply delegates:
+    /// with exactly one source of truth to consult, there is nothing to corroborate
+    /// against, so behavior is unchanged from plain `is_key_image_spent`.
+    async fn is_key_image_spent_corroborated(
+        &self,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        self.is_key_image_spent(key_images).await
+    }
 }
 
 /// Test double for `MoneroDaemonClient`, scripted via a small timeline API. Lets
