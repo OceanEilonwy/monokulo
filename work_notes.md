@@ -42,6 +42,128 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- WBS 1.7.1 done: `CoingeckoRateProvider`, a second `ExchangeRateProvider`
+  implementation backed by live rates from Coingecko's public API, plus config
+  wiring and a `main.rs` background-refresh loop.
+  - **Design followed as specced, not re-derived**: the trait stays synchronous.
+    `CoingeckoRateProvider` holds an `Arc<std::sync::RwLock<HashMap<String, u64>>>`
+    cache that `piconero_per_unit` just reads; a separate `pub async fn
+    refresh(&self) -> Result<(), ExchangeRateError>` does the real HTTP round trip
+    and updates the cache. A currency the cache doesn't (yet) have is `None`,
+    same as `FixedRateProvider`'s existing behavior for an unconfigured currency -
+    nothing downstream needed to change.
+  - **Verified the real API before writing the parser, and found a real gotcha
+    doing it**: `GET https://api.coingecko.com/api/v3/simple/price?ids=monero&vs_currencies=usd,eur`
+    really does return `{"monero":{"usd":530.68,"eur":457.01}}` (live numbers at
+    the time, XMR was ~$530-531) - confirmed via `curl` first. An unknown currency
+    is simply absent from the inner object (`{"monero":{}}`), not an error or
+    `null`; an unknown coin id under `ids=` (not reachable in practice here, since
+    `monero` is hardcoded) comes back as a bare `{}`, handled by treating "no
+    `\"monero\"` object in the body" as `ExchangeRateError::UnexpectedResponse`.
+    **The real gotcha**: a bare `reqwest::Client::new()` gets a flat `403` from
+    the live endpoint - Coingecko's edge rejects any request without a
+    "descriptive User-Agent" (its own error message's exact wording). Not
+    theorized, hit for real: the first run of the live smoke test (below) failed
+    with `Status(403, None)` before this was fixed by setting `.user_agent(...)`
+    on the client `CoingeckoRateProvider::new` builds. Worth flagging because it
+    would have been invisible in every unit test here (the local axum test server
+    doesn't care about `User-Agent`) and would only have surfaced once someone
+    finally ran this against the real internet - which is exactly why the task
+    asked for a live smoke test rather than trusting the fixture tests alone.
+  - **The inversion arithmetic and its guardrails**: `piconero_per_unit =
+    round(1e12 / price_of_1_xmr_in_that_currency)`, `f64` throughout, matching the
+    task's explicit carve-out from `docs/DESIGN.md` §8.1 (documented in the
+    module's own doc comment as an exception, not a violation - §8.1 governs
+    computing a customer's charge from an already-fixed rate via
+    `compute_xmr_amount`, untouched here; Coingecko's own market price has no
+    "exact" form to preserve in the first place). Per-currency, not
+    all-or-nothing: an absent, non-numeric, non-finite, zero, negative, or
+    u64-overflowing price for one currency is logged and that currency alone is
+    skipped for the round (a Coingecko bug/outage returning `0`/`null` for one
+    currency must not silently price every order in it at zero), while every
+    other currency in the same response still updates normally. A failed
+    request/non-2xx/malformed-body fails the *whole* `refresh()` call before the
+    cache is touched at all, so a transient outage never wipes previously-cached
+    rates - mirrors the "a lagging/failing fallback node doesn't corrupt stored
+    state" resilience shape this codebase's fallback-node tests already
+    established, applied here to the rate cache instead of chain-scan state.
+  - **Config** (`src/config.rs`): `ExchangeRateConfig` gained `currencies:
+    Vec<String>` (`#[serde(default)]`, empty by default - the exact casing
+    written here is what `piconero_per_unit` gets looked up by later, matching
+    `FixedRateProvider`'s already-existing case-sensitive-verbatim behavior) and
+    `cache_seconds: u64` (`#[serde(default)]` = 60, validated 10-3600 in
+    `validate_bounds` - the lower bound exists so a typo can't turn the
+    background loop into a hot loop against a free public API this deployment
+    depends on for every order's price). `Config::validate` now accepts
+    `provider = "coingecko"` alongside the existing `"fixed"`, and rejects
+    coingecko mode with an empty `currencies` list as a new
+    `ConfigError::CoingeckoNoCurrenciesConfigured` (nothing would ever be
+    fetched - a real misconfiguration, not a valid "no currencies yet" state).
+    New `ExchangeRateConfig::build_coingecko_rate_provider()` mirrors the
+    existing `build_fixed_rate_provider()`, always pointed at the real
+    `https://api.coingecko.com` (the base-url override exists on the provider
+    type for tests, not as an operator-facing config knob - not asked for, and
+    a config surface for pointing production at an arbitrary URL felt like
+    unrequested scope).
+  - **`main.rs` wiring**: the exchange-rate provider construction now matches on
+    `config.exchange_rate.provider` (already validated to be one of the two known
+    values by this point). `"coingecko"` builds the provider, calls `.refresh()`
+    once synchronously (logs and continues rather than panicking on failure - a
+    transient outage at boot shouldn't stop the whole service starting, and every
+    order in every configured currency will 400 as unsupported until a refresh
+    succeeds, which is loud in the logs, not silent), then `supervise`s a new
+    `run_coingecko_refresh_loop` that sleeps `cache_seconds` and calls
+    `.refresh()` again, forever - same `supervise` pattern as the existing
+    webhook-delivery/scanner/double-spend-revalidation loops, so a panic inside
+    it gets logged and restarted rather than silently killing rate updates
+    forever. `"fixed"` (and anything else, though `validate` already excludes
+    other values) takes the existing unchanged path.
+  - **Tests**: 8 new in `exchange_rate.rs` (successful refresh's inversion
+    arithmetic checked against a hand-computed value for a known price of 149.23
+    USD/XMR -> 6,701,065,469 piconero/USD; an untracked/absent currency stays
+    `None`, no panic; a non-object and a non-JSON response body are each a clean
+    `Err`, not a panic; a zero price and a negative price in the same response
+    each individually skip only their own currency, leaving a third good value in
+    that same response intact; an unreachable base URL (`http://127.0.0.1:0` -
+    deterministic, no bind/drop race) is a clean `Err`; a later failed refresh
+    (simulated outage via a scripted second response) leaves an already-cached
+    rate untouched; lookup casing matches configured casing exactly, mirroring
+    `FixedRateProvider`) plus a `#[ignore]`d live smoke test, run manually (see
+    below). 3 new in `config.rs` (coingecko mode with a real currency list
+    parses/validates and `build_coingecko_rate_provider` hands back a working,
+    empty-cache provider; empty `currencies` under coingecko mode is rejected,
+    both omitted and explicit `[]`; `cache_seconds` bounds - 0, 5, and 3601
+    rejected, 10 and 3600 accepted). All pre-existing `provider = "fixed"` tests
+    pass unmodified.
+  - **Live smoke test, run for real** (not simulated): `cargo test -p
+    moneropay-core --lib
+    exchange_rate::tests::coingecko::manual_smoke_test_against_the_real_coingecko_api
+    -- --ignored --nocapture`, against the real `https://api.coingecko.com`,
+    requesting USD and EUR. Actual output: `piconero_per_unit("USD") =
+    1883629377, piconero_per_unit("EUR") = 2187274437` - i.e. roughly $530.90 and
+    €457.20 per XMR at the time, consistent with the earlier `curl` check (also
+    run live: `{"monero":{"usd":530.68,"eur":457.01}}` moments earlier - price
+    moved slightly between the two calls, as expected for a live market feed).
+  - **Not done / explicitly out of scope**: `init_wizard.rs`'s interactive setup
+    flow was not extended to offer `provider = "coingecko"` as a choice - it still
+    only ever writes `provider = "fixed"` configs. The task's spec named
+    `config.rs` and `main.rs` for wiring, not the wizard; adding a third
+    provider-choice branch to an already-scripted interactive prompt sequence
+    felt like a separate, non-trivial UI task rather than an oversight worth
+    silently folding in here. A self-hoster (or the control-plane's own generated
+    config, once that exists) can still hand-write `provider = "coingecko"` into
+    the TOML directly - `Config::validate`/`build_coingecko_rate_provider` don't
+    care how the file was produced. Also not built: any operator-facing override
+    of the Coingecko base URL (see above) or a config knob for which specific
+    coin id to query (hardcoded to `monero`, the only one this service could ever
+    need).
+  - Full `cargo test --workspace`: engine 310 passed/9 ignored (was 299/8, +11
+    tests, +1 new `#[ignore]`d live test), control-plane 80 (unchanged), shared
+    26 (unchanged), engine-test-support 2 (unchanged), mock-woocommerce 8+1
+    (unchanged). `cargo build --workspace` clean, no warnings. Files touched:
+    `src/exchange_rate.rs`, `src/config.rs`, `src/main.rs` - no engine schema/
+    migration changes, no other crate touched.
+
 - Corroborated key-image voiding + bounded false-positive recovery sweep (not a
   WBS item - the user asked directly whether reconnecting to an honest node would
   ever undo a wrongful void caused by a single lying node's `is_key_image_spent`
@@ -803,6 +925,29 @@ Key architectural facts an agent should not have to rediscover:
   than the new `[workspace]` table in `Cargo.toml`.
 
 ## Judgment calls & open questions for the user
+
+- **WBS 1.5 (the real WooCommerce PHP plugin) is blocked on missing tooling
+  in this environment - skipped ahead to 1.7.1 instead, which the WBS itself
+  marks as parallel/non-blocking.** Checked directly (not assumed): this
+  sandbox has no `php`, `composer`, `docker`, or `wp` (wp-cli) binary, and no
+  passwordless `sudo` - `pacman` (this is Arch/CachyOS, not
+  apt/dnf) needs root to install anything. 1.5.1's own acceptance test
+  explicitly requires `wp-env` (Docker-based WordPress) and WooCommerce
+  PHPUnit, neither of which can exist here without installing a real PHP +
+  Docker toolchain onto your actual machine (not a disposable container) -
+  a system-level change I'm not willing to make unilaterally, and one only
+  you can authorize (with your `sudo` password, typed via `!` in the
+  terminal, or by setting the toolchain up yourself). Writing the PHP plugin
+  code without being able to run it against real WooCommerce would break
+  this whole project's established practice of never treating anything as
+  "done" without an independently-run, real test proving it - I'd rather
+  flag this than fake it. **What I did instead**: moved to WBS 1.7.1
+  (Coingecko exchange-rate provider), which only needs the existing Rust
+  toolchain and is explicitly marked "parallel within Track A, non-blocking"
+  in the WBS - see the progress log entry once it lands. **What you'll want
+  to decide**: whether to install `php`, `composer`, and `wp-env`'s Docker
+  dependency yourself, grant me the access to do it, or hold Track 1.5 until
+  you're working from an environment that already has them.
 
 - **Important: this worktree is built on an older baseline than your main
   checkout, and it matters for one specific area.** While reviewing 0.1's

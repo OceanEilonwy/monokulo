@@ -13,7 +13,7 @@ use moneropay_core::config::Config;
 use moneropay_core::daemon::MoneroDaemonClient;
 use moneropay_core::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use moneropay_core::daemon_rpc::RpcDaemonClient;
-use moneropay_core::exchange_rate::ExchangeRateProvider;
+use moneropay_core::exchange_rate::{CoingeckoRateProvider, ExchangeRateProvider};
 use moneropay_core::http::rate_limit::RateLimiter;
 use moneropay_core::http::{build_router, now_unix, AppState};
 use moneropay_core::init_wizard;
@@ -155,12 +155,45 @@ async fn main() {
     let db_path = init_wizard::database_path_for(&config_path);
     let store = Store::open_file(&db_path.to_string_lossy()).expect("failed to open database").into_shared();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-    let exchange_rate: Arc<dyn ExchangeRateProvider> = Arc::new(
-        config
-            .exchange_rate
-            .build_fixed_rate_provider()
-            .expect("invalid exchange_rate.rates entry in config"),
-    );
+    // `Config::validate` has already confirmed `provider` is one of these two
+    // known values (and, for "coingecko", that `currencies` is non-empty) - this
+    // match is a plain dispatch, not a second round of validation.
+    let exchange_rate: Arc<dyn ExchangeRateProvider> = match config.exchange_rate.provider.as_str() {
+        "coingecko" => {
+            let provider = Arc::new(
+                config
+                    .exchange_rate
+                    .build_coingecko_rate_provider()
+                    .expect("invalid exchange_rate config for the coingecko provider"),
+            );
+            // Best-effort at boot: a transient Coingecko outage right now
+            // shouldn't stop the whole service from starting, since the
+            // background loop below will keep retrying. Every order in every
+            // configured currency will 400 as "unsupported currency" until
+            // either this or a later refresh succeeds - loud in the logs, not
+            // silent.
+            if let Err(e) = provider.refresh().await {
+                eprintln!(
+                    "initial coingecko exchange-rate refresh failed: {e} - starting with an empty rate cache; \
+                     orders will be rejected as an unsupported currency until the background refresh loop \
+                     (every {}s) succeeds",
+                    config.exchange_rate.cache_seconds
+                );
+            }
+            let refresh_provider = provider.clone();
+            let cache_seconds = config.exchange_rate.cache_seconds;
+            supervise("coingecko exchange-rate refresh", move || {
+                run_coingecko_refresh_loop(refresh_provider.clone(), cache_seconds)
+            });
+            provider
+        }
+        _ => Arc::new(
+            config
+                .exchange_rate
+                .build_fixed_rate_provider()
+                .expect("invalid exchange_rate.rates entry in config"),
+        ),
+    };
 
     // One daemon client per configured network (§DESIGN.md §7) - a single instance
     // can hold mainnet tenants for real customers alongside stagenet/testnet
@@ -360,6 +393,20 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
         }
     }
     handles
+}
+
+/// Re-fetches Coingecko rates on `cache_seconds`'s interval, forever. Sleeps
+/// first rather than refreshing immediately: `main` already performs one refresh
+/// synchronously (best-effort) before spawning this loop, so refreshing again
+/// right away would just be a redundant duplicate request at boot.
+async fn run_coingecko_refresh_loop(provider: Arc<CoingeckoRateProvider>, cache_seconds: u64) {
+    let interval = Duration::from_secs(cache_seconds);
+    loop {
+        tokio::time::sleep(interval).await;
+        if let Err(e) = provider.refresh().await {
+            eprintln!("coingecko exchange-rate refresh failed: {e} - continuing to serve the last successfully cached rates");
+        }
+    }
 }
 
 async fn run_webhook_delivery_loop(
