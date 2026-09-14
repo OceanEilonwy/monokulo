@@ -42,6 +42,62 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 
 	/**
+	 * The one, fixed address of MoneroPay Cloud's own hosted control plane -
+	 * the service `control-plane/src/http/connect.rs` implements, sitting in
+	 * front of (potentially many) real engines. **Not** the same thing as
+	 * `$api_base_url`/`endpoint` below, and the two must never be conflated:
+	 * `$api_base_url` is *an engine's* base URL (there can be many - every
+	 * tenant's own hosted engine, or a self-hoster's own instance); this
+	 * constant is *the* control plane's base URL, and for the hosted
+	 * "MoneroPay Cloud" product this plugin exists for
+	 * (`docs/WOOCOMMERCE_ROADMAP.md`'s framing throughout, e.g. "we (not each
+	 * individual merchant) run the infrastructure") there is exactly one of
+	 * them - a fixed, known address, never something a merchant types in.
+	 * That asymmetry is exactly why this is a class constant and
+	 * `$api_base_url` is a per-merchant settings field: a merchant has to
+	 * tell this plugin *which engine* their store talks to (today: pasted
+	 * in by hand; via this step: written automatically by the connect flow
+	 * below), but never *which control plane* - there's only the one this
+	 * plugin ships already knowing about, exactly the way a Stripe or
+	 * WooCommerce Payments extension hardcodes Stripe's/WooCommerce's own
+	 * API host rather than asking the merchant to paste it in.
+	 *
+	 * **This is a placeholder, deliberately, not a real address**: as of
+	 * this step, MoneroPay Cloud's control plane has no real, decided
+	 * production domain yet (checked `docs/WOOCOMMERCE_ROADMAP.md` and
+	 * `work_notes.md` directly - neither names one). `cloud.moneropay.example`
+	 * is lifted verbatim from the roadmap doc's own illustrative URL (Stage
+	 * 6) specifically *because* it's already an obvious non-address -
+	 * `.example` is the IANA-reserved TLD that can never resolve to anything
+	 * real (RFC 2606) - rather than inventing a new placeholder that could
+	 * later be mistaken for a real one. Whoever picks the real production
+	 * domain only has to change this one line (and, ideally, drop the filter
+	 * override below instead of leaving both).
+	 *
+	 * @var string
+	 */
+	const CONTROL_PLANE_BASE_URL = 'https://cloud.moneropay.example';
+
+	/**
+	 * The `platform` path segment this plugin identifies itself as to the
+	 * control plane's generic, platform-agnostic connect flow
+	 * (`GET /connect/{platform}` etc., see `connect.rs`'s own module doc
+	 * comment) - `"woocommerce"`, matching exactly what `control-plane`'s own
+	 * tests and `mock-woocommerce`'s driver already use for this platform, so
+	 * every `store_connections.platform` row this plugin ever produces is
+	 * consistent with what the mock already exercised end to end.
+	 */
+	const CONNECT_PLATFORM = 'woocommerce';
+
+	/**
+	 * The `admin-post.php` action name this gateway registers as `return_url`
+	 * for the connect flow - see `get_connect_return_url()`'s own doc comment
+	 * for why `admin-post.php`, specifically, is the callback mechanism this
+	 * step chose.
+	 */
+	const CONNECT_RETURN_ACTION = 'moneropay_cloud_connect_return';
+
+	/**
 	 * The engine instance this store talks to, e.g. `https://pay.example.com`
 	 * - no trailing slash (stripped in the getters below, so a merchant
 	 * pasting one in doesn't produce a double slash in the outbound URL).
@@ -92,6 +148,36 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 	 * @var string
 	 */
 	private $tenant_public_key;
+
+	/**
+	 * The tenant's secret key (`sk_...`), as of this step (WBS 1.5.3)
+	 * genuinely returned by a real connect flow's `/finish` call
+	 * (`FinishResponse::secret_token`, `control-plane/src/http/connect.rs`)
+	 * and now actually stored - unlike WBS 1.5.2's deliberate choice not to
+	 * add a secret-key field at all, back when nothing in this plugin ever
+	 * saw one.
+	 *
+	 * **Why store it now when nothing here reads it yet**: discarding it
+	 * would be actively harmful, not just unused - `consume_connect_token`
+	 * redeems the connect token exactly once (see that method's own
+	 * atomicity doc comment), so a `secret_token` that isn't saved the one
+	 * time it's ever handed over is *gone* until the merchant reconnects
+	 * their wallet from scratch. A future step that needs authenticated
+	 * admin-API access (webhook management, refunds, anything behind
+	 * `AuthedTenant`) would otherwise have to force every already-connected
+	 * merchant through the whole browser-redirect connect flow again just to
+	 * get back a value this plugin already had in hand once and threw away.
+	 * Storing a string nobody reads yet costs nothing; losing a single-use
+	 * secret costs a real support burden later. Exposed as a real (masked,
+	 * `type => 'password'`) settings field below for the same reason
+	 * `endpoint`/`public_key` are - so a self-hoster or an advanced merchant
+	 * can also paste one in by hand, exactly like those two fields already
+	 * allow - not because this step has any code path that reads it back
+	 * out.
+	 *
+	 * @var string
+	 */
+	private $secret_token;
 
 	/**
 	 * Sets up the gateway's identity and settings fields.
@@ -205,6 +291,7 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 		// exactly the kind of support ticket worth avoiding for free.
 		$this->api_base_url     = trim( (string) $this->get_option( 'endpoint', '' ) );
 		$this->tenant_public_key = trim( (string) $this->get_option( 'public_key', '' ) );
+		$this->secret_token      = trim( (string) $this->get_option( 'secret_token', '' ) );
 
 		// No explicit `$this->enabled = $this->get_option( 'enabled' )` line
 		// here, deliberately - checked directly against WooCommerce's own
@@ -243,6 +330,27 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 		// settings form would render correctly but silently discard every
 		// change on submit.
 		add_action( 'woocommerce_update_options_payment_gateways_' . $this->id, array( $this, 'process_admin_options' ) );
+
+		// The real connect-flow callback (WBS 1.5.3) - see
+		// `get_connect_return_url()`'s own doc comment for why
+		// `admin_post_{action}` specifically is the right WordPress
+		// mechanism for this, and `handle_connect_return()`'s for why
+		// registering it here in the constructor is safe (identical
+		// reasoning to the `woocommerce_update_options_...` registration
+		// immediately above: this constructor only ever runs once
+		// WooCommerce's own `WC_Payment_Gateways::init()` has already fired,
+		// which happens on every request including the one `admin-post.php`
+		// itself bootstraps).
+		add_action( 'admin_post_' . self::CONNECT_RETURN_ACTION, array( $this, 'handle_connect_return' ) );
+
+		// Flashes a one-line success/error notice on this gateway's own
+		// settings screen after a connect attempt redirects back to it - see
+		// `maybe_render_connect_notice()`'s own doc comment for why a plain
+		// query-string flag is used here rather than `WC_Admin_Settings::
+		// add_error()` (which only works within the same request that
+		// renders the settings form, and the connect callback is a separate
+		// request).
+		add_action( 'admin_notices', array( $this, 'maybe_render_connect_notice' ) );
 	}
 
 	/**
@@ -251,13 +359,30 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 	 * `init_settings()`/`get_option()` above read defaults from.
 	 *
 	 * Kept to the minimum this step actually needs, not a placeholder set of
-	 * every field a *later* step will eventually want (connect-flow
-	 * credentials, an endpoint override, a webhook secret) - those belong to
-	 * WBS 1.5.3, once there is real connect-flow logic to back them.
+	 * every field a *later* step will eventually want (an endpoint override,
+	 * a webhook secret) - those belong to whichever step actually uses them.
 	 * Building empty settings fields now, with nothing yet reading or
 	 * writing them for real, would be exactly the kind of unrequested scope
 	 * this project's own established practice (see `work_notes.md`'s
 	 * progress log) has repeatedly flagged and avoided elsewhere.
+	 *
+	 * **WBS 1.5.3 note**: `endpoint`/`public_key` (added at 1.5.2, as a
+	 * manual stand-in for this step) are kept, unrenamed - see this class's
+	 * own `$api_base_url` doc comment for why the real connect flow below
+	 * writes into these exact same two keys rather than introducing a
+	 * second pair. `secret_token` is new (see `$secret_token`'s own doc
+	 * comment for why it's stored at all, given nothing reads it back yet).
+	 * No `webhook_signing_secret` field here, deliberately: unlike the three
+	 * fields above, a merchant has no legitimate way to independently know
+	 * that value by hand - it's minted fresh by the engine only when a
+	 * webhook is registered (`connect.rs::finish`), so it's only ever
+	 * written programmatically (`process_connect_return()` below, via a
+	 * plain `update_option()` call outside `$this->form_fields` entirely -
+	 * confirmed directly against `WC_Settings_API::update_option()`
+	 * /`get_option()`, both read/write `$this->settings[$key]` by string key
+	 * with no dependency on the key being declared here), never rendered as
+	 * an editable field a merchant could accidentally paste a wrong value
+	 * into.
 	 */
 	public function init_form_fields() {
 		$this->form_fields = array(
@@ -268,7 +393,12 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 				// See the constructor's own comment on `$this->enabled` -
 				// this default is what makes "disabled state is fine at
 				// this step" the actual out-of-the-box behavior, not just
-				// documentation of an intention.
+				// documentation of an intention. WBS 1.5.3's own connect
+				// callback (`process_connect_return()` below) is now a real
+				// second way this flips to `'yes'` - see that method's own
+				// doc comment for why flipping it there, not just leaving it
+				// for the merchant to toggle afterward, is the WBS's own
+				// stated outcome, not an extra liberty this step is taking.
 				'default' => 'no',
 			),
 			'title'       => array(
@@ -286,23 +416,27 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 				'desc_tip'    => true,
 			),
 
-			// WBS 1.5.2 adds these two fields, and only these two - see
-			// `$api_base_url`'s doc comment above for the full reasoning.
-			// This is a real gap 1.5.2 has to resolve to have anything to
-			// call at all, not scope creep toward a finished credentials UX:
-			// no webhook-secret field, no admin secret-key field, nothing
-			// else a later step (1.5.3's real connect flow, 1.5.4's webhook
-			// receiver) will eventually need - each of those gets its own
-			// field only once the step that actually uses it exists.
 			'connection'  => array(
-				'title'       => __( 'Connection (temporary manual setup)', 'moneropay-cloud' ),
+				'title'       => __( 'Connection', 'moneropay-cloud' ),
 				'type'        => 'title',
-				'description' => __( 'A future update will replace these two fields with a one-click "Connect your Monero wallet" button. Until then, enter them by hand from your MoneroPay Cloud dashboard.', 'moneropay-cloud' ),
+				'description' => __( 'Click below to connect your Monero wallet through MoneroPay Cloud - this fills in everything below automatically and enables this gateway. Advanced/self-hosted users can also enter these by hand instead.', 'moneropay-cloud' ),
 			),
+
+			// The real WBS 1.5.3 button - see `generate_moneropay_connect_html()`'s
+			// own doc comment for exactly what it renders and why this needs
+			// a genuinely custom field type rather than reusing `'title'`
+			// (whose own `generate_title_html()` renders fixed markup this
+			// step needs to deviate from: a real `<a href=...>` built fresh
+			// on every render, not static text).
+			'connect'     => array(
+				'type'        => 'moneropay_connect',
+				'description' => __( 'You will be sent to MoneroPay Cloud to sign in (or sign up) and confirm the connection, then returned here automatically.', 'moneropay-cloud' ),
+			),
+
 			'endpoint'    => array(
 				'title'       => __( 'Engine API base URL', 'moneropay-cloud' ),
 				'type'        => 'text',
-				'description' => __( 'The base URL of the MoneroPay Cloud engine this store talks to (no trailing slash needed).', 'moneropay-cloud' ),
+				'description' => __( 'The base URL of the MoneroPay Cloud engine this store talks to (no trailing slash needed). Filled in automatically by Connect above - only edit this by hand for a self-hosted engine.', 'moneropay-cloud' ),
 				'default'     => '',
 				'placeholder' => 'https://pay.example.com',
 				'desc_tip'    => true,
@@ -310,9 +444,17 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 			'public_key'  => array(
 				'title'       => __( 'Tenant public key', 'moneropay-cloud' ),
 				'type'        => 'text',
-				'description' => __( 'Your MoneroPay Cloud tenant\'s public key (starts with pk_). Only the public key is ever entered here - order creation is a public endpoint and never needs your secret key.', 'moneropay-cloud' ),
+				'description' => __( 'Your MoneroPay Cloud tenant\'s public key (starts with pk_). Filled in automatically by Connect above.', 'moneropay-cloud' ),
 				'default'     => '',
 				'placeholder' => 'pk_...',
+				'desc_tip'    => true,
+			),
+			'secret_token' => array(
+				'title'       => __( 'Tenant secret key', 'moneropay-cloud' ),
+				'type'        => 'password',
+				'description' => __( 'Your MoneroPay Cloud tenant\'s secret key (starts with sk_). Filled in automatically by Connect above. Not currently used by this plugin for anything - kept so a future update never has to ask you to reconnect just to retrieve it again.', 'moneropay-cloud' ),
+				'default'     => '',
+				'placeholder' => 'sk_...',
 				'desc_tip'    => true,
 			),
 		);
@@ -339,6 +481,21 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 			return false;
 		}
 
+		return $this->has_credentials();
+	}
+
+	/**
+	 * Whether this gateway has enough to actually create an order right now
+	 * - factored out of `is_available()` so `generate_moneropay_connect_html()`
+	 * below can show "Connected"/"Reconnect" status using the exact same
+	 * fact, rather than a second, potentially-drifting check. Deliberately
+	 * does **not** consider `secret_token`/`webhook_signing_secret` - see
+	 * `$secret_token`'s own doc comment: order creation (the only thing
+	 * `is_available()` is gating) never needs either.
+	 *
+	 * @return bool
+	 */
+	private function has_credentials() {
 		return '' !== $this->api_base_url && '' !== $this->tenant_public_key;
 	}
 
@@ -586,6 +743,513 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 			rawurlencode( $this->tenant_public_key ),
 			rawurlencode( $payment_id )
 		);
+	}
+
+	/**
+	 * The control plane's own base URL, run through
+	 * `moneropay_cloud_control_plane_base_url` - a filter, not just the bare
+	 * constant, for two concrete reasons: it's what lets this plugin's own
+	 * tests point `process_connect_return()`/`generate_moneropay_connect_html()`
+	 * at a fake control plane (`pre_http_request` alone can't substitute for
+	 * the *browser-facing* `GET /connect/...` URL a test never actually
+	 * fetches, only asserts the shape of - so the base URL itself has to be
+	 * swappable, not just the HTTP call), and it's the one real, sanctioned
+	 * escape hatch for anyone running their own control plane instance
+	 * (a self-hoster who wants the one-click flow against infrastructure
+	 * they run themselves, rather than ours) without forking this file.
+	 *
+	 * @return string
+	 */
+	private function get_control_plane_base_url() {
+		return apply_filters( 'moneropay_cloud_control_plane_base_url', self::CONTROL_PLANE_BASE_URL );
+	}
+
+	/**
+	 * The WordPress mechanism chosen for `return_url` - the URL the control
+	 * plane's browser redirect (step 3 of `connect.rs`'s own module doc
+	 * comment) has to land on, on *this* site, in a shape this plugin can
+	 * recognize and handle.
+	 *
+	 * Reasoned from WordPress's own documented conventions for exactly this
+	 * shape of problem ("an external service redirects the browser back into
+	 * a plugin's own admin screen, plugin does some server-side work, then
+	 * sends the browser on"), not invented fresh - three real WordPress
+	 * mechanisms fit:
+	 *
+	 * 1. **A dedicated `admin-post.php?action=...` handler** (chosen here).
+	 *    WordPress core's own documented pattern for "a link or button
+	 *    triggers a server-side action, which redirects somewhere when
+	 *    done" - `wp-admin/admin-post.php` fires `do_action(
+	 *    "admin_post_{$_GET['action']}" )` for a logged-in user (the exact
+	 *    case here - the merchant is coming back into a wp-admin session
+	 *    they were already in when they clicked "Connect"), runs inside the
+	 *    ordinary wp-admin bootstrap (so `current_user_can()`, `admin_url()`,
+	 *    `wp_safe_redirect()` all just work with no extra setup), and needs
+	 *    no new URL-routing surface beyond a plain `add_action()` call - the
+	 *    same shape this class already uses for
+	 *    `woocommerce_update_options_payment_gateways_{$this->id}`.
+	 * 2. **A query var checked on this gateway's own settings-page render.**
+	 *    Rejected: it would mean the connect flow's actual credential-saving
+	 *    side effect happens as an incidental part of *rendering a page*
+	 *    (`generate_moneropay_connect_html()`/`admin_options()`), which is
+	 *    the wrong place for a state-changing action to live - a page render
+	 *    can be triggered more than once (a refresh, a prefetch) in ways a
+	 *    dedicated action handler isn't, and mixing "display the form" with
+	 *    "consume a single-use token" is exactly the kind of GET-with-side-
+	 *    effects WordPress's own admin-notices/admin-post split exists to
+	 *    avoid.
+	 * 3. **A REST API route** (`register_rest_route`). A legitimate
+	 *    alternative real WooCommerce/WordPress extensions do use for this -
+	 *    rejected only because it's strictly more machinery than this step
+	 *    needs (a new namespace, permission callback, route registration)
+	 *    for a URL that only ever has to be recognized by *this* site's own
+	 *    logged-in browser session, which `admin-post.php` already handles
+	 *    with a single `add_action()` call.
+	 *
+	 * This is also exactly the shape real "Connect" style WooCommerce
+	 * gateway plugins are documented to use for their own OAuth-return
+	 * handlers (Stripe's and PayPal's own WooCommerce extensions both route
+	 * their connect callbacks through an `admin-post.php` action rather than
+	 * a REST route or a settings-page query var) - reasoned here from
+	 * WordPress's own documented `admin-post.php` mechanism directly, per
+	 * this step's own brief, since this environment has no way to fetch
+	 * their source live to confirm byte-for-byte.
+	 *
+	 * @return string
+	 */
+	private function get_connect_return_url() {
+		return admin_url( 'admin-post.php?action=' . self::CONNECT_RETURN_ACTION );
+	}
+
+	/**
+	 * The transient key this gateway's own single-use connect nonce is
+	 * stored under between `generate_moneropay_connect_html()` (which mints
+	 * it) and `process_connect_return()` (which consumes it exactly once).
+	 * A WordPress transient, not a plain `option`: it's meant to expire on
+	 * its own (`10 * MINUTE_IN_SECONDS`, chosen to match `connect.rs`'s own
+	 * `CONNECT_TOKEN_TTL_SECONDS` exactly - the nonce only ever needs to
+	 * survive the same round trip the connect token itself does, so there's
+	 * no reason for it to outlive that token), which is precisely what
+	 * `set_transient()`'s own expiry argument is for and a plain `option`
+	 * has no built-in equivalent of.
+	 *
+	 * @return string
+	 */
+	private function connect_nonce_transient_key() {
+		return 'moneropay_cloud_connect_nonce_' . $this->id;
+	}
+
+	/**
+	 * Builds the real `GET {control_plane_base_url}/connect/{platform}?...`
+	 * URL (step 1 of `connect.rs`'s own module doc comment) this gateway
+	 * sends the merchant's browser to.
+	 *
+	 * @param string $nonce A freshly generated, single-use nonce - the
+	 *                       caller is responsible for also having stored it
+	 *                       (`connect_nonce_transient_key()`) before handing
+	 *                       this URL out, so `process_connect_return()` has
+	 *                       something real to check the redirect-back
+	 *                       `nonce` against.
+	 * @return string
+	 */
+	private function build_connect_start_url( $nonce ) {
+		return sprintf(
+			'%s/connect/%s?site_url=%s&return_url=%s&nonce=%s',
+			rtrim( $this->get_control_plane_base_url(), '/' ),
+			rawurlencode( self::CONNECT_PLATFORM ),
+			rawurlencode( home_url( '/' ) ),
+			rawurlencode( $this->get_connect_return_url() ),
+			rawurlencode( $nonce )
+		);
+	}
+
+	/**
+	 * Renders the "Connect your Monero wallet" settings-screen field - a
+	 * genuinely custom `WC_Settings_API` field type (`'moneropay_connect'`,
+	 * dispatched to this method by `generate_settings_html()`'s own
+	 * `method_exists( $this, 'generate_' . $type . '_html' )` check, read
+	 * directly against `abstract-wc-settings-api.php` before writing this),
+	 * not a reuse of the built-in `'title'` type: `generate_title_html()`
+	 * renders fixed, static markup from `$data['title']`/`$data['description']`
+	 * alone, but this field has to build a real `<a href>` fresh on every
+	 * render (a new nonce, a new transient, a URL that depends on whether a
+	 * wallet is already connected) - none of which a static type could do.
+	 *
+	 * Mints a fresh nonce **on every render of this field**, deliberately
+	 * not in the constructor (which every gateway instantiation on every
+	 * front-end/admin request also runs, via `WC_Payment_Gateways::init()`
+	 * on `woocommerce_init` - minting and overwriting the one live nonce on
+	 * every unrelated page load would routinely invalidate an
+	 * already-in-flight connect attempt before the merchant even got back).
+	 * This method only ever runs when this gateway's own settings screen is
+	 * actually being rendered (`WC_Settings_Page::output()` calling
+	 * `$gateway->admin_options()` for the matching `section`), which is
+	 * exactly the point a fresh nonce is actually needed.
+	 *
+	 * @param string $key  Field key (`'connect'`).
+	 * @param array  $data Field data from `init_form_fields()`.
+	 * @return string
+	 */
+	public function generate_moneropay_connect_html( $key, $data ) {
+		$field_key = $this->get_field_key( $key );
+
+		// Same default-filling `generate_text_html()` itself does (read
+		// directly) before ever touching `$data['desc_tip']`/
+		// `$data['description']` - `init_form_fields()`'s own `'connect'`
+		// entry only sets `type`/`description`, and `get_description_html()`
+		// below indexes `$data['desc_tip']` unconditionally, which would be
+		// an undefined-array-key warning on every real render without this.
+		$data = wp_parse_args(
+			$data,
+			array(
+				'desc_tip'    => false,
+				'description' => '',
+			)
+		);
+
+		$nonce = bin2hex( random_bytes( 16 ) );
+		set_transient( $this->connect_nonce_transient_key(), $nonce, 10 * MINUTE_IN_SECONDS );
+		$connect_url = $this->build_connect_start_url( $nonce );
+
+		ob_start();
+		?>
+		<tr valign="top">
+			<th scope="row" class="titledesc">
+				<label for="<?php echo esc_attr( $field_key ); ?>"><?php esc_html_e( 'Connect your Monero wallet', 'moneropay-cloud' ); ?></label>
+			</th>
+			<td class="forminp">
+				<?php if ( $this->has_credentials() ) : ?>
+					<p>
+						<?php esc_html_e( 'Connected as', 'moneropay-cloud' ); ?>
+						<code><?php echo esc_html( $this->tenant_public_key ); ?></code>
+					</p>
+				<?php endif; ?>
+				<a href="<?php echo esc_url( $connect_url ); ?>" id="<?php echo esc_attr( $field_key ); ?>" class="button button-primary">
+					<?php
+					echo $this->has_credentials()
+						? esc_html__( 'Reconnect your Monero wallet', 'moneropay-cloud' )
+						: esc_html__( 'Connect your Monero wallet', 'moneropay-cloud' );
+					?>
+				</a>
+				<?php echo $this->get_description_html( $data ); // WPCS: XSS ok. ?>
+			</td>
+		</tr>
+		<?php
+		return ob_get_clean();
+	}
+
+	/**
+	 * `'connect'`'s own `type` (`moneropay_connect`) has no real form input
+	 * for `process_admin_options()` to read back on save - it only ever
+	 * renders a link. Without this method, `get_field_value()` would fall
+	 * through to `validate_text_field()` on a `null` POST value (checked
+	 * directly, `abstract-wc-settings-api.php::get_field_value()`), which is
+	 * harmless but pointless (nothing should ever read a
+	 * `moneropay_connect` settings key) and, on PHP 8.1+, a `null`-to-string
+	 * coercion warning waiting to happen the moment that fallback path's own
+	 * implementation changes. Returning `''` directly is the explicit,
+	 * intentional no-op this field type actually needs - the *real* save
+	 * path for this field's effect is `process_connect_return()` below, not
+	 * WooCommerce's ordinary settings-form POST at all.
+	 *
+	 * @param string $key   Field key.
+	 * @param mixed  $value Posted value (always unused here).
+	 * @return string Always `''`.
+	 */
+	public function validate_moneropay_connect_field( $key, $value ) {
+		return '';
+	}
+
+	/**
+	 * The real `admin_post_{action}` handler WordPress core dispatches to
+	 * (see `get_connect_return_url()`'s own doc comment for why
+	 * `admin-post.php` is the mechanism at all). Deliberately just two
+	 * lines: everything that can actually be tested without WordPress's own
+	 * `exit` getting in the way lives in `process_connect_return()` below,
+	 * which this method calls and then acts on. `wp_safe_redirect()` +
+	 * `exit` immediately after is WordPress core's own documented way to end
+	 * an `admin-post.php` handler - `exit` specifically because a handler
+	 * that fell through to WordPress's own further output after redirecting
+	 * would corrupt the response, not because of anything specific to this
+	 * plugin.
+	 *
+	 * The `current_user_can( 'manage_woocommerce' )` guard exists because
+	 * `admin_post_{action}` (unlike this gateway's own settings screen,
+	 * which WooCommerce's own menu registration already restricts to that
+	 * capability) fires for **any** logged-in user, regardless of role -
+	 * defense in depth on top of the nonce check in
+	 * `process_connect_return()`, which is this leg's real CSRF defense
+	 * (see that method's own doc comment), against a logged-in
+	 * low-privilege account (e.g. a customer with a WordPress login) hitting
+	 * this URL directly rather than a genuine admin who initiated the flow.
+	 */
+	public function handle_connect_return() {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			wp_die( esc_html__( 'You do not have permission to do this.', 'moneropay-cloud' ), '', array( 'response' => 403 ) );
+		}
+
+		$redirect_url = $this->process_connect_return( wp_unslash( $_GET ) ); // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+		wp_safe_redirect( $redirect_url );
+		exit;
+	}
+
+	/**
+	 * The real logic behind steps 3-4 of `connect.rs`'s own module doc
+	 * comment: the merchant's browser has just landed back on this site
+	 * carrying `token`/`nonce` query params, and this method has to decide
+	 * whether to trust them, redeem the token for real credentials, and (on
+	 * success) save them and enable the gateway - the WBS's own stated
+	 * outcome for this step ("the gateway becomes enabled"), not left for
+	 * the merchant to separately toggle afterward.
+	 *
+	 * **Split out of `handle_connect_return()` above specifically so this is
+	 * directly unit-testable**: no `wp_safe_redirect()`/`exit` in here, just
+	 * a pure(-ish) function of "the query args a request carried" ->
+	 * "the URL to send the browser to next" (plus the real side effect of
+	 * saving settings on success) - `tests/ConnectFlowTest.php` calls this
+	 * method directly, the same way `tests/ProcessPaymentTest.php` calls
+	 * `process_payment()` directly rather than driving a real HTTP request
+	 * through WordPress's own router.
+	 *
+	 * **The nonce check - the actual CSRF defense this whole leg has**:
+	 * `return_url` is a public, guessable URL (it's this exact method's own
+	 * `admin-post.php` address); anyone could, in principle, cause a
+	 * logged-in merchant's browser to `GET` it with an arbitrary `token`.
+	 * What they can't do is know the *nonce* this plugin itself generated
+	 * and stored server-side in `connect_nonce_transient_key()` at the
+	 * moment the *real* connect attempt started - so a mismatched, missing,
+	 * or already-consumed (the transient is deleted immediately, win or
+	 * lose - single use, not single check) nonce means this request did not
+	 * originate from a connect flow this plugin itself kicked off, and is
+	 * rejected before ever calling `/finish` at all, exactly per this
+	 * step's own brief ("nonce mismatch must be rejected, not silently
+	 * accepted"). `hash_equals()`, not `===`, for the same constant-time
+	 * reasoning `docs/WOOCOMMERCE_WBS.md` already calls out for WBS 1.5.4's
+	 * webhook signature check - a nonce is shorter-lived and lower-value
+	 * than an HMAC key, but there's no real cost to using the safe
+	 * comparison here too, and no argument for `===` being the least bit
+	 * simpler.
+	 *
+	 * **On a failed `/finish` call**: no setting is touched at all - an
+	 * already-connected merchant whose *reconnect* attempt fails (expired
+	 * token, control plane hiccup, etc.) keeps whatever credentials they had
+	 * before, rather than this method clobbering good settings with a
+	 * failure.
+	 *
+	 * @param array $query_args The request's GET query parameters (`token`,
+	 *                            `nonce`), already `wp_unslash()`ed by the
+	 *                            caller - accepted as a plain array, not read
+	 *                            from `$_GET` directly, purely so a test can
+	 *                            hand this method an arbitrary array without
+	 *                            needing to fake superglobals.
+	 * @return string The URL to send the merchant's browser to next - always
+	 *                 this gateway's own settings screen, with a
+	 *                 `moneropay_cloud_connected` or
+	 *                 `moneropay_cloud_connect_error` flag appended for
+	 *                 `maybe_render_connect_notice()` below to read.
+	 */
+	public function process_connect_return( array $query_args ) {
+		$token = isset( $query_args['token'] ) ? sanitize_text_field( $query_args['token'] ) : '';
+		$nonce = isset( $query_args['nonce'] ) ? sanitize_text_field( $query_args['nonce'] ) : '';
+
+		$stored_nonce = get_transient( $this->connect_nonce_transient_key() );
+		// Single-use regardless of outcome, per this method's own doc
+		// comment - a stale or already-checked nonce must never be
+		// re-checkable.
+		delete_transient( $this->connect_nonce_transient_key() );
+
+		if ( '' === $token || '' === $nonce || false === $stored_nonce || ! hash_equals( (string) $stored_nonce, $nonce ) ) {
+			$this->log( 'Connect return rejected: missing token, or the nonce did not match what this site generated.', 'warning' );
+			return $this->build_settings_url( array( 'moneropay_cloud_connect_error' => 'nonce' ) );
+		}
+
+		$finish = $this->call_connect_finish( $token );
+		if ( null === $finish ) {
+			return $this->build_settings_url( array( 'moneropay_cloud_connect_error' => 'finish' ) );
+		}
+
+		$this->update_option( 'endpoint', $finish['endpoint'] );
+		$this->update_option( 'public_key', $finish['public_key'] );
+		$this->update_option( 'secret_token', $finish['secret_token'] );
+		if ( ! empty( $finish['webhook_signing_secret'] ) ) {
+			// Deliberately not a declared `form_fields` entry - see
+			// `init_form_fields()`'s own comment on why. `update_option()`
+			// (checked directly, `WC_Settings_API::update_option()`) writes
+			// into `$this->settings[$key]` by plain string key regardless of
+			// whether that key was ever declared, so this is a real,
+			// persisted write, not a no-op.
+			$this->update_option( 'webhook_signing_secret', $finish['webhook_signing_secret'] );
+		}
+		// The WBS's own stated outcome for this step: connecting a wallet
+		// enables the gateway outright, not just fills in fields for the
+		// merchant to separately flip a switch on afterward.
+		$this->update_option( 'enabled', 'yes' );
+
+		return $this->build_settings_url( array( 'moneropay_cloud_connected' => '1' ) );
+	}
+
+	/**
+	 * `POST {control_plane_base_url}/connect/{platform}/finish` (step 4-5 of
+	 * `connect.rs`'s own module doc comment / its `finish` handler, read
+	 * directly): redeems the single-use connect token for real credentials.
+	 *
+	 * **`webhook_url` is sent, deliberately, even though this plugin has no
+	 * webhook-receiving route yet** (that's WBS 1.5.4's job entirely - see
+	 * `get_webhook_receiver_url()`'s own doc comment). Chosen over omitting
+	 * it, for a reason parallel to why `$secret_token` is stored now despite
+	 * nothing reading it yet: `mock-woocommerce::run_connect_flow` - "1.4.2's
+	 * already-proven logic" this step's own brief explicitly says to mirror
+	 * - always registers a webhook as part of the very same connect flow
+	 * (confirmed directly, `mock-woocommerce/src/lib.rs::run_connect_flow_with`,
+	 * not assumed); there is no "connect without a webhook" variant of the
+	 * already-proven protocol to mirror instead. Registering now, pointed at
+	 * a URL nothing yet answers, means WBS 1.5.4 only has to *build the
+	 * receiver* - not also force every merchant who already connected under
+	 * 1.5.3 back through the whole browser-redirect flow a second time just
+	 * to register a webhook that could have been registered the first time
+	 * for free. This is safe to do before 1.5.4 exists: checked directly
+	 * against `src/http/admin.rs::create_webhook` - registration only
+	 * validates the URL's scheme (`http`/`https`), never reachability (SSRF
+	 * validation is explicitly deferred to delivery time, per that
+	 * handler's own comment), so a webhook pointed at a route that
+	 * doesn't respond yet fails to *register* for. Deliveries against it
+	 * will simply fail (and retry, per the engine's own delivery-worker
+	 * policy) until 1.5.4 lands - an acceptable, self-healing gap for a
+	 * feature whose receiver is being built in the very next step of the
+	 * same project, not a real production outage window.
+	 *
+	 * Returns `null` on any failure (transport error, non-200, or a response
+	 * missing any of the three fields this plugin actually needs) - this
+	 * method never throws, unlike `create_engine_order()`: this isn't inside
+	 * WooCommerce's own checkout `try`/`catch`, so there's no framework
+	 * mechanism here to catch an `Exception` and turn it into a user-facing
+	 * message; the caller (`process_connect_return()`) is responsible for
+	 * turning a `null` into the right redirect + notice instead.
+	 *
+	 * @param string $token The single-use connect token from the `return_url`
+	 *                       redirect's own `token` query param.
+	 * @return array{public_key: string, secret_token: string, endpoint: string,
+	 *               webhook_signing_secret?: string}|null
+	 */
+	private function call_connect_finish( $token ) {
+		$url = rtrim( $this->get_control_plane_base_url(), '/' ) . '/connect/' . self::CONNECT_PLATFORM . '/finish';
+
+		$response = wp_remote_post(
+			$url,
+			array(
+				'headers' => array( 'Content-Type' => 'application/json' ),
+				'body'    => wp_json_encode(
+					array(
+						'token'       => $token,
+						'webhook_url' => $this->get_webhook_receiver_url(),
+					)
+				),
+				// Same generous, untuned headroom `create_engine_order()`
+				// above uses, for the same reason: an ordinary HTTP round
+				// trip with no reason to be slow, not a value chosen from
+				// measurement.
+				'timeout' => 30,
+			)
+		);
+
+		if ( is_wp_error( $response ) ) {
+			$this->log( sprintf( 'Connect finish request to %s failed: %s', $url, $response->get_error_message() ), 'error' );
+			return null;
+		}
+
+		$status_code = (int) wp_remote_retrieve_response_code( $response );
+		$raw_body    = wp_remote_retrieve_body( $response );
+
+		// A bare 401 is the real, documented shape of *every* failure mode
+		// `connect.rs::finish` can produce (unknown/expired/already-consumed
+		// token, a rejected webhook URL, an internal error) - collapsed
+		// deliberately on that side for enumeration-defense reasons (see
+		// `finish`'s own doc comment); this side has nothing more specific
+		// to recover from any of them, so every non-200 is treated
+		// identically here too.
+		if ( 200 !== $status_code ) {
+			$this->log( sprintf( 'Connect finish request to %s returned HTTP %d: %s', $url, $status_code, $raw_body ), 'error' );
+			return null;
+		}
+
+		$decoded = json_decode( $raw_body, true );
+		if ( ! is_array( $decoded ) || empty( $decoded['public_key'] ) || empty( $decoded['secret_token'] ) || empty( $decoded['endpoint'] ) ) {
+			$this->log( sprintf( 'Connect finish response from %s was not the expected shape: %s', $url, $raw_body ), 'error' );
+			return null;
+		}
+
+		return $decoded;
+	}
+
+	/**
+	 * The webhook URL this plugin's own (not-yet-built, WBS 1.5.4) receiver
+	 * will eventually answer on - `WC()->api_request_url( $this->id )`,
+	 * WooCommerce's own real, documented mechanism for a plugin's
+	 * `woocommerce_api_{id}` endpoint (confirmed directly,
+	 * `class-woocommerce.php::api_request_url()`, before relying on it - it
+	 * resolves to `{site}/wc-api/{id}/` with pretty permalinks or
+	 * `{site}/?wc-api={id}` without, never anything this plugin has to
+	 * construct by hand). Used only by `call_connect_finish()` above - see
+	 * that method's own doc comment for why registering it now, before
+	 * 1.5.4 builds anything to answer it, is deliberate and safe.
+	 *
+	 * @return string
+	 */
+	private function get_webhook_receiver_url() {
+		return WC()->api_request_url( $this->id );
+	}
+
+	/**
+	 * This gateway's own settings screen URL
+	 * (`admin.php?page=wc-settings&tab=checkout&section={id}` -
+	 * WooCommerce's standard, stable routing for a single gateway's settings
+	 * panel), with `$extra_args` appended - used by `process_connect_return()`
+	 * to build the redirect target that also carries the
+	 * success/error flag `maybe_render_connect_notice()` reads.
+	 *
+	 * @param array $extra_args Query args to append, e.g.
+	 *                           `array( 'moneropay_cloud_connected' => '1' )`.
+	 * @return string
+	 */
+	private function build_settings_url( array $extra_args ) {
+		return add_query_arg(
+			$extra_args,
+			admin_url( 'admin.php?page=wc-settings&tab=checkout&section=' . $this->id )
+		);
+	}
+
+	/**
+	 * Flashes a one-line success/error notice on this gateway's own settings
+	 * screen right after a connect attempt redirects back to it - reads the
+	 * plain query-string flags `process_connect_return()` appends
+	 * (`build_settings_url()`) rather than using `WC_Admin_Settings::
+	 * add_error()`, which only accumulates messages within the single
+	 * request that renders the settings form and has no mechanism to carry
+	 * a message across the separate `admin-post.php` request/redirect this
+	 * callback is. This is the same "flag in the redirect target, read back
+	 * on the next page load" pattern real WordPress admin screens
+	 * (including WooCommerce's own core settings pages) use for exactly
+	 * this situation.
+	 *
+	 * Scoped to this gateway's own settings screen specifically (checked via
+	 * `$_GET['page']`/`$_GET['section']`) so this notice never appears on an
+	 * unrelated admin screen just because these query flags happen to still
+	 * be present in the URL (e.g. a bookmarked/shared link).
+	 */
+	public function maybe_render_connect_notice() {
+		if ( ! isset( $_GET['page'], $_GET['section'] ) || 'wc-settings' !== $_GET['page'] || $this->id !== $_GET['section'] ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			return;
+		}
+
+		if ( isset( $_GET['moneropay_cloud_connected'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			echo '<div class="notice notice-success is-dismissible"><p>' .
+				esc_html__( 'Your Monero wallet is connected - Monero payments are now enabled.', 'moneropay-cloud' ) .
+				'</p></div>';
+		} elseif ( isset( $_GET['moneropay_cloud_connect_error'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			echo '<div class="notice notice-error is-dismissible"><p>' .
+				esc_html__( 'Could not connect your Monero wallet. Please try again.', 'moneropay-cloud' ) .
+				'</p></div>';
+		}
 	}
 
 	/**
