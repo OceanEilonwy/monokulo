@@ -1,0 +1,14 @@
+# Composer-managed PHPUnit + polyfills for this plugin's own test suite -
+# reproducible from composer.json/composer.lock (both committed), not source.
+/vendor/
+
+# wp-env's own local state (docker volumes tracked outside this directory,
+# but it occasionally leaves a marker here) - never anything this plugin
+# needs to ship or version.
+/.wp-env-override.json
+
+# PHPUnit's own incremental test-result cache (which tests failed last run,
+# used only to support --order-by=defects locally) - regenerated on every
+# run, environment-specific, not something two developers' runs should fight
+# over in version control.
+/.phpunit.result.cache

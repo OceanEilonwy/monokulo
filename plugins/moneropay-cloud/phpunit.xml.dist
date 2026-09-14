@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+    PHPUnit config for the MoneroPay Cloud WooCommerce plugin's own test
+    suite. Deliberately just this one plugin's tests, not the whole
+    workspace - the Rust crates already have their own `cargo test` story,
+    and there's no reason for a PHP test runner to know about them.
+-->
+<phpunit
+    xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+    xsi:noNamespaceSchemaLocation="vendor/phpunit/phpunit/phpunit.xsd"
+    bootstrap="tests/bootstrap.php"
+    colors="true"
+    beStrictAboutOutputDuringTests="true"
+    beStrictAboutTestsThatDoNotTestAnything="true"
+>
+    <testsuites>
+        <testsuite name="moneropay-cloud">
+            <!--
+                suffix="Test.php" (filename equals class name, e.g.
+                GatewayRegistrationTest.php / class GatewayRegistrationTest) -
+                not a style preference. PHPUnit 10's own TestSuiteLoader
+                requires a discovered file's declared class name to
+                case-insensitively end with the file's own basename (see
+                tests/GatewayRegistrationTest.php's own doc comment for the
+                real failure this fixes, found by hitting it directly against
+                this exact PHPUnit version rather than assumed from an older
+                WordPress-core-style "test-*.php" convention).
+            -->
+            <directory suffix="Test.php">./tests/</directory>
+        </testsuite>
+    </testsuites>
+</phpunit>

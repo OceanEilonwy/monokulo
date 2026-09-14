@@ -1,0 +1,14 @@
+{
+    "name": "moneropay-cloud/moneropay-cloud",
+    "description": "WooCommerce payment gateway for MoneroPay Cloud - a thin PHP adapter over the moneropay-core Rust engine (see docs/WOOCOMMERCE_ROADMAP.md and docs/WOOCOMMERCE_WBS.md in the repo root). This composer.json exists only for the plugin's own PHPUnit test suite and its dev-time dependencies - the plugin itself has zero runtime PHP dependencies beyond WordPress/WooCommerce, deliberately, since every real decision (order state, exchange rates, chain scanning) lives in the Rust engine, not here.",
+    "license": "GPL-2.0-or-later",
+    "type": "wordpress-plugin",
+    "require": {
+        "php": ">=8.1"
+    },
+    "require-dev": {
+        "yoast/phpunit-polyfills": "^2.0",
+        "phpunit/phpunit": "^9.6"
+    },
+    "minimum-stability": "stable"
+}

@@ -42,6 +42,217 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- WBS 1.5.1 done: `WC_Gateway_MoneroPay` + a plugin bootstrap file, registering
+  "Monero (via MoneroPay Cloud)" as a (disabled) WooCommerce checkout option -
+  the first PHP/WordPress code in this repo, and the first step of Track A's
+  1.5 (real WooCommerce plugin). This entry is unusually long because getting
+  a working `wp-env`/PHPUnit toolchain running for the first time surfaced
+  several real, hit-not-guessed environment problems worth a future reader
+  not having to rediscover - the plugin code itself, once the toolchain
+  actually worked, was comparatively simple.
+  - **Where it lives, and why not the roadmap's own literal sketch**:
+    `plugins/moneropay-cloud/` - not `plugins/woocommerce/`, the path
+    `docs/WOOCOMMERCE_ROADMAP.md` §3.1's directory sketch used. Checked, not
+    assumed: `.wp-env.json`'s own plugin-source basename derivation (its
+    `parse-source-string.js`, read directly) means whatever a plugin's own
+    directory is named becomes literally what gets mounted under
+    `wp-content/plugins/` - if this plugin's own directory were named
+    `woocommerce`, it would collide with the real WooCommerce plugin's own
+    directory the moment both are listed in the same `.wp-env.json` (which
+    they have to be, since this plugin's tests need real WooCommerce running
+    too). `plugins/moneropay-cloud/` keeps the roadmap's own `plugins/`
+    top-level convention (room for a future `plugins/shopify/` per Stage 15)
+    while giving this plugin its own real, collision-free slug - also the
+    correct convention regardless, since WordPress' own norm is folder name =
+    plugin slug = text domain, all three of which are `moneropay-cloud` here.
+  - **Gateway identity**: `id = 'moneropay_cloud'` (permanent per its own
+    doc comment - it's the WooCommerce settings option-array key, the
+    `$order->get_payment_method()` value on every order, and the future
+    `woocommerce_api_{id}` webhook suffix WBS 1.5.4 will register), plugin
+    slug/text-domain `moneropay-cloud`, checkout title "Monero (via MoneroPay
+    Cloud)" (the WBS's own outcome text, verbatim, as the field's default).
+  - **The `payment_gateways()` vs. `get_available_payment_gateways()`
+    ambiguity, resolved against WooCommerce's real installed source, not
+    guessed at or left for later**: once `wp-env` had a real WooCommerce
+    11.1.0 checkout, read
+    `wp-content/plugins/woocommerce/includes/class-wc-payment-gateways.php`
+    directly. `payment_gateways()` returns every gateway WooCommerce's own
+    `init()` built from the `woocommerce_payment_gateways` filter, with *no*
+    enabled/applicable filtering at all. `get_available_payment_gateways()`
+    additionally requires `$gateway->is_available()` per gateway - and
+    `WC_Payment_Gateway::is_available()`
+    (`includes/abstracts/abstract-wc-payment-gateway.php`, also read
+    directly) short-circuits `false` the instant `$this->enabled !== 'yes'`,
+    before any currency/cart check. Since this gateway genuinely ships
+    disabled by default (WBS 1.5.1's own stated outcome), asserting its
+    presence in `get_available_payment_gateways()`'s result would assert
+    something this step's own correct behavior makes false by construction.
+    `tests/GatewayRegistrationTest.php` therefore asserts against
+    `payment_gateways()` - "real, registered checkout option, independent of
+    enabled state" is what the WBS's own outcome language actually describes
+    - and additionally asserts the *negative* against
+    `get_available_payment_gateways()` (a disabled gateway is correctly
+    excluded), so both of WooCommerce's real, distinct gateway-listing
+    methods are exercised for the behavior actually true of each, not just
+    the one this step happens to need. Full reasoning is in the test file's
+    own class doc comment, not just here.
+  - **Toolchain trouble #1 - Node's Happy Eyeballs vs. this sandbox's missing
+    IPv6 route, a real problem, not a flaky network**: `npx @wordpress/env
+    start` failed immediately and deterministically with a generic
+    `AggregateError [ETIMEDOUT]` at its very first "Reading configuration"
+    step, every time, even though plain `curl` to the exact same URLs
+    (`downloads.wordpress.org`, `raw.githubusercontent.com`) succeeded
+    instantly. Root-caused by not trusting "the network must be flaky" and
+    instead reproducing it minimally: `curl -6` to any external host fails
+    immediately in this sandbox (no IPv6 route at all), and Node 24 enables
+    `net.getDefaultAutoSelectFamily()` (Happy Eyeballs dual-stack racing,
+    RFC 8305) *on by default* - confirmed by a standalone Node script hitting
+    the same URL directly with `node:https`, which reproduced the identical
+    failure with zero `wp-env`/Docker involvement, then fixed by calling
+    `net.setDefaultAutoSelectFamily(false)` in-process. `--dns-result-order=
+    ipv4first` (the first fix tried) does **not** help - it only reorders
+    which address `dns.lookup()` returns first, not whether Happy Eyeballs
+    still races the unreachable IPv6 address at all. The real fix, applied
+    before every single `npx @wordpress/env ...` invocation in this
+    environment (not just `start` - `run` hit the identical failure until
+    this was set too):
+    `NODE_OPTIONS='--no-network-family-autoselection'`. Worth flagging
+    prominently for 1.5.2-1.5.4: this is an environment quirk of this
+    sandbox specifically (no IPv6 route), not of `wp-env` itself, and will
+    need re-discovering (or this note re-reading) on a differently-networked
+    machine if it's not already muscle memory by then.
+  - **Toolchain trouble #2 - a real `wp-env` plugin-source basename gotcha**:
+    the natural URL to try for "latest stable WooCommerce" is
+    `https://downloads.wordpress.org/plugin/woocommerce.latest-stable.zip`
+    (a real, working URL) - but `.wp-env.json` mounts it as
+    `wp-content/plugins/woocommerce.latest-stable/`, not `.../woocommerce/`.
+    Confirmed by reading `@wordpress/env`'s own
+    `lib/config/parse-source-string.js` directly: its basename derivation
+    only strips a trailing *purely numeric* version suffix (e.g. `.1.2.3`)
+    from a zip URL's filename, and `latest-stable` doesn't match that
+    pattern, so it survives into the mounted directory name verbatim - not
+    obvious from the URL alone, and it silently produced a working WordPress
+    install that nonetheless didn't match the directory name every real
+    production install (and this plugin's own `tests/bootstrap.php`, which
+    hardcodes `wp-content/plugins/woocommerce/woocommerce.php`) assumes.
+    Fixed by switching to the version-suffix-free
+    `https://downloads.wordpress.org/plugin/woocommerce.zip` (confirmed via
+    `curl -I` to genuinely serve the current stable release, same as the
+    `.latest-stable.zip` alias), which derives the correct `woocommerce`
+    basename. Caught by actually inspecting the mounted container's
+    `wp-content/plugins/` listing (`docker exec ... ls`), not assumed correct
+    because `wp plugin list` initially showed it "active" under the wrong
+    slug (`woocommerce.latest-stable`) - active-but-wrong-slug would have
+    broken every future step that hardcodes the real WooCommerce plugin
+    directory name (webhook paths, `wp_remote_post` target discovery, etc.).
+  - **Toolchain trouble #3 - a real WordPress-core/PHPUnit-10 incompatibility,
+    not a bug in this plugin**: `wp-env run tests-cli ... phpunit` (the
+    container's global PHPUnit, 10.5.64) got past test discovery but every
+    test errored with `Call to undefined method
+    PHPUnit\Util\Test::parseTestMethodAnnotations()`, thrown from *WordPress
+    core's own* bundled `/wordpress-phpunit/includes/abstract-testcase.php`
+    (`WP_UnitTestCase`'s `expectDeprecated()`, called from every test's
+    `set_up()`), not from this plugin's test file at all. That method is a
+    real, confirmed-by-reading-the-vendored-source casualty of PHPUnit 10's
+    annotation-system removal - WP core's bundled test library (matching the
+    WordPress version `wp-env` downloaded) only branches on PHPUnit `<9.5` vs
+    `>=9.5`, predating PHPUnit 10 entirely. Fixed by pinning this plugin's
+    own `composer.json` to `"phpunit/phpunit": "^9.6"` (still within
+    `yoast/phpunit-polyfills`' supported range, and 9.6.36 - the version
+    Composer resolved - supports PHP 8.3, the container's runtime) and
+    running the plugin's own `vendor/bin/phpunit` rather than the container's
+    global one. Not a workaround for a mistake in this plugin - a real,
+    documented compatibility ceiling of the WordPress version this specific
+    environment's `wp-env` pulled, worth 1.5.2-1.5.4 knowing about upfront
+    rather than rediscovering.
+  - **Toolchain trouble #4 - a real PHPUnit 10.x `TestSuiteLoader` naming
+    rule, read from its source, not guessed at**: with #3 not yet fixed,
+    test discovery itself failed first, with a misleading-sounding "Class
+    test-gateway-registration cannot be found" warning despite the class
+    genuinely existing (confirmed by manually `require`ing the bootstrap and
+    test file by hand and checking `class_exists()` - `true` - before
+    concluding this wasn't a real load failure). Root cause, read directly
+    from `vendor/phpunit/phpunit/src/Runner/TestSuiteLoader.php`: PHPUnit's
+    loader derives an expected class-name suffix from each discovered file's
+    own basename and requires the declared class's short name to
+    case-insensitively *end with* it, character-for-character - and a
+    WordPress-core-style filename (`test-gateway-registration.php`, hyphens)
+    paired with an underscored class name (`Test_Gateway_Registration`) never
+    satisfies that literal check, regardless of the class being real and
+    loadable. Fixed by renaming to the plain PHPUnit-native convention
+    (filename equals class name exactly: `tests/GatewayRegistrationTest.php`
+    / `class GatewayRegistrationTest`) and updating `phpunit.xml.dist`'s
+    `<directory suffix="Test.php">` pattern to match - documented in the test
+    file's own doc comment for whoever adds the next test file in 1.5.2+.
+  - **License header, caught and fixed before finishing, not shipped
+    wrong**: initially wrote `AGPL-3.0-or-later` into the plugin header and
+    `composer.json` with no real basis - checked and this repo has **no**
+    `LICENSE` file and no `license` field anywhere in the root `Cargo.toml`,
+    so there was nothing to actually inherit. Switched to
+    `GPL-2.0-or-later` instead: not arbitrary either, but tied to a real,
+    already-planned downstream requirement - `docs/WOOCOMMERCE_WBS.md`'s own
+    1.6.1 explicitly targets wordpress.org distribution, which requires
+    GPLv2-or-later-compatible licensing, and GPL-2.0-or-later is what
+    WordPress' own plugin boilerplate and the vast majority of the plugin
+    ecosystem default to. Flagged here explicitly for the user: this repo's
+    real, project-wide license is still an open question this plugin's
+    header shouldn't be read as having silently settled - revise this header
+    if/when that's decided differently.
+  - **The real, observed test run** (after all four toolchain fixes above),
+    run twice for confidence, identical result both times:
+    `NODE_OPTIONS='--no-network-family-autoselection' npx @wordpress/env run
+    tests-cli --env-cwd=wp-content/plugins/moneropay-cloud vendor/bin/phpunit
+    --testdox` (via `newgrp docker -c "..."` in this shell, per this
+    environment's own docker-group-membership quirk) ->
+    ```
+    PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
+
+    Gateway Registration
+     ✔ Gateway is registered with woocommerce
+     ✔ Gateway is disabled by default
+
+    Time: 00:00.013, Memory: 89.00 MB
+
+    OK (2 tests, 4 assertions)
+    ```
+    Additionally verified directly against the *dev* `wp-env` WordPress
+    instance (separate from the PHPUnit-only tests instance, same plugin
+    code, real browser-reachable site at `http://localhost:8888`), via `wp
+    eval-file` iterating `WC_Payment_Gateways::instance()->payment_gateways()`:
+    real output `moneropay_cloud => MoneroPay Cloud (title: Monero (via
+    MoneroPay Cloud), enabled: no)` alongside WooCommerce's own bundled BACS/
+    Cheque/COD gateways - the literal, human-readable form of the WBS's own
+    stated outcome, not just a PHPUnit assertion proving the same thing
+    indirectly.
+  - **Files added** (all new, nothing existing touched):
+    `plugins/moneropay-cloud/moneropay-cloud.php` (bootstrap: plugin header,
+    `plugins_loaded`-deferred class load, `woocommerce_payment_gateways`
+    filter registration), `plugins/moneropay-cloud/includes/
+    class-wc-gateway-moneropay.php` (`WC_Gateway_MoneroPay`),
+    `plugins/moneropay-cloud/composer.json` + `composer.lock` (dev-only:
+    `yoast/phpunit-polyfills`, `phpunit/phpunit` ^9.6 - the plugin itself has
+    zero runtime PHP dependencies beyond WordPress/WooCommerce),
+    `plugins/moneropay-cloud/.wp-env.json` (WordPress core `null` = latest,
+    WooCommerce + this plugin as `"plugins"`), `plugins/moneropay-cloud/
+    phpunit.xml.dist`, `plugins/moneropay-cloud/tests/bootstrap.php`,
+    `plugins/moneropay-cloud/tests/GatewayRegistrationTest.php`,
+    `plugins/moneropay-cloud/.gitignore` (`/vendor/`,
+    `/.phpunit.result.cache`).
+  - **Not done / explicitly out of scope, matching WBS 1.5.1's own stated
+    boundary**: `process_payment()` (WBS 1.5.2), the connect-flow settings
+    button (WBS 1.5.3), the webhook receiver (WBS 1.5.4), a checkout icon, a
+    `.pot` translation file, and `readme.txt`/wordpress.org directory
+    compliance (WBS 1.6.1) - none of these were needed to satisfy this step's
+    own outcome ("shows as a checkout option, disabled is fine") and adding
+    them now would be exactly the unrequested-scope pattern this project's
+    practice has repeatedly avoided elsewhere. Also not done: silencing
+    `wp-env`'s own "starts both development and tests environments by
+    default... deprecated" warning by setting `"testsEnvironment": false` -
+    checked its own source first, and that flag doesn't just silence the
+    warning, it actually removes the `tests-cli`/`tests-wordpress` containers
+    this plugin's whole PHPUnit setup depends on, so left as harmless noise
+    rather than "fixed" into a broken state.
+
 - WBS 2.1.3 done: the engine wired to the socket-based `KeyCustody`
   implementation behind a config flag - `main.rs` no longer unconditionally
   constructs `PlainKeyCustody::default()`.
