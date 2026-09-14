@@ -12,3 +12,11 @@
 # run, environment-specific, not something two developers' runs should fight
 # over in version control.
 /.phpunit.result.cache
+
+# tests/LiveEngineIntegrationTest.php's own local pointer to a real, running
+# moneropay-core engine (base URL + tenant public key) - see that test file's
+# own doc comment. Deliberately not committed: the engine container name and
+# bootstrapped public_key are both specific to whoever's local Docker setup
+# started it, and a fresh engine (or a fresh DB) mints a brand new public_key
+# every time - there is nothing stable here for two developers' runs to share.
+/tests/live-engine.local.json

@@ -42,6 +42,257 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- WBS 1.5.2 done: `WC_Gateway_MoneroPay::process_payment( $order_id )` - placing
+  a real WooCommerce order with this gateway selected now calls the real
+  engine's `POST /api/v1/t/{pk}/orders` and returns the `redirect` WooCommerce
+  needs to send the customer to the engine's own real
+  `/pay/v1/{pk}/{payment_id}` checkout page. Read WooCommerce's real installed
+  source directly before writing anything, not just its doc comments: `WC_
+  Payment_Gateway::process_payment()`'s own doc comment
+  (`includes/abstracts/abstract-wc-payment-gateway.php`), `WC_Gateway_BACS`/
+  `WC_Gateway_COD`'s own implementations (`includes/gateways/{bacs,cod}/
+  class-wc-gateway-{bacs,cod}.php`), and `WC_Checkout::process_order_payment()`
+  / `process_checkout()` (`includes/class-wc-checkout.php`) for exactly what
+  happens to the returned array and to a thrown `Exception` - all three
+  findings are documented in `process_payment()`'s own doc comment, not just
+  here, since a future reader of that method shouldn't have to come back to
+  this log to find them again.
+  - **The settings-field gap, and the naming decision**: `process_payment()`
+    needs an engine base URL and a tenant public key, and 1.5.1 left nothing
+    but `enabled`/`title`/`description`. Added exactly two new plain text
+    settings fields - `endpoint` and `public_key` - named to match
+    `mock-woocommerce/src/lib.rs`'s own `ConnectedCredentials` struct field
+    names verbatim (checked directly, not from memory), since that struct is
+    what a real WBS 1.5.3 connect-flow callback will eventually have in hand
+    and write back into these same two option keys - so 1.5.3 never has to
+    rename anything here, just start writing to it programmatically instead of
+    a merchant pasting it in by hand. No third field for a secret key: `POST
+    /api/v1/t/{pk}/orders` is a public endpoint (confirmed directly against
+    `src/http/public.rs::create_order` and its route registration in
+    `src/http/mod.rs` before writing this, exactly as the brief said) - order
+    creation only ever needs the public key in the URL path. Both the "why
+    these two fields, why now" and "why these exact names" reasoning live on
+    `WC_Gateway_MoneroPay::$api_base_url`'s own doc comment, not just here.
+    Also added `is_available()` override (enabled *and* both fields
+    non-empty) - the same "don't offer what you can't honor" principle 1.5.1's
+    own disabled-by-default default already established, applied to the one
+    new failure mode this step introduces (an enabled-but-unconfigured
+    gateway would otherwise throw on a real customer's first attempt).
+  - **Failure signaling, resolved against WooCommerce's real source, not
+    guessed**: neither bundled gateway (`BACS`/`COD`) ever fails, so neither
+    demonstrates the failure path directly - but `WC_Checkout::
+    process_checkout()`, read directly, calls `process_order_payment()` (and
+    therefore this gateway's `process_payment()`) from inside its own
+    top-level `try { ... } catch ( Exception $e ) { wc_add_notice(
+    $e->getMessage(), 'error' ); }`. So every failure branch in
+    `create_engine_order()` (unconfigured gateway, `wp_remote_post()`
+    returning a `WP_Error`, a non-200 engine response, a response missing
+    `payment_id`) throws a plain `Exception` with a customer-safe message,
+    never the raw engine/HTTP error text (that's logged instead, via a small
+    `wc_get_logger()` wrapper, for the merchant to actually diagnose) - `wc_
+    add_notice()`/checkout re-render is WooCommerce's own real mechanism for
+    this, not a bespoke `'result' => 'fail'` shape this gateway invented.
+  - **Deliberately does not mark the order paid or change its status** -
+    `$order->payment_complete()` is never called here. The order WooCommerce
+    just created is already `pending`/awaiting payment, and it stays exactly
+    that until a real payment is actually observed on-chain (WBS 1.5.4's job,
+    not built here). `process_payment()` does record the engine's own
+    `payment_id` as order meta (`_moneropay_cloud_payment_id`) plus an order
+    note, though - the one point in this whole flow that ever sees the
+    WC-order/engine-order mapping, and 1.5.4's webhook receiver will need
+    exactly that lookup later. Nothing here *consumes* that meta key - no
+    webhook receiver exists yet - just not thrown away.
+  - **`fiat_amount` as a plain two-decimal-place decimal string**
+    (`number_format( (float) $order->get_total(), 2, '.', '' )`, never a
+    locale-formatted `(string) $order->get_total()`), matched against the real
+    parser it has to satisfy: read `src/exchange_rate.rs::compute_xmr_amount`
+    directly and confirmed it rejects more than two decimal places, thousands
+    separators, and scientific notation.
+  - **The mocked-HTTP unit test** (`tests/ProcessPaymentTest.php`, 5 tests):
+    uses WordPress's own real short-circuit mechanism, the `pre_http_request`
+    filter (`wp-includes/class-http.php::WP_Http::request()`, read directly -
+    confirmed it returns whatever the filter returns, verbatim, before ever
+    touching the network), not a hand-rolled mock object - WordPress's HTTP
+    API is procedural, there's no client to inject. Builds a real, saved
+    `WC_Order` via WooCommerce's own `wc_create_order()`, asserts the *exact*
+    request `process_payment()` sent (URL, method, `Content-Type`, and the
+    full decoded JSON body - `fiat_amount`, `fiat_currency`,
+    `merchant_order_id`), and the exact `/pay/v1/{pk}/{payment_id}` redirect
+    shape using the canned response's own `payment_id`. Plus three negative
+    tests (unconfigured gateway, non-200 engine response, `WP_Error`
+    transport failure) proving `create_engine_order()`'s failure branches are
+    real, exercised behavior, not just comments describing intent.
+  - **The live integration test - the genuinely hard part, and a real,
+    machine-specific networking obstacle actually hit, not assumed away**:
+    `tests/LiveEngineIntegrationTest.php`, tagged `@group live-engine` and
+    excluded from the default run in `phpunit.xml.dist` (identical reasoning
+    to `tests/e2e_stagenet.rs`'s own `#[ignore]` convention on the Rust side -
+    a real network/process dependency the default hermetic run must never
+    silently acquire), run explicitly with `--group live-engine`.
+    - Built the real engine: `cargo build --release` from the repo root,
+      clean build, `target/release/moneropay-core`.
+    - A minimal config (`/tmp/moneropay-engine-test/config.toml`, not
+      committed - scratch state for this session) bootstraps one real
+      self-hosted tenant via the existing `[wallet]` path in `main.rs`
+      (reusing the exact same test view/spend key pair
+      `e2e/moneropay-stagenet.toml` already uses - not secret, not funded,
+      just real key material so `WalletMaterial::from_hex`/`KeyCustody::seal`
+      succeed), `[exchange_rate] provider = "fixed"` with a `USD` rate (no
+      live network needed), and a placeholder, deliberately-unreachable
+      `[monero_node.stagenet]` entry - `Config::validate()` requires at least
+      one `monero_node` entry and the wallet's network to match one, but
+      order creation itself never dials it (confirmed for real: the engine
+      boots and serves orders fine with the scanner loop failing/retrying
+      forever in the background against a closed local port, exactly the
+      failover behavior `daemon_fallback.rs` already documents). Boot log
+      really did print `bootstrapped self-hosted tenant:
+      public_key=pk_f7c59419dc4c50fcfe98ed28ebcb5d43ca3adecf54757d84` -
+      confirmed order creation worked from the host with a plain `curl`
+      before ever touching wp-env.
+    - **The container-to-host networking question, actually investigated, not
+      assumed**: read wp-env's own generated `docker-compose.yml` directly
+      (`~/.wp-env/<instance>/docker-compose.yml`, the same file 1.5.1's own
+      entry already learned to check) and found it already sets `extra_hosts:
+      ['host.docker.internal:host-gateway']` on every one of its containers -
+      so `host.docker.internal` genuinely does resolve inside `tests-cli` on
+      this plain-Linux-Docker host (`getent hosts` confirmed it - Docker
+      bridge gateway IP, not Docker Desktop magic), unlike the brief's own
+      caution that this isn't a given. It just didn't help here: a `curl`
+      from *inside* `tests-cli` to the engine (bound to `0.0.0.0:8180`) at
+      that same IP genuinely timed out (`exit 7`), even though the identical
+      `curl` from the *host itself* to that same bridge-gateway IP:port
+      worked fine (`HTTP 415`, meaning the engine really received it) -
+      root-caused to `ufw` being `active` on this host
+      (`systemctl is-active ufw`) and Docker's well-documented interaction
+      with it: a container reaching *out* to a host-bound port crosses the
+      host's own `INPUT` chain, which `ufw`'s default-deny policy blocks,
+      while a host-local process never crosses that boundary at all. No
+      passwordless `sudo` was available to add a `ufw`/`DOCKER-USER` allow
+      rule, and a system-wide firewall change felt out of scope for what one
+      WBS step should be doing to someone's machine, so this wasn't forced
+      through - flagged explicitly in case a future reader has root and wants
+      the simpler path.
+    - **What actually worked, verified end-to-end, not just reasoned about**:
+      running the engine as a *container* on wp-env's own Docker network
+      instead, reached by container name - container-to-container traffic on
+      the same user-defined bridge network never crosses the host's `ufw`
+      `INPUT` chain at all. `docker inspect` on the running `tests-cli`
+      container gave the real network name
+      (`wp-env-moneropay-cloud-9652ae59_default`, this specific wp-env
+      instance's own project-scoped network - it changes if the instance hash
+      changes). The compiled binary needed a container base with a
+      compatible-or-newer glibc, since it was built against this build host's
+      own (very new - 2.44, a rolling-release distro) glibc and a container
+      with an older one fails to even exec it - checked, not assumed
+      (`ld-linux-x86-64.so.2 --version` inside `archlinux:latest` matched
+      2.44 exactly, so that's the base image used; a statically-linked musl
+      build would sidestep this entirely but wasn't needed here). Launched
+      with `docker run -d --name moneropay-engine-test --network
+      wp-env-moneropay-cloud-9652ae59_default -v .../target/release/
+      moneropay-core:/moneropay-core:ro -v /tmp/moneropay-engine-test:/cfg -w
+      /cfg archlinux:latest /moneropay-core /cfg/config.toml`, reusing the
+      same bind-mounted config/db directory the host-run instance had already
+      bootstrapped a tenant into (so the container instance skipped
+      bootstrap, idempotently, and reused the same `pk_...` - confirmed by
+      its boot log *not* printing a second "bootstrapped" line). `curl
+      http://moneropay-engine-test:8180/...` from inside `tests-cli`
+      (real command, via `wp-env run tests-cli curl ...`) returned a real
+      `200 OK` with the order-status JSON for the order created earlier via
+      the host `curl` - proof the path works before ever running PHPUnit
+      against it. Full exact commands for both the working path and the
+      `host.docker.internal` path that didn't work here are in
+      `tests/LiveEngineIntegrationTest.php`'s own class doc comment, not just
+      this log.
+    - `tests/live-engine.local.json` (gitignored - see `.gitignore`'s own
+      comment on it: the container name and freshly-bootstrapped `pk_...` are
+      both specific to whichever local Docker setup started the engine, and a
+      fresh DB mints a new `pk_...` every time, so there's nothing stable
+      here for two developers to share) is how the test learns the
+      endpoint/public_key to use, rather than environment variables - checked
+      first and confirmed `wp-env run` shells out to plain `docker compose
+      exec` with no host-env-var passthrough and no `.wp-env.json` mechanism
+      for injecting per-run values, so a file under `tests/` (already
+      bind-mounted into the container) was the direct option, not env
+      plumbing that doesn't exist yet.
+    - **The real, observed test runs** (both via `newgrp docker -c "..."` per
+      this environment's own docker-group quirk, and
+      `NODE_OPTIONS='--no-network-family-autoselection'` before every
+      `wp-env` invocation per 1.5.1's own toolchain note):
+      - Mocked-HTTP suite (now includes `ProcessPaymentTest.php` alongside
+        1.5.1's `GatewayRegistrationTest.php`, `LiveEngineIntegrationTest.php`
+        correctly excluded by its group):
+        `NODE_OPTIONS='--no-network-family-autoselection' npx @wordpress/env
+        run tests-cli --env-cwd=wp-content/plugins/moneropay-cloud
+        vendor/bin/phpunit --testdox` ->
+        ```
+        PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
+
+        Gateway Registration
+         ✔ Gateway is registered with woocommerce
+         ✔ Gateway is disabled by default
+
+        Process Payment
+         ✔ Process payment sends expected request and returns engine redirect
+         ✔ Process payment throws when gateway is not configured
+         ✔ Process payment throws when engine returns non 200
+         ✔ Process payment throws when the engine is unreachable
+
+        Time: 00:00.102, Memory: 89.00 MB
+
+        OK (6 tests, 23 assertions)
+        ```
+      - Live-engine test, against the real container-based engine described
+        above: same command plus `--group live-engine` ->
+        ```
+        PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
+
+        Live Engine Integration
+         ✔ Process payment creates a real engine order and redirects to it
+
+        Time: 00:00.052, Memory: 89.00 MB
+
+        OK (1 test, 12 assertions)
+        ```
+      - Not just trusted: independently queried the engine's own SQLite
+        database directly afterward (`sqlite3 /tmp/moneropay-engine-test/
+        moneropay.db "select id, merchant_order_id, fiat_amount,
+        fiat_currency, status, created_at from orders order by created_at
+        desc limit 5;"`), a *third*, fully independent check beyond the
+        test's own assertions and its own HTTP-status-endpoint cross-check -
+        real output:
+        ```
+        pay_6f4d376b8c7148cb93d9e720d2a0a75a|10|5.00|USD|pending|1789377475
+        pay_0e1e4b4c41514db5840d850fff0ff3ce|host-smoke-test|42.50|USD|pending|1789377076
+        ```
+        (`10` is the real WooCommerce order id `wc_create_order()` assigned
+        during the PHPUnit run; the second row is the earlier host-`curl`
+        smoke test that first proved the engine itself worked, before wp-env
+        was involved at all.)
+      - Torn down afterward (`docker rm -f moneropay-engine-test`, host
+        `moneropay-core` process killed) - nothing was left running. Publishes
+        no port to the host, so it never conflicted with anything; the
+        `tests/live-engine.local.json` left in the tree points at now-stopped
+        infrastructure and needs regenerating (per its own referenced doc
+        comment) before the live-engine group can pass again.
+  - **Files touched**: `plugins/moneropay-cloud/includes/
+    class-wc-gateway-moneropay.php` (the two new settings-field properties,
+    `init_form_fields()` additions, `is_available()` override,
+    `process_payment()`, `create_engine_order()`, and three small private URL/
+    logging helpers), `plugins/moneropay-cloud/phpunit.xml.dist` (the
+    `live-engine` group exclusion), `plugins/moneropay-cloud/.gitignore`
+    (`tests/live-engine.local.json`), new `plugins/moneropay-cloud/tests/
+    {ProcessPaymentTest.php,LiveEngineIntegrationTest.php}`. No engine-side
+    (Rust) file touched - this step only ever *calls* the engine's existing,
+    already-shipped public API.
+  - **Not done / explicitly out of scope, matching this step's own stated
+    boundary**: the real one-click connect flow (WBS 1.5.3 - these two
+    settings fields are explicitly a manual stand-in, documented as such in
+    three places: the field descriptions themselves, `$api_base_url`'s doc
+    comment, and here), the webhook receiver and any consumption of the
+    `_moneropay_cloud_payment_id` meta this step writes (WBS 1.5.4), and any
+    change to the order's WooCommerce status beyond what order creation itself
+    already sets.
+
 - WBS 1.5.1 done: `WC_Gateway_MoneroPay` + a plugin bootstrap file, registering
   "Monero (via MoneroPay Cloud)" as a (disabled) WooCommerce checkout option -
   the first PHP/WordPress code in this repo, and the first step of Track A's

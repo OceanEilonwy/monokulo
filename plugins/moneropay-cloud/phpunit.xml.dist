@@ -29,4 +29,19 @@
             <directory suffix="Test.php">./tests/</directory>
         </testsuite>
     </testsuites>
+    <!--
+        The "live-engine" group (WBS 1.5.2's tests/LiveEngineIntegrationTest.php)
+        needs a real, running moneropay-core reachable from inside wp-env's own
+        Docker network - excluded from the default run for the identical reason
+        tests/e2e_stagenet.rs on the Rust side is marked ignored by default and
+        run only explicitly: a real network dependency this project's default,
+        hermetic test run should never silently depend on. Run it explicitly
+        with the phpunit "group" CLI option set to live-engine, once a real
+        engine is up (see that test file's own doc comment for how).
+    -->
+    <groups>
+        <exclude>
+            <group>live-engine</group>
+        </exclude>
+    </groups>
 </phpunit>
