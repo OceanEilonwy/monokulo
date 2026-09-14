@@ -42,6 +42,112 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- WBS 2.2 done (2.2.1 attestation-verification tooling + 2.2.2 deployment
+  scripting for AMD SEV-SNP bare metal) - closes out Track B's cloud/
+  attestation steps. Real decisions made this item (the user answered these
+  explicitly, not judgment calls of mine): **bare-metal** hosting rather
+  than a hyperscaler's confidential-VM product (more hosting flexibility
+  given the crypto-adjacent nature of the business); **no billing/account
+  set up yet** - the user will provision the actual box later, so nothing
+  here was run against real hardware; **direct-to-AMD** attestation
+  verification (never routed through a cloud provider's own attestation
+  service - see `snp-attest/src/kds.rs`'s module doc comment for why that
+  matters); **base OS image assumed SNP-guest-aware** already.
+  - **2.2.1**: new `snp-attest` workspace crate + `verify-snp-attestation`
+    binary - a real AMD SEV-SNP attestation-report verifier, not a stub.
+    Before writing any of it, used live web research (WebFetch/WebSearch,
+    plus direct `curl`/`openssl` against `kdsintf.amd.com` from this
+    session's own network access) to ground every non-obvious fact rather
+    than trust memory of AMD's spec:
+    - Report byte layout and the two different `TCB_VERSION` encodings
+      (legacy Milan/Genoa vs. Turin+) confirmed against `virtee/sev`'s
+      actual source, not reconstructed from the PDF spec.
+    - **A real, easy-to-get-wrong finding, caught by directly inspecting a
+      live-fetched cert with `openssl x509 -text` rather than assuming**:
+      the AMD ARK/ASK/VCEK *issuance* chain (the X.509 certificates) is
+      **RSASSA-PSS-SHA384 over 4096-bit RSA keys**, not ECDSA - only the
+      attestation report's own signature (made with the VCEK's separate
+      P-384 EC key) is ECDSA P-384. Getting this backwards would have meant
+      writing an RSA verifier disguised as an EC one, or vice versa - either
+      silently wrong. Verified via `x509_parser`'s `verify_signature`
+      (ring-backed), not a hand-rolled PSS implementation.
+    - AMD's KDS URL formats (VCEK fetch with `blSPL`/`teeSPL`/`snpSPL`/
+      `ucodeSPL` query params, `cert_chain` for ASK+ARK) confirmed against
+      `virtee/snpguest`'s real source.
+    - VCEK certificate TCB extension OIDs (`1.3.6.1.4.1.3704.1.3.{1,2,3,8}`)
+      cross-checked against `google/go-sev-guest` independently, since a
+      wrong OID here would make the tamper-check silently pass on anything.
+    - **The ARK root is pinned in-binary** (`snp-attest/src/pinned_ark.rs`),
+      fetched live from `kdsintf.amd.com` this session and checked into
+      `snp-attest/src/pinned_certs/` with fingerprints recorded in the doc
+      comment - this is what "direct-to-AMD, not the cloud provider" means
+      concretely: only the pinned root is unconditionally trusted; the live
+      ASK and VCEK are re-verified against it on every run.
+    - **What "AMD's July 2025 microcode patch" (this WBS item's own literal
+      wording) actually is**, tracked down via `WebSearch`: AMD-SB-3019, the
+      "StackWarp" SEV-SNP vulnerability (CVE-2025-29943), fixed by AMD's
+      2025-07-29 microcode release. The tool does *not* hardcode the numeric
+      SPL threshold that release corresponds to per-platform - per the
+      user's own instruction ("if programmatically possible to detect let's
+      do that, otherwise don't worry I will confirm when setting up the
+      server"), it cryptographically extracts and prints the real, signed
+      SPL values unconditionally, and enforces a minimum only if the
+      operator supplies `--min-*-spl` flags at deploy time with the real
+      number from AMD's advisory or their hardware vendor. See the binary's
+      own module doc comment (`snp-attest/src/bin/verify-snp-attestation.rs`)
+      for the full reasoning - this was a judgment call, flagged here rather
+      than silently baked in.
+    - Tests (15, all passing) include **real crypto tests run against
+      genuine AMD-issued material**, not just synthetic fixtures: the ASK-
+      signed-by-ARK and ARK-self-signed checks run against the actual
+      certificates fetched live from `kdsintf.amd.com`
+      (`snp-attest/tests/fixtures/*.pem`), for all three products
+      (Milan/Genoa/Turin). The report's own ECDSA signature path is tested
+      with a freshly generated non-AMD P-384 key (proving the little-endian
+      byte-order handling is correct) since a real end-to-end test needs an
+      actual report captured from real SEV-SNP hardware, which doesn't exist
+      yet - documented as a genuinely open gap in `deploy/sev-snp/README.md`,
+      not silently assumed covered.
+    - Manually exercised the compiled CLI against a synthetic report: it
+      builds the correct KDS URL, makes a real HTTPS request to AMD's live
+      KDS, gets a real 404 (no such chip exists), and fails closed with a
+      clear error - confirmed the whole pipeline is wired correctly
+      end-to-end, short of an actual chip to succeed against.
+  - **2.2.2**: `deploy/sev-snp/` - two hardened systemd units
+    (`moneropay-key-custody.service`, `moneropay-engine.service`, the latter
+    deliberately *not* `Requires=`-bound to the former - see the unit's own
+    comment for why a hard dependency would be more disruptive than the
+    engine's existing bounded-reconnect startup behavior already handles)
+    plus a real, step-by-step `README.md` covering: running
+    `verify-snp-attestation` before deploying anything and refusing to
+    proceed if it fails; installing the two binaries; the one config
+    difference from a plain self-hosted install (`[key_custody] backend =
+    "socket"`); and what "re-run 2.1.3's regression suite against the
+    deployed instance over the network" concretely means (`systemctl
+    status`/`journalctl` liveness checks, a real order driven through the
+    deployed instance, and why `cargo test --workspace` on a dev box proves
+    the code path but not this specific deployment). Also states plainly,
+    cross-referenced against `docs/INCIDENT_RUNBOOK.md`, what SEV-SNP does
+    *not* protect against (a compromise with a foothold already inside the
+    guest still exposes `PlainKeyCustody`'s cleartext memory, unchanged).
+  - Real, not yet done by anyone: actually provisioning a bare-metal SEV-SNP
+    box and running any of this against genuine hardware - that's the
+    user's own next real-world step, not something further automation can
+    close from here. Hosting-provider suggestions given directly to the
+    user (see this session's chat, not repeated here since they're
+    time-sensitive market info, not stable project state): bare-metal AMD
+    EPYC (Milan/Genoa/Turin) providers advertising SEV-SNP support at time
+    of writing include OVHcloud, Hetzner (AX/EPYC line, confirm SEV-SNP
+    availability per-model), and IBM Cloud Bare Metal - re-verify SEV-SNP
+    support and current AMD-SB-3019 microcode status directly with whichever
+    provider is chosen before trusting a listing, since offerings change.
+  - Full workspace re-verified: `cargo build --workspace` and
+    `cargo test --workspace` both clean; every prior crate's count unchanged
+    (engine 312/9 ignored, `shared` 29, `engine-test-support` 3,
+    `key-custody-service` 22, `key-custody-server` 17, `control-plane` 80,
+    `mock-woocommerce` 8+1, `tests/backup_restore.rs` 2 ignored) plus the new
+    `snp-attest` crate's 15 passing.
+
 - WBS 2.3 done (2.3.1 backup/restore drill + 2.3.2 incident runbook) -
   closes out the "Hardening" track. Note for whoever picks up next: the
   subagent that started this item hit its own session rate limit partway

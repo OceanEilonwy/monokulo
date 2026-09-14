@@ -1,0 +1,38 @@
+[Unit]
+Description=MoneroPay Cloud engine (SEV-SNP host)
+After=moneropay-key-custody.service network-online.target
+Wants=network-online.target
+# Not `Requires=moneropay-key-custody.service` - a hard dependency would mean
+# systemd tears this unit down the moment the key-custody unit is stopped for
+# any reason (e.g. an operator restarting it alone to pick up a binary
+# update), which is more disruptive than this process's own bounded
+# reconnect-on-startup behavior calls for. See config.rs's
+# connect_socket_key_custody doc comment: a missing/not-yet-listening socket
+# at boot is already handled by a real retry loop there, not assumed away by
+# unit ordering.
+
+[Service]
+Type=simple
+ExecStart=/opt/moneropay/bin/moneropay-core --config /etc/moneropay/moneropay.toml
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=moneropay
+RuntimeDirectoryMode=0750
+StateDirectory=moneropay
+StateDirectoryMode=0750
+User=moneropay
+Group=moneropay
+
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictNamespaces=true
+LockPersonality=true
+ReadWritePaths=/run/moneropay /var/lib/moneropay
+
+[Install]
+WantedBy=multi-user.target

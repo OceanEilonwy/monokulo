@@ -1,5 +1,5 @@
 [workspace]
-members = ["shared", "control-plane", "mock-woocommerce", "engine-test-support", "key-custody-service", "key-custody-server"]
+members = ["shared", "control-plane", "mock-woocommerce", "engine-test-support", "key-custody-service", "key-custody-server", "snp-attest"]
 
 [package]
 name = "moneropay-core"
