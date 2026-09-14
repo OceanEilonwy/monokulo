@@ -1,0 +1,26 @@
+# WBS 2.3.1: schedules moneropay-backup.service. Pairs with that file - see
+# its own comment for install steps.
+#
+# Daily at 03:17 (not 03:00 on the dot - a deliberately non-round minute, the
+# standard reason being "don't have every box on the internet that copied a
+# tutorial's crontab all wake up and hit disk/network at the exact same
+# instant"; irrelevant for a single self-hosted box, but harmless and free,
+# and it's the same habit this repo's own convention would want documented
+# rather than silently copied). `Persistent=true` means a box that was off or
+# suspended through 03:17 (a laptop-class self-hoster, a home router that
+# rebooted) still runs the missed backup on next boot instead of silently
+# waiting a full day for the next scheduled tick - the one setting a plain
+# crontab line has no equivalent for.
+[Unit]
+Description=Daily MoneroPay database backup
+
+[Timer]
+OnCalendar=*-*-* 03:17:00
+Persistent=true
+# Spreads actual execution over a random window after the scheduled time -
+# same "don't thunder-herd" reasoning as the non-round minute above, and
+# genuinely useful once more than one tenant-hosting box exists.
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

@@ -42,6 +42,68 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- WBS 2.3 done (2.3.1 backup/restore drill + 2.3.2 incident runbook) -
+  closes out the "Hardening" track. Note for whoever picks up next: the
+  subagent that started this item hit its own session rate limit partway
+  through (finished the two shell scripts + two systemd unit files, hadn't
+  started the Rust test or the runbook) - I resumed and finished it myself
+  directly rather than re-delegating, after independently reading all its
+  work first.
+  - **2.3.1**: `scripts/backup-database.sh` and `scripts/restore-database.sh`
+    (produced by the interrupted subagent, read in full, high quality - real
+    investigation of `.backup` vs `VACUUM INTO` vs plain `cp`, correct
+    atomicity/locking/verification patterns) plus `scripts/moneropay-backup.{service,timer}`
+    for a systemd-timer install. The actual missing piece - the WBS's own
+    literal acceptance test ("actually perform the restore once against a
+    copy; diff tenant/order counts before and after as the pass condition")
+    - is now `tests/backup_restore.rs` (new, at the engine crate root,
+      matching the `tests/e2e_stagenet.rs` convention: `#[ignore]`d like that
+      test is, run explicitly with
+      `cargo test --test backup_restore -- --ignored --nocapture`, since it
+      shells out to the real scripts and needs `sqlite3` on PATH). Two
+      tests: the real drill (seeds a tenant + 20 orders via a real `Store`,
+      keeps a second thread inserting orders concurrently while the real
+      `backup-database.sh` runs against the live file, restores via the real
+      `restore-database.sh` to a fresh path, and asserts tenant/order/
+      order_payments counts match exactly between the backup file and the
+      restored copy - not just "restore exited 0"), and a second test
+      specifically drilling the `--force` overwrite-refusal path (restore
+      against an existing destination must fail and leave it untouched;
+      with `--force` it must succeed). Both pass, independently re-run by me
+      after a scoped `rustfmt` pass on just this new file (never the whole
+      crate - see the standing fmt lesson below in this log).
+  - **2.3.2**: `docs/INCIDENT_RUNBOOK.md` (new). Grounded in the *current*,
+    not aspirational, architecture - cross-checked directly against
+    `docs/DESIGN.md` §6.1 before writing anything: this system is watch-only
+    end to end (no spend key ever exists anywhere in this codebase), so a
+    box compromise is framed throughout as a privacy incident (view-key /
+    transaction-linkability exposure), never a funds-loss one - that's a
+    factual claim about the architecture, not a hedge. One point worth a
+    future reader's attention: the runbook is explicit that the `socket`
+    `KeyCustody` backend (WBS 2.1.2/2.1.3, already shipped) buys process
+    *separation* only, not confidentiality against a host-level/root
+    attacker - it is not a substitute for the not-yet-built WBS 2.2
+    (SEV-SNP). Don't let a future incident get under-scoped by someone
+    assuming the socket split alone contains a host compromise; it doesn't.
+    Section 6 is the required tabletop-walkthrough note per the WBS's own
+    "not code-testable" acceptance bar for this item - I did not run an
+    actual tabletop with a human, since that requires the user's
+    participation; that's the one genuinely open item this step leaves for
+    a real person to do, not something further automation can close.
+  - Full workspace re-verified after this change: `cargo build --workspace`
+    clean, `cargo test --workspace` - counts unchanged from the last known-
+    good baseline (engine 312 passed/9 ignored, `shared` 29, `engine-test-support`
+    3, `key-custody-service` 22, `key-custody-server` 17, `control-plane`
+    80, `mock-woocommerce` 8+1) plus the new `tests/backup_restore.rs`
+    (2 ignored by default, both pass when run explicitly, confirmed above).
+  - This closes the last WBS item I judged safe to pick up autonomously.
+    Everything remaining in the WBS (1.6 distribution, 2.2 SEV-SNP, the
+    final "3. Convergence" stage) needs a real-world decision only the user
+    can make (a wordpress.org account and a decided production domain for
+    1.6; real cloud/hardware choices for 2.2) - already flagged to the user
+    before they said "Yes continue with 2.3," and still true now that 2.3 is
+    done. Do not start any further WBS item without asking first.
+
 - WBS 1.5.4 done: the real webhook receiver + order status mapping - this
   closes out Track 1.5 (the WooCommerce plugin) entirely. A real payment
   through a real WooCommerce checkout now ends with the WC order in the
