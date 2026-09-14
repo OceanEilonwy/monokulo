@@ -98,6 +98,72 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 	const CONNECT_RETURN_ACTION = 'moneropay_cloud_connect_return';
 
 	/**
+	 * The order-meta key `process_payment()` writes the engine's own
+	 * `payment_id` under, and `find_order_by_payment_id()` (WBS 1.5.4) reads
+	 * back to map an incoming webhook to a `WC_Order` - promoted to a
+	 * constant, rather than the literal string 1.5.2 originally hardcoded
+	 * inline, specifically because this step adds a second, independent call
+	 * site that must agree with the first byte-for-byte: a silent drift
+	 * between "what `process_payment()` writes" and "what the webhook
+	 * receiver queries for" would make every real webhook fail to find its
+	 * order, with no error anywhere near either call site to explain why.
+	 *
+	 * @var string
+	 */
+	const META_PAYMENT_ID = '_moneropay_cloud_payment_id';
+
+	/**
+	 * The order-meta key `event_already_applied()`/`mark_event_applied()`
+	 * (WBS 1.5.4) use to record which webhook `event_id`s have already been
+	 * applied to a given order - a JSON-encoded array of `evt_...` strings,
+	 * not a comma-joined one, purely so `event_id`s (which this codebase
+	 * never puts commas in, but nothing guarantees that structurally) can
+	 * never be mis-split. See `event_already_applied()`'s own doc comment for
+	 * why this exists at all.
+	 *
+	 * @var string
+	 */
+	const META_APPLIED_EVENT_IDS = '_moneropay_cloud_applied_webhook_event_ids';
+
+	/**
+	 * The `X-MoneroPay-Signature` header, as PHP exposes it in `$_SERVER`:
+	 * every incoming HTTP header `Name-Like-This` is normalized to
+	 * `HTTP_NAME_LIKE_THIS` by PHP's own SAPI before user code ever sees it
+	 * (a PHP/CGI convention, not a WordPress one) - named here as a constant
+	 * so `handle_webhook()`'s one read of it and this doc comment's own
+	 * explanation stay next to each other rather than the transform being
+	 * re-derived silently at the call site.
+	 *
+	 * @var string
+	 */
+	const WEBHOOK_SIGNATURE_SERVER_KEY = 'HTTP_X_MONEROPAY_SIGNATURE';
+
+	/**
+	 * Maps an engine `OrderStatus` (`src/status.rs::OrderStatus`, read
+	 * directly - the seven-variant, authoritative enum, not assumed
+	 * exhaustive from docs) to the WooCommerce order status this gateway
+	 * transitions an order to when that engine status is announced by an
+	 * `order.<status>` webhook event. `paid`/`overpaid` are deliberately
+	 * **absent** from this table - see `apply_order_status_event()`'s own
+	 * doc comment for why those two go through `WC_Order::payment_complete()`
+	 * instead of a plain table lookup.
+	 *
+	 * Each row's reasoning (why *this* WooCommerce status, not some other
+	 * plausible one) is documented in full on `apply_order_status_event()`,
+	 * not repeated here - this table is the answer, that method's doc
+	 * comment is the "why".
+	 *
+	 * @var array<string, string>
+	 */
+	const STATUS_MAP = array(
+		'pending'     => 'pending',
+		'unconfirmed' => 'on-hold',
+		'confirming'  => 'on-hold',
+		'partial'     => 'on-hold',
+		'expired'     => 'cancelled',
+	);
+
+	/**
 	 * The engine instance this store talks to, e.g. `https://pay.example.com`
 	 * - no trailing slash (stripped in the getters below, so a merchant
 	 * pasting one in doesn't produce a double slash in the outbound URL).
@@ -178,6 +244,19 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 	 * @var string
 	 */
 	private $secret_token;
+
+	/**
+	 * The webhook's own signing secret (`whsec_...`), returned by
+	 * `call_connect_finish()`'s `/finish` response and saved (since WBS
+	 * 1.5.3) under the `webhook_signing_secret` option key - see that
+	 * method's own doc comment for why it's saved outside `$this->form_fields`
+	 * entirely. Read here, in this step, for the first time: it's the HMAC
+	 * key `verify_webhook_signature()` below checks every incoming webhook
+	 * delivery against.
+	 *
+	 * @var string
+	 */
+	private $webhook_signing_secret;
 
 	/**
 	 * Sets up the gateway's identity and settings fields.
@@ -292,6 +371,7 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 		$this->api_base_url     = trim( (string) $this->get_option( 'endpoint', '' ) );
 		$this->tenant_public_key = trim( (string) $this->get_option( 'public_key', '' ) );
 		$this->secret_token      = trim( (string) $this->get_option( 'secret_token', '' ) );
+		$this->webhook_signing_secret = trim( (string) $this->get_option( 'webhook_signing_secret', '' ) );
 
 		// No explicit `$this->enabled = $this->get_option( 'enabled' )` line
 		// here, deliberately - checked directly against WooCommerce's own
@@ -342,6 +422,31 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 		// which happens on every request including the one `admin-post.php`
 		// itself bootstraps).
 		add_action( 'admin_post_' . self::CONNECT_RETURN_ACTION, array( $this, 'handle_connect_return' ) );
+
+		// The real webhook receiver (WBS 1.5.4) - WooCommerce's own real,
+		// documented mechanism for a plugin's webhook endpoint, confirmed
+		// directly against the *installed* WooCommerce source before relying
+		// on it (not just its doc comments): `WC()->api_request_url( $id )`
+		// (already used by `get_webhook_receiver_url()` above, since 1.5.3)
+		// builds a URL carrying a `wc-api={id}` query var (or `/wc-api/{id}/`
+		// under pretty permalinks); `src/Internal/Utilities/
+		// LegacyRestApiStub.php::maybe_process_wc_api_query_var()` (hooked on
+		// `parse_request`, read directly) is what actually dispatches that
+		// var, firing `do_action( 'woocommerce_api_' . $api_request )` for
+		// *any* site that has this hook registered - regardless of whether
+		// the separate, full "WooCommerce Legacy REST API" extension is
+		// installed. That file's own doc comment explains why the stub
+		// exists at all: the versioned `/wc-api/v1-3/...` REST endpoints
+		// were genuinely removed from core in WC 9.0, but the plain
+		// `woocommerce_api_{id}` gateway-callback mechanism (what PayPal's
+		// own legacy IPN handler still uses too, per
+		// `wc-deprecated-functions.php::woocommerce_legacy_paypal_ipn()`,
+		// read directly) was deliberately kept working without it - this is
+		// real, current, installed-source-confirmed behavior on this
+		// environment's WooCommerce 11.1.0, not an assumption carried over
+		// from an older WooCommerce version where the whole legacy API was
+		// still in core wholesale.
+		add_action( 'woocommerce_api_' . $this->id, array( $this, 'handle_webhook' ) );
 
 		// Flashes a one-line success/error notice on this gateway's own
 		// settings screen after a connect attempt redirects back to it - see
@@ -571,7 +676,7 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 		// incoming delivery carries a payment_id, not a WC order id) to know
 		// which order to update; nothing here *consumes* that meta key yet -
 		// that consumption is 1.5.4's job, not built here.
-		$order->update_meta_data( '_moneropay_cloud_payment_id', $engine_order['payment_id'] );
+		$order->update_meta_data( self::META_PAYMENT_ID, $engine_order['payment_id'] );
 		$order->add_order_note(
 			sprintf(
 				/* translators: %s: MoneroPay Cloud payment_id */
@@ -1197,6 +1302,582 @@ class WC_Gateway_MoneroPay extends WC_Payment_Gateway {
 	 */
 	private function get_webhook_receiver_url() {
 		return WC()->api_request_url( $this->id );
+	}
+
+	/**
+	 * The real `woocommerce_api_{id}` hook target (see the constructor's own
+	 * comment on why this specific mechanism, checked directly against
+	 * WooCommerce's installed source) - WordPress core dispatches to this
+	 * for every incoming delivery to `get_webhook_receiver_url()`'s own URL.
+	 *
+	 * Kept to the same "two lines, all real logic elsewhere" shape
+	 * `handle_connect_return()` above already established, for the identical
+	 * reason: `process_webhook_request()` below is directly unit-testable
+	 * (no PHP superglobals, no `exit`), which this thin wrapper is not - see
+	 * `tests/WebhookReceiverTest.php`'s own class doc comment for how it
+	 * drives this hook's real logic without going through an actual HTTP
+	 * request.
+	 *
+	 * Reads the request body via `file_get_contents( 'php://input' )` -
+	 * **never** `$_POST` - because the signature this method hands to
+	 * `process_webhook_request()` has to be verified against the *exact raw
+	 * bytes* the engine signed (`shared/src/webhook_sign.rs::sign_payload`
+	 * hashes `payload: &[u8]` as sent, read directly). `$_POST` doesn't even
+	 * apply here (the engine sends a raw JSON body, not
+	 * `application/x-www-form-urlencoded`/multipart form fields, so PHP
+	 * never populates `$_POST` for this request at all) - but even if it
+	 * did, going through it would mean verifying a signature against a
+	 * *re-serialized* body PHP itself reconstructed, which can differ from
+	 * the original byte-for-byte (key order, whitespace, numeric formatting)
+	 * even when it decodes to the same logical JSON - exactly the "even
+	 * whitespace-identical-looking JSON can byte-differ after a decode/
+	 * re-encode round trip" failure mode this step's own brief calls out by
+	 * name. `php://input` is the one source that can't have been touched by
+	 * anything in between.
+	 *
+	 * The signature header is read from `$_SERVER` (see
+	 * `WEBHOOK_SIGNATURE_SERVER_KEY`'s own doc comment for the
+	 * `X-MoneroPay-Signature` -> `HTTP_X_MONEROPAY_SIGNATURE` transform) and
+	 * `wp_unslash()`-ed - the same treatment `handle_connect_return()` above
+	 * already gives `$_GET`, for the identical reason: WordPress's own
+	 * `wp_magic_quotes()` (`wp-includes/load.php`, read directly) backslash-
+	 * escapes `$_SERVER` exactly like `$_GET`/`$_POST`/`$_COOKIE`, not just
+	 * the superglobals an HTML form would populate.
+	 *
+	 * `status_header()`, not `wp_die()`: unlike `handle_connect_return()`'s
+	 * `wp_die()` (whose HTML error page is for a *human* who followed a bad
+	 * link), the only consumer of this response is the engine's own
+	 * delivery worker, which reads nothing but the HTTP status code -
+	 * `attempt_delivery()` in `src/webhook_delivery.rs` (read directly)
+	 * decides `delivered: status.is_success()` and otherwise reschedules a
+	 * retry with backoff, never inspecting the body at all. A bare status
+	 * code is therefore the entire real contract this endpoint has to
+	 * honor; `wp_die()`'s HTML-page machinery would be pure overhead no
+	 * caller of this endpoint ever looks at.
+	 */
+	public function handle_webhook() {
+		$raw_body  = (string) file_get_contents( 'php://input' );
+		$signature = isset( $_SERVER[ self::WEBHOOK_SIGNATURE_SERVER_KEY ] )
+			? (string) wp_unslash( $_SERVER[ self::WEBHOOK_SIGNATURE_SERVER_KEY ] ) // phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.MissingUnslash
+			: '';
+
+		status_header( $this->process_webhook_request( $raw_body, $signature ) );
+		exit;
+	}
+
+	/**
+	 * The real logic behind an incoming webhook delivery: verify, decode,
+	 * find the order, dedupe, apply. Split out of `handle_webhook()` above
+	 * for the same reason `process_connect_return()` is split out of
+	 * `handle_connect_return()` - directly testable, no request
+	 * superglobals or `exit` involved, a pure(-ish) function of "the raw
+	 * body and header this request carried" -> "the HTTP status code to
+	 * respond with" (plus the real side effect, on success, of updating the
+	 * matched order).
+	 *
+	 * **The four response codes, and why each one specifically** (per this
+	 * step's own brief: "decide the right status code... and document why"):
+	 *
+	 * - **200**: signature verified, payload well-formed, a matching order
+	 *   was found, and the event was applied (or was already applied before
+	 *   - see `event_already_applied()`'s own doc comment for why a
+	 *   duplicate delivery is *also* a 200, not some other code). This is
+	 *   the only status `run_delivery_tick` in `src/webhook_delivery.rs`
+	 *   treats as `delivered: true` - anything else means the engine's
+	 *   delivery worker will retry with backoff (`backoff_seconds()`, read
+	 *   directly) until `max_attempts` is reached, per that file's own doc
+	 *   comment on `run_delivery_tick`.
+	 * - **401 Unauthorized**: signature missing or invalid. Mirrors this
+	 *   *engine's own* convention for exactly this situation - `ApiError::
+	 *   Unauthorized => (StatusCode::UNAUTHORIZED, ...)` in `src/http/
+	 *   mod.rs`, read directly - rather than inventing a different
+	 *   convention on the PHP side for what is, semantically, the identical
+	 *   fact ("this request did not prove it knows the shared secret").
+	 *   **No order lookup or mutation ever happens before this check passes**
+	 *   - the whole point of verifying first is that everything downstream
+	 *   can trust `payment_id` came from the engine, not from anyone who
+	 *   found this URL.
+	 * - **400 Bad Request**: the signature is valid but the body isn't the
+	 *   envelope shape `enqueue_webhook_event()` in `src/scanner.rs` always
+	 *   produces (`event`/`event_id`/`payment_id`, read directly - every
+	 *   event this engine ever sends has all three). A signed-but-malformed
+	 *   body is a client error on the sender's side, not a "we don't
+	 *   recognize this order" case (404) or an auth failure (401) - 400 is
+	 *   the one of the three that actually means "your request, not our
+	 *   data, is the problem," matching ordinary REST convention.
+	 * - **404 Not Found**: a well-formed, correctly-signed event for a
+	 *   `payment_id` with no matching order *on this WordPress site*.
+	 *   Mirrors the engine's own `ApiError::NotFound => StatusCode::
+	 *   NOT_FOUND` convention for "the referenced resource doesn't exist
+	 *   here" (`src/http/mod.rs`, same file as above) - chosen deliberately
+	 *   over a 2xx "swallow it silently" response, because an unknown
+	 *   `payment_id` reaching a *correctly-signed* request (it already
+	 *   passed the 401 check, so this webhook's `signing_secret` really is
+	 *   this site's) is a real operational fact worth an operator noticing
+	 *   in logs - a stale webhook registration surviving a database reset,
+	 *   or (in principle) a site's webhook secret having leaked - not
+	 *   something to hide by pretending success. Also deliberately not
+	 *   treated as a reason to retry forever: since `process_payment()`
+	 *   always creates the engine-side order and records its `payment_id`
+	 *   (`META_PAYMENT_ID`) *before* that order can possibly generate any
+	 *   webhook event at all, "the order doesn't exist yet, try again
+	 *   later" is not a real race this endpoint has to accommodate - an
+	 *   unknown `payment_id` here means "never will," not "not yet."
+	 *
+	 * @param string $raw_body  The exact raw request body bytes, unmodified.
+	 * @param string $signature The `X-MoneroPay-Signature` header value, or
+	 *                            `''` if the header was absent.
+	 * @return int The HTTP status code to respond with.
+	 */
+	public function process_webhook_request( $raw_body, $signature ) {
+		if ( ! $this->verify_webhook_signature( $raw_body, $signature ) ) {
+			$this->log( 'Webhook rejected: missing or invalid X-MoneroPay-Signature.', 'warning' );
+			return 401;
+		}
+
+		$event = json_decode( $raw_body, true );
+		if ( ! is_array( $event )
+			|| empty( $event['event'] ) || ! is_string( $event['event'] )
+			|| empty( $event['event_id'] ) || ! is_string( $event['event_id'] )
+			|| empty( $event['payment_id'] ) || ! is_string( $event['payment_id'] )
+		) {
+			$this->log( sprintf( 'Webhook rejected: correctly signed but not the expected envelope shape: %s', $raw_body ), 'error' );
+			return 400;
+		}
+
+		$order = $this->find_order_by_payment_id( $event['payment_id'] );
+		if ( ! $order instanceof WC_Order ) {
+			$this->log(
+				sprintf( 'Webhook for payment_id %s (event %s) has no matching order on this site.', $event['payment_id'], $event['event_id'] ),
+				'warning'
+			);
+			return 404;
+		}
+
+		if ( $this->event_already_applied( $order, $event['event_id'] ) ) {
+			// Already handled - see event_already_applied()'s own doc
+			// comment for why this is still a 200, not a rejection.
+			return 200;
+		}
+
+		$this->apply_webhook_event( $order, $event );
+		$this->mark_event_applied( $order, $event['event_id'] );
+		$order->save();
+
+		return 200;
+	}
+
+	/**
+	 * Verifies `X-MoneroPay-Signature` against a freshly computed HMAC-
+	 * SHA256 of `$raw_body`, keyed by this gateway's stored
+	 * `webhook_signing_secret`.
+	 *
+	 * **`hash_equals()`, never `===`** - this step's own brief states the
+	 * requirement explicitly, and the reasoning is worth restating here, in
+	 * this codebase's own words, rather than only citing the rule: PHP's
+	 * `===` string comparison (like Rust's plain `String`/`&str` equality)
+	 * short-circuits at the first differing byte, so the *time* a rejection
+	 * takes leaks *how many leading bytes were already correct* - the
+	 * textbook byte-at-a-time forgery oracle. `shared/src/webhook_sign.rs::
+	 * verify_signature`'s own doc comment (read directly) states this exact
+	 * concern for the Rust side, which uses `Mac::verify_slice` (backed by
+	 * `subtle`'s constant-time `ct_eq`) for the identical reason; `hash_
+	 * equals()` is PHP's own standard-library equivalent - a comparison
+	 * whose running time does not depend on where or whether the two inputs
+	 * first differ, specifically documented (php.net) as existing for
+	 * "comparing a string to a value the user is not supposed to know",
+	 * which is exactly this situation (an attacker submitting a guessed
+	 * signature against this public endpoint).
+	 *
+	 * **Compared as hex strings, not decoded to raw bytes first** - a
+	 * deliberate difference from the Rust side, not an inconsistency:
+	 * `verify_signature` in `shared/src/webhook_sign.rs` decodes the
+	 * presented hex to raw tag bytes before `verify_slice`, because Rust's
+	 * standard library has no built-in constant-time string comparison to
+	 * reach for directly. PHP's `hash_equals()` *is* a constant-time byte
+	 * comparison, and works identically whether the two strings being
+	 * compared happen to be hex text or raw bytes - comparing the lowercase
+	 * hex `hash_hmac()` already returns is the direct, standard, officially
+	 * documented PHP idiom for verifying an HMAC (the `hash_equals()` manual
+	 * page's own canonical example does exactly this), so there is no
+	 * decode-first step to add here that would buy anything Rust's own
+	 * decode-then-compare doesn't already get for free out of `hash_
+	 * equals()`.
+	 *
+	 * Cross-checked against `shared/src/webhook_sign.rs`'s own fixed
+	 * known-vector test constants in `tests/WebhookSignatureTest.php` - see
+	 * that file for the exact secret/payload/signature triple this method
+	 * must reproduce byte-for-byte.
+	 *
+	 * @param string $raw_body  The exact raw request body bytes.
+	 * @param string $signature The presented `X-MoneroPay-Signature` value.
+	 * @return bool
+	 */
+	private function verify_webhook_signature( $raw_body, $signature ) {
+		if ( '' === $this->webhook_signing_secret || '' === $signature ) {
+			// No configured secret (gateway never connected, or an admin
+			// blanked the field by hand) or no presented header - neither
+			// is a "wrong" signature to log as a forgery attempt, just an
+			// unauthenticated request; still rejected identically below via
+			// hash_equals() returning false against an empty comparand, but
+			// short-circuited here so hash_hmac() never runs against an
+			// empty key for no reason.
+			return false;
+		}
+
+		$expected = hash_hmac( 'sha256', $raw_body, $this->webhook_signing_secret );
+
+		return hash_equals( $expected, $signature );
+	}
+
+	/**
+	 * Finds the `WC_Order` an incoming webhook's `payment_id` refers to, by
+	 * querying for the `META_PAYMENT_ID` meta key `process_payment()`
+	 * writes - via `wc_get_orders()` (WooCommerce's own real order-query
+	 * abstraction, `WC_Order_Query` under the hood), **not** a raw SQL query
+	 * against `wp_postmeta`/the HPOS order-meta tables directly, because
+	 * WooCommerce's order storage backend is itself pluggable (the legacy
+	 * custom-post-type store, or High-Performance Order Storage's own
+	 * dedicated tables) and only its own query API is guaranteed to work
+	 * against whichever one a given site actually has active.
+	 *
+	 * **The exact `meta_key`/`meta_value` args used here, confirmed to work
+	 * on *both* backends by reading the real installed source, not
+	 * assumed**: `WC_Data_Store_WP::get_wp_query_args()`
+	 * (`includes/data-stores/class-wc-data-store-wp.php`) passes any
+	 * unrecognized top-level query var - `meta_key`/`meta_value` included -
+	 * straight through to `WP_Query` verbatim, which is what the legacy
+	 * CPT store's `query()` ultimately runs; that store's own `query()`
+	 * (`includes/data-stores/class-wc-order-data-store-cpt.php`) explicitly
+	 * flags a *`meta_query`*-shaped arg (the array form) as `$unsupported_
+	 * args` and fires a `doing_it_wrong()` notice for it - so the array form
+	 * would have been the wrong choice here even though it also happens to
+	 * work on HPOS. On the HPOS side, `OrdersTableQuery::` (`src/Internal/
+	 * DataStores/Orders/OrdersTableQuery.php`) builds its own internal
+	 * meta-query mechanism from exactly this same top-level `meta_key`/
+	 * `meta_value`/`meta_compare` "shortcut" shape (read directly - it
+	 * folds `$this->args['meta_key']`/`['meta_value']` into a `$shortcut_
+	 * meta_query` before handing off to `OrdersTableMetaQuery`), the same
+	 * WP_Query-style convention the legacy store also understands. The
+	 * plain `meta_key`/`meta_value` pair used below is therefore the one
+	 * shape genuinely portable across both backends - not a guess, and not
+	 * the `meta_query` array shape WooCommerce's own CPT store explicitly
+	 * warns is CPT-unsupported.
+	 *
+	 * @param string $payment_id The engine's own order id from the webhook
+	 *                            payload.
+	 * @return WC_Order|null
+	 */
+	private function find_order_by_payment_id( $payment_id ) {
+		$orders = wc_get_orders(
+			array(
+				'meta_key'   => self::META_PAYMENT_ID, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+				'meta_value' => $payment_id, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+				'limit'      => 1,
+				'return'     => 'objects',
+			)
+		);
+
+		return isset( $orders[0] ) && $orders[0] instanceof WC_Order ? $orders[0] : null;
+	}
+
+	/**
+	 * Whether `$event_id` has already been applied to `$order` -
+	 * `META_APPLIED_EVENT_IDS` order meta, a JSON-encoded array checked with
+	 * `in_array()`.
+	 *
+	 * **Why this exists at all**: `run_delivery_tick` in `src/webhook_
+	 * delivery.rs` (read directly) retries a delivery on anything short of
+	 * a 2xx response, with exponential backoff, up to `max_attempts` - and,
+	 * separately, any real HTTP delivery can also succeed on the engine's
+	 * side while its response is lost in transit (a network blip between
+	 * this server sending `200` and the engine receiving it), which the
+	 * engine's own retry logic cannot distinguish from an outright failure.
+	 * Either way, this receiver *will* see the same `event_id` more than
+	 * once for a perfectly healthy delivery, not just a broken one - and
+	 * `enqueue_webhook_event()` in `src/scanner.rs` (read directly) mints
+	 * exactly one fresh `event_id` per real status *transition*, baking it
+	 * into the stored payload once so every retry of that delivery resends
+	 * the identical id under the identical signature. Skipping a
+	 * already-seen `event_id` is what makes re-applying it a no-op instead
+	 * of, for example, appending the same order note twice or re-running
+	 * `payment_complete()`'s stock-reduction side effects a second time.
+	 *
+	 * @param WC_Order $order    The order to check.
+	 * @param string   $event_id The webhook envelope's own `event_id`.
+	 * @return bool
+	 */
+	private function event_already_applied( WC_Order $order, $event_id ) {
+		$applied = json_decode( (string) $order->get_meta( self::META_APPLIED_EVENT_IDS ), true );
+		return is_array( $applied ) && in_array( $event_id, $applied, true );
+	}
+
+	/**
+	 * Records `$event_id` as applied to `$order` - see
+	 * `event_already_applied()`'s own doc comment for why this exists.
+	 * Appends to the existing list rather than replacing it (an order sees
+	 * at most a handful of transitions over its real lifetime - the seven
+	 * `order.<status>` events plus, rarely, the two double-spend ones - so
+	 * unbounded growth is not a real concern here the way it might be for a
+	 * key logging every request an endpoint ever received).
+	 *
+	 * Deliberately does **not** call `$order->save()` - the caller
+	 * (`process_webhook_request()`) saves once, after every mutation this
+	 * event implies has been applied to the in-memory order object,
+	 * matching this class's existing pattern elsewhere (e.g.
+	 * `process_payment()`'s own single `$order->save()` after both
+	 * `update_meta_data()` and `add_order_note()`).
+	 *
+	 * @param WC_Order $order    The order to record against.
+	 * @param string   $event_id The webhook envelope's own `event_id`.
+	 */
+	private function mark_event_applied( WC_Order $order, $event_id ) {
+		$applied   = json_decode( (string) $order->get_meta( self::META_APPLIED_EVENT_IDS ), true );
+		$applied   = is_array( $applied ) ? $applied : array();
+		$applied[] = $event_id;
+		$order->update_meta_data( self::META_APPLIED_EVENT_IDS, wp_json_encode( array_values( array_unique( $applied ) ) ) );
+	}
+
+	/**
+	 * Applies one already-verified, already-deduped webhook event to
+	 * `$order` - the real status-mapping/note-writing decision for every
+	 * event type this engine actually sends.
+	 *
+	 * **The real event catalog, checked directly against every call site in
+	 * `src/scanner.rs`** (grepped for `"order\.` rather than assumed from
+	 * this step's own brief alone) - `enqueue_webhook_event()` is called
+	 * from exactly two places: `recompute_and_notify_in_tx()` (one
+	 * `order.<status>` event per actual status *transition*, for all seven
+	 * `OrderStatus` variants - `src/status.rs`, read directly, confirmed
+	 * exhaustive) and `void_and_notify()`/`unvoid_as_false_positive()`
+	 * (the two double-spend events). Nine event types total; this method
+	 * handles all nine, not just `order.paid`.
+	 *
+	 * **Why the two double-spend events never set a WC status themselves**:
+	 * both `void_and_notify()` and `unvoid_as_false_positive()` (read
+	 * directly, `src/scanner.rs`) call `recompute_and_notify_in_tx()` -
+	 * which enqueues its own `order.<status>` event under its own fresh
+	 * `event_id` whenever the status genuinely changed - *before* enqueueing
+	 * their own `order.double_spend_detected`/`order.double_spend_reversed`
+	 * event, in the same database transaction. That means any real status
+	 * consequence of a void or an un-void is **already** announced,
+	 * correctly, by its own paired `order.<status>` event - handled by
+	 * `apply_order_status_event()` below like any other transition. A
+	 * double-spend event forcing some *second*, independently-guessed
+	 * status change here would either duplicate that (if the two events are
+	 * both delivered and processed) or actively fight it (since delivery
+	 * order between two independently-retried webhook rows is not
+	 * guaranteed - this receiver could see `double_spend_reversed` before
+	 * or after its paired `order.<status>` event). This is also exactly
+	 * what makes "recomputed, not hardcoded back to processing regardless
+	 * of amount" (this step's own brief, for `double_spend_reversed`
+	 * specifically) true *for free*: the real recomputation already
+	 * happened engine-side, against the engine's own authoritative ledger,
+	 * and is delivered as an honest, independent event - this method's only
+	 * job for both double-spend events is to make sure the merchant
+	 * *notices* (a prominent order note), never to re-derive or second-guess
+	 * a status this receiver has no authoritative data to recompute anyway
+	 * (the double-spend payloads carry no amount/confirmation data at all -
+	 * only `payment_id`, plus `txid` for the reversal).
+	 *
+	 * @param WC_Order $order The already-matched order.
+	 * @param array    $event The decoded webhook envelope (`event`,
+	 *                         `event_id`, `payment_id`, plus whatever
+	 *                         event-specific fields that event type carries).
+	 */
+	private function apply_webhook_event( WC_Order $order, array $event ) {
+		$event_type = $event['event'];
+
+		$status_by_event_type = array(
+			'order.pending'     => 'pending',
+			'order.unconfirmed' => 'unconfirmed',
+			'order.confirming'  => 'confirming',
+			'order.paid'        => 'paid',
+			'order.partial'     => 'partial',
+			'order.overpaid'    => 'overpaid',
+			'order.expired'     => 'expired',
+		);
+
+		if ( isset( $status_by_event_type[ $event_type ] ) ) {
+			$this->apply_order_status_event( $order, $status_by_event_type[ $event_type ] );
+			return;
+		}
+
+		if ( 'order.double_spend_detected' === $event_type ) {
+			// No status change here - see this method's own doc comment for
+			// why. Just the loud note a merchant needs to actually notice
+			// the fraud case happened, per this step's own brief.
+			$order->add_order_note(
+				__(
+					'MoneroPay Cloud: FRAUD ALERT - a payment previously credited to this order was proven to be a double-spend and has been voided by the engine. If this changed the order\'s payment status, that change was announced separately. Please review this order.',
+					'moneropay-cloud'
+				)
+			);
+			return;
+		}
+
+		if ( 'order.double_spend_reversed' === $event_type ) {
+			$txid = isset( $event['txid'] ) && is_string( $event['txid'] ) ? $event['txid'] : __( 'unknown', 'moneropay-cloud' );
+			// Likewise no status change here - see this method's own doc
+			// comment: any real status consequence of the reversal was
+			// already announced via its own order.<status> event.
+			$order->add_order_note(
+				sprintf(
+					/* translators: %s: the transaction id the earlier double-spend accusation was about */
+					__(
+						'MoneroPay Cloud: an earlier double-spend accusation against this order (transaction %s) was a false positive and has been reversed by the engine. If this changed the order\'s payment status, that change was announced separately.',
+						'moneropay-cloud'
+					),
+					$txid
+				)
+			);
+			return;
+		}
+
+		// An event type this receiver doesn't recognize - logged, never
+		// fatal. Forward-compatible with a future engine version adding a
+		// new event type this plugin hasn't been updated for yet; the
+		// delivery still gets a 200 (it was received and understood as far
+		// as the envelope goes) rather than looping the engine's retry
+		// worker forever over something a retry can never fix.
+		$this->log( sprintf( 'Webhook: unrecognized event type "%s" - envelope accepted, no action taken.', $event_type ), 'warning' );
+	}
+
+	/**
+	 * Applies one `order.<status>` transition event - the engine -> WooCommerce
+	 * status mapping this whole step exists to build, and the reasoning
+	 * behind every row of it.
+	 *
+	 * **`paid`/`overpaid` -> `WC_Order::payment_complete()`, not a plain
+	 * `update_status()` call** (confirmed directly against the installed
+	 * `includes/class-wc-order.php::payment_complete()`, not assumed from
+	 * its name): this is WooCommerce's own canonical, real "a payment has
+	 * been received" mechanism - every bundled and third-party gateway that
+	 * actually receives real money calls this, not a raw status setter. It
+	 * does meaningfully more than set a string: it sets `date_paid` (once,
+	 * the first time it's ever called - `maybe_set_date_paid()`, read
+	 * directly), reduces stock, records a transaction id, fires `woocommerce_
+	 * payment_complete` for every other plugin that hooks it (subscriptions
+	 * renewals, stock-alert plugins, accounting integrations), and -
+	 * critically - **decides `processing` vs. `completed` itself**, via
+	 * `$this->needs_processing()`: an order containing only virtual/
+	 * downloadable items goes straight to `completed` (nothing left for the
+	 * merchant to fulfill), while anything else goes to `processing`. This
+	 * plugin has no principled way to know, order by order, whether that
+	 * distinction applies - hardcoding `processing` unconditionally (which
+	 * this step's own outcome text literally says, "ends with the WC order
+	 * in processing/completed") would be *wrong* for exactly the
+	 * downloadable-goods case that same outcome text's "/completed" already
+	 * anticipates. `payment_complete()` is also idempotent by construction
+	 * (gated on `$this->has_status( OrderStatus::PAYMENT_COMPLETE_STATUSES )`
+	 * - `pending`/`on-hold`/`failed`/`cancelled` - read directly), so a
+	 * duplicate call (which `event_already_applied()`'s dedupe should
+	 * already prevent, but this is real defense in depth, not redundant
+	 * caution) on an order already `processing`/`completed` is a safe no-op,
+	 * not a second stock reduction or a second `date_paid` write.
+	 *
+	 * **`unconfirmed`/`confirming` -> `on-hold`**: both mean "the engine has
+	 * seen the full amount, but doesn't yet trust it enough to treat the
+	 * order as paid" (`src/status.rs::derive_status`, read directly) -
+	 * `unconfirmed` is mempool-only, `confirming` is mined but below the
+	 * tenant's required confirmation depth. WooCommerce's own `on-hold`
+	 * status ("Awaiting payment confirmation" per its own `wc_get_order_
+	 * statuses()` label) is a near-verbatim match for both, and - just as
+	 * importantly - `on-hold` does **not** reduce stock the way `processing`/
+	 * `completed` do (confirmed via `payment_complete()`'s own gate above,
+	 * which only that method's success path ever reaches), which is exactly
+	 * right: nothing should be reserved as sold for a payment this server
+	 * doesn't yet trust. Collapsing both into the same WC bucket rather than
+	 * inventing a distinct status for each is deliberate - a merchant acts
+	 * on these identically ("wait"), and WooCommerce has no built-in status
+	 * more specific than `on-hold` to distinguish them with anyway.
+	 *
+	 * **`partial` -> `on-hold`**, not `pending`: `pending` (a fresh order
+	 * that's never received a single piconero) and `partial` (real,
+	 * on-chain-or-mempool funds have arrived, just not enough of them) are
+	 * genuinely different situations for a merchant - the former needs
+	 * nothing from anyone yet, the latter may need a human to eventually
+	 * decide what to do about an underpayment (there is no automated refund
+	 * path anywhere in this system - `docs/DESIGN.md` §3, and `status.rs`'s
+	 * own module doc comment cites the same fact). `on-hold` is
+	 * WooCommerce's own general "needs a look" bucket for exactly this kind
+	 * of ambiguity, and the order note added below says the actual reason,
+	 * so a merchant scanning their on-hold queue isn't left guessing which
+	 * of several possible causes put a given order there.
+	 *
+	 * **`expired` -> `cancelled`**: WooCommerce's own status for "this order
+	 * did not complete and is not going to" - the direct match for an order
+	 * whose payment window has closed with insufficient funds. Per `status.
+	 * rs`'s own comment (read directly): "even a partial payment past the
+	 * deadline surfaces as expired - the funds still exist at the address
+	 * and require manual merchant handling, since no automated refund path
+	 * exists" - restated in this transition's own order note below so that
+	 * fact isn't buried in a status label alone.
+	 *
+	 * **`pending`**: maps to WooCommerce's own `pending` - normally a no-op
+	 * (a fresh order is already `pending`), but reachable as a genuine
+	 * *regression* if a double-spend void removes an order's only payment
+	 * entirely (`derive_status`'s own `total == 0` branch). This is
+	 * deliberately not special-cased away: the webhook is reporting the
+	 * engine's own current, authoritative truth, and an order that no
+	 * longer has any valid payment genuinely isn't paid anymore, however
+	 * unusual that regression is in practice.
+	 *
+	 * Every branch's `$note` is handed to `WC_Order::update_status( $status,
+	 * $note )`, not a separate `add_order_note()` call - confirmed directly
+	 * (`includes/class-wc-order.php::add_status_transition_note()`) that
+	 * WooCommerce folds this text into the *same* order note as its own
+	 * auto-generated "Order status changed from X to Y." (`trim( $transition
+	 * ['note'] . ' ' . $note )`), and skips adding any note at all when the
+	 * status doesn't actually change (e.g. `unconfirmed` following
+	 * `confirming`, both mapping to `on-hold`) - exactly right, since a
+	 * same-bucket transition has nothing new to tell the merchant.
+	 *
+	 * @param WC_Order $order         The already-matched order.
+	 * @param string   $engine_status One of `src/status.rs::OrderStatus`'s
+	 *                                 seven `as_str()` values.
+	 */
+	private function apply_order_status_event( WC_Order $order, $engine_status ) {
+		if ( 'paid' === $engine_status || 'overpaid' === $engine_status ) {
+			if ( 'overpaid' === $engine_status ) {
+				// payment_complete() has no note parameter of its own (it
+				// writes a fixed "Payment via ..." note) - this is added as
+				// a separate note specifically to flag the one fact that
+				// method can't express: the customer sent more than was
+				// due, and nothing in this plugin or the engine refunds the
+				// excess automatically.
+				$order->add_order_note(
+					__(
+						'MoneroPay Cloud: the customer sent more Monero than the amount due. The excess is not automatically refunded - handle any refund manually.',
+						'moneropay-cloud'
+					)
+				);
+			}
+			$order->payment_complete();
+			return;
+		}
+
+		if ( ! isset( self::STATUS_MAP[ $engine_status ] ) ) {
+			// Defensive only - every OrderStatus variant is covered by
+			// either this branch or the paid/overpaid one above, so this
+			// should be unreachable for a real engine payload. Logged, not
+			// fatal, for the same forward-compatibility reason unrecognized
+			// event types are in apply_webhook_event() above.
+			$this->log( sprintf( 'Webhook: unrecognized engine status "%s" - no WooCommerce status change applied.', $engine_status ), 'warning' );
+			return;
+		}
+
+		$note = '';
+		if ( 'partial' === $engine_status ) {
+			$note = __( 'MoneroPay Cloud: a partial payment was received - the full amount due has not yet arrived.', 'moneropay-cloud' );
+		} elseif ( 'expired' === $engine_status ) {
+			$note = __(
+				'MoneroPay Cloud: this order\'s payment window has closed without full payment. If any funds were received, they remain at the payment address - there is no automatic refund; handle manually.',
+				'moneropay-cloud'
+			);
+		}
+
+		$order->update_status( self::STATUS_MAP[ $engine_status ], $note );
 	}
 
 	/**

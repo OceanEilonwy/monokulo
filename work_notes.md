@@ -42,6 +42,421 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- WBS 1.5.4 done: the real webhook receiver + order status mapping - this
+  closes out Track 1.5 (the WooCommerce plugin) entirely. A real payment
+  through a real WooCommerce checkout now ends with the WC order in the
+  right WooCommerce status once the engine's webhook for it arrives, per
+  this step's own outcome text.
+  - **The real WooCommerce mechanism, confirmed directly against installed
+    source before relying on it - and a genuinely nontrivial finding along
+    the way**: `add_action( 'woocommerce_api_' . $this->id, ... )` is what
+    this step's brief named, and it *does* still work on a real, current
+    WooCommerce install - but not for the reason an older mental model of
+    WooCommerce would suggest. Reading `includes/class-woocommerce.php`'s
+    own `__get()` directly first surfaced a real, current fact: "The Legacy
+    REST API was removed from WooCommerce core as of version 9.0 (moved to
+    a dedicated plugin)." That could easily have been read as "so
+    `woocommerce_api_{id}` no longer fires without that separate plugin
+    installed" - checked further rather than assumed, and that reading is
+    wrong: `src/Internal/Utilities/LegacyRestApiStub.php` (read in full) is
+    a stub *kept in core specifically* so gateway-callback URLs keep
+    working without the separate extension - its own class doc comment
+    states this explicitly ("Provide the not-endpoint related utility
+    methods...", plus `maybe_process_wc_api_query_var()`'s own real
+    `do_action( 'woocommerce_api_' . $api_request )` call, hooked on
+    `parse_request` priority 0, confirmed to run regardless of whether
+    `WC_Legacy_REST_API_Plugin` exists). This is real, current, WC 11.1.0
+    behavior on this environment's own installed copy
+    (`~/.wp-env/wp-env-moneropay-cloud-9652ae59/woocommerce/`), not
+    carried over from memory of an older WooCommerce version - and it's
+    also what PayPal's own still-shipped legacy IPN handler relies on
+    (`includes/wc-deprecated-functions.php::woocommerce_legacy_paypal_ipn()`,
+    read directly), so this isn't a rarely-exercised code path either.
+    Documented at length on the `add_action()` call site itself
+    (`class-wc-gateway-moneropay.php`'s constructor), not just here.
+  - **The full status-mapping table** (every engine event this receiver
+    handles - the complete nine-event catalog, checked directly against
+    every `enqueue_webhook_event()`/`void_and_notify()`/
+    `unvoid_as_false_positive()` call site in `src/scanner.rs`, grepped for
+    `"order\.`, not assumed exhaustive from this step's own brief alone):
+
+    | engine event | WC status | why |
+    |---|---|---|
+    | `order.pending` | `pending` | Normally a no-op (a fresh order is already `pending`) - kept as a real, mapped transition (not skipped) because it's genuinely *reachable* as a regression: a double-spend void that removes an order's only payment makes `derive_status()` in `src/status.rs` return to `Pending` (`total == 0`). Covered by its own regression test. |
+    | `order.unconfirmed` | `on-hold` | Full amount seen, only in the mempool, not yet trusted per the tenant's zero-conf policy. WooCommerce's own "Awaiting payment confirmation" label is a near-verbatim match; `on-hold` also doesn't reduce stock, correctly, since nothing here is confirmed yet. |
+    | `order.confirming` | `on-hold` | Full amount mined but below the tenant's required confirmation depth - same "seen, not yet trusted" situation as `unconfirmed` from a merchant's point of view; collapsed into the same bucket deliberately, since WooCommerce has no built-in status more specific than `on-hold` to distinguish them with, and a merchant acts on both identically ("wait"). |
+    | `order.partial` | `on-hold` | Real funds arrived, but not the full amount - deliberately *not* `pending` (a fresh order with nothing at all), since an underpaid order may need a human decision (there is no automated refund path anywhere in this system - `docs/DESIGN.md` §3 and `status.rs`'s own module doc comment both say so). The order note added alongside the status change says this explicitly, so a merchant scanning their on-hold queue isn't left guessing which of several causes put a given order there. |
+    | `order.paid` | `WC_Order::payment_complete()` (→ `processing` or `completed`) | WooCommerce's own real, canonical "a payment was received" mechanism, not a raw status setter - confirmed directly (`includes/class-wc-order.php::payment_complete()`) that it decides `processing` vs. `completed` itself via `needs_processing()` (an order of only virtual/downloadable items goes straight to `completed`), sets `date_paid`, reduces stock, fires `woocommerce_payment_complete`, and is idempotent by construction (gated on the order's current status being in `PAYMENT_COMPLETE_STATUSES`). Hardcoding `processing` unconditionally, as a literal reading of this step's own outcome text might suggest, would be wrong for exactly the downloadable-goods case that same outcome text's own "/completed" already anticipates. |
+    | `order.overpaid` | `WC_Order::payment_complete()`, plus an explicit order note | Same mechanism as `paid` - the customer paid at least what was due. An extra order note is added first (since `payment_complete()` has no note parameter of its own) explicitly flagging that the excess is not automatically refunded by this plugin or the engine. |
+    | `order.expired` | `cancelled` | WooCommerce's own "this did not complete and isn't going to." Per `status.rs`'s own comment (read directly): even a partial payment past the deadline surfaces as `expired`, since the funds still exist at the address and need manual merchant handling - restated in the transition's own order note, not left implicit in the status label alone. |
+    | `order.double_spend_detected` | **no status change by itself** | Prominent ("FRAUD ALERT") order note only. Reasoning below. |
+    | `order.double_spend_reversed` | **no status change by itself** | Order note (with the `txid`) only. Reasoning below. |
+
+  - **The two double-spend events - the ones with no obvious "correct"
+    answer, and the actual reasoning for the choice made**: the brief's own
+    suggested starting framework was "`double_spend_detected` → likely
+    `failed` or `on-hold`... `double_spend_reversed` → recomputed, not
+    hardcoded back to `processing`". Read `void_and_notify()` and
+    `unvoid_as_false_positive()` directly in `src/scanner.rs` before
+    deciding, rather than picking one of the two suggested options by
+    intuition - and found a fact that changes the shape of the right
+    answer entirely: **both** functions call `recompute_and_notify_in_tx()`
+    - which enqueues its own `order.<status>` event under its own fresh
+    `event_id` whenever the status genuinely changed - **before** enqueuing
+    their own double-spend event, in the same database transaction. That
+    means any real status consequence of a void or an un-void is *already*
+    announced correctly, by its own independent, already-mapped
+    `order.<status>` event - the exact recomputation the brief asked for,
+    done engine-side, against the engine's own authoritative ledger, for
+    free. Having `apply_webhook_event()` *also* force a status change off
+    the double-spend event itself would either duplicate that (if both
+    events are delivered and processed) or actively fight it, since
+    delivery order between two independently-retried webhook rows is not
+    guaranteed (this receiver could see `double_spend_reversed` before or
+    after its paired `order.<status>` event). It would also be a real
+    regression for the case the brief's own suggested "failed or on-hold"
+    framing doesn't fit: `multi_payment_voiding_one_still_leaves_enough_
+    stays_paid` in `status.rs`'s own test suite - a double-spent payment
+    voided while *other*, still-legitimate payments already cover the
+    order in full, so `recompute_and_notify_in_tx()` finds no transition at
+    all and only the double-spend event fires alone. Forcing that order to
+    `on-hold`/`failed` regardless would be a real, false regression on an
+    order that is genuinely, fully paid. So: **neither double-spend event
+    sets a WC status by itself** - each only adds a note a merchant can't
+    miss (`double_spend_detected`: "FRAUD ALERT" plus a reminder to review
+    the order; `double_spend_reversed`: the `txid` the reversal concerned,
+    plus a note that any real status change was announced separately).
+    This is not a weaker response to the fraud case than "failed/on-hold" -
+    it's a more accurate one: the merchant is told about *every* double-spend
+    event unconditionally (an order note is never suppressed or
+    deduped-away except by the same `event_id` mechanism every event
+    uses), and the order's actual WooCommerce status always reflects the
+    engine's own honest, independently-computed truth rather than a second,
+    possibly-conflicting guess made on the WooCommerce side.
+  - **`event_id` dedupe**: `_moneropay_cloud_applied_webhook_event_ids`
+    order meta, a JSON-encoded array (not comma-joined, so a future
+    `event_id` format can never be mis-split), checked before applying an
+    event and appended to afterward. A redelivery of an already-applied
+    `event_id` still returns 200 (the delivery already succeeded from the
+    engine's point of view per `run_delivery_tick`'s own retry contract in
+    `src/webhook_delivery.rs`) but touches nothing - no duplicate order
+    note, no second `payment_complete()` call. Verified two ways: a
+    PHPUnit test asserting the order note count is identical before/after a
+    redelivery, and (see below) a real repeated HTTP POST against a real
+    running WordPress instance, independently confirmed via `wp eval`
+    that the note count and the applied-event-ids meta were both
+    unchanged by the second delivery.
+  - **The three response codes, and why each one** (mirroring this
+    *engine's own* real `ApiError` convention in `src/http/mod.rs`, read
+    directly, rather than inventing a separate one on the PHP side for
+    semantically identical facts):
+    - **401** - missing or invalid `X-MoneroPay-Signature`. Mirrors
+      `ApiError::Unauthorized => StatusCode::UNAUTHORIZED`. No order lookup
+      or mutation ever happens before this check passes.
+    - **400** - a correctly-signed body that isn't the envelope shape
+      `enqueue_webhook_event()` in `src/scanner.rs` always produces
+      (`event`/`event_id`/`payment_id`). A signed-but-malformed body is a
+      client error on the sender's side, distinct from both the auth
+      failure above and the not-found case below.
+    - **404** - a well-formed, correctly-signed event for a `payment_id`
+      with no matching order on this site. Mirrors `ApiError::NotFound =>
+      StatusCode::NOT_FOUND`. Deliberately not a 2xx "swallow it silently"
+      response: since `process_payment()` always creates the engine-side
+      order and records its `payment_id` *before* that order can generate
+      any webhook event at all, an unknown `payment_id` reaching an
+      already-authenticated request means "never will match," not "not yet
+      - keep retrying" - so there's no race this code has to be gentle
+      about, and a real 404 gives an operator something to notice in logs
+      (a stale webhook registration surviving a DB reset, or, in
+      principle, a leaked signing secret).
+    - **200** - everything else, including an already-applied `event_id`
+      (see dedupe above) - the only status `run_delivery_tick` in
+      `src/webhook_delivery.rs` treats as `delivered: true`; anything else
+      means the engine's own delivery worker retries with exponential
+      backoff up to `max_attempts`.
+  - **The HMAC verification itself**: `hash_hmac( 'sha256', $raw_body,
+    $secret )` compared with `hash_equals()`, never `===` - per this step's
+    own explicit brief, with the reasoning restated in this codebase's own
+    words on `verify_webhook_signature()`'s doc comment (a `===`/early-exit
+    string comparison leaks how many leading bytes of a forged signature
+    guess were already correct - the byte-at-a-time forgery oracle
+    `shared/src/webhook_sign.rs::verify_signature`'s own doc comment
+    describes for the identical reason on the Rust side). Compared as hex
+    *strings*, not decoded to raw bytes first, unlike the Rust side - a
+    deliberate difference, not an inconsistency: PHP's `hash_equals()` is
+    itself a constant-time byte comparison and works identically on hex
+    text or raw bytes, and comparing `hash_hmac()`'s own lowercase-hex
+    output directly is the standard, officially-documented PHP idiom for
+    this - there's no decode-first step to add that would buy anything
+    Rust's own decode-then-`ct_eq` doesn't already get for free out of
+    `hash_equals()`. The raw body is read via `file_get_contents(
+    'php://input' )` in `handle_webhook()`, never `$_POST` (which the
+    engine's raw-JSON POST never even populates) and never a
+    decode-then-re-encode round trip - the exact requirement this step's
+    own brief called out by name ("even whitespace-identical-looking JSON
+    can byte-differ").
+  - **Order lookup**: `wc_get_orders()` with plain top-level `meta_key`/
+    `meta_value` args (`META_PAYMENT_ID` = `_moneropay_cloud_payment_id`,
+    the exact key `process_payment()` already writes - now a shared class
+    constant so the two call sites can't silently drift), **not** a
+    `meta_query` array and **not** raw SQL - confirmed by reading both real
+    order-storage backends directly, not assumed: `WC_Data_Store_WP::
+    get_wp_query_args()` (`includes/data-stores/class-wc-data-store-wp.php`)
+    passes an unrecognized top-level arg like `meta_key`/`meta_value`
+    straight through to `WP_Query` verbatim, while the legacy CPT store's
+    own `query()` (`includes/data-stores/class-wc-order-data-store-cpt.php`)
+    explicitly flags the *array* `meta_query` form as unsupported on that
+    backend and fires a `doing_it_wrong()` notice for it; on HPOS,
+    `OrdersTableQuery` (`src/Internal/DataStores/Orders/OrdersTableQuery.php`,
+    read directly) builds its own internal meta-query from exactly the same
+    top-level `meta_key`/`meta_value`/`meta_compare` "shortcut" convention.
+    The plain key/value pair is therefore the one shape genuinely portable
+    across both backends - not a guess, and specifically not the shape
+    WooCommerce's own CPT store warns is unsupported there.
+  - **Testing**:
+    - `tests/WebhookSignatureTest.php` - the mandatory known-vector test
+      (secret `known_vector_secret_for_php_crosscheck`, payload
+      `{"event":"order.paid","order_id":"12345","amount_piconero":
+      "1000000000000"}`, expected `436a60c6f66d20b611c7e4a3f78ab13167fb
+      26680a65d8b2e5a114c182de80f1`) copied verbatim from `shared/src/
+      webhook_sign.rs`'s own `KNOWN_VECTOR_*` test constants, plus four
+      more signature-verification tests (tampered payload, wrong secret,
+      missing signature, no secret configured). Independently
+      cross-checked *outside* this test file entirely before writing it -
+      a standalone `python3 -c "import hmac,hashlib; ..."` and a standalone
+      `php -r 'echo hash_hmac(...);'` invocation both produced the
+      identical expected hex, a three-way agreement (Rust, Python stdlib,
+      PHP stdlib) rather than PHP only checking its own work.
+    - `tests/WebhookStatusMappingTest.php` - table-driven (`@dataProvider`)
+      over all seven `order.<status>` events, plus dedicated tests for the
+      `pending`-regression case, the overpaid/expired order-note content,
+      and both double-spend events' note-only behavior.
+    - `tests/WebhookReceiverTest.php` - the request-handling logic, driven
+      directly through `process_webhook_request()` (public, side-effect-
+      testable) rather than through a real HTTP request - the same pattern
+      `ConnectFlowTest.php`/`ProcessPaymentTest.php` already established for
+      `process_connect_return()`/`process_payment()`: correctly-signed ->
+      200 and processed; missing/invalid/wrong-secret signature -> 401,
+      order completely untouched; malformed/incomplete body -> 400; unknown
+      `payment_id` -> 404, no fatal; a repeated `event_id` -> 200, not
+      double-applied (order status *and* note count both asserted
+      unchanged); two distinct events for the same order both genuinely
+      applied (dedupe keyed by `event_id`, not "has this order ever been
+      touched before").
+  - **Beyond the mocked suite - a real, observed HTTP smoke test against a
+    real running WordPress/WooCommerce dev instance**, specifically because
+    the `woocommerce_api_{id}` dispatch mechanism was the one genuinely
+    novel/risky piece of this step (see the `LegacyRestApiStub` finding
+    above) and deserved more than source-reading alone: seeded a real order
+    (`wp eval-file`, a scratch `tmp-smoke-setup.php`, deleted afterward -
+    same one-off, never-committed pattern WBS 1.5.3's own `tmp-smoke-
+    check.php` used) with `_moneropay_cloud_payment_id` meta and a real
+    `webhook_signing_secret` option, then sent a genuine `curl POST` from
+    the host to the real, published dev URL
+    (`http://localhost:8890/wc-api/moneropay_cloud/` - pretty permalinks
+    were active on this dev instance, so this is the `/wc-api/{id}/` path
+    form, not the `?wc-api={id}` query form; both are handled by the same
+    receiver code, this just happened to be the one this instance
+    exercised for real) with a real HMAC computed by a standalone `php -r`
+    invocation. First attempt genuinely failed with a real `401` - not a
+    bug in the plugin, but a real, self-inflicted repro of exactly the
+    byte-exactness hazard this step's own brief warns about: `echo "$BODY"
+    > file` appends a trailing newline `bash`'s `echo` adds, so the bytes
+    `curl --data-binary @file` sent didn't match the bytes the signature
+    was computed over, even though the *content* looked identical. Fixed
+    with `printf '%s'` (no trailing newline) and re-sent - a real, observed
+    `200 OK`, and `wp eval` afterward showed the real order (id 10)
+    genuinely transitioned to `wc-completed` (this smoke order had no
+    shippable items, so `payment_complete()`'s own `needs_processing()`
+    branch correctly chose `completed` over `processing` - real,
+    observed confirmation of the exact `payment_complete()` reasoning
+    documented on `apply_order_status_event()`) with a real "Payment
+    complete." order note. Re-sent the *identical* signed request a second
+    time: a real second `200 OK`, and `wp eval` confirmed the order note
+    count and the `_moneropay_cloud_applied_webhook_event_ids` meta were
+    both unchanged by the redelivery - real, HTTP-level confirmation of the
+    dedupe, not just the PHPUnit mock of it. Sent once more with no
+    signature header at all: a real `401`. `tmp-smoke-setup.php` deleted
+    afterward, never committed (confirmed via `git status`).
+  - **A real, load-bearing side effect of standing up wp-env for this
+    step, worth flagging explicitly**: `wp-env`'s own instance hash is
+    derived from the plugin directory's *basename* (`moneropay-cloud`),
+    not its full absolute path - confirmed by observation, not just
+    inferred: running `wp-env start` from this worktree's own
+    `plugins/moneropay-cloud/` reused the *exact same* Docker container
+    names (`wp-env-moneropay-cloud-9652ae59-*`) that were already running
+    before this session touched anything, and `docker inspect` afterward
+    showed those containers' plugin bind-mount had been *repointed* from
+    wherever they were mounted before to this worktree's own
+    `plugins/moneropay-cloud` path. No file in `/home/henry/Downloads/
+    mokulo` (the separate, uncommitted main checkout this session was told
+    never to write to) was touched by this - only ephemeral local Docker
+    state, which `wp-env start` already recreates idempotently on every
+    invocation regardless - but if that main checkout also has a
+    `plugins/moneropay-cloud/` directory (it does, per this project's own
+    fixed layout) and anyone was mid-session there relying on `wp-env run`
+    resolving to *that* checkout's own files, this session's `wp-env
+    start` silently repointed the shared instance away from it. Fully
+    recoverable with no data loss (re-running `wp-env start` from that
+    other checkout's own `plugins/moneropay-cloud/` repoints the same
+    named containers right back - the underlying WordPress/MySQL Docker
+    volumes are the same shared instance throughout, only which host
+    directory is bind-mounted as the plugin source changes), but flagged
+    here explicitly rather than silently, since it's exactly the kind of
+    cross-worktree interaction this session's own brief was careful to
+    warn against in the other direction (never *writing* to that checkout)
+    without anticipating this specific `wp-env` naming collision. Also
+    worth noting for a future step: the ports this session's own instance
+    ended up on (`8890`/`8891`, via `wp-env start --auto-port`) differ from
+    the `8888`/`8889` prior sessions' own notes describe, purely because
+    this session's first (misconfigured, run from the wrong directory)
+    `wp-env start` attempt collided with the already-running instance on
+    the default ports before the directory mistake was caught and fixed.
+  - **The full live stagenet e2e test named in this step's own brief
+    ("one full `wp-env` + stagenet e2e test mirroring 1.4.5") - not
+    attempted, per this step's own explicit permission to stop short of it
+    given the infrastructure lift**: this step's real-HTTP smoke test above
+    already goes further than a purely mocked suite in validating the one
+    genuinely novel mechanism this step relies on (the `woocommerce_api_{id}`
+    dispatch), but a true stagenet e2e - a real, funded stagenet wallet, a
+    real running stagenet Monero node, a real engine instance actually
+    *scanning* that chain (not the `[monero_node.stagenet]`
+    deliberately-unreachable placeholder WBS 1.5.2's own live test used,
+    since order *creation* never dials the node but a real scan tick
+    absolutely does), a real transaction broadcast and confirmed on-chain,
+    and minutes of real wall-clock wait for confirmations to accumulate -
+    is a substantially larger lift than this step alone should stand up
+    from scratch, exactly the same judgment call WBS 1.5.2/1.5.3 already
+    made about their own largest live-integration asks. **What a future
+    attempt would need, concretely**: (1) a funded stagenet wallet - stagenet
+    XMR from a public faucet, and enough of it, and enough real confirmation
+    wait time, to actually observe `pending -> confirming -> paid`
+    transitions for real; (2) a real stagenet daemon reachable from the
+    engine (a public stagenet node, or a locally-run one - `e2e/
+    moneropay-stagenet.toml`'s own existing config is the starting point,
+    not something this step read in depth); (3) the engine run for real
+    (not the host-`curl`-then-container trick WBS 1.5.2's own live test
+    used to dodge starting a real scanner loop - this test specifically
+    needs the scanner loop actually running and actually finding the real
+    transaction); (4) a real webhook registered pointing at this plugin's
+    real receiver, reachable from wherever the engine runs (the same
+    `host.docker.internal`/`ufw` container-networking question WBS 1.5.2's
+    own entry already solved once, likely needing the identical
+    container-on-wp-env-network workaround again); (5) a PHPUnit test
+    (mirroring `LiveEngineIntegrationTest.php`'s own `@group live-engine`/
+    gitignored-local-config pattern) that places a real order through this
+    gateway, waits for the real chain to confirm it, and asserts the real
+    WC order status ends up `processing`/`completed` - not a webhook this
+    test fabricates itself, since the entire point is proving the real
+    engine's real delivery worker and this plugin's real receiver agree.
+  - **The real, observed test run**: `NODE_OPTIONS='--no-network-family-
+    autoselection' npx @wordpress/env run tests-cli --env-cwd=wp-content/
+    plugins/moneropay-cloud vendor/bin/phpunit --testdox` (via `newgrp
+    docker -c "..."`, per this environment's own docker-group quirk; run
+    from inside `plugins/moneropay-cloud/` itself this time, matching a
+    real gotcha hit and fixed this session - see the `wp-env` hash note
+    above for why running it from the repo root instead produces a
+    *different*, wrongly-configured instance with nothing mounted where
+    the tests expect) ->
+    ```
+    PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
+
+    Connect Flow
+     ✔ Connect button links to the real connect start url with a stored nonce
+     ✔ Process connect return saves settings and enables the gateway on success
+     ✔ Process connect return does not save or enable on a failed finish call
+     ✔ Process connect return rejects a mismatched nonce without calling finish
+     ✔ Process connect return rejects reusing the same nonce twice
+     ✔ Process connect return rejects missing token or nonce
+
+    Gateway Registration
+     ✔ Gateway is registered with woocommerce
+     ✔ Gateway is disabled by default
+
+    Process Payment
+     ✔ Process payment sends expected request and returns engine redirect
+     ✔ Process payment throws when gateway is not configured
+     ✔ Process payment throws when engine returns non 200
+     ✔ Process payment throws when the engine is unreachable
+
+    Webhook Receiver
+     ✔ Correctly signed known event returns 200 and processes it
+     ✔ Missing signature is rejected and the order is left untouched
+     ✔ Invalid signature is rejected and the order is left untouched
+     ✔ Signature valid under a different secret is rejected
+     ✔ Correctly signed but malformed body is rejected as bad request
+     ✔ Correctly signed body missing required envelope fields is rejected as bad request
+     ✔ Unknown payment id is rejected cleanly as not found with no fatal
+     ✔ A repeated event id is skipped and not double processed
+     ✔ Two different events for the same order are both applied
+
+    Webhook Signature
+     ✔ Php hmac matches the known vector from shared webhook sign rs
+     ✔ Verification rejects a tampered payload
+     ✔ Verification rejects the wrong secret
+     ✔ Verification rejects a missing signature
+     ✔ Verification rejects when no secret is configured
+
+    Webhook Status Mapping
+     ✔ Status mapping with data set "order.pending -> pending"
+     ✔ Status mapping with data set "order.unconfirmed -> on-hold"
+     ✔ Status mapping with data set "order.confirming -> on-hold"
+     ✔ Status mapping with data set "order.partial -> on-hold"
+     ✔ Status mapping with data set "order.paid -> processing/completed"
+     ✔ Status mapping with data set "order.overpaid -> processing/completed"
+     ✔ Status mapping with data set "order.expired -> cancelled"
+     ✔ Order pending after a double spend void wipes out the only payment is a real reachable regression
+     ✔ Overpaid adds an explicit manual refund note beyond the payment complete note
+     ✔ Expired note explains manual handling is required for any partial funds
+     ✔ Double spend detected adds a prominent note without changing status by itself
+     ✔ Double spend reversed adds a note with the txid without changing status by itself
+
+    Time: 00:00.978, Memory: 93.00 MB
+
+    OK (38 tests, 112 assertions)
+    ```
+    Re-run without `--testdox` for a second, independent confirmation:
+    `OK (38 tests, 112 assertions)`, identical count both times.
+    `Live Engine Integration` (WBS 1.5.2's `@group live-engine` test)
+    correctly excluded from both runs by `phpunit.xml.dist`'s existing
+    group exclusion - not run this session (no live engine was started).
+  - **Files touched**: `plugins/moneropay-cloud/includes/
+    class-wc-gateway-moneropay.php` (five new class constants -
+    `META_PAYMENT_ID`, `META_APPLIED_EVENT_IDS`,
+    `WEBHOOK_SIGNATURE_SERVER_KEY`, `STATUS_MAP` - the
+    `$webhook_signing_secret` property, the `add_action( 'woocommerce_api_'
+    . $this->id, ... )` registration, and `handle_webhook()`/
+    `process_webhook_request()`/`verify_webhook_signature()`/
+    `find_order_by_payment_id()`/`event_already_applied()`/
+    `mark_event_applied()`/`apply_webhook_event()`/
+    `apply_order_status_event()`; `process_payment()`'s existing
+    `update_meta_data()` call switched to the new `META_PAYMENT_ID`
+    constant instead of its original inline literal, so the two now-real
+    call sites - the writer and this step's new reader - can't silently
+    drift), new `plugins/moneropay-cloud/tests/
+    {WebhookSignatureTest.php,WebhookStatusMappingTest.php,
+    WebhookReceiverTest.php}`. No engine-side or control-plane-side (Rust)
+    file touched - this step only ever *verifies against* `shared/src/
+    webhook_sign.rs`'s existing, already-shipped signing scheme and *reads*
+    `src/scanner.rs`/`src/status.rs`'s existing, already-shipped event
+    catalog, exactly like every prior Track A step's relationship to the
+    engine.
+  - **Worth the orchestrator's own second look**: (1) the `on-hold`-for-
+    both-double-spend-events design decision above - it's a real,
+    deliberate departure from the brief's own suggested "failed or
+    on-hold" framing for `double_spend_detected` specifically (no status
+    change *at all*, not even `on-hold`), reasoned from `scanner.rs`'s real
+    transactional ordering rather than picked from the brief's two
+    suggested options; worth a second read given it's the one place this
+    step's own judgment most visibly diverged from its brief's own
+    starting suggestion. (2) The `wp-env` container-bind-mount-collision
+    finding above, in case the main checkout at `/home/henry/Downloads/
+    mokulo` needs its own `wp-env start` re-run to point back at its own
+    files. (3) The live stagenet e2e test remains genuinely unbuilt, per
+    the explicit scope call above - if beta-readiness needs it before this
+    session's own real-HTTP smoke test is considered sufficient, that's a
+    separate, larger piece of work.
+
 - WBS 1.5.3 done: the real one-click "Connect your Monero wallet" flow,
   ported from `control-plane/src/http/connect.rs`'s own protocol (read
   directly, including its module doc comment, before writing any of this)
