@@ -29,6 +29,60 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **`fx_refactor.md` execution: Phase 0 and Phase 1 (all of 0.1, 1.1-1.4)
+  done, committed, verified live.** User confirmed all 5 open decisions
+  from that doc directly (drop per-tenant checkout customization; engine
+  keeps zero fiat/FX concept, not even a passthrough field; `moneropay-
+  client.js` moves to control-plane; control-plane owning the only fiat
+  record is accepted, XMR is the source of truth; hard-break the v1 API in
+  place, no version bump) and asked to start work autonomously. Commits, in
+  order: `f59720d` (0.1: `RateLimiter<K>` -> `shared`), `79f4e93` (1.1:
+  `exchange_rate` module -> `shared`, plus `supervise` -> `shared` since
+  control-plane's own Coingecko refresh loop needed it), `d049102` (1.1
+  cont'd: control-plane's own env-var-driven `exchange_rate_config` +
+  `AppState.exchange_rate`), `b28e290` (1.2: `order_fiat_metadata` table,
+  migration 0005), `ca03769` (1.3: control-plane's own per-IP
+  `rate_limiter` + `main.rs` switched to `into_make_service_with_connect_info`
+  - it never captured real peer IPs before this, a real gap fixed as part
+    of wiring the limiter in, not a pre-existing bug anyone had reported),
+  `5263345` (1.4: real `POST /pay/{pk}/orders` - control-plane's first
+  genuinely public, unauthenticated, state-changing endpoint).
+  - Every phase built the same way established earlier this session:
+    real code investigated first (not guessed), real tests against a real
+    spawned engine where relevant, full `cargo test --workspace` +
+    `cargo build --tests --features e2e` (both root and `mock-woocommerce`)
+    clean after every commit, then a live check against the real running
+    dev stack before moving on.
+  - **A real, live-verified end-to-end proof, not just passing tests**:
+    restarted control-plane by hand with `CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES=
+    '{"USD":"0.0067"}'` set, signed up, connected a real store, and posted
+    directly to the new `/pay/{pk}/orders` endpoint - got back a real
+    order (`xmr_amount_piconero: 167500000000`), which matches this
+    project's own known hand-computed reference value for $25 at that
+    rate exactly. Confirmed the honest failure path too: with no rate
+    configured (the dev stack's actual default), the same call returns a
+    clean `400 unsupported currency: USD`, not a silent wrong amount or a
+    crash.
+  - Real judgment calls made along the way, recorded here since they
+    weren't explicitly asked about: (a) the new endpoint is addressed by
+    the tenant's own `pk_...`, not control-plane's internal
+    `connection_id` - the WBS doc's own first draft said `connection_id`,
+    corrected during implementation since `pk_` is the identifier already
+    public and already used by the embed/checkout pattern, and leaking an
+    internal id would be a real, avoidable regression; (b) in this
+    transitional phase the new endpoint still calls the engine's existing
+    fiat-aware `create_order` (computing its own, independent XMR amount)
+    rather than trying to force agreement between two separately
+    configured rate providers - documented explicitly in `http/pay.rs`'s
+    own module doc comment as expected, not a bug, and something Phase 3's
+    real cutover resolves by construction, not by patching around it now.
+  - **Not yet started**: Phase 2 (control-plane's own checkout/payment
+    page + QR code), Phase 3 (the actual breaking change - engine
+    order-creation API becomes XMR-only, plus the schema migration
+    touching 14 `NewOrder` literals across `store.rs`/`scanner.rs`), Phase
+    4 (removing the engine's checkout UI/`exchange_rate` module/client
+    library entirely), Phase 5 (e2e test rework), Phase 6 (docs).
+
 - **`docs/fx_refactor.md` added** (user-directed): a real WBS for the
   FX/checkout-off-the-engine migration flagged as a separate follow-up in
   the dashboard-feedback-batch entry below. The user confirmed the design
