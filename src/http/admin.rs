@@ -4,11 +4,29 @@ use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
 use crate::auth::generate_webhook_secret;
-use crate::key_custody::{SubaddressIndex, WalletMaterial};
+use crate::key_custody::{KeyCustodyError, SubaddressIndex, WalletMaterial};
 use crate::status::OrderStatus;
 use crate::store::{NewTenant, Order, OrderPaymentRow, TenantConfigPatch, Webhook};
 
 use super::{AppState, ApiError, AuthedTenant, network_str, now_unix, parse_network, parse_status_query};
+
+/// `KeyCustodyError::InvalidKeyMaterial` from `register_wallet`/`derive_subaddress`
+/// below means *this request's* `view_key_hex`/`spend_pubkey_hex` decoded to the
+/// right length (`WalletMaterial::from_hex` already checked that, a few lines up)
+/// but isn't actually a valid point/scalar on the curve - e.g. `PublicKey::from_slice`
+/// rejecting a well-formed-but-off-curve spend key. That's still the *caller's*
+/// mistake, exactly like a bad hex string is - the blanket `From<KeyCustodyError>
+/// for ApiError` (`http/mod.rs`) maps `InvalidKeyMaterial` to `Internal` by design,
+/// because at most of its call sites (e.g. `resolve_wallet_handle` unsealing a
+/// tenant's own already-validated stored material) that error really would mean
+/// server-side data corruption, not a client mistake - so this endpoint needs its
+/// own, more specific mapping rather than changing that default for every caller.
+fn key_custody_error_for_new_tenant(e: KeyCustodyError) -> ApiError {
+    match e {
+        KeyCustodyError::InvalidKeyMaterial(m) => ApiError::BadRequest(format!("invalid key material: {m}")),
+        other => other.into(),
+    }
+}
 
 #[derive(Deserialize)]
 pub struct CreateTenantRequest {
@@ -44,12 +62,14 @@ pub async fn create_tenant(
 
     validate_tenant_settings(req.confirmations_required, req.order_expiry_seconds)?;
 
-    let handle = state.key_custody.register_wallet(material.clone()).await?;
+    let handle =
+        state.key_custody.register_wallet(material.clone()).await.map_err(key_custody_error_for_new_tenant)?;
     let primary_address = state
         .key_custody
         .derive_subaddress(handle, SubaddressIndex::default(), network)
-        .await?;
-    let sealed = state.key_custody.seal(&material).await?;
+        .await
+        .map_err(key_custody_error_for_new_tenant)?;
+    let sealed = state.key_custody.seal(&material).await.map_err(key_custody_error_for_new_tenant)?;
 
     let created = state.store.lock().unwrap().create_tenant(
         NewTenant {

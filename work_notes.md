@@ -42,6 +42,68 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- Real bug fix (user-directed: asked whether the connect forms had proper
+  server-side validation + error display, specifically for the view/spend
+  key hex fields). Investigated rather than assumed, and found a genuine,
+  previously-undetected bug: `WalletMaterial::from_hex` only checks that
+  the hex decodes to 32 bytes - it does *not* check the bytes are actually
+  a valid curve point/scalar. That real check only happens later, inside
+  `PlainKeyCustody::register_wallet`'s `to_view_pair()` call
+  (`PublicKey::from_slice`/`PrivateKey::from_slice` from the `monero`
+  crate) - and `http/mod.rs`'s blanket `From<KeyCustodyError> for ApiError`
+  maps `KeyCustodyError::InvalidKeyMaterial` to `ApiError::Internal`
+  (500), not `BadRequest` (400), by design, because at most of that
+  mapping's other call sites (e.g. `resolve_wallet_handle` unsealing a
+  tenant's own already-stored material) that error genuinely would mean
+  server-side corruption. But `admin::create_tenant` never had its own
+  override, so a well-formed-hex-but-off-curve spend key, or a
+  well-formed-hex-but-non-canonical view key scalar, silently fell through
+  as a bare 500 - confirmed live against the real running engine before
+  touching any code (`curl` with 64 `f`s as a spend key -> real 500,
+  "Invalid point on the curve"). Through control-plane, that 500 was worse
+  than useless: `connections::create_connection_for_user` only treats a
+  literal 400 as `CreateConnectionError::BadRequest` (shown inline on the
+  form); anything else, including this 500 with a perfectly good message
+  attached, fell into `CreateConnectionError::Internal` -> the generic
+  "Something went wrong. Please try again." - discarding a message the
+  engine had already computed correctly.
+  - Fix: `src/http/admin.rs` now has its own
+    `key_custody_error_for_new_tenant`, mapping `InvalidKeyMaterial`
+    specifically to `BadRequest` for the three `key_custody` calls inside
+    `create_tenant` only - deliberately not changing the blanket
+    `From<KeyCustodyError> for ApiError` mapping everywhere else, since
+    that default is correct for other callers.
+  - 2 new real regression tests in `src/http/tests.rs`, both against the
+    real `monero` crate's own curve validation (not mocked): an off-curve
+    spend pubkey and a non-canonical view-key scalar each now correctly
+    return `400` with the real validation message, not `500`. Engine test
+    count: 314 (was 312).
+  - Re-verified live end-to-end after rebuilding and restarting the real
+    engine: `curl` directly against `/api/v1/admin/tenants` now returns
+    `400` (was `500`) for the same off-curve key; then drove the real
+    `/dashboard/connect` form through the real running control-plane with
+    the same bad key and confirmed the exact message ("invalid key
+    material: spend public key: Invalid point on the curve") now renders
+    inline in the form's visible `.error` box, not lost.
+  - On the "matching the network selected" half of the question: Monero
+    view/spend keys are not themselves network-tagged (network only
+    affects *address encoding*, not key validity) - so there's no
+    "key belongs to the wrong network" check to add; what *is* already
+    validated (and was already correct, confirmed by reading
+    `admin::create_tenant` before assuming otherwise) is that the
+    requested `network` is one this instance has a configured node for
+    (`state.configured_networks.contains(&network)`), already a real
+    `400` with a clear message.
+  - Client-side: both connect forms already had `pattern="[0-9a-fA-F]{64}"`
+    on the hex fields (added during the earlier styling pass) - immediate
+    browser-level feedback for non-hex/wrong-length input; the curve/scalar
+    validity check this fix addresses can only happen server-side (no
+    reason to duplicate elliptic-curve math in page JS for this).
+  - `cargo build --workspace`/`cargo test --workspace` both clean; every
+    crate's count unchanged except the engine's own (+2, above).
+  - Not yet committed as of this entry - see the commit this same
+    conversation turn makes right after writing it.
+
 - Control-plane UI/UX pass (not a numbered WBS item - user-directed work
   after checking out the running control plane + engine locally): a real
   visual identity plus the pages the WBS's own dashboard tasks (1.3.1/1.3.2/

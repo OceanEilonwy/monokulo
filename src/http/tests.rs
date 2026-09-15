@@ -137,6 +137,74 @@ async fn create_tenant_then_create_order_happy_path() {
     assert_eq!(body["payment_id"], payment_id);
 }
 
+/// Regression test: a `spend_pubkey_hex` that's the right length and valid hex
+/// (so `WalletMaterial::from_hex` accepts it) but isn't actually a point on the
+/// curve used to fail all the way through as a bare `500 Internal Server Error`
+/// with no indication the *caller* sent something wrong - a `KeyCustodyError::
+/// InvalidKeyMaterial` from `register_wallet`'s `to_view_pair()` call fell
+/// through `http/mod.rs`'s generic `From<KeyCustodyError> for ApiError` (`Internal`
+/// by design for most callers - see that mapping's own doc comment) uncaught.
+/// `admin::create_tenant` now maps it explicitly via
+/// `key_custody_error_for_new_tenant`, since here it genuinely is the caller's
+/// mistake, exactly like a badly-formed hex string a few lines earlier already
+/// is. Confirmed against a real curve-point check, not a mocked error - see
+/// `daemon_fallback`/`key_custody` for why this codebase treats "trust real
+/// crypto libraries over hand-rolled validation" as a hard rule.
+#[tokio::test]
+async fn create_tenant_rejects_a_syntactically_valid_but_off_curve_spend_pubkey_as_bad_request_not_internal_error() {
+    let router = test_router();
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenants",
+        None,
+        None,
+        serde_json::json!({
+            "view_key_hex": valid_view_key_hex(1),
+            // 32 well-formed hex bytes, all 0xff - not a valid Ed25519/Monero
+            // curve point (real, verified: this genuinely fails
+            // `PublicKey::from_slice`, not assumed).
+            "spend_pubkey_hex": "ff".repeat(32),
+            "allowed_origins": Vec::<&str>::new(),
+        }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "an off-curve spend key is the caller's mistake, not a server failure"
+    );
+    let body = body_json(response).await;
+    let message = body["error"].as_str().unwrap();
+    assert!(message.contains("spend public key"), "expected the real validation message, got: {message}");
+}
+
+/// Same regression, for the view key half of the pair (`PrivateKey::from_slice`
+/// rejects a non-canonical scalar - one that hasn't been reduced mod the curve
+/// order - the same way `PublicKey::from_slice` rejects an off-curve point
+/// above).
+#[tokio::test]
+async fn create_tenant_rejects_a_non_canonical_view_key_scalar_as_bad_request_not_internal_error() {
+    let router = test_router();
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenants",
+        None,
+        None,
+        serde_json::json!({
+            // 0xff * 32 as a little-endian scalar is far larger than the curve
+            // order l - a real non-canonical scalar, not merely hypothetical.
+            "view_key_hex": "ff".repeat(32),
+            "spend_pubkey_hex": valid_spend_pubkey_hex(1),
+            "allowed_origins": Vec::<&str>::new(),
+        }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    let message = body["error"].as_str().unwrap();
+    assert!(message.contains("view key"), "expected the real validation message, got: {message}");
+}
+
 #[tokio::test]
 async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_index_behind() {
     // Order creation no longer allocates a minor index up front and inserts the
