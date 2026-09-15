@@ -58,6 +58,11 @@
 checked at delivery time, not registration - registering one won't error here, but nothing will ever actually be
 delivered to it.</span>
 </label>
+<label>Custom headers (optional)
+<textarea name="extra_headers" rows="3" placeholder="X-Api-Key: your-value&#10;Another-Header: another-value"></textarea>
+<span class="field-help">One <code>Header-Name: value</code> pair per line - sent with every delivery to this
+webhook, alongside the signature headers MoneroPay always includes.</span>
+</label>
 <button type="submit">Add webhook</button>
 </form>
 </div>

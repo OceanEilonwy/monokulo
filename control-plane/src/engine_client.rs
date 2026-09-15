@@ -130,12 +130,28 @@ impl EngineClient {
     /// engine's own `CreateWebhookRequest` treats it as optional. Returns
     /// `(webhook_id, signing_secret)` rather than a named struct since that's the
     /// entirety of what `http/connect.rs::finish` needs back.
-    pub async fn create_webhook(&self, sk: &str, url: &str) -> Result<(String, String), EngineClientError> {
+    /// `extra_headers`, when non-empty, is sent as a flat JSON object of
+    /// header name -> value strings - the exact shape the engine's own
+    /// delivery worker reads back out (`src/webhook_delivery.rs` at the
+    /// repo root: `if let Value::Object(map) = extra_headers { ... v.as_str() ... }`,
+    /// silently skipping any non-string value) - so every value here must
+    /// already be a plain string, never nested JSON.
+    pub async fn create_webhook(
+        &self,
+        sk: &str,
+        url: &str,
+        extra_headers: &std::collections::BTreeMap<String, String>,
+    ) -> Result<(String, String), EngineClientError> {
+        let extra_headers = if extra_headers.is_empty() {
+            None
+        } else {
+            Some(serde_json::to_value(extra_headers).expect("a BTreeMap<String, String> always serializes to a JSON object"))
+        };
         let response = self
             .http
             .post(format!("{}/api/v1/admin/tenant/webhooks", self.base_url))
             .bearer_auth(sk)
-            .json(&CreateWebhookRequest { url: url.to_string() })
+            .json(&CreateWebhookRequest { url: url.to_string(), extra_headers })
             .send()
             .await?;
         let parsed: CreateWebhookResponse = parse_response(response).await?;
@@ -180,7 +196,27 @@ impl EngineClient {
             .http
             .patch(format!("{}/api/v1/admin/tenant", self.base_url))
             .bearer_auth(sk)
-            .json(&PatchTenantRequest { allowed_origins: Some(allowed_origins) })
+            .json(&PatchTenantRequest { allowed_origins: Some(allowed_origins), confirmations_required: None })
+            .send()
+            .await?;
+        parse_response(response).await
+    }
+
+    /// `PATCH {base_url}/api/v1/admin/tenant` — sets `sk`'s tenant's
+    /// `confirmations_required` (how many block confirmations an on-chain
+    /// payment needs before an order reads as `paid`). The engine's own
+    /// `validate_tenant_settings` (`src/http/admin.rs` at the repo root)
+    /// rejects `0` (would mark an order paid off an unconfirmed transaction
+    /// that can still be replaced) and anything above its own configured
+    /// ceiling - surfaced here as an ordinary `EngineClientError::EngineError`
+    /// with status `400`, same as every other caller-facing engine
+    /// validation error in this client.
+    pub async fn set_confirmations_required(&self, sk: &str, confirmations_required: u64) -> Result<TenantView, EngineClientError> {
+        let response = self
+            .http
+            .patch(format!("{}/api/v1/admin/tenant", self.base_url))
+            .bearer_auth(sk)
+            .json(&PatchTenantRequest { allowed_origins: None, confirmations_required: Some(confirmations_required) })
             .send()
             .await?;
         parse_response(response).await
@@ -316,19 +352,21 @@ pub struct OrderDetailResponse {
 }
 
 /// A partial mirror of the engine's own `PatchTenantRequest`
-/// (`src/http/admin.rs` at the repo root, which has three more `Option`
-/// fields this client has no caller for yet - `confirmations_required`/
-/// `zero_conf_max_piconero`/`order_expiry_seconds`). Only declaring the one
-/// field `set_allowed_origins` sends is deliberately safe to omit the rest:
-/// serde treats a struct's `Option<T>` fields as optional automatically (a
-/// missing JSON key deserializes to `None`, no `#[serde(default)]` needed),
-/// so the engine sees exactly "leave everything but `allowed_origins`
-/// unchanged" - the same "unchanged vs. set to a value" contract
-/// `TenantConfigPatch`'s own doc comment (`src/store.rs` at the repo root)
-/// describes.
+/// (`src/http/admin.rs` at the repo root, which has two more `Option`
+/// fields this client has no caller for yet - `zero_conf_max_piconero`/
+/// `order_expiry_seconds`). Every field left `None` is safe to omit from
+/// the JSON body: serde treats a struct's `Option<T>` fields as optional
+/// automatically (a missing JSON key deserializes to `None`, no
+/// `#[serde(default)]` needed), so the engine sees exactly "leave
+/// everything not set here unchanged" - the same "unchanged vs. set to a
+/// value" contract `TenantConfigPatch`'s own doc comment (`src/store.rs`
+/// at the repo root) describes. Both `set_allowed_origins` and
+/// `set_confirmations_required` below construct this with every other
+/// field `None`.
 #[derive(Serialize)]
 struct PatchTenantRequest {
     allowed_origins: Option<Vec<String>>,
+    confirmations_required: Option<u64>,
 }
 
 /// Mirrors the engine's own `public::CreateOrderRequest` - only the two
@@ -368,6 +406,7 @@ pub struct WebhookView {
 #[derive(Serialize)]
 struct CreateWebhookRequest {
     url: String,
+    extra_headers: Option<serde_json::Value>,
 }
 
 /// Mirrors the engine's own `CreateWebhookResponse`.
@@ -494,7 +533,7 @@ mod tests {
             .expect("create_tenant against a real engine should succeed");
 
         let (webhook_id, signing_secret) = client
-            .create_webhook(&created.secret_token, "https://merchant.example/hook")
+            .create_webhook(&created.secret_token, "https://merchant.example/hook", &Default::default())
             .await
             .expect("create_webhook against a real engine should succeed");
         assert!(!webhook_id.is_empty());

@@ -447,6 +447,109 @@ async fn the_session_cookie_from_dashboard_login_authenticates_against_a_protect
 }
 
 #[tokio::test]
+async fn the_landing_page_shows_log_out_instead_of_log_in_once_a_session_cookie_is_presented() {
+    let router = test_router();
+
+    let no_session = router
+        .clone()
+        .oneshot(Request::builder().method("GET").uri("/").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let html = body_text(no_session).await;
+    assert!(html.contains(r#"href="/dashboard/login""#), "expected a log-in link with no session, got: {html}");
+    assert!(!html.contains("log out"), "expected no log-out link with no session, got: {html}");
+
+    let signup = router
+        .clone()
+        .oneshot(form_request(
+            "/dashboard/signup",
+            &[("email", "nav-auth-state@example.com"), ("password", "correct horse battery staple")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(signup.status(), StatusCode::FOUND);
+    let login = router
+        .clone()
+        .oneshot(form_request(
+            "/dashboard/login",
+            &[("email", "nav-auth-state@example.com"), ("password", "correct horse battery staple")],
+        ))
+        .await
+        .unwrap();
+    let set_cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    let session_pair = set_cookie.split(';').next().unwrap().to_string();
+
+    let with_session = router
+        .oneshot(Request::builder().method("GET").uri("/").header("cookie", session_pair).body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    let html = body_text(with_session).await;
+    // The landing page's own body has separate, always-shown marketing CTAs
+    // ("Sign up - it's free...", "Log in", both capitalized, with a `btn`
+    // class) that are deliberately unaffected by login state - only the nav
+    // bar's own lowercase, unstyled "log in"/"sign up" links are checked
+    // here, matched by their exact nav markup rather than a generic `href`
+    // substring that would also match those body CTAs.
+    assert!(html.contains(r#">log out<"#), "expected a log-out link once a real session cookie is presented, got: {html}");
+    assert!(!html.contains(r#"href="/dashboard/login">log in<"#), "the nav's log-in link must be gone once logged in, got: {html}");
+    assert!(!html.contains(r#"href="/dashboard/signup">sign up<"#), "the nav's sign-up link must be gone once logged in, got: {html}");
+}
+
+#[tokio::test]
+async fn logging_out_via_the_dashboard_nav_form_clears_the_session_and_redirects_home() {
+    let router = test_router();
+
+    let signup = router
+        .clone()
+        .oneshot(form_request(
+            "/dashboard/signup",
+            &[("email", "dashboard-logout@example.com"), ("password", "correct horse battery staple")],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(signup.status(), StatusCode::FOUND);
+    let login = router
+        .clone()
+        .oneshot(form_request(
+            "/dashboard/login",
+            &[("email", "dashboard-logout@example.com"), ("password", "correct horse battery staple")],
+        ))
+        .await
+        .unwrap();
+    let set_cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
+    let session_pair = set_cookie.split(';').next().unwrap().to_string();
+
+    let logout = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri("/dashboard/logout")
+                .header("cookie", session_pair.clone())
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), StatusCode::FOUND, "expected a redirect after logging out");
+    assert_eq!(logout.headers().get("location").unwrap(), "/");
+
+    // The same, now-deleted session cookie must no longer authenticate.
+    let whoami_after = router
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri("/_test/whoami")
+                .header("cookie", session_pair)
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(whoami_after.status(), StatusCode::UNAUTHORIZED, "the logged-out session must no longer authenticate");
+}
+
+#[tokio::test]
 async fn posting_a_wrong_password_to_dashboard_login_rerenders_the_form_with_a_generic_error() {
     let router = test_router();
 

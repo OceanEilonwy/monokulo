@@ -110,11 +110,16 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard", axum::routing::get(home::dashboard_home))
         .route("/dashboard/signup", axum::routing::get(dashboard::signup_form).post(dashboard::signup_submit))
         .route("/dashboard/login", axum::routing::get(dashboard::login_form).post(dashboard::login_submit))
+        .route("/dashboard/logout", axum::routing::post(dashboard::logout_submit))
         .route("/dashboard/connect", axum::routing::get(dashboard::connect_form).post(dashboard::connect_submit))
         .route("/dashboard/connections/new", axum::routing::get(home::new_store_picker))
         .route("/dashboard/connections/new/woocommerce", axum::routing::get(home::woocommerce_instructions))
         .route("/dashboard/connections/{id}", axum::routing::get(orders::store_detail))
         .route("/dashboard/connections/{id}/orders/new", axum::routing::post(orders::create_order))
+        .route(
+            "/dashboard/connections/{id}/settings/confirmations",
+            axum::routing::post(orders::update_confirmations_required),
+        )
         .route("/dashboard/connections/{id}/orders", axum::routing::get(orders::orders_list))
         .route("/dashboard/connections/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
         .route("/dashboard/connections/{id}/webhooks", axum::routing::get(orders::webhooks_list).post(orders::webhooks_create))

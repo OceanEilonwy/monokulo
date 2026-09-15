@@ -113,18 +113,24 @@ pub struct ConnectForm {
     pub allowed_origins: String,
 }
 
+/// `logged_in` is always `false` here, not a real per-request session
+/// check - this page's whole purpose is establishing a *new* session, so
+/// showing the sign-up/log-in links regardless of any existing one is the
+/// reasonable default (see `templates::FormViewModel::logged_in`'s own doc
+/// comment).
 fn render_signup(state: &AppState, error: Option<&str>) -> Response {
     let html = state
         .templates
-        .render_signup(&FormViewModel { error: error.map(str::to_string) })
+        .render_signup(&FormViewModel { error: error.map(str::to_string), logged_in: false })
         .expect("the built-in signup template must always render");
     Html(html).into_response()
 }
 
+/// Same `logged_in: false` reasoning as `render_signup` above.
 fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>) -> Response {
     let html = state
         .templates
-        .render_login(&LoginViewModel { error: error.map(str::to_string), next: next.map(str::to_string) })
+        .render_login(&LoginViewModel { error: error.map(str::to_string), next: next.map(str::to_string), logged_in: false })
         .expect("the built-in login template must always render");
     Html(html).into_response()
 }
@@ -152,6 +158,7 @@ fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&
             network_mainnet_selected,
             network_stagenet_selected,
             network_testnet_selected,
+            logged_in: true,
         })
         .expect("the built-in connect template must always render");
     Html(html).into_response()
@@ -171,6 +178,7 @@ fn render_connect_success(state: &AppState, public_key: &str) -> Response {
             network_mainnet_selected: false,
             network_stagenet_selected: false,
             network_testnet_selected: false,
+            logged_in: true,
         })
         .expect("the built-in connect template must always render");
     Html(html).into_response()
@@ -205,6 +213,30 @@ pub async fn signup_submit(State(state): State<AppState>, Form(form): Form<Signu
 
 pub async fn login_form(State(state): State<AppState>, Query(query): Query<LoginQuery>) -> Response {
     render_login(&state, None, query.next.as_deref())
+}
+
+/// `POST /dashboard/logout` - the browser-facing nav's "log out" link (a
+/// tiny same-origin form, not a bare `<a href>`, since this is a
+/// state-changing action - see `_nav.html.hbs`). Behind [`AuthedUser`] like
+/// every other `/dashboard/*` route, so it accepts the session cookie the
+/// same way every other protected page already does; reuses the exact same
+/// delete-session logic `POST /logout` (the JSON API, `http/logout.rs`)
+/// runs, just via `AuthedUser`'s cookie path rather than its `Bearer` one.
+/// Clears the cookie in the response (an empty value with `max_age(0)`) so
+/// the browser doesn't keep presenting a now-deleted session token on its
+/// next request, then redirects to `/` - a human clicking "log out" expects
+/// a real page back, not `logout::logout`'s bare `204` (which is correct
+/// for the JSON API, wrong for a browser form submission).
+pub async fn logout_submit(State(state): State<AppState>, AuthedUser(_user, token_hash): AuthedUser) -> Response {
+    state.db.lock().unwrap().delete_session(&token_hash).ok();
+    let cookie = Cookie::build((super::SESSION_COOKIE_NAME, ""))
+        .http_only(true)
+        .same_site(SameSite::Lax)
+        .path("/")
+        .max_age(time::Duration::ZERO)
+        .build();
+    let jar = CookieJar::new().add(cookie);
+    (jar, redirect_302("/")).into_response()
 }
 
 /// `POST /dashboard/login`. WBS 1.4.1 adds `next`-redirect support on top of

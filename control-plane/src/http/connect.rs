@@ -114,6 +114,7 @@ fn render_confirm_form(
             network_stagenet_selected,
             network_testnet_selected,
             existing_stores,
+            logged_in: true,
         })
         .expect("the built-in platform-connect template must always render");
     axum::response::Html(html).into_response()
@@ -548,7 +549,7 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
     // here explicitly in case a real deployment prefers "credentials now, webhook
     // registration retried separately" instead.
     let webhook_signing_secret = match &req.webhook_url {
-        Some(url) => match state.engine_client.create_webhook(&secret_token, url).await {
+        Some(url) => match state.engine_client.create_webhook(&secret_token, url, &Default::default()).await {
             Ok((_webhook_id, signing_secret)) => Some(signing_secret),
             Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
         },

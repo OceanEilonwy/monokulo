@@ -56,11 +56,14 @@ pre { padding: 0.8em; overflow-x: auto; white-space: pre-wrap; word-break: break
 .box + .box { margin-top: 1.2rem; }
 table { border-collapse: collapse; width: 100%; margin: 0.8em 0; }
 th, td { border: 1px solid var(--line); padding: 0.4em 0.6em; text-align: left; vertical-align: top; }
+/* A code/pre value inside a table cell (an address, a txid) shouldn't carry
+   its own box on top of the cell's own border - the cell border is enough. */
+td code, td pre, th code, th pre { background: none; border: none; padding: 0; }
 th { background: var(--ink); color: var(--paper); font-weight: 700; }
 tr:nth-child(even) td { background: rgba(0,0,0,0.03); }
 form label { display: block; margin: 0.9em 0 0.3em; font-weight: 700; }
 form .field-help { display: block; font-weight: 400; color: var(--muted); margin-top: 0.15em; font-size: 0.88em; }
-input[type=text], input[type=email], input[type=password], input[type=url], select {
+input[type=text], input[type=email], input[type=password], input[type=url], select, textarea {
   width: 100%;
   font-family: inherit;
   font-size: 1em;
@@ -69,7 +72,8 @@ input[type=text], input[type=email], input[type=password], input[type=url], sele
   background: #fff;
   color: var(--ink);
 }
-input:focus, select:focus { outline: 3px solid var(--accent); outline-offset: 0; }
+textarea { resize: vertical; }
+input:focus, select:focus, textarea:focus { outline: 3px solid var(--accent); outline-offset: 0; }
 button, .btn {
   display: inline-block;
   font-family: inherit;
@@ -108,6 +112,70 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .pick-card h3 { margin-top: 0; }
 .steps { padding-left: 1.4em; }
 .steps li { margin: 0.5em 0; }
+.help-disclosure { margin: 0.6em 0 1.2em; }
+.help-disclosure summary {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  gap: 1em;
+  cursor: pointer;
+  list-style: none;
+  padding: 0.3em 0;
+}
+.help-disclosure summary::-webkit-details-marker { display: none; }
+.help-disclosure summary .hint { text-decoration: underline; white-space: nowrap; }
+.help-disclosure[open] summary .hint::after { content: " \25B4"; }
+.help-disclosure:not([open]) summary .hint::after { content: " \25BE"; }
+/* Nav bar - a semantic <nav>/<label>/checkbox structure rather than pure
+   inline styles, so the small-screen hamburger below (a plain CSS checkbox
+   toggle - no JS involved in showing/hiding the menu itself) has real
+   selectors to work with. Above the breakpoint this all just renders as a
+   normal flex row; the checkbox/label stay hidden and irrelevant. */
+.site-nav { background: var(--ink); color: var(--paper); border-bottom: 3px solid var(--accent); }
+.site-nav-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding-top: 0.7rem;
+  padding-bottom: 0.7rem;
+  flex-wrap: wrap;
+  position: relative;
+}
+.site-nav-brand { color: var(--paper); text-decoration: none; font-weight: 700; letter-spacing: -0.02em; }
+.site-nav-links { display: flex; align-items: center; flex-wrap: wrap; }
+.site-nav-links a, .site-nav-links .nav-link-button {
+  color: var(--paper);
+  margin-left: 1.2em;
+  background: none;
+  border: none;
+  font: inherit;
+  cursor: pointer;
+  padding: 0;
+  text-decoration: underline;
+  text-decoration-thickness: 1px;
+}
+.site-nav-links .nav-logout-form { margin: 0; display: inline; }
+.nav-status-link { text-decoration: none !important; }
+.nav-status-text { text-decoration: underline; }
+.nav-toggle-checkbox { position: absolute; opacity: 0; pointer-events: none; }
+.nav-toggle-label { display: none; color: var(--paper); font-size: 1.4rem; line-height: 1; cursor: pointer; user-select: none; }
+/* No-JS-required small-screen menu: below the breakpoint, the link group
+   wraps onto its own full-width row (the honest "progressive enhancement"
+   fallback) *and* starts collapsed behind the checkbox-driven hamburger -
+   pure CSS, nothing here depends on JS running at all. */
+@media (max-width: 640px) {
+  .nav-toggle-label { display: block; }
+  .site-nav-links {
+    flex-basis: 100%;
+    display: none;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 0.6em;
+    margin-top: 0.6em;
+  }
+  .site-nav-links a, .site-nav-links .nav-link-button { margin-left: 0; }
+  .nav-toggle-checkbox:checked ~ .site-nav-links { display: flex; }
+}
 .status-dot {
   display: inline-block;
   width: 0.6em;

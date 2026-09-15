@@ -82,12 +82,15 @@ async fn get_status_cached(state: &AppState) -> Result<EngineStatusResponse, Str
     result
 }
 
-/// `GET /status` - the full page.
-pub async fn status_page(State(state): State<AppState>) -> Response {
-    let view_model = match get_status_cached(&state).await {
+/// `GET /status` - the full page. Unauthenticated, so `logged_in` is a real
+/// per-request check (see `StatusPageViewModel::logged_in`'s own doc
+/// comment), not a fixed literal like most other pages.
+pub async fn status_page(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
+    let mut view_model = match get_status_cached(&state).await {
         Ok(status) => build_view_model(status),
         Err(message) => StatusPageViewModel { engine_error: Some(message), ..Default::default() },
     };
+    view_model.logged_in = super::resolve_authed_user(&state, &headers).is_some();
     let html = state.templates.render_status(&view_model).expect("the built-in status template must always render");
     Html(html).into_response()
 }
@@ -132,6 +135,9 @@ fn build_view_model(status: EngineStatusResponse) -> StatusPageViewModel {
         networks,
         poll_interval_secs: status.poll_interval_secs,
         generated_at_display: relative_time(now, status.generated_at),
+        // Overwritten by `status_page`'s own real per-request check right
+        // after this returns - a placeholder here, never the value shown.
+        logged_in: false,
     }
 }
 

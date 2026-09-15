@@ -60,8 +60,9 @@ pub struct ScannerStatusView {
     pub tenants_scanned: usize,
     pub last_tick_ok: bool,
     pub last_error: Option<String>,
-    /// More than 3x `poll_interval_secs` since the last tick finished (or
-    /// never ticked at all) - see `is_stale`'s own doc comment for why 3x.
+    /// More than `is_stale`'s own threshold since the last tick finished
+    /// (or never ticked at all) - see that function's doc comment for the
+    /// real formula and why.
     pub is_stale: bool,
 }
 
@@ -80,15 +81,27 @@ pub struct EngineStatusResponse {
 }
 
 /// A network's scan loop is considered stale (not just "last tick failed" -
-/// genuinely not ticking at all) once it's gone more than 3x its own
-/// configured poll interval without a tick - generous enough that normal
-/// jitter (a slow node, GC pause, whatever) never falsely reads as stuck,
-/// while still catching a genuinely wedged loop well before an operator
-/// would otherwise notice only via a merchant complaint (the exact failure
-/// mode `main.rs::supervise`'s own doc comment names as the reason that
-/// function exists at all).
+/// genuinely not ticking at all) once it's gone more than
+/// `max(5x poll_interval_secs, 15s)` without a tick.
+///
+/// **Real bug this threshold fixes**: the original formula (3x
+/// `poll_interval_secs`, no floor) only accounts for the sleep *between*
+/// ticks, not how long a tick itself actually takes - and a real tick
+/// against a real, live public node over the real internet routinely takes
+/// several seconds (`daemon_fallback`'s own per-request round trip, not
+/// something this loop controls). Against this repo's own dev config
+/// (`poll_interval_secs = 2`, so a 3x threshold of 6s), a perfectly healthy
+/// scanner ticking every ~7-8s in practice - confirmed directly against the
+/// real running engine, not a guess - read as "stale" on every other tick,
+/// which is exactly the status-page flicker (healthy -> stale -> healthy)
+/// a real user reported. The 5x multiplier plus a 15s floor gives real,
+/// live-node tick durations comfortable headroom regardless of how short
+/// the configured interval is, while still catching a genuinely wedged
+/// loop well before an operator would otherwise notice only via a merchant
+/// complaint (the exact failure mode `main.rs::supervise`'s own doc comment
+/// names as the reason that function exists at all).
 fn is_stale(now: i64, last_tick_finished_at: i64, poll_interval_secs: u64) -> bool {
-    let staleness_threshold = (poll_interval_secs as i64).saturating_mul(3).max(1);
+    let staleness_threshold = (poll_interval_secs as i64).saturating_mul(5).max(15);
     now.saturating_sub(last_tick_finished_at) > staleness_threshold
 }
 
@@ -149,9 +162,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn is_stale_uses_three_times_the_configured_poll_interval_as_its_threshold() {
-        assert!(!is_stale(1000, 995, 2), "5s since the last tick, 2s interval x3 = 6s threshold - not stale yet");
-        assert!(is_stale(1000, 990, 2), "10s since the last tick, 2s interval x3 = 6s threshold - genuinely stale");
-        assert!(!is_stale(1000, 1000, 0), "a poll_interval of 0 must not make every tick instantly stale");
+    fn is_stale_uses_five_times_the_configured_poll_interval_with_a_15s_floor() {
+        // 2s interval -> 5x = 10s, below the 15s floor, so the floor wins.
+        assert!(!is_stale(1000, 990, 2), "10s since the last tick, below the 15s floor - not stale yet");
+        assert!(is_stale(1000, 984, 2), "16s since the last tick, above the 15s floor - genuinely stale");
+        // A large enough interval that 5x actually exceeds the floor.
+        assert!(!is_stale(1000, 970, 10), "30s since the last tick, 10s interval x5 = 50s threshold - not stale yet");
+        assert!(is_stale(1000, 940, 10), "60s since the last tick, 10s interval x5 = 50s threshold - genuinely stale");
+        assert!(!is_stale(1000, 1000, 0), "a poll_interval of 0 must still get the 15s floor, not read as instantly stale");
+    }
+
+    /// The real bug this whole formula change fixes, reproduced directly:
+    /// this repo's own dev config (`poll_interval_secs = 2`) with a real,
+    /// observed ~7-8s tick cadence against live remote nodes must never
+    /// read as stale under the new threshold, even though it did under the
+    /// old 3x-with-no-floor one.
+    #[test]
+    fn a_real_observed_slow_tick_cadence_against_the_dev_config_no_longer_reads_as_stale() {
+        assert!(!is_stale(1008, 1000, 2), "8s since the last tick at a 2s configured interval must not be stale");
     }
 }

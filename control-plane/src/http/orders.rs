@@ -88,6 +88,7 @@ pub async fn orders_list(
                 created_at: o.created_at,
             })
             .collect(),
+        logged_in: true,
     };
     let html = state.templates.render_orders(&view_model).expect("the built-in orders template must always render");
     Html(html).into_response()
@@ -148,6 +149,7 @@ pub async fn order_detail(
                         })
                         .collect(),
                 }),
+                logged_in: true,
             };
             let html = state
                 .templates
@@ -156,7 +158,7 @@ pub async fn order_detail(
             Html(html).into_response()
         }
         Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
-            let view_model = OrderDetailViewModel { connection_id: id, order: None };
+            let view_model = OrderDetailViewModel { connection_id: id, order: None, logged_in: true };
             let html = state
                 .templates
                 .render_order_detail(&view_model)
@@ -216,6 +218,7 @@ async fn render_webhooks_page(
             .collect(),
         error,
         created_webhook_signing_secret,
+        logged_in: true,
     };
     let html =
         state.templates.render_webhooks(&view_model).expect("the built-in webhooks template must always render");
@@ -225,6 +228,41 @@ async fn render_webhooks_page(
 #[derive(Deserialize)]
 pub struct CreateWebhookForm {
     pub url: String,
+    /// One `Header-Name: value` pair per line - the engine's own
+    /// `extra_headers` (`CreateWebhookRequest`, `src/http/admin.rs` at the
+    /// repo root) wants a flat JSON object of string values, and this is
+    /// the plainest way to collect an arbitrary number of them from an
+    /// HTML form without JS-driven "add another row" UI. Blank lines are
+    /// ignored; every other line must contain `:` or the whole submission
+    /// is rejected with a clear error (see [`parse_extra_headers`]) -
+    /// rejecting outright rather than silently dropping a malformed line,
+    /// since a header the merchant *thinks* they configured but didn't
+    /// would be a much worse failure mode than an upfront error.
+    #[serde(default)]
+    pub extra_headers: String,
+}
+
+/// Parses [`CreateWebhookForm::extra_headers`]'s `Header-Name: value` lines
+/// into the flat string map `EngineClient::create_webhook` wants. `Err`
+/// names the exact offending line so the re-rendered form's error is
+/// actionable, not just "invalid input somewhere."
+fn parse_extra_headers(text: &str) -> Result<std::collections::BTreeMap<String, String>, String> {
+    let mut headers = std::collections::BTreeMap::new();
+    for line in text.lines() {
+        let line = line.trim();
+        if line.is_empty() {
+            continue;
+        }
+        let Some((name, value)) = line.split_once(':') else {
+            return Err(format!("Custom headers must be one \"Header-Name: value\" pair per line - could not parse: {line:?}"));
+        };
+        let (name, value) = (name.trim(), value.trim());
+        if name.is_empty() {
+            return Err(format!("Custom headers must be one \"Header-Name: value\" pair per line - could not parse: {line:?}"));
+        }
+        headers.insert(name.to_string(), value.to_string());
+    }
+    Ok(headers)
 }
 
 /// `POST /dashboard/connections/{id}/webhooks` - registers a new webhook via
@@ -257,8 +295,12 @@ pub async fn webhooks_create(
     if url.is_empty() {
         return render_webhooks_page(&state, &id, &sk, Some("Enter a webhook URL.".to_string()), None).await;
     }
+    let extra_headers = match parse_extra_headers(&form.extra_headers) {
+        Ok(headers) => headers,
+        Err(message) => return render_webhooks_page(&state, &id, &sk, Some(message), None).await,
+    };
 
-    match state.engine_client.create_webhook(&sk, url).await {
+    match state.engine_client.create_webhook(&sk, url, &extra_headers).await {
         Ok((_webhook_id, signing_secret)) => render_webhooks_page(&state, &id, &sk, None, Some(signing_secret)).await,
         // The engine's own validation (a malformed URL, a non-http(s) scheme -
         // `src/http/admin.rs::create_webhook` at the repo root) - the
@@ -342,21 +384,27 @@ pub async fn store_detail(
         Ok(None) => {
             let html = state
                 .templates
-                .render_store_detail(&crate::templates::StoreDetailViewModel { store: None })
+                .render_store_detail(&crate::templates::StoreDetailViewModel { store: None, logged_in: true })
                 .expect("the built-in store detail template must always render");
             return (StatusCode::NOT_FOUND, Html(html)).into_response();
         }
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_store_detail_page(&state, row, None).await
+    render_store_detail_page(&state, row, None, None).await
 }
 
-/// Shared by `store_detail` and `create_order` - both end by showing the
-/// same page (a fresh store overview, optionally with a create-order
-/// error), same pattern as `orders.rs`'s own `render_webhooks_page`. Takes
-/// an already ownership-checked row rather than re-checking it, since both
-/// callers have already done that.
-async fn render_store_detail_page(state: &AppState, row: StoreConnectionRow, order_creation_error: Option<String>) -> Response {
+/// Shared by `store_detail`, `create_order`, and `update_confirmations_required`
+/// - all three end by showing the same page (a fresh store overview,
+/// optionally with a create-order or settings error), same pattern as
+/// `orders.rs`'s own `render_webhooks_page`. Takes an already
+/// ownership-checked row rather than re-checking it, since every caller has
+/// already done that.
+async fn render_store_detail_page(
+    state: &AppState,
+    row: StoreConnectionRow,
+    order_creation_error: Option<String>,
+    settings_error: Option<String>,
+) -> Response {
     let sk = match decrypt_sk(state, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -364,6 +412,7 @@ async fn render_store_detail_page(state: &AppState, row: StoreConnectionRow, ord
 
     let tenant_result = state.engine_client.get_tenant(&sk).await;
     let (health, health_label) = health_of_tenant_lookup(&tenant_result);
+    let confirmations_required = tenant_result.as_ref().map(|t| t.confirmations_required).unwrap_or(0);
 
     // A store whose engine is currently unreachable still gets a real page -
     // just with no order data available, rather than a hard error. The
@@ -401,7 +450,10 @@ async fn render_store_detail_page(state: &AppState, row: StoreConnectionRow, ord
             recent_orders,
             is_woocommerce,
             order_creation_error,
+            confirmations_required,
+            settings_error,
         }),
+        logged_in: true,
     };
     let html =
         state.templates.render_store_detail(&view_model).expect("the built-in store detail template must always render");
@@ -438,15 +490,67 @@ pub async fn create_order(
     let fiat_amount = form.fiat_amount.trim();
     let fiat_currency = form.fiat_currency.trim();
     if fiat_amount.is_empty() || fiat_currency.is_empty() {
-        return render_store_detail_page(&state, row, Some("Enter an amount and a currency.".to_string())).await;
+        return render_store_detail_page(&state, row, Some("Enter an amount and a currency.".to_string()), None).await;
     }
 
     match state.engine_client.create_order(&row.tenant_public_key, fiat_amount, fiat_currency).await {
         Ok(order) => redirect_302(&format!("/dashboard/connections/{id}/orders/{}", order.payment_id)),
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_store_detail_page(&state, row, Some(message)).await
+            render_store_detail_page(&state, row, Some(message), None).await
         }
-        Err(_) => render_store_detail_page(&state, row, Some("Something went wrong. Please try again.".to_string())).await,
+        Err(_) => {
+            render_store_detail_page(&state, row, Some("Something went wrong. Please try again.".to_string()), None).await
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct UpdateConfirmationsForm {
+    pub confirmations_required: String,
+}
+
+/// `POST /dashboard/connections/{id}/settings/confirmations` - updates the
+/// tenant's `confirmations_required` via the engine's own `PATCH
+/// /api/v1/admin/tenant` (`EngineClient::set_confirmations_required`).
+/// `String`, not `u64`, on the form field: an unparseable value (empty,
+/// non-numeric) is a validation error surfaced the same way as every other
+/// one here, not a `400` from axum's own form extractor before this
+/// handler ever runs - a merchant who fat-fingers this field should see the
+/// same page with the same clear message, not a generic framework error
+/// page.
+pub async fn update_confirmations_required(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Form(form): Form<UpdateConfirmationsForm>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let confirmations_required: u64 = match form.confirmations_required.trim().parse() {
+        Ok(n) => n,
+        Err(_) => {
+            return render_store_detail_page(&state, row, None, Some("Enter a whole number of confirmations.".to_string()))
+                .await;
+        }
+    };
+
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    match state.engine_client.set_confirmations_required(&sk, confirmations_required).await {
+        Ok(_) => redirect_302(&format!("/dashboard/connections/{id}")),
+        Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
+            render_store_detail_page(&state, row, None, Some(message)).await
+        }
+        Err(_) => {
+            render_store_detail_page(&state, row, None, Some("Something went wrong. Please try again.".to_string())).await
+        }
     }
 }
 
@@ -462,6 +566,7 @@ mod tests {
     use crate::engine_client::EngineClient;
 
     use super::super::{AppState, build_router};
+    use super::parse_extra_headers;
 
     /// Same fixed-scalar construction `engine_client.rs`'s and
     /// `connections.rs`'s own tests use.
@@ -646,9 +751,10 @@ mod tests {
         let html = body_text(response).await;
         assert!(html.contains(&payment_id), "expected the order's payment_id in its detail page, got: {html}");
         assert!(html.contains(TEST_CURRENCY), "expected the order's fiat currency in its detail page, got: {html}");
-        // Real bug fixed: `created_at`/`expires_at`/`updated_at` used to be
-        // shown as raw Unix seconds - now a human-readable UTC date/time.
-        assert!(html.contains("UTC"), "expected human-readable timestamps, got: {html}");
+        // Timestamps deliberately stay compact (raw Unix seconds), not a
+        // human-readable date - a user-requested reversion of an earlier
+        // attempt at this page.
+        assert!(html.contains("Created at"), "expected the created-at row present, got: {html}");
         // `merchant_order_id` was never set on this seeded order - must show
         // a muted placeholder, not a blank cell.
         assert!(html.contains("muted"), "expected a muted placeholder for the unset merchant order id, got: {html}");
@@ -855,6 +961,102 @@ mod tests {
             .header("authorization", format!("Bearer {bearer}"))
             .body(Body::from(body))
             .unwrap()
+    }
+
+    #[test]
+    fn parse_extra_headers_reads_one_header_name_value_pair_per_line() {
+        let parsed = parse_extra_headers("X-Api-Key: secret123\nAnother-Header:  spaced value \n\n").unwrap();
+        assert_eq!(parsed.get("X-Api-Key").map(String::as_str), Some("secret123"));
+        assert_eq!(parsed.get("Another-Header").map(String::as_str), Some("spaced value"));
+        assert_eq!(parsed.len(), 2, "blank lines must not produce a phantom entry");
+    }
+
+    #[test]
+    fn parse_extra_headers_on_empty_input_returns_an_empty_map_not_an_error() {
+        assert!(parse_extra_headers("").unwrap().is_empty());
+        assert!(parse_extra_headers("   \n  \n").unwrap().is_empty());
+    }
+
+    #[test]
+    fn parse_extra_headers_rejects_a_line_with_no_colon() {
+        let err = parse_extra_headers("X-Api-Key: fine\nnot-a-valid-line").unwrap_err();
+        assert!(err.contains("not-a-valid-line"), "expected the real offending line named in the error, got: {err}");
+    }
+
+    #[test]
+    fn parse_extra_headers_rejects_an_empty_header_name() {
+        let err = parse_extra_headers(": value-with-no-name").unwrap_err();
+        assert!(err.contains(": value-with-no-name"), "expected the real offending line named in the error, got: {err}");
+    }
+
+    #[tokio::test]
+    async fn creating_a_webhook_with_custom_headers_is_accepted_by_the_real_engine() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "webhook-headers@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/webhooks"),
+                &session_token,
+                &[
+                    ("url", "https://merchant.example/moneropay-webhook"),
+                    ("extra_headers", "X-Api-Key: secret123\nX-Another: value2"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "the engine must accept a real webhook with custom headers");
+        let html = body_text(response).await;
+        assert!(html.contains("Webhook created"), "expected the webhook actually created, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn creating_a_webhook_with_a_malformed_header_line_shows_a_clear_error_and_registers_nothing() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "webhook-bad-headers@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/webhooks"),
+                &session_token,
+                &[("url", "https://merchant.example/moneropay-webhook"), ("extra_headers", "not-a-valid-line")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("not-a-valid-line"), "expected the real offending line named in the error, got: {html}");
+        assert!(!html.contains("Webhook created"), "a malformed headers submission must not register anything, got: {html}");
+
+        let list_response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}/webhooks"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list_html = body_text(list_response).await;
+        assert!(
+            !list_html.contains("merchant.example"),
+            "the rejected webhook must not have been registered, got: {list_html}"
+        );
     }
 
     #[tokio::test]
@@ -1091,6 +1293,130 @@ mod tests {
                 &format!("/dashboard/connections/{connection_id}/orders/new"),
                 &intruder_token,
                 &[("fiat_amount", "10.00"), ("fiat_currency", TEST_CURRENCY)],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn updating_the_confirmation_threshold_redirects_and_the_new_value_shows_on_the_store_page() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "confirmations-update@example.com", "correct horse battery staple")
+                .await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/confirmations"),
+                &session_token,
+                &[("confirmations_required", "3")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND, "expected a redirect back to the store page");
+        assert_eq!(
+            response.headers().get("location").unwrap(),
+            &format!("/dashboard/connections/{connection_id}"),
+        );
+
+        let store_page = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(store_page).await;
+        assert!(html.contains(r#"value="3""#), "expected the real, updated confirmation threshold shown, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn updating_the_confirmation_threshold_to_zero_shows_the_engines_real_validation_error() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "confirmations-zero@example.com", "correct horse battery staple")
+                .await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/confirmations"),
+                &session_token,
+                &[("confirmations_required", "0")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "a validation error re-renders the page, it doesn't redirect");
+        let html = body_text(response).await;
+        assert!(
+            html.to_lowercase().contains("0 would treat an unconfirmed transaction as final")
+                || html.contains("class=\"error\""),
+            "expected the engine's real validation error surfaced, got: {html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn updating_the_confirmation_threshold_with_non_numeric_input_shows_a_clear_error() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "confirmations-non-numeric@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/confirmations"),
+                &session_token,
+                &[("confirmations_required", "not-a-number")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("Enter a whole number of confirmations."), "expected a clear validation error, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn a_different_user_cannot_update_confirmations_on_someone_elses_connection() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let owner_token = signed_up_and_logged_in_session_token(
+            &router,
+            "confirmations-owner@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, _public_key) = create_connection(&router, &owner_token).await;
+
+        let intruder_token = signed_up_and_logged_in_session_token(
+            &router,
+            "confirmations-intruder@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/confirmations"),
+                &intruder_token,
+                &[("confirmations_required", "3")],
             ))
             .await
             .unwrap();

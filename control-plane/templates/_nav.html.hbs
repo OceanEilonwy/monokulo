@@ -1,14 +1,20 @@
-<div style="background:var(--ink);color:var(--paper);border-bottom:3px solid var(--accent);">
-<div class="wrap" style="display:flex;align-items:center;justify-content:space-between;padding-top:0.7rem;padding-bottom:0.7rem;">
-<a href="/" style="color:var(--paper);text-decoration:none;font-weight:700;letter-spacing:-0.02em;">[ MoneroPay Cloud ]</a>
-<div>
-<a href="/dashboard" style="color:var(--paper);margin-left:1.2em;">dashboard</a>
-<a href="/dashboard/login" style="color:var(--paper);margin-left:1.2em;">log in</a>
-<a href="/dashboard/signup" style="color:var(--paper);margin-left:1.2em;">sign up</a>
-<a href="/status" style="color:var(--paper);margin-left:1.2em;text-decoration:none;"><span style="text-decoration:underline;">status</span><span id="nav-status-dot" class="status-dot status-dot-unknown" title="checking..."></span></a>
+<nav class="site-nav">
+<div class="wrap site-nav-row">
+<a href="/" class="site-nav-brand">[ MoneroPay Cloud ]</a>
+<input type="checkbox" id="nav-toggle" class="nav-toggle-checkbox">
+<label for="nav-toggle" class="nav-toggle-label" aria-label="Menu">&#9776;</label>
+<div class="site-nav-links">
+<a href="/dashboard">dashboard</a>
+{{#if logged_in}}
+<form method="post" action="/dashboard/logout" class="nav-logout-form"><button type="submit" class="nav-link-button">log out</button></form>
+{{else}}
+<a href="/dashboard/login">log in</a>
+<a href="/dashboard/signup">sign up</a>
+{{/if}}
+<a href="/status" class="nav-status-link"><span class="nav-status-text">status</span><span id="nav-status-dot" class="status-dot status-dot-unknown" title="checking..."></span></a>
 </div>
 </div>
-</div>
+</nav>
 <script>
 (function () {
   var dot = document.getElementById("nav-status-dot");

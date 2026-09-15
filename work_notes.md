@@ -29,6 +29,133 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Large user-directed feedback batch on the control-plane dashboard**:
+  five design fixes, a real bug fix, and three new features, all in one
+  message. Worked through it as a tracked task list; every item verified
+  live against the real running dev stack (`scripts/dev-run.sh restart`),
+  not just unit-tested.
+  - **Dates reverted to compact (raw Unix seconds), not human-readable** -
+    a direct reversal of the earlier order-detail-page work in this same
+    session: the user explicitly asked for compact format back "across all
+    screens." Removed `chrono_like_utc_string` entirely from
+    `control-plane/src/templates.rs` (dead code once nothing formats a real
+    date) - `display_timestamp`/`display_timestamp_or_dash` now just
+    `.to_string()` the raw number, keeping only the muted-dash-for-missing
+    behavior from that earlier work, which is still worth having.
+  - **No border/background on `<code>`/`<pre>` inside table cells** - one
+    CSS rule in `_styles.html.hbs` (`td code, td pre, th code, th pre {
+    background: none; border: none; padding: 0; }`), global, since several
+    pages put addresses/txids in table cells.
+  - **Store identity table (pub key/endpoint/connected) no longer wrapped
+    in `.box`** on `store_detail.html.hbs` - just the bare table now, per
+    direct feedback that the box "looked better" without it.
+  - **Nav bar: CSS-only hamburger menu on small screens** - genuinely no
+    JS involved in showing/hiding the menu (the classic checkbox-hack:
+    a hidden `<input type="checkbox">` + a `<label>` styled as the
+    hamburger icon + a `:checked ~ .site-nav-links` sibling selector),
+    not a JS-with-a-wrapping-fallback compromise - the user's own "consider
+    what non-JS options exist" question had a real, complete answer.
+    Required restructuring `_nav.html.hbs` off pure inline styles onto real
+    classes (`.site-nav`/`.site-nav-row`/`.site-nav-links`) so the sibling
+    selector had something to target; above the 640px breakpoint this is
+    all just a normal flex row, checkbox/label irrelevant and hidden.
+  - **Integration help moved behind a `<details>`/`<summary>` "help"
+    disclosure** on the store page - the whole status/platform/site-url
+    line became the summary (native, no-JS disclosure widget), with "help"
+    right-aligned via `display:flex;justify-content:space-between` inside
+    the `<summary>` itself, opening the same integration-help content that
+    used to always render inline.
+  - **Real bug fixed: the status nav dot flickered red/gray/green** - the
+    user's own diagnosis (refresh/cache/tick timing out of alignment) was
+    exactly right, but the actual root cause was one specific formula:
+    `is_stale` (`src/http/status_page.rs` at the repo root, the *engine*
+    side) only budgeted 3x the *configured* poll interval with no floor -
+    against this repo's own dev config (`mempool_poll_interval_ms` giving
+    a 2s interval, so a 6s threshold) a perfectly healthy scanner ticking
+    every ~7-8s in practice (real network latency against real, live
+    public stagenet nodes - confirmed directly, not assumed) read as
+    "stale" on every other tick. Fixed to `max(5x poll_interval, 15s)`.
+    **Verified live, not just unit-tested**: restarted the dev stack,
+    polled `/status/summary` every 10s for two full minutes in the
+    background - one `false` at the very first poll (before the scanner's
+    first real tick had even landed - genuinely correct, not a bug), then
+    `true` continuously for the remaining 110 seconds. Before the fix this
+    same window would have flickered.
+  - **Auth-aware nav: "log in"/"sign up" replaced by "log out" once
+    logged in** - every one of the 13 templates now carries a real
+    `logged_in: bool` (inherited automatically by `{{> nav}}`, since
+    handlebars partials share their parent's context by default - no
+    explicit hash params needed at any of the 13 `{{> nav}}` call sites,
+    only the Rust view models needed the new field). Most pages set it to
+    a fixed literal (`true` behind `AuthedUser`, `false` on
+    signup/login - deliberately not a real session check there, since
+    those pages' whole purpose is starting a *new* session); `/` and
+    `/status` (both unauthenticated routes) do a real per-request
+    `resolve_authed_user` check instead, since those are the pages a
+    logged-in person actually revisits. New `POST /dashboard/logout`
+    (`http/dashboard.rs::logout_submit`) - reuses `AuthedUser`'s cookie
+    path and the same delete-session logic `POST /logout` (the JSON API)
+    already had, but redirects to `/` instead of returning a bare `204`,
+    since a human clicking a nav link expects a real page back. Needed a
+    new direct `time = "0.3.55"` dependency (`Cookie::max_age` wants
+    `time::Duration`, and `axum-extra` only re-exports `cookie::{Cookie,
+    Expiration, SameSite}`, not `time` itself, despite pulling it in
+    transitively). **A real test bug caught and fixed before it shipped**:
+    the first landing-page test asserted the nav's `href="/dashboard/login"`
+    was entirely gone once logged in - failed immediately, because the
+    landing page's own separate marketing CTAs ("Sign up - it's free...",
+    "Log in", both capitalized with a `btn` class) legitimately still
+    link there regardless of login state, and were never meant to change -
+    only the nav's own lowercase, unstyled links should disappear. Fixed by
+    asserting the exact nav markup (`href="/dashboard/login">log in<`)
+    rather than a generic `href` substring that also matched the body CTA.
+  - **New feature: adjustable payment confirmation threshold** - the
+    engine already supported this via `PATCH /api/v1/admin/tenant`
+    (`confirmations_required`), control-plane just never exposed it.
+    `EngineClient::set_confirmations_required` (extends the previously
+    single-field-only `PatchTenantRequest` mirror to carry this too) +
+    a "Settings" section on the store page + `POST /dashboard/connections/
+    {id}/settings/confirmations`. The engine's own real validation (`0`
+    rejected - "would treat an unconfirmed transaction as final") surfaces
+    verbatim, confirmed via a real test against the real engine, not
+    mocked.
+  - **New feature: custom webhook headers** - the engine already supported
+    this too (`CreateWebhookRequest.extra_headers`, a flat JSON object of
+    string values the delivery worker attaches to every request -
+    `src/webhook_delivery.rs` at the repo root), control-plane's
+    `create_webhook` client method never sent it. Collected via a plain
+    textarea, one `Header-Name: value` pair per line (deliberately no
+    JS-driven "add another row" UI) - `parse_extra_headers` rejects the
+    whole submission with the exact offending line named if any line lacks
+    a colon or has an empty name, rather than silently dropping a
+    malformed one. 8 new tests (4 pure-function unit tests for the parser,
+    2 real-engine round trips - one accepted with real custom headers, one
+    rejected with a real, actionable error and confirmed to register
+    nothing).
+  - **Fourth ask ("choose a rate provider") deliberately not built as
+    originally scoped** - asked the user to clarify per-tenant vs.
+    whole-engine scope first (the engine's exchange-rate provider is
+    currently a single, boot-time, whole-process choice with no runtime
+    API at all - building either interpretation properly meant real
+    engine-side architecture work, not just a form field, so guessing
+    wrong here would have burned significant effort in the wrong
+    direction). They chose per-tenant - but then, mid-implementation of
+    everything else in this batch, reconsidered the scope entirely: the
+    engine should carry no FX/rate-provider concept at all, and the
+    embeddable checkout/payment UI should move to the control-plane too,
+    keeping the engine strictly Monero-watching-only. Recommended treating
+    that as its own separate follow-up (same shape as the SEV-SNP/
+    WooCommerce work getting their own WBS breakdowns earlier this
+    session) rather than folding it into this already-large batch - real
+    scope: the engine's public order-creation API shape changes (XMR-only,
+    no more `fiat_amount`/`fiat_currency`), `public::payment_page`/QR
+    code/checkout polling and the whole `exchange_rate` module move off
+    the engine, and a self-hoster running the engine *without*
+    control-plane would lose fiat orders and a built-in checkout page
+    entirely (worth deciding on purpose, not as a side effect - the
+    landing page currently promises "the same open, self-hostable engine
+    either way"). Not started; flagged for a dedicated planning pass.
+
 - Order detail page polish (user-directed follow-up to the dashboard
   order-creation form above): after creating a real test order, "Merchant
   order ID" rendered as a genuinely blank cell (correct - it's never set by

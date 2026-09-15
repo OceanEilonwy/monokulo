@@ -44,6 +44,12 @@ pub enum TemplateError {
 #[derive(Debug, Default, Serialize)]
 pub struct FormViewModel {
     pub error: Option<String>,
+    /// Drives the nav bar's log-in-state links (`_nav.html.hbs`, inherited
+    /// automatically by `{{> nav}}` since handlebars partials share their
+    /// parent's context unless given an explicit one) - see
+    /// `http::dashboard::render_signup`'s own doc comment for why this page
+    /// always renders `false` regardless of any existing session.
+    pub logged_in: bool,
 }
 
 /// The view model the login template takes (WBS 1.4.1 extends the plain
@@ -59,6 +65,9 @@ pub struct FormViewModel {
 pub struct LoginViewModel {
     pub error: Option<String>,
     pub next: Option<String>,
+    /// Same purpose as [`FormViewModel::logged_in`] - always `false` here
+    /// too, same reasoning.
+    pub logged_in: bool,
 }
 
 /// The view model the wallet-connection template (WBS 1.3.2) takes: either
@@ -92,6 +101,9 @@ pub struct ConnectViewModel {
     pub network_mainnet_selected: bool,
     pub network_stagenet_selected: bool,
     pub network_testnet_selected: bool,
+    /// Always `true` - every caller of `render_connect` is already behind
+    /// `AuthedUser` (`http/dashboard.rs`'s `connect_form`/`connect_submit`).
+    pub logged_in: bool,
 }
 
 /// The view model the generic platform-connect confirm form (WBS 1.4.1,
@@ -124,6 +136,11 @@ pub struct PlatformConnectViewModel {
     /// empty vec, same convention `DashboardViewModel::has_stores` already
     /// relies on).
     pub existing_stores: Vec<ExistingStoreOption>,
+    /// Always `true` - `GET`/`POST /connect/{platform}` only ever render
+    /// this template once a session is already confirmed (see
+    /// `http/connect.rs::start`'s own doc comment: no session redirects to
+    /// `/dashboard/login` instead of rendering this at all).
+    pub logged_in: bool,
 }
 
 /// One row of the "use an existing store" picker
@@ -164,34 +181,8 @@ pub struct OrderRowViewModel {
 pub struct OrdersViewModel {
     pub connection_id: String,
     pub orders: Vec<OrderRowViewModel>,
-}
-
-/// A hand-rolled `"YYYY-MM-DD HH:MM:SS UTC"` formatter - no date/time crate
-/// dependency for what's otherwise just a handful of display lines. The
-/// civil-from-days conversion is Howard Hinnant's well-known constant-time
-/// algorithm (proleptic Gregorian, correct for every real Unix timestamp
-/// this page will ever show). Every reference value in this function's own
-/// tests was independently cross-checked against a real `date -u -d @<secs>`
-/// call before being trusted, including a leap-day boundary
-/// (2024-02-29 exists, 2023-02-29 doesn't) - a hand-rolled date function
-/// deserves that, not just "one page load looked right."
-fn chrono_like_utc_string(unix_seconds: i64) -> String {
-    let days_since_epoch = unix_seconds.div_euclid(86_400);
-    let seconds_of_day = unix_seconds.rem_euclid(86_400);
-    let (hour, minute, second) = (seconds_of_day / 3600, (seconds_of_day % 3600) / 60, seconds_of_day % 60);
-
-    let z = days_since_epoch + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = (z - era * 146_097) as u64;
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
-    let y = yoe as i64 + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
-    let mp = (5 * doy + 2) / 153;
-    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
-    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
-    let year = if month <= 2 { y + 1 } else { y };
-
-    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
+    /// Always `true` - every caller is behind `AuthedUser`.
+    pub logged_in: bool,
 }
 
 /// A muted placeholder for a field with nothing to show - same
@@ -208,18 +199,23 @@ pub fn display_or_dash(value: Option<&str>) -> String {
     }
 }
 
+/// Compact, non-human-readable form (raw Unix seconds) - a deliberate,
+/// user-requested reversion from an earlier human-readable-date attempt on
+/// this page. Kept as its own function (rather than inlining `.to_string()`
+/// at every call site) purely so the muted-dash-for-`None` behavior stays
+/// centralized in one place - a plain number is still `Option`-aware here,
+/// it's just no longer formatted as a calendar date.
 pub fn display_timestamp_or_dash(value: Option<i64>) -> String {
     match value {
-        Some(v) => chrono_like_utc_string(v),
+        Some(v) => v.to_string(),
         None => NO_VALUE.to_string(),
     }
 }
 
 /// Same as [`display_timestamp_or_dash`] but for a timestamp that's always
-/// present (`created_at`/`expires_at`/`updated_at`) - never a dash, always a
-/// real formatted date.
+/// present (`created_at`/`expires_at`/`updated_at`) - never a dash.
 pub fn display_timestamp(value: i64) -> String {
-    chrono_like_utc_string(value)
+    value.to_string()
 }
 
 /// One payment row inside the order detail page's `payments` table -
@@ -284,6 +280,8 @@ pub struct OrderDetailData {
 pub struct OrderDetailViewModel {
     pub connection_id: String,
     pub order: Option<OrderDetailData>,
+    /// Always `true` - every caller is behind `AuthedUser`.
+    pub logged_in: bool,
 }
 
 /// One row of the webhooks list page (WBS 1.3.3) - mirrors the engine's own
@@ -314,6 +312,8 @@ pub struct WebhooksViewModel {
     /// own `sk_...` at connect time. Never populated on a plain `GET`, and
     /// gone again the moment the page is reloaded.
     pub created_webhook_signing_secret: Option<String>,
+    /// Always `true` - every caller is behind `AuthedUser`.
+    pub logged_in: bool,
 }
 
 /// One connected store as shown on the dashboard home page - a much smaller
@@ -370,6 +370,8 @@ pub struct DashboardViewModel {
     /// status, since a partially-paid or still-confirming order has still
     /// genuinely had funds detected for it.
     pub total_received_xmr: String,
+    /// Always `true` - every caller is behind `AuthedUser`.
+    pub logged_in: bool,
 }
 
 /// The view model the integration-help partial (`_integration_help.html.hbs`)
@@ -390,6 +392,8 @@ pub struct IntegrationHelpViewModel {
 #[derive(Debug, Serialize)]
 pub struct StoreDetailViewModel {
     pub store: Option<StoreDetailData>,
+    /// Always `true` - every caller is behind `AuthedUser`.
+    pub logged_in: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -415,6 +419,19 @@ pub struct StoreDetailData {
     /// surfaced verbatim, same convention `WebhooksViewModel::error` already
     /// applies to webhook creation. `None` on a plain page load.
     pub order_creation_error: Option<String>,
+    /// The tenant's current confirmation threshold, as last fetched from
+    /// the engine (`TenantView::confirmations_required`) - `0` when the
+    /// engine is currently unreachable (`health == "error"`), same
+    /// "degrade honestly, show *something* real-ish rather than fail the
+    /// whole page" approach `recent_orders` already takes for that case.
+    pub confirmations_required: u64,
+    /// Set only when the "update settings" form on this page (see
+    /// `http/orders.rs::update_confirmations_required`) was just rejected -
+    /// the engine's own validation error, surfaced verbatim. Shared by
+    /// every settings sub-form on this page (just confirmations for now),
+    /// since only one can ever be submitted at a time. `None` on a plain
+    /// page load.
+    pub settings_error: Option<String>,
 }
 
 /// One Monero node's row on the status page - mirrors
@@ -469,6 +486,22 @@ pub struct StatusPageViewModel {
     pub networks: Vec<StatusNetworkView>,
     pub poll_interval_secs: u64,
     pub generated_at_display: String,
+    /// Unlike every other view model's `logged_in` (always a fixed
+    /// literal, since those pages are always/never behind `AuthedUser`),
+    /// this one is a genuine, per-request lookup - `/status` is
+    /// unauthenticated, so whether the nav shows "log out" here reflects
+    /// whatever session (if any) the visitor actually presented. See
+    /// `status_page`'s own handler.
+    pub logged_in: bool,
+}
+
+/// The view model for a page whose only dynamic content is the nav bar's
+/// own log-in-state links - `landing`/`new_store_picker`/
+/// `woocommerce_instructions` used to render with `&()` (no context at
+/// all); each needs exactly this one field now.
+#[derive(Debug, Serialize)]
+pub struct NavOnlyViewModel {
+    pub logged_in: bool,
 }
 
 pub struct TemplateEngine {
@@ -533,20 +566,20 @@ impl TemplateEngine {
         Ok(self.handlebars.render("webhooks", data)?)
     }
 
-    pub fn render_landing(&self) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("landing", &())?)
+    pub fn render_landing(&self, logged_in: bool) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("landing", &NavOnlyViewModel { logged_in })?)
     }
 
     pub fn render_dashboard_home(&self, data: &DashboardViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("dashboard_home", data)?)
     }
 
-    pub fn render_new_store_picker(&self) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("new_store_picker", &())?)
+    pub fn render_new_store_picker(&self, logged_in: bool) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("new_store_picker", &NavOnlyViewModel { logged_in })?)
     }
 
-    pub fn render_woocommerce_instructions(&self) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("woocommerce_instructions", &())?)
+    pub fn render_woocommerce_instructions(&self, logged_in: bool) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("woocommerce_instructions", &NavOnlyViewModel { logged_in })?)
     }
 
     pub fn render_store_detail(&self, data: &StoreDetailViewModel) -> Result<String, TemplateError> {
@@ -563,16 +596,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn chrono_like_utc_string_matches_known_real_timestamps() {
-        assert_eq!(chrono_like_utc_string(0), "1970-01-01 00:00:00 UTC");
-        assert_eq!(chrono_like_utc_string(1_000_000_000), "2001-09-09 01:46:40 UTC");
-        assert_eq!(chrono_like_utc_string(1_700_000_000), "2023-11-14 22:13:20 UTC");
-        // A leap-year boundary (2024-02-29 exists; 2023-02-29 doesn't) - the
-        // real reason a hand-rolled date function needs this class of
-        // dedicated test rather than trusting it because one live page load
-        // looked right.
-        assert_eq!(chrono_like_utc_string(1_709_251_199), "2024-02-29 23:59:59 UTC");
-        assert_eq!(chrono_like_utc_string(1_709_251_200), "2024-03-01 00:00:00 UTC");
+    fn display_timestamp_or_dash_shows_a_raw_compact_number_not_a_human_readable_date() {
+        assert_eq!(display_timestamp_or_dash(Some(1_700_000_000)), "1700000000");
+        assert_eq!(display_timestamp_or_dash(None), NO_VALUE);
+        assert_eq!(display_timestamp(1_700_000_000), "1700000000");
     }
 
     #[test]
@@ -594,7 +621,7 @@ mod tests {
     fn signup_template_shows_the_error_when_present() {
         let engine = TemplateEngine::new().unwrap();
         let html = engine
-            .render_signup(&FormViewModel { error: Some("that email is already registered".to_string()) })
+            .render_signup(&FormViewModel { error: Some("that email is already registered".to_string()), logged_in: false })
             .unwrap();
         assert!(html.contains("that email is already registered"));
     }
@@ -611,7 +638,7 @@ mod tests {
     fn login_template_shows_the_error_when_present() {
         let engine = TemplateEngine::new().unwrap();
         let html = engine
-            .render_login(&LoginViewModel { error: Some("invalid email or password".to_string()), next: None })
+            .render_login(&LoginViewModel { error: Some("invalid email or password".to_string()), next: None, logged_in: false })
             .unwrap();
         assert!(html.contains("invalid email or password"));
     }
@@ -620,7 +647,7 @@ mod tests {
     fn login_template_includes_a_hidden_next_field_when_present() {
         let engine = TemplateEngine::new().unwrap();
         let html = engine
-            .render_login(&LoginViewModel { error: None, next: Some("/connect/woocommerce?nonce=abc".to_string()) })
+            .render_login(&LoginViewModel { error: None, next: Some("/connect/woocommerce?nonce=abc".to_string()), logged_in: false })
             .unwrap();
         assert!(html.contains(r#"type="hidden" name="next""#), "expected a hidden next field, got: {html}");
         // Handlebars auto-escapes HTML-significant characters (including
@@ -639,6 +666,7 @@ mod tests {
             .render_login(&LoginViewModel {
                 error: None,
                 next: Some("/connect/woocommerce?a=1&b=2".to_string()),
+                logged_in: false,
             })
             .unwrap();
         assert!(html.contains("&amp;"), "expected the & in next to be HTML-escaped, got: {html}");
@@ -791,7 +819,7 @@ mod tests {
     #[test]
     fn landing_page_renders_with_a_signup_cta() {
         let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_landing().unwrap();
+        let html = engine.render_landing(false).unwrap();
         assert!(html.contains(r#"href="/dashboard/signup""#));
         assert!(html.to_lowercase().contains("monero"));
     }
@@ -805,6 +833,7 @@ mod tests {
                 stores: vec![],
                 recent_orders: vec![],
                 total_received_xmr: "0".to_string(),
+                logged_in: true,
             })
             .unwrap();
         assert!(html.contains(r#"href="/dashboard/connections/new""#));
@@ -836,6 +865,7 @@ mod tests {
                     created_at: 1000,
                 }],
                 total_received_xmr: "1.234567890123".to_string(),
+                logged_in: true,
             })
             .unwrap();
         assert!(html.contains("pk_abc123"));
@@ -849,7 +879,7 @@ mod tests {
     #[test]
     fn new_store_picker_links_to_both_flows() {
         let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_new_store_picker().unwrap();
+        let html = engine.render_new_store_picker(true).unwrap();
         assert!(html.contains(r#"href="/dashboard/connections/new/woocommerce""#));
         assert!(html.contains(r#"href="/dashboard/connect""#));
     }
@@ -857,7 +887,7 @@ mod tests {
     #[test]
     fn woocommerce_instructions_page_renders() {
         let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_woocommerce_instructions().unwrap();
+        let html = engine.render_woocommerce_instructions(true).unwrap();
         assert!(html.to_lowercase().contains("woocommerce"));
         assert!(html.contains(r#"href="/dashboard/connect""#));
     }
@@ -865,7 +895,7 @@ mod tests {
     #[test]
     fn store_detail_renders_not_found_state_when_store_is_none() {
         let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_store_detail(&StoreDetailViewModel { store: None }).unwrap();
+        let html = engine.render_store_detail(&StoreDetailViewModel { store: None, logged_in: true }).unwrap();
         assert!(html.to_lowercase().contains("not found"));
     }
 
@@ -887,7 +917,10 @@ mod tests {
                     recent_orders: vec![],
                     is_woocommerce: true,
                     order_creation_error: None,
+                    confirmations_required: 10,
+                    settings_error: None,
                 }),
+                logged_in: true,
             })
             .unwrap();
         // Proves the integration_help partial actually received this
@@ -931,7 +964,10 @@ mod tests {
                     recent_orders: vec![],
                     is_woocommerce: false,
                     order_creation_error: None,
+                    confirmations_required: 10,
+                    settings_error: None,
                 }),
+                logged_in: true,
             })
             .unwrap();
         assert!(html.contains("Install the"), "expected the WooCommerce onboarding steps to still be offered, got: {html}");
@@ -956,7 +992,10 @@ mod tests {
                     recent_orders: vec![],
                     is_woocommerce: false,
                     order_creation_error: Some("unsupported currency: XYZ".to_string()),
+                    confirmations_required: 10,
+                    settings_error: None,
                 }),
+                logged_in: true,
             })
             .unwrap();
         assert!(html.contains("unsupported currency: XYZ"), "expected the real error surfaced, got: {html}");

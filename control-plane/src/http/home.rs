@@ -5,16 +5,22 @@
 //! content page exists yet").
 
 use axum::extract::State;
+use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 
 use crate::templates::{DashboardOrderRow, DashboardStoreRow, DashboardViewModel};
 
 use super::orders::{display_name_for, health_of_tenant_lookup};
-use super::{AppState, AuthedUser};
+use super::{resolve_authed_user, AppState, AuthedUser};
 
-/// `GET /` - unauthenticated, explains the product, links to signup/login.
-pub async fn landing(State(state): State<AppState>) -> Response {
-    let html = state.templates.render_landing().expect("the built-in landing template must always render");
+/// `GET /` - unauthenticated, explains the product, links to signup/login
+/// (or, if the visitor happens to already have a session, "log out" - a
+/// real per-request check via [`resolve_authed_user`], not a fixed literal
+/// like every other page's `logged_in`, since this is the one truly public
+/// page most people actually revisit while already logged in).
+pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Response {
+    let logged_in = resolve_authed_user(&state, &headers).is_some();
+    let html = state.templates.render_landing(logged_in).expect("the built-in landing template must always render");
     Html(html).into_response()
 }
 
@@ -23,8 +29,10 @@ pub async fn landing(State(state): State<AppState>) -> Response {
 /// `/dashboard/connect` form; "simple -> woocommerce" is the guided page
 /// below). Behind [`AuthedUser`] like every other `/dashboard/*` route.
 pub async fn new_store_picker(State(state): State<AppState>, AuthedUser(_user, _): AuthedUser) -> Response {
-    let html =
-        state.templates.render_new_store_picker().expect("the built-in new-store-picker template must always render");
+    let html = state
+        .templates
+        .render_new_store_picker(true)
+        .expect("the built-in new-store-picker template must always render");
     Html(html).into_response()
 }
 
@@ -38,7 +46,7 @@ pub async fn new_store_picker(State(state): State<AppState>, AuthedUser(_user, _
 pub async fn woocommerce_instructions(State(state): State<AppState>, AuthedUser(_user, _): AuthedUser) -> Response {
     let html = state
         .templates
-        .render_woocommerce_instructions()
+        .render_woocommerce_instructions(true)
         .expect("the built-in woocommerce-instructions template must always render");
     Html(html).into_response()
 }
@@ -109,6 +117,7 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
         stores,
         recent_orders: all_orders,
         total_received_xmr: format_piconero_as_xmr(total_received_piconero),
+        logged_in: true,
     };
     let html = state
         .templates

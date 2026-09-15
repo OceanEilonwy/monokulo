@@ -12,19 +12,20 @@
 
 {{#if store}}
 <h1>{{store.display_name}}</h1>
-<p>
-<span class="tag tag-{{store.health}}">{{store.health_label}}</span>
-&nbsp;<span class="muted">{{store.platform}}</span>
-&nbsp;&middot;&nbsp;<a href="{{store.site_url}}">{{store.site_url}}</a>
-</p>
 
-<div class="box">
+<details class="help-disclosure">
+<summary>
+<span><span class="tag tag-{{store.health}}">{{store.health_label}}</span>&nbsp;<span class="muted">{{store.platform}}</span>&nbsp;&middot;&nbsp;<a href="{{store.site_url}}">{{store.site_url}}</a></span>
+<span class="hint">help</span>
+</summary>
+{{> integration_help public_key=store.public_key endpoint=store.endpoint is_woocommerce=store.is_woocommerce}}
+</details>
+
 <table>
 <tr><th>Public key</th><td><code>{{store.public_key}}</code></td></tr>
 <tr><th>Engine endpoint</th><td><code>{{store.endpoint}}</code></td></tr>
 <tr><th>Connected</th><td>{{store.created_at}}</td></tr>
 </table>
-</div>
 
 <h2>Recent orders</h2>
 {{#if store.recent_orders}}
@@ -63,7 +64,18 @@ try the flow without wiring up a real storefront yet.</p>
 <button type="submit">Create order</button>
 </form>
 
-{{> integration_help public_key=store.public_key endpoint=store.endpoint is_woocommerce=store.is_woocommerce}}
+<h2>Settings</h2>
+{{#if store.settings_error}}
+<div class="error">{{store.settings_error}}</div>
+{{/if}}
+<form method="post" action="/dashboard/connections/{{store.connection_id}}/settings/confirmations">
+<label>Confirmations required before an order is paid
+<input type="text" name="confirmations_required" value="{{store.confirmations_required}}" required>
+<span class="field-help">How many blocks a payment needs before this store's orders read as paid. Lower is
+faster but riskier (a transaction can still be replaced before it's confirmed); higher is slower but safer.</span>
+</label>
+<button type="submit">Update</button>
+</form>
 
 {{else}}
 <h1>Store not found</h1>
