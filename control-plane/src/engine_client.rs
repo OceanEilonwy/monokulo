@@ -141,6 +141,50 @@ impl EngineClient {
         let parsed: CreateWebhookResponse = parse_response(response).await?;
         Ok((parsed.webhook_id, parsed.signing_secret))
     }
+
+    /// `DELETE {base_url}/api/v1/admin/tenant/webhooks/{webhook_id}` — removes
+    /// one of `sk`'s tenant's webhooks. The engine's own `delete_webhook`
+    /// (`src/http/admin.rs` at the repo root) returns a bare `204 No Content`
+    /// on success and its own `404` for an unknown or not-this-tenant's
+    /// `webhook_id` - `parse_response` isn't used here since it assumes a
+    /// JSON body to deserialize, which a `204` never has.
+    pub async fn delete_webhook(&self, sk: &str, webhook_id: &str) -> Result<(), EngineClientError> {
+        let response = self
+            .http
+            .delete(format!("{}/api/v1/admin/tenant/webhooks/{webhook_id}", self.base_url))
+            .bearer_auth(sk)
+            .send()
+            .await?;
+        if response.status().is_success() {
+            Ok(())
+        } else {
+            let status = response.status();
+            let body = response.text().await.unwrap_or_default();
+            let message = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v.get("error").and_then(|e| e.as_str()).map(str::to_string))
+                .unwrap_or(body);
+            Err(EngineClientError::EngineError { status, message })
+        }
+    }
+
+    /// `PATCH {base_url}/api/v1/admin/tenant` — replaces `sk`'s tenant's
+    /// `allowed_origins` list wholesale (the engine's own `PatchTenantRequest`
+    /// treats `allowed_origins: Some(v)` as "set to exactly `v`", not "append" -
+    /// merging a new origin into the existing list is this method's caller's
+    /// job, e.g. `connect::confirm_existing_store`). Every other patchable
+    /// field is left `None` (unchanged) - this method exists for exactly the
+    /// one field callers need today.
+    pub async fn set_allowed_origins(&self, sk: &str, allowed_origins: Vec<String>) -> Result<TenantView, EngineClientError> {
+        let response = self
+            .http
+            .patch(format!("{}/api/v1/admin/tenant", self.base_url))
+            .bearer_auth(sk)
+            .json(&PatchTenantRequest { allowed_origins: Some(allowed_origins) })
+            .send()
+            .await?;
+        parse_response(response).await
+    }
 }
 
 async fn parse_response<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, EngineClientError> {
@@ -240,6 +284,22 @@ pub struct OrderDetailResponse {
     #[serde(flatten)]
     pub order: OrderView,
     pub payments: Vec<PaymentView>,
+}
+
+/// A partial mirror of the engine's own `PatchTenantRequest`
+/// (`src/http/admin.rs` at the repo root, which has three more `Option`
+/// fields this client has no caller for yet - `confirmations_required`/
+/// `zero_conf_max_piconero`/`order_expiry_seconds`). Only declaring the one
+/// field `set_allowed_origins` sends is deliberately safe to omit the rest:
+/// serde treats a struct's `Option<T>` fields as optional automatically (a
+/// missing JSON key deserializes to `None`, no `#[serde(default)]` needed),
+/// so the engine sees exactly "leave everything but `allowed_origins`
+/// unchanged" - the same "unchanged vs. set to a value" contract
+/// `TenantConfigPatch`'s own doc comment (`src/store.rs` at the repo root)
+/// describes.
+#[derive(Serialize)]
+struct PatchTenantRequest {
+    allowed_origins: Option<Vec<String>>,
 }
 
 /// Mirrors the engine's own `WebhookView`.

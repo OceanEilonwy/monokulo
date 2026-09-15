@@ -368,6 +368,18 @@ impl Db {
             .optional()
             .map_err(DbError::from)
     }
+
+    /// Updates `site_url` on an existing `store_connections` row - used when
+    /// a merchant attaches a second (or replacement) storefront to a store
+    /// they already have (`connect::confirm_existing_store`), so the
+    /// dashboard reflects the most recent site this store was actually
+    /// connected from rather than only ever showing wherever it was first
+    /// created. Does not touch `platform` - a store's platform still names
+    /// how it was first connected, not necessarily its most recent one.
+    pub fn update_store_connection_site_url(&self, id: &str, site_url: &str) -> Result<()> {
+        self.conn.execute("UPDATE store_connections SET site_url = ?2 WHERE id = ?1", params![id, site_url])?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -463,6 +475,32 @@ mod tests {
     fn looking_up_an_unknown_store_connection_id_returns_none_rather_than_an_error() {
         let db = Db::open_in_memory().unwrap();
         assert!(db.get_store_connection_by_id("nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn updating_a_store_connections_site_url_only_touches_that_field() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user("user-1", "a@example.com", "hash", 1000).unwrap();
+        db.create_store_connection(
+            "conn-1",
+            "user-1",
+            "woocommerce",
+            "https://old-site.example.com",
+            "pk_abc",
+            "sk_abc",
+            "http://127.0.0.1:8080",
+            3000,
+        )
+        .unwrap();
+
+        db.update_store_connection_site_url("conn-1", "https://new-site.example.com").unwrap();
+
+        let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
+        assert_eq!(row.site_url, "https://new-site.example.com");
+        // Nothing else changed.
+        assert_eq!(row.platform, "woocommerce");
+        assert_eq!(row.tenant_public_key, "pk_abc");
+        assert_eq!(row.tenant_secret_token_encrypted, "sk_abc");
     }
 
     #[test]

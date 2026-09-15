@@ -1,12 +1,13 @@
-//! Read-only order list/detail + webhook list pages (WBS 1.3.3): a
-//! logged-in user views their tenant's real orders and webhooks, proxied
-//! from the engine's own admin API using the connection's decrypted
-//! `sk_...` token ([`crate::crypto::decrypt`]'s first real consumer outside
-//! a test).
+//! Order list/detail pages (read-only, WBS 1.3.3) plus webhook management
+//! (create/delete - user-directed follow-up, since the engine's own admin
+//! API already supported both and nothing in this crate exposed them): a
+//! logged-in user views their tenant's real orders and manages its real
+//! webhooks, proxied from the engine's own admin API using the connection's
+//! decrypted `sk_...` token ([`crate::crypto::decrypt`]'s first real
+//! consumer outside a test).
 //!
-//! Scope is deliberately read-only, per the WBS's own "what" bullet for this
-//! task (only `GET` engine routes): no webhook create/delete, no order
-//! mutation here.
+//! Orders stay read-only, per WBS 1.3.3's own "what" bullet for that part of
+//! this module (only `GET` engine routes): no order mutation here, ever.
 //!
 //! A user can have more than one `store_connections` row, so every route
 //! here is scoped by `{id}` in the path - and ownership-checked:
@@ -19,9 +20,10 @@
 //! id must learn nothing beyond what they'd learn guessing a nonexistent
 //! one.
 
-use axum::extract::{Path, State};
+use axum::extract::{Form, Path, State};
 use axum::http::StatusCode;
 use axum::response::{Html, IntoResponse, Response};
+use serde::Deserialize;
 
 use crate::crypto;
 use crate::db::{StoreConnectionRow, UserRow};
@@ -31,6 +33,7 @@ use crate::templates::{
     WebhookRowViewModel, WebhooksViewModel,
 };
 
+use super::dashboard::redirect_302;
 use super::{AppState, AuthedUser};
 
 /// Looks up `store_connections` row `id` and confirms it belongs to `user`.
@@ -164,9 +167,9 @@ pub async fn order_detail(
     }
 }
 
-/// `GET /dashboard/connections/{id}/webhooks` - a simple table of the
-/// connection's tenant's registered webhooks. Read-only, per this task's
-/// scope: no create/delete route lives here.
+/// `GET /dashboard/connections/{id}/webhooks` - a table of the connection's
+/// tenant's registered webhooks, plus (below) the create/delete actions
+/// this same page's forms post back to.
 pub async fn webhooks_list(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -181,13 +184,27 @@ pub async fn webhooks_list(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let webhooks = match state.engine_client.list_webhooks(&sk).await {
+    render_webhooks_page(&state, &id, &sk, None, None).await
+}
+
+/// Shared by `webhooks_list`/`webhooks_create`/`webhooks_delete` - every one
+/// of them ends by showing the same page (a fresh webhook list, optionally
+/// with an error or a just-created secret), so this is the one place that
+/// actually fetches the list and renders it.
+async fn render_webhooks_page(
+    state: &AppState,
+    connection_id: &str,
+    sk: &str,
+    error: Option<String>,
+    created_webhook_signing_secret: Option<String>,
+) -> Response {
+    let webhooks = match state.engine_client.list_webhooks(sk).await {
         Ok(webhooks) => webhooks,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
     let view_model = WebhooksViewModel {
-        connection_id: id,
+        connection_id: connection_id.to_string(),
         webhooks: webhooks
             .into_iter()
             .map(|w| WebhookRowViewModel {
@@ -197,10 +214,93 @@ pub async fn webhooks_list(
                 created_at: w.created_at,
             })
             .collect(),
+        error,
+        created_webhook_signing_secret,
     };
     let html =
         state.templates.render_webhooks(&view_model).expect("the built-in webhooks template must always render");
     Html(html).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct CreateWebhookForm {
+    pub url: String,
+}
+
+/// `POST /dashboard/connections/{id}/webhooks` - registers a new webhook via
+/// the engine's own `POST /api/v1/admin/tenant/webhooks` (already built,
+/// nothing here proxies to previously; this is purely a UI gap closing).
+/// Deliberately re-renders the page directly rather than redirecting on
+/// success (unlike `webhooks_delete`'s POST-redirect-GET below) - the
+/// engine's real, freshly-issued signing secret has to be shown somewhere,
+/// exactly once, and a redirect would mean carrying it in a URL (browser
+/// history, `Referer` headers) instead of a response body. See
+/// `WebhooksViewModel::created_webhook_signing_secret`'s own doc comment for
+/// why there's no second chance to show it later.
+pub async fn webhooks_create(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Form(form): Form<CreateWebhookForm>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let url = form.url.trim();
+    if url.is_empty() {
+        return render_webhooks_page(&state, &id, &sk, Some("Enter a webhook URL.".to_string()), None).await;
+    }
+
+    match state.engine_client.create_webhook(&sk, url).await {
+        Ok((_webhook_id, signing_secret)) => render_webhooks_page(&state, &id, &sk, None, Some(signing_secret)).await,
+        // The engine's own validation (a malformed URL, a non-http(s) scheme -
+        // `src/http/admin.rs::create_webhook` at the repo root) - the
+        // caller's mistake, surfaced verbatim, same convention
+        // `connections::create_connection_for_user` already applies to the
+        // engine's tenant-creation `400`s.
+        Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
+            render_webhooks_page(&state, &id, &sk, Some(message), None).await
+        }
+        Err(_) => render_webhooks_page(&state, &id, &sk, Some("Something went wrong. Please try again.".to_string()), None).await,
+    }
+}
+
+/// `POST /dashboard/connections/{id}/webhooks/{webhook_id}/delete` - a POST
+/// (not a real `DELETE`) because a plain HTML `<form>` can only submit
+/// `GET`/`POST`. Redirects back to the plain webhook list on success
+/// (POST-redirect-GET - refreshing the page after a delete must not risk
+/// resubmitting it) or on the engine's own `404` for an unknown/not-this-
+/// tenant's `webhook_id`; only a genuine internal error re-renders the page
+/// with a visible error.
+pub async fn webhooks_delete(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path((id, webhook_id)): Path<(String, String)>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    match state.engine_client.delete_webhook(&sk, &webhook_id).await {
+        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}/webhooks")),
+        Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
+            redirect_302(&format!("/dashboard/connections/{id}/webhooks"))
+        }
+        Err(_) => render_webhooks_page(&state, &id, &sk, Some("Could not delete that webhook. Please try again.".to_string()), None).await,
+    }
 }
 
 /// Derives a human-readable store name from `site_url`, since
@@ -667,5 +767,219 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::NOT_FOUND, "expected 404 for {uri}");
         }
+    }
+
+    /// Minimal `application/x-www-form-urlencoded` percent-encoding for test
+    /// fixtures - same approach `http/connect.rs`'s own test module already
+    /// uses for its form-based tests.
+    fn urlencoding_encode(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for b in s.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => out.push(b as char),
+                b' ' => out.push('+'),
+                _ => out.push_str(&format!("%{b:02X}")),
+            }
+        }
+        out
+    }
+
+    fn form_post_request(uri: &str, bearer: &str, fields: &[(&str, &str)]) -> Request<Body> {
+        let body =
+            fields.iter().map(|(k, v)| format!("{}={}", urlencoding_encode(k), urlencoding_encode(v))).collect::<Vec<_>>().join("&");
+        Request::builder()
+            .method("POST")
+            .uri(uri)
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header("authorization", format!("Bearer {bearer}"))
+            .body(Body::from(body))
+            .unwrap()
+    }
+
+    #[tokio::test]
+    async fn creating_a_webhook_shows_its_signing_secret_once_and_lists_it_afterward() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "webhook-create@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/webhooks"),
+                &session_token,
+                &[("url", "https://merchant.example/moneropay-webhook")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("https://merchant.example/moneropay-webhook"), "expected the new webhook listed, got: {html}");
+        assert!(html.contains("Webhook created"), "expected the one-time signing-secret banner, got: {html}");
+
+        // The list itself (a separate GET, simulating a page reload) must
+        // show the webhook but never the secret again - it's genuinely
+        // gone, not just hidden by this response's own rendering choice.
+        let list_response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}/webhooks"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list_html = body_text(list_response).await;
+        assert!(list_html.contains("https://merchant.example/moneropay-webhook"));
+        assert!(!list_html.contains("Webhook created"), "the signing secret must not reappear on a later page load, got: {list_html}");
+    }
+
+    #[tokio::test]
+    async fn creating_a_webhook_with_an_empty_url_shows_a_clear_error() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "webhook-empty-url@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(&format!("/dashboard/connections/{connection_id}/webhooks"), &session_token, &[("url", "")]))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("Enter a webhook URL."), "expected a clear validation error, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn creating_a_webhook_with_an_invalid_url_surfaces_the_engines_real_error() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "webhook-bad-url@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/webhooks"),
+                &session_token,
+                &[("url", "not a url at all")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("class=\"error\""), "expected the engine's real validation error surfaced, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn deleting_a_webhook_removes_it_from_the_list() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "webhook-delete@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let create_response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/webhooks"),
+                &session_token,
+                &[("url", "https://merchant.example/to-be-deleted")],
+            ))
+            .await
+            .unwrap();
+        let create_html = body_text(create_response).await;
+        // The webhook_id isn't shown in the rendered page (only the URL is -
+        // see webhooks.html.hbs), so read it back from the engine's own
+        // list API directly via the same session, the same way a real
+        // delete form's hidden webhook_id would have been rendered from.
+        assert!(create_html.contains("https://merchant.example/to-be-deleted"));
+
+        let list_before = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}/webhooks"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list_before_html = body_text(list_before).await;
+        let webhook_id_start = list_before_html.find("/webhooks/").expect("expected a delete form action containing the webhook id") + "/webhooks/".len();
+        let webhook_id: String = list_before_html[webhook_id_start..].chars().take_while(|c| *c != '/').collect();
+        assert!(!webhook_id.is_empty());
+
+        let delete_response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/webhooks/{webhook_id}/delete"),
+                &session_token,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(delete_response.status(), StatusCode::FOUND, "expected a redirect back to the webhook list");
+
+        let list_after = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}/webhooks"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let list_after_html = body_text(list_after).await;
+        assert!(
+            !list_after_html.contains("https://merchant.example/to-be-deleted"),
+            "expected the deleted webhook gone, got: {list_after_html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_different_user_cannot_create_or_delete_webhooks_on_someone_elses_connection() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let owner_token =
+            signed_up_and_logged_in_session_token(&router, "webhook-owner@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &owner_token).await;
+
+        let intruder_token =
+            signed_up_and_logged_in_session_token(&router, "webhook-intruder@example.com", "correct horse battery staple").await;
+
+        let create_response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/webhooks"),
+                &intruder_token,
+                &[("url", "https://attacker.example/steal")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(create_response.status(), StatusCode::NOT_FOUND);
+
+        let delete_response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/webhooks/some-webhook-id/delete"),
+                &intruder_token,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(delete_response.status(), StatusCode::NOT_FOUND);
     }
 }

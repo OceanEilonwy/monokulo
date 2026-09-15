@@ -220,11 +220,24 @@ pub struct WebhookRowViewModel {
     pub created_at: i64,
 }
 
-/// The view model `GET /dashboard/connections/{id}/webhooks` takes.
-#[derive(Debug, Serialize)]
+/// The view model `GET /dashboard/connections/{id}/webhooks` (and the
+/// create/delete handlers, which all re-render this same page rather than
+/// redirect) takes.
+#[derive(Debug, Default, Serialize)]
 pub struct WebhooksViewModel {
     pub connection_id: String,
     pub webhooks: Vec<WebhookRowViewModel>,
+    pub error: Option<String>,
+    /// Set only immediately after a successful `POST .../webhooks` - the
+    /// engine's own `CreateWebhookResponse` hands back a real signing secret
+    /// exactly once, at creation time; its `WebhookView` (what every later
+    /// `GET .../webhooks` list call returns, confirmed by reading that
+    /// struct directly - `src/http/admin.rs` at the repo root) has no
+    /// `signing_secret` field at all, so there is no way to ever fetch it
+    /// again after this moment - same one-time-reveal shape as a tenant's
+    /// own `sk_...` at connect time. Never populated on a plain `GET`, and
+    /// gone again the moment the page is reloaded.
+    pub created_webhook_signing_secret: Option<String>,
 }
 
 /// One connected store as shown on the dashboard home page - a much smaller

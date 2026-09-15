@@ -42,6 +42,98 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- Two more user-directed pieces, done together: (A) the "use an existing
+  store" flow now also merges the new site's origin into the tenant's
+  real `allowed_origins` and updates the row's `site_url`; (B) a real
+  webhook management UI (add/list/delete) - the engine's own admin API
+  already fully supported create/list/delete, nothing in this crate ever
+  exposed create or delete.
+  - **(A)**: `connect::confirm_existing_store` now, after the ownership
+    check: decrypts the store's `sk_...`, fetches its current
+    `allowed_origins` from the engine (`EngineClient::get_tenant`),
+    derives the new site's origin via `url::Url::origin().ascii_serialization()`
+    (matches exactly how `http/public.rs::resolve_public_tenant` compares
+    a request's real `Origin` header - read directly before assuming the
+    format, not guessed), and - **merges it in, never replaces the
+    existing list** (the user's own explicit instruction) - via a new
+    `EngineClient::set_allowed_origins` (`PATCH /api/v1/admin/tenant`,
+    already existed engine-side, no client method had ever called it).
+    `Db::update_store_connection_site_url` (new) then updates the row's
+    `site_url` to the newly-attached site. Any failure anywhere in this
+    sequence is a real error (not silently swallowed) - a half-applied
+    CORS update would be a worse, quieter failure than telling the
+    merchant to retry.
+  - **A second real self-deadlock, this time in shipped handler code, not
+    just a test** - caught by the exact same symptom (a hung test) before
+    it ever reached a commit: `let row = match state.db.lock().unwrap()
+    .get_store_connection_by_id(...) { Ok(_) => { ... return
+    render_confirm_form(...) /* which itself locks state.db */ ... } }`.
+    The `MutexGuard` temporary produced in a `match` scrutinee lives for
+    the *entire* match expression, including its arms - not just until the
+    scrutinee value is computed, a genuinely easy-to-miss Rust rule. Fixed
+    by pulling the lookup into its own `let` statement first, so the guard
+    drops at that statement's semicolon, before any arm runs. Audited the
+    rest of the crate afterward (`grep -rn "match.*\.lock().unwrap()"`) -
+    one other occurrence (`home::dashboard_home`) confirmed safe (its
+    error arm never touches the lock again) and left alone rather than
+    churned for consistency's sake.
+  - **(B)**: `orders.rs` (its own module doc comment updated - it used to
+    say "deliberately read-only... no webhook create/delete" and now
+    explains why that's no longer true for webhooks specifically, orders
+    are still untouched) gained `webhooks_create` (`POST
+    /dashboard/connections/{id}/webhooks`) and `webhooks_delete` (`POST
+    .../webhooks/{webhook_id}/delete` - a `POST`-to-a-`/delete`-path route,
+    not a real `DELETE` verb, since a plain HTML `<form>` can only submit
+    `GET`/`POST`). `EngineClient` gained `delete_webhook` (the engine's own
+    `DELETE .../webhooks/{id}` already existed, just never had a client
+    method) - `parse_response` isn't reused for it since it assumes a JSON
+    body and the engine's delete returns a bare `204`.
+  - **Deliberately does not redirect after a successful create, unlike
+    delete's own POST-redirect-GET pattern**: the engine hands back a
+    webhook's real signing secret exactly once, at creation - confirmed by
+    reading the engine's own `WebhookView` struct directly (no
+    `signing_secret` field at all, so a later `GET .../webhooks` call
+    genuinely cannot recover it) - and a redirect would mean carrying that
+    secret in a URL (browser history, `Referer` headers) rather than a
+    response body. `WebhooksViewModel` gained
+    `created_webhook_signing_secret` (rendered once, in a dedicated "shown
+    once" box) and `error` (for a bad/empty URL, surfacing the engine's
+    own real validation message the same way `connections::
+    create_connection_for_user`'s `400` handling already does elsewhere).
+  - `webhooks.html.hbs` got a real "Add a webhook" form and a delete button
+    per row (with a plain `confirm()` browser dialog before submitting -
+    deleting a webhook stops real event delivery immediately, worth a
+    speed bump). One real correction caught before it shipped: my first
+    draft of the field-help text claimed the engine "refuses to register"
+    a private/loopback webhook URL - re-checked against
+    `admin::create_webhook`'s own code (already read earlier this session)
+    before writing that, and it was wrong: only the URL scheme is checked
+    at registration; private-IP/SSRF rejection happens at *delivery* time
+    in the not-yet-built delivery worker, per that function's own comment.
+    Corrected the copy to say so honestly instead of shipping a false
+    claim about what the engine actually does.
+  - 15 new tests total: 1 `db.rs` unit test (site_url update), 2 `connect.rs`
+    end-to-end tests for the origin-merge behavior (one proving a
+    previously-empty `allowed_origins` gets the new origin added, one
+    proving an *existing* real origin survives alongside it - the "merged,
+    not replaced" half made explicit), and 5 webhook-management end-to-end
+    HTTP tests (secret shown once then never again, empty-URL validation,
+    the engine's real invalid-URL error surfaced, delete actually removes
+    it from a subsequent list, and cross-user ownership rejection on both
+    create and delete). `cargo test -p control-plane`: 115 passed (was
+    108). `cargo build --workspace`/`cargo test --workspace` clean
+    throughout.
+  - Independently verified live end to end against the real running
+    control-plane + engine, for both pieces: attached a second WordPress
+    site to an existing store via the real picker and confirmed both the
+    dashboard's `site_url` and (checked directly against the engine, not
+    just the UI) the tenant's real `allowed_origins` updated correctly
+    (including a separate run proving an existing origin survives the
+    merge); created a real webhook, saw its signing secret exactly once,
+    confirmed it never reappears on reload, deleted it via a real `POST`
+    (caught my own first attempt using `GET` failing with a real `405`,
+    corrected it), and confirmed it was actually gone from a fresh list.
+
 - Real bug fix + real feature (both user-reported, in one message): (1) a
   store connected via the advanced/custom form showed "woocommerce" as
   its platform on the dashboard and got shown WooCommerce plugin-install

@@ -328,36 +328,79 @@ async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str
         }
     };
 
-    let owned = match state.db.lock().unwrap().get_store_connection_by_id(connection_id) {
-        Ok(Some(row)) => row.user_id == user.id,
-        Ok(None) => false,
-        Err(_) => {
+    let internal_error = || {
+        render_confirm_form(
+            state,
+            platform,
+            &form.site_url,
+            &form.return_url,
+            &form.nonce,
+            Some("Something went wrong. Please try again."),
+            Some(form),
+            &user.id,
+        )
+    };
+
+    // Looked up in its own statement, not as a `match` scrutinee - a
+    // `MutexGuard` temporary produced inside a scrutinee lives for the
+    // *entire* match expression, including its arms, so a naive
+    // `match state.db.lock().unwrap().get_store_connection_by_id(...)`
+    // here would still be holding this lock while an arm below calls
+    // `render_confirm_form`, which itself locks the same mutex - a real,
+    // confirmed self-deadlock (caught by a hung test before this was ever
+    // committed), not a hypothetical one.
+    let lookup = state.db.lock().unwrap().get_store_connection_by_id(connection_id);
+    let row = match lookup {
+        Ok(Some(row)) if row.user_id == user.id => row,
+        Ok(_) => {
+            // Same enumeration-defense convention `orders.rs` documents for
+            // its own ownership check: a nonexistent id and someone else's
+            // id must be indistinguishable to the caller.
             return render_confirm_form(
                 state,
                 platform,
                 &form.site_url,
                 &form.return_url,
                 &form.nonce,
-                Some("Something went wrong. Please try again."),
+                Some("That store could not be found."),
                 Some(form),
                 &user.id,
             );
         }
+        Err(_) => return internal_error(),
     };
-    if !owned {
-        // Same enumeration-defense convention `orders.rs` documents for its
-        // own ownership check: a nonexistent id and someone else's id must
-        // be indistinguishable to the caller.
-        return render_confirm_form(
-            state,
-            platform,
-            &form.site_url,
-            &form.return_url,
-            &form.nonce,
-            Some("That store could not be found."),
-            Some(form),
-            &user.id,
-        );
+
+    // Attaching this WordPress site to an already-existing store means the
+    // plugin's own storefront needs to be able to call this store's public
+    // order-creation API from *its* origin too - per the user's own request,
+    // add it to the tenant's real `allowed_origins` (merged in, never
+    // replacing what was already there) rather than leaving the merchant to
+    // discover a silent CORS failure on their new site later. The row's
+    // `site_url` is updated the same way, so the dashboard reflects the most
+    // recent site this store is actually serving. Any failure in this
+    // sequence (decrypting the stored secret, reaching the engine, or the
+    // database write) is treated as a real error, not silently swallowed -
+    // a half-applied CORS update would be a worse, quieter failure mode
+    // than just telling the merchant to try again.
+    let sk = match crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted) {
+        Ok(sk) => sk,
+        Err(_) => return internal_error(),
+    };
+    if let Some(new_origin) = url::Url::parse(&form.site_url).ok().map(|u| u.origin().ascii_serialization()) {
+        let tenant = match state.engine_client.get_tenant(&sk).await {
+            Ok(tenant) => tenant,
+            Err(_) => return internal_error(),
+        };
+        if !tenant.allowed_origins.contains(&new_origin) {
+            let mut updated_origins = tenant.allowed_origins;
+            updated_origins.push(new_origin);
+            if state.engine_client.set_allowed_origins(&sk, updated_origins).await.is_err() {
+                return internal_error();
+            }
+        }
+    }
+    if state.db.lock().unwrap().update_store_connection_site_url(&row.id, &form.site_url).is_err() {
+        return internal_error();
     }
 
     mint_token_and_redirect(state, connection_id, platform, form, &user.id)
@@ -529,6 +572,7 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
+    use crate::crypto;
     use crate::db::Db;
     use crate::engine_client::EngineClient;
 
@@ -1147,6 +1191,95 @@ mod tests {
         assert_eq!(finish_response.status(), StatusCode::OK);
         let finish_body = body_json(finish_response).await;
         assert_eq!(finish_body["public_key"].as_str().unwrap(), public_key, "expected credentials for the same, already-existing store");
+
+        // The two real side effects of attaching a second site to an
+        // existing store: the row's site_url reflects the new site...
+        let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        assert_eq!(row.site_url, "https://new-wp-site.example.com", "expected the row's site_url to move to the newly-attached site");
+
+        // ...and the new site's origin is *merged* into the tenant's real
+        // allowed_origins on the engine, not replacing anything already
+        // there (this store had none set, so this proves the origin was
+        // genuinely added, not just left alone).
+        let sk = crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
+        let tenant = state.engine_client.get_tenant(&sk).await.unwrap();
+        assert!(
+            tenant.allowed_origins.contains(&"https://new-wp-site.example.com".to_string()),
+            "expected the new site's origin added to allowed_origins, got: {:?}",
+            tenant.allowed_origins
+        );
+    }
+
+    /// The "merged in, not replaced" half of the same behavior, made
+    /// explicit: a store that already has a real, different allowed origin
+    /// keeps it after a second site attaches.
+    #[tokio::test]
+    async fn attaching_a_second_site_preserves_the_stores_original_allowed_origin() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+
+        let cookie = signed_up_and_logged_in_session_cookie(&router, "preserve-origin@example.com", "correct horse battery staple").await;
+
+        // Create the store directly with a real starting allowed_origins
+        // entry - `create_a_store` always starts with none, and this test
+        // needs one already present to prove it survives.
+        let create_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/connections")
+                    .header("content-type", "application/json")
+                    .header("cookie", &cookie)
+                    .body(Body::from(
+                        serde_json::json!({
+                            "platform": "custom",
+                            "site_url": "https://original-site.example.com",
+                            "view_key_hex": TEST_VIEW_KEY_HEX,
+                            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
+                            "network": "mainnet",
+                            "allowed_origins": ["https://original-site.example.com"],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(create_response.status(), StatusCode::CREATED);
+        let created = body_json(create_response).await;
+        let connection_id = created["connection_id"].as_str().unwrap().to_string();
+
+        let post_response = router
+            .clone()
+            .oneshot(form_request(
+                "/connect/woocommerce",
+                Some(&cookie),
+                &[
+                    ("site_url", "https://second-site.example.com"),
+                    ("return_url", "https://second-site.example.com/settings"),
+                    ("nonce", "nonce-preserve"),
+                    ("mode", "existing"),
+                    ("connection_id", &connection_id),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(post_response.status(), StatusCode::FOUND);
+
+        let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        let sk = crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
+        let tenant = state.engine_client.get_tenant(&sk).await.unwrap();
+        assert!(
+            tenant.allowed_origins.contains(&"https://original-site.example.com".to_string()),
+            "the original origin must survive, got: {:?}",
+            tenant.allowed_origins
+        );
+        assert!(
+            tenant.allowed_origins.contains(&"https://second-site.example.com".to_string()),
+            "the new origin must be added too, got: {:?}",
+            tenant.allowed_origins
+        );
     }
 
     /// The real security boundary: a signed-in user must not be able to
