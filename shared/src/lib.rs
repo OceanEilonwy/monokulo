@@ -15,6 +15,7 @@ pub mod key_custody;
 pub mod migrations;
 pub mod network;
 pub mod password;
+pub mod rate_limit;
 pub mod webhook_sign;
 
 #[cfg(test)]
