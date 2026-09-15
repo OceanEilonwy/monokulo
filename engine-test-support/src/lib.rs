@@ -406,6 +406,14 @@ impl TestEngineConfig {
             configured_networks: Arc::new(
                 self.networks.iter().copied().collect::<HashSet<Network>>(),
             ),
+            // This harness's own background scan loop (below) talks to a
+            // bare `NoopDaemonClient` directly, never through
+            // `AppState::daemons` - no caller of this crate exercises the
+            // engine's `/status` page, so an empty map here is honest, not
+            // a stub standing in for something real.
+            daemons: Arc::new(HashMap::new()),
+            scanner_status: moneropay_core::scanner_status::new_scanner_status_map(),
+            scan_poll_interval_secs: BACKGROUND_LOOP_INTERVAL.as_secs().max(1),
         };
         let router = build_router(app_state, MAX_BODY_BYTES);
 

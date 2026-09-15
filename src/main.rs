@@ -11,7 +11,6 @@ use key_custody_service::client::SocketKeyCustody;
 use monero::Network;
 use moneropay_core::cli::{self, Action};
 use moneropay_core::config::{Config, KeyCustodyConfig};
-use moneropay_core::daemon::MoneroDaemonClient;
 use moneropay_core::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use moneropay_core::daemon_rpc::RpcDaemonClient;
 use moneropay_core::exchange_rate::{CoingeckoRateProvider, ExchangeRateProvider};
@@ -22,6 +21,7 @@ use moneropay_core::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle, Wal
 use moneropay_core::local_admin;
 use moneropay_core::network::network_str;
 use moneropay_core::scanner::{revalidate_recent_double_spend_voids, run_scan_tick};
+use moneropay_core::scanner_status::{self, ScannerStatusMap};
 use moneropay_core::store::{NewTenant, SharedStore, Store};
 use moneropay_core::webhook_delivery::run_delivery_tick;
 
@@ -207,7 +207,15 @@ async fn main() {
     // is a `FallbackDaemonClient` wrapping its primary node plus any configured
     // `fallbacks`, so a single flaky/down public node doesn't stop scanning that
     // network - see `daemon_fallback`'s own doc comment for the failover policy.
-    let daemons: HashMap<Network, Arc<dyn MoneroDaemonClient>> = config
+    // Concrete `Arc<FallbackDaemonClient>`, not `Arc<dyn MoneroDaemonClient>`:
+    // `AppState::daemons` (the status page, `http/status_page.rs`) needs
+    // `FallbackDaemonClient`'s own `nodes()`/`current_index()` accessors to
+    // report on each configured node individually, which the trait object
+    // alone can't expose. Every real construction path here always
+    // produces a `FallbackDaemonClient` anyway (see the loop body below),
+    // so this reflects what's actually built, not an artificial
+    // narrowing.
+    let daemons: HashMap<Network, Arc<FallbackDaemonClient>> = config
         .monero_node
         .iter()
         .map(|(network, node_config)| {
@@ -236,11 +244,18 @@ async fn main() {
                     )),
                 });
             }
-            let client: Arc<dyn MoneroDaemonClient> = Arc::new(FallbackDaemonClient::new(nodes));
+            let client = Arc::new(FallbackDaemonClient::new(nodes));
             (network, client)
         })
         .collect();
     let configured_networks: Arc<HashSet<Network>> = Arc::new(daemons.keys().copied().collect());
+    let daemons = Arc::new(daemons);
+    let scanner_status = scanner_status::new_scanner_status_map();
+    // Rounds down to whole seconds purely for the status page's own
+    // "expected every Ns" display - the scan loop itself still sleeps the
+    // real, precise `config.payment.mempool_poll_interval_ms` value
+    // (`poll_interval` below), this is never used to drive timing.
+    let scan_poll_interval_secs = config.payment.mempool_poll_interval_ms / 1000;
 
     bootstrap_self_hosted_tenant(&store, &key_custody, &config).await;
     let wallet_handles = Arc::new(RwLock::new(register_all_tenants(&store, &key_custody).await));
@@ -253,6 +268,9 @@ async fn main() {
         wallet_handles: wallet_handles.clone(),
         rate_limiter: Arc::new(RateLimiter::new(config.server.rate_limit_per_ip_per_min)),
         configured_networks,
+        daemons: daemons.clone(),
+        scanner_status: scanner_status.clone(),
+        scan_poll_interval_secs,
     };
 
     let allow_private_urls = config.webhooks.allow_private_urls;
@@ -270,7 +288,6 @@ async fn main() {
 
     let reorg_check_depth = config.payment.reorg_check_depth;
     let poll_interval = Duration::from_millis(config.payment.mempool_poll_interval_ms);
-    let daemons = Arc::new(daemons);
 
     // Cloned before the scanner loop's own `move` closure below consumes the
     // originals - its own, much slower loop (see `run_double_spend_revalidation_loop`'s
@@ -289,6 +306,7 @@ async fn main() {
             wallet_handles.clone(),
             reorg_check_depth,
             poll_interval,
+            scanner_status.clone(),
         )
     });
 
@@ -582,21 +600,25 @@ async fn run_webhook_delivery_loop(
 async fn run_scanner_loop(
     store: SharedStore,
     key_custody: Arc<dyn KeyCustody>,
-    daemons: Arc<HashMap<Network, Arc<dyn MoneroDaemonClient>>>,
+    daemons: Arc<HashMap<Network, Arc<FallbackDaemonClient>>>,
     wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
     reorg_check_depth: u64,
     poll_interval: Duration,
+    scanner_status: ScannerStatusMap,
 ) {
     loop {
         let tenants: Vec<(String, WalletHandle)> =
             wallet_handles.read().unwrap().iter().map(|(id, h)| (id.clone(), *h)).collect();
         for (network, daemon) in daemons.iter() {
-            if let Err(e) =
+            let started_at = now_unix();
+            let result =
                 run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(*network), &tenants, reorg_check_depth)
-                    .await
-            {
+                    .await;
+            let finished_at = now_unix();
+            if let Err(e) = &result {
                 eprintln!("scan tick failed for {network:?}: {e}");
             }
+            scanner_status::record_tick(&scanner_status, *network, started_at, finished_at, tenants.len(), &result);
         }
         tokio::time::sleep(poll_interval).await;
     }
@@ -612,7 +634,7 @@ const DOUBLE_SPEND_REVALIDATION_INTERVAL: Duration = Duration::from_secs(5 * 60)
 
 async fn run_double_spend_revalidation_loop(
     store: SharedStore,
-    daemons: Arc<HashMap<Network, Arc<dyn MoneroDaemonClient>>>,
+    daemons: Arc<HashMap<Network, Arc<FallbackDaemonClient>>>,
 ) {
     loop {
         for (network, daemon) in daemons.iter() {

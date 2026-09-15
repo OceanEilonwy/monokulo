@@ -55,6 +55,24 @@ impl FallbackDaemonClient {
         Self { nodes, current: AtomicUsize::new(0) }
     }
 
+    /// Every configured node, in priority order - for a caller that wants to
+    /// report on (or query) each one individually rather than through this
+    /// type's own failover behavior, e.g. an operator-facing status page
+    /// showing every node's live height, not just whichever one currently
+    /// happens to answer first.
+    pub fn nodes(&self) -> &[FallbackNode] {
+        &self.nodes
+    }
+
+    /// Index into [`Self::nodes`] of whichever node this client would try
+    /// first on its *next* call right now - see the module doc comment's
+    /// own "Failover policy" section. A snapshot, not a guarantee: another
+    /// concurrent call can change it the instant after this returns, same
+    /// as any other use of `current` in this type.
+    pub fn current_index(&self) -> usize {
+        self.current.load(Ordering::Relaxed)
+    }
+
     fn note_success(&self, idx: usize) {
         let previous = self.current.swap(idx, Ordering::Relaxed);
         if previous != idx {

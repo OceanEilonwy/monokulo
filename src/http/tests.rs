@@ -15,8 +15,11 @@ use http_body_util::BodyExt;
 use monero::{Network, PrivateKey, PublicKey};
 use tower::ServiceExt;
 
+use crate::daemon::fake::FakeDaemonClient;
+use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use crate::exchange_rate::{ExchangeRateProvider, FixedRateProvider};
 use crate::key_custody::{KeyCustody, PlainKeyCustody};
+use crate::scanner_status::new_scanner_status_map;
 use crate::store::Store;
 
 use super::rate_limit::RateLimiter;
@@ -43,6 +46,15 @@ fn test_app_state() -> AppState {
     let mut rates = HashMap::new();
     rates.insert("USD".to_string(), 6_700_000_000u64);
     let exchange_rate: Arc<dyn ExchangeRateProvider> = Arc::new(FixedRateProvider::new(rates));
+    // A real (fake-backed, but genuinely `MoneroDaemonClient`-implementing)
+    // node for mainnet - matches `configured_networks` below, and gives
+    // `status_page`'s own tests something real to query rather than an
+    // empty map that would make every test tenant's own network
+    // inconsistent with what `daemons` actually has.
+    let mainnet_daemon = Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+        label: "fake-node:18081".to_string(),
+        client: Arc::new(FakeDaemonClient::new()),
+    }]));
     AppState {
         store,
         key_custody,
@@ -57,6 +69,9 @@ fn test_app_state() -> AppState {
         // incidentally affected by rate limiting - the middleware's own behavior is
         // tested separately, end to end, in `rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info`.
         rate_limiter: Arc::new(RateLimiter::new(10_000)),
+        daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
+        scanner_status: new_scanner_status_map(),
+        scan_poll_interval_secs: 2,
     }
 }
 
@@ -1058,4 +1073,98 @@ async fn the_cors_predicate_fails_closed_on_every_confusable_path_shape() {
         response.headers().get("access-control-allow-origin").unwrap(),
         "https://merchant.example"
     );
+}
+
+async fn get_status_page(router: Router) -> String {
+    let response = router.oneshot(Request::builder().method("GET").uri("/status").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+#[tokio::test]
+async fn status_page_is_reachable_with_no_authentication_at_all() {
+    // Deliberately no `authorization` header, no session cookie - see
+    // `build_router`'s own doc comment on why this route is unauthenticated.
+    let router = build_router(test_app_state(), 1_000_000);
+    let html = get_status_page(router).await;
+    assert!(html.contains("Engine status"));
+}
+
+#[tokio::test]
+async fn status_page_shows_the_real_configured_network_and_node_with_its_live_height() {
+    let router = build_router(test_app_state(), 1_000_000);
+    let html = get_status_page(router).await;
+    assert!(html.contains("mainnet"), "expected the configured network shown, got: {html}");
+    assert!(html.contains("fake-node:18081"), "expected the real node label shown, got: {html}");
+    // FakeDaemonClient::new() starts at height 0 - a real, live query result,
+    // not a placeholder.
+    assert!(html.contains("reachable"), "expected the node to show as reachable, got: {html}");
+    assert!(
+        html.contains("has not been scanned yet"),
+        "no scan tick has happened in this test, so this must say so honestly, got: {html}"
+    );
+}
+
+#[tokio::test]
+async fn status_page_shows_an_offline_node_as_an_error_not_a_silent_gap() {
+    let mut state = test_app_state();
+    let offline_daemon = Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+        label: "dead-node:18081".to_string(),
+        client: Arc::new(FakeDaemonClient::default()), // starts offline (see FakeDaemonClient::new vs. Default)
+    }]));
+    state.daemons = Arc::new(HashMap::from([(Network::Mainnet, offline_daemon)]));
+    let router = build_router(state, 1_000_000);
+    let html = get_status_page(router).await;
+    assert!(html.contains("dead-node:18081"));
+    assert!(html.contains("tag-error"), "expected a visible error indicator for the offline node, got: {html}");
+    assert!(html.contains("fake daemon is offline"), "expected the real error message surfaced, got: {html}");
+}
+
+#[tokio::test]
+async fn status_page_reflects_a_healthy_recent_scan_tick() {
+    let state = test_app_state();
+    crate::scanner_status::record_tick(&state.scanner_status, Network::Mainnet, crate::now_unix(), crate::now_unix(), 3, &Ok::<(), String>(()));
+    let router = build_router(state, 1_000_000);
+    let html = get_status_page(router).await;
+    assert!(html.contains("healthy"), "expected a healthy tag for a fresh successful tick, got: {html}");
+    assert!(html.contains(">3<"), "expected the real tenants-scanned count shown, got: {html}");
+}
+
+#[tokio::test]
+async fn status_page_reflects_a_failing_scan_tick_with_its_real_error() {
+    let state = test_app_state();
+    crate::scanner_status::record_tick(
+        &state.scanner_status,
+        Network::Mainnet,
+        crate::now_unix(),
+        crate::now_unix(),
+        1,
+        &Err::<(), String>("node returned garbage".to_string()),
+    );
+    let router = build_router(state, 1_000_000);
+    let html = get_status_page(router).await;
+    assert!(html.contains("tick failing"), "expected the real failing-tick label, got: {html}");
+    assert!(html.contains("node returned garbage"), "expected the real error message surfaced, got: {html}");
+}
+
+#[tokio::test]
+async fn status_page_reflects_a_stale_scanner_that_has_stopped_ticking() {
+    let state = test_app_state();
+    // A tick that "succeeded" a very long time ago - the scanner itself is
+    // the thing that's actually broken here (stopped ticking at all), which
+    // must read differently from a merely-failing-but-alive tick.
+    crate::scanner_status::record_tick(&state.scanner_status, Network::Mainnet, 1, 1, 2, &Ok::<(), String>(()));
+    let router = build_router(state, 1_000_000);
+    let html = get_status_page(router).await;
+    assert!(html.contains("stale"), "expected a stale tag once a tick is far older than the poll interval, got: {html}");
+}
+
+#[tokio::test]
+async fn status_page_with_no_configured_networks_says_so_plainly() {
+    let mut state = test_app_state();
+    state.daemons = Arc::new(HashMap::new());
+    let router = build_router(state, 1_000_000);
+    let html = get_status_page(router).await;
+    assert!(html.contains("No Monero nodes are configured"));
 }

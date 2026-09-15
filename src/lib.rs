@@ -18,6 +18,7 @@ pub mod key_custody;
 pub mod local_admin;
 pub mod network;
 pub mod scanner;
+pub mod scanner_status;
 pub mod status;
 pub mod store;
 pub mod templates;

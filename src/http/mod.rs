@@ -32,6 +32,7 @@
 mod admin;
 mod public;
 pub mod rate_limit;
+mod status_page;
 #[cfg(test)]
 mod tests;
 
@@ -48,8 +49,10 @@ use serde_json::json;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 
+use crate::daemon_fallback::FallbackDaemonClient;
 use crate::exchange_rate::ExchangeRateProvider;
 use crate::key_custody::{KeyCustody, KeyCustodyError, WalletHandle};
+use crate::scanner_status::ScannerStatusMap;
 use crate::status::OrderStatus;
 use crate::store::{SharedStore, StoreError, Tenant};
 
@@ -83,6 +86,28 @@ pub struct AppState {
     /// but never scanned by anything; see `docs/DESIGN.md` §7 (multi-network) and
     /// `admin::create_tenant`.
     pub configured_networks: Arc<std::collections::HashSet<monero::Network>>,
+    /// One `FallbackDaemonClient` per configured network - the same
+    /// instances the chain-scanner loop itself uses (`main.rs` clones the
+    /// `Arc` into both places), so the status page
+    /// (`GET /status`, `status_page.rs`) reports on the real node list
+    /// scanning is actually happening against, not a second, separately
+    /// -configured view of it. Concrete `Arc<FallbackDaemonClient>`, not
+    /// `Arc<dyn MoneroDaemonClient>` - only `FallbackDaemonClient` exposes
+    /// its own node list (`FallbackDaemonClient::nodes`), which is exactly
+    /// what the status page needs to query each node individually rather
+    /// than only the aggregate view `MoneroDaemonClient`'s own trait
+    /// methods give.
+    pub daemons: Arc<HashMap<monero::Network, Arc<FallbackDaemonClient>>>,
+    /// Live scan-tick history per network, updated by `main.rs`'s own scan
+    /// loop after every tick - see `scanner_status`'s own module doc
+    /// comment.
+    pub scanner_status: ScannerStatusMap,
+    /// How often the scan loop sleeps between full sweeps
+    /// (`config.payment.mempool_poll_interval_ms`, converted once at boot) -
+    /// purely so the status page can say *how* overdue a tick that hasn't
+    /// happened in a while actually is, relative to what's actually
+    /// configured, rather than against an arbitrary hardcoded guess.
+    pub scan_poll_interval_secs: u64,
 }
 
 pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
@@ -108,6 +133,15 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         )
         .route("/pay/v1/{pk}/{payment_id}", get(public::payment_page))
         .route("/static/moneropay-client.js", get(public::client_library))
+        // Deliberately unauthenticated (no `sk_`/`pk_` involved) and outside
+        // the `/api/v1/...`/`/pay/v1/...` version prefixes those doc
+        // comments explain the reasoning for - this is operator-facing
+        // operational status, not tenant-scoped API surface, the same way
+        // a service's own `/healthz` typically sits outside its versioned
+        // API. Reports node/scanner health across *every* configured
+        // network at once, so scoping it under a tenant's own `pk_` would
+        // be the wrong shape even if it were authenticated.
+        .route("/status", get(status_page::status_page))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit_middleware))
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
         .layer(build_cors_layer(state.store.clone()))

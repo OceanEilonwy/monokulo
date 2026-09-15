@@ -42,6 +42,82 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- `GET /status` on the **engine** (user-directed, sent mid-turn as an
+  interjection ahead of the e2e-test work below, which was paused and
+  resumed after this was done): a real, unauthenticated, live operator
+  status page - every configured network, every node in that network's
+  real `FallbackDaemonClient` fallback list (not just the aggregate
+  "current" one), each one's genuinely live-queried block height and
+  reachability, plus the chain-scanner loop's own real tick history per
+  network (last tick, tick count, tenants scanned, last error if any, and
+  a derived healthy/stale/failing label).
+  - Lives on the *engine*, not control-plane: node/daemon/scanner internals
+    only exist in the engine's own process (`main.rs`'s local `daemons`
+    map and scan loop were never in `AppState` at all before this - had to
+    add them). "Matching the style of the site" is done as a deliberate,
+    explicitly-commented byte-for-byte copy of
+    `control-plane/templates/_styles.html.hbs`'s CSS into this page's own
+    embedded template - the two crates have no shared template
+    infrastructure to pull from, so this is a real, acknowledged
+    duplication to keep in sync by hand if that file's look ever changes,
+    not an accident.
+  - `AppState` gained `daemons` (concrete `Arc<FallbackDaemonClient>` per
+    network, not the trait object every other caller uses - only the
+    concrete type exposes `nodes()`/`current_index()`, which is what this
+    page needs; every real construction path already produces exactly
+    that type, so this reflects reality rather than narrowing anything),
+    `scanner_status` (new `scanner_status` module - a live, in-memory
+    per-network tick-history map, purely observational, updated by
+    `main.rs::run_scanner_loop` after every real tick, success or
+    failure), and `scan_poll_interval_secs` (so "how stale is stale"
+    is judged against what's actually configured, not a guess).
+    `daemon_fallback::FallbackDaemonClient` gained public `nodes()`/
+    `current_index()` accessors it never needed before.
+  - Every node's height is queried live, on every page load, with a 5s
+    per-node timeout - matches `daemon_fallback`'s own stated philosophy
+    ("the next real call is the health check") rather than introducing a
+    second, cached view of node health that could disagree with reality.
+  - **A real bug caught by my own test, not just eyeballing the page**: the
+    height column used `{{#if this.height}}` to distinguish a known height
+    from an unknown one - handlebars treats `0` as falsy exactly like
+    JS's `if(0)`, so a real, live height of *genuinely zero* rendered
+    identically to "unknown" (a `-`). Caught immediately by
+    `status_page_shows_the_real_configured_network_and_node_with_its_live_height`
+    (which uses the crate's own `#[cfg(test)] daemon::fake::FakeDaemonClient`,
+    whose real starting height is 0) failing on its very first run. Fixed
+    by pre-formatting the height as a plain string in Rust
+    (`height_display`) instead of branching on the raw number in the
+    template - the same class of fix (compute the display value in Rust,
+    never lean on handlebars' own truthiness for a value that can
+    legitimately be zero) `network_selected_flags` already established
+    earlier this session for an unrelated reason.
+  - A genuinely hand-rolled Gregorian date formatter
+    (`chrono_like_utc_string`, no new dependency for one "as of" timestamp
+    line) got its own dedicated unit test with five real reference
+    points - including a leap-day boundary (2024-02-29 exists,
+    2023-02-29 doesn't) - each independently cross-checked against a real
+    `date -u -d @<seconds>` call before being trusted, not just assumed
+    from memory. Caught two arithmetic mistakes in my *own test's*
+    expected values while writing it (a wrong hour-vs-day bucket
+    boundary, twice) via the same real-command cross-check, before they
+    ever became a false "this is correct" signal.
+  - 13 new tests total (`scanner_status`'s own 3, `status_page`'s 3 pure
+    unit tests, and 7 real HTTP-level tests covering: no-auth
+    reachability, a real node's live height and reachable status, an
+    offline node showing a real visible error (not a silent gap), a
+    healthy recent tick, a failing tick with its real error surfaced, a
+    genuinely stale/stopped scanner, and the honest empty state when no
+    networks are configured at all). `cargo test -p moneropay-core`: 327
+    passed (was 314). `cargo build --workspace`/`cargo test --workspace`
+    clean throughout.
+  - Verified live against the real running engine (via
+    `scripts/dev-run.sh restart`, the script written just before this):
+    the real configured `stagenet.xmr-tw.org:38081` node showing as
+    active/reachable with its genuine current stagenet block height
+    (2208078 at verification time), and the scanner section showing a
+    real recent tick (tick count, tenants scanned) against the actual
+    running scan loop - not a screenshot of intent, the real page.
+
 - `scripts/dev-run.sh` (user-directed): a real start/stop/restart/status/logs
   script for the local dev stack (engine + control-plane together), rather
   than the ad hoc `nohup ... &`/`pkill`/manually-tracked-PID approach this
