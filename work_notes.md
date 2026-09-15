@@ -29,6 +29,95 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **`fx_refactor.md` execution: Phases 4 (remainder), 5, and 6 done - the
+  document's entire WBS is now complete.** Continued fully autonomously per
+  the user's original "start work autonomously" instruction; no further
+  check-in requested or received at any point across this whole document's
+  execution.
+  - **Phase 4 remainder**: dropped `tenants.template_dir` for real - new
+    migration `migrations/0006_drop_tenant_template_dir.sql` (plain `ALTER
+    TABLE ... DROP COLUMN`, not part of any index/constraint), plus
+    `Tenant.template_dir`/`TenantConfigPatch.template_dir_set`/
+    `template_dir` removed from `src/store.rs` and the two now-pointless
+    `None`/`false` literals removed from `src/http/admin.rs::patch_own_tenant`.
+    Confirmed dead first, not assumed: `PatchTenantRequest` never exposed
+    `template_dir` to callers at all, so this was unreachable through the
+    HTTP API before this change too - the column just hadn't been formally
+    retired yet.
+  - **A real embeddable client library now exists on control-plane**,
+    closing the part of decision 3 this document's own Phase 4.3 flagged as
+    still open after Phase 3 landed (`mock-woocommerce`'s own `create_order`
+    proved the `/pay/{pk}/orders` endpoint via a raw `reqwest` call, but
+    that was never the actual embed widget a real merchant site would use).
+    Ported the engine's original `moneropay-client.js` to
+    `control-plane/static/moneropay-client.js` verbatim except for its two
+    endpoint paths (`/api/v1/t/{pk}/orders` -> `/pay/{pk}/orders`,
+    `/pay/v1/{pk}/{paymentId}` -> `/pay/{pk}/orders/{paymentId}`) - same
+    dependency-free, no-build-step, `postMessage`-relaying design, same
+    `MoneroPay.createOrder()`/`.mount()` public interface, so an existing
+    self-hosted integration only needs a URL change, not a rewrite. New
+    `GET /static/moneropay-client.js` route (`http::pay::client_library`,
+    no rate limiter - a plain static file, not state-changing) plus a real
+    test asserting it actually calls control-plane's own endpoints, not the
+    engine's old ones (`!js.contains("/api/v1/t/")`,
+    `!js.contains("/pay/v1/")`) - the kind of assertion that would have
+    caught a copy-paste-without-updating mistake, not just "the bytes are
+    served". Also added a real "Widget embed" section to
+    `_integration_help.html.hbs` (previously only showed the raw-API
+    `curl`-shaped example) with a working, real script-tag snippet -
+    live-verified on a real connect-success page, real `pk_...` correctly
+    interpolated in.
+  - **Phase 5 (e2e test rework)**: confirmed 5.1 (`tests/e2e_stagenet.rs`)
+    was already fully done as part of Phase 3's own minimal fix - it already
+    posts `xmr_amount_piconero` directly. Did the actual work for 5.2:
+    `tests/e2e_dashboard_stagenet.rs`'s order creation now goes through the
+    real `cp_router` (in-process `oneshot`, matching every other step of
+    that same test) hitting control-plane's own `/pay/{pk}/orders` with a
+    real fiat body, not a direct call to the engine - closing the real gap
+    the doc's own 5.2 bullet named ("the first time this e2e test would
+    exercise control-plane's own order-creation surface"). Retuned that
+    test's fixed exchange rate (`33_500_000_000` piconero/USD) so `"0.01"`
+    - a normal 2-decimal-place fiat amount, since `compute_xmr_amount`
+    rejects more than 2 - lands on the same genuinely-tiny
+    335_000_000-piconero real-stagenet-payment target every other real
+    e2e test in this repo already uses, rather than picking an arbitrary
+    new magnitude. `mock-woocommerce/tests/e2e_stagenet_connect_flow.rs`
+    was already reworked this same way during Phase 3's own propagation
+    pass - confirmed, not re-done.
+  - **Phase 6 (documentation)**: `docs/DESIGN.md` §5 (added a paragraph
+    clarifying the diagram's direct-engine-integration box describes the
+    self-hosted-only path, not how control-plane itself talks to the
+    engine), §8 (dropped the four fiat/template-customization columns from
+    the reproduced DDL, with a note that this snapshot already lagged
+    migrations 0002-0006 before this edit and isn't meant as a byte-for-byte
+    current dump), §10 (removed the stale `/pay/v1/...` version-namespace
+    claim, rewrote the `create_order` contract row to XMR-only, replaced
+    the old §10.4 "payment link" section - which described a page that no
+    longer exists on this engine at all - with a pointer to where checkout
+    and the client library actually live now), §13 (dropped the
+    `[exchange_rate]` sketch, pointed at control-plane's own env-var
+    config instead), §14 (full rewrite: the client library section now
+    shows control-plane's real routes, not the engine's deleted ones).
+    Left the diagram's other pre-existing staleness alone (a "Writer Actor"
+    that isn't how `src/http/mod.rs` actually works, an `/events` SSE
+    route that was never built) - genuinely out of scope for this document,
+    which is about the FX refactor specifically, not a full DESIGN.md audit.
+    Reworded `landing.html.hbs`'s "runs the same open, self-hostable engine
+    either way" claim per 6.2's own suggested phrasing, to stop implying
+    full feature parity between self-hosted-alone and hosted.
+  - Verified the same way every phase in this document has been: real code
+    read first, `cargo test --workspace` and `cargo build --tests --features
+    e2e` (root and `mock-woocommerce`) clean after every change, then a real
+    `./scripts/dev-run.sh restart` against the live dev stack - confirmed
+    migration 0006 applies cleanly to the existing on-disk db, `GET
+    /static/moneropay-client.js` serves real JS referencing only
+    control-plane's own routes, and the widget-embed snippet renders
+    correctly (real interpolated `pk_...`) on a real connect-success page
+    reached via a genuine signup -> login -> connect flow.
+  - **`docs/fx_refactor.md`'s entire WBS is now complete** - every phase
+    (0 through 6) has landed, been tested, and been live-verified. Nothing
+    from that document remains outstanding.
+
 - **`fx_refactor.md` execution: Phase 3 done, combined with the parts of
   Phase 4 that turned out to be inseparable from it, plus the propagation
   through control-plane (Phase 3.3) - the engine now has genuinely zero
