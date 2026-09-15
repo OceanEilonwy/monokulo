@@ -231,11 +231,16 @@ impl EngineClient {
     /// their dashboard without needing their own storefront wired up yet.
     /// No auth header - this is `pk_` addressed, the same public surface a
     /// real checkout would call.
-    pub async fn create_order(&self, pk: &str, fiat_amount: &str, fiat_currency: &str) -> Result<CreateOrderResponse, EngineClientError> {
+    ///
+    /// XMR-only (`docs/fx_refactor.md` Phase 3): the engine has no concept
+    /// of fiat at all any more, so `xmr_amount_piconero` here is the exact
+    /// amount already computed from control-plane's own exchange rate -
+    /// this is the only rate computation left in the whole system.
+    pub async fn create_order(&self, pk: &str, xmr_amount_piconero: u64) -> Result<CreateOrderResponse, EngineClientError> {
         let response = self
             .http
             .post(format!("{}/api/v1/t/{pk}/orders", self.base_url))
-            .json(&CreateOrderRequest { fiat_amount: fiat_amount.to_string(), fiat_currency: fiat_currency.to_string() })
+            .json(&CreateOrderRequest { xmr_amount_piconero })
             .send()
             .await?;
         parse_response(response).await
@@ -311,14 +316,14 @@ pub struct TenantView {
 }
 
 /// Mirrors the engine's own `OrderView` (`src/http/admin.rs` at the repo
-/// root) field-for-field.
+/// root) field-for-field. No fiat fields (`docs/fx_refactor.md` Phase 3) -
+/// any fiat display comes from control-plane's own local
+/// `order_fiat_metadata` table (`db::Db::get_order_fiat_metadata`) instead.
 #[derive(Debug, Deserialize)]
 pub struct OrderView {
     pub payment_id: String,
     pub merchant_order_id: Option<String>,
     pub address: String,
-    pub fiat_currency: String,
-    pub fiat_amount: String,
     pub xmr_amount_piconero: u64,
     pub amount_received_piconero: u64,
     pub status: String,
@@ -369,15 +374,14 @@ struct PatchTenantRequest {
     confirmations_required: Option<u64>,
 }
 
-/// Mirrors the engine's own `public::CreateOrderRequest` - only the two
-/// fields this client's `create_order` caller needs (`merchant_order_id`/
+/// Mirrors the engine's own `public::CreateOrderRequest` - only the field
+/// this client's `create_order` caller needs (`merchant_order_id`/
 /// `description` are left unset by omitting them, same `Option` field
 /// default-to-`None`-on-a-missing-key convention `PatchTenantRequest`
 /// already relies on).
 #[derive(Serialize)]
 struct CreateOrderRequest {
-    fiat_amount: String,
-    fiat_currency: String,
+    xmr_amount_piconero: u64,
 }
 
 /// Mirrors the engine's own `public::CreateOrderResponse`.
@@ -386,8 +390,6 @@ pub struct CreateOrderResponse {
     pub payment_id: String,
     pub address: String,
     pub xmr_amount_piconero: u64,
-    pub fiat_amount: String,
-    pub fiat_currency: String,
     pub expires_at: i64,
 }
 

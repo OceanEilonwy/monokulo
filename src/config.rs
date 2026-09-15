@@ -1,13 +1,11 @@
 //! TOML configuration, per `docs/DESIGN.md` §13. One file, sensible defaults - "one
 //! config file, one binary" is a stated v1 goal (§DESIGN.md §2).
 
-use std::collections::HashMap;
-
 use monero::Network;
 use serde::Deserialize;
 
-use crate::exchange_rate::{parse_xmr_to_piconero, CoingeckoRateProvider, FixedRateProvider};
 use crate::network::parse_network;
+use shared::xmr_amount::parse_xmr_to_piconero;
 
 #[derive(Debug, thiserror::Error)]
 pub enum ConfigError {
@@ -15,11 +13,11 @@ pub enum ConfigError {
     Io(#[from] std::io::Error),
     #[error("could not parse config file: {0}")]
     Parse(#[from] toml::de::Error),
-    #[error("invalid exchange rate for {currency}: {source}")]
-    InvalidRate {
-        currency: String,
+    #[error("invalid amount for {field}: {source}")]
+    InvalidAmount {
+        field: &'static str,
         #[source]
-        source: crate::exchange_rate::AmountError,
+        source: shared::xmr_amount::AmountError,
     },
     #[error("no [monero_node.<network>] section is configured - need at least one of mainnet, stagenet, testnet")]
     NoNodesConfigured,
@@ -31,14 +29,6 @@ pub enum ConfigError {
         value: String,
         expected: &'static str,
     },
-    #[error("exchange_rate.provider {0:?} is not implemented - only \"fixed\" and \"coingecko\" exist in this version")]
-    UnknownRateProvider(String),
-    #[error(
-        "exchange_rate.provider is \"coingecko\" but exchange_rate.currencies is empty - nothing would ever be \
-         fetched, so every order would be rejected as an unsupported currency. List every fiat code you intend \
-         to price orders in, e.g. currencies = [\"USD\", \"EUR\"]."
-    )]
-    CoingeckoNoCurrenciesConfigured,
     #[error(
         "payment.zero_conf_max_fiat has been renamed to payment.zero_conf_max_xmr, because the value was \
          never denominated in fiat: it is compared directly against the piconero total an order has \
@@ -86,8 +76,6 @@ pub struct Config {
     /// first boot. Absent entirely on a hosted instance where tenants are created at
     /// runtime via the admin API instead (§DESIGN.md §4).
     pub wallet: Option<WalletBootstrapConfig>,
-    #[serde(default)]
-    pub exchange_rate: ExchangeRateConfig,
     /// Which `KeyCustody` implementation `main.rs` constructs at startup - "plain"
     /// (default, unchanged: key material lives in this process, via
     /// `key_custody::PlainKeyCustody`) or "socket" (WBS 2.1.3: forwards every call
@@ -145,11 +133,6 @@ impl Config {
     /// - `max_body_bytes = 0` rejects every request body, i.e. all order creation.
     /// - `delivery_timeout_ms`/`max_attempts` at 0 mean no webhook is ever
     ///   successfully delivered.
-    /// - `exchange_rate.cache_seconds = 0` (only meaningful under `provider =
-    ///   "coingecko"`) would have the background refresh loop call Coingecko in
-    ///   as tight a loop as `tokio::time::sleep(Duration::ZERO)` allows, which is
-    ///   a good way to get this deployment's IP rate-limited or banned by a free
-    ///   public API it depends on for every order's price.
     ///
     /// The upper bounds are deliberately generous - they exist to catch a
     /// transposed digit or a wrong unit (milliseconds typed as seconds, minutes as
@@ -157,15 +140,6 @@ impl Config {
     /// particular is capped well below the point where `* 60` could overflow the
     /// `i64` seconds it is converted to in `main`.
     fn validate_bounds(&self) -> Result<(), ConfigError> {
-        match self.exchange_rate.provider.as_str() {
-            "fixed" => {}
-            "coingecko" => {
-                if self.exchange_rate.currencies.is_empty() {
-                    return Err(ConfigError::CoingeckoNoCurrenciesConfigured);
-                }
-            }
-            other => return Err(ConfigError::UnknownRateProvider(other.to_string())),
-        }
         match self.key_custody.backend.as_str() {
             "plain" => {}
             "socket" => {
@@ -176,13 +150,6 @@ impl Config {
             }
             other => return Err(ConfigError::UnknownKeyCustodyBackend(other.to_string())),
         }
-        require(
-            "exchange_rate.cache_seconds",
-            self.exchange_rate.cache_seconds,
-            10,
-            3600,
-            "at least 10 seconds (to avoid hammering Coingecko) and at most an hour",
-        )?;
         for (network, node) in self.monero_node.iter() {
             if node.host.trim().is_empty() {
                 return Err(ConfigError::OutOfRange {
@@ -212,10 +179,8 @@ impl Config {
             return Err(ConfigError::ZeroConfCeilingRenamed);
         }
         if let Some(ceiling) = &self.payment.zero_conf_max_xmr {
-            parse_xmr_to_piconero(ceiling).map_err(|source| ConfigError::InvalidRate {
-                currency: "payment.zero_conf_max_xmr".to_string(),
-                source,
-            })?;
+            parse_xmr_to_piconero(ceiling)
+                .map_err(|source| ConfigError::InvalidAmount { field: "payment.zero_conf_max_xmr", source })?;
         }
 
         self.server.bind.parse::<std::net::SocketAddr>().map_err(|_| ConfigError::OutOfRange {
@@ -231,19 +196,6 @@ impl Config {
         require("webhooks.delivery_timeout_ms", self.webhooks.delivery_timeout_ms, 100, 300_000, "at least 100ms and at most 5 minutes")?;
         require("webhooks.max_attempts", self.webhooks.max_attempts, 1, 64, "at least 1 and at most 64")?;
 
-        for (currency, xmr_decimal) in &self.exchange_rate.rates {
-            let rate = parse_xmr_to_piconero(xmr_decimal)
-                .map_err(|source| ConfigError::InvalidRate { currency: currency.clone(), source })?;
-            if rate == 0 {
-                // A zero rate prices every order in this currency at zero piconero,
-                // and an order for nothing is satisfied by paying nothing.
-                return Err(ConfigError::OutOfRange {
-                    field: "exchange_rate.rates.<currency>",
-                    value: format!("{xmr_decimal:?} (for {currency})"),
-                    expected: "greater than zero",
-                });
-            }
-        }
         Ok(())
     }
 }
@@ -353,93 +305,10 @@ fn default_network() -> String {
     "mainnet".to_string()
 }
 
-#[derive(Debug, Deserialize)]
-pub struct ExchangeRateConfig {
-    /// "fixed" (hand-entered rates, see `rates` below) or "coingecko" (live rates
-    /// fetched from Coingecko's public API, see `currencies`/`cache_seconds` and
-    /// `exchange_rate::CoingeckoRateProvider`) - a real Haveno-backed provider is
-    /// still deferred (§DESIGN.md §16). `Config::validate` rejects anything else.
-    #[serde(default = "default_provider")]
-    pub provider: String,
-    /// `provider = "fixed"` only: maps a fiat currency code to an XMR-denominated
-    /// decimal string (e.g. `"0.0067"` XMR per 1 USD).
-    #[serde(default)]
-    pub rates: HashMap<String, String>,
-    /// `provider = "coingecko"` only: the fiat currency codes to fetch and keep
-    /// cached (e.g. `["USD", "EUR"]`). Whatever casing is written here is the
-    /// casing `piconero_per_unit` will be looked up by later (order creation
-    /// passes `fiat_currency` through unnormalized - see
-    /// `exchange_rate::CoingeckoRateProvider::new`'s doc comment), so this should
-    /// match whatever casing the merchant's storefront actually sends.
-    /// `#[serde(default)]` so `provider = "fixed"` configs (the overwhelming
-    /// majority today) never need to mention this key at all; `Config::validate`
-    /// separately requires it be non-empty specifically when `provider =
-    /// "coingecko"` - an empty list there is a real misconfiguration (nothing
-    /// would ever be fetched), not a valid "no currencies yet" state.
-    #[serde(default)]
-    pub currencies: Vec<String>,
-    /// `provider = "coingecko"` only: how often the background loop in `main.rs`
-    /// re-fetches rates from Coingecko. Named to match `docs/DESIGN.md` §13's
-    /// configuration sketch, which already anticipated this knob. Validated to
-    /// 10-3600 seconds in `Config::validate_bounds` - see that function's doc
-    /// comment for why the lower bound exists.
-    #[serde(default = "default_cache_seconds")]
-    pub cache_seconds: u64,
-}
-
-fn default_provider() -> String {
-    "fixed".to_string()
-}
-
-fn default_cache_seconds() -> u64 {
-    60
-}
-
-impl Default for ExchangeRateConfig {
-    fn default() -> Self {
-        ExchangeRateConfig {
-            provider: default_provider(),
-            rates: HashMap::new(),
-            currencies: Vec::new(),
-            cache_seconds: default_cache_seconds(),
-        }
-    }
-}
-
-impl ExchangeRateConfig {
-    pub fn build_fixed_rate_provider(&self) -> Result<FixedRateProvider, ConfigError> {
-        let mut piconero_rates = HashMap::new();
-        for (currency, xmr_decimal) in &self.rates {
-            let piconero_per_unit = parse_xmr_to_piconero(xmr_decimal)
-                .map_err(|source| ConfigError::InvalidRate { currency: currency.clone(), source })?;
-            piconero_rates.insert(currency.clone(), piconero_per_unit);
-        }
-        Ok(FixedRateProvider::new(piconero_rates))
-    }
-
-    /// Mirrors `build_fixed_rate_provider` for the other provider kind - `main.rs`
-    /// calls whichever one matches `self.provider` after `Config::validate` has
-    /// already confirmed `provider` is one of the two known values and, for
-    /// "coingecko", that `currencies` is non-empty. Always points at the real
-    /// `https://api.coingecko.com`; nothing in the config schema overrides it
-    /// today (deliberately - see `CoingeckoRateProvider::new`'s doc comment for
-    /// why the base URL is a constructor parameter at all: it exists for tests,
-    /// not for operators).
-    pub fn build_coingecko_rate_provider(&self) -> Result<CoingeckoRateProvider, ConfigError> {
-        Ok(CoingeckoRateProvider::new("https://api.coingecko.com", self.currencies.clone()))
-    }
-}
-
 /// `[key_custody]` - see `Config::key_custody`'s own doc comment for what
-/// `backend` selects. Mirrors `ExchangeRateConfig`'s own two-backends-behind-a-
-/// string-field shape (`provider`/`"fixed"` vs `"coingecko"`) rather than an
-/// enum with `#[serde(tag = "backend")]`: a plain `String` field is what every
-/// other conditionally-required section in this file already does (see
-/// `Config::validate_bounds`'s `exchange_rate.provider` match just above), and
-/// an unrecognized value gets exactly the same "unknown, rejected at boot with a
-/// clear error" treatment either way - a tagged enum buys nothing extra here
-/// and would be the only config section in this file shaped differently from
-/// the rest for no functional reason.
+/// `backend` selects. A plain `String` field rather than an enum with
+/// `#[serde(tag = "backend")]`: an unrecognized value gets a clear "unknown,
+/// rejected at boot" error either way, and a tagged enum buys nothing extra here.
 #[derive(Debug, Deserialize)]
 #[serde(default)]
 pub struct KeyCustodyConfig {
@@ -450,9 +319,7 @@ pub struct KeyCustodyConfig {
     /// `main.rs::connect_socket_key_custody`). Required (and validated
     /// non-empty-after-trimming) under that backend by `Config::validate_bounds`;
     /// ignored under `"plain"`, so a config that sets it while leaving `backend`
-    /// at the default is harmless, not an error - only the reverse (missing
-    /// under `"socket"`) is one, matching how `exchange_rate.currencies` under
-    /// `provider = "fixed"` is likewise ignored rather than rejected.
+    /// at the default is harmless, not an error.
     pub socket_path: Option<String>,
 }
 
@@ -581,7 +448,6 @@ impl Config {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::exchange_rate::ExchangeRateProvider;
     use std::str::FromStr;
 
     #[test]
@@ -673,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn full_config_with_wallet_bootstrap_and_rates_parses() {
+    fn full_config_with_wallet_bootstrap_parses() {
         let toml = r#"
             [monero_node.mainnet]
             host = "127.0.0.1"
@@ -690,11 +556,6 @@ mod tests {
             public_spend_key = "bb"
             network = "stagenet"
             allowed_origins = ["https://merchant.example"]
-
-            [exchange_rate]
-            provider = "fixed"
-            [exchange_rate.rates]
-            USD = "0.0067"
 
             [payment]
             confirmations_required = 3
@@ -715,23 +576,6 @@ mod tests {
         assert_eq!(config.server.bind, "127.0.0.1:9000");
         assert!(config.webhooks.allow_private_urls);
         config.validate().unwrap();
-
-        let provider = config.exchange_rate.build_fixed_rate_provider().unwrap();
-        assert_eq!(provider.piconero_per_unit("USD"), Some(6_700_000_000));
-    }
-
-    #[test]
-    fn invalid_rate_decimal_in_config_is_a_clear_error_not_a_panic() {
-        let toml = r#"
-            [monero_node.mainnet]
-            host = "127.0.0.1"
-            port = 18081
-            [exchange_rate.rates]
-            USD = "not_a_number"
-        "#;
-        let config = Config::from_str(toml).unwrap();
-        let err = config.exchange_rate.build_fixed_rate_provider().unwrap_err();
-        assert!(matches!(err, ConfigError::InvalidRate { .. }));
     }
 
     /// A config that passes `validate()` today, for tests that vary one field.
@@ -785,80 +629,6 @@ mod tests {
         let config = config_with("[payment]\norder_expiry_minutes = 525600");
         config.validate().unwrap();
         assert!(config.payment.order_expiry_minutes.checked_mul(60).is_some());
-    }
-
-    #[test]
-    fn a_zero_exchange_rate_is_rejected_because_it_would_price_orders_at_nothing() {
-        let err = config_with("[exchange_rate.rates]\nUSD = \"0\"").validate().unwrap_err();
-        assert!(matches!(err, ConfigError::OutOfRange { field: "exchange_rate.rates.<currency>", .. }), "got {err}");
-        assert!(matches!(
-            config_with("[exchange_rate.rates]\nUSD = \"0.0000000000001\"").validate().unwrap_err(),
-            ConfigError::InvalidRate { .. }
-        ));
-        config_with("[exchange_rate.rates]\nUSD = \"0.000000000001\"").validate().unwrap();
-    }
-
-    #[test]
-    fn an_unimplemented_rate_provider_is_refused_rather_than_silently_ignored() {
-        // `build_fixed_rate_provider` is called unconditionally in `main`, so a
-        // config naming a provider that doesn't exist would boot and quietly serve
-        // fixed rates under a name promising live ones.
-        let err = config_with("[exchange_rate]\nprovider = \"haveno\"").validate().unwrap_err();
-        assert!(matches!(err, ConfigError::UnknownRateProvider(p) if p == "haveno"));
-    }
-
-    #[test]
-    fn a_coingecko_provider_with_a_real_currency_list_parses_and_validates() {
-        let toml = r#"
-            [monero_node.mainnet]
-            host = "127.0.0.1"
-            port = 18081
-
-            [exchange_rate]
-            provider = "coingecko"
-            currencies = ["USD", "EUR"]
-        "#;
-        let config = Config::from_str(toml).unwrap();
-        config.validate().unwrap();
-        assert_eq!(config.exchange_rate.currencies, vec!["USD".to_string(), "EUR".to_string()]);
-        assert_eq!(config.exchange_rate.cache_seconds, 60, "should default even under coingecko mode");
-
-        // `build_coingecko_rate_provider` should succeed and hand back a provider
-        // pointed at the real Coingecko host, with the configured currency list -
-        // its cache starts empty (nothing fetched yet), matching
-        // `FixedRateProvider`'s own "no rate configured yet" behavior.
-        let provider = config.exchange_rate.build_coingecko_rate_provider().unwrap();
-        assert_eq!(provider.piconero_per_unit("USD"), None);
-    }
-
-    #[test]
-    fn coingecko_provider_with_an_empty_currency_list_is_rejected() {
-        // Nothing would ever be fetched - every order in every currency would be
-        // rejected as unsupported, silently, with a config that otherwise looks
-        // entirely reasonable.
-        let err = config_with("[exchange_rate]\nprovider = \"coingecko\"").validate().unwrap_err();
-        assert!(matches!(err, ConfigError::CoingeckoNoCurrenciesConfigured), "got {err}");
-
-        // Explicitly empty is the same as omitted.
-        let err =
-            config_with("[exchange_rate]\nprovider = \"coingecko\"\ncurrencies = []").validate().unwrap_err();
-        assert!(matches!(err, ConfigError::CoingeckoNoCurrenciesConfigured), "got {err}");
-    }
-
-    #[test]
-    fn cache_seconds_bounds_are_validated() {
-        let err = config_with("[exchange_rate]\ncache_seconds = 0").validate().unwrap_err();
-        assert!(
-            matches!(&err, ConfigError::OutOfRange { field: "exchange_rate.cache_seconds", .. }),
-            "got {err}"
-        );
-        let err = config_with("[exchange_rate]\ncache_seconds = 5").validate().unwrap_err();
-        assert!(matches!(&err, ConfigError::OutOfRange { field: "exchange_rate.cache_seconds", .. }), "got {err}");
-        let err = config_with("[exchange_rate]\ncache_seconds = 3601").validate().unwrap_err();
-        assert!(matches!(&err, ConfigError::OutOfRange { field: "exchange_rate.cache_seconds", .. }), "got {err}");
-
-        config_with("[exchange_rate]\ncache_seconds = 10").validate().unwrap();
-        config_with("[exchange_rate]\ncache_seconds = 3600").validate().unwrap();
     }
 
     #[test]
@@ -1026,7 +796,7 @@ mod tests {
         // ceiling configured" - a tenant would silently get stricter behaviour than
         // the operator asked for, with nothing logged.
         let err = config_with("[payment]\nzero_conf_max_xmr = \"1.2.3\"").validate().unwrap_err();
-        assert!(matches!(err, ConfigError::InvalidRate { currency, .. } if currency == "payment.zero_conf_max_xmr"));
+        assert!(matches!(err, ConfigError::InvalidAmount { field: "payment.zero_conf_max_xmr", .. }));
         config_with("[payment]\nzero_conf_max_xmr = \"0.5\"").validate().unwrap();
     }
 

@@ -15,8 +15,6 @@ pub enum Action {
     RotateSecret { config_path: PathBuf, pk: Option<String> },
     /// Prints a tenant's non-secret settings - see `local_admin::show_tenant`.
     ShowTenant { config_path: PathBuf, pk: Option<String> },
-    /// Prints a ready-to-paste widget integration snippet - see `local_admin::snippet`.
-    Snippet { config_path: PathBuf, pk: Option<String>, endpoint: Option<String> },
     Help,
 }
 
@@ -28,7 +26,6 @@ USAGE:
     moneropay-core --init [--stagenet | --testnet] [--config <PATH>]
     moneropay-core --rotate-secret [--config <PATH>] [--pk <PK>]
     moneropay-core --show-tenant [--config <PATH>] [--pk <PK>]
-    moneropay-core --snippet [--config <PATH>] [--pk <PK>] [--endpoint <URL>]
 
 With no other mode, starts the HTTP server, reading its configuration from
 CONFIG_PATH (or --config PATH) if given, otherwise from the default location:
@@ -62,15 +59,9 @@ OPTIONS:
     --show-tenant     Print a tenant's current settings (public key, network,
                       address, allowed origins, thresholds) - never its keys or
                       secret.
-    --snippet         Print a ready-to-paste HTML/JS snippet that embeds the
-                      checkout widget on your site, pre-filled with a real
-                      tenant's public key. --endpoint <URL> is the address
-                      customers will actually reach this server at (through
-                      any reverse proxy/domain in front of it) - you'll be
-                      asked for it if you don't pass it.
-    --pk <PK>         Which tenant --rotate-secret/--show-tenant/--snippet act
-                      on. Only needed if more than one tenant is configured -
-                      the common, self-hosted, single-tenant case is found
+    --pk <PK>         Which tenant --rotate-secret/--show-tenant act on. Only
+                      needed if more than one tenant is configured - the
+                      common, self-hosted, single-tenant case is found
                       automatically.
     --help, -h        Print this help and exit.
 
@@ -80,8 +71,6 @@ EXAMPLES:
     moneropay-core my.toml               Same as above (positional form).
     moneropay-core --init                Walk through setting up mainnet.
     moneropay-core --init --stagenet     Add or update stagenet in the existing config.
-    moneropay-core --snippet --endpoint https://pay.example.com
-                                          Print the paste-ready widget snippet for your site.
 ";
 
 /// Parses the full process argv (excluding argv[0]). `--help`/`-h` short-circuits
@@ -109,11 +98,6 @@ pub fn parse_args(args: &[String]) -> Result<Action, String> {
         let parsed = parse_local_admin_args(args)?;
         return Ok(Action::ShowTenant { config_path: parsed.config_path, pk: parsed.pk });
     }
-    if args.iter().any(|a| a == "--snippet") {
-        let parsed = parse_local_admin_args(args)?;
-        return Ok(Action::Snippet { config_path: parsed.config_path, pk: parsed.pk, endpoint: parsed.endpoint });
-    }
-
     let mut config_path_override: Option<String> = None;
     let mut positional: Option<String> = None;
     let mut strict_tls = false;
@@ -136,19 +120,14 @@ pub fn parse_args(args: &[String]) -> Result<Action, String> {
 struct LocalAdminArgs {
     config_path: PathBuf,
     pk: Option<String>,
-    endpoint: Option<String>,
 }
 
-/// Shared `--config`/`--pk`/`--endpoint` parsing for `--rotate-secret`,
-/// `--show-tenant`, and `--snippet` - the three modes that act on the local
-/// database rather than starting the server or the wizard. `--endpoint` is
-/// harmless to parse even for the two modes that ignore it (`--rotate-secret`,
-/// `--show-tenant`); not erroring on an unused-but-recognized flag is friendlier
-/// than making the three modes subtly different in what they'll accept.
+/// Shared `--config`/`--pk` parsing for `--rotate-secret` and `--show-tenant` -
+/// the two modes that act on the local database rather than starting the server
+/// or the wizard.
 fn parse_local_admin_args(args: &[String]) -> Result<LocalAdminArgs, String> {
     let mut config_path_override = None;
     let mut pk = None;
-    let mut endpoint = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -160,15 +139,11 @@ fn parse_local_admin_args(args: &[String]) -> Result<LocalAdminArgs, String> {
                 let value = iter.next().ok_or_else(|| "--pk needs a value".to_string())?;
                 pk = Some(value.clone());
             }
-            "--endpoint" => {
-                let value = iter.next().ok_or_else(|| "--endpoint needs a value".to_string())?;
-                endpoint = Some(value.clone());
-            }
             _ => {}
         }
     }
     let config_path = config_path_override.map(PathBuf::from).unwrap_or_else(init_wizard::default_config_path);
-    Ok(LocalAdminArgs { config_path, pk, endpoint })
+    Ok(LocalAdminArgs { config_path, pk })
 }
 
 #[cfg(test)]
@@ -266,7 +241,7 @@ mod tests {
     fn help_text_documents_every_real_flag() {
         for flag in [
             "--config", "--strict-tls", "--init", "--stagenet", "--testnet", "--rotate-secret", "--show-tenant",
-            "--snippet", "--pk", "--endpoint", "--help",
+            "--pk", "--help",
         ] {
             assert!(HELP_TEXT.contains(flag), "help text should mention {flag}");
         }
@@ -295,19 +270,8 @@ mod tests {
     }
 
     #[test]
-    fn snippet_flag_accepts_an_endpoint_override() {
-        match parse_args(&args(&["--snippet", "--endpoint", "https://pay.example.com"])).unwrap() {
-            Action::Snippet { endpoint, pk, .. } => {
-                assert_eq!(endpoint.as_deref(), Some("https://pay.example.com"));
-                assert!(pk.is_none());
-            }
-            _ => panic!("expected Snippet"),
-        }
-    }
-
-    #[test]
     fn help_still_wins_over_the_new_local_admin_flags() {
         assert!(matches!(parse_args(&args(&["--rotate-secret", "--help"])).unwrap(), Action::Help));
-        assert!(matches!(parse_args(&args(&["--snippet", "--help"])).unwrap(), Action::Help));
+        assert!(matches!(parse_args(&args(&["--show-tenant", "--help"])).unwrap(), Action::Help));
     }
 }

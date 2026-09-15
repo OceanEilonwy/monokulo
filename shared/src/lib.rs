@@ -19,6 +19,7 @@ pub mod password;
 pub mod rate_limit;
 pub mod supervise;
 pub mod webhook_sign;
+pub mod xmr_amount;
 
 #[cfg(test)]
 mod tests {

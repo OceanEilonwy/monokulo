@@ -52,7 +52,6 @@ use moneropay_core::config::Config;
 use moneropay_core::daemon::MoneroDaemonClient;
 use moneropay_core::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use moneropay_core::daemon_rpc::RpcDaemonClient;
-use moneropay_core::exchange_rate::ExchangeRateProvider;
 use moneropay_core::http::rate_limit::RateLimiter;
 use moneropay_core::http::{build_router as build_engine_router, now_unix, AppState as EngineAppState};
 use moneropay_core::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
@@ -181,8 +180,6 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     // like a real merchant would) ----
     let store = Store::open_in_memory().unwrap().into_shared();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-    let exchange_rate: Arc<dyn ExchangeRateProvider> =
-        Arc::new(config.exchange_rate.build_fixed_rate_provider().expect("invalid exchange_rate.rates in e2e config"));
     let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
         RpcDaemonClient::new(&node_cfg.host, node_cfg.port, node_cfg.ssl, node_cfg.accept_self_signed_certs)
             .expect("failed to build daemon RPC client"),
@@ -199,7 +196,6 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         store: store.clone(),
         key_custody: key_custody.clone(),
         key_custody_backend: "plain".to_string(),
-        exchange_rate,
         wallet_handles: wallet_handles.clone(),
         rate_limiter: Arc::new(RateLimiter::new(10_000)),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
@@ -228,10 +224,11 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         encryption_key: [7u8; 32],
         templates: Arc::new(TemplateEngine::new().unwrap()),
         status_cache: control_plane::http::status_page::new_status_cache(),
-        // Unused by this test today - the real order-creation flow here still
-        // goes straight through the engine's own (still fiat-aware) public
-        // API, not yet control-plane's new one (`docs/fx_refactor.md` Phase
-        // 1.4). A fixed, inert provider is enough to satisfy `AppState`.
+        // Unused by this test today - order creation below still goes straight
+        // through the engine's own (now XMR-only) public API, not yet
+        // control-plane's own `/pay/{pk}/orders` (`docs/fx_refactor.md` Phase 5
+        // is the planned rework of this test to go through that endpoint
+        // instead). A fixed, inert provider is enough to satisfy `AppState`.
         exchange_rate: Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
             "USD".to_string(),
             1_000_000_000_000u64,
@@ -316,8 +313,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         .post(format!("{engine_base_url}/api/v1/t/{public_key}/orders"))
         .json(&json!({
             "merchant_order_id": format!("rust-dashboard-e2e-{}", now_unix()),
-            "fiat_amount": "0.05",
-            "fiat_currency": "USD",
+            "xmr_amount_piconero": 335_000_000u64,
         }))
         .send()
         .await

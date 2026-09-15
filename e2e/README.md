@@ -111,11 +111,12 @@ database; delete it to start over with a fresh bootstrap.
   resolves in seconds once broadcast. (This field is XMR-denominated, not
   fiat, despite the name it used to have - a real bug caught in the production
   config, see `docs/DESIGN.md` §13.)
-- `USD = "0.0067"` in `[exchange_rate.rates]`: an arbitrary fixed rate (not a
-  live market price) chosen so a human-readable fiat amount like `$0.05` maps
-  to a genuinely tiny real payment (a few hundred thousand piconero), per the
-  project's own constraint of only moving trivial amounts on this shared
-  faucet-funded wallet.
+- The test order's `xmr_amount_piconero` (335_000_000, i.e. 0.000335 XMR) is
+  chosen to be a genuinely tiny real payment, per the project's own constraint
+  of only moving trivial amounts on this shared faucet-funded wallet. The
+  engine itself has no concept of fiat at all (`docs/fx_refactor.md`) - the
+  control-plane owns fiat pricing in production; this test talks to the
+  engine's own XMR-only API directly.
 
 ## A note on running the test repeatedly
 

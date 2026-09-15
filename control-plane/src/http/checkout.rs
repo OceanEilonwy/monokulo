@@ -17,14 +17,12 @@
 //! still uses the shared `_styles` partial for consistent typography/color,
 //! just not the nav.
 //!
-//! Fiat display prefers control-plane's own locally recorded quote
-//! (`Db::get_order_fiat_metadata`) over the engine's own (still-present,
-//! soon-removed) `OrderView.fiat_amount`/`fiat_currency` fields - forward-
-//! compatible with Phase 3/4, when the engine's own copy disappears
-//! entirely and this page needs no further change at all. Falls back to
-//! the engine's copy only for an order that predates this feature, or was
-//! created directly against the engine rather than through control-plane's
-//! own `http::pay` endpoint.
+//! Fiat display comes entirely from control-plane's own locally recorded
+//! quote (`Db::get_order_fiat_metadata`) - the engine has no concept of
+//! fiat at all any more (`docs/fx_refactor.md` Phase 3), so an order with no
+//! local record (predates this feature, or was created directly against the
+//! engine rather than through control-plane's own `http::pay` endpoint)
+//! simply shows a dash rather than a fabricated amount.
 
 use axum::extract::{Path, State};
 use axum::response::{Html, IntoResponse, Json, Response};
@@ -142,7 +140,7 @@ pub async fn checkout_page(State(state): State<AppState>, Path((pk, payment_id))
     let (fiat_amount, fiat_currency) =
         match state.db.lock().unwrap().get_order_fiat_metadata(&row.id, &payment_id) {
             Ok(Some(metadata)) => (metadata.fiat_amount, metadata.fiat_currency),
-            _ => (detail.order.fiat_amount.clone(), detail.order.fiat_currency.clone()),
+            _ => ("—".to_string(), "".to_string()),
         };
 
     let qr_code_svg = match qr_svg_for_html(&detail.order.address) {
@@ -238,7 +236,6 @@ mod tests {
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
         let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
-            .with_rate(TEST_CURRENCY, TEST_RATE_PICONERO_PER_UNIT)
             .spawn()
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));

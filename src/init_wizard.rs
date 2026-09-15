@@ -12,8 +12,8 @@
 //! - **Merging, not overwriting.** If the target file already exists, it's parsed
 //!   first (`WizardAnswers::from_existing`) and only the target network's
 //!   `[monero_node.<network>]` section is added or replaced - every other section
-//!   (the other networks, `[wallet]`, `[payment]`, `[server]`, `[webhooks]`,
-//!   `[exchange_rate]`) carries its *value* forward unchanged. Re-running
+//!   (the other networks, `[wallet]`, `[payment]`, `[server]`, `[webhooks]`)
+//!   carries its *value* forward unchanged. Re-running
 //!   `--init --stagenet` after `--init` (mainnet) must never make the mainnet
 //!   section disappear or reset.
 //! - **Regenerated, not textually patched.** The merge above works by re-rendering
@@ -38,7 +38,7 @@ use std::path::{Path, PathBuf};
 
 use monero::Network;
 
-use crate::config::{Config, ExchangeRateConfig, PaymentConfig, ServerConfig, WebhooksConfig};
+use crate::config::{Config, PaymentConfig, ServerConfig, WebhooksConfig};
 use crate::network::network_str;
 
 // ---------------------------------------------------------------------------
@@ -185,8 +185,6 @@ pub struct WalletAnswer {
 pub struct WizardAnswers {
     pub nodes: Vec<(String, NodeAnswer)>,
     pub wallet: Option<WalletAnswer>,
-    pub exchange_rate_provider: String,
-    pub exchange_rates: Vec<(String, String)>,
     pub confirmations_required: u64,
     pub zero_conf_max_xmr: Option<String>,
     pub order_expiry_minutes: i64,
@@ -213,8 +211,6 @@ impl Default for WizardAnswers {
         WizardAnswers {
             nodes: Vec::new(),
             wallet: None,
-            exchange_rate_provider: ExchangeRateConfig::default().provider,
-            exchange_rates: Vec::new(),
             confirmations_required: payment.confirmations_required,
             zero_conf_max_xmr: None,
             order_expiry_minutes: payment.order_expiry_minutes,
@@ -261,8 +257,6 @@ impl WizardAnswers {
         WizardAnswers {
             nodes,
             wallet,
-            exchange_rate_provider: cfg.exchange_rate.provider.clone(),
-            exchange_rates: cfg.exchange_rate.rates.iter().map(|(k, v)| (k.clone(), v.clone())).collect(),
             confirmations_required: cfg.payment.confirmations_required,
             zero_conf_max_xmr: cfg.payment.zero_conf_max_xmr.clone(),
             order_expiry_minutes: cfg.payment.order_expiry_minutes,
@@ -353,23 +347,6 @@ impl WizardAnswers {
                 );
             }
         }
-
-        out.push_str("[exchange_rate]\n");
-        str_line(&mut out, "provider", &self.exchange_rate_provider, "fixed", "\"fixed\" is the only implemented provider today");
-        out.push_str("[exchange_rate.rates]\n");
-        if self.exchange_rates.is_empty() {
-            out.push_str(
-                "# Maps a currency code to an XMR-per-unit decimal amount, e.g.:\n\
-                 # USD = \"0.0067\"   # 1 USD = 0.0067 XMR\n\
-                 # Every order-creation call names a fiat_currency that must have an entry here -\n\
-                 # with none configured, no order can ever be created.\n",
-            );
-        } else {
-            for (currency, rate) in &self.exchange_rates {
-                out.push_str(&format!("{currency} = {rate:?}\n"));
-            }
-        }
-        out.push('\n');
 
         let default_payment = PaymentConfig::default();
         out.push_str("[payment]\n");
@@ -685,19 +662,6 @@ pub async fn run_interactive<R: BufRead, W: Write>(
         }
     }
 
-    writeln!(output)?;
-    if answers.exchange_rates.is_empty() {
-        writeln!(output, "No fiat exchange rate is configured yet - every order-creation call needs one, or it will be rejected.")?;
-        if prompt_yes_no(output, input, "Add one now?", true)? {
-            prompt_exchange_rate(output, input, &mut answers)?;
-        }
-    } else if advanced {
-        writeln!(output, "Configured exchange rates: {}", answers.exchange_rates.iter().map(|(c, _)| c.as_str()).collect::<Vec<_>>().join(", "))?;
-        while prompt_yes_no(output, input, "Add another currency?", false)? {
-            prompt_exchange_rate(output, input, &mut answers)?;
-        }
-    }
-
     if advanced {
         writeln!(output, "\n-- Payment settings --")?;
         answers.confirmations_required = prompt_num(output, input, "Confirmations required before an order is final (1-720)", answers.confirmations_required)?;
@@ -815,26 +779,6 @@ fn prompt_wallet<W: Write, R: BufRead>(output: &mut W, input: &mut R, answers: &
     Ok(Some(WalletAnswer { primary_address, private_view_key, public_spend_key, network, allowed_origins }))
 }
 
-fn prompt_exchange_rate<W: Write, R: BufRead>(output: &mut W, input: &mut R, answers: &mut WizardAnswers) -> io::Result<()> {
-    let currency = prompt(output, input, "Currency code", Some("USD"))?.to_uppercase();
-    loop {
-        let price_str = prompt(output, input, &format!("Current price of 1 XMR in {currency}"), None)?;
-        match price_str.trim().parse::<f64>() {
-            Ok(price) if price > 0.0 => {
-                let per_unit = 1.0 / price;
-                // 12 decimal places matches piconero granularity (parse_xmr_to_piconero
-                // rejects more), and is generous enough that the reciprocal of any
-                // sane price doesn't need more.
-                let rate = format!("{per_unit:.12}");
-                answers.exchange_rates.retain(|(c, _)| c != &currency);
-                answers.exchange_rates.push((currency, rate));
-                return Ok(());
-            }
-            _ => writeln!(output, "Enter a positive number, e.g. 150 or 150.25.")?,
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -912,9 +856,9 @@ mod tests {
     // -- end-to-end wizard runs -----------------------------------------------
 
     /// Answers in order: mode(simple)=Enter, node choice=1 (curated #1), test node
-    /// connection=no, wallet=no, exchange rate=yes/USD/150, final confirm=yes.
+    /// connection=no, wallet=no, final confirm=yes.
     fn simple_mainnet_script() -> String {
-        "\n1\nn\nn\ny\nUSD\n150\ny\n".to_string()
+        "\n1\nn\nn\ny\n".to_string()
     }
 
     #[tokio::test]
@@ -929,10 +873,6 @@ mod tests {
         assert!(config.monero_node.get(Network::Mainnet).is_some());
         assert_eq!(config.monero_node.get(Network::Mainnet).unwrap().host, "node.moneroworld.com");
         assert!(config.wallet.is_none(), "wallet setup was declined");
-        assert_eq!(
-            crate::exchange_rate::parse_xmr_to_piconero(config.exchange_rate.rates.get("USD").unwrap()).unwrap(),
-            crate::exchange_rate::parse_xmr_to_piconero(&format!("{:.12}", 1.0f64 / 150.0)).unwrap()
-        );
         std::fs::remove_file(&path).ok();
     }
 
@@ -945,17 +885,16 @@ mod tests {
         // Advanced mode this time, so every section actually gets walked and every
         // field name is exercised by the wizard itself, not just present via a
         // default render. mode=2(advanced), node=1, test node connection=n, wallet=n,
-        // rate=y/USD/150, then 12 blank (default) answers through every advanced-mode
+        // then 12 blank (default) answers through every advanced-mode
         // field (confirmations, zero_conf, expiry, reorg, poll, bind, rate_limit_ip,
         // rate_limit_token, max_body, allow_private, timeout, max_attempts), final=y.
-        let script = format!("2\n1\nn\nn\ny\nUSD\n150\n{}y\n", "\n".repeat(12));
+        let script = format!("2\n1\nn\nn\n{}y\n", "\n".repeat(12));
         let (outcome, _) = run(&script, Network::Mainnet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Written(_)));
 
         let rendered = std::fs::read_to_string(&path).unwrap();
         let expected_fields = [
             "host", "port", "ssl", "accept_self_signed_certs",
-            "provider",
             "confirmations_required", "zero_conf_max_xmr", "order_expiry_minutes", "reorg_check_depth", "mempool_poll_interval_ms",
             "bind", "worker_threads", "rate_limit_per_ip_per_min", "rate_limit_per_token_per_min", "max_body_bytes",
             "allow_private_urls", "delivery_timeout_ms", "max_attempts",
@@ -971,15 +910,13 @@ mod tests {
         let path = temp_config_path("advanced");
         // mode=2(advanced), node=3(mainnet's curated list has 2 entries, so
         // "custom" is choice 3: host/port/ssl=n/self-signed=n),
-        // test node connection=n, wallet=n, rate (exchange_rates starts empty so this
-        // is a one-shot "add one now?" prompt, not the advanced-mode add-another
-        // loop): y/EUR/200,
+        // test node connection=n, wallet=n,
         // payment: confirmations=5, zero_conf=0.1, expiry=45, reorg=30, poll=2000,
         // server: bind=127.0.0.1:9999, rate_limit_ip=99, rate_limit_token=88,
         // max_body=4096,
         // webhooks: allow_private=y, timeout=1234, attempts=3,
         // final confirm=y
-        let script = "2\n3\nnode.example.org\n18081\nn\nn\nn\nn\ny\nEUR\n200\n5\n0.1\n45\n30\n2000\n127.0.0.1:9999\n99\n88\n4096\ny\n1234\n3\ny\n";
+        let script = "2\n3\nnode.example.org\n18081\nn\nn\nn\nn\n5\n0.1\n45\n30\n2000\n127.0.0.1:9999\n99\n88\n4096\ny\n1234\n3\ny\n";
         let (outcome, _) = run(script, Network::Mainnet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Written(_)));
 
@@ -1011,8 +948,7 @@ mod tests {
         assert!(after_first.contains("node.moneroworld.com"));
 
         // Second run targets stagenet: mode(simple), node choice=1, test node
-        // connection=no, wallet=no (none exists yet), exchange rate already
-        // configured + not advanced so no re-prompt, final confirm=yes.
+        // connection=no, wallet=no (none exists yet), final confirm=yes.
         let script = "\n1\nn\nn\ny\n";
         let (outcome, transcript) = run(script, Network::Stagenet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Written(_)));
@@ -1024,8 +960,6 @@ mod tests {
         assert_eq!(config.monero_node.get(Network::Mainnet).unwrap().host, "node.moneroworld.com");
         // ...and stagenet added alongside it.
         assert_eq!(config.monero_node.get(Network::Stagenet).unwrap().host, "node.monerodevs.org");
-        // The exchange rate from the first run survived the second run untouched.
-        assert!(config.exchange_rate.rates.contains_key("USD"));
         std::fs::remove_file(&path).ok();
     }
 
@@ -1049,7 +983,7 @@ mod tests {
     #[tokio::test]
     async fn declining_the_final_confirmation_writes_nothing() {
         let path = temp_config_path("declined");
-        let script = "\n1\nn\nn\ny\nUSD\n150\nn\n"; // final answer: n
+        let script = "\n1\nn\nn\nn\n"; // final answer: n
         let (outcome, _) = run(script, Network::Mainnet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Cancelled));
         assert!(!path.exists());
@@ -1061,7 +995,7 @@ mod tests {
         run(&simple_mainnet_script(), Network::Mainnet, &path).await;
         let before = std::fs::read_to_string(&path).unwrap();
 
-        let script = "\n1\nn\nn\nn\n"; // node=1, test node connection=n, wallet=n, (rates already configured + simple mode = no rate prompt), final=n
+        let script = "\n1\nn\nn\nn\n"; // node=1, test node connection=n, wallet=n, final=n
         let (outcome, _) = run(script, Network::Stagenet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Cancelled));
 
@@ -1100,8 +1034,8 @@ mod tests {
         let path = temp_config_path("wallet-kept");
         // First run: configure mainnet with a wallet. mode(simple), node=1, test
         // node connection=n, wallet configure(none existing)=y, then wallet fields,
-        // rate=y/USD/150, final=y.
-        let script = "\n1\nn\ny\n4abc\nviewkeyhex\nspendkeyhex\nmainnet\nhttps://merchant.example\ny\nUSD\n150\ny\n";
+        // final=y.
+        let script = "\n1\nn\ny\n4abc\nviewkeyhex\nspendkeyhex\nmainnet\nhttps://merchant.example\ny\n";
         run(script, Network::Mainnet, &path).await;
         let config = Config::from_file(path.to_str().unwrap()).unwrap();
         assert!(config.wallet.is_some());
@@ -1123,8 +1057,8 @@ mod tests {
         let path = temp_config_path("wallet-bad-network");
         // mode(simple), node=1, test node connection=n, wallet configure=y, then
         // wallet fields: try "testnet" (not configured) first, get rejected, then
-        // "mainnet", origins=blank, rate=y/USD/150, final=y.
-        let script = "\n1\nn\ny\n4abc\nviewkeyhex\nspendkeyhex\ntestnet\nmainnet\n\ny\nUSD\n150\ny\n";
+        // "mainnet", origins=blank, final=y.
+        let script = "\n1\nn\ny\n4abc\nviewkeyhex\nspendkeyhex\ntestnet\nmainnet\n\ny\n";
         let (outcome, transcript) = run(script, Network::Mainnet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Written(_)));
         assert!(transcript.contains("isn't configured yet"));
@@ -1137,9 +1071,8 @@ mod tests {
     async fn custom_node_entry_is_used_verbatim() {
         let path = temp_config_path("custom-node");
         // Mainnet's curated list has 2 entries, so "custom" is choice 3.
-        // host/port/ssl=y/self-signed=n, test node connection=n, wallet=n,
-        // rate=y/USD/150, final=y.
-        let script = "\n3\nnode.mine.example\n18089\ny\nn\nn\nn\ny\nUSD\n150\ny\n";
+        // host/port/ssl=y/self-signed=n, test node connection=n, wallet=n, final=y.
+        let script = "\n3\nnode.mine.example\n18089\ny\nn\nn\nn\ny\n";
         run(script, Network::Mainnet, &path).await;
         let config = Config::from_file(path.to_str().unwrap()).unwrap();
         let node = config.monero_node.get(Network::Mainnet).unwrap();
@@ -1147,20 +1080,6 @@ mod tests {
         assert_eq!(node.port, 18089);
         assert!(node.ssl);
         assert!(!node.accept_self_signed_certs);
-        std::fs::remove_file(&path).ok();
-    }
-
-    #[tokio::test]
-    async fn declining_the_exchange_rate_prompt_still_leaves_documented_syntax_in_the_file() {
-        let path = temp_config_path("no-rate");
-        let script = "\n1\nn\nn\nn\ny\n"; // node=1, test node connection=n, wallet=n, add rate=n, confirm=y
-        let (outcome, _) = run(script, Network::Mainnet, &path).await;
-        assert!(matches!(outcome, WizardOutcome::Written(_)));
-        let rendered = std::fs::read_to_string(&path).unwrap();
-        assert!(rendered.contains("[exchange_rate.rates]"));
-        assert!(rendered.contains("USD = \"0.0067\""), "documented example syntax should still be shown: {rendered}");
-        // Still parses, just can't create an order until a rate is added.
-        Config::from_file(path.to_str().unwrap()).unwrap().validate().unwrap();
         std::fs::remove_file(&path).ok();
     }
 

@@ -33,6 +33,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (2, include_str!("../migrations/0002_active_orders_index.sql")),
     (3, include_str!("../migrations/0003_network_scoped_scanning.sql")),
     (4, include_str!("../migrations/0004_order_scoped_payment_uniqueness.sql")),
+    (5, include_str!("../migrations/0005_drop_order_fiat_columns.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -155,9 +156,6 @@ pub struct Order {
     pub merchant_order_id: Option<String>,
     pub minor_index: u32,
     pub address: String,
-    pub fiat_currency: String,
-    pub fiat_amount: String,
-    pub exchange_rate: String,
     pub xmr_amount_piconero: u64,
     pub amount_received_piconero: u64,
     pub status: OrderStatus,
@@ -175,9 +173,6 @@ pub struct NewOrder {
     pub merchant_order_id: Option<String>,
     pub minor_index: u32,
     pub address: String,
-    pub fiat_currency: String,
-    pub fiat_amount: String,
-    pub exchange_rate: String,
     pub xmr_amount_piconero: u64,
     pub description: Option<String>,
     pub created_at: i64,
@@ -641,18 +636,14 @@ impl Store {
     fn insert_order(conn: &Connection, id: &str, new: &NewOrder) -> rusqlite::Result<()> {
         conn.execute(
             "INSERT INTO orders (id, tenant_id, merchant_order_id, minor_index, address,
-                fiat_currency, fiat_amount, exchange_rate, xmr_amount_piconero,
-                description, created_at, expires_at, updated_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?11)",
+                xmr_amount_piconero, description, created_at, expires_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8)",
             params![
                 id,
                 new.tenant_id,
                 new.merchant_order_id,
                 new.minor_index,
                 new.address,
-                new.fiat_currency,
-                new.fiat_amount,
-                new.exchange_rate,
                 new.xmr_amount_piconero as i64,
                 new.description,
                 new.created_at,
@@ -676,9 +667,6 @@ impl Store {
             merchant_order_id: row.get("merchant_order_id")?,
             minor_index: row.get::<_, i64>("minor_index")? as u32,
             address: row.get("address")?,
-            fiat_currency: row.get("fiat_currency")?,
-            fiat_amount: row.get("fiat_amount")?,
-            exchange_rate: row.get("exchange_rate")?,
             xmr_amount_piconero: row.get::<_, i64>("xmr_amount_piconero")? as u64,
             amount_received_piconero: row.get::<_, i64>("amount_received_piconero")? as u64,
             status: status_from_str(&status_str),
@@ -1339,9 +1327,6 @@ mod tests {
                 merchant_order_id: None,
                 minor_index,
                 address: format!("sub_{minor_index}"),
-                fiat_currency: "USD".into(),
-                fiat_amount: "25.00".into(),
-                exchange_rate: "0.0067".into(),
                 xmr_amount_piconero: 100,
                 description: None,
                 created_at: 1000,
@@ -2165,9 +2150,6 @@ mod tests {
                 merchant_order_id: None,
                 minor_index: first,
                 address: "sub_1".into(),
-                fiat_currency: "USD".into(),
-                fiat_amount: "25.00".into(),
-                exchange_rate: "1".into(),
                 xmr_amount_piconero: 100,
                 description: None,
                 created_at: 1000,
@@ -2186,9 +2168,6 @@ mod tests {
                 merchant_order_id: None,
                 minor_index: first,
                 address: "sub_1_again".into(),
-                fiat_currency: "USD".into(),
-                fiat_amount: "25.00".into(),
-                exchange_rate: "1".into(),
                 xmr_amount_piconero: 100,
                 description: None,
                 created_at: 1000,
@@ -2206,9 +2185,6 @@ mod tests {
             merchant_order_id: None,
             minor_index: first, // deliberately the already-used index, not `next`
             address: "sub_collision".into(),
-            fiat_currency: "USD".into(),
-            fiat_amount: "25.00".into(),
-            exchange_rate: "1".into(),
             xmr_amount_piconero: 100,
             description: None,
             created_at: 1000,
@@ -2244,9 +2220,6 @@ mod tests {
                 merchant_order_id: None,
                 minor_index: 1,
                 address: "sub_1".into(),
-                fiat_currency: "USD".into(),
-                fiat_amount: "1.00".into(),
-                exchange_rate: "1".into(),
                 xmr_amount_piconero: 1,
                 description: None,
                 created_at: 1000,
@@ -2283,7 +2256,21 @@ mod tests {
         let store = Store { conn };
 
         let tenant = new_tenant(&store);
-        let order = new_order(&store, &tenant.tenant.id, 1);
+        // Inserted directly via raw SQL, not `new_order`/`create_order`: those
+        // now build an XMR-only `INSERT` (`docs/fx_refactor.md` Phase 3), which
+        // this pre-migration-5 schema (fiat columns still `NOT NULL`) would
+        // reject. A real pre-upgrade database still has real fiat values in
+        // every row, so this reproduces that shape directly instead.
+        let order_id = "pay_before_upgrade";
+        store
+            .execute_raw_for_test(&format!(
+                "INSERT INTO orders (id, tenant_id, minor_index, address, fiat_currency, fiat_amount,
+                    exchange_rate, xmr_amount_piconero, created_at, expires_at, updated_at)
+                 VALUES ('{order_id}', '{}', 1, 'sub_1', 'USD', '25.00', '0.0067', 100, 1000, 2000, 1000)",
+                tenant.tenant.id
+            ))
+            .unwrap();
+        let order = store.get_order_by_id(order_id).unwrap().unwrap();
         // Inserted directly rather than through `record_payment_match`, whose
         // conflict target names a constraint this schema version doesn't have yet.
         store

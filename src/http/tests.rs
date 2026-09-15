@@ -17,7 +17,6 @@ use tower::ServiceExt;
 
 use crate::daemon::fake::FakeDaemonClient;
 use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
-use crate::exchange_rate::{ExchangeRateProvider, FixedRateProvider};
 use crate::key_custody::{KeyCustody, PlainKeyCustody};
 use crate::scanner_status::new_scanner_status_map;
 use crate::store::Store;
@@ -43,9 +42,6 @@ fn valid_spend_pubkey_hex(seed: u8) -> String {
 fn test_app_state() -> AppState {
     let store = Store::open_in_memory().unwrap().into_shared();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-    let mut rates = HashMap::new();
-    rates.insert("USD".to_string(), 6_700_000_000u64);
-    let exchange_rate: Arc<dyn ExchangeRateProvider> = Arc::new(FixedRateProvider::new(rates));
     // A real (fake-backed, but genuinely `MoneroDaemonClient`-implementing)
     // node for mainnet - matches `configured_networks` below, and gives
     // `status_page`'s own tests something real to query rather than an
@@ -59,7 +55,6 @@ fn test_app_state() -> AppState {
         store,
         key_custody,
         key_custody_backend: "plain".to_string(),
-        exchange_rate,
         wallet_handles: Arc::new(RwLock::new(HashMap::new())),
         // Every test tenant is created without an explicit `network`, which
         // defaults to mainnet (see admin::create_tenant) - so mainnet must be
@@ -132,7 +127,7 @@ async fn create_tenant_then_create_order_happy_path() {
         &format!("/api/v1/t/{}/orders", tenant.public_key),
         None,
         Some("https://merchant.example"),
-        serde_json::json!({ "fiat_amount": "25.00", "fiat_currency": "USD" }),
+        serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -244,7 +239,7 @@ async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_i
             &format!("/api/v1/t/{}/orders", tenant.public_key),
             None,
             Some("https://merchant.example"),
-            serde_json::json!({ "fiat_amount": "25.00", "fiat_currency": "USD" }),
+            serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
         );
         let response = router.clone().oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -310,7 +305,7 @@ async fn tenant_a_cannot_read_tenant_bs_order_via_admin_api() {
         &format!("/api/v1/t/{}/orders", tenant_b.public_key),
         None,
         Some("https://b.example"),
-        serde_json::json!({ "fiat_amount": "10.00", "fiat_currency": "USD" }),
+        serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
     let body = body_json(response).await;
@@ -382,7 +377,7 @@ async fn order_creation_from_a_disallowed_origin_is_rejected_even_with_a_valid_p
         &format!("/api/v1/t/{}/orders", tenant.public_key),
         None,
         Some("https://evil.example"),
-        serde_json::json!({ "fiat_amount": "10.00", "fiat_currency": "USD" }),
+        serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::FORBIDDEN);
@@ -394,7 +389,7 @@ async fn order_creation_from_a_disallowed_origin_is_rejected_even_with_a_valid_p
         &format!("/api/v1/t/{}/orders", tenant.public_key),
         None,
         None,
-        serde_json::json!({ "fiat_amount": "10.00", "fiat_currency": "USD" }),
+        serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
     );
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -441,7 +436,12 @@ async fn webhook_lifecycle_is_scoped_to_the_owning_tenant() {
 }
 
 #[tokio::test]
-async fn unsupported_currency_and_malformed_amount_are_rejected_with_bad_request() {
+async fn a_zero_or_malformed_xmr_amount_is_rejected_with_bad_request() {
+    // This engine no longer has any concept of fiat/exchange rates
+    // (`docs/fx_refactor.md` decision 2) - a caller supplies the exact
+    // `xmr_amount_piconero` an order is worth directly, so the only amount-shaped
+    // validation left here is "an order can't be worth exactly nothing" and "the
+    // field must actually be present and correctly typed."
     let router = test_router();
     let tenant = create_tenant(&router, 9, vec![]).await;
 
@@ -450,20 +450,24 @@ async fn unsupported_currency_and_malformed_amount_are_rejected_with_bad_request
         &format!("/api/v1/t/{}/orders", tenant.public_key),
         None,
         None,
-        serde_json::json!({ "fiat_amount": "10.00", "fiat_currency": "ZZZ" }),
+        serde_json::json!({ "xmr_amount_piconero": 0u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 
+    // A string where the extractor expects a `u64` never reaches the handler
+    // body at all - axum's own `Json<T>` rejection fires first, with its
+    // standard `422 Unprocessable Entity` (not this handler's own `400`s,
+    // which only cover validation the handler itself performs).
     let req = json_request(
         "POST",
         &format!("/api/v1/t/{}/orders", tenant.public_key),
         None,
         None,
-        serde_json::json!({ "fiat_amount": "not_a_number", "fiat_currency": "USD" }),
+        serde_json::json!({ "xmr_amount_piconero": "not_a_number" }),
     );
     let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
 }
 
 #[tokio::test]
@@ -536,7 +540,7 @@ async fn tenant_deletion_disables_it_and_admin_routes_stop_working() {
         &format!("/api/v1/t/{}/orders", tenant.public_key),
         None,
         None,
-        serde_json::json!({ "fiat_amount": "10.00", "fiat_currency": "USD" }),
+        serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
     );
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
@@ -640,7 +644,7 @@ async fn admin_rate_limit_middleware_keys_on_the_presented_token_not_the_source_
 async fn oversized_request_body_is_rejected_before_reaching_the_handler() {
     let router = build_router(test_app_state(), 16); // absurdly small cap for the test
 
-    let oversized_body = serde_json::json!({ "fiat_amount": "10.00", "fiat_currency": "USD" }).to_string();
+    let oversized_body = serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }).to_string();
     assert!(oversized_body.len() > 16);
 
     let req = Request::builder()
@@ -651,70 +655,6 @@ async fn oversized_request_body_is_rejected_before_reaching_the_handler() {
         .unwrap();
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-}
-
-#[tokio::test]
-async fn payment_page_renders_html_with_order_details_and_404s_for_unknown_payment_id() {
-    let router = test_router();
-    let tenant = create_tenant(&router, 5, vec!["https://merchant.example"]).await;
-
-    let req = json_request(
-        "POST",
-        &format!("/api/v1/t/{}/orders", tenant.public_key),
-        None,
-        Some("https://merchant.example"),
-        serde_json::json!({ "fiat_amount": "25.00", "fiat_currency": "USD" }),
-    );
-    let response = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    let body = body_json(response).await;
-    let payment_id = body["payment_id"].as_str().unwrap().to_string();
-    let address = body["address"].as_str().unwrap().to_string();
-
-    let req = Request::builder()
-        .method("GET")
-        .uri(format!("/pay/v1/{}/{payment_id}", tenant.public_key))
-        .body(Body::empty())
-        .unwrap();
-    let response = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("content-type").unwrap(),
-        "text/html; charset=utf-8"
-    );
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let html = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(html.contains(&payment_id));
-    assert!(html.contains(&address));
-    assert!(html.contains("<svg"));
-    assert!(html.contains("Waiting for payment"));
-    // The QR code is decorative - the address text right next to it already carries
-    // everything it encodes in a form assistive tech can actually read - so the real
-    // `qr_svg_for_html` (not a template fixture) must hide it, not leave it as an
-    // unlabeled image.
-    assert!(html.contains(r#"<svg role="presentation" aria-hidden="true" focusable="false""#));
-
-    let req = Request::builder()
-        .method("GET")
-        .uri(format!("/pay/v1/{}/pay_does_not_exist", tenant.public_key))
-        .body(Body::empty())
-        .unwrap();
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
-}
-
-#[tokio::test]
-async fn client_library_is_served_as_javascript() {
-    let router = test_router();
-    let req = Request::builder().method("GET").uri("/static/moneropay-client.js").body(Body::empty()).unwrap();
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(response.headers().get("content-type").unwrap(), "text/javascript; charset=utf-8");
-    let bytes = response.into_body().collect().await.unwrap().to_bytes();
-    let js = String::from_utf8(bytes.to_vec()).unwrap();
-    assert!(js.contains("MoneroPay"));
-    assert!(js.contains("createOrder"));
-    assert!(js.contains("mount"));
 }
 
 #[tokio::test]
@@ -745,7 +685,7 @@ async fn cors_preflight_and_actual_request_succeed_only_for_an_allowed_cross_ori
         &format!("/api/v1/t/{}/orders", tenant.public_key),
         None,
         Some("https://merchant.example"),
-        serde_json::json!({ "fiat_amount": "10.00", "fiat_currency": "USD" }),
+        serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -881,7 +821,7 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
                 &format!("/api/v1/t/{}/orders", a.public_key),
                 None,
                 None,
-                serde_json::json!({ "fiat_amount": "25.00", "fiat_currency": "USD" }),
+                serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
             ))
             .await
             .unwrap(),
@@ -1103,9 +1043,6 @@ async fn the_cors_predicate_fails_closed_on_every_confusable_path_shape() {
         // The admin family, which is deliberately granted no CORS at all.
         "/api/v1/admin/tenant".to_string(),
         "/api/v1/admin/tenants".to_string(),
-        // The iframe page and the client script, both same-origin by design.
-        format!("/pay/v1/{}/pay_whatever", allowed.public_key),
-        "/static/moneropay-client.js".to_string(),
         // Truncated and over-long shapes.
         format!("/api/v1/t/{}", allowed.public_key),
         "/api/v1/t//orders".to_string(),

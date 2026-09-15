@@ -4,9 +4,9 @@
 //!
 //! Deliberately **data only, no HTML** - this used to render a full page
 //! directly on the engine, which was the wrong layer for it: the engine has
-//! no product-facing visual identity of its own (its only other HTML
-//! surface, the checkout page, is per-tenant customizable, not "the site's
-//! look"), and the control-plane is the one place a merchant-facing status
+//! no product-facing visual identity or HTML surface of its own at all any
+//! more (`docs/fx_refactor.md` moved the checkout page to the control-plane
+//! too), and the control-plane is the one place a merchant-facing status
 //! page actually belongs, styled to match everything else there. The
 //! control-plane's own `GET /status` (`control-plane/src/http/status_page.rs`)
 //! is the real page now - it calls this endpoint via `EngineClient::get_status`
@@ -18,8 +18,8 @@
 //! reports what's true right now, not a cached belief about what was true
 //! at some earlier point. A per-node timeout keeps one unreachable node
 //! from making the whole response hang. Deliberately unauthenticated (no
-//! `sk_`/`pk_` involved) and outside the `/api/v1/...`/`/pay/v1/...`
-//! version prefixes: this reports on the instance as a whole, not any one
+//! `sk_`/`pk_` involved) and outside the `/api/v1/...` version prefix:
+//! this reports on the instance as a whole, not any one
 //! tenant, the same way a service's own `/healthz` typically sits outside
 //! its versioned API.
 //!

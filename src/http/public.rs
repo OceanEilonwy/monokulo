@@ -1,14 +1,10 @@
 use axum::extract::{Path, State};
 use axum::http::HeaderMap;
-use axum::response::{Html, Json};
-use qrcode::render::svg;
-use qrcode::QrCode;
+use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::exchange_rate::{compute_xmr_amount, format_piconero_as_xmr};
 use crate::key_custody::SubaddressIndex;
 use crate::store::{NewOrder, Tenant};
-use crate::templates::{status_label, CheckoutViewModel, PaymentViewModel, TemplateEngine};
 
 use super::{parse_network, AppState, ApiError, now_unix, resolve_wallet_handle};
 
@@ -30,11 +26,18 @@ async fn resolve_public_tenant(state: &AppState, pk: &str, origin: Option<&str>)
     Ok(tenant)
 }
 
+/// XMR-only, per `docs/fx_refactor.md` Phase 3: this process has no concept of fiat
+/// or exchange rates at all any more. A caller (in practice, only the control-plane's
+/// own `POST /pay/{pk}/orders`, which looks up its own rate and computes this amount
+/// before ever calling here) supplies the exact `xmr_amount_piconero` an order is
+/// worth; this engine only ever watches the chain for that amount arriving. Any fiat
+/// display a customer sees is entirely the control-plane's responsibility, backed by
+/// its own local `order_fiat_metadata` record - this engine's `orders` table no
+/// longer stores fiat fields at all (see migration `0005_drop_order_fiat_columns.sql`).
 #[derive(Deserialize)]
 pub struct CreateOrderRequest {
     merchant_order_id: Option<String>,
-    fiat_amount: String,
-    fiat_currency: String,
+    xmr_amount_piconero: u64,
     description: Option<String>,
 }
 
@@ -43,8 +46,6 @@ pub struct CreateOrderResponse {
     payment_id: String,
     address: String,
     xmr_amount_piconero: u64,
-    fiat_amount: String,
-    fiat_currency: String,
     expires_at: i64,
 }
 
@@ -57,12 +58,9 @@ pub async fn create_order(
     let origin = headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok());
     let tenant = resolve_public_tenant(&state, &pk, origin).await?;
 
-    let piconero_per_unit = state
-        .exchange_rate
-        .piconero_per_unit(&req.fiat_currency)
-        .ok_or_else(|| ApiError::BadRequest(format!("unsupported currency: {}", req.fiat_currency)))?;
-    let xmr_amount_piconero = compute_xmr_amount(&req.fiat_amount, piconero_per_unit)
-        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    if req.xmr_amount_piconero == 0 {
+        return Err(ApiError::BadRequest("xmr_amount_piconero must be greater than zero".into()));
+    }
 
     let handle = resolve_wallet_handle(&state, &tenant).await?;
     // tenant.network was validated against a configured node at tenant-creation
@@ -100,10 +98,7 @@ pub async fn create_order(
                 merchant_order_id: req.merchant_order_id.clone(),
                 minor_index,
                 address: address.to_string(),
-                fiat_currency: req.fiat_currency.clone(),
-                fiat_amount: req.fiat_amount.clone(),
-                exchange_rate: piconero_per_unit.to_string(),
-                xmr_amount_piconero,
+                xmr_amount_piconero: req.xmr_amount_piconero,
                 description: req.description.clone(),
                 created_at: now,
                 expires_at: now + tenant.order_expiry_seconds,
@@ -122,8 +117,6 @@ pub async fn create_order(
         payment_id: order.id,
         address: order.address,
         xmr_amount_piconero: order.xmr_amount_piconero,
-        fiat_amount: order.fiat_amount,
-        fiat_currency: order.fiat_currency,
         expires_at: order.expires_at,
     }))
 }
@@ -183,117 +176,4 @@ pub async fn set_refund_address(
     } else {
         Err(ApiError::NotFound)
     }
-}
-
-const CLIENT_LIBRARY_JS: &str = include_str!("../../static/moneropay-client.js");
-
-/// The thin embed library merchant sites `<script src>` (`docs/DESIGN.md` §14).
-/// Served from this binary rather than a CDN so a self-hoster's static site has no
-/// third-party dependency in its payment path.
-pub async fn client_library() -> impl axum::response::IntoResponse {
-    ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], CLIENT_LIBRARY_JS)
-}
-
-fn short_txid(txid: &str) -> String {
-    if txid.len() <= 16 {
-        return txid.to_string();
-    }
-    format!("{}…{}", &txid[..8], &txid[txid.len() - 6..])
-}
-
-/// Renders the SVG produced by the `qrcode` crate for direct inline embedding: its
-/// `<?xml ...?>` prolog is valid standalone SVG but not valid HTML, so an HTML
-/// parser turns it into visible/garbled markup rather than a processing
-/// instruction. Stripping down to the `<svg ...>` tag itself is what actually
-/// embeds cleanly.
-///
-/// Also stamps the tag as decorative for assistive technology: the address text
-/// rendered right alongside this QR code on the checkout page already carries
-/// everything it encodes, in a form a screen reader can actually read and a
-/// customer can copy - so the graphic itself is `aria-hidden`, not announced as an
-/// unlabeled image (an SVG has no `alt`; `role="presentation"` plus
-/// `aria-hidden="true"` is the documented equivalent). `focusable="false"` guards
-/// against Internet Explorer/legacy Edge's default of making any inline SVG its own
-/// tab stop even when it carries no other interactive semantics.
-fn qr_svg_for_html(data: &str) -> Result<String, ApiError> {
-    let full = QrCode::new(data.as_bytes())
-        .map_err(|e| ApiError::Internal(format!("failed to encode QR code: {e}")))?
-        .render::<svg::Color>()
-        .build();
-    let svg = match full.find("<svg") {
-        Some(idx) => &full[idx..],
-        None => &full[..],
-    };
-    Ok(svg.replacen("<svg", r#"<svg role="presentation" aria-hidden="true" focusable="false""#, 1))
-}
-
-/// The public, unauthenticated checkout page (`docs/DESIGN.md` §14). Like
-/// `get_order_status`, `payment_id` alone (not a secret) scopes this lookup - it's
-/// the unguessable identifier a customer already holds, not something this route
-/// needs to further authenticate.
-///
-/// A fresh `TemplateEngine` is built per request from the tenant's
-/// `template_dir` rather than cached in `AppState`: this keeps a merchant's
-/// template edit live immediately (no server restart, matching
-/// `templates.rs`'s "no rebuild required" goal) at the cost of re-parsing one
-/// small Handlebars template per page view - a fine trade at this project's
-/// scale, worth revisiting only if a real hosted instance shows it as a hot path.
-pub async fn payment_page(
-    Path((pk, payment_id)): Path<(String, String)>,
-    State(state): State<AppState>,
-) -> Result<Html<String>, ApiError> {
-    let (order, tenant, valid_payments, current_height) = {
-        let store = state.store.lock().unwrap();
-        let tenant = store.find_tenant_by_public_key(&pk)?.ok_or(ApiError::NotFound)?;
-        let order = store.get_order(&tenant.id, &payment_id)?.ok_or(ApiError::NotFound)?;
-        let valid_payments = store.get_valid_payments(&order.id)?;
-        let current_height = store.max_scanned_height(&tenant.network)?.unwrap_or(0);
-        (order, tenant, valid_payments, current_height)
-    };
-
-    let (status_label_text, status_class, is_terminal) = status_label(order.status.as_str());
-
-    let payments = valid_payments
-        .into_iter()
-        .map(|p| {
-            let confirmations = match p.block_height {
-                Some(h) if current_height >= h as u64 => current_height - h as u64 + 1,
-                _ => 0,
-            };
-            PaymentViewModel {
-                txid_short: short_txid(&p.txid),
-                amount_xmr: format_piconero_as_xmr(p.amount_piconero),
-                confirmations,
-                is_zero_conf: p.block_height.is_none(),
-            }
-        })
-        .collect();
-
-    let qr_code_svg = qr_svg_for_html(&order.address)?;
-
-    let view = CheckoutViewModel {
-        payment_id: order.id,
-        status: order.status.as_str().to_string(),
-        status_label: status_label_text,
-        status_class: status_class.to_string(),
-        address: order.address,
-        qr_code_svg,
-        xmr_amount: format_piconero_as_xmr(order.xmr_amount_piconero),
-        amount_received_xmr: format_piconero_as_xmr(order.amount_received_piconero),
-        fiat_amount: order.fiat_amount,
-        fiat_currency: order.fiat_currency,
-        confirmations: order.confirmations,
-        confirmations_required: tenant.confirmations_required,
-        is_terminal,
-        double_spend_detected_at: order.double_spend_detected_at,
-        expires_at: order.expires_at,
-        merchant_order_id: order.merchant_order_id,
-        description: order.description,
-        payments,
-    };
-
-    let engine = TemplateEngine::new(tenant.template_dir.as_deref())
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let html = engine.render_checkout(&view).map_err(|e| ApiError::Internal(e.to_string()))?;
-    Ok(Html(html))
 }

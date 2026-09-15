@@ -50,7 +50,6 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::daemon_fallback::FallbackDaemonClient;
-use crate::exchange_rate::ExchangeRateProvider;
 use crate::key_custody::{KeyCustody, KeyCustodyError, WalletHandle};
 use crate::scanner_status::ScannerStatusMap;
 use crate::status::OrderStatus;
@@ -77,7 +76,6 @@ pub struct AppState {
     /// it via some new downcast/introspection surface this boundary was
     /// deliberately never given.
     pub key_custody_backend: String,
-    pub exchange_rate: Arc<dyn ExchangeRateProvider>,
     pub wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
     /// Per-source-IP budget for the public/unauthenticated endpoints and
     /// `/status` - see `http::rate_limit`'s own module doc comment.
@@ -138,13 +136,11 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             "/api/v1/t/{pk}/orders/{payment_id}/refund-address",
             post(public::set_refund_address),
         )
-        .route("/pay/v1/{pk}/{payment_id}", get(public::payment_page))
-        .route("/static/moneropay-client.js", get(public::client_library))
         // A JSON status *API*, not a page - the control-plane's own
         // `GET /status` calls this and renders the real, styled page.
         // Deliberately unauthenticated (no `sk_`/`pk_` involved) and outside
-        // the `/api/v1/...`/`/pay/v1/...` version prefixes those doc
-        // comments explain the reasoning for - this reports node/scanner
+        // the `/api/v1/...` version prefix those doc comments explain the
+        // reasoning for - this reports node/scanner
         // health across *every* configured network at once, not tenant-
         // scoped API surface, the same way a service's own `/healthz`
         // typically sits outside its versioned API.
@@ -177,13 +173,14 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
 }
 
 /// Only the `/api/v1/t/{pk}/orders...` family needs real cross-origin browser
-/// support: it's the surface a merchant's own (necessarily different-origin) static
-/// site calls directly via `fetch()`. `/pay/v1/...` is loaded as an iframe `src` and
-/// polls its own origin from inside that frame - same-origin, no CORS involved -
-/// and `/static/moneropay-client.js` is a plain `<script src>` load, which was never
-/// subject to CORS in the first place. The admin API is deliberately left with no
-/// CORS grant at all: it's a backend-to-backend surface authenticated by a secret
-/// token, never meant to be called from an arbitrary browser tab.
+/// support: it's the surface a caller's own (necessarily different-origin) site can
+/// call directly via `fetch()` for a custom integration (`docs/fx_refactor.md`
+/// decision 2/3: the hosted checkout UI and its embed library now live on the
+/// control-plane, which calls this API server-to-server, not from a browser - this
+/// grant exists for a self-hoster's own direct browser-side integration instead).
+/// The admin API is deliberately left with no CORS grant at all: it's a
+/// backend-to-backend surface authenticated by a secret token, never meant to be
+/// called from an arbitrary browser tab.
 fn build_cors_layer(store: SharedStore) -> CorsLayer {
     CorsLayer::new()
         .allow_methods([Method::GET, Method::POST])

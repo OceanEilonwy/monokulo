@@ -79,10 +79,13 @@ use mock_woocommerce::{create_order, run_connect_flow_with_wallet, ConnectFlowWa
 const CONFIG_PATH: &str = "../e2e/moneropay-stagenet.toml";
 const WALLETS_PATH: &str = "../e2e/stagenet-wallets.json";
 
-/// $0.05 -> a genuinely tiny real stagenet payment, matching the fixed rate
-/// `e2e/moneropay-stagenet.toml`'s own `[exchange_rate.rates]` uses (1 USD =
-/// 0.0067 XMR = 6_700_000_000 piconero) so both configs move the same order of
-/// magnitude of real (worthless, stagenet) XMR.
+/// $0.05 at `TEST_RATE_PICONERO_PER_UNIT` (1 USD = 0.0067 XMR =
+/// 6_700_000_000 piconero, this test's own `spawn_test_control_plane` rate -
+/// the engine itself has no concept of fiat any more, `docs/fx_refactor.md`
+/// Phase 3) -> a genuinely tiny real stagenet payment, matching
+/// `tests/e2e_stagenet.rs`'s own 335_000_000-piconero target at the repo
+/// root, so both real-stagenet tests move the same order of magnitude of
+/// real (worthless, stagenet) XMR.
 const TEST_FIAT_AMOUNT: &str = "0.05";
 const TEST_CURRENCY: &str = "USD";
 const TEST_RATE_PICONERO_PER_UNIT: u64 = 6_700_000_000;
@@ -210,9 +213,13 @@ async fn spawn_test_control_plane(engine_addr: std::net::SocketAddr) -> TestCont
             TemplateEngine::new().expect("built-in control-plane templates must parse"),
         ),
         status_cache: control_plane::http::status_page::new_status_cache(),
+        // Matches `TEST_RATE_PICONERO_PER_UNIT` below - this is a real
+        // stagenet run against a shared, faucet-funded wallet, so the rate
+        // must keep `TEST_FIAT_AMOUNT` mapping to a genuinely tiny payment,
+        // not an arbitrary test value.
         exchange_rate: Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
-            "USD".to_string(),
-            1_000_000_000_000u64,
+            TEST_CURRENCY.to_string(),
+            TEST_RATE_PICONERO_PER_UNIT,
         )]))),
         rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
     };
@@ -344,7 +351,6 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // deadlock. See `TestEngineConfig::without_background_scan_loop`'s doc comment.
     let engine = engine_test_support::TestEngineConfig::new()
         .with_networks(&[Network::Stagenet])
-        .with_rate(TEST_CURRENCY, TEST_RATE_PICONERO_PER_UNIT)
         .with_background_loops()
         .without_background_scan_loop()
         .spawn()
@@ -374,13 +380,13 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     );
 
     let order = create_order(
-        &credentials.endpoint,
+        &control_plane_base_url,
         &credentials.public_key,
         TEST_FIAT_AMOUNT,
         TEST_CURRENCY,
     )
     .await
-    .expect("order creation should succeed against the real stagenet-configured engine");
+    .expect("order creation should succeed against the real stagenet-configured control plane");
 
     // `create_order` only returns `payment_id`/`checkout_url` - fetch the real
     // derived address and exact XMR amount directly from the engine's own public,

@@ -36,7 +36,6 @@ use std::time::Duration;
 use key_custody_service::client::SocketKeyCustody;
 use monero::Network;
 use moneropay_core::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
-use moneropay_core::exchange_rate::{ExchangeRateProvider, FixedRateProvider};
 use moneropay_core::http::rate_limit::RateLimiter;
 use moneropay_core::http::{build_router, AppState};
 use moneropay_core::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
@@ -198,9 +197,7 @@ impl Drop for TestEngineHandle {
 }
 
 /// Configuration for spawning a test engine: which Monero networks are
-/// configured (`state.configured_networks`) and what fixed exchange rates are
-/// seeded into its `FixedRateProvider`. Added for WBS 1.3.3 (order-seeding
-/// tests need a real exchange rate, not just a configured network) as a
+/// configured (`state.configured_networks`). Added for WBS 1.3.3 as a
 /// generalization of the narrower `spawn_test_engine_with_networks` added for
 /// WBS 1.2.1 - rather than a third near-duplicate spawn function per new
 /// dimension of test setup, [`spawn_test_engine`] and
@@ -210,7 +207,6 @@ impl Drop for TestEngineHandle {
 #[derive(Debug, Default, Clone)]
 pub struct TestEngineConfig {
     networks: Vec<Network>,
-    rates: HashMap<String, u64>,
     background_loops: bool,
     background_scan_loop: bool,
     /// `Some(path)` when [`TestEngineConfig::with_socket_key_custody`] has been
@@ -230,17 +226,6 @@ impl TestEngineConfig {
     /// needing a real tenant (via `create_tenant`) needs at least one.
     pub fn with_networks(mut self, networks: &[Network]) -> Self {
         self.networks = networks.to_vec();
-        self
-    }
-
-    /// Seeds a fixed exchange rate (piconero per one whole unit of
-    /// `currency`, e.g. per $1.00) into the spawned engine's
-    /// `FixedRateProvider`. Needed by any test that creates a real order via
-    /// the engine's public `POST /api/v1/t/{pk}/orders` - that handler
-    /// rejects any `fiat_currency` with no configured rate (see
-    /// `src/http/public.rs::create_order` at the repo root).
-    pub fn with_rate(mut self, currency: &str, piconero_per_unit: u64) -> Self {
-        self.rates.insert(currency.to_string(), piconero_per_unit);
         self
     }
 
@@ -341,7 +326,7 @@ impl TestEngineConfig {
     /// `key-custody-server` instead of an in-process `PlainKeyCustody`. This is
     /// the right crate for that capability, not a new harness - `TestEngineConfig`
     /// already owns every other choice about what backs a spawned engine
-    /// (`with_networks`, `with_rate`, `with_background_loops`), and both
+    /// (`with_networks`, `with_background_loops`), and both
     /// `mock-woocommerce`'s and `control-plane`'s own tests already depend on
     /// this crate to get a real, network-bound engine rather than building their
     /// own; a `KeyCustody` backend choice is exactly one more axis of "what backs
@@ -386,8 +371,6 @@ impl TestEngineConfig {
                 }
                 None => (Arc::new(PlainKeyCustody::default()), "plain"),
             };
-        let exchange_rate: Arc<dyn ExchangeRateProvider> =
-            Arc::new(FixedRateProvider::new(self.rates));
 
         // Held separately (not just inline in `AppState`) so the background scan loop
         // below can clone the same `Arc` and re-read it fresh every tick, exactly like
@@ -400,7 +383,6 @@ impl TestEngineConfig {
             store: store.clone(),
             key_custody: key_custody.clone(),
             key_custody_backend: key_custody_backend.to_string(),
-            exchange_rate,
             wallet_handles: wallet_handles.clone(),
             rate_limiter: Arc::new(RateLimiter::new(10_000)),
             admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
@@ -512,16 +494,15 @@ impl TestEngineConfig {
     }
 }
 
-/// Boots a real `moneropay-core` engine with no configured Monero networks
-/// and no exchange rates - see [`TestEngineConfig::spawn`] for what "boots"
-/// means concretely. Equivalent to `TestEngineConfig::new().spawn()`.
+/// Boots a real `moneropay-core` engine with no configured Monero networks -
+/// see [`TestEngineConfig::spawn`] for what "boots" means concretely.
+/// Equivalent to `TestEngineConfig::new().spawn()`.
 ///
 /// No tenant is created and `configured_networks` is empty, so any route that
 /// depends on the scanner or a real `[monero_node]` isn't meaningfully usable
-/// yet - but routes with no such dependency, e.g.
-/// `GET /static/moneropay-client.js`, work with no further setup. A caller
-/// that needs a tenant should create one against the returned address via the
-/// engine's own admin API (`POST /api/v1/admin/tenants`).
+/// yet - but routes with no such dependency, e.g. `GET /status`, work with no
+/// further setup. A caller that needs a tenant should create one against the
+/// returned address via the engine's own admin API (`POST /api/v1/admin/tenants`).
 pub async fn spawn_test_engine() -> TestEngineHandle {
     TestEngineConfig::new().spawn().await
 }
@@ -552,21 +533,21 @@ mod tests {
     use super::*;
 
     /// The WBS 0.6 smoke test: start a real, network-bound engine instance and
-    /// hit its most dependency-free route - `/static/moneropay-client.js`,
-    /// which needs no tenant, no `[monero_node]`, and no scanner (confirmed by
-    /// reading `src/http/public.rs::client_library`, which takes no state at
-    /// all) - through a genuine `reqwest::Client` over a real TCP socket, not
+    /// hit its most dependency-free route - `/status` (deliberately
+    /// unauthenticated, no tenant or `[monero_node]` required - it reports on
+    /// the instance as a whole, empty `configured_networks` included) -
+    /// through a genuine `reqwest::Client` over a real TCP socket, not
     /// `tower::ServiceExt::oneshot`, proving the harness itself works
     /// end to end.
     #[tokio::test]
-    async fn client_library_route_is_reachable_over_a_real_socket() {
+    async fn status_route_is_reachable_over_a_real_socket() {
         let engine = spawn_test_engine().await;
 
         // A real socket, not an in-process `tower::Service` call: the address
         // came back from a bound `TcpListener`, and this is an independent
         // `reqwest::Client` making an actual TCP connection to it.
         let response = reqwest::Client::new()
-            .get(format!("http://{}/static/moneropay-client.js", engine.addr))
+            .get(format!("http://{}/status", engine.addr))
             .send()
             .await
             .expect("request to test engine failed");
@@ -644,7 +625,6 @@ mod tests {
     async fn background_loops_genuinely_deliver_a_real_expired_webhook() {
         let engine = TestEngineConfig::new()
             .with_networks(&[Network::Mainnet])
-            .with_rate("USD", 1_000_000_000_000)
             .with_background_loops()
             .spawn()
             .await;
@@ -684,7 +664,7 @@ mod tests {
 
         let order: serde_json::Value = client
             .post(format!("{base_url}/api/v1/t/{public_key}/orders"))
-            .json(&serde_json::json!({ "fiat_amount": "1.00", "fiat_currency": "USD" }))
+            .json(&serde_json::json!({ "xmr_amount_piconero": 1_000_000_000_000u64 }))
             .send()
             .await
             .expect("create_order request failed")
@@ -869,20 +849,16 @@ mod tests {
     async fn run_order_creation_and_scan_scenario(
         engine_config: TestEngineConfig,
     ) -> (String, u64) {
-        // A deliberately tiny rate (1000 piconero for a $1.00 order), not a
-        // realistic one: the fixture transaction's real, already-fixed amount is
-        // unknown ahead of time (it's a real historical Monero transaction, not
-        // something this test controls), so the target amount only needs to be
-        // trivially satisfied by whatever it actually paid - same reasoning
+        // A deliberately tiny target amount (1000 piconero), not a realistic one:
+        // the fixture transaction's real, already-fixed amount is unknown ahead of
+        // time (it's a real historical Monero transaction, not something this test
+        // controls), so the target amount only needs to be trivially satisfied by
+        // whatever it actually paid - same reasoning
         // `src/scanner.rs::setup_with_zero_conf_ceiling` already documents for its
-        // own `xmr_amount_piconero: 1`. A too-large rate here would make the order
-        // land on `partial` instead of `unconfirmed`, which is exactly what the
-        // first version of this test got wrong before this comment was added.
-        let engine = engine_config
-            .with_networks(&[Network::Mainnet])
-            .with_rate("USD", 1_000)
-            .spawn()
-            .await;
+        // own `xmr_amount_piconero: 1`. A too-large amount here would make the
+        // order land on `partial` instead of `unconfirmed`, which is exactly what
+        // the first version of this test got wrong before this comment was added.
+        let engine = engine_config.with_networks(&[Network::Mainnet]).spawn().await;
         let base_url = format!("http://{}", engine.addr);
         let client = reqwest::Client::new();
 
@@ -908,7 +884,7 @@ mod tests {
         // conf_ceiling`'s own assertion pins this for the internal test.
         let order: serde_json::Value = client
             .post(format!("{base_url}/api/v1/t/{public_key}/orders"))
-            .json(&serde_json::json!({ "fiat_amount": "1.00", "fiat_currency": "USD" }))
+            .json(&serde_json::json!({ "xmr_amount_piconero": 1_000u64 }))
             .send()
             .await
             .expect("create_order request failed")

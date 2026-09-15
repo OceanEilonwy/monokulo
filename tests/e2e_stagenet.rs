@@ -40,13 +40,13 @@ use moneropay_core::config::Config;
 use moneropay_core::daemon::MoneroDaemonClient;
 use moneropay_core::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use moneropay_core::daemon_rpc::RpcDaemonClient;
-use moneropay_core::exchange_rate::{parse_xmr_to_piconero, ExchangeRateProvider};
 use moneropay_core::http::rate_limit::RateLimiter;
 use moneropay_core::http::{build_router, now_unix, AppState};
 use moneropay_core::key_custody::{KeyCustody, PlainKeyCustody, WalletMaterial};
 use moneropay_core::network::network_str;
 use moneropay_core::scanner::run_scan_tick;
 use moneropay_core::store::{NewTenant, Store};
+use shared::xmr_amount::parse_xmr_to_piconero;
 
 use support::StagenetSpendWallet;
 
@@ -143,8 +143,6 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     // in-process via `oneshot` instead).
     let store = Store::open_in_memory().unwrap().into_shared();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-    let exchange_rate: Arc<dyn ExchangeRateProvider> =
-        Arc::new(config.exchange_rate.build_fixed_rate_provider().expect("invalid exchange_rate.rates in e2e config"));
     let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
         RpcDaemonClient::new(&node_cfg.host, node_cfg.port, node_cfg.ssl, node_cfg.accept_self_signed_certs)
             .expect("failed to build daemon RPC client"),
@@ -183,7 +181,6 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
         store: store.clone(),
         key_custody: key_custody.clone(),
         key_custody_backend: "plain".to_string(),
-        exchange_rate,
         wallet_handles,
         rate_limiter: Arc::new(RateLimiter::new(10_000)),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
@@ -204,16 +201,14 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     let router = build_router(app_state, 1_000_000);
 
     // -- create a real order for a genuinely tiny amount (see e2e/README.md for
-    // why the fixed exchange rate is tuned to make $0.05 map to a few hundred
-    // thousand piconero) --
+    // why this is a few hundred thousand piconero, not a realistic amount) --
     let (status, order) = oneshot_json(
         &router,
         "POST",
         format!("/api/v1/t/{pk}/orders"),
         Some(json!({
             "merchant_order_id": format!("rust-e2e-{}", now_unix()),
-            "fiat_amount": "0.05",
-            "fiat_currency": "USD",
+            "xmr_amount_piconero": 335_000_000u64,
         })),
     )
     .await;

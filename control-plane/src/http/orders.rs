@@ -75,17 +75,22 @@ pub async fn orders_list(
         Ok(orders) => orders,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    // The engine has no concept of fiat any more (`docs/fx_refactor.md` Phase
+    // 3) - fiat display comes entirely from control-plane's own local
+    // `order_fiat_metadata`, keyed by payment_id, fetched once for the whole
+    // list rather than per-row.
+    let fiat_metadata = state.db.lock().unwrap().list_order_fiat_metadata_for_connection(&row.id).unwrap_or_default();
 
     let view_model = OrdersViewModel {
         connection_id: id,
         orders: orders
             .into_iter()
-            .map(|o| OrderRowViewModel {
-                payment_id: o.payment_id,
-                status: o.status,
-                fiat_amount: o.fiat_amount,
-                fiat_currency: o.fiat_currency,
-                created_at: o.created_at,
+            .map(|o| {
+                let (fiat_amount, fiat_currency) = match fiat_metadata.get(&o.payment_id) {
+                    Some(m) => (m.fiat_amount.clone(), m.fiat_currency.clone()),
+                    None => ("—".to_string(), "".to_string()),
+                };
+                OrderRowViewModel { payment_id: o.payment_id, status: o.status, fiat_amount, fiat_currency, created_at: o.created_at }
             })
             .collect(),
         logged_in: true,
@@ -119,14 +124,23 @@ pub async fn order_detail(
 
     match state.engine_client.get_order_detail(&sk, &payment_id).await {
         Ok(detail) => {
+            // The engine has no concept of fiat any more (`docs/fx_refactor.md`
+            // Phase 3) - fiat display comes entirely from control-plane's own
+            // local `order_fiat_metadata`, absent for any order that predates
+            // this record (falls back to a dash rather than failing the page).
+            let (fiat_amount, fiat_currency) =
+                match state.db.lock().unwrap().get_order_fiat_metadata(&row.id, &payment_id) {
+                    Ok(Some(m)) => (m.fiat_amount, m.fiat_currency),
+                    _ => ("—".to_string(), "".to_string()),
+                };
             let view_model = OrderDetailViewModel {
                 connection_id: id,
                 order: Some(OrderDetailData {
                     payment_id: detail.order.payment_id,
                     merchant_order_id: detail.order.merchant_order_id,
                     address: detail.order.address,
-                    fiat_currency: detail.order.fiat_currency,
-                    fiat_amount: detail.order.fiat_amount,
+                    fiat_currency,
+                    fiat_amount,
                     xmr_amount_piconero: detail.order.xmr_amount_piconero,
                     amount_received_piconero: detail.order.amount_received_piconero,
                     status: detail.order.status,
@@ -420,15 +434,17 @@ async fn render_store_detail_page(
     let recent_orders = match state.engine_client.list_orders(&sk).await {
         Ok(mut orders) => {
             orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            let fiat_metadata =
+                state.db.lock().unwrap().list_order_fiat_metadata_for_connection(&row.id).unwrap_or_default();
             orders
                 .into_iter()
                 .take(10)
-                .map(|o| OrderRowViewModel {
-                    payment_id: o.payment_id,
-                    status: o.status,
-                    fiat_amount: o.fiat_amount,
-                    fiat_currency: o.fiat_currency,
-                    created_at: o.created_at,
+                .map(|o| {
+                    let (fiat_amount, fiat_currency) = match fiat_metadata.get(&o.payment_id) {
+                        Some(m) => (m.fiat_amount.clone(), m.fiat_currency.clone()),
+                        None => ("—".to_string(), "".to_string()),
+                    };
+                    OrderRowViewModel { payment_id: o.payment_id, status: o.status, fiat_amount, fiat_currency, created_at: o.created_at }
                 })
                 .collect()
         }
@@ -493,8 +509,40 @@ pub async fn create_order(
         return render_store_detail_page(&state, row, Some("Enter an amount and a currency.".to_string()), None).await;
     }
 
-    match state.engine_client.create_order(&row.tenant_public_key, fiat_amount, fiat_currency).await {
-        Ok(order) => redirect_302(&format!("/dashboard/connections/{id}/orders/{}", order.payment_id)),
+    // The engine has no concept of fiat any more (`docs/fx_refactor.md` Phase
+    // 3) - control-plane's own exchange rate does the same computation
+    // `http::pay::create_order` does for a real storefront call.
+    let piconero_per_unit = match state.exchange_rate.piconero_per_unit(fiat_currency) {
+        Some(rate) => rate,
+        None => {
+            return render_store_detail_page(&state, row, Some(format!("unsupported currency: {fiat_currency}")), None)
+                .await
+        }
+    };
+    let xmr_amount_piconero = match shared::exchange_rate::compute_xmr_amount(fiat_amount, piconero_per_unit) {
+        Ok(amount) => amount,
+        Err(e) => return render_store_detail_page(&state, row, Some(e.to_string()), None).await,
+    };
+
+    match state.engine_client.create_order(&row.tenant_public_key, xmr_amount_piconero).await {
+        Ok(order) => {
+            if let Err(e) = state.db.lock().unwrap().create_order_fiat_metadata(
+                &row.id,
+                &order.payment_id,
+                fiat_currency,
+                fiat_amount,
+                piconero_per_unit,
+                crate::now_unix(),
+            ) {
+                eprintln!(
+                    "failed to record local fiat metadata for order {} on connection {}: {e} - the real order \
+                     still exists on the engine and this response is still correct, but its fiat display on \
+                     control-plane's own dashboard will be missing",
+                    order.payment_id, row.id
+                );
+            }
+            redirect_302(&format!("/dashboard/connections/{id}/orders/{}", order.payment_id))
+        }
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
             render_store_detail_page(&state, row, Some(message), None).await
         }
@@ -594,7 +642,6 @@ mod tests {
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
         let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
-            .with_rate(TEST_CURRENCY, TEST_RATE_PICONERO_PER_UNIT)
             .spawn()
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
@@ -691,12 +738,11 @@ mod tests {
     /// absent `Origin` skips that check entirely, exactly like a
     /// server-to-server call would.
     async fn seed_real_order(engine_addr: std::net::SocketAddr, public_key: &str) -> String {
+        // The engine has no concept of fiat any more (`docs/fx_refactor.md`
+        // Phase 3) - 10.00 at `TEST_RATE_PICONERO_PER_UNIT` (1e12 piconero/USD).
         let response = reqwest::Client::new()
             .post(format!("http://{engine_addr}/api/v1/t/{public_key}/orders"))
-            .json(&serde_json::json!({
-                "fiat_amount": "10.00",
-                "fiat_currency": TEST_CURRENCY,
-            }))
+            .json(&serde_json::json!({ "xmr_amount_piconero": 10 * TEST_RATE_PICONERO_PER_UNIT }))
             .send()
             .await
             .expect("seeding a real order against the engine's public API failed");
@@ -762,7 +808,12 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
         assert!(html.contains(&payment_id), "expected the order's payment_id in its detail page, got: {html}");
-        assert!(html.contains(TEST_CURRENCY), "expected the order's fiat currency in its detail page, got: {html}");
+        // Seeded directly against the engine's own public API, bypassing
+        // control-plane's own `http::pay` endpoint - no local fiat metadata
+        // was ever recorded for it, so the page must show a dash rather than
+        // a fabricated amount (see `checkout.rs`'s own doc comment on the
+        // same fallback).
+        assert!(html.contains('—'), "expected a dash placeholder for the missing fiat quote, got: {html}");
         // Timestamps deliberately stay compact (raw Unix seconds), not a
         // human-readable date - a user-requested reversion of an earlier
         // attempt at this page.

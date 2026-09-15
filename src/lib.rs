@@ -11,7 +11,6 @@ pub mod daemon_rpc;
 /// dependency since it lives in a different crate entirely.
 #[cfg(feature = "e2e")]
 pub mod e2e_wallet;
-pub mod exchange_rate;
 pub mod http;
 pub mod init_wizard;
 pub mod key_custody;
@@ -21,7 +20,6 @@ pub mod scanner;
 pub mod scanner_status;
 pub mod status;
 pub mod store;
-pub mod templates;
 pub mod webhook_delivery;
 pub mod webhook_sign;
 

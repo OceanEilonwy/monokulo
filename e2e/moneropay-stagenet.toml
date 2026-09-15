@@ -27,17 +27,6 @@ public_spend_key = "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144
 network = "stagenet"
 allowed_origins = ["http://127.0.0.1:8190"]
 
-[exchange_rate]
-provider = "fixed"
-[exchange_rate.rates]
-# `[exchange_rate.rates]` values are XMR-per-unit-of-fiat decimal strings, not
-# piconero (see Config::build_fixed_rate_provider / parse_xmr_to_piconero) -
-# "0.0067" here means 1 USD = 0.0067 XMR (~$149/XMR, roughly realistic). Not a
-# live market rate, just a fixed test value: it makes a human-readable
-# fiat_amount like "0.05" map to a genuinely tiny real stagenet payment
-# (335_000 micro-XMR = 0.000335 XMR = 335_000_000 piconero).
-USD = "0.0067"
-
 [payment]
 # Real stagenet blocks land roughly every ~2 minutes; requiring several
 # confirmations would make the E2E test spend most of its time waiting on the

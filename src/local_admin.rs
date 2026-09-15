@@ -1,5 +1,5 @@
 //! Operator commands that act directly on the local SQLite database rather than
-//! through the HTTP admin API - `--rotate-secret`, `--show-tenant`, `--snippet`.
+//! through the HTTP admin API - `--rotate-secret`, `--show-tenant`.
 //! Deliberately need no network call and no existing secret token: having
 //! filesystem access to the box this database lives on already implies the level
 //! of trust the HTTP admin API's bearer-token check exists to establish remotely,
@@ -79,59 +79,6 @@ pub fn show_tenant(store: &Store, pk: Option<&str>) -> Result<TenantSummary, Loc
         zero_conf_max_piconero: tenant.zero_conf_max_piconero,
         order_expiry_seconds: tenant.order_expiry_seconds,
     })
-}
-
-/// The embeddable-widget integration snippet (`docs/DESIGN.md` §14's documented
-/// client API), pre-filled with a real tenant's public key and the endpoint URL
-/// customers will actually reach this server at - the thing a self-hoster
-/// currently has to reconstruct by hand from the design doc or `e2e/demo-shop/`.
-///
-/// `endpoint` is taken as given, not derived from `server.bind` - a bind address
-/// like `0.0.0.0:8443` says nothing about the externally-reachable URL once a
-/// reverse proxy, a domain name, or port forwarding sits in front of it, so
-/// guessing would produce a plausible-looking snippet that's wrong exactly when
-/// it matters. The caller is expected to ask.
-pub fn snippet(store: &Store, pk: Option<&str>, endpoint: &str) -> Result<String, LocalAdminError> {
-    let tenant = resolve_tenant(store, pk)?;
-    let endpoint = endpoint.trim_end_matches('/');
-    Ok(format!(
-        r#"<!-- MoneroPay checkout widget - paste this where you want a "Pay with Monero" button. -->
-<button id="moneropay-buy-button">Pay with Monero</button>
-<div id="moneropay-checkout"></div>
-<script>
-(function () {{
-  var script = document.createElement('script');
-  script.src = {endpoint:?} + '/static/moneropay-client.js';
-  script.onload = function () {{
-    document.getElementById('moneropay-buy-button').addEventListener('click', function () {{
-      MoneroPay.createOrder({{
-        endpoint: {endpoint:?},
-        publicKey: {pk:?},
-        merchantOrderId: 'order-' + Date.now(),   // <- replace with your own order id
-        fiatAmount: 9.99,                         // <- replace with the real amount
-        fiatCurrency: 'USD',                      // <- must have an [exchange_rate.rates] entry
-        description: 'What they are paying for',  // <- optional, shown on the checkout page
-      }}).then(function (order) {{
-        MoneroPay.mount('#moneropay-checkout', order, {{
-          onPaid: function () {{
-            // e.g. window.location = '/thank-you.html';
-          }},
-        }});
-      }}).catch(function (err) {{
-        alert('Could not start checkout: ' + err.message);
-      }});
-    }});
-  }};
-  document.head.appendChild(script);
-}})();
-</script>
-<!-- If order creation fails with a CORS error in the browser console, double-check
-     `allowed_origins` in your moneropay config exactly matches this page's origin
-     (scheme + host + port, no trailing slash). -->
-"#,
-        endpoint = endpoint,
-        pk = tenant.public_key,
-    ))
 }
 
 #[cfg(test)]
@@ -275,25 +222,9 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn snippet_embeds_the_real_pk_and_endpoint_and_strips_a_trailing_slash() {
-        let (store, _, pk) = store_with_tenant(vec![]).await;
-        let html = snippet(&store, None, "https://pay.example.com/").unwrap();
-        assert!(html.contains(&format!("{pk:?}")), "missing the real pk: {html}");
-        assert!(html.contains("\"https://pay.example.com\""), "trailing slash should be stripped: {html}");
-        assert!(!html.contains("https://pay.example.com/'"), "must not keep the trailing slash: {html}");
-        assert!(html.contains("MoneroPay.createOrder"));
-        assert!(html.contains("MoneroPay.mount"));
-        assert!(html.contains("moneropay-client.js"));
-    }
-
-    #[tokio::test]
     async fn every_local_admin_command_gives_the_same_actionable_error_when_nothing_is_configured_yet() {
         let store = Store::open_in_memory().unwrap();
-        for err in [
-            rotate_secret(&store, None).unwrap_err(),
-            show_tenant(&store, None).unwrap_err(),
-            snippet(&store, None, "https://example.com").unwrap_err(),
-        ] {
+        for err in [rotate_secret(&store, None).unwrap_err(), show_tenant(&store, None).unwrap_err()] {
             assert!(matches!(err, LocalAdminError::NoTenant), "got {err}");
             assert!(err.to_string().contains("--init"), "should point at the fix: {err}");
         }

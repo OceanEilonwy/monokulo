@@ -8,9 +8,8 @@
 //!
 //! - `CONTROL_PLANE_EXCHANGE_RATE_PROVIDER=fixed` (the default if unset) -
 //!   `CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES` is a JSON object of
-//!   `{"USD": "0.0067", ...}` (currency -> XMR-per-unit decimal string,
-//!   same format the engine's own `[exchange_rate.rates]` TOML table uses
-//!   per key). Missing or empty defaults to no rates configured at all -
+//!   `{"USD": "0.0067", ...}` (currency -> XMR-per-unit decimal string per
+//!   key). Missing or empty defaults to no rates configured at all -
 //!   every order creation would then fail as "unsupported currency" until
 //!   this is set, loud and immediate rather than silently wrong.
 //! - `CONTROL_PLANE_EXCHANGE_RATE_PROVIDER=coingecko` -

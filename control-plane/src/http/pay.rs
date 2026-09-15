@@ -9,22 +9,13 @@
 //! per source IP (`http::rate_limit`) - see that module's own doc comment
 //! for why control-plane needed a rate limiter at all as of this endpoint.
 //!
-//! **Transitional shape, not the end state**: this computes the XMR amount
-//! from control-plane's own exchange rate (`AppState.exchange_rate`) and
-//! records it locally (`Db::create_order_fiat_metadata`) - but the engine
-//! hasn't had `docs/fx_refactor.md` Phase 3's breaking change yet, so this
-//! still calls the engine's own *existing*, still-fiat-aware
-//! `EngineClient::create_order`, which independently computes its *own* XMR
-//! amount from its own (still-present, soon-removed) exchange-rate config.
-//! The two computed amounts are not guaranteed to match during this window
-//! - a real, expected transitional inconsistency between two independently
-//! configured rate sources, not a bug, and one that disappears entirely
-//! once Phase 3 lands (control-plane passes a raw XMR amount instead of
-//! fiat fields at all, and its own computation becomes the only one that
-//! exists). Local metadata records control-plane's own quote; the response
-//! returned to the caller reflects whatever the engine actually assigned -
-//! the real, authoritative order, not control-plane's independent guess at
-//! it.
+//! Computes the XMR amount from control-plane's own exchange rate
+//! (`AppState.exchange_rate`) and passes that raw `xmr_amount_piconero` to
+//! the engine's own (now XMR-only, `docs/fx_refactor.md` Phase 3) public
+//! order-creation endpoint - control-plane's computation is the only rate
+//! computation in the whole system now. The fiat amount/currency the
+//! caller asked for is recorded locally (`Db::create_order_fiat_metadata`)
+//! for display purposes only; the engine never sees or stores it.
 
 use axum::extract::{Path, State};
 use axum::response::{IntoResponse, Json, Response};
@@ -46,6 +37,9 @@ pub struct CreateOrderRequest {
 /// directly today already expects, so migrating a storefront from calling
 /// the engine to calling this endpoint instead is a base-URL change, not a
 /// response-parsing rewrite.
+/// `fiat_amount`/`fiat_currency` echo back what the caller asked for
+/// (`req.fiat_amount`/`req.fiat_currency`), not anything the engine
+/// returned - the engine has no concept of fiat at all any more.
 #[derive(Debug, Serialize)]
 pub struct CreateOrderResponse {
     pub payment_id: String,
@@ -68,19 +62,20 @@ pub async fn create_order(
         Err(_) => return ApiError::Internal.into_response(),
     };
 
-    // Validated against control-plane's *own* exchange rate before the
-    // engine is ever called - a real, fast `400` for an unsupported
-    // currency or a malformed amount, independent of whatever the engine's
-    // own (soon-removed) rate config happens to think.
+    // Control-plane's own exchange rate is the only rate computation left in
+    // the whole system (`docs/fx_refactor.md` Phase 3) - a real, fast `400`
+    // for an unsupported currency or a malformed amount, before the engine
+    // (which has no concept of fiat at all) is ever called.
     let piconero_per_unit = match state.exchange_rate.piconero_per_unit(&req.fiat_currency) {
         Some(rate) => rate,
         None => return ApiError::BadRequest(format!("unsupported currency: {}", req.fiat_currency)).into_response(),
     };
-    if let Err(e) = shared::exchange_rate::compute_xmr_amount(&req.fiat_amount, piconero_per_unit) {
-        return ApiError::BadRequest(e.to_string()).into_response();
-    }
+    let xmr_amount_piconero = match shared::exchange_rate::compute_xmr_amount(&req.fiat_amount, piconero_per_unit) {
+        Ok(amount) => amount,
+        Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
+    };
 
-    match state.engine_client.create_order(&pk, &req.fiat_amount, &req.fiat_currency).await {
+    match state.engine_client.create_order(&pk, xmr_amount_piconero).await {
         Ok(order) => {
             // Best-effort: a failure to record the local metadata row must
             // never fail an order that the engine has *already* genuinely
@@ -109,8 +104,8 @@ pub async fn create_order(
                 payment_id: order.payment_id,
                 address: order.address,
                 xmr_amount_piconero: order.xmr_amount_piconero,
-                fiat_amount: order.fiat_amount,
-                fiat_currency: order.fiat_currency,
+                fiat_amount: req.fiat_amount,
+                fiat_currency: req.fiat_currency,
                 expires_at: order.expires_at,
             })
             .into_response()
@@ -158,7 +153,6 @@ mod tests {
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
         let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
-            .with_rate(TEST_CURRENCY, TEST_RATE_PICONERO_PER_UNIT)
             .spawn()
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));

@@ -13,7 +13,6 @@ use moneropay_core::cli::{self, Action};
 use moneropay_core::config::{Config, KeyCustodyConfig};
 use moneropay_core::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use moneropay_core::daemon_rpc::RpcDaemonClient;
-use moneropay_core::exchange_rate::{CoingeckoRateProvider, ExchangeRateProvider};
 use moneropay_core::http::rate_limit::RateLimiter;
 use moneropay_core::http::{build_router, now_unix, AppState};
 use moneropay_core::init_wizard;
@@ -94,34 +93,6 @@ async fn dispatch_args() -> (std::path::PathBuf, bool) {
                 }
             }
         }
-        Ok(Action::Snippet { config_path, pk, endpoint }) => {
-            let store = open_local_store(&config_path);
-            let endpoint = match endpoint {
-                Some(e) => e,
-                None => {
-                    let stdin = std::io::stdin();
-                    let mut input = stdin.lock();
-                    let mut output = std::io::stdout();
-                    init_wizard::prompt(
-                        &mut output,
-                        &mut input,
-                        "What URL will customers reach this server at? (through any reverse proxy/domain in front of it)",
-                        None,
-                    )
-                    .unwrap_or_default()
-                }
-            };
-            match local_admin::snippet(&store, pk.as_deref(), &endpoint) {
-                Ok(html) => {
-                    print!("{html}");
-                    std::process::exit(0);
-                }
-                Err(e) => {
-                    eprintln!("{e}");
-                    std::process::exit(1);
-                }
-            }
-        }
         Ok(Action::RunServer { config_path, strict_tls }) => (config_path, strict_tls),
         Err(e) => {
             eprintln!("{e}\n\nRun with --help for usage.");
@@ -159,48 +130,8 @@ async fn main() {
     // `Config::validate` has already confirmed `key_custody.backend` is one of
     // these two known values (and, for "socket", that `socket_path` is present
     // and non-empty) - `build_key_custody` below is a plain dispatch on an
-    // already-validated field, not a second round of validation, matching the
-    // `exchange_rate.provider` dispatch a few lines down.
+    // already-validated field, not a second round of validation.
     let key_custody: Arc<dyn KeyCustody> = build_key_custody(&config.key_custody).await;
-    // `Config::validate` has already confirmed `provider` is one of these two
-    // known values (and, for "coingecko", that `currencies` is non-empty) - this
-    // match is a plain dispatch, not a second round of validation.
-    let exchange_rate: Arc<dyn ExchangeRateProvider> = match config.exchange_rate.provider.as_str() {
-        "coingecko" => {
-            let provider = Arc::new(
-                config
-                    .exchange_rate
-                    .build_coingecko_rate_provider()
-                    .expect("invalid exchange_rate config for the coingecko provider"),
-            );
-            // Best-effort at boot: a transient Coingecko outage right now
-            // shouldn't stop the whole service from starting, since the
-            // background loop below will keep retrying. Every order in every
-            // configured currency will 400 as "unsupported currency" until
-            // either this or a later refresh succeeds - loud in the logs, not
-            // silent.
-            if let Err(e) = provider.refresh().await {
-                eprintln!(
-                    "initial coingecko exchange-rate refresh failed: {e} - starting with an empty rate cache; \
-                     orders will be rejected as an unsupported currency until the background refresh loop \
-                     (every {}s) succeeds",
-                    config.exchange_rate.cache_seconds
-                );
-            }
-            let refresh_provider = provider.clone();
-            let cache_seconds = config.exchange_rate.cache_seconds;
-            supervise("coingecko exchange-rate refresh", move || {
-                run_coingecko_refresh_loop(refresh_provider.clone(), cache_seconds)
-            });
-            provider
-        }
-        _ => Arc::new(
-            config
-                .exchange_rate
-                .build_fixed_rate_provider()
-                .expect("invalid exchange_rate.rates entry in config"),
-        ),
-    };
 
     // One daemon client per configured network (§DESIGN.md §7) - a single instance
     // can hold mainnet tenants for real customers alongside stagenet/testnet
@@ -265,7 +196,6 @@ async fn main() {
         store: store.clone(),
         key_custody: key_custody.clone(),
         key_custody_backend: config.key_custody.backend.clone(),
-        exchange_rate,
         wallet_handles: wallet_handles.clone(),
         rate_limiter: Arc::new(RateLimiter::new(config.server.rate_limit_per_ip_per_min)),
         admin_rate_limiter: Arc::new(RateLimiter::new(config.server.rate_limit_per_token_per_min)),
@@ -354,8 +284,7 @@ async fn main() {
 /// should fail loudly, not misinterpret them - `docs/TESTING.md`'s own gap list
 /// already flags that check as not yet implemented, unrelated to this task). It
 /// was never wired as a dispatch key, and nothing here adds that: this config
-/// option makes the *whole process* pick one backend, same as
-/// `exchange_rate.provider` makes the whole process pick one rate source.
+/// option makes the *whole process* pick one backend.
 async fn build_key_custody(cfg: &KeyCustodyConfig) -> Arc<dyn KeyCustody> {
     match cfg.backend.as_str() {
         "socket" => {
@@ -486,7 +415,7 @@ async fn bootstrap_self_hosted_tenant(store: &SharedStore, key_custody: &Arc<dyn
                     .payment
                     .zero_conf_max_xmr
                     .as_deref()
-                    .and_then(|s| moneropay_core::exchange_rate::parse_xmr_to_piconero(s).ok()),
+                    .and_then(|s| shared::xmr_amount::parse_xmr_to_piconero(s).ok()),
                 order_expiry_seconds: Some(config.payment.order_expiry_minutes * 60),
             },
             now_unix(),
@@ -518,20 +447,6 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
         }
     }
     handles
-}
-
-/// Re-fetches Coingecko rates on `cache_seconds`'s interval, forever. Sleeps
-/// first rather than refreshing immediately: `main` already performs one refresh
-/// synchronously (best-effort) before spawning this loop, so refreshing again
-/// right away would just be a redundant duplicate request at boot.
-async fn run_coingecko_refresh_loop(provider: Arc<CoingeckoRateProvider>, cache_seconds: u64) {
-    let interval = Duration::from_secs(cache_seconds);
-    loop {
-        tokio::time::sleep(interval).await;
-        if let Err(e) = provider.refresh().await {
-            eprintln!("coingecko exchange-rate refresh failed: {e} - continuing to serve the last successfully cached rates");
-        }
-    }
 }
 
 async fn run_webhook_delivery_loop(

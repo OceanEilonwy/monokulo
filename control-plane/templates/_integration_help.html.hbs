@@ -16,14 +16,18 @@ Need to connect a second WordPress site to this same store? From that site's plu
 </ol>
 {{/if}}
 
-<p><strong>Direct API integration</strong> - create an order directly against the engine and redirect the buyer to the returned checkout link:</p>
-<pre>POST {{endpoint}}/api/v1/t/{{public_key}}/orders
+<p><strong>Direct API integration</strong> - create an order against this same MoneroPay Cloud instance
+(not the underlying engine - this instance owns pricing and the checkout page) and redirect the buyer to the
+returned checkout link:</p>
+<pre>POST /pay/{{public_key}}/orders
 Content-Type: application/json
 
 {
   "fiat_currency": "USD",
   "fiat_amount": "25.00"
 }</pre>
-<p class="hint">The response includes a <code>payment_id</code> - send the buyer to
-<code>{{endpoint}}/pay/v1/{{public_key}}/&lt;payment_id&gt;</code> to complete the payment. This endpoint needs no secret - it's safe to call directly from your storefront's backend.</p>
+<p class="hint">Send this request to wherever this dashboard is hosted (the same origin this page is on). The
+response includes a <code>payment_id</code> - send the buyer to
+<code>/pay/{{public_key}}/orders/&lt;payment_id&gt;</code> (same origin) to complete the payment. This endpoint
+needs no secret - it's safe to call directly from your storefront's backend.</p>
 </div>

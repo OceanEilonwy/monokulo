@@ -260,20 +260,20 @@ async fn spawn_webhook_receiver() -> Result<WebhookReceiver, ConnectFlowError> {
     Ok(WebhookReceiver { addr, state, task })
 }
 
-/// The result of [`create_order`]: a real order seeded on the engine, plus
-/// the checkout URL a WooCommerce customer would be redirected to next
-/// (`GET /pay/v1/{pk}/{payment_id}` at the repo root's
-/// `src/http/public.rs::payment_page` - see [`create_order`]'s own doc
-/// comment).
+/// The result of [`create_order`]: a real order seeded through control-plane,
+/// plus the checkout URL a WooCommerce customer would be redirected to next
+/// (`GET /pay/{pk}/orders/{payment_id}` - control-plane's own checkout page,
+/// `control-plane/src/http/checkout.rs::checkout_page` - see [`create_order`]'s
+/// own doc comment for why this is control-plane's URL, not the engine's).
 #[derive(Debug)]
 pub struct CreatedOrder {
     pub payment_id: String,
     pub checkout_url: String,
 }
 
-/// Field-for-field mirror of the engine's own
-/// `src/http/public.rs::CreateOrderResponse` - only `payment_id` is actually
-/// needed to build [`CreatedOrder`], but the rest is deserialized too so a
+/// Field-for-field mirror of control-plane's own
+/// `http::pay::CreateOrderResponse` - only `payment_id` is actually needed to
+/// build [`CreatedOrder`], but the rest is deserialized too so a
 /// malformed/unexpected response body fails clearly via `serde_json` rather
 /// than silently ignoring extra fields no differently than a real caller
 /// would notice.
@@ -593,30 +593,29 @@ async fn expect_ok(response: reqwest::Response, step: &str) -> Result<(), Connec
     })
 }
 
-/// WBS 1.4.3: creates a real order directly against the engine's own public,
-/// unauthenticated `POST /api/v1/t/{public_key}/orders` (`src/http/
-/// public.rs::create_order` at the repo root - no `sk_`/`Authorization`
-/// header involved, exactly like a real WooCommerce checkout page's
-/// server-to-server call would be, since a merchant's `pk_` is not a
-/// secret), then builds the checkout redirect target
-/// (`{engine_base_url}/pay/v1/{public_key}/{payment_id}`, matching
-/// `src/http/mod.rs`'s own route table for `public::payment_page`) from the
-/// real `payment_id` the engine handed back - not a plausibly-shaped guess.
+/// Creates a real order through control-plane's own public, unauthenticated
+/// `POST /pay/{pk}/orders` (`control-plane/src/http/pay.rs::create_order`) -
+/// exactly the call a real WooCommerce checkout page makes, per
+/// `docs/fx_refactor.md` decisions 2/3: the engine has no concept of fiat or
+/// a checkout UI at all any more, so a real storefront integration talks to
+/// control-plane, not the engine directly, for both. Builds the checkout
+/// redirect target (`{control_plane_base_url}/pay/{public_key}/orders/{payment_id}`,
+/// matching control-plane's own route table for `checkout::checkout_page`)
+/// from the real `payment_id` control-plane handed back - not a
+/// plausibly-shaped guess.
 ///
-/// `engine_base_url` is the engine's own externally-reachable address (e.g.
-/// `ConnectedCredentials::endpoint` from [`run_connect_flow`]), *not* the
-/// control plane - order creation talks to the engine directly, the same
-/// way a real WooCommerce site's checkout page would call the engine with
-/// the `pk_` it was configured with.
+/// `control_plane_base_url` is control-plane's own externally-reachable
+/// address - *not* the engine's; a real WooCommerce plugin never talks to
+/// the engine directly at all.
 pub async fn create_order(
-    engine_base_url: &str,
+    control_plane_base_url: &str,
     public_key: &str,
     fiat_amount: &str,
     fiat_currency: &str,
 ) -> Result<CreatedOrder, ConnectFlowError> {
     let client = reqwest::Client::new();
     let response = client
-        .post(format!("{engine_base_url}/api/v1/t/{public_key}/orders"))
+        .post(format!("{control_plane_base_url}/pay/{public_key}/orders"))
         .json(&serde_json::json!({
             "fiat_amount": fiat_amount,
             "fiat_currency": fiat_currency,
@@ -636,7 +635,7 @@ pub async fn create_order(
 
     let parsed: CreateOrderResponseBody = response.json().await?;
     let checkout_url = format!(
-        "{engine_base_url}/pay/v1/{public_key}/{}",
+        "{control_plane_base_url}/pay/{public_key}/orders/{}",
         parsed.payment_id
     );
     Ok(CreatedOrder {
@@ -988,13 +987,9 @@ mod tests {
         );
     }
 
-    /// A fixed, arbitrary exchange rate for a test-only currency - same
-    /// convention `control-plane/src/http/orders.rs`'s own tests use (only
-    /// its non-zero-ness matters, since the engine's `compute_xmr_amount` is
-    /// exact integer arithmetic regardless of the rate's real-world
-    /// plausibility).
+    /// A test-only currency code, matching control-plane's own fixed test
+    /// exchange rate (`spawn_test_control_plane`'s `AppState.exchange_rate`).
     const TEST_CURRENCY: &str = "USD";
-    const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
     /// WBS 1.4.3: runs the full connect flow to get real, working
     /// credentials against a real engine (reusing [`run_connect_flow`]
@@ -1004,17 +999,13 @@ mod tests {
     /// just plausibly shaped. The final assertion fetches the returned
     /// `checkout_url` directly with a plain `reqwest::get` (standing in for
     /// the customer's browser being redirected there) and confirms it's a
-    /// real, working checkout page, not just a well-formed string - only
-    /// possible because this engine was spawned with `with_rate` in
-    /// addition to `with_networks`, unlike this crate's other tests, which
-    /// never create an order.
+    /// real, working checkout page, not just a well-formed string - control-
+    /// plane's own exchange rate (`spawn_test_control_plane`) is what makes
+    /// order creation succeed here, not anything configured on the engine.
     #[tokio::test]
     async fn create_order_against_a_real_engine_yields_a_working_checkout_redirect() {
-        let engine = engine_test_support::TestEngineConfig::new()
-            .with_networks(&[monero::Network::Mainnet])
-            .with_rate(TEST_CURRENCY, TEST_RATE_PICONERO_PER_UNIT)
-            .spawn()
-            .await;
+        let engine =
+            engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let control_plane = spawn_test_control_plane(engine.addr).await;
         let control_plane_base_url = format!("http://{}", control_plane.addr);
 
@@ -1024,13 +1015,13 @@ mod tests {
         assert_eq!(credentials.endpoint, format!("http://{}", engine.addr));
 
         let order = create_order(
-            &credentials.endpoint,
+            &control_plane_base_url,
             &credentials.public_key,
             "10.00",
             TEST_CURRENCY,
         )
         .await
-        .expect("order creation should succeed against a real engine with a configured rate");
+        .expect("order creation should succeed against a real control-plane with a configured rate");
 
         assert!(
             !order.payment_id.is_empty(),
@@ -1038,8 +1029,8 @@ mod tests {
         );
         assert_eq!(
             order.checkout_url,
-            format!("http://{}/pay/v1/{}/{}", engine.addr, credentials.public_key, order.payment_id),
-            "checkout_url should be shaped exactly like the engine's own /pay/v1/{{pk}}/{{payment_id}} route"
+            format!("{control_plane_base_url}/pay/{}/orders/{}", credentials.public_key, order.payment_id),
+            "checkout_url should be shaped exactly like control-plane's own /pay/{{pk}}/orders/{{payment_id}} route"
         );
 
         // Strong proof, not just a plausibly-shaped URL: actually fetch it,
@@ -1398,7 +1389,6 @@ mod tests {
     async fn a_genuinely_forced_order_expired_webhook_is_delivered_and_verified() {
         let engine = engine_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
-            .with_rate(TEST_CURRENCY, TEST_RATE_PICONERO_PER_UNIT)
             .with_background_loops()
             .spawn()
             .await;
@@ -1412,13 +1402,13 @@ mod tests {
             );
 
         let order = create_order(
-            &credentials.endpoint,
+            &control_plane_base_url,
             &credentials.public_key,
             "1.00",
             TEST_CURRENCY,
         )
         .await
-        .expect("order creation should succeed against a real engine with a configured rate");
+        .expect("order creation should succeed against a real control-plane with a configured rate");
 
         // Poll rather than a fixed sleep: the background loops tick every ~150ms
         // (`engine_test_support::BACKGROUND_LOOP_INTERVAL`), and this only needs to

@@ -94,15 +94,24 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
         });
 
         if let Ok(orders) = state.engine_client.list_orders(&sk).await {
+            // The engine has no concept of fiat any more (`docs/fx_refactor.md`
+            // Phase 3) - fiat display comes entirely from control-plane's own
+            // local `order_fiat_metadata`.
+            let fiat_metadata =
+                state.db.lock().unwrap().list_order_fiat_metadata_for_connection(&row.id).unwrap_or_default();
             for o in orders {
                 total_received_piconero += o.amount_received_piconero as u128;
+                let (fiat_amount, fiat_currency) = match fiat_metadata.get(&o.payment_id) {
+                    Some(m) => (m.fiat_amount.clone(), m.fiat_currency.clone()),
+                    None => ("—".to_string(), "".to_string()),
+                };
                 all_orders.push(DashboardOrderRow {
                     connection_id: row.id.clone(),
                     display_name: display_name.clone(),
                     payment_id: o.payment_id,
                     status: o.status,
-                    fiat_amount: o.fiat_amount,
-                    fiat_currency: o.fiat_currency,
+                    fiat_amount,
+                    fiat_currency,
                     created_at: o.created_at,
                 });
             }
@@ -194,7 +203,6 @@ mod tests {
         async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
             let engine = engine_test_support::TestEngineConfig::new()
                 .with_networks(&[monero::Network::Mainnet])
-                .with_rate(TEST_CURRENCY, TEST_RATE_PICONERO_PER_UNIT)
                 .spawn()
                 .await;
             let engine_client = EngineClient::new(format!("http://{}", engine.addr));
@@ -283,9 +291,13 @@ mod tests {
         }
 
         async fn seed_real_order(engine_addr: std::net::SocketAddr, public_key: &str) -> String {
+            // 10.00 at `TEST_RATE_PICONERO_PER_UNIT` (1e12 piconero/USD) - the
+            // engine itself has no concept of fiat any more
+            // (`docs/fx_refactor.md` Phase 3), so this passes the already
+            // computed XMR amount directly.
             let response = reqwest::Client::new()
                 .post(format!("http://{engine_addr}/api/v1/t/{public_key}/orders"))
-                .json(&serde_json::json!({ "fiat_amount": "10.00", "fiat_currency": TEST_CURRENCY }))
+                .json(&serde_json::json!({ "xmr_amount_piconero": 10 * TEST_RATE_PICONERO_PER_UNIT }))
                 .send()
                 .await
                 .expect("seeding a real order against the engine's public API failed");
