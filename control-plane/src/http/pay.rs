@@ -90,6 +90,7 @@ pub async fn create_order(
                 &req.fiat_currency,
                 &req.fiat_amount,
                 piconero_per_unit,
+                state.exchange_rate_provider,
                 now_unix(),
             ) {
                 eprintln!(
@@ -177,6 +178,7 @@ mod tests {
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
+            exchange_rate_provider: "fixed",
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         };
         (state, engine)

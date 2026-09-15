@@ -221,6 +221,7 @@ async fn spawn_test_control_plane(engine_addr: std::net::SocketAddr) -> TestCont
             TEST_CURRENCY.to_string(),
             TEST_RATE_PICONERO_PER_UNIT,
         )]))),
+        exchange_rate_provider: "fixed",
         rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
     };
     let router = build_router(state);

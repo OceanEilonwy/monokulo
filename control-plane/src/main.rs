@@ -106,6 +106,7 @@ async fn main() {
          CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES/CONTROL_PLANE_EXCHANGE_RATE_CURRENCIES/\
          CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS",
     );
+    let exchange_rate_provider = exchange_rate_cfg.provider_name();
     let exchange_rate = build_exchange_rate_provider(&exchange_rate_cfg).await;
     let rate_limiter = Arc::new(RateLimiter::new(rate_limit_per_ip_per_min_from_env()));
     let app_state = AppState {
@@ -115,6 +116,7 @@ async fn main() {
         templates,
         status_cache: new_status_cache(),
         exchange_rate,
+        exchange_rate_provider,
         rate_limiter,
     };
     let router = build_router(app_state);

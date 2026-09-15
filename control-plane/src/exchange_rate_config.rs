@@ -53,6 +53,17 @@ pub enum ExchangeRateConfig {
 }
 
 impl ExchangeRateConfig {
+    /// `"fixed"` or `"coingecko"` - recorded alongside `piconero_per_unit` on
+    /// every order's local fiat metadata (`Db::create_order_fiat_metadata`)
+    /// so a merchant looking at an order later can see not just the rate
+    /// but where it came from.
+    pub fn provider_name(&self) -> &'static str {
+        match self {
+            ExchangeRateConfig::Fixed { .. } => "fixed",
+            ExchangeRateConfig::Coingecko { .. } => "coingecko",
+        }
+    }
+
     pub fn build_fixed_rate_provider(&self) -> Result<FixedRateProvider, ExchangeRateConfigError> {
         let ExchangeRateConfig::Fixed { rates } = self else {
             panic!("build_fixed_rate_provider called on a non-Fixed ExchangeRateConfig - caller bug, not a real config error");
@@ -211,6 +222,15 @@ mod tests {
         let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_PROVIDER", "haveno")]);
         let err = parse(|k| env.get(k).cloned()).unwrap_err();
         assert_eq!(err, ExchangeRateConfigError::UnknownProvider("haveno".to_string()));
+    }
+
+    #[test]
+    fn provider_name_matches_the_env_var_value_that_selected_it() {
+        assert_eq!(ExchangeRateConfig::Fixed { rates: HashMap::new() }.provider_name(), "fixed");
+        assert_eq!(
+            ExchangeRateConfig::Coingecko { currencies: vec!["USD".to_string()], cache_seconds: 60 }.provider_name(),
+            "coingecko"
+        );
     }
 
     #[test]

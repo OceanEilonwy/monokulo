@@ -106,6 +106,15 @@ pub struct AppState {
     /// decisions), so control-plane computes the XMR amount itself before
     /// ever calling the engine.
     pub exchange_rate: Arc<dyn shared::exchange_rate::ExchangeRateProvider>,
+    /// `"fixed"` or `"coingecko"` - which concrete provider `exchange_rate`
+    /// above actually is (`exchange_rate_config::ExchangeRateConfig::
+    /// provider_name`). The trait object alone can't answer "which
+    /// implementation is this" (same reasoning as the engine's own
+    /// `AppState.key_custody_backend`, `moneropay_core::http::AppState`'s
+    /// own doc comment), so this is recorded alongside it - needed to
+    /// stamp every order's local fiat metadata with which provider quoted
+    /// it, not just the numeric rate.
+    pub exchange_rate_provider: &'static str,
     /// Per-source-IP budget for control-plane's own new public,
     /// unauthenticated endpoints (`docs/fx_refactor.md` Phase 1.3/1.4) -
     /// see `http::rate_limit`'s own module doc comment for why control-plane

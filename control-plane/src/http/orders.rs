@@ -128,11 +128,18 @@ pub async fn order_detail(
             // Phase 3) - fiat display comes entirely from control-plane's own
             // local `order_fiat_metadata`, absent for any order that predates
             // this record (falls back to a dash rather than failing the page).
-            let (fiat_amount, fiat_currency) =
-                match state.db.lock().unwrap().get_order_fiat_metadata(&row.id, &payment_id) {
-                    Ok(Some(m)) => (m.fiat_amount, m.fiat_currency),
-                    _ => ("—".to_string(), "".to_string()),
-                };
+            let metadata = state.db.lock().unwrap().get_order_fiat_metadata(&row.id, &payment_id).ok().flatten();
+            let (fiat_amount, fiat_currency) = match &metadata {
+                Some(m) => (m.fiat_amount.clone(), m.fiat_currency.clone()),
+                None => ("—".to_string(), "".to_string()),
+            };
+            let (fiat_rate_display, fiat_rate_provider) = match &metadata {
+                Some(m) => (
+                    format!("{} XMR per 1 {}", shared::exchange_rate::format_piconero_as_xmr(m.piconero_per_unit), m.fiat_currency),
+                    m.provider.clone(),
+                ),
+                None => ("—".to_string(), "—".to_string()),
+            };
             let view_model = OrderDetailViewModel {
                 connection_id: id,
                 order: Some(OrderDetailData {
@@ -141,6 +148,8 @@ pub async fn order_detail(
                     address: detail.order.address,
                     fiat_currency,
                     fiat_amount,
+                    fiat_rate_display,
+                    fiat_rate_provider,
                     xmr_amount_piconero: detail.order.xmr_amount_piconero,
                     amount_received_piconero: detail.order.amount_received_piconero,
                     status: detail.order.status,
@@ -532,6 +541,7 @@ pub async fn create_order(
                 fiat_currency,
                 fiat_amount,
                 piconero_per_unit,
+                state.exchange_rate_provider,
                 crate::now_unix(),
             ) {
                 eprintln!(
@@ -652,6 +662,7 @@ mod tests {
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
+            exchange_rate_provider: "fixed",
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         };
         (state, engine)
@@ -1314,6 +1325,14 @@ mod tests {
         assert_eq!(detail_response.status(), StatusCode::OK);
         let html = body_text(detail_response).await;
         assert!(html.contains(TEST_CURRENCY), "expected the real, just-created order's detail page, got: {html}");
+        // The real point of this test: the exact rate used and which
+        // provider quoted it are both recorded and shown, not just the
+        // resulting fiat amount.
+        assert!(
+            html.contains("1.000000000000 XMR per 1 USD"),
+            "expected the real exchange rate used (1e12 piconero/USD == 1 XMR/USD) on the page, got: {html}"
+        );
+        assert!(html.contains("fixed"), "expected the real rate provider (\"fixed\", from test_exchange_rate_provider) on the page, got: {html}");
     }
 
     #[tokio::test]

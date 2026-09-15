@@ -24,6 +24,8 @@
 <tr><th>Merchant order ID</th><td>{{#if order.merchant_order_id}}{{order.merchant_order_id}}{{else}}<span class="muted">-</span>{{/if}}</td></tr>
 <tr><th>Address</th><td><code>{{order.address}}</code></td></tr>
 <tr><th>Fiat amount</th><td>{{order.fiat_amount}} {{order.fiat_currency}}</td></tr>
+<tr><th>Exchange rate</th><td>{{order.fiat_rate_display}}</td></tr>
+<tr><th>Rate provider</th><td>{{order.fiat_rate_provider}}</td></tr>
 <tr><th>XMR amount (piconero)</th><td>{{order.xmr_amount_piconero}}</td></tr>
 <tr><th>Amount received (piconero)</th><td>{{order.amount_received_piconero}}</td></tr>
 <tr><th>Status</th><td>{{order.status}}</td></tr>

@@ -66,6 +66,7 @@ mod tests {
             exchange_rate: std::sync::Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from(
                 [("USD".to_string(), 1_000_000_000_000u64)],
             ))),
+            exchange_rate_provider: "fixed",
             rate_limiter: std::sync::Arc::new(RateLimiter::new(limit_per_minute)),
         }
     }

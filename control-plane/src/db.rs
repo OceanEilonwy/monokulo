@@ -26,6 +26,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (3, include_str!("../migrations/0003_store_connections.sql")),
     (4, include_str!("../migrations/0004_connect_tokens.sql")),
     (5, include_str!("../migrations/0005_order_fiat_metadata.sql")),
+    (6, include_str!("../migrations/0006_order_fiat_metadata_provider.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -107,6 +108,11 @@ pub struct OrderFiatMetadataRow {
     pub fiat_currency: String,
     pub fiat_amount: String,
     pub piconero_per_unit: u64,
+    /// Which `ExchangeRateConfig` variant produced `piconero_per_unit` -
+    /// `"fixed"` or `"coingecko"` (`exchange_rate_config::ExchangeRateConfig
+    /// ::provider_name`), or `"unknown"` for a row recorded before this
+    /// field existed (migration 0006).
+    pub provider: String,
     pub created_at: i64,
 }
 
@@ -315,6 +321,7 @@ impl Db {
     /// orders of magnitude below `i64::MAX`, this only guards against a
     /// `u64` value SQLite genuinely cannot represent, not a plausible real
     /// one.
+    #[allow(clippy::too_many_arguments)]
     pub fn create_order_fiat_metadata(
         &self,
         connection_id: &str,
@@ -322,15 +329,16 @@ impl Db {
         fiat_currency: &str,
         fiat_amount: &str,
         piconero_per_unit: u64,
+        provider: &str,
         created_at: i64,
     ) -> Result<()> {
         let piconero_per_unit = i64::try_from(piconero_per_unit)
             .expect("piconero_per_unit out of i64 range - not a plausible real exchange rate");
         self.conn.execute(
             "INSERT INTO order_fiat_metadata
-                (connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
-            params![connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, created_at],
+                (connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, provider, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+            params![connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, provider, created_at],
         )?;
         Ok(())
     }
@@ -342,7 +350,7 @@ impl Db {
     pub fn get_order_fiat_metadata(&self, connection_id: &str, payment_id: &str) -> Result<Option<OrderFiatMetadataRow>> {
         self.conn
             .query_row(
-                "SELECT connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, created_at
+                "SELECT connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, provider, created_at
                  FROM order_fiat_metadata WHERE connection_id = ?1 AND payment_id = ?2",
                 params![connection_id, payment_id],
                 |row| {
@@ -353,7 +361,8 @@ impl Db {
                         fiat_currency: row.get(2)?,
                         fiat_amount: row.get(3)?,
                         piconero_per_unit: piconero_per_unit as u64,
-                        created_at: row.get(5)?,
+                        provider: row.get(5)?,
+                        created_at: row.get(6)?,
                     })
                 },
             )
@@ -372,7 +381,7 @@ impl Db {
         connection_id: &str,
     ) -> Result<std::collections::HashMap<String, OrderFiatMetadataRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, created_at
+            "SELECT connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, provider, created_at
              FROM order_fiat_metadata WHERE connection_id = ?1",
         )?;
         let rows = stmt
@@ -384,7 +393,8 @@ impl Db {
                     fiat_currency: row.get(2)?,
                     fiat_amount: row.get(3)?,
                     piconero_per_unit: piconero_per_unit as u64,
-                    created_at: row.get(5)?,
+                    provider: row.get(5)?,
+                    created_at: row.get(6)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -718,7 +728,7 @@ mod tests {
     fn creating_order_fiat_metadata_then_reading_it_back_round_trips() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_order_fiat_metadata(&connection_id, "pay_1", "USD", "25.00", 6_700_000_000, 1000).unwrap();
+        db.create_order_fiat_metadata(&connection_id, "pay_1", "USD", "25.00", 6_700_000_000, "fixed", 1000).unwrap();
 
         let row = db.get_order_fiat_metadata(&connection_id, "pay_1").unwrap().unwrap();
         assert_eq!(row.connection_id, connection_id);
@@ -726,6 +736,7 @@ mod tests {
         assert_eq!(row.fiat_currency, "USD");
         assert_eq!(row.fiat_amount, "25.00");
         assert_eq!(row.piconero_per_unit, 6_700_000_000);
+        assert_eq!(row.provider, "fixed");
         assert_eq!(row.created_at, 1000);
     }
 
@@ -756,21 +767,23 @@ mod tests {
         )
         .unwrap();
 
-        db.create_order_fiat_metadata(&connection_id, "pay_shared", "USD", "10.00", 1_000_000, 1000).unwrap();
-        db.create_order_fiat_metadata("conn-2", "pay_shared", "EUR", "20.00", 2_000_000, 2000).unwrap();
+        db.create_order_fiat_metadata(&connection_id, "pay_shared", "USD", "10.00", 1_000_000, "fixed", 1000).unwrap();
+        db.create_order_fiat_metadata("conn-2", "pay_shared", "EUR", "20.00", 2_000_000, "coingecko", 2000).unwrap();
 
         let first = db.get_order_fiat_metadata(&connection_id, "pay_shared").unwrap().unwrap();
         let second = db.get_order_fiat_metadata("conn-2", "pay_shared").unwrap().unwrap();
         assert_eq!(first.fiat_currency, "USD");
         assert_eq!(second.fiat_currency, "EUR");
+        assert_eq!(first.provider, "fixed");
+        assert_eq!(second.provider, "coingecko");
     }
 
     #[test]
     fn listing_fiat_metadata_for_a_connection_returns_a_map_keyed_by_payment_id() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_order_fiat_metadata(&connection_id, "pay_a", "USD", "10.00", 1_000_000, 1000).unwrap();
-        db.create_order_fiat_metadata(&connection_id, "pay_b", "EUR", "20.00", 2_000_000, 2000).unwrap();
+        db.create_order_fiat_metadata(&connection_id, "pay_a", "USD", "10.00", 1_000_000, "fixed", 1000).unwrap();
+        db.create_order_fiat_metadata(&connection_id, "pay_b", "EUR", "20.00", 2_000_000, "fixed", 2000).unwrap();
 
         let map = db.list_order_fiat_metadata_for_connection(&connection_id).unwrap();
         assert_eq!(map.len(), 2);

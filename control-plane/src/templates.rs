@@ -259,6 +259,14 @@ pub struct OrderDetailData {
     pub address: String,
     pub fiat_currency: String,
     pub fiat_amount: String,
+    /// e.g. `"0.006700000000 XMR per 1 USD"`, or a muted dash for an order
+    /// with no local fiat metadata (predates the feature, or was created
+    /// directly against the engine rather than through control-plane).
+    pub fiat_rate_display: String,
+    /// Which provider (`"fixed"`/`"coingecko"`) quoted `fiat_rate_display` -
+    /// `"unknown"` for a row that predates recording this at all (migration
+    /// 0006), or a muted dash alongside `fiat_rate_display` for no metadata.
+    pub fiat_rate_provider: String,
     pub xmr_amount_piconero: u64,
     pub amount_received_piconero: u64,
     pub status: String,
