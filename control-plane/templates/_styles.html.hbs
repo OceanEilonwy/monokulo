@@ -15,6 +15,17 @@
   --muted: #5a564c;
 }
 * { box-sizing: border-box; }
+/* Minimal reset for form controls - browsers (and this file's own later,
+   more specific `button, .btn` rule) give buttons/inputs/etc. their own
+   default margin/font, which silently leaks into any context that isn't
+   "a standalone block-level control with space below it" - e.g. a
+   <button> reused as an inline nav link (`.nav-link-button` in
+   `_nav.html.hbs`) inheriting a form button's `margin-top` and sitting
+   visibly out of line with its sibling <a> tags. Reset the baseline here;
+   components that genuinely want spacing (the real `button, .btn` rule
+   below) declare it themselves, deliberately, rather than relying on a
+   default nothing else was meant to inherit. */
+button, input, textarea, select { margin: 0; font: inherit; }
 html, body {
   margin: 0;
   padding: 0;
@@ -145,7 +156,7 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .site-nav-links { display: flex; align-items: center; flex-wrap: wrap; }
 .site-nav-links a, .site-nav-links .nav-link-button {
   color: var(--paper);
-  margin-left: 1.2em;
+  margin: 0 0 0 1.2em;
   background: none;
   border: none;
   font: inherit;
