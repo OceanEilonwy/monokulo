@@ -29,6 +29,51 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **`docs/fx_refactor.md` added** (user-directed): a real WBS for the
+  FX/checkout-off-the-engine migration flagged as a separate follow-up in
+  the dashboard-feedback-batch entry below. The user confirmed the design
+  direction (self-hosted-engine-without-control-plane loses fiat orders
+  and a built-in checkout page — accepted as a power-user trade-off, not
+  an oversight) and asked for the WBS specifically so nothing gets missed,
+  same reasoning `docs/WOOCOMMERCE_WBS.md` exists for the WooCommerce/
+  SEV-SNP work. Investigated the real current code before writing it
+  (not guessed): `src/exchange_rate.rs`, `src/http/public.rs`
+  (`create_order`/`payment_page`/`qr_svg_for_html`/`client_library`),
+  `src/templates.rs`'s `CheckoutViewModel`/per-tenant `template_dir`
+  customization, `src/store.rs`'s `NewOrder`/`OrderRow` fiat fields,
+  `static/moneropay-client.js`'s own fiat-aware `createOrder()`, and
+  confirmed the engine's *existing* `get_order_status` (the live-polling
+  endpoint) already returns no fiat fields at all - real, useful groundwork
+  already in place for the new control-plane checkout page.
+  - Structured as 7 phases (0 foundations through 6 docs), explicitly
+    sequenced so Phases 1-2 (control-plane gains FX + its own checkout
+    page, calling the engine's *existing*, still-fiat-aware API) ship and
+    get verified live *before* Phase 3 (the actual breaking change - the
+    engine's public order-creation API becomes XMR-only) - never skip
+    ahead to the breaking change to "save a step."
+  - Five **open decisions** deliberately left unresolved in the doc rather
+    than silently decided while writing it, each with a stated
+    recommendation: fate of per-tenant checkout template customization
+    (no hosted-DB equivalent exists today); whether the engine keeps
+    fiat fields as opaque passthrough or drops them from its schema
+    entirely (recommended: drop, with the resulting local-data-durability
+    trade-off named explicitly); where `moneropay-client.js` ends up
+    served from; the durability trade-off of control-plane owning the
+    only copy of fiat order records; and whether the breaking API change
+    needs a version bump (recommended: no, pre-private-beta, no real
+    consumers on the current contract yet).
+  - One concrete number worth remembering for later effort estimation:
+    the schema migration removing `fiat_currency`/`fiat_amount`/
+    `exchange_rate` from the engine's `orders` table touches 14 separate
+    `NewOrder { ... }` literals across `src/store.rs` (8) and
+    `src/scanner.rs` (6) test fixtures alone, confirmed via
+    `grep -c "fiat_currency:"` rather than eyeballed - likely the single
+    largest mechanical-effort leaf in the whole migration.
+  - Not started - planning only. Next real step is Phase 0.1 (extracting
+    the engine's own `RateLimiter<K>` to `shared`, since control-plane's
+    new public order-creation endpoint in Phase 1 will need the same
+    per-IP protection the engine's public endpoints already have).
+
 - **Large user-directed feedback batch on the control-plane dashboard**:
   five design fixes, a real bug fix, and three new features, all in one
   message. Worked through it as a tracked task list; every item verified
