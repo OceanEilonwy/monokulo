@@ -76,10 +76,33 @@ Key architectural facts an agent should not have to rediscover:
     configured rate providers - documented explicitly in `http/pay.rs`'s
     own module doc comment as expected, not a bug, and something Phase 3's
     real cutover resolves by construction, not by patching around it now.
-  - **Not yet started**: Phase 2 (control-plane's own checkout/payment
-    page + QR code), Phase 3 (the actual breaking change - engine
+  - **Phase 2 (control-plane's own checkout/payment page) also done**,
+    commit `8ac3ead`: new `GET /pay/{pk}/orders/{payment_id}` +
+    `.../status`. Real, good judgment call made while building it: rather
+    than adding anything new to the engine's public API (which has no
+    `payments` list, confirmed by reading `OrderStatusResponse`), this
+    reuses `EngineClient::get_order_detail` - the *admin* API, called
+    server-side with the connection's own decrypted `sk_...` - the same
+    method the dashboard's own order-detail page already uses. Zero engine
+    changes needed for this whole phase. Deliberately no per-tenant
+    checkout customization (decision 1) and no site nav at all (a
+    merchant iframes this into their own checkout flow). **A real bug
+    caught by its own test before shipping**: a doc-comment inside
+    `checkout.html.hbs` literally wrote `{{> nav}}` as descriptive text
+    inside what was meant to be a plain HTML comment - handlebars doesn't
+    respect HTML comment syntax at all, so it actually rendered the real
+    nav partial into the page. The first version of the "no nav" test
+    assertion itself was also wrong (checking for the substring "nav",
+    which false-positived on `_styles.html.hbs`'s own CSS comments) -
+    fixed to check for the nav's real opening tag specifically, which
+    caught the real bug on the next run. Verified live: a real order
+    created through the Phase 1.4 endpoint, then fetched via the new
+    checkout page - correct XMR/fiat amounts, a real rendered QR code, a
+    real working status endpoint.
+  - **Not yet started**: Phase 3 (the actual breaking change - engine
     order-creation API becomes XMR-only, plus the schema migration
-    touching 14 `NewOrder` literals across `store.rs`/`scanner.rs`), Phase
+    touching 14 `NewOrder` literals across `store.rs`/`scanner.rs` -
+    the doc's own "point of no return," not to be rushed), Phase
     4 (removing the engine's checkout UI/`exchange_rate` module/client
     library entirely), Phase 5 (e2e test rework), Phase 6 (docs).
 
