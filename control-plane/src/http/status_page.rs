@@ -278,6 +278,7 @@ mod tests {
                 templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
                 status_cache: new_status_cache(),
                 exchange_rate: test_exchange_rate_provider(),
+                rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             }
         }
 

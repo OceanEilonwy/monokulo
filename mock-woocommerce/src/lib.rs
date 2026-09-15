@@ -902,6 +902,7 @@ mod tests {
                 "USD".to_string(),
                 1_000_000_000_000u64,
             )]))),
+            rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         };
         let router = build_router(state);
 

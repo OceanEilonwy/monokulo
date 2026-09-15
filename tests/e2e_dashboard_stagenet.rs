@@ -236,6 +236,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
             "USD".to_string(),
             1_000_000_000_000u64,
         )]))),
+        rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
     };
     let cp_router = build_control_plane_router(cp_state);
 

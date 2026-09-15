@@ -52,6 +52,7 @@ mod home;
 mod login;
 mod logout;
 mod orders;
+pub mod rate_limit;
 mod signup;
 pub mod status_page;
 #[cfg(test)]
@@ -102,6 +103,12 @@ pub struct AppState {
     /// decisions), so control-plane computes the XMR amount itself before
     /// ever calling the engine.
     pub exchange_rate: Arc<dyn shared::exchange_rate::ExchangeRateProvider>,
+    /// Per-source-IP budget for control-plane's own new public,
+    /// unauthenticated endpoints (`docs/fx_refactor.md` Phase 1.3/1.4) -
+    /// see `http::rate_limit`'s own module doc comment for why control-plane
+    /// needs this at all now, and `http::build_router` for which routes it's
+    /// actually layered onto.
+    pub rate_limiter: Arc<shared::rate_limit::RateLimiter<std::net::IpAddr>>,
 }
 
 pub fn build_router(state: AppState) -> Router {

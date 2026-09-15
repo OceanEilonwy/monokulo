@@ -10,8 +10,23 @@ use control_plane::http::status_page::new_status_cache;
 use control_plane::http::{AppState, build_router};
 use control_plane::templates::TemplateEngine;
 use shared::exchange_rate::{CoingeckoRateProvider, ExchangeRateProvider};
+use shared::rate_limit::RateLimiter;
 use shared::supervise::supervise;
 use std::sync::Arc;
+
+/// `CONTROL_PLANE_RATE_LIMIT_PER_IP_PER_MIN` (`docs/fx_refactor.md` Phase
+/// 1.3) - the budget `http::rate_limit::rate_limit_middleware` enforces on
+/// control-plane's own new public, unauthenticated endpoints. Defaults to
+/// 20/min, the same default the engine's own equivalent
+/// (`server.rate_limit_per_ip_per_min`) uses.
+fn rate_limit_per_ip_per_min_from_env() -> u32 {
+    match std::env::var("CONTROL_PLANE_RATE_LIMIT_PER_IP_PER_MIN") {
+        Ok(raw) => raw.parse().unwrap_or_else(|_| {
+            panic!("CONTROL_PLANE_RATE_LIMIT_PER_IP_PER_MIN must be a positive integer, got {raw:?}")
+        }),
+        Err(_) => 20,
+    }
+}
 
 /// Reads the AES-256-GCM key (WBS 1.2.3) used to encrypt the engine's
 /// `sk_...` secret token at rest (see `control_plane::crypto`) from
@@ -92,12 +107,28 @@ async fn main() {
          CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS",
     );
     let exchange_rate = build_exchange_rate_provider(&exchange_rate_cfg).await;
-    let app_state =
-        AppState { db, engine_client, encryption_key, templates, status_cache: new_status_cache(), exchange_rate };
+    let rate_limiter = Arc::new(RateLimiter::new(rate_limit_per_ip_per_min_from_env()));
+    let app_state = AppState {
+        db,
+        engine_client,
+        encryption_key,
+        templates,
+        status_cache: new_status_cache(),
+        exchange_rate,
+        rate_limiter,
+    };
     let router = build_router(app_state);
 
     let bind = "127.0.0.1:8081";
     let listener = tokio::net::TcpListener::bind(bind).await.expect("failed to bind server address");
     println!("control-plane listening on {bind}");
-    axum::serve(listener, router).await.expect("server error");
+    // `with_connect_info` (`docs/fx_refactor.md` Phase 1.3) - without this,
+    // `http::rate_limit::rate_limit_middleware`'s own `ConnectInfo` lookup
+    // would never see a real peer address in production, and would fail
+    // open for every request (the same "no signal at all" case its own doc
+    // comment says should only ever happen in a test harness driven via
+    // `tower::ServiceExt::oneshot`, not for real traffic).
+    axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .await
+        .expect("server error");
 }

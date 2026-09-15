@@ -33,6 +33,7 @@ fn test_app_state() -> AppState {
         templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
         status_cache: crate::http::status_page::new_status_cache(),
         exchange_rate: test_exchange_rate_provider(),
+        rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
     }
 }
 
@@ -624,6 +625,7 @@ async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEn
         templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
         status_cache: crate::http::status_page::new_status_cache(),
         exchange_rate: test_exchange_rate_provider(),
+        rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
     };
     (state, engine)
 }
