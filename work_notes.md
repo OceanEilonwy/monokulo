@@ -29,6 +29,61 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- Order detail page polish (user-directed follow-up to the dashboard
+  order-creation form above): after creating a real test order, "Merchant
+  order ID" rendered as a genuinely blank cell (correct - it's never set by
+  the new create-order form - but looked broken), `created_at`/
+  `expires_at`/`updated_at`/`double_spend_detected_at`/payments'
+  `first_seen_at`/`voided_at` were raw Unix seconds, the page never
+  auto-refreshed despite orders being exactly the kind of thing a merchant
+  watches live, and the key/value table's narrow header column plus an
+  unwrapped 95-character Monero address made the page look cramped.
+  - Reused `chrono_like_utc_string` (the hand-rolled, no-new-dependency
+    `"YYYY-MM-DD HH:MM:SS UTC"` formatter + its exact 5 cross-checked
+    reference points, including the 2024-02-29 leap-day boundary) from the
+    engine-side status page work earlier this session - moved to
+    `control-plane/src/templates.rs` since that's where it's needed now,
+    not re-derived from scratch.
+  - `OrderDetailData`/`PaymentRowViewModel` now carry pre-formatted
+    `*_display: String` fields for every timestamp (always-present ones
+    via `display_timestamp`, optional ones via `display_timestamp_or_dash`
+    - a muted `<span class="muted">-</span>` placeholder, same convention
+    the status page already uses for "no value") - rendered in the
+    template with `{{{ }}}` (triple-stash, trusted HTML) since these are
+    entirely our own internally-generated strings, never caller input.
+  - **Deliberately did *not* apply the same trusted-HTML treatment to
+    `merchant_order_id`/`refund_address`** - caught this mid-implementation
+    before it shipped: unlike a timestamp, both are genuinely
+    caller-supplied free text (the engine's public order-creation API
+    accepts `merchant_order_id` as-is; `refund_address` comes from
+    `set_refund_address`), so triple-stashing them would have been a real
+    stored-XSS hole (a malicious caller sets `merchant_order_id` to
+    `<script>...</script>`, it renders unescaped in the merchant's own
+    dashboard). Both stayed plain `Option<String>` fields, handled in the
+    template with an ordinary escaped `{{#if}}...{{else}}<span
+    class="muted">-</span>{{/if}}` instead - same muted-dash look, safe
+    escaping preserved.
+  - `<meta http-equiv="refresh" content="15">` plus a visible "This page
+    refreshes automatically every 15s" line - shorter than the status
+    page's own 30s (a merchant actively watching for a payment wants
+    tighter feedback than an infra dashboard does).
+  - Two new CSS classes scoped to this page only (`.kv-table`/
+    `.payments-table` in a `<style>` block in the template itself, not the
+    shared `_styles.html.hbs` - these constraints are specific to this
+    page's two very different table shapes, not a site-wide convention):
+    `.kv-table th { width: 14em }` for the wider label column, `word-break:
+    break-all; overflow-wrap: anywhere` on both tables' `td`s so the long
+    unbroken Monero address (and txids) wrap instead of overflowing.
+  - New test assertions folded into the existing
+    `order_detail_shows_the_seeded_orders_full_detail` test (real "UTC"
+    string present, a muted placeholder for the never-set merchant order
+    id, the meta-refresh tag and its visible note both present) plus two
+    new `templates.rs` unit tests for the date formatter and the
+    dash-placeholder helper. Verified live: real signup -> connect ->
+    dashboard-created order -> its real detail page, showing genuine
+    human-readable `2026-09-15 13:03:44 UTC`-style dates, a muted dash for
+    the unset merchant order id, and the wrapped address.
+
 - **Real production incident, fixed same-day: the engine's per-IP rate
   limiter tripped for one genuine user just browsing the dashboard**
   (`"the engine could not be reached: the engine responded with an error

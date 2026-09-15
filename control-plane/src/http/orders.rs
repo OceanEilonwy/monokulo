@@ -29,8 +29,8 @@ use crate::crypto;
 use crate::db::{StoreConnectionRow, UserRow};
 use crate::engine_client::EngineClientError;
 use crate::templates::{
-    OrderDetailData, OrderDetailViewModel, OrderRowViewModel, OrdersViewModel, PaymentRowViewModel,
-    WebhookRowViewModel, WebhooksViewModel,
+    display_or_dash, display_timestamp, display_timestamp_or_dash, OrderDetailData, OrderDetailViewModel,
+    OrderRowViewModel, OrdersViewModel, PaymentRowViewModel, WebhookRowViewModel, WebhooksViewModel,
 };
 
 use super::dashboard::redirect_302;
@@ -130,11 +130,11 @@ pub async fn order_detail(
                     amount_received_piconero: detail.order.amount_received_piconero,
                     status: detail.order.status,
                     confirmations: detail.order.confirmations,
-                    double_spend_detected_at: detail.order.double_spend_detected_at,
+                    double_spend_detected_at_display: display_timestamp_or_dash(detail.order.double_spend_detected_at),
                     refund_address: detail.order.refund_address,
-                    created_at: detail.order.created_at,
-                    expires_at: detail.order.expires_at,
-                    updated_at: detail.order.updated_at,
+                    created_at_display: display_timestamp(detail.order.created_at),
+                    expires_at_display: display_timestamp(detail.order.expires_at),
+                    updated_at_display: display_timestamp(detail.order.updated_at),
                     payments: detail
                         .payments
                         .into_iter()
@@ -142,9 +142,9 @@ pub async fn order_detail(
                             txid: p.txid,
                             output_index: p.output_index,
                             amount_piconero: p.amount_piconero,
-                            first_seen_at: p.first_seen_at,
-                            block_height: p.block_height,
-                            voided_at: p.voided_at,
+                            first_seen_at_display: display_timestamp(p.first_seen_at),
+                            block_height_display: display_or_dash(p.block_height.map(|h| h.to_string()).as_deref()),
+                            voided_at_display: display_timestamp_or_dash(p.voided_at),
                         })
                         .collect(),
                 }),
@@ -646,6 +646,14 @@ mod tests {
         let html = body_text(response).await;
         assert!(html.contains(&payment_id), "expected the order's payment_id in its detail page, got: {html}");
         assert!(html.contains(TEST_CURRENCY), "expected the order's fiat currency in its detail page, got: {html}");
+        // Real bug fixed: `created_at`/`expires_at`/`updated_at` used to be
+        // shown as raw Unix seconds - now a human-readable UTC date/time.
+        assert!(html.contains("UTC"), "expected human-readable timestamps, got: {html}");
+        // `merchant_order_id` was never set on this seeded order - must show
+        // a muted placeholder, not a blank cell.
+        assert!(html.contains("muted"), "expected a muted placeholder for the unset merchant order id, got: {html}");
+        assert!(html.contains(r#"<meta http-equiv="refresh""#), "expected an auto-refresh meta tag, got: {html}");
+        assert!(html.contains("refreshes automatically"), "expected the refresh interval noted on the page, got: {html}");
     }
 
     #[tokio::test]

@@ -3,8 +3,14 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="15">
 <title>Order detail - MoneroPay Cloud</title>
 {{> styles}}
+<style>
+.kv-table th { width: 14em; }
+.kv-table td, .payments-table td { word-break: break-all; overflow-wrap: anywhere; }
+.payments-table th { min-width: 8em; }
+</style>
 </head>
 <body>
 {{> nav}}
@@ -13,34 +19,35 @@
 <p><a href="/dashboard/connections/{{connection_id}}/orders">&larr; back to orders</a></p>
 {{#if order}}
 <h1>Order {{order.payment_id}}</h1>
-<table>
-<tr><th>Merchant order ID</th><td>{{order.merchant_order_id}}</td></tr>
-<tr><th>Address</th><td>{{order.address}}</td></tr>
+<p class="hint">This page refreshes automatically every 15s.</p>
+<table class="kv-table">
+<tr><th>Merchant order ID</th><td>{{#if order.merchant_order_id}}{{order.merchant_order_id}}{{else}}<span class="muted">-</span>{{/if}}</td></tr>
+<tr><th>Address</th><td><code>{{order.address}}</code></td></tr>
 <tr><th>Fiat amount</th><td>{{order.fiat_amount}} {{order.fiat_currency}}</td></tr>
 <tr><th>XMR amount (piconero)</th><td>{{order.xmr_amount_piconero}}</td></tr>
 <tr><th>Amount received (piconero)</th><td>{{order.amount_received_piconero}}</td></tr>
 <tr><th>Status</th><td>{{order.status}}</td></tr>
 <tr><th>Confirmations</th><td>{{order.confirmations}}</td></tr>
-<tr><th>Double-spend detected at</th><td>{{order.double_spend_detected_at}}</td></tr>
-<tr><th>Refund address</th><td>{{order.refund_address}}</td></tr>
-<tr><th>Created at</th><td>{{order.created_at}}</td></tr>
-<tr><th>Expires at</th><td>{{order.expires_at}}</td></tr>
-<tr><th>Updated at</th><td>{{order.updated_at}}</td></tr>
+<tr><th>Double-spend detected at</th><td>{{{order.double_spend_detected_at_display}}}</td></tr>
+<tr><th>Refund address</th><td>{{#if order.refund_address}}<code>{{order.refund_address}}</code>{{else}}<span class="muted">-</span>{{/if}}</td></tr>
+<tr><th>Created at</th><td>{{{order.created_at_display}}}</td></tr>
+<tr><th>Expires at</th><td>{{{order.expires_at_display}}}</td></tr>
+<tr><th>Updated at</th><td>{{{order.updated_at_display}}}</td></tr>
 </table>
 <h2>Payments</h2>
-<table>
+<table class="payments-table">
 <thead>
 <tr><th>Txid</th><th>Output index</th><th>Amount (piconero)</th><th>First seen</th><th>Block height</th><th>Voided at</th></tr>
 </thead>
 <tbody>
 {{#each order.payments}}
 <tr>
-<td>{{this.txid}}</td>
+<td><code>{{this.txid}}</code></td>
 <td>{{this.output_index}}</td>
 <td>{{this.amount_piconero}}</td>
-<td>{{this.first_seen_at}}</td>
-<td>{{this.block_height}}</td>
-<td>{{this.voided_at}}</td>
+<td>{{{this.first_seen_at_display}}}</td>
+<td>{{{this.block_height_display}}}</td>
+<td>{{{this.voided_at_display}}}</td>
 </tr>
 {{/each}}
 </tbody>

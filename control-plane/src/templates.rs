@@ -166,25 +166,97 @@ pub struct OrdersViewModel {
     pub orders: Vec<OrderRowViewModel>,
 }
 
+/// A hand-rolled `"YYYY-MM-DD HH:MM:SS UTC"` formatter - no date/time crate
+/// dependency for what's otherwise just a handful of display lines. The
+/// civil-from-days conversion is Howard Hinnant's well-known constant-time
+/// algorithm (proleptic Gregorian, correct for every real Unix timestamp
+/// this page will ever show). Every reference value in this function's own
+/// tests was independently cross-checked against a real `date -u -d @<secs>`
+/// call before being trusted, including a leap-day boundary
+/// (2024-02-29 exists, 2023-02-29 doesn't) - a hand-rolled date function
+/// deserves that, not just "one page load looked right."
+fn chrono_like_utc_string(unix_seconds: i64) -> String {
+    let days_since_epoch = unix_seconds.div_euclid(86_400);
+    let seconds_of_day = unix_seconds.rem_euclid(86_400);
+    let (hour, minute, second) = (seconds_of_day / 3600, (seconds_of_day % 3600) / 60, seconds_of_day % 60);
+
+    let z = days_since_epoch + 719_468;
+    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
+    let doe = (z - era * 146_097) as u64;
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146_096) / 365;
+    let y = yoe as i64 + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let day = (doy - (153 * mp + 2) / 5 + 1) as u32;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 } as u32;
+    let year = if month <= 2 { y + 1 } else { y };
+
+    format!("{year:04}-{month:02}-{day:02} {hour:02}:{minute:02}:{second:02} UTC")
+}
+
+/// A muted placeholder for a field with nothing to show - same
+/// `<span class="muted">-</span>` convention the status page already uses
+/// for "no value" (`height_display`, `_nav.html.hbs`'s own "Active" column),
+/// applied here to every optional order/payment field so a merchant never
+/// sees a bare, unexplained empty table cell.
+const NO_VALUE: &str = "<span class=\"muted\">-</span>";
+
+pub fn display_or_dash(value: Option<&str>) -> String {
+    match value {
+        Some(v) if !v.is_empty() => v.to_string(),
+        _ => NO_VALUE.to_string(),
+    }
+}
+
+pub fn display_timestamp_or_dash(value: Option<i64>) -> String {
+    match value {
+        Some(v) => chrono_like_utc_string(v),
+        None => NO_VALUE.to_string(),
+    }
+}
+
+/// Same as [`display_timestamp_or_dash`] but for a timestamp that's always
+/// present (`created_at`/`expires_at`/`updated_at`) - never a dash, always a
+/// real formatted date.
+pub fn display_timestamp(value: i64) -> String {
+    chrono_like_utc_string(value)
+}
+
 /// One payment row inside the order detail page's `payments` table -
-/// mirrors the engine's own `PaymentView` field-for-field.
+/// mirrors the engine's own `PaymentView`, but with every timestamp/
+/// optional field already rendered to a display string (`Option<i64>` ->
+/// human-readable UTC or a muted dash) rather than left for the template to
+/// interpret - the display strings are trusted HTML (`NO_VALUE` carries a
+/// real `<span>`), so they're rendered with handlebars' triple-stash
+/// (`{{{ }}}`) in the template, same as `network_selected_flags`-style
+/// values elsewhere are computed in Rust rather than branched on in the
+/// template.
 #[derive(Debug, Serialize)]
 pub struct PaymentRowViewModel {
     pub txid: String,
     pub output_index: i64,
     pub amount_piconero: u64,
-    pub first_seen_at: i64,
-    pub block_height: Option<i64>,
-    pub voided_at: Option<i64>,
+    pub first_seen_at_display: String,
+    pub block_height_display: String,
+    pub voided_at_display: String,
 }
 
 /// The full order detail shown by `GET
 /// /dashboard/connections/{id}/orders/{payment_id}` on a successful lookup -
 /// every `OrderView` field plus the `payments` list from
-/// `OrderDetailResponse`.
+/// `OrderDetailResponse`, with timestamps/optional fields already rendered
+/// to display strings - see [`PaymentRowViewModel`]'s own doc comment for
+/// why.
 #[derive(Debug, Serialize)]
 pub struct OrderDetailData {
     pub payment_id: String,
+    /// Raw, *not* pre-rendered to a trusted-HTML display string like the
+    /// timestamp fields below - unlike a missing timestamp (always our own
+    /// internally-generated value), a merchant order id is caller-supplied
+    /// free text (the engine's public order-creation API accepts it as-is),
+    /// so it must stay ordinary escaped template output
+    /// (`{{order.merchant_order_id}}`), never `{{{ }}}` - see
+    /// `order_detail.html.hbs`'s own `{{#if}}` handling of `None`.
     pub merchant_order_id: Option<String>,
     pub address: String,
     pub fiat_currency: String,
@@ -193,11 +265,14 @@ pub struct OrderDetailData {
     pub amount_received_piconero: u64,
     pub status: String,
     pub confirmations: u64,
-    pub double_spend_detected_at: Option<i64>,
+    pub double_spend_detected_at_display: String,
+    /// Same caller-supplied-text caveat as `merchant_order_id` above (set
+    /// via the engine's `set_refund_address` endpoint) - raw, escaped by
+    /// the template, never triple-stashed.
     pub refund_address: Option<String>,
-    pub created_at: i64,
-    pub expires_at: i64,
-    pub updated_at: i64,
+    pub created_at_display: String,
+    pub expires_at_display: String,
+    pub updated_at_display: String,
     pub payments: Vec<PaymentRowViewModel>,
 }
 
@@ -486,6 +561,26 @@ impl TemplateEngine {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn chrono_like_utc_string_matches_known_real_timestamps() {
+        assert_eq!(chrono_like_utc_string(0), "1970-01-01 00:00:00 UTC");
+        assert_eq!(chrono_like_utc_string(1_000_000_000), "2001-09-09 01:46:40 UTC");
+        assert_eq!(chrono_like_utc_string(1_700_000_000), "2023-11-14 22:13:20 UTC");
+        // A leap-year boundary (2024-02-29 exists; 2023-02-29 doesn't) - the
+        // real reason a hand-rolled date function needs this class of
+        // dedicated test rather than trusting it because one live page load
+        // looked right.
+        assert_eq!(chrono_like_utc_string(1_709_251_199), "2024-02-29 23:59:59 UTC");
+        assert_eq!(chrono_like_utc_string(1_709_251_200), "2024-03-01 00:00:00 UTC");
+    }
+
+    #[test]
+    fn display_or_dash_shows_the_muted_placeholder_for_none_or_empty() {
+        assert_eq!(display_or_dash(Some("real value")), "real value");
+        assert_eq!(display_or_dash(None), NO_VALUE);
+        assert_eq!(display_or_dash(Some("")), NO_VALUE, "an empty string is not a real value either");
+    }
 
     #[test]
     fn signup_template_renders_with_no_error() {
