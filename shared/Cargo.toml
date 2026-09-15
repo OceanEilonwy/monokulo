@@ -24,9 +24,21 @@ rand = "0.10.2"
 # Cargo's feature unification during a workspace-wide build) so `cargo test
 # -p shared` builds correctly in isolation, not just as part of `--workspace`.
 rand_core = { version = "0.6", features = ["getrandom"] }
+# `exchange_rate::CoingeckoRateProvider`'s real HTTP client - same
+# rustls/json feature set the engine and control-plane already pin, so
+# moving this module here doesn't change its TLS/JSON behavior at all.
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde_json = "1.0.151"
 sha2 = "0.11.0"
 thiserror = "2.0.20"
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
 zeroize = { version = "1.9.0", features = ["derive"] }
+
+[dev-dependencies]
+# `exchange_rate`'s own `coingecko` test module spins up a real local HTTP
+# server standing in for Coingecko (`spawn_price_server`) - needs a real
+# router/runtime, test-only.
+axum = "0.8.9"
+tokio = { version = "1.53.1", features = ["full"] }

@@ -11,6 +11,7 @@
 //! dependency once `main.rs` needed to depend on both.
 
 pub mod auth;
+pub mod exchange_rate;
 pub mod key_custody;
 pub mod migrations;
 pub mod network;
