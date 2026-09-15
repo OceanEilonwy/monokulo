@@ -40,7 +40,103 @@ Key architectural facts an agent should not have to rediscover:
 - No implementation code has been written yet. WBS item 0.1 (workspace
   setup) has not started as of this note.
 
-## Progress log
+- New `tests/e2e_dashboard_stagenet.rs` (user-directed - the original ask
+  this turn, resumed after the `/status` page interjection above): a full
+  e2e test spanning the *whole* hosted stack, not just the engine -
+  real account creation, the real "advanced connect" form flow, a real
+  stagenet payment, and a real assertion against the real control-plane
+  dashboard's rendered HTML that the order and its total-received-XMR
+  figure are both correct. Complements (does not replace)
+  `tests/e2e_stagenet.rs`, which only ever proves the *engine* detects a
+  payment - this proves a merchant using the real hosted product would
+  actually see it.
+  - Real engine, network-bound (an ephemeral `TcpListener` +
+    `axum::serve`) - has to be, since control-plane's own `EngineClient`
+    makes genuine `reqwest` calls to it, unlike every other test in this
+    repo that drives the engine in-process via `oneshot`. control-plane's
+    own side stays in-process (`tower::ServiceExt::oneshot`), matching its
+    own test suite - added as a `[dev-dependencies]` entry on the *root*
+    crate (`control-plane = { path = "control-plane" }`), confirmed safe
+    (no cycle: control-plane depends only on `shared`, never back on
+    `moneropay-core`; a path dependency's own `[dev-dependencies]` -
+    control-plane's `engine-test-support -> moneropay-core` - are never
+    pulled in when it's used as a library dependency, only when its *own*
+    tests run).
+  - Real HTTP flow against the real control-plane router: `POST
+    /dashboard/signup`, `POST /dashboard/login` (session cookie extracted
+    from the real `Set-Cookie` header), `POST /dashboard/connect` with the
+    *same* reusable merchant watch-only wallet
+    (`e2e/stagenet-wallets.json`'s `merchant` entry) `tests/e2e_stagenet.rs`
+    and `mock-woocommerce/tests/e2e_stagenet_connect_flow.rs` already use -
+    the real "advanced connect" form the user asked for, not a shortcut
+    around it. The real `pk_...` is scraped from the real rendered success
+    page, the same way a browser would show it to a merchant.
+  - A real order is created directly against the real engine's public API
+    (what a real storefront calls), paid with a genuine signed+broadcast
+    stagenet transaction via the same `support::StagenetSpendWallet`
+    `tests/e2e_stagenet.rs` uses, then the scanner is ticked in the
+    foreground (same deliberate choice that test makes, for the same
+    reason) while polling the real control-plane `GET /dashboard` - not
+    the engine's own API - until the order appears with the correct total.
+    The expected total is computed by a second, independent implementation
+    of `control_plane::http::home`'s own (private) formatting logic, not
+    by importing that exact function - so this doesn't just prove "the
+    code agrees with itself."
+  - `record_known_txid` (the shared customer wallet's atomic-write-back
+    spendable-output bookkeeping) is deliberately duplicated from
+    `tests/e2e_stagenet.rs` rather than factored into `tests/support/mod.rs`
+    - a real, stated judgment call: touching that other, real-money-costing
+    test's own file (even just to extract a helper) felt like more risk
+    than ~15 duplicated lines justified, for a change made while that
+    exact test was mid-investigation.
+  - **A real regression caught and fixed**: the `/status` page work above
+    added three new required `AppState` fields
+    (`daemons`/`scanner_status`/`scan_poll_interval_secs`) - and because
+    those live behind the `e2e` feature flag, `cargo test --workspace`
+    never actually compiles `tests/e2e_stagenet.rs` or
+    `mock-woocommerce/tests/e2e_stagenet_connect_flow.rs`, so that
+    earlier "full workspace clean" verification never actually caught that
+    it broke `tests/e2e_stagenet.rs`'s own `AppState` literal. Caught only
+    by directly attempting `cargo build --test e2e_stagenet --features e2e`
+    while working on *this* new test (which needed the same fix) - fixed
+    with the same honest, minimal addition (wire the same real daemon this
+    test already builds into the three new fields, since this test drives
+    scanning directly and never reads them, but `AppState` should still be
+    internally consistent). Re-verified `mock-woocommerce`'s own e2e test
+    binary separately - already fine, since it goes through
+    `engine-test-support`, which had already been fixed for the same
+    reason during the `/status` work itself. **Lesson for next time,
+    recorded here plainly**: `cargo build --tests --features e2e` (both at
+    the workspace root and for `mock-woocommerce`) needs to be part of the
+    real verification loop for any future `AppState`-shaped change, not
+    just the default `cargo test --workspace`.
+  - `cargo build --workspace`, `cargo test -p moneropay-core --lib` (327
+    passed, unaffected), and `cargo build --tests --features e2e` (both
+    the root crate and `mock-woocommerce`) all clean.
+  - **Live verification status**: the new parts this test actually adds -
+    real signup, real login, real advanced-connect HTTP flow creating a
+    real tenant on the real engine, real order creation against the real
+    engine's public API - were directly confirmed working via real runs
+    (visible `connected real store, public_key=...`/`created order
+    ...: 335000000 piconero to ...` output, matching the real, tuned
+    amount `e2e_stagenet.rs` also uses). The final leg (send the real
+    payment, confirm it lands on the real dashboard with the right total)
+    could not be completed this session: `StagenetSpendWallet::connect`'s
+    own initial handshake (a `monero-daemon-rpc`-crate-internal call,
+    separate from the plain RPC calls `moneropay_core::daemon_rpc::
+    RpcDaemonClient` makes, which keep working fine throughout) started
+    hanging/failing against `stagenet.xmr-tw.org` partway through this
+    work. **Directly confirmed this is a live external-infrastructure
+    condition, not a flaw in this new test**: re-ran the pre-existing,
+    previously-verified-working `tests/e2e_stagenet.rs` against the exact
+    same node and hit the identical failure at the identical call. Left
+    running in the background for up to ~9 minutes in case the node
+    recovers within this session; if it does, this entry gets a follow-up
+    with the real pass/fail result. If not: the test is real, complete,
+    and ready to run - `cargo test --test e2e_dashboard_stagenet --features e2e -- --ignored --nocapture` -
+    whenever the public stagenet node this repo already depends on for
+    every one of its real e2e tests is behaving normally again; this isn't
+    something further code changes here can fix.
 
 - `GET /status` on the **engine** (user-directed, sent mid-turn as an
   interjection ahead of the e2e-test work below, which was paused and

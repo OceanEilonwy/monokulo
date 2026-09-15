@@ -83,6 +83,22 @@ name = "e2e_stagenet"
 path = "tests/e2e_stagenet.rs"
 required-features = ["e2e"]
 
+[[test]]
+name = "e2e_dashboard_stagenet"
+path = "tests/e2e_dashboard_stagenet.rs"
+required-features = ["e2e"]
+
 [dev-dependencies]
 http-body-util = "0.1.5"
 tokio = { version = "1.53.1", features = ["rt", "macros"] }
+# Dev-only, and safe: control-plane depends only on `shared` as a real
+# dependency (never on this crate) - `control-plane -> shared`, not the
+# other way around - so this edge (`moneropay-core`(dev) -> `control-plane`)
+# creates no cycle. control-plane's own [dev-dependencies] (which do pull in
+# `engine-test-support -> moneropay-core`) are never built along this edge -
+# Cargo only ever builds a path dependency's [dependencies], never its own
+# [dev-dependencies], when it's depended on as a library by another crate.
+# Needed by tests/e2e_dashboard_stagenet.rs to drive a real control-plane
+# instance's own router directly, in the same test process as a real,
+# network-bound engine.
+control-plane = { path = "control-plane" }

@@ -38,6 +38,7 @@ use tower::ServiceExt;
 
 use moneropay_core::config::Config;
 use moneropay_core::daemon::MoneroDaemonClient;
+use moneropay_core::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use moneropay_core::daemon_rpc::RpcDaemonClient;
 use moneropay_core::exchange_rate::{parse_xmr_to_piconero, ExchangeRateProvider};
 use moneropay_core::http::rate_limit::RateLimiter;
@@ -186,6 +187,18 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
         wallet_handles,
         rate_limiter: Arc::new(RateLimiter::new(10_000)),
         configured_networks: Arc::new(HashSet::from([Network::Stagenet])),
+        // This test drives scanning directly via `run_scan_tick` below (not
+        // through `AppState` at all - see that call site's own comment), so
+        // these three exist only to satisfy `AppState`'s shape, not because
+        // this test's own logic reads them. Still wired to the same real
+        // `daemon` this test already built, rather than a disconnected
+        // placeholder, so `AppState` stays internally honest.
+        daemons: Arc::new(HashMap::from([(
+            Network::Stagenet,
+            Arc::new(FallbackDaemonClient::new(vec![FallbackNode { label: format!("{}:{}", node_cfg.host, node_cfg.port), client: daemon.clone() }])),
+        )])),
+        scanner_status: moneropay_core::scanner_status::new_scanner_status_map(),
+        scan_poll_interval_secs: 2,
     };
     let router = build_router(app_state, 1_000_000);
 
