@@ -29,6 +29,145 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **`fx_refactor.md` execution: Phase 3 done, combined with the parts of
+  Phase 4 that turned out to be inseparable from it, plus the propagation
+  through control-plane (Phase 3.3) - the engine now has genuinely zero
+  concept of fiat/FX, not even a passthrough field.** Continued
+  autonomously per the user's original "start work autonomously" - no
+  further check-ins requested or received since.
+  - **Real scope discovery before writing code**: the doc's own "14
+    NewOrder literals" estimate (from its first-draft investigation) was
+    incomplete. A fresh `grep -rc "fiat_currency:" src/*.rs src/http/*.rs`
+    found 26 real occurrences across six files - `store.rs` (8),
+    `scanner.rs` (6), `http/public.rs` (5), `templates.rs` (2),
+    `http/admin.rs` (2), and `webhook_delivery.rs` (3, not mentioned in the
+    original estimate at all). Recorded here so the "14" figure in the doc
+    itself isn't mistaken for still-accurate by whoever reads it next - the
+    doc's own stated convention is that it doesn't get edited as work
+    completes, so the correction lives here instead.
+  - **Real, discovered-during-implementation coupling between Phase 3 and
+    Phase 4, acted on rather than silently deviated from**: the engine's
+    own checkout page (`src/http/public.rs::payment_page`, via
+    `templates::CheckoutViewModel`) read `Order.fiat_amount`/`fiat_currency`
+    directly, so dropping those columns in Phase 3 would have broken it
+    outright unless Phase 4's removal of that same page landed in the same
+    pass. Rather than do the schema change and then ship a broken page for
+    one commit, did the *whole* Phase 4 checkout-page/client-library
+    removal in this same pass: deleted `src/http/public.rs::payment_page`/
+    `qr_svg_for_html`/`client_library`, `src/templates.rs` entirely (its
+    only caller), `templates/default/checkout.html.hbs`,
+    `static/moneropay-client.js`, `src/exchange_rate.rs`'s thin re-export,
+    the `[exchange_rate]` config section and its whole `ExchangeRateConfig`
+    struct/validation/tests from `src/config.rs`, the Coingecko
+    boot-time dispatch + refresh loop from `main.rs`, and
+    `AppState.exchange_rate` from the engine's own `http::AppState`. The
+    engine's public routes are now just `POST/GET .../orders`, `POST
+    .../refund-address`, and `GET /status` - no HTML surface of its own at
+    all.
+  - **A second real discovery, also acted on**: the engine's `--snippet`
+    local-admin CLI command (`src/local_admin.rs::snippet`, wired through
+    `src/cli.rs`/`src/main.rs`) generated a widget-embed snippet pointing at
+    the now-deleted `/static/moneropay-client.js` and `[exchange_rate.rates]`
+    - exactly the self-hosted-engine-plus-browser-widget story decision 3
+    killed. Removed the whole command (`Action::Snippet`, its argv parsing,
+    its help text, the `local_admin::snippet` fn and its tests) rather than
+    patch it to reference something that no longer makes sense for it to
+    reference - a self-hosted engine operator without control-plane is
+    exactly the "power user, writes a custom integration" case the user
+    described when approving this whole direction.
+  - **Pure-XMR utility functions split out of `shared::exchange_rate` into
+    a new `shared::xmr_amount` module** (`AmountError`, `parse_xmr_to_piconero`,
+    `format_piconero_as_xmr`, and the private `split_decimal` helper) -
+    these are decimal-XMR-string <-> piconero conversions with no fiat
+    concept at all (unlike `compute_xmr_amount`, which stays in
+    `exchange_rate` since it genuinely is fiat-amount-plus-rate ->
+    piconero). Existed so the engine's own `payment.zero_conf_max_xmr`
+    config parsing - a real, still-needed feature, just not a fiat one -
+    could depend on a module that itself carries zero fiat/FX concept,
+    rather than reaching into `shared::exchange_rate` (which decision 2
+    says the engine should have nothing to do with). `shared::exchange_rate`
+    re-exports these three names unchanged so every existing caller
+    (control-plane's `checkout.rs`/`exchange_rate_config.rs`) kept
+    compiling with no changes needed there.
+  - **Schema**: new engine migration
+    `migrations/0005_drop_order_fiat_columns.sql` - three plain `ALTER
+    TABLE orders DROP COLUMN` statements (no table rebuild needed, unlike
+    migration 0004's constraint change - none of the three dropped columns
+    were part of an index or constraint). Confirmed live: restarted the
+    real dev-stack engine against its own existing `moneropay.db` and the
+    migration applied cleanly with no constraint errors.
+  - **API contract**: `POST /api/v1/t/{pk}/orders` now takes
+    `{"xmr_amount_piconero": u64}` and returns no fiat fields; a caller
+    sending the old `fiat_amount`/`fiat_currency` shape gets a `422` from
+    axum's own `Json<T>` extractor (the field is simply absent, and there's
+    no `#[serde(default)]` on a required amount) before the handler ever
+    runs - confirmed live, not assumed. `xmr_amount_piconero: 0` is
+    rejected with a real `400` from the handler itself.
+  - **Propagated through control-plane (Phase 3.3, same pass)**:
+    `EngineClient::create_order` takes `xmr_amount_piconero: u64` now, not
+    a fiat pair; `OrderView` lost its `fiat_currency`/`fiat_amount` fields
+    entirely. `http::pay::create_order` (control-plane's own public
+    endpoint) now does the fiat->XMR computation itself and passes the
+    result straight through - it's the only rate computation left in the
+    whole system, closing the "two independently-configured rate sources"
+    inconsistency Phase 1.4's own doc comment flagged as expected-but-
+    transitional. Every other reader of engine-supplied fiat data -
+    `orders.rs`'s three call sites (list, detail, the dashboard's own
+    "create a test order" form-based `create_order`, which now also
+    computes XMR via control-plane's rate and records local metadata,
+    matching `http::pay`), `home.rs`'s dashboard-wide order feed,
+    `checkout.rs`'s payment page - now reads control-plane's own local
+    `order_fiat_metadata` exclusively, falling back to a plain `"—"` dash
+    (empty currency) for any order with no local record (created directly
+    against the engine, or predating this feature) rather than a fabricated
+    amount - checkout.rs's own module doc comment already anticipated this
+    exact fallback shape from Phase 2.
+  - **A real, live-verified end-to-end proof of the new architecture, not
+    just passing tests**: restarted the real dev-stack engine (confirmed
+    migration 0005 applies cleanly against its existing on-disk db, `POST
+    .../orders` with `xmr_amount_piconero` succeeds, the same call with the
+    old fiat shape 422s, `/pay/v1/...` and `/static/moneropay-client.js`
+    both now genuinely 404 rather than merely "not routed here anymore" in
+    theory), then hand-started control-plane with
+    `CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES='{"USD":"0.0067"}'` and ran
+    the real signup -> connect -> `POST /pay/{pk}/orders` with
+    `{"fiat_amount":"0.05","fiat_currency":"USD"}` flow end to end: got back
+    `xmr_amount_piconero: 335000000` (the known hand-computed value for
+    $0.05 at that rate), the real checkout page at
+    `/pay/{pk}/orders/{payment_id}` showed "0.05 USD" and genuinely no
+    `<nav class="site-nav">` element, the status-polling endpoint returned
+    real JSON, and the dashboard's own order list showed the same order
+    with the same fiat amount. Killed the manual processes and ran
+    `./scripts/dev-run.sh restart` afterward to restore the normal
+    script-managed stack, per this session's established housekeeping
+    practice - also deleted a stray `control_plane.db` the manual run left
+    in the worktree root (control-plane's `main.rs` opens a fixed relative
+    path when not run via the dev script).
+  - Also fixed, while working through the fallout: an engine `store.rs`
+    test (`migration_0004_rebuilds_order_payments_without_losing_existing_rows`)
+    that brought a database up to *before* migration 0004 and then called
+    the new (XMR-only) `create_order` against it - which now fails a `NOT
+    NULL` constraint on a fiat column that schema version still has, since
+    migration 0005 hasn't run yet at that point in the test. Fixed by
+    inserting that one pre-upgrade order via raw SQL (matching what a real
+    pre-upgrade database row actually looks like) instead of through the
+    new store API, which can only ever produce XMR-only rows now.
+  - Not yet done, deliberately deferred as genuinely separate scope (per
+    the doc's own phase list): full Phase 4 remainder (dropping
+    `tenants.template_dir` per decision 1 - the column still exists,
+    unused, since nothing built for this pass touches tenant schema;
+    rewriting/moving a real client-library replacement onto control-plane
+    per decision 3 - `mock-woocommerce`'s own `create_order` now calls
+    control-plane's `/pay/{pk}/orders` directly via `reqwest`, which proves
+    the endpoint but isn't itself the JS embed library a real merchant site
+    would use); Phase 5 (e2e test rework beyond the minimal fixes needed to
+    keep `tests/e2e_stagenet.rs`/`tests/e2e_dashboard_stagenet.rs` compiling
+    and passing against the new contract - `e2e_dashboard_stagenet.rs`'s
+    own order creation still goes straight to the engine, not through
+    control-plane's `/pay/{pk}/orders`, exactly as its own updated comment
+    now says); Phase 6 (docs - `docs/DESIGN.md` still describes the
+    pre-refactor architecture in places).
+
 - **`fx_refactor.md` execution: Phase 0 and Phase 1 (all of 0.1, 1.1-1.4)
   done, committed, verified live.** User confirmed all 5 open decisions
   from that doc directly (drop per-tenant checkout customization; engine
