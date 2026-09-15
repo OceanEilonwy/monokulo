@@ -23,7 +23,7 @@ use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use serde::Deserialize;
 
-use crate::templates::{ConnectViewModel, FormViewModel, LoginViewModel};
+use crate::templates::{network_selected_flags, ConnectViewModel, FormViewModel, LoginViewModel};
 
 use super::AppState;
 use super::AuthedUser;
@@ -129,10 +129,30 @@ fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>) -> Re
     Html(html).into_response()
 }
 
-fn render_connect_form(state: &AppState, error: Option<&str>) -> Response {
+/// `resubmit` is `None` on a plain `GET` (empty form, mainnet selected by
+/// default) or `Some(&form)` when re-rendering after a rejected `POST` - in
+/// which case every field the merchant typed, including the two key hex
+/// fields, is echoed straight back rather than lost. See
+/// `ConnectViewModel`'s own doc comment for why that's the right call here
+/// (these are plain-text inputs already, not password fields - echoing
+/// doesn't change what was ever visible on the merchant's own screen).
+fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&ConnectForm>) -> Response {
+    let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
+        network_selected_flags(resubmit.map(|f| f.network.as_str()).unwrap_or("mainnet"));
     let html = state
         .templates
-        .render_connect(&ConnectViewModel { error: error.map(str::to_string), public_key: None, endpoint: String::new() })
+        .render_connect(&ConnectViewModel {
+            error: error.map(str::to_string),
+            public_key: None,
+            endpoint: String::new(),
+            site_url: resubmit.map(|f| f.site_url.clone()).unwrap_or_default(),
+            view_key_hex: resubmit.map(|f| f.view_key_hex.clone()).unwrap_or_default(),
+            spend_pubkey_hex: resubmit.map(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
+            allowed_origins: resubmit.map(|f| f.allowed_origins.clone()).unwrap_or_default(),
+            network_mainnet_selected,
+            network_stagenet_selected,
+            network_testnet_selected,
+        })
         .expect("the built-in connect template must always render");
     Html(html).into_response()
 }
@@ -144,6 +164,13 @@ fn render_connect_success(state: &AppState, public_key: &str) -> Response {
             error: None,
             public_key: Some(public_key.to_string()),
             endpoint: state.engine_client.base_url().to_string(),
+            site_url: String::new(),
+            view_key_hex: String::new(),
+            spend_pubkey_hex: String::new(),
+            allowed_origins: String::new(),
+            network_mainnet_selected: false,
+            network_stagenet_selected: false,
+            network_testnet_selected: false,
         })
         .expect("the built-in connect template must always render");
     Html(html).into_response()
@@ -236,7 +263,7 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
 /// the dashboard yet, so a bare `401` here is the consistent choice rather
 /// than inventing new behavior for just this one route.
 pub async fn connect_form(State(state): State<AppState>, AuthedUser(_user, _token_hash): AuthedUser) -> Response {
-    render_connect_form(&state, None)
+    render_connect_form(&state, None, None)
 }
 
 /// `POST /dashboard/connect` (WBS 1.3.2) - the form equivalent of
@@ -261,10 +288,10 @@ pub async fn connect_submit(
 
     let fields = CreateConnectionFields {
         platform: "woocommerce".to_string(),
-        site_url: form.site_url,
-        view_key_hex: form.view_key_hex,
-        spend_pubkey_hex: form.spend_pubkey_hex,
-        network: Some(form.network),
+        site_url: form.site_url.clone(),
+        view_key_hex: form.view_key_hex.clone(),
+        spend_pubkey_hex: form.spend_pubkey_hex.clone(),
+        network: Some(form.network.clone()),
         allowed_origins,
         confirmations_required: None,
         zero_conf_max_piconero: None,
@@ -273,9 +300,9 @@ pub async fn connect_submit(
 
     match connections::create_connection_for_user(&state, &user, fields).await {
         Ok(outcome) => render_connect_success(&state, &outcome.public_key),
-        Err(CreateConnectionError::BadRequest(message)) => render_connect_form(&state, Some(&message)),
+        Err(CreateConnectionError::BadRequest(message)) => render_connect_form(&state, Some(&message), Some(&form)),
         Err(CreateConnectionError::Internal) => {
-            render_connect_form(&state, Some("Something went wrong. Please try again."))
+            render_connect_form(&state, Some("Something went wrong. Please try again."), Some(&form))
         }
     }
 }

@@ -76,6 +76,21 @@ pub struct ConnectViewModel {
     /// as the default empty string on the plain form render, where it's
     /// never used.
     pub endpoint: String,
+    /// The submitted field values, echoed back into the re-rendered form on
+    /// a validation error so a rejected submission doesn't throw away
+    /// everything the merchant typed - including the two key fields, which
+    /// are long, easy-to-mistype hex strings nobody wants to retype from
+    /// scratch after one bad character. All empty strings (and the network
+    /// flags below defaulting to mainnet) on a plain `GET` of the form.
+    /// Never populated (and never rendered - see the template's own `{{#if
+    /// public_key}}`) on a successful submission.
+    pub site_url: String,
+    pub view_key_hex: String,
+    pub spend_pubkey_hex: String,
+    pub allowed_origins: String,
+    pub network_mainnet_selected: bool,
+    pub network_stagenet_selected: bool,
+    pub network_testnet_selected: bool,
 }
 
 /// The view model the generic platform-connect confirm form (WBS 1.4.1,
@@ -92,6 +107,26 @@ pub struct PlatformConnectViewModel {
     pub return_url: String,
     pub nonce: String,
     pub error: Option<String>,
+    /// Same re-fill purpose as [`ConnectViewModel`]'s own matching fields -
+    /// see that struct's doc comment.
+    pub view_key_hex: String,
+    pub spend_pubkey_hex: String,
+    pub allowed_origins: String,
+    pub network_mainnet_selected: bool,
+    pub network_stagenet_selected: bool,
+    pub network_testnet_selected: bool,
+}
+
+/// The three `<option>` "selected" flags both connect forms' network
+/// `<select>` need, derived from a submitted (or default) network value.
+/// Handlebars-rust has no built-in string-equality helper - three plain
+/// bools computed once here is simpler and more consistent with this
+/// codebase's style than registering one. `network` not matching any known
+/// value (shouldn't happen - the `<select>` only ever offers these three -
+/// but a resubmitted form is still untrusted input) selects none of them,
+/// same as an unrecognized value would render in a plain `<select>` anyway.
+pub fn network_selected_flags(network: &str) -> (bool, bool, bool) {
+    (network == "mainnet", network == "stagenet", network == "testnet")
 }
 
 /// One row of the orders list page (WBS 1.3.3) - just the fields the table
@@ -430,6 +465,7 @@ mod tests {
                 return_url: "https://shop.example.com/settings".to_string(),
                 nonce: "nonce-abc".to_string(),
                 error: None,
+                ..Default::default()
             })
             .unwrap();
         assert!(html.contains("https://shop.example.com"));
@@ -449,10 +485,40 @@ mod tests {
                 return_url: "https://shop.example.com/settings".to_string(),
                 nonce: "nonce-abc".to_string(),
                 error: Some("bad view key hex".to_string()),
+                ..Default::default()
             })
             .unwrap();
         assert!(html.contains("bad view key hex"));
         assert!(html.contains("<form"), "the form must still be present on error");
+    }
+
+    #[test]
+    fn connect_platform_template_re_fills_every_submitted_field_when_re_rendered_after_a_rejected_submission() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine
+            .render_platform_connect(&PlatformConnectViewModel {
+                platform: "woocommerce".to_string(),
+                site_url: "https://shop.example.com".to_string(),
+                return_url: "https://shop.example.com/settings".to_string(),
+                nonce: "nonce-abc".to_string(),
+                error: Some("bad view key hex".to_string()),
+                view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707".to_string(),
+                spend_pubkey_hex: "deadbeef".to_string(),
+                allowed_origins: "https://shop.example.com".to_string(),
+                network_stagenet_selected: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(
+            html.contains(r#"value="0707070707070707070707070707070707070707070707070707070707070707""#),
+            "expected view_key_hex echoed back, got: {html}"
+        );
+        assert!(html.contains(r#"value="deadbeef""#), "expected spend_pubkey_hex echoed back, got: {html}");
+        assert!(
+            html.contains(r#"name="allowed_origins" value="https://shop.example.com""#),
+            "expected allowed_origins echoed back, got: {html}"
+        );
+        assert!(html.contains(r#"value="stagenet" selected"#), "expected the stagenet option marked selected, got: {html}");
     }
 
     #[test]
@@ -467,10 +533,47 @@ mod tests {
     fn connect_template_shows_the_error_when_present() {
         let engine = TemplateEngine::new().unwrap();
         let html = engine
-            .render_connect(&ConnectViewModel { error: Some("bad view key hex".to_string()), public_key: None, endpoint: String::new() })
+            .render_connect(&ConnectViewModel { error: Some("bad view key hex".to_string()), ..Default::default() })
             .unwrap();
         assert!(html.contains("bad view key hex"));
         assert!(html.contains("<form"), "the form must still be present on error");
+    }
+
+    /// The actual bug being fixed: a rejected submission used to lose every
+    /// field the merchant typed, forcing them to retype two long hex keys
+    /// from scratch. `error` being set must not mean these are gone.
+    #[test]
+    fn connect_template_re_fills_every_submitted_field_when_re_rendered_after_a_rejected_submission() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine
+            .render_connect(&ConnectViewModel {
+                error: Some("bad view key hex".to_string()),
+                site_url: "https://shop.example.com".to_string(),
+                view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707".to_string(),
+                spend_pubkey_hex: "deadbeef".to_string(),
+                allowed_origins: "https://shop.example.com, https://admin.example.com".to_string(),
+                network_stagenet_selected: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(html.contains(r#"value="https://shop.example.com""#), "expected site_url echoed back, got: {html}");
+        assert!(
+            html.contains(r#"value="0707070707070707070707070707070707070707070707070707070707070707""#),
+            "expected view_key_hex echoed back, got: {html}"
+        );
+        assert!(html.contains(r#"value="deadbeef""#), "expected spend_pubkey_hex echoed back, got: {html}");
+        assert!(
+            html.contains(r#"value="https://shop.example.com, https://admin.example.com""#),
+            "expected allowed_origins echoed back, got: {html}"
+        );
+        assert!(
+            html.contains(r#"value="stagenet" selected"#),
+            "expected the stagenet option marked selected, got: {html}"
+        );
+        assert!(
+            !html.contains(r#"value="mainnet" selected"#),
+            "mainnet must not stay marked selected once stagenet was actually submitted, got: {html}"
+        );
     }
 
     #[test]
@@ -481,6 +584,7 @@ mod tests {
                 error: None,
                 public_key: Some("pk_deadbeef".to_string()),
                 endpoint: "http://127.0.0.1:8080".to_string(),
+                ..Default::default()
             })
             .unwrap();
         assert!(html.contains("pk_deadbeef"));

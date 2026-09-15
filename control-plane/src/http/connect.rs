@@ -40,7 +40,7 @@ use url::Url;
 
 use crate::crypto;
 use crate::now_unix;
-use crate::templates::PlatformConnectViewModel;
+use crate::templates::{network_selected_flags, PlatformConnectViewModel};
 
 use super::connections::{self, CreateConnectionError, CreateConnectionFields};
 use super::dashboard::redirect_302;
@@ -62,6 +62,11 @@ pub struct ConnectQuery {
     pub nonce: String,
 }
 
+/// `resubmit` is `None` on a plain `GET` (empty key/origin fields, mainnet
+/// selected) or `Some(&form)` re-rendering after a rejected `POST` - see
+/// `ConnectViewModel`'s doc comment (`templates.rs`) for why every submitted
+/// field, including the two key hex fields, gets echoed back rather than
+/// lost.
 fn render_confirm_form(
     state: &AppState,
     platform: &str,
@@ -69,7 +74,10 @@ fn render_confirm_form(
     return_url: &str,
     nonce: &str,
     error: Option<&str>,
+    resubmit: Option<&ConfirmForm>,
 ) -> Response {
+    let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
+        network_selected_flags(resubmit.map(|f| f.network.as_str()).unwrap_or("mainnet"));
     let html = state
         .templates
         .render_platform_connect(&PlatformConnectViewModel {
@@ -78,6 +86,12 @@ fn render_confirm_form(
             return_url: return_url.to_string(),
             nonce: nonce.to_string(),
             error: error.map(str::to_string),
+            view_key_hex: resubmit.map(|f| f.view_key_hex.clone()).unwrap_or_default(),
+            spend_pubkey_hex: resubmit.map(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
+            allowed_origins: resubmit.map(|f| f.allowed_origins.clone()).unwrap_or_default(),
+            network_mainnet_selected,
+            network_stagenet_selected,
+            network_testnet_selected,
         })
         .expect("the built-in platform-connect template must always render");
     axum::response::Html(html).into_response()
@@ -116,7 +130,7 @@ pub async fn start(
         return redirect_302(&format!("/dashboard/login?next={}", encode_query_value(&this_url)));
     }
 
-    render_confirm_form(&state, &platform, &query.site_url, &query.return_url, &query.nonce, None)
+    render_confirm_form(&state, &platform, &query.site_url, &query.return_url, &query.nonce, None, None)
 }
 
 /// `POST /connect/{platform}`'s form fields (WBS 1.4.1, step 4) - the same
@@ -185,9 +199,9 @@ pub async fn confirm_submit(
     let fields = CreateConnectionFields {
         platform: platform.clone(),
         site_url: form.site_url.clone(),
-        view_key_hex: form.view_key_hex,
-        spend_pubkey_hex: form.spend_pubkey_hex,
-        network: Some(form.network),
+        view_key_hex: form.view_key_hex.clone(),
+        spend_pubkey_hex: form.spend_pubkey_hex.clone(),
+        network: Some(form.network.clone()),
         allowed_origins,
         confirmations_required: form.confirmations_required,
         zero_conf_max_piconero: form.zero_conf_max_piconero,
@@ -197,7 +211,15 @@ pub async fn confirm_submit(
     let outcome = match connections::create_connection_for_user(&state, &user, fields).await {
         Ok(outcome) => outcome,
         Err(CreateConnectionError::BadRequest(message)) => {
-            return render_confirm_form(&state, &platform, &form.site_url, &form.return_url, &form.nonce, Some(&message));
+            return render_confirm_form(
+                &state,
+                &platform,
+                &form.site_url,
+                &form.return_url,
+                &form.nonce,
+                Some(&message),
+                Some(&form),
+            );
         }
         Err(CreateConnectionError::Internal) => {
             return render_confirm_form(
@@ -207,6 +229,7 @@ pub async fn confirm_submit(
                 &form.return_url,
                 &form.nonce,
                 Some("Something went wrong. Please try again."),
+                Some(&form),
             );
         }
     };
@@ -222,6 +245,7 @@ pub async fn confirm_submit(
             &form.return_url,
             &form.nonce,
             Some("Something went wrong. Please try again."),
+            Some(&form),
         );
     }
 
@@ -235,6 +259,7 @@ pub async fn confirm_submit(
                 &form.return_url,
                 &form.nonce,
                 Some("Invalid return_url."),
+                Some(&form),
             );
         }
     };
@@ -783,5 +808,59 @@ mod tests {
         assert_eq!(login_response.status(), StatusCode::FOUND, "a successful login with a valid next must redirect");
         let final_location = login_response.headers().get("location").unwrap().to_str().unwrap().to_string();
         assert_eq!(final_location, original_uri, "must land back on the exact original connect URL, query params intact");
+    }
+
+    /// Same real UX bug `http/tests.rs`'s
+    /// `a_rejected_connect_submission_re_fills_every_field_the_merchant_typed`
+    /// covers for `/dashboard/connect`, here for the plugin-driven
+    /// `/connect/{platform}` confirm form: a rejected submission must not
+    /// throw away the site_url/view key/spend key/network/allowed_origins
+    /// the merchant already typed in.
+    #[tokio::test]
+    async fn a_rejected_confirm_submission_re_fills_every_field_the_merchant_typed() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "keep-my-confirm-inputs@example.com", "correct horse battery staple")
+                .await;
+
+        let response = router
+            .oneshot(form_request(
+                "/connect/woocommerce",
+                Some(&cookie),
+                &[
+                    ("site_url", "https://shop.example.com"),
+                    ("return_url", "https://shop.example.com/settings"),
+                    ("nonce", "nonce-abc"),
+                    ("view_key_hex", TEST_VIEW_KEY_HEX),
+                    // Well-formed hex, real, verified invalid curve point -
+                    // same value `http/tests.rs`'s sibling test uses.
+                    ("spend_pubkey_hex", &"ff".repeat(32)),
+                    ("network", "stagenet"),
+                    ("allowed_origins", "https://shop.example.com"),
+                ],
+            ))
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("class=\"error\""), "expected a visible error, got: {html}");
+        assert!(html.contains(&format!(r#"value="{TEST_VIEW_KEY_HEX}""#)), "expected the valid view key kept, got: {html}");
+        assert!(
+            html.contains(&format!(r#"value="{}""#, "ff".repeat(32))),
+            "expected the rejected spend key re-filled, got: {html}"
+        );
+        assert!(
+            html.contains(r#"name="allowed_origins" value="https://shop.example.com""#),
+            "expected allowed_origins re-filled, got: {html}"
+        );
+        assert!(html.contains(r#"value="stagenet" selected"#), "expected stagenet to stay selected, got: {html}");
+        // The hidden site_url/return_url/nonce fields were already always
+        // preserved (they're passed straight through, not part of this
+        // bug) - confirmed here too so a future refactor can't silently
+        // break that while fixing something else nearby.
+        assert!(html.contains(r#"name="nonce" value="nonce-abc""#));
     }
 }

@@ -42,6 +42,65 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- Real UX bug fix (user-directed, immediate follow-up to the validation
+  fix above): both connect forms (`/dashboard/connect` and
+  `/connect/{platform}`) lost every field the merchant had typed the
+  moment a submission was rejected - re-rendering an entirely blank form
+  alongside the error message, forcing a full retype of two long hex keys
+  even when only one character was wrong.
+  - Root cause: `ConnectViewModel`/`PlatformConnectViewModel`
+    (`templates.rs`) only ever carried `error` (plus `public_key`/
+    `endpoint` on success) - nothing about what was actually submitted.
+    Neither template had `value="..."` on any input, and the network
+    `<select>` always hardcoded `mainnet` as `selected` regardless of what
+    was actually chosen.
+  - Fix: both view models gained `site_url`/`view_key_hex`/
+    `spend_pubkey_hex`/`allowed_origins` plus three `network_*_selected`
+    bools (handlebars-rust has no built-in string-equality helper, so
+    these are computed server-side once via a new shared
+    `templates::network_selected_flags` rather than adding one). Both
+    `dashboard::render_connect_form` and `connect::render_confirm_form`
+    now take an `Option<&Form>` (`None` on a fresh `GET` - empty fields,
+    mainnet selected; `Some(&form)` re-rendering after a rejected `POST`)
+    and thread every submitted value straight back. Both templates got
+    `value="{{...}}"` on every input and `{{#if network_*_selected}}` on
+    each `<option>`.
+  - **Deliberately includes the two key hex fields, not just site_url/
+    network/allowed_origins** - a real judgment call, stated plainly: these
+    are plain `type="text"` inputs already fully visible on the merchant's
+    own screen the moment they typed them (not `type="password"`), and the
+    value already left the browser once in the rejected POST body - so
+    echoing it back into the same page, for the same browser session,
+    creates no new exposure. Losing a 64-character hex string the merchant
+    just pasted from their own wallet software, over a false-cautious
+    "don't echo sensitive-looking fields" instinct, was judged the clearly
+    worse outcome here.
+  - Both handlers needed their submitted-form values kept around through
+    every error-return path where they previously moved straight into
+    `CreateConnectionFields` - `connect_submit`/`confirm_submit` now
+    `.clone()` the three fields `CreateConnectionFields` also needs,
+    keeping `form` itself intact through every `render_*_form(..., Some(&form))`
+    call.
+  - 6 new tests: 2 template-render tests proving the echo (including that
+    switching to stagenet doesn't leave mainnet marked `selected` too -
+    the actual failure mode a naive "just always mark mainnet selected"
+    fix would have left in place), and 2 real end-to-end HTTP tests (one
+    per form) driving an actual rejected submission - a syntactically
+    valid but off-curve spend key, the same real bug from the fix directly
+    above this entry - through the real router and asserting every field
+    reappears in the re-rendered HTML, plus that the rejected value itself
+    (not silently dropped) is what's shown back, so the merchant can see
+    and fix exactly the field that was wrong.
+  - `cargo test -p control-plane`: 102 passed (was 98). Full
+    `cargo test --workspace` clean.
+  - Re-verified live end to end against the real running control-plane +
+    engine: real signup/login, a real rejected submission (the same
+    off-curve spend key from the validation fix above), confirmed via the
+    raw response HTML that site_url/view_key_hex/spend_pubkey_hex/
+    allowed_origins all reappear with their exact submitted values and
+    that `stagenet` (not `mainnet`) is the option actually marked
+    `selected`.
+
 - Real bug fix (user-directed: asked whether the connect forms had proper
   server-side validation + error display, specifically for the view/spend
   key hex fields). Investigated rather than assumed, and found a genuine,
