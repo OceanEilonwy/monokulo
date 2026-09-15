@@ -52,6 +52,7 @@ mod home;
 mod login;
 mod logout;
 mod orders;
+mod pay;
 pub mod rate_limit;
 mod signup;
 pub mod status_page;
@@ -63,6 +64,7 @@ use std::sync::Arc;
 use axum::Router;
 use axum::extract::FromRequestParts;
 use axum::http::{HeaderMap, StatusCode, header, request::Parts};
+use axum::middleware;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::post;
 use axum_extra::extract::CookieJar;
@@ -139,6 +141,19 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/connections/{id}/webhooks/{webhook_id}/delete", axum::routing::post(orders::webhooks_delete))
         .route("/connect/{platform}", axum::routing::get(connect::start).post(connect::confirm_submit))
         .route("/connect/{platform}/finish", post(connect::finish));
+
+    // `POST /pay/{pk}/orders` (`docs/fx_refactor.md` Phase 1.4) is
+    // control-plane's first genuinely public, unauthenticated,
+    // state-changing endpoint - a separate sub-router purely so
+    // `rate_limit::rate_limit_middleware` layers onto *only* this route,
+    // not the authenticated `/dashboard/*` routes or the admin-proxy ones
+    // above, which don't need (and shouldn't share a budget via) an
+    // IP-keyed limit - see `http::rate_limit`'s own module doc comment.
+    let pay_router = Router::new()
+        .route("/pay/{pk}/orders", post(pay::create_order))
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit::rate_limit_middleware));
+
+    let router = router.merge(pay_router);
 
     // Test-only route exercising `AuthedUser` - see its doc comment.
     // Compiled only under `#[cfg(test)]`, so it never exists in the real
@@ -233,6 +248,13 @@ pub enum ApiError {
     Conflict,
     Unauthorized,
     BadRequest(String),
+    /// Added for `http::pay`'s new public order-creation endpoint
+    /// (`docs/fx_refactor.md` Phase 1.4) - an unknown `pk_...` gets a plain
+    /// `404` with a generic message, the same enumeration-defense principle
+    /// `AuthedUser`/every dashboard route's "missing vs. not-yours" `404`
+    /// already applies, extended to "does this tenant even exist" for a
+    /// route with no owner to check against in the first place.
+    NotFound,
     Internal,
 }
 
@@ -242,6 +264,7 @@ impl IntoResponse for ApiError {
             ApiError::Conflict => (StatusCode::CONFLICT, "email already in use".to_string()),
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             ApiError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
+            ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             ApiError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string()),
         };
         (status, Json(json!({ "error": message }))).into_response()
