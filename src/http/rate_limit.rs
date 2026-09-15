@@ -1,17 +1,33 @@
-//! Per-IP rate limiting for the state-changing, necessarily-unauthenticated public
-//! endpoints (order creation chief among them - a static site has nowhere to keep a
-//! secret, so these can't require auth). See `docs/DESIGN.md` §12.
+//! Rate limiting for two genuinely different kinds of caller, each with its own
+//! limiter and its own key:
 //!
-//! Fixed-window counters, not a proper token bucket - simpler, and sufficient for
-//! "stop one source from hammering this endpoint," which is the actual goal. A
-//! smarter algorithm is a reasonable future improvement, not a v1 requirement.
+//! - **Per-IP**, for the state-changing, necessarily-unauthenticated public
+//!   endpoints (order creation chief among them - a static site has nowhere to
+//!   keep a secret, so these can't require auth) plus `/status`. See
+//!   `docs/DESIGN.md` §12.
+//! - **Per-token**, for the `sk_`-authenticated admin API. IP-based limiting is
+//!   meaningless there: a hosted control plane calls this API on behalf of
+//!   every one of *its own* users from one proxy IP, so a per-IP budget caps
+//!   all of them combined rather than any one abusive caller (a real incident -
+//!   see `work_notes.md`'s note on the control-plane status page tripping this
+//!   for a single real user). Keying on the presented `sk_...` token instead
+//!   gives each tenant its own independent budget, the same guarantee per-IP
+//!   limiting gives a direct, unproxied caller. A request with no/malformed
+//!   token still falls back to its IP (see `admin_rate_limit_middleware`) so
+//!   anonymous guessing against these endpoints is still capped by *something*.
+//!
+//! Both are fixed-window counters, not a proper token bucket - simpler, and
+//! sufficient for "stop one source from hammering this endpoint," which is the
+//! actual goal. A smarter algorithm is a reasonable future improvement, not a
+//! v1 requirement.
 
 use std::collections::HashMap;
+use std::hash::Hash;
 use std::net::{IpAddr, SocketAddr};
 use std::sync::Mutex;
 
 use axum::extract::{ConnectInfo, Request, State};
-use axum::http::StatusCode;
+use axum::http::{header, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
@@ -43,14 +59,17 @@ const PRUNE_THRESHOLD: usize = 10_000;
 /// after sweeping has demonstrably failed.
 const MAX_TRACKED_ADDRESSES: usize = PRUNE_THRESHOLD * 4;
 
-pub struct RateLimiter {
+/// Generic over the bucket key - `IpAddr` for the public per-IP limiter,
+/// `String` (the raw presented token) for the admin per-token limiter. The
+/// windowing/pruning/ceiling logic below is identical either way; only what
+/// identifies "one caller" differs.
+pub struct RateLimiter<K = IpAddr> {
     limit_per_minute: u32,
-    state: Mutex<LimiterState>,
+    state: Mutex<LimiterState<K>>,
 }
 
-#[derive(Default)]
-struct LimiterState {
-    buckets: HashMap<IpAddr, (u32, i64)>, // (count, window_start_unix)
+struct LimiterState<K> {
+    buckets: HashMap<K, (u32, i64)>, // (count, window_start_unix)
     /// Earliest time a sweep may run again. Without this, a sustained flood that
     /// holds the map above `PRUNE_THRESHOLD` with entries too fresh to remove would
     /// make every single request pay an O(n) scan - converting a memory problem into
@@ -58,14 +77,20 @@ struct LimiterState {
     next_prune_at: i64,
 }
 
-impl RateLimiter {
+impl<K> Default for LimiterState<K> {
+    fn default() -> Self {
+        LimiterState { buckets: HashMap::new(), next_prune_at: 0 }
+    }
+}
+
+impl<K: Eq + Hash + Clone> RateLimiter<K> {
     pub fn new(limit_per_minute: u32) -> Self {
         RateLimiter { limit_per_minute, state: Mutex::new(LimiterState::default()) }
     }
 
     /// Returns `true` if this request is allowed, having consumed one unit of the
     /// caller's budget for the current window; `false` if the window is exhausted.
-    pub fn check(&self, ip: IpAddr, now: i64) -> bool {
+    pub fn check(&self, key: K, now: i64) -> bool {
         let mut state = self.state.lock().unwrap();
         // Opportunistic rather than on a timer: this map is only ever touched from
         // inside this lock, so a sweep here needs no background task and no second
@@ -86,7 +111,7 @@ impl RateLimiter {
             state.buckets.clear();
             state.buckets.shrink_to_fit();
         }
-        let entry = state.buckets.entry(ip).or_insert((0, now));
+        let entry = state.buckets.entry(key).or_insert((0, now));
         if now - entry.1 >= WINDOW_SECONDS {
             *entry = (0, now);
         }
@@ -117,6 +142,35 @@ pub async fn rate_limit_middleware(State(state): State<AppState>, req: Request, 
         if !state.rate_limiter.check(ip, super::now_unix()) {
             return (StatusCode::TOO_MANY_REQUESTS, axum::Json(json!({ "error": "rate limit exceeded" }))).into_response();
         }
+    }
+    next.run(req).await
+}
+
+/// Same shape as [`rate_limit_middleware`], but for the `sk_`-authenticated admin
+/// API - keyed on the presented `Authorization: Bearer sk_...` token itself, not
+/// the source IP. See this module's own doc comment for why: a hosted control
+/// plane calls this API for many real tenants from one proxy IP, so an IP-keyed
+/// budget would cap all of them together instead of each tenant independently.
+/// A request with no/malformed `Authorization` header has no token to key on -
+/// falls back to IP (same as [`rate_limit_middleware`]) so it's still capped by
+/// *something* rather than exempted entirely; a real `sk_...` is opaque and
+/// server-minted, not guessable, so this isn't meaningfully weaker than IP-keying
+/// would be for that case. Does not itself validate the token - an invalid one
+/// still consumes its own budget bucket (keyed on its literal bytes) and is
+/// rejected downstream by `AuthedTenant`, same as a valid one would be rejected
+/// downstream for an unrelated reason; this middleware only ever answers "is this
+/// key over budget," never "is this key valid."
+pub async fn admin_rate_limit_middleware(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    let token = req.headers().get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).and_then(|v| v.strip_prefix("Bearer "));
+    let key = match token {
+        Some(token) => token.to_string(),
+        None => match req.extensions().get::<ConnectInfo<SocketAddr>>() {
+            Some(ci) => ci.0.ip().to_string(),
+            None => return next.run(req).await, // see rate_limit_middleware's own doc comment
+        },
+    };
+    if !state.admin_rate_limiter.check(key, super::now_unix()) {
+        return (StatusCode::TOO_MANY_REQUESTS, axum::Json(json!({ "error": "rate limit exceeded" }))).into_response();
     }
     next.run(req).await
 }

@@ -23,6 +23,7 @@ fn test_app_state() -> AppState {
         engine_client: EngineClient::new("http://127.0.0.1:1"),
         encryption_key: [7u8; 32],
         templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
+        status_cache: crate::http::status_page::new_status_cache(),
     }
 }
 
@@ -509,6 +510,7 @@ async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEn
         engine_client,
         encryption_key: [7u8; 32],
         templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
+        status_cache: crate::http::status_page::new_status_cache(),
     };
     (state, engine)
 }

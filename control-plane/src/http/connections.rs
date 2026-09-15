@@ -210,6 +210,7 @@ mod tests {
             engine_client,
             encryption_key: TEST_ENCRYPTION_KEY,
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
+            status_cache: crate::http::status_page::new_status_cache(),
         };
         (state, engine)
     }

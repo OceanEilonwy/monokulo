@@ -56,7 +56,7 @@ use crate::scanner_status::ScannerStatusMap;
 use crate::status::OrderStatus;
 use crate::store::{SharedStore, StoreError, Tenant};
 
-use rate_limit::{rate_limit_middleware, RateLimiter};
+use rate_limit::{admin_rate_limit_middleware, rate_limit_middleware, RateLimiter};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -79,7 +79,14 @@ pub struct AppState {
     pub key_custody_backend: String,
     pub exchange_rate: Arc<dyn ExchangeRateProvider>,
     pub wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
+    /// Per-source-IP budget for the public/unauthenticated endpoints and
+    /// `/status` - see `http::rate_limit`'s own module doc comment.
     pub rate_limiter: Arc<RateLimiter>,
+    /// Per-`sk_`-token budget for the admin API - a separate, independent
+    /// limiter from `rate_limiter` above, not a second view of the same
+    /// data. See `http::rate_limit`'s own module doc comment for why IP-
+    /// keying is the wrong shape for this particular surface.
+    pub admin_rate_limiter: Arc<RateLimiter<String>>,
     /// Which networks this instance can actually scan - i.e. which
     /// `[monero_node.<network>]` sections are configured. A tenant can only be
     /// created for a network in this set; otherwise its address would be derived
@@ -112,20 +119,19 @@ pub struct AppState {
 }
 
 pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
-    Router::new()
+    // Two sub-routers, each with its own rate-limit middleware and key - see
+    // `http::rate_limit`'s own module doc comment for why these need to be
+    // separate rather than one shared limiter over the whole API.
+    //
+    // `POST /api/v1/admin/tenants` (tenant creation) sits in the *public*
+    // group despite living under `/api/v1/admin/...`: it takes no
+    // `Authorization` header at all (see `EngineClient`'s own doc comment on
+    // why - admin-API network isolation is an ops-level concern, not one
+    // this endpoint enforces itself), so it has no token to key a per-token
+    // limit on, and it's exactly the kind of unauthenticated, state-changing
+    // request this repo's rate limiting exists to bound in the first place.
+    let public_router = Router::new()
         .route("/api/v1/admin/tenants", post(admin::create_tenant))
-        .route(
-            "/api/v1/admin/tenant",
-            get(admin::get_own_tenant).patch(admin::patch_own_tenant).delete(admin::delete_own_tenant),
-        )
-        .route("/api/v1/admin/tenant/rotate-secret", post(admin::rotate_secret))
-        .route("/api/v1/admin/tenant/orders", get(admin::list_orders))
-        .route("/api/v1/admin/tenant/orders/{payment_id}", get(admin::get_order_detail))
-        .route(
-            "/api/v1/admin/tenant/webhooks",
-            get(admin::list_webhooks).post(admin::create_webhook),
-        )
-        .route("/api/v1/admin/tenant/webhooks/{webhook_id}", delete(admin::delete_webhook))
         .route("/api/v1/t/{pk}/orders", post(public::create_order))
         .route("/api/v1/t/{pk}/orders/{payment_id}", get(public::get_order_status))
         .route(
@@ -143,7 +149,28 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         // scoped API surface, the same way a service's own `/healthz`
         // typically sits outside its versioned API.
         .route("/status", get(status_page::status_page))
-        .layer(middleware::from_fn_with_state(state.clone(), rate_limit_middleware))
+        .layer(middleware::from_fn_with_state(state.clone(), rate_limit_middleware));
+
+    // Every route here requires a real `Authorization: Bearer sk_...` (see
+    // `AuthedTenant`), so each gets its own per-token budget instead of
+    // sharing the public group's per-IP one.
+    let admin_router = Router::new()
+        .route(
+            "/api/v1/admin/tenant",
+            get(admin::get_own_tenant).patch(admin::patch_own_tenant).delete(admin::delete_own_tenant),
+        )
+        .route("/api/v1/admin/tenant/rotate-secret", post(admin::rotate_secret))
+        .route("/api/v1/admin/tenant/orders", get(admin::list_orders))
+        .route("/api/v1/admin/tenant/orders/{payment_id}", get(admin::get_order_detail))
+        .route(
+            "/api/v1/admin/tenant/webhooks",
+            get(admin::list_webhooks).post(admin::create_webhook),
+        )
+        .route("/api/v1/admin/tenant/webhooks/{webhook_id}", delete(admin::delete_webhook))
+        .layer(middleware::from_fn_with_state(state.clone(), admin_rate_limit_middleware));
+
+    public_router
+        .merge(admin_router)
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
         .layer(build_cors_layer(state.store.clone()))
         .with_state(state)

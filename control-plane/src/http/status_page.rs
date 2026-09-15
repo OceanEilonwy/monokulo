@@ -18,6 +18,21 @@
 //! error banner rather than a 500 or a fabricated "everything's fine" page -
 //! the engine being unreachable is itself the most important fact this page
 //! can report.
+//!
+//! **A real incident, and why [`StatusCache`] exists**: the nav bar's status
+//! dot (`GET /status/summary`) fires on *every* page load, for every
+//! visitor - which turned out to mean one real person just browsing the
+//! dashboard could, by itself, exceed the engine's own per-IP rate limit for
+//! `/status` (control-plane is the engine's one caller, so every browser's
+//! traffic arrives from the same source IP - see `http::rate_limit`'s own
+//! module doc comment, which this incident is also what motivated). A short,
+//! shared, in-memory TTL cache means every viewer within the TTL window gets
+//! one real engine request between them, not one each - the fix that
+//! actually addresses the request *volume*, independent of whichever engine-
+//! side limit is configured.
+
+use std::sync::{Arc, Mutex};
+use std::time::{Duration, Instant};
 
 use axum::extract::State;
 use axum::response::{Html, IntoResponse, Json, Response};
@@ -28,11 +43,50 @@ use crate::templates::{StatusNetworkView, StatusNodeView, StatusPageViewModel, S
 
 use super::AppState;
 
+/// How long a fetched status is trusted before the next request triggers a
+/// fresh one. Short enough that the page (which also has its own 30s meta
+/// refresh) never looks stale to a person watching it; long enough that a
+/// burst of page loads - many browser tabs, many users, the nav dot firing
+/// on every one - costs the engine one real request, not one per view.
+const CACHE_TTL: Duration = Duration::from_secs(10);
+
+pub struct CachedStatus {
+    fetched_at: Instant,
+    // `String`, not `EngineClientError` - the cached value has to be
+    // `Clone` to hand out without holding the lock across an `.await`, and
+    // `reqwest::Error` (inside `EngineClientError::Request`) isn't.
+    result: Result<EngineStatusResponse, String>,
+}
+
+pub type StatusCache = Arc<Mutex<Option<CachedStatus>>>;
+
+pub fn new_status_cache() -> StatusCache {
+    Arc::new(Mutex::new(None))
+}
+
+/// Returns the cached engine status if it's still fresh, otherwise fetches a
+/// real one and caches it before returning. The lock is only ever held for
+/// the plain read/write, never across the `.await` itself - two requests
+/// racing past a just-expired cache both fetch and both cache, which is
+/// simpler than a mutex-held-across-await or a dedicated refresh task, and
+/// "occasionally two real fetches instead of one" is a fine outcome for what
+/// this exists to bound (typical page-view volume, not a flood).
+async fn get_status_cached(state: &AppState) -> Result<EngineStatusResponse, String> {
+    if let Some(cached) = state.status_cache.lock().unwrap().as_ref() {
+        if cached.fetched_at.elapsed() < CACHE_TTL {
+            return cached.result.clone();
+        }
+    }
+    let result = state.engine_client.get_status().await.map_err(|e| describe_engine_error(&e));
+    *state.status_cache.lock().unwrap() = Some(CachedStatus { fetched_at: Instant::now(), result: result.clone() });
+    result
+}
+
 /// `GET /status` - the full page.
 pub async fn status_page(State(state): State<AppState>) -> Response {
-    let view_model = match state.engine_client.get_status().await {
+    let view_model = match get_status_cached(&state).await {
         Ok(status) => build_view_model(status),
-        Err(err) => StatusPageViewModel { engine_error: Some(describe_engine_error(&err)), ..Default::default() },
+        Err(message) => StatusPageViewModel { engine_error: Some(message), ..Default::default() },
     };
     let html = state.templates.render_status(&view_model).expect("the built-in status template must always render");
     Html(html).into_response()
@@ -46,7 +100,7 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
 /// distinguish "everything's fine" from "go look", the detail lives on the
 /// full page.
 pub async fn status_summary(State(state): State<AppState>) -> Response {
-    match state.engine_client.get_status().await {
+    match get_status_cached(&state).await {
         Ok(status) => {
             // `Iterator::all` is vacuously true on an empty list - an engine
             // reporting zero configured networks is not "everything's fine",
@@ -174,7 +228,33 @@ mod tests {
         use crate::engine_client::EngineClient;
         use crate::http::{AppState, build_router};
 
+        use super::super::{get_status_cached, new_status_cache};
+
         const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
+
+        /// The real fix this cache exists for (see the module's own doc
+        /// comment on the incident): a second request arriving within the
+        /// TTL must reuse the first's real fetch rather than making its own
+        /// - proven by reading the cache's own `fetched_at` back rather than
+        /// just checking both calls "look the same" (which a coincidental
+        /// same-second real refetch could also produce).
+        #[tokio::test]
+        async fn get_status_cached_reuses_a_fresh_fetch_instead_of_refetching() {
+            let engine = engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+            let state = state_with_engine(EngineClient::new(format!("http://{}", engine.addr)));
+
+            let first = get_status_cached(&state).await.expect("first fetch should succeed");
+            let fetched_at_after_first = state.status_cache.lock().unwrap().as_ref().unwrap().fetched_at;
+
+            let second = get_status_cached(&state).await.expect("second fetch should succeed");
+            let fetched_at_after_second = state.status_cache.lock().unwrap().as_ref().unwrap().fetched_at;
+
+            assert_eq!(
+                fetched_at_after_first, fetched_at_after_second,
+                "a second call within the TTL must reuse the cached fetch, not trigger a new one"
+            );
+            assert_eq!(first.generated_at, second.generated_at, "a reused cache entry must hand back the exact same response");
+        }
 
         fn state_with_engine(engine_client: EngineClient) -> AppState {
             AppState {
@@ -182,6 +262,7 @@ mod tests {
                 engine_client,
                 encryption_key: TEST_ENCRYPTION_KEY,
                 templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
+                status_cache: new_status_cache(),
             }
         }
 

@@ -53,7 +53,7 @@ mod login;
 mod logout;
 mod orders;
 mod signup;
-mod status_page;
+pub mod status_page;
 #[cfg(test)]
 mod tests;
 
@@ -90,6 +90,12 @@ pub struct AppState {
     /// since it's built once (parsing the two built-in templates) and only
     /// ever read afterward — cheap to clone into every `AppState` clone.
     pub templates: Arc<TemplateEngine>,
+    /// Short-TTL cache of the engine's own `GET /status` response, shared by
+    /// every viewer - see `http::status_page`'s own module doc comment for
+    /// why this exists (a real incident: the nav bar's status dot alone
+    /// turned "one user browsing the dashboard" into enough engine requests
+    /// to trip its own rate limiter).
+    pub status_cache: status_page::StatusCache,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -108,6 +114,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/connections/new", axum::routing::get(home::new_store_picker))
         .route("/dashboard/connections/new/woocommerce", axum::routing::get(home::woocommerce_instructions))
         .route("/dashboard/connections/{id}", axum::routing::get(orders::store_detail))
+        .route("/dashboard/connections/{id}/orders/new", axum::routing::post(orders::create_order))
         .route("/dashboard/connections/{id}/orders", axum::routing::get(orders::orders_list))
         .route("/dashboard/connections/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
         .route("/dashboard/connections/{id}/webhooks", axum::routing::get(orders::webhooks_list).post(orders::webhooks_create))

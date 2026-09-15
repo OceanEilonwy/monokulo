@@ -29,6 +29,134 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Real production incident, fixed same-day: the engine's per-IP rate
+  limiter tripped for one genuine user just browsing the dashboard**
+  (`"the engine could not be reached: the engine responded with an error
+  (429 Too Many Requests)"`, reported directly by the user). Root cause:
+  `rate_limit_middleware` (`src/http/rate_limit.rs`) wrapped *every* engine
+  route - admin API included - in one per-source-IP counter defaulting to
+  20 req/min (`src/config.rs`). Since the control-plane proxies every
+  browser's traffic to the engine from its own single IP, that "per-IP"
+  limit was really "per entire hosted product, combined" - and the new
+  nav-bar status dot (previous entry below) firing `GET /status/summary`
+  on *every* page load made it trivial for one person to exceed it.
+  Confirmed directly: 30 rapid real `curl` requests straight at the
+  engine's own `/status` all came back `429`.
+  - User asked to think through the real fix rather than just patch the
+    symptom; presented three options (raise the limit / split the limiter
+    properly / both) and they picked the full split - implemented as such,
+    not just a config bump.
+  - **Two independent limiters now**, not one shared one - see
+    `http::rate_limit`'s own rewritten module doc comment for the full
+    reasoning:
+    - `rate_limiter` (unchanged type, `RateLimiter<IpAddr>`): the public,
+      necessarily-unauthenticated surface - order creation, payment page,
+      client JS, and `/status` - plus `POST /api/v1/admin/tenants` (tenant
+      creation), which despite its `/api/v1/admin/...` path takes no auth
+      header at all and is exactly the kind of state-changing anonymous
+      request this limiter exists for.
+    - `admin_rate_limiter` (new, `RateLimiter<String>` - `RateLimiter`
+      genericized over its bucket key type, `IpAddr` the default so every
+      existing call site kept compiling unchanged): every real
+      `sk_`-authenticated `/api/v1/admin/tenant/*` route, keyed on the
+      *presented token itself*, not the source IP - so a hosted control
+      plane calling on behalf of many real tenants from one IP gives each
+      tenant its own independent budget instead of capping all of them
+      together. Falls back to IP-keying only when no/malformed
+      `Authorization` header is present (nothing to key on otherwise, but
+      still capped by *something*).
+    - New config: `server.rate_limit_per_token_per_min` (default 120,
+      validated the same `>= 1` way as the existing IP limit) alongside the
+      renamed-in-spirit (unchanged name) `rate_limit_per_ip_per_min`. Wired
+      through `init_wizard.rs` (prompt, `render_toml`, `from_existing`,
+      every scripted wizard test's transcript updated for the extra
+      field).
+    - `build_router` split into two sub-`Router`s (public/admin), each with
+      its own rate-limit middleware layer, then `.merge()`d - not one
+      router with conditional logic, so the two limiters can never
+      accidentally apply to the wrong route.
+    - New tests: `admin_rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info`
+      (mirrors the existing public-route test, now on the admin side) and,
+      the one that actually proves the fix,
+      `admin_rate_limit_middleware_keys_on_the_presented_token_not_the_source_ip`
+      - two different `sk_` tokens from the *same* source IP each get
+      their own independent budget of 1.
+  - **Second half of the fix - request volume, not just attribution**:
+    control-plane's own `GET /status`/`GET /status/summary`
+    (`control-plane/src/http/status_page.rs`) now share a short (10s TTL),
+    in-memory, per-`AppState` cache (`StatusCache`/`new_status_cache`) of
+    the engine's `GET /status` response - every viewer within the TTL
+    window costs the engine one real request, not one each. This is the
+    part that actually caps *volume* regardless of whichever engine-side
+    limit is configured; the token-split above only fixes *attribution*
+    (whose budget a request counts against), and both were needed together
+    per the chosen fix. `EngineClientError`'s `Result` isn't `Clone`
+    (`reqwest::Error` inside it isn't), so the cache stores
+    `Result<EngineStatusResponse, String>` instead - the engine DTOs
+    (`NodeStatus`/`ScannerStatusView`/`NetworkStatus`/`EngineStatusResponse`)
+    gained `#[derive(Clone)]` for this. New test
+    `get_status_cached_reuses_a_fresh_fetch_instead_of_refetching` proves
+    reuse by reading the cache's own `fetched_at` back after two calls
+    (equal `Instant`s), not just "both responses look the same" (which a
+    same-second coincidental real refetch could also produce and would
+    have been a weaker, potentially-flaky proof).
+  - **A real, mechanical gap surfaced again by this change**: adding the
+    `status_cache` field to `AppState` broke `mock-woocommerce/tests/
+    e2e_stagenet_connect_flow.rs`'s own `AppState` literal - invisible to
+    `cargo test --workspace` for the same `required-features = ["e2e"]`
+    reason recorded in the e2e-test entry below. Caught this time by
+    actually running `cargo build --tests --features e2e` in
+    `mock-woocommerce` as part of routine verification (the lesson from
+    that earlier entry, now actually followed rather than just written
+    down) - fixed with the same one-line addition as every other
+    construction site.
+  - Verified live: restarted the dev stack, ran 40 rapid real
+    `curl`s straight at the control-plane's `/status/summary`, then
+    confirmed the engine's own `/status` was **still answering 200**
+    afterward (not exhausted) - direct proof the volume fix works, not
+    just an inference from reading the code.
+  - **Separate, pre-existing issue noticed while verifying this (not part
+    of this fix's scope, flagged for later)**: the status page's
+    "stale" scanner label can read as stale even when the scanner is
+    genuinely healthy, because real scan ticks against the live public
+    stagenet nodes can legitimately take longer than the `is_stale`
+    threshold (3x the *configured* poll interval, e.g. 6s for a 2s
+    interval) assumes - confirmed directly against the raw, uncached
+    engine JSON (`tick_count: 3` after ~20s of uptime with a 2s configured
+    interval, i.e. ~7s real cadence > 6s threshold). Not a caching
+    artifact of the fix above (checked by bypassing the control-plane
+    cache entirely and hitting the engine directly) - a real gap in how
+    `is_stale` is computed, worth a follow-up (e.g. basing the threshold on
+    real observed tick duration, not just the configured interval).
+
+- Also user-directed this turn, small and unrelated to the above:
+  - Added a UI to create a real test order directly from a store's
+    dashboard page (`control-plane/templates/store_detail.html.hbs`), so a
+    merchant can try the payment flow without wiring up a real storefront
+    first. `EngineClient::create_order` calls the engine's own *public*
+    `POST /api/v1/t/{pk}/orders` (the same endpoint a real checkout would
+    call, no `sk_` needed) server-to-server; success redirects straight to
+    the new order's real detail page, a validation error (bad currency,
+    unparseable amount) re-renders the store page with the engine's real
+    message via a new `render_store_detail_page` helper shared between
+    `GET`/`POST`, same pattern `render_webhooks_page` already established.
+    4 new tests (success redirect + real detail page, engine validation
+    error surfaced, cross-user 404, plus the existing store-detail template
+    tests updated for the new `order_creation_error` field). Verified live:
+    signed up, logged in, connected a real store, submitted the dashboard
+    form, and confirmed the real resulting order's detail page - the exact
+    flow a user would take.
+  - Nav bar: moved the "status" link to the end of the link list (visually
+    the far right, since the nav is a `flex; justify-content:space-between`
+    row with the logo on the left and this link group on the right) and
+    fixed a real rendering bug: the literal space between "status" and its
+    glow dot was picking up the link's own `text-decoration: underline`,
+    drawing a visible underline segment under the gap. Fixed by giving the
+    `<a>` itself `text-decoration:none` and wrapping just the word "status"
+    in its own `<span style="text-decoration:underline">` - the dot stays
+    unstyled by any underline, and there's no literal whitespace between
+    the two inline elements in the template source.
+
 - Working in git worktree `/home/henry/Downloads/mokulo/.claude/worktrees/woocommerce-roadmap-doc`,
   branch `worktree-woocommerce-roadmap-doc`. **This branch is not pushed to
   origin** (push access denied under current credentials) — it only exists

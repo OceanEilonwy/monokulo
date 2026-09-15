@@ -69,6 +69,7 @@ fn test_app_state() -> AppState {
         // incidentally affected by rate limiting - the middleware's own behavior is
         // tested separately, end to end, in `rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info`.
         rate_limiter: Arc::new(RateLimiter::new(10_000)),
+        admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
         scanner_status: new_scanner_status_map(),
         scan_poll_interval_secs: 2,
@@ -547,12 +548,43 @@ async fn rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info(
     // router with a fabricated `ConnectInfo` extension, the way production's
     // `into_make_service_with_connect_info` would actually provide it - proving the
     // wiring, not just `RateLimiter`'s standalone logic (already covered in
-    // `rate_limit.rs`'s own unit tests).
+    // `rate_limit.rs`'s own unit tests). Uses a *public* route
+    // (`/api/v1/t/{pk}/orders/{payment_id}`) so this exercises `state.rate_limiter`
+    // specifically - `/api/v1/admin/*` now has its own, separately-tested limiter
+    // (`admin_rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info`
+    // below).
     let mut state = test_app_state();
     state.rate_limiter = Arc::new(RateLimiter::new(2));
     let router = build_router(state, 1_000_000);
 
     let peer: std::net::SocketAddr = "10.0.0.1:12345".parse().unwrap();
+    let make_request = || {
+        let mut req = Request::builder().method("GET").uri("/api/v1/t/pk_nope/orders/pay_nope").body(Body::empty()).unwrap();
+        req.extensions_mut().insert(axum::extract::ConnectInfo(peer));
+        req
+    };
+
+    let r1 = router.clone().oneshot(make_request()).await.unwrap();
+    let r2 = router.clone().oneshot(make_request()).await.unwrap();
+    let r3 = router.oneshot(make_request()).await.unwrap();
+
+    // All three get 404 (unknown tenant/order) or 429 - what matters is the third
+    // is specifically rate-limited, not merely a not-found like the first two.
+    assert_eq!(r1.status(), StatusCode::NOT_FOUND);
+    assert_eq!(r2.status(), StatusCode::NOT_FOUND);
+    assert_eq!(r3.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn admin_rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info() {
+    // Same shape as the public-route test above, but against the admin API's own
+    // separate limiter - with no `Authorization` header at all, so this exercises
+    // `admin_rate_limit_middleware`'s IP-fallback path (see its own doc comment).
+    let mut state = test_app_state();
+    state.admin_rate_limiter = Arc::new(RateLimiter::new(2));
+    let router = build_router(state, 1_000_000);
+
+    let peer: std::net::SocketAddr = "10.0.0.2:12345".parse().unwrap();
     let make_request = || {
         let mut req = Request::builder().method("GET").uri("/api/v1/admin/tenant").body(Body::empty()).unwrap();
         req.extensions_mut().insert(axum::extract::ConnectInfo(peer));
@@ -567,6 +599,40 @@ async fn rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info(
     // specifically rate-limited, not merely unauthorized like the first two.
     assert_eq!(r1.status(), StatusCode::UNAUTHORIZED);
     assert_eq!(r2.status(), StatusCode::UNAUTHORIZED);
+    assert_eq!(r3.status(), StatusCode::TOO_MANY_REQUESTS);
+}
+
+#[tokio::test]
+async fn admin_rate_limit_middleware_keys_on_the_presented_token_not_the_source_ip() {
+    // The real bug this whole change fixes: two different tenants' traffic,
+    // proxied through the *same* source IP (exactly what happens when a hosted
+    // control plane calls this API on every real user's behalf), must not share
+    // one budget - each `sk_...` gets its own.
+    let mut state = test_app_state();
+    state.admin_rate_limiter = Arc::new(RateLimiter::new(1));
+    let router = build_router(state, 1_000_000);
+
+    let peer: std::net::SocketAddr = "10.0.0.3:12345".parse().unwrap();
+    let make_request = |token: &str| {
+        let mut req = Request::builder()
+            .method("GET")
+            .uri("/api/v1/admin/tenant")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        req.extensions_mut().insert(axum::extract::ConnectInfo(peer));
+        req
+    };
+
+    // Same IP, two different (unknown, so 401 not 200) tokens - both get through
+    // the rate limiter itself, each consuming its own budget of 1.
+    let r1 = router.clone().oneshot(make_request("sk_tenant_one")).await.unwrap();
+    let r2 = router.clone().oneshot(make_request("sk_tenant_two")).await.unwrap();
+    assert_eq!(r1.status(), StatusCode::UNAUTHORIZED, "tenant one's first request must not be rate-limited");
+    assert_eq!(r2.status(), StatusCode::UNAUTHORIZED, "tenant two's own budget must be independent of tenant one's");
+
+    // Tenant one's *second* request, same IP, is over its own budget of 1.
+    let r3 = router.oneshot(make_request("sk_tenant_one")).await.unwrap();
     assert_eq!(r3.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 

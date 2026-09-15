@@ -5,6 +5,7 @@
 
 use control_plane::db::Db;
 use control_plane::engine_client::EngineClient;
+use control_plane::http::status_page::new_status_cache;
 use control_plane::http::{AppState, build_router};
 use control_plane::templates::TemplateEngine;
 
@@ -40,7 +41,7 @@ async fn main() {
     let encryption_key = encryption_key_from_env();
     let templates =
         std::sync::Arc::new(TemplateEngine::new().expect("built-in signup/login templates must parse"));
-    let app_state = AppState { db, engine_client, encryption_key, templates };
+    let app_state = AppState { db, engine_client, encryption_key, templates, status_cache: new_status_cache() };
     let router = build_router(app_state);
 
     let bind = "127.0.0.1:8081";

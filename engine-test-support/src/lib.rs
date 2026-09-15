@@ -403,6 +403,7 @@ impl TestEngineConfig {
             exchange_rate,
             wallet_handles: wallet_handles.clone(),
             rate_limiter: Arc::new(RateLimiter::new(10_000)),
+            admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
             configured_networks: Arc::new(
                 self.networks.iter().copied().collect::<HashSet<Network>>(),
             ),

@@ -139,7 +139,8 @@ impl Config {
     /// - `mempool_poll_interval_ms = 0` turns the scanner into a hot loop that
     ///   hammers the node until it rate-limits or bans this client, at which point
     ///   payments stop being detected for a reason nothing here reports.
-    /// - `rate_limit_per_ip_per_min = 0` rejects *every* request, including the
+    /// - `rate_limit_per_ip_per_min = 0` / `rate_limit_per_token_per_min = 0`
+    ///   rejects *every* request on the affected surface, including the
     ///   merchant's own - the limiter checks the count before incrementing it.
     /// - `max_body_bytes = 0` rejects every request body, i.e. all order creation.
     /// - `delivery_timeout_ms`/`max_attempts` at 0 mean no webhook is ever
@@ -224,6 +225,7 @@ impl Config {
         })?;
         require("server.worker_threads", self.server.worker_threads, 1, 1024, "at least 1")?;
         require("server.rate_limit_per_ip_per_min", self.server.rate_limit_per_ip_per_min, 1, 1_000_000, "at least 1 (0 rejects every request, including the merchant's own)")?;
+        require("server.rate_limit_per_token_per_min", self.server.rate_limit_per_token_per_min, 1, 1_000_000, "at least 1 (0 rejects every admin API request, including a legitimate tenant's own)")?;
         require("server.max_body_bytes", self.server.max_body_bytes, 256, 16 * 1024 * 1024, "at least 256 bytes and at most 16MiB")?;
 
         require("webhooks.delivery_timeout_ms", self.webhooks.delivery_timeout_ms, 100, 300_000, "at least 100ms and at most 5 minutes")?;
@@ -514,7 +516,22 @@ pub struct ServerConfig {
     /// doesn't start failing to parse, and validated so it can't hold a value that
     /// would be nonsense once it is wired up.
     pub worker_threads: usize,
+    /// Applied per source IP, to the public/unauthenticated endpoints only
+    /// (order creation, payment page, `/status`, ...) - see
+    /// `http::rate_limit`'s own module doc comment for why the `sk_`-
+    /// authenticated admin API uses a *different* limit, below, instead of
+    /// this one.
     pub rate_limit_per_ip_per_min: u32,
+    /// Applied per presented `sk_...` token to the admin API
+    /// (`/api/v1/admin/tenant/*`) - deliberately a separate, independent
+    /// budget from `rate_limit_per_ip_per_min` above: a hosted control plane
+    /// calls this API on behalf of every one of its own users from one
+    /// source IP, so an IP-keyed limit there caps all of them combined
+    /// rather than any one caller. Defaults higher than the IP limit since
+    /// it's a per-tenant budget, not a shared one - a real, expected caller
+    /// (a dashboard rendering several stores per page load) can legitimately
+    /// make several calls per view.
+    pub rate_limit_per_token_per_min: u32,
     pub max_body_bytes: usize,
 }
 
@@ -524,6 +541,7 @@ impl Default for ServerConfig {
             bind: "0.0.0.0:8443".to_string(),
             worker_threads: 2,
             rate_limit_per_ip_per_min: 20,
+            rate_limit_per_token_per_min: 120,
             max_body_bytes: 8192,
         }
     }

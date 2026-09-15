@@ -267,6 +267,7 @@ async fn main() {
         exchange_rate,
         wallet_handles: wallet_handles.clone(),
         rate_limiter: Arc::new(RateLimiter::new(config.server.rate_limit_per_ip_per_min)),
+        admin_rate_limiter: Arc::new(RateLimiter::new(config.server.rate_limit_per_token_per_min)),
         configured_networks,
         daemons: daemons.clone(),
         scanner_status: scanner_status.clone(),

@@ -202,6 +202,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         exchange_rate,
         wallet_handles: wallet_handles.clone(),
         rate_limiter: Arc::new(RateLimiter::new(10_000)),
+        admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         configured_networks: Arc::new(HashSet::from([Network::Stagenet])),
         daemons: Arc::new(HashMap::from([(Network::Stagenet, fallback_daemon)])),
         scanner_status: new_scanner_status_map(),
@@ -226,6 +227,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         engine_client: EngineClient::new(engine_base_url.clone()),
         encryption_key: [7u8; 32],
         templates: Arc::new(TemplateEngine::new().unwrap()),
+        status_cache: control_plane::http::status_page::new_status_cache(),
     };
     let cp_router = build_control_plane_router(cp_state);
 

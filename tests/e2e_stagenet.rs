@@ -186,6 +186,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
         exchange_rate,
         wallet_handles,
         rate_limiter: Arc::new(RateLimiter::new(10_000)),
+        admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         configured_networks: Arc::new(HashSet::from([Network::Stagenet])),
         // This test drives scanning directly via `run_scan_tick` below (not
         // through `AppState` at all - see that call site's own comment), so

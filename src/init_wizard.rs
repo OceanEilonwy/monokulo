@@ -195,6 +195,7 @@ pub struct WizardAnswers {
     pub server_bind: String,
     pub worker_threads: usize,
     pub rate_limit_per_ip_per_min: u32,
+    pub rate_limit_per_token_per_min: u32,
     pub max_body_bytes: usize,
     pub webhooks_allow_private_urls: bool,
     pub webhooks_delivery_timeout_ms: u64,
@@ -222,6 +223,7 @@ impl Default for WizardAnswers {
             server_bind: server.bind,
             worker_threads: server.worker_threads,
             rate_limit_per_ip_per_min: server.rate_limit_per_ip_per_min,
+            rate_limit_per_token_per_min: server.rate_limit_per_token_per_min,
             max_body_bytes: server.max_body_bytes,
             webhooks_allow_private_urls: webhooks.allow_private_urls,
             webhooks_delivery_timeout_ms: webhooks.delivery_timeout_ms,
@@ -269,6 +271,7 @@ impl WizardAnswers {
             server_bind: cfg.server.bind.clone(),
             worker_threads: cfg.server.worker_threads,
             rate_limit_per_ip_per_min: cfg.server.rate_limit_per_ip_per_min,
+            rate_limit_per_token_per_min: cfg.server.rate_limit_per_token_per_min,
             max_body_bytes: cfg.server.max_body_bytes,
             webhooks_allow_private_urls: cfg.webhooks.allow_private_urls,
             webhooks_delivery_timeout_ms: cfg.webhooks.delivery_timeout_ms,
@@ -426,7 +429,14 @@ impl WizardAnswers {
             "rate_limit_per_ip_per_min",
             self.rate_limit_per_ip_per_min,
             default_server.rate_limit_per_ip_per_min,
-            "requests allowed per source IP per minute",
+            "requests allowed per source IP per minute, on the public/unauthenticated endpoints",
+        );
+        num_line(
+            &mut out,
+            "rate_limit_per_token_per_min",
+            self.rate_limit_per_token_per_min,
+            default_server.rate_limit_per_token_per_min,
+            "requests allowed per sk_ token per minute, on the admin API",
         );
         num_line(
             &mut out,
@@ -701,7 +711,8 @@ pub async fn run_interactive<R: BufRead, W: Write>(
 
         writeln!(output, "\n-- Server settings --")?;
         answers.server_bind = prompt(output, input, "Bind address", Some(&answers.server_bind))?;
-        answers.rate_limit_per_ip_per_min = prompt_num(output, input, "Requests per source IP per minute", answers.rate_limit_per_ip_per_min)?;
+        answers.rate_limit_per_ip_per_min = prompt_num(output, input, "Requests per source IP per minute (public endpoints)", answers.rate_limit_per_ip_per_min)?;
+        answers.rate_limit_per_token_per_min = prompt_num(output, input, "Requests per sk_ token per minute (admin API)", answers.rate_limit_per_token_per_min)?;
         answers.max_body_bytes = prompt_num(output, input, "Max request body size, bytes", answers.max_body_bytes)?;
 
         writeln!(output, "\n-- Webhook settings --")?;
@@ -934,10 +945,10 @@ mod tests {
         // Advanced mode this time, so every section actually gets walked and every
         // field name is exercised by the wizard itself, not just present via a
         // default render. mode=2(advanced), node=1, test node connection=n, wallet=n,
-        // rate=y/USD/150, then 11 blank (default) answers through every advanced-mode
-        // field (confirmations, zero_conf, expiry, reorg, poll, bind, rate_limit,
-        // max_body, allow_private, timeout, max_attempts), final=y.
-        let script = format!("2\n1\nn\nn\ny\nUSD\n150\n{}y\n", "\n".repeat(11));
+        // rate=y/USD/150, then 12 blank (default) answers through every advanced-mode
+        // field (confirmations, zero_conf, expiry, reorg, poll, bind, rate_limit_ip,
+        // rate_limit_token, max_body, allow_private, timeout, max_attempts), final=y.
+        let script = format!("2\n1\nn\nn\ny\nUSD\n150\n{}y\n", "\n".repeat(12));
         let (outcome, _) = run(&script, Network::Mainnet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Written(_)));
 
@@ -946,7 +957,7 @@ mod tests {
             "host", "port", "ssl", "accept_self_signed_certs",
             "provider",
             "confirmations_required", "zero_conf_max_xmr", "order_expiry_minutes", "reorg_check_depth", "mempool_poll_interval_ms",
-            "bind", "worker_threads", "rate_limit_per_ip_per_min", "max_body_bytes",
+            "bind", "worker_threads", "rate_limit_per_ip_per_min", "rate_limit_per_token_per_min", "max_body_bytes",
             "allow_private_urls", "delivery_timeout_ms", "max_attempts",
         ];
         for field in expected_fields {
@@ -964,10 +975,11 @@ mod tests {
         // is a one-shot "add one now?" prompt, not the advanced-mode add-another
         // loop): y/EUR/200,
         // payment: confirmations=5, zero_conf=0.1, expiry=45, reorg=30, poll=2000,
-        // server: bind=127.0.0.1:9999, rate_limit=99, max_body=4096,
+        // server: bind=127.0.0.1:9999, rate_limit_ip=99, rate_limit_token=88,
+        // max_body=4096,
         // webhooks: allow_private=y, timeout=1234, attempts=3,
         // final confirm=y
-        let script = "2\n3\nnode.example.org\n18081\nn\nn\nn\nn\ny\nEUR\n200\n5\n0.1\n45\n30\n2000\n127.0.0.1:9999\n99\n4096\ny\n1234\n3\ny\n";
+        let script = "2\n3\nnode.example.org\n18081\nn\nn\nn\nn\ny\nEUR\n200\n5\n0.1\n45\n30\n2000\n127.0.0.1:9999\n99\n88\n4096\ny\n1234\n3\ny\n";
         let (outcome, _) = run(script, Network::Mainnet, &path).await;
         assert!(matches!(outcome, WizardOutcome::Written(_)));
 
@@ -983,6 +995,7 @@ mod tests {
         assert_eq!(config.payment.mempool_poll_interval_ms, 2000);
         assert_eq!(config.server.bind, "127.0.0.1:9999");
         assert_eq!(config.server.rate_limit_per_ip_per_min, 99);
+        assert_eq!(config.server.rate_limit_per_token_per_min, 88);
         assert_eq!(config.server.max_body_bytes, 4096);
         assert!(config.webhooks.allow_private_urls);
         assert_eq!(config.webhooks.delivery_timeout_ms, 1234);

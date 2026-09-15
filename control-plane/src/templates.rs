@@ -334,6 +334,12 @@ pub struct StoreDetailData {
     /// `network_selected_flags` exists), so this is `platform ==
     /// "woocommerce"` computed once here rather than in the template.
     pub is_woocommerce: bool,
+    /// Set only when the "create a test order" form on this page (see
+    /// `http/orders.rs::create_order`) was just rejected - the engine's own
+    /// validation error (an unsupported currency, an unparseable amount),
+    /// surfaced verbatim, same convention `WebhooksViewModel::error` already
+    /// applies to webhook creation. `None` on a plain page load.
+    pub order_creation_error: Option<String>,
 }
 
 /// One Monero node's row on the status page - mirrors
@@ -785,6 +791,7 @@ mod tests {
                     created_at: 1000,
                     recent_orders: vec![],
                     is_woocommerce: true,
+                    order_creation_error: None,
                 }),
             })
             .unwrap();
@@ -828,10 +835,36 @@ mod tests {
                     created_at: 1000,
                     recent_orders: vec![],
                     is_woocommerce: false,
+                    order_creation_error: None,
                 }),
             })
             .unwrap();
         assert!(html.contains("Install the"), "expected the WooCommerce onboarding steps to still be offered, got: {html}");
         assert!(!html.contains("already connected via the WooCommerce plugin"));
+    }
+
+    #[test]
+    fn store_detail_shows_the_create_order_error_when_present() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine
+            .render_store_detail(&StoreDetailViewModel {
+                store: Some(StoreDetailData {
+                    connection_id: "conn_1".to_string(),
+                    display_name: "shop.example.com".to_string(),
+                    platform: "custom".to_string(),
+                    site_url: "https://shop.example.com".to_string(),
+                    public_key: "pk_abc123".to_string(),
+                    endpoint: "http://127.0.0.1:8080".to_string(),
+                    health: "ok".to_string(),
+                    health_label: "healthy".to_string(),
+                    created_at: 1000,
+                    recent_orders: vec![],
+                    is_woocommerce: false,
+                    order_creation_error: Some("unsupported currency: XYZ".to_string()),
+                }),
+            })
+            .unwrap();
+        assert!(html.contains("unsupported currency: XYZ"), "expected the real error surfaced, got: {html}");
+        assert!(html.contains("<form"), "the create-order form must still be present on error");
     }
 }

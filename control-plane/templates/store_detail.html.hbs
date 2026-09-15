@@ -49,6 +49,20 @@
 <p><a href="/dashboard/connections/{{store.connection_id}}/orders">all orders &rarr;</a>
 &nbsp;&middot;&nbsp;<a href="/dashboard/connections/{{store.connection_id}}/webhooks">webhooks &rarr;</a></p>
 
+<h2>Create a test order</h2>
+<p class="hint">Creates a real order on the engine and takes you straight to its payment page - a quick way to
+try the flow without wiring up a real storefront yet.</p>
+{{#if store.order_creation_error}}
+<div class="error">{{store.order_creation_error}}</div>
+{{/if}}
+<form method="post" action="/dashboard/connections/{{store.connection_id}}/orders/new">
+<label for="fiat_amount">Amount</label>
+<input type="text" id="fiat_amount" name="fiat_amount" value="10.00" required>
+<label for="fiat_currency">Currency</label>
+<input type="text" id="fiat_currency" name="fiat_currency" value="USD" required>
+<button type="submit">Create order</button>
+</form>
+
 {{> integration_help public_key=store.public_key endpoint=store.endpoint is_woocommerce=store.is_woocommerce}}
 
 {{else}}

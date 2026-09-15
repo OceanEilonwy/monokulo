@@ -348,7 +348,16 @@ pub async fn store_detail(
         }
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) {
+    render_store_detail_page(&state, row, None).await
+}
+
+/// Shared by `store_detail` and `create_order` - both end by showing the
+/// same page (a fresh store overview, optionally with a create-order
+/// error), same pattern as `orders.rs`'s own `render_webhooks_page`. Takes
+/// an already ownership-checked row rather than re-checking it, since both
+/// callers have already done that.
+async fn render_store_detail_page(state: &AppState, row: StoreConnectionRow, order_creation_error: Option<String>) -> Response {
+    let sk = match decrypt_sk(state, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -380,7 +389,7 @@ pub async fn store_detail(
     let is_woocommerce = row.platform == "woocommerce";
     let view_model = crate::templates::StoreDetailViewModel {
         store: Some(crate::templates::StoreDetailData {
-            connection_id: id,
+            connection_id: row.id,
             display_name: display_name_for(&row.site_url),
             platform: row.platform,
             site_url: row.site_url,
@@ -391,11 +400,54 @@ pub async fn store_detail(
             created_at: row.created_at,
             recent_orders,
             is_woocommerce,
+            order_creation_error,
         }),
     };
     let html =
         state.templates.render_store_detail(&view_model).expect("the built-in store detail template must always render");
     Html(html).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct CreateOrderForm {
+    pub fiat_amount: String,
+    pub fiat_currency: String,
+}
+
+/// `POST /dashboard/connections/{id}/orders/new` - creates a real order
+/// directly from the dashboard, via the engine's own *public*
+/// order-creation API (`EngineClient::create_order`, `pk_`-addressed, the
+/// same endpoint a real storefront would call) - lets a merchant try the
+/// payment flow without wiring up a storefront first. Redirects straight to
+/// the new order's own detail page on success (POST-redirect-GET); a
+/// validation error (unsupported currency, unparseable amount) re-renders
+/// the store page with the engine's real message, same convention
+/// `webhooks_create` already applies.
+pub async fn create_order(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Form(form): Form<CreateOrderForm>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let fiat_amount = form.fiat_amount.trim();
+    let fiat_currency = form.fiat_currency.trim();
+    if fiat_amount.is_empty() || fiat_currency.is_empty() {
+        return render_store_detail_page(&state, row, Some("Enter an amount and a currency.".to_string())).await;
+    }
+
+    match state.engine_client.create_order(&row.tenant_public_key, fiat_amount, fiat_currency).await {
+        Ok(order) => redirect_302(&format!("/dashboard/connections/{id}/orders/{}", order.payment_id)),
+        Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
+            render_store_detail_page(&state, row, Some(message)).await
+        }
+        Err(_) => render_store_detail_page(&state, row, Some("Something went wrong. Please try again.".to_string())).await,
+    }
 }
 
 #[cfg(test)]
@@ -436,6 +488,7 @@ mod tests {
             engine_client,
             encryption_key: TEST_ENCRYPTION_KEY,
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
+            status_cache: crate::http::status_page::new_status_cache(),
         };
         (state, engine)
     }
@@ -947,6 +1000,93 @@ mod tests {
             !list_after_html.contains("https://merchant.example/to-be-deleted"),
             "expected the deleted webhook gone, got: {list_after_html}"
         );
+    }
+
+    #[tokio::test]
+    async fn creating_an_order_from_the_dashboard_redirects_to_its_real_detail_page() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "order-create@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/orders/new"),
+                &session_token,
+                &[("fiat_amount", "10.00"), ("fiat_currency", TEST_CURRENCY)],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND, "expected a redirect to the new order's own detail page");
+        let location = response.headers().get("location").unwrap().to_str().unwrap().to_string();
+        assert!(
+            location.starts_with(&format!("/dashboard/connections/{connection_id}/orders/")),
+            "expected a redirect into this store's own orders, got: {location}"
+        );
+
+        let detail_response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(location)
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail_response.status(), StatusCode::OK);
+        let html = body_text(detail_response).await;
+        assert!(html.contains(TEST_CURRENCY), "expected the real, just-created order's detail page, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn creating_an_order_with_an_unsupported_currency_shows_the_engines_real_error() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "order-create-bad-currency@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/orders/new"),
+                &session_token,
+                &[("fiat_amount", "10.00"), ("fiat_currency", "NOTREAL")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "a validation error re-renders the page, it doesn't redirect");
+        let html = body_text(response).await;
+        assert!(html.contains("unsupported currency"), "expected the engine's real validation error surfaced, got: {html}");
+        assert!(html.contains("<form"), "the create-order form must still be present, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn a_different_user_cannot_create_an_order_on_someone_elses_connection() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let owner_token =
+            signed_up_and_logged_in_session_token(&router, "order-create-owner@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &owner_token).await;
+
+        let intruder_token =
+            signed_up_and_logged_in_session_token(&router, "order-create-intruder@example.com", "correct horse battery staple").await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/orders/new"),
+                &intruder_token,
+                &[("fiat_amount", "10.00"), ("fiat_currency", TEST_CURRENCY)],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

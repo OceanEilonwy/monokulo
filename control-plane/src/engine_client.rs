@@ -186,6 +186,25 @@ impl EngineClient {
         parse_response(response).await
     }
 
+    /// `POST {base_url}/api/v1/t/{pk}/orders` — the engine's own *public*
+    /// order-creation endpoint, called here server-to-server on the
+    /// merchant's own behalf (no `Origin` header, same as a plugin/backend
+    /// caller - see `src/http/public.rs::resolve_public_tenant` at the repo
+    /// root for why an absent `Origin` skips the allowed-origins check
+    /// entirely). Lets a merchant create a real test order directly from
+    /// their dashboard without needing their own storefront wired up yet.
+    /// No auth header - this is `pk_` addressed, the same public surface a
+    /// real checkout would call.
+    pub async fn create_order(&self, pk: &str, fiat_amount: &str, fiat_currency: &str) -> Result<CreateOrderResponse, EngineClientError> {
+        let response = self
+            .http
+            .post(format!("{}/api/v1/t/{pk}/orders", self.base_url))
+            .json(&CreateOrderRequest { fiat_amount: fiat_amount.to_string(), fiat_currency: fiat_currency.to_string() })
+            .send()
+            .await?;
+        parse_response(response).await
+    }
+
     /// `GET {base_url}/status` — the engine's own live node/scanner report
     /// (`src/http/status_page.rs` at the repo root). Unauthenticated, no
     /// `sk_`/`pk_` involved — it reports on the whole instance, not any one
@@ -312,6 +331,28 @@ struct PatchTenantRequest {
     allowed_origins: Option<Vec<String>>,
 }
 
+/// Mirrors the engine's own `public::CreateOrderRequest` - only the two
+/// fields this client's `create_order` caller needs (`merchant_order_id`/
+/// `description` are left unset by omitting them, same `Option` field
+/// default-to-`None`-on-a-missing-key convention `PatchTenantRequest`
+/// already relies on).
+#[derive(Serialize)]
+struct CreateOrderRequest {
+    fiat_amount: String,
+    fiat_currency: String,
+}
+
+/// Mirrors the engine's own `public::CreateOrderResponse`.
+#[derive(Debug, Deserialize)]
+pub struct CreateOrderResponse {
+    pub payment_id: String,
+    pub address: String,
+    pub xmr_amount_piconero: u64,
+    pub fiat_amount: String,
+    pub fiat_currency: String,
+    pub expires_at: i64,
+}
+
 /// Mirrors the engine's own `WebhookView`.
 #[derive(Debug, Deserialize)]
 pub struct WebhookView {
@@ -337,8 +378,10 @@ struct CreateWebhookResponse {
 }
 
 /// Mirrors the engine's own `NodeStatus` (`src/http/status_page.rs` at the
-/// repo root) field-for-field.
-#[derive(Debug, Deserialize)]
+/// repo root) field-for-field. `Clone` so `http::status_page`'s short-TTL
+/// cache (see its own module doc comment) can hand out copies without
+/// holding its lock across an `.await`.
+#[derive(Debug, Clone, Deserialize)]
 pub struct NodeStatus {
     pub label: String,
     pub is_active: bool,
@@ -347,7 +390,7 @@ pub struct NodeStatus {
 }
 
 /// Mirrors the engine's own `ScannerStatusView`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct ScannerStatusView {
     pub ever_ticked: bool,
     pub last_tick_started_at: Option<i64>,
@@ -360,7 +403,7 @@ pub struct ScannerStatusView {
 }
 
 /// Mirrors the engine's own `NetworkStatus`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct NetworkStatus {
     pub network: String,
     pub nodes: Vec<NodeStatus>,
@@ -369,7 +412,7 @@ pub struct NetworkStatus {
 
 /// Mirrors the engine's own `EngineStatusResponse` — the whole body of
 /// `GET {base_url}/status`.
-#[derive(Debug, Deserialize)]
+#[derive(Debug, Clone, Deserialize)]
 pub struct EngineStatusResponse {
     pub networks: Vec<NetworkStatus>,
     pub poll_interval_secs: u64,
