@@ -27,59 +27,34 @@ Phase 3 to "save a step" — the whole point of Phases 1–2 is proving the
 control-plane side works before anything on the engine side becomes
 irreversible for real deployments.
 
-## Open decisions — resolve these before or during Phase 1, not silently
+## Decisions (resolved)
 
-These are real product calls this document does not make on its own
-behalf. Each names a recommendation, but the recommendation is not a
-decision.
+All five were open questions in this doc's first draft; the user resolved
+each directly before work started. Recorded here for anyone picking this
+up later, so the reasoning isn't lost even though the question isn't open
+anymore.
 
-1. **Per-tenant checkout template customization** (`tenants.template_dir`,
-   `TemplateEngine::new(custom_dir)` reading a merchant-supplied
-   `checkout.html.hbs` off disk — `src/templates.rs`/`src/store.rs` at the
-   repo root) has no equivalent in a hosted, database-backed control-plane
-   (there is no per-tenant filesystem to read from). Options: (a) drop it,
-   every control-plane checkout page looks the same, on-brand with the
-   rest of the site (matches the direction the whole control-plane visual
-   identity has taken this session); (b) replace it with a much narrower,
-   DB-backed customization (a logo URL, an accent color) rather than
-   arbitrary HTML. **Recommendation: (a) now, revisit (b) only if a real
-   merchant asks.**
-2. **Does the engine keep `fiat_amount`/`fiat_currency`/`exchange_rate` as
-   opaque, unvalidated passthrough fields on the order row** (still
-   accepted and echoed back, just never computed/interpreted by the
-   engine), **or are they removed from the engine's schema and API
-   entirely**, with control-plane keeping its own fiat record locally,
-   joined by `payment_id`? A passthrough field is less work now but
-   contradicts "engine has no concept of FX" — a string the engine stores
-   but never validates is still a small FX-shaped concept living there.
-   **Recommendation: remove them from the engine entirely (real schema
-   migration, Phase 3) — control-plane owns this data fully, including
-   the durability trade-off that implies (see decision 4).**
-3. **`static/moneropay-client.js`** (the merchant-embeddable JS library,
-   `src/http/public.rs::client_library`) has a fiat-aware `createOrder()`
-   today. Does this move to being served *from* control-plane (its
-   `createOrder` calls control-plane's new order-creation endpoint), or
-   does the engine keep serving a much thinner, XMR-only version of it for
-   the power-user self-host case? **Recommendation: move it to
-   control-plane entirely, alongside the checkout page it exists to embed
-   — a self-hoster without control-plane is already expected to write a
-   custom integration per this refactor's own stated scope, so a thinner
-   engine-side JS library would serve nobody the WBS actually targets.**
-4. **Durability of control-plane's own fiat records.** Once fiat data
-   lives only in control-plane's database (decision 2), it's no longer
-   recoverable from the engine if control-plane's own DB is ever lost —
-   the engine would still truthfully report XMR amounts and payment
-   status, but the fiat price/currency a customer was originally quoted
-   would be gone. Confirm this is an acceptable trade for how
-   control-plane's database is actually operated (backups, etc.) before
-   Phase 3 removes the engine-side copy.
-5. **API versioning for the breaking change.** This project has no
-   production traffic on the current fiat-aware `POST /api/v1/t/{pk}/orders`
-   contract yet (`docs/WOOCOMMERCE_WBS.md`'s own framing: pre-private-beta).
-   **Recommendation: break the contract in place, no `/api/v2/` prefix —
-   document it loudly (changelog, this file, `docs/DESIGN.md`) instead of
-   carrying version-negotiation complexity for zero real consumers.**
-   Revisit if that assumption turns out to be wrong.
+1. **Per-tenant checkout template customization: dropped.** Every
+   control-plane checkout page looks the same, on-brand with the rest of
+   the site. `tenants.template_dir` and its whole read-from-disk
+   customization path are removed, not replaced with a narrower
+   DB-backed version — revisit only if a real merchant asks later.
+2. **The engine keeps no concept of fiat/exchange-rate at all.** Not even
+   as an opaque passthrough field — `fiat_amount`/`fiat_currency`/
+   `exchange_rate` are removed from the engine's schema and API entirely
+   (Phase 3/4). Control-plane owns this data fully.
+3. **`static/moneropay-client.js` moves to control-plane.** Served from
+   there, `createOrder()` calling control-plane's own order-creation
+   endpoint. The engine keeps no client library at all — a self-hoster
+   without control-plane writes their own integration.
+4. **Control-plane owning the only copy of fiat order records is
+   accepted.** The Monero amount (on the engine) is the source of truth;
+   the fiat price a customer was quoted is control-plane's own record to
+   keep durable, not the engine's problem.
+5. **No API version bump — hard break in place, still under `/api/v1/`.**
+   No production traffic on the current contract yet; document the break
+   loudly (this file, `docs/DESIGN.md`, a changelog note) instead of
+   carrying version-negotiation complexity for zero real consumers.
 
 ---
 
