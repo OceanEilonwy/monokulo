@@ -9,6 +9,9 @@ axum = "0.8.9"
 axum-extra = { version = "0.12.6", features = ["cookie"] }
 handlebars = "6.4.4"
 hex = "0.4.3"
+# `http::checkout`'s QR code rendering (`docs/fx_refactor.md` Phase 2.1) -
+# same version/feature set the engine's own (soon-removed) equivalent uses.
+qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }

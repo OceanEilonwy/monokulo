@@ -28,6 +28,8 @@ const NEW_STORE_PICKER_TEMPLATE: &str = include_str!("../templates/new_store_pic
 const WOOCOMMERCE_INSTRUCTIONS_TEMPLATE: &str = include_str!("../templates/woocommerce_instructions.html.hbs");
 const STORE_DETAIL_TEMPLATE: &str = include_str!("../templates/store_detail.html.hbs");
 const STATUS_TEMPLATE: &str = include_str!("../templates/status.html.hbs");
+const CHECKOUT_TEMPLATE: &str = include_str!("../templates/checkout.html.hbs");
+const CHECKOUT_NOT_FOUND_TEMPLATE: &str = include_str!("../templates/checkout_not_found.html.hbs");
 
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateError {
@@ -504,6 +506,44 @@ pub struct NavOnlyViewModel {
     pub logged_in: bool,
 }
 
+/// One payment row on the checkout page's payments table
+/// (`docs/fx_refactor.md` Phase 2.2) - mirrors the engine's own (soon-
+/// removed) `PaymentViewModel` field-for-field.
+#[derive(Debug, Serialize)]
+pub struct CheckoutPaymentViewModel {
+    pub txid_short: String,
+    pub amount_xmr: String,
+    pub confirmations: u64,
+    pub is_zero_conf: bool,
+}
+
+/// The view model `GET /pay/{pk}/orders/{payment_id}` takes - mirrors the
+/// engine's own (soon-removed) `CheckoutViewModel` field-for-field, with
+/// one addition (`pk`, needed by the page's own polling script to build
+/// its status-check URL) and no `logged_in` at all (this page carries no
+/// site nav - see `http::checkout`'s own module doc comment for why).
+#[derive(Debug, Serialize)]
+pub struct CheckoutViewModel {
+    pub payment_id: String,
+    pub status: String,
+    pub status_label: String,
+    pub status_class: String,
+    pub address: String,
+    pub qr_code_svg: String,
+    pub xmr_amount: String,
+    pub amount_received_xmr: String,
+    pub fiat_amount: String,
+    pub fiat_currency: String,
+    pub confirmations: u64,
+    pub confirmations_required: u64,
+    pub is_terminal: bool,
+    pub double_spend_detected_at: Option<i64>,
+    pub expires_at: i64,
+    pub merchant_order_id: Option<String>,
+    pub pk: String,
+    pub payments: Vec<CheckoutPaymentViewModel>,
+}
+
 pub struct TemplateEngine {
     handlebars: Handlebars<'static>,
 }
@@ -535,6 +575,8 @@ impl TemplateEngine {
         handlebars.register_template_string("woocommerce_instructions", WOOCOMMERCE_INSTRUCTIONS_TEMPLATE)?;
         handlebars.register_template_string("store_detail", STORE_DETAIL_TEMPLATE)?;
         handlebars.register_template_string("status", STATUS_TEMPLATE)?;
+        handlebars.register_template_string("checkout", CHECKOUT_TEMPLATE)?;
+        handlebars.register_template_string("checkout_not_found", CHECKOUT_NOT_FOUND_TEMPLATE)?;
         Ok(TemplateEngine { handlebars })
     }
 
@@ -588,6 +630,14 @@ impl TemplateEngine {
 
     pub fn render_status(&self, data: &StatusPageViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("status", data)?)
+    }
+
+    pub fn render_checkout(&self, data: &CheckoutViewModel) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("checkout", data)?)
+    }
+
+    pub fn render_checkout_not_found(&self) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("checkout_not_found", &())?)
     }
 }
 

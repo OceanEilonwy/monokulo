@@ -393,6 +393,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "monero",
+ "qrcode",
  "reqwest",
  "rusqlite",
  "serde",

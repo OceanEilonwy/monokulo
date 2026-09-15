@@ -1,0 +1,195 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pay with Monero</title>
+{{> styles}}
+<style>
+/* This page is meant to be embedded in a merchant's own checkout flow via
+   iframe - deliberately no site nav partial included, no top bar, nothing
+   that reads as "you've left the merchant's site". Just the payment
+   widget itself. */
+body { padding: 1rem; }
+.checkout-card { max-width: 420px; margin: 0 auto; }
+.status-badge {
+  display: inline-block;
+  border: 1px solid var(--line);
+  padding: 0.2em 0.7em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  font-size: 0.8em;
+  margin-bottom: 0.8em;
+}
+.status-pending, .status-unconfirmed, .status-confirming, .status-partial { background: #fff3cd; }
+.status-paid { background: #dff5d8; }
+.status-expired, .status-unknown { background: #f8d7da; }
+.amount { font-size: 1.8rem; font-weight: 700; margin: 0.2em 0; }
+.fiat-amount { color: var(--muted); margin-bottom: 1em; }
+.qr-wrap { text-align: center; margin: 1em 0; }
+.qr-wrap svg { width: 200px; height: 200px; }
+.address-box {
+  display: flex;
+  gap: 0.5em;
+  align-items: center;
+  border: 2px solid var(--line);
+  background: var(--paper-raised);
+  padding: 0.6em;
+  margin-bottom: 1em;
+}
+.address-text { font-size: 0.8em; word-break: break-all; flex: 1; }
+.copy-btn { margin-top: 0; flex-shrink: 0; }
+.progress-row { display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 0.3em; }
+.progress-bar { border: 1px solid var(--line); height: 0.6em; background: var(--paper-raised); }
+.progress-fill { height: 100%; background: var(--accent); }
+.payments-table { font-size: 0.8em; margin-top: 0.8em; }
+.meta { margin-top: 1em; font-size: 0.8em; color: var(--muted); }
+.visually-hidden {
+  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
+  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
+}
+</style>
+</head>
+<body>
+<div class="wrap checkout-card">
+
+<h1 class="visually-hidden">Monero payment of {{xmr_amount}} XMR</h1>
+
+<!-- role="status" gets an implicit aria-live="polite"/aria-atomic="true" -
+     matters here because a status transition this page detects without a
+     full reload would otherwise never be announced. -->
+<span id="status-badge" class="status-badge {{status_class}}" role="status" aria-atomic="true">{{status_label}}</span>
+
+{{#if double_spend_detected_at}}
+<div id="double-spend-banner" class="error" role="alert">
+A payment toward this order was reversed by a blockchain double-spend, detected at
+<span id="double-spend-time" data-timestamp="{{double_spend_detected_at}}">{{double_spend_detected_at}}</span>.
+{{#unless is_terminal}}This order's status above reflects only still-valid payments.{{/unless}}
+</div>
+{{/if}}
+
+<span class="visually-hidden" id="amount-label">Amount due</span>
+<div class="amount" id="xmr-amount" aria-labelledby="amount-label">{{xmr_amount}} XMR</div>
+<div class="fiat-amount">&asymp; {{fiat_amount}} {{fiat_currency}}</div>
+
+<!-- The QR code is redundant with the copyable address text right below it,
+     so it's hidden from assistive tech (qr_svg_for_html stamps
+     role="presentation" aria-hidden="true" focusable="false" onto the SVG
+     itself) rather than announced as an unlabeled image. -->
+<div class="qr-wrap">{{{qr_code_svg}}}</div>
+
+<span class="visually-hidden" id="address-label">Payment address</span>
+<div class="address-box">
+<span class="address-text" id="address" aria-labelledby="address-label">{{address}}</span>
+<button class="btn-secondary copy-btn" id="copy-btn" type="button" aria-label="Copy payment address to clipboard" aria-live="polite">Copy</button>
+</div>
+
+<div class="progress-row" aria-live="polite" aria-atomic="true">
+<span id="confirmations-label">{{confirmations}} / {{confirmations_required}} confirmations</span>
+<span id="received-label">{{amount_received_xmr}} XMR received</span>
+</div>
+<div class="progress-bar" id="progress-bar" role="progressbar" aria-labelledby="confirmations-label"
+     aria-valuemin="0" aria-valuemax="{{confirmations_required}}" aria-valuenow="{{confirmations}}"
+     aria-valuetext="{{confirmations}} of {{confirmations_required}} confirmations">
+<div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+</div>
+
+{{#if payments}}
+<table class="payments-table">
+<caption class="visually-hidden">Individual payments received toward this order</caption>
+<thead><tr><th scope="col">Tx</th><th scope="col">Amount</th><th scope="col">Confirmations</th></tr></thead>
+<tbody id="payments-body">
+{{#each payments}}
+<tr>
+<td>{{this.txid_short}}</td>
+<td>{{this.amount_xmr}} XMR</td>
+<td>{{#if this.is_zero_conf}}mempool{{else}}{{this.confirmations}}{{/if}}</td>
+</tr>
+{{/each}}
+</tbody>
+</table>
+{{/if}}
+
+<div class="meta">
+Payment ID: {{payment_id}}<br>
+{{#unless is_terminal}}Expires <span id="expires-at" data-timestamp="{{expires_at}}">{{expires_at}}</span>{{/unless}}
+</div>
+
+</div>
+
+<script>
+(function () {
+  var isTerminal = {{#if is_terminal}}true{{else}}false{{/if}};
+  var confirmationsRequired = {{confirmations_required}};
+  var statusUrl = '/pay/{{pk}}/orders/{{payment_id}}/status';
+
+  function formatTimestamp(el) {
+    var ts = el.getAttribute('data-timestamp');
+    if (!ts) return;
+    var date = new Date(parseInt(ts, 10) * 1000);
+    el.textContent = date.toLocaleString();
+  }
+  document.querySelectorAll('[data-timestamp]').forEach(formatTimestamp);
+
+  document.getElementById('copy-btn').addEventListener('click', function () {
+    var text = document.getElementById('address').textContent;
+    navigator.clipboard.writeText(text).then(function () {
+      var btn = document.getElementById('copy-btn');
+      var original = btn.textContent;
+      btn.textContent = 'Copied!';
+      setTimeout(function () { btn.textContent = original; }, 1500);
+    });
+  });
+
+  function postToParent(status) {
+    if (window.parent !== window) {
+      window.parent.postMessage({ source: 'moneropay', paymentId: '{{payment_id}}', status: status }, '*');
+    }
+  }
+  postToParent('{{status}}');
+
+  if (isTerminal) return;
+
+  var lastStatus = '{{status}}';
+  var lastConfirmations = {{confirmations}};
+
+  function poll() {
+    fetch(statusUrl).then(function (r) {
+      // A non-2xx response (429 from the per-IP rate limit is the realistic
+      // one - this loop polls every 3s on its own - but any transient 5xx
+      // too) still has a JSON body, so `.json()` alone would "succeed" with
+      // `data.status` simply `undefined`. Checking `r.ok` first routes any
+      // non-2xx into the same catch/retry path as a network failure.
+      if (!r.ok) { throw new Error('status check failed: ' + r.status); }
+      return r.json();
+    }).then(function (data) {
+      if (data.confirmations !== lastConfirmations) {
+        lastConfirmations = data.confirmations;
+        document.getElementById('confirmations-label').textContent =
+          data.confirmations + ' / ' + confirmationsRequired + ' confirmations';
+        var bar = document.getElementById('progress-bar');
+        bar.setAttribute('aria-valuenow', data.confirmations);
+        bar.setAttribute('aria-valuetext', data.confirmations + ' of ' + confirmationsRequired + ' confirmations');
+      }
+      var pct = Math.min(100, Math.round((data.confirmations / confirmationsRequired) * 100));
+      document.getElementById('progress-fill').style.width = pct + '%';
+
+      if (data.status !== lastStatus) {
+        // A real status transition - simplest correct thing is a reload,
+        // which re-renders the full page from the server-rendered template
+        // rather than duplicating that logic in JS.
+        postToParent(data.status);
+        window.location.reload();
+        return;
+      }
+      setTimeout(poll, 3000);
+    }).catch(function () {
+      setTimeout(poll, 5000);
+    });
+  }
+  setTimeout(poll, 3000);
+})();
+</script>
+</body>
+</html>

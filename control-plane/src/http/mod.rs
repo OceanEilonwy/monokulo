@@ -45,6 +45,7 @@
 //! [`AuthedUser`] — it's called server-to-server by the plugin, which has no
 //! control-plane session at all — and redeems that token exactly once.
 
+mod checkout;
 mod connect;
 mod connections;
 mod dashboard;
@@ -151,6 +152,8 @@ pub fn build_router(state: AppState) -> Router {
     // IP-keyed limit - see `http::rate_limit`'s own module doc comment.
     let pay_router = Router::new()
         .route("/pay/{pk}/orders", post(pay::create_order))
+        .route("/pay/{pk}/orders/{payment_id}", axum::routing::get(checkout::checkout_page))
+        .route("/pay/{pk}/orders/{payment_id}/status", axum::routing::get(checkout::checkout_status))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit::rate_limit_middleware));
 
     let router = router.merge(pay_router);
