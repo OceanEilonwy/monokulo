@@ -96,6 +96,12 @@ pub struct AppState {
     /// turned "one user browsing the dashboard" into enough engine requests
     /// to trip its own rate limiter).
     pub status_cache: status_page::StatusCache,
+    /// Fiat-to-XMR conversion for control-plane's own order-creation
+    /// endpoint (`docs/fx_refactor.md` Phase 1.4) - the engine no longer
+    /// has any concept of this (per that document's own resolved
+    /// decisions), so control-plane computes the XMR amount itself before
+    /// ever calling the engine.
+    pub exchange_rate: Arc<dyn shared::exchange_rate::ExchangeRateProvider>,
 }
 
 pub fn build_router(state: AppState) -> Router {

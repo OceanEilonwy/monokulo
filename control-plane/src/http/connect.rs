@@ -585,6 +585,16 @@ mod tests {
     const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
     const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
 
+    /// A fixed 1-XMR-per-unit `FixedRateProvider` for tests that don't
+    /// actually exercise fiat conversion, just need `AppState.exchange_rate`
+    /// populated with something real - see `AppState`'s own doc comment.
+    fn test_exchange_rate_provider() -> std::sync::Arc<dyn shared::exchange_rate::ExchangeRateProvider> {
+        std::sync::Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
+            "USD".to_string(),
+            1_000_000_000_000u64,
+        )])))
+    }
+
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
         let engine = engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
@@ -594,6 +604,7 @@ mod tests {
             encryption_key: TEST_ENCRYPTION_KEY,
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
             status_cache: crate::http::status_page::new_status_cache(),
+            exchange_rate: test_exchange_rate_provider(),
         };
         (state, engine)
     }

@@ -11,6 +11,7 @@
 pub mod crypto;
 pub mod db;
 pub mod engine_client;
+pub mod exchange_rate_config;
 pub mod http;
 pub mod templates;
 

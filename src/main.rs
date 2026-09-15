@@ -24,6 +24,7 @@ use moneropay_core::scanner::{revalidate_recent_double_spend_voids, run_scan_tic
 use moneropay_core::scanner_status::{self, ScannerStatusMap};
 use moneropay_core::store::{NewTenant, SharedStore, Store};
 use moneropay_core::webhook_delivery::run_delivery_tick;
+use shared::supervise::supervise;
 
 /// All argv parsing lives in `moneropay_core::cli` (a lib module, unit-testable
 /// the normal way) - this function is just the untestable-by-nature glue that
@@ -319,43 +320,14 @@ async fn main() {
         .expect("server error");
 }
 
-/// Runs a background loop under a supervisor that survives its death.
-///
-/// A bare `tokio::spawn` of an infinite loop has a failure mode that is uniquely bad
-/// here: a panic anywhere inside the task kills *only* that task. The `JoinHandle` is
-/// dropped, nothing observes the error, and the HTTP server keeps serving happily -
-/// so the service goes on accepting orders and quoting addresses while no chain
-/// scanning and no webhook delivery is happening at all. Every one of those orders
-/// gets paid and never noticed. There is no signal short of a merchant eventually
-/// complaining.
-///
-/// So: log loudly, then restart. The delay is there because the most likely cause of
-/// a panic is a condition that will still hold a moment later (a poisoned lock, a
-/// node returning something unparseable), and a hot restart loop would bury the very
-/// message that explains it.
-fn supervise<F, Fut>(name: &'static str, make_loop: F)
-where
-    F: Fn() -> Fut + Send + 'static,
-    Fut: std::future::Future<Output = ()> + Send + 'static,
-{
-    tokio::spawn(async move {
-        loop {
-            // The inner spawn is what makes the panic catchable: a panic propagating
-            // through `.await` in *this* task would kill the supervisor too.
-            match tokio::spawn(make_loop()).await {
-                Ok(()) => eprintln!("BUG: {name} loop returned; it is not supposed to terminate. Restarting in 5s."),
-                Err(e) if e.is_panic() => {
-                    eprintln!("FATAL: {name} loop PANICKED: {e}. No {name} work is happening until it restarts. Restarting in 5s.");
-                }
-                Err(e) => {
-                    eprintln!("{name} loop was cancelled: {e}. Not restarting.");
-                    return;
-                }
-            }
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        }
-    });
-}
+// `supervise` itself moved to `shared::supervise` (`docs/fx_refactor.md`
+// Phase 1.1, imported at the top of this file) so control-plane's own
+// background loops (its Coingecko exchange-rate refresh loop) can reuse
+// the exact same panic-catching restart shape - see that module's own doc
+// comment for the full reasoning (still applies unchanged: a bare
+// `tokio::spawn` of an infinite loop panicking would silently kill chain
+// scanning/webhook delivery while the HTTP server keeps serving happily,
+// with no signal short of a merchant eventually complaining).
 
 /// Builds the one `Arc<dyn KeyCustody>` this whole process shares - `"plain"`
 /// (the default, unchanged behavior: key material lives in this process) or

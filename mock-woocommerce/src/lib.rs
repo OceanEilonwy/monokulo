@@ -898,6 +898,10 @@ mod tests {
                 TemplateEngine::new().expect("built-in control-plane templates must parse"),
             ),
             status_cache: control_plane::http::status_page::new_status_cache(),
+            exchange_rate: Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
+                "USD".to_string(),
+                1_000_000_000_000u64,
+            )]))),
         };
         let router = build_router(state);
 

@@ -238,6 +238,14 @@ mod tests {
 
         const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
 
+        /// See `AppState`'s own doc comment on `exchange_rate`.
+        fn test_exchange_rate_provider() -> std::sync::Arc<dyn shared::exchange_rate::ExchangeRateProvider> {
+            std::sync::Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
+                "USD".to_string(),
+                1_000_000_000_000u64,
+            )])))
+        }
+
         /// The real fix this cache exists for (see the module's own doc
         /// comment on the incident): a second request arriving within the
         /// TTL must reuse the first's real fetch rather than making its own
@@ -269,6 +277,7 @@ mod tests {
                 encryption_key: TEST_ENCRYPTION_KEY,
                 templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
                 status_cache: new_status_cache(),
+                exchange_rate: test_exchange_rate_provider(),
             }
         }
 

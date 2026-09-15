@@ -17,6 +17,14 @@ use super::{AppState, build_router};
 /// `/login`, `/logout`, and the `AuthedUser` extractor, none of which ever
 /// reach the engine client. See `connections.rs`'s own tests for the
 /// `/connections` handler, which does need a real spawned engine.
+/// See `AppState`'s own doc comment on `exchange_rate`.
+fn test_exchange_rate_provider() -> std::sync::Arc<dyn shared::exchange_rate::ExchangeRateProvider> {
+    std::sync::Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
+        "USD".to_string(),
+        1_000_000_000_000u64,
+    )])))
+}
+
 fn test_app_state() -> AppState {
     AppState {
         db: Db::open_in_memory().unwrap().into_shared(),
@@ -24,6 +32,7 @@ fn test_app_state() -> AppState {
         encryption_key: [7u8; 32],
         templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
         status_cache: crate::http::status_page::new_status_cache(),
+        exchange_rate: test_exchange_rate_provider(),
     }
 }
 
@@ -614,6 +623,7 @@ async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEn
         encryption_key: [7u8; 32],
         templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
         status_cache: crate::http::status_page::new_status_cache(),
+        exchange_rate: test_exchange_rate_provider(),
     };
     (state, engine)
 }

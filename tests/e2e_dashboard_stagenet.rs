@@ -228,6 +228,14 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         encryption_key: [7u8; 32],
         templates: Arc::new(TemplateEngine::new().unwrap()),
         status_cache: control_plane::http::status_page::new_status_cache(),
+        // Unused by this test today - the real order-creation flow here still
+        // goes straight through the engine's own (still fiat-aware) public
+        // API, not yet control-plane's new one (`docs/fx_refactor.md` Phase
+        // 1.4). A fixed, inert provider is enough to satisfy `AppState`.
+        exchange_rate: Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
+            "USD".to_string(),
+            1_000_000_000_000u64,
+        )]))),
     };
     let cp_router = build_control_plane_router(cp_state);
 

@@ -17,6 +17,7 @@ pub mod migrations;
 pub mod network;
 pub mod password;
 pub mod rate_limit;
+pub mod supervise;
 pub mod webhook_sign;
 
 #[cfg(test)]

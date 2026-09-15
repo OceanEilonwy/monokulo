@@ -32,6 +32,10 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 thiserror = "2.0.20"
+# `supervise::supervise`'s own real use of `tokio::spawn`/`tokio::time::sleep`
+# (not test-only - both the engine's and control-plane's real background
+# loops call this in production).
+tokio = { version = "1.53.1", features = ["full"] }
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
 zeroize = { version = "1.9.0", features = ["derive"] }
@@ -39,6 +43,5 @@ zeroize = { version = "1.9.0", features = ["derive"] }
 [dev-dependencies]
 # `exchange_rate`'s own `coingecko` test module spins up a real local HTTP
 # server standing in for Coingecko (`spawn_price_server`) - needs a real
-# router/runtime, test-only.
+# router, test-only (the runtime itself is now a real dependency above).
 axum = "0.8.9"
-tokio = { version = "1.53.1", features = ["full"] }

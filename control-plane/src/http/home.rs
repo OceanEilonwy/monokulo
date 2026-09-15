@@ -183,6 +183,14 @@ mod tests {
         const TEST_CURRENCY: &str = "USD";
         const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
+        /// See `AppState`'s own doc comment on `exchange_rate`.
+        fn test_exchange_rate_provider() -> std::sync::Arc<dyn shared::exchange_rate::ExchangeRateProvider> {
+            std::sync::Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
+                TEST_CURRENCY.to_string(),
+                TEST_RATE_PICONERO_PER_UNIT,
+            )])))
+        }
+
         async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
             let engine = engine_test_support::TestEngineConfig::new()
                 .with_networks(&[monero::Network::Mainnet])
@@ -196,6 +204,7 @@ mod tests {
                 encryption_key: TEST_ENCRYPTION_KEY,
                 templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
                 status_cache: crate::http::status_page::new_status_cache(),
+                exchange_rate: test_exchange_rate_provider(),
             };
             (state, engine)
         }
