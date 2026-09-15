@@ -34,6 +34,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (3, include_str!("../migrations/0003_network_scoped_scanning.sql")),
     (4, include_str!("../migrations/0004_order_scoped_payment_uniqueness.sql")),
     (5, include_str!("../migrations/0005_drop_order_fiat_columns.sql")),
+    (6, include_str!("../migrations/0006_drop_tenant_template_dir.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -109,7 +110,6 @@ pub struct Tenant {
     pub zero_conf_max_piconero: Option<u64>,
     pub order_expiry_seconds: i64,
     pub allowed_origins: Vec<String>,
-    pub template_dir: Option<String>,
     pub created_at: i64,
     pub disabled_at: Option<i64>,
 }
@@ -128,8 +128,8 @@ pub struct NewTenant {
 /// A partial update to a tenant's config. Fields are plain `Option<T>` for
 /// "unchanged vs. set to a value" (there's no way to clear `allowed_origins` etc.
 /// back to empty via this API, which is fine - it's never meant to be empty).
-/// `zero_conf_max_piconero` and `template_dir` are the two fields that legitimately
-/// need to be *cleared* to `NULL`, so they get an explicit `_set` flag alongside the
+/// `zero_conf_max_piconero` is the one field that legitimately needs to be
+/// *cleared* to `NULL`, so it gets an explicit `_set` flag alongside the
 /// `Option<T>` value to distinguish "leave alone" from "set to None".
 #[derive(Default)]
 pub struct TenantConfigPatch {
@@ -138,8 +138,6 @@ pub struct TenantConfigPatch {
     pub zero_conf_max_piconero_set: bool,
     pub zero_conf_max_piconero: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
-    pub template_dir_set: bool,
-    pub template_dir: Option<String>,
 }
 
 pub struct CreatedTenant {
@@ -332,7 +330,6 @@ impl Store {
                 .map(|v| v as u64),
             order_expiry_seconds: row.get("order_expiry_seconds")?,
             allowed_origins,
-            template_dir: row.get("template_dir")?,
             created_at: row.get("created_at")?,
             disabled_at: row.get("disabled_at")?,
         })
@@ -429,12 +426,6 @@ impl Store {
             self.conn.execute(
                 "UPDATE tenants SET order_expiry_seconds = ?2 WHERE id = ?1",
                 params![tenant_id, v],
-            )?;
-        }
-        if patch.template_dir_set {
-            self.conn.execute(
-                "UPDATE tenants SET template_dir = ?2 WHERE id = ?1",
-                params![tenant_id, patch.template_dir],
             )?;
         }
         Ok(())

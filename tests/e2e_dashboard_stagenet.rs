@@ -148,6 +148,11 @@ async fn body_text(response: axum::response::Response) -> String {
     String::from_utf8(bytes.to_vec()).unwrap()
 }
 
+async fn body_json(response: axum::response::Response) -> Value {
+    let bytes = response.into_body().collect().await.unwrap().to_bytes();
+    serde_json::from_slice(&bytes).unwrap()
+}
+
 #[tokio::test]
 #[ignore]
 async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_received() {
@@ -224,14 +229,15 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         encryption_key: [7u8; 32],
         templates: Arc::new(TemplateEngine::new().unwrap()),
         status_cache: control_plane::http::status_page::new_status_cache(),
-        // Unused by this test today - order creation below still goes straight
-        // through the engine's own (now XMR-only) public API, not yet
-        // control-plane's own `/pay/{pk}/orders` (`docs/fx_refactor.md` Phase 5
-        // is the planned rework of this test to go through that endpoint
-        // instead). A fixed, inert provider is enough to satisfy `AppState`.
+        // `docs/fx_refactor.md` Phase 5: order creation now goes through
+        // control-plane's own `/pay/{pk}/orders`, the real path a production
+        // storefront takes - this is the rate that computation actually uses.
+        // Tuned (with the "0.01" fiat amount below) to land on the same
+        // genuinely-tiny 335_000_000-piconero target `tests/e2e_stagenet.rs`
+        // and `mock-woocommerce`'s own real-stagenet test use.
         exchange_rate: Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
             "USD".to_string(),
-            1_000_000_000_000u64,
+            33_500_000_000u64,
         )]))),
         rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
     };
@@ -306,20 +312,24 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     // holds a handle to, exactly like it would for any real caller.
     assert_eq!(wallet_handles.read().unwrap().len(), 1, "the real connect flow should have registered exactly one tenant");
 
-    // ---- 3. create a real order directly against the real engine's public API
-    // (this is what a real storefront - or the WooCommerce plugin - calls) ----
-    let http = reqwest::Client::new();
-    let order_response = http
-        .post(format!("{engine_base_url}/api/v1/t/{public_key}/orders"))
-        .json(&json!({
-            "merchant_order_id": format!("rust-dashboard-e2e-{}", now_unix()),
-            "xmr_amount_piconero": 335_000_000u64,
-        }))
-        .send()
+    // ---- 3. create a real order through control-plane's own public
+    // `/pay/{pk}/orders` (this is what a real storefront - or the
+    // WooCommerce plugin - actually calls in production; the engine's own
+    // API is XMR-only and developer-facing now, `docs/fx_refactor.md` Phase 5) ----
+    let order_response = cp_router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("POST")
+                .uri(format!("/pay/{public_key}/orders"))
+                .header("content-type", "application/json")
+                .body(Body::from(json!({ "fiat_amount": "0.01", "fiat_currency": "USD" }).to_string()))
+                .unwrap(),
+        )
         .await
-        .expect("order creation request failed");
-    assert_eq!(order_response.status(), reqwest::StatusCode::OK, "real order creation must succeed");
-    let order: Value = order_response.json().await.unwrap();
+        .unwrap();
+    assert_eq!(order_response.status(), StatusCode::OK, "real order creation through control-plane must succeed");
+    let order: Value = body_json(order_response).await;
     let payment_id = order["payment_id"].as_str().unwrap().to_string();
     let address = order["address"].as_str().unwrap().to_string();
     let amount_piconero = order["xmr_amount_piconero"].as_u64().unwrap();

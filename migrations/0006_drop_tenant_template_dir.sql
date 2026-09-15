@@ -1,0 +1,12 @@
+-- `docs/fx_refactor.md` Phase 4.1 / decision 1: per-tenant checkout template
+-- customization is dropped outright - everyone gets the same control-plane-
+-- hosted checkout UI now (`docs/fx_refactor.md` Phase 2). This column was
+-- never actually settable through the admin HTTP API (`PatchTenantRequest`
+-- never exposed it) and its only reader (`src/templates.rs`'s
+-- `TemplateEngine::new(tenant.template_dir.as_deref())`) was deleted in
+-- Phase 3/4's combined pass along with the rest of the engine's own checkout
+-- page, so this column has been dead weight since that commit landed.
+--
+-- Not part of any index or constraint (confirmed against migrations
+-- 0001-0005), so a plain `DROP COLUMN` is sufficient - no table rebuild.
+ALTER TABLE tenants DROP COLUMN template_dir;

@@ -16,6 +16,26 @@ Need to connect a second WordPress site to this same store? From that site's plu
 </ol>
 {{/if}}
 
+<p><strong>Widget embed</strong> - paste this where you want a "Pay with Monero" button on any static page:</p>
+<pre>&lt;button id="moneropay-buy-button"&gt;Pay with Monero&lt;/button&gt;
+&lt;div id="moneropay-checkout"&gt;&lt;/div&gt;
+&lt;script src="/static/moneropay-client.js"&gt;&lt;/script&gt;
+&lt;script&gt;
+document.getElementById('moneropay-buy-button').addEventListener('click', function () {
+  MoneroPay.createOrder({
+    publicKey: '{{public_key}}',
+    fiatAmount: 9.99,                         // replace with the real amount
+    fiatCurrency: 'USD',
+  }).then(function (order) {
+    MoneroPay.mount('#moneropay-checkout', order, {
+      onPaid: function () { /* e.g. window.location = '/thank-you.html'; */ },
+    });
+  });
+});
+&lt;/script&gt;</pre>
+<p class="hint">The script infers this instance's own address from its own <code>&lt;script src&gt;</code> - paste it
+verbatim, from wherever this dashboard is hosted.</p>
+
 <p><strong>Direct API integration</strong> - create an order against this same MoneroPay Cloud instance
 (not the underlying engine - this instance owns pricing and the checkout page) and redirect the buyer to the
 returned checkout link:</p>

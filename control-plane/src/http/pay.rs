@@ -121,6 +121,20 @@ pub async fn create_order(
     }
 }
 
+const CLIENT_LIBRARY_JS: &str = include_str!("../../static/moneropay-client.js");
+
+/// `GET /static/moneropay-client.js` - the thin embed library a merchant's
+/// static site `<script src>`s (`docs/fx_refactor.md` decision 3 / Phase
+/// 4.3). Moved here from the engine, which no longer has any checkout UI or
+/// fiat concept for it to talk to - this version's `createOrder`/`mount`
+/// call control-plane's own `/pay/{pk}/orders` and
+/// `/pay/{pk}/orders/{payment_id}` instead. Served from this binary rather
+/// than a CDN so a self-hoster's static site has no third-party dependency
+/// in its payment path, same reasoning the engine's original had.
+pub async fn client_library() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], CLIENT_LIBRARY_JS)
+}
+
 #[cfg(test)]
 mod tests {
     use axum::Router;
@@ -334,5 +348,30 @@ mod tests {
 
         let response = router.oneshot(create_order_request(&pk, "not-a-number", TEST_CURRENCY)).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn client_library_is_served_as_javascript_and_calls_control_planes_own_endpoints() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let req = Request::builder().method("GET").uri("/static/moneropay-client.js").body(Body::empty()).unwrap();
+        let response = router.oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers().get("content-type").unwrap(), "text/javascript; charset=utf-8");
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        let js = String::from_utf8(bytes.to_vec()).unwrap();
+        assert!(js.contains("MoneroPay"));
+        assert!(js.contains("createOrder"));
+        assert!(js.contains("mount"));
+        // The real point of this rewrite (`docs/fx_refactor.md` decision 3):
+        // it must call control-plane's own `/pay/{pk}/orders` endpoint, not
+        // the engine's old `/api/v1/t/{pk}/orders` - and the mounted iframe
+        // must point at control-plane's own checkout page, not the engine's
+        // now-deleted `/pay/v1/{pk}/{payment_id}`.
+        assert!(js.contains("/pay/\" + encodeURIComponent(publicKey) + \"/orders"), "should call control-plane's own order-creation endpoint, got: {js}");
+        assert!(js.contains("/orders/\" + encodeURIComponent(paymentId)"), "should iframe control-plane's own checkout page, got: {js}");
+        assert!(!js.contains("/api/v1/t/"), "must not reference the engine's own API directly: {js}");
+        assert!(!js.contains("/pay/v1/"), "must not reference the engine's own (deleted) checkout route: {js}");
     }
 }

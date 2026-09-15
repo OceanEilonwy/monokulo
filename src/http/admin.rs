@@ -202,8 +202,6 @@ pub async fn patch_own_tenant(
         zero_conf_max_piconero_set: req.zero_conf_max_piconero.is_some(),
         zero_conf_max_piconero: req.zero_conf_max_piconero,
         order_expiry_seconds: req.order_expiry_seconds,
-        template_dir_set: false,
-        template_dir: None,
     };
     let store = state.store.lock().unwrap();
     store.update_tenant_config(&tenant.id, patch)?;

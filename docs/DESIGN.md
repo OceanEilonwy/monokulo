@@ -162,6 +162,17 @@ Components, each with one clear owner of state:
 | Read pool | Pooled read-only SQLite connections (WAL) | Any write |
 | Webhook Delivery Worker | Outbound HTTP to merchant endpoints | Order/tenant state mutation beyond its own delivery-log rows |
 
+The diagram's "Static site (GH Pages) + client lib" box describes a self-hoster's own
+direct integration against this engine's plain JSON API (§10.3) - real, still
+supported, but no longer how the hosted SaaS product (control-plane) works.
+`docs/fx_refactor.md` moved fiat pricing, the checkout page, and the embed client
+library off this engine entirely: a merchant using control-plane has *that* service
+sitting where this diagram shows the static site talking to the engine directly, and
+control-plane is the one that talks to this engine's API on the merchant's behalf
+(§10.4, §14). This engine's own diagram and JSON API are otherwise unchanged - it
+still just watches the chain and manages orders/tenants/webhooks; fiat/checkout is
+simply no longer any part of what it does.
+
 ## 6. The `KeyCustody` Boundary
 
 **Status: implemented** (`src/key_custody/`). This section describes its role and
@@ -582,8 +593,17 @@ matter — and note that a *single* node is also the unit an eclipse attack targ
 Canonical DDL: [`migrations/0001_init.sql`](../migrations/0001_init.sql) — validated
 against a real `sqlite3` (constraints exercised live: `CHECK` on `status`,
 `UNIQUE(tenant_id, minor_index)`, `UNIQUE(txid, output_index)`, and the foreign keys).
-Reproduced here for reference; the migration file is the source of truth if these ever
-diverge.
+Reproduced here for reference; the migration files are the source of truth if these ever
+diverge — in particular this snapshot predates migrations 0002-0006 (a scanned-blocks
+`network` column, the order-payments uniqueness constraint becoming order-scoped, and
+the two `docs/fx_refactor.md` migrations below), so treat the column lists as
+illustrative of the model's shape, not a byte-for-byte current schema dump.
+
+`docs/fx_refactor.md` (Phase 3/4) dropped `orders.fiat_currency`/`fiat_amount`/
+`exchange_rate` and `tenants.template_dir` from the columns below — the engine has no
+concept of fiat/FX or per-tenant checkout customization left in it at all; `xmr_amount_piconero`
+is the sole source of truth for what an order is worth, and any fiat display is a
+control-plane concern (its own local `order_fiat_metadata` table, not part of this schema).
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -603,7 +623,6 @@ CREATE TABLE tenants (
     zero_conf_max_piconero  INTEGER,
     order_expiry_seconds    INTEGER NOT NULL DEFAULT 1800,
     allowed_origins         TEXT NOT NULL,
-    template_dir            TEXT,
     created_at              INTEGER NOT NULL,
     disabled_at             INTEGER
 );
@@ -614,9 +633,6 @@ CREATE TABLE orders (
     merchant_order_id        TEXT,
     minor_index              INTEGER NOT NULL,
     address                  TEXT NOT NULL,
-    fiat_currency            TEXT NOT NULL,
-    fiat_amount              TEXT NOT NULL,
-    exchange_rate            TEXT NOT NULL,
     xmr_amount_piconero      INTEGER NOT NULL,
     amount_received_piconero INTEGER NOT NULL DEFAULT 0,
     status                   TEXT NOT NULL DEFAULT 'pending'
@@ -729,9 +745,13 @@ speculatively (§3).
 All JSON endpoints share one version prefix, `/api/v1`, including admin routes — there
 is no principled reason to exempt admin from the same breaking-change discipline the
 public surface gets, and a reverse-proxy rule restricting admin traffic (e.g. to a LAN)
-matches on `/api/v1/admin/*` exactly as easily as on a bare `/admin/*`. The
-checkout/payment-link page is a *different kind of surface* (rendered HTML, not a
-JSON data contract) and gets its own independent version namespace, `/pay/v1/...`.
+matches on `/api/v1/admin/*` exactly as easily as on a bare `/admin/*`.
+
+The engine no longer has a checkout/payment-link page of its own at all
+(`docs/fx_refactor.md` Phase 2-4): that HTML surface, and everything fiat/FX-shaped,
+moved to control-plane, which is now the only thing that renders a page a customer's
+browser ever sees. What follows in this section is strictly the engine's own remaining
+JSON API — `xmr_amount_piconero` only, no fiat concept anywhere in it.
 
 ### 10.1 Auth model
 
@@ -771,7 +791,7 @@ every handler an already-scoped tenant context, not re-implemented per handler.
 |---|---|---|---|
 | `POST` | `/api/v1/admin/tenants` | none (DDoS layer only, §12) | `{view_key_hex, spend_pubkey_hex, network, allowed_origins[], confirmations_required?, zero_conf_max_xmr?, order_expiry_seconds?}` → `{tenant_id, public_key, secret_token}` (secret shown once) |
 | `GET` | `/api/v1/admin/tenant` | `sk_` | Own config; never returns `sealed_key_material` or the token hash |
-| `PATCH` | `/api/v1/admin/tenant` | `sk_` | Mutable fields only: `allowed_origins`, `confirmations_required`, `zero_conf_max_xmr`, `order_expiry_seconds`, `template_dir`. Key material and `public_key` are immutable — rotate by creating a new tenant |
+| `PATCH` | `/api/v1/admin/tenant` | `sk_` | Mutable fields only: `allowed_origins`, `confirmations_required`, `zero_conf_max_xmr`, `order_expiry_seconds`. Key material and `public_key` are immutable — rotate by creating a new tenant |
 | `POST` | `/api/v1/admin/tenant/rotate-secret` | `sk_` | Invalidates the old secret, returns a new one once |
 | `DELETE` | `/api/v1/admin/tenant` | `sk_` | Soft-delete: `key_custody.remove_wallet()`, set `disabled_at`; orders keep a valid FK |
 | `GET` | `/api/v1/admin/tenant/orders?status=&cursor=` | `sk_` | Paginated |
@@ -787,21 +807,31 @@ No bearer auth — scoped by `pk_` in the path plus an `allowed_origins` check o
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/api/v1/t/{pk}/orders` | `{merchant_order_id?, fiat_amount, fiat_currency, description?}` → `{payment_id, address, xmr_amount, exchange_rate, expires_at}` |
+| `POST` | `/api/v1/t/{pk}/orders` | `{merchant_order_id?, xmr_amount_piconero, description?}` → `{payment_id, address, xmr_amount_piconero, expires_at}` — the caller (in practice, control-plane's own order-creation endpoint) supplies the exact piconero amount an order is worth; the engine does no fiat lookup of any kind (`docs/fx_refactor.md` Phase 3) |
 | `GET` | `/api/v1/t/{pk}/orders/{payment_id}` | Status poll |
-| `GET` | `/api/v1/t/{pk}/orders/{payment_id}/events` | SSE, pushed by the writer actor |
 | `POST` | `/api/v1/t/{pk}/orders/{payment_id}/refund-address` | Records only; nothing ever sends it |
 
-### 10.4 Payment link / widget (`/pay/v1/{pk}/{payment_id}`)
+### 10.4 Checkout page and client library — moved off the engine
 
-One route serves both the iframe embed target *and* a standalone link a merchant hands
-a customer directly (email, chat) that "continues to work" independent of the
-merchant's own site. Both uses share the same rendering logic — `postMessage` calls to
-a parent window are harmless no-ops when there is no parent listening — so this
-deliberately avoids maintaining two near-identical template sets. Rendered from the
-tenant's `template_dir` (or the server default), showing the recomputed `status` plus,
-independently, a double-spend explanation banner whenever `double_spend_detected_at`
-is set (§7.6) — the banner's presence is not tied to which `status` is currently shown.
+Both now live on control-plane, not here (`docs/fx_refactor.md` Phases 2-4):
+
+- The checkout/payment-link page (iframe embed target and standalone customer-facing
+  link) is `GET /pay/{pk}/orders/{payment_id}` on control-plane
+  (`control-plane/src/http/checkout.rs`), not a route on this engine at all. It shows
+  the recomputed `status`, a double-spend explanation banner whenever
+  `double_spend_detected_at` is set (§7.6, unrelated to which `status` is currently
+  shown), and a fiat amount sourced entirely from control-plane's own local
+  `order_fiat_metadata` — this engine has nothing to contribute to that display since
+  it stores no fiat data. There is no per-tenant template customization any more:
+  every tenant gets the same control-plane-rendered page.
+- The embeddable widget script (`MoneroPay.createOrder()`/`.mount()`) is served from
+  control-plane at `GET /static/moneropay-client.js` and calls control-plane's own
+  `POST /pay/{pk}/orders`, not this engine's API directly.
+
+A self-hoster running the engine alone, with no control-plane in front of it, has
+neither of these — they get the plain JSON API in §10.3 and are expected to build
+their own checkout experience against it, per this project's own "power users write a
+custom integration" stance on that deployment shape.
 
 ## 11. Webhook Delivery
 
@@ -881,9 +911,12 @@ ssl = false
 primary_address = "4..."
 private_view_key = "..."
 
-[exchange_rate]
-provider = "haveno"           # pluggable trait: haveno | kraken | coingecko | fixed
-cache_seconds = 60
+# No [exchange_rate] section: the engine has no concept of fiat/FX at all
+# (`docs/fx_refactor.md` Phase 3/4) - `xmr_amount_piconero` is the only unit an order
+# is ever priced in here. A hosted-SaaS front end (control-plane) that wants to quote
+# fiat prices owns that lookup entirely on its own side, via its own
+# `CONTROL_PLANE_EXCHANGE_RATE_*` environment variables - see
+# `control-plane/src/exchange_rate_config.rs`, not this file.
 
 [payment]
 confirmations_required = 10
@@ -915,29 +948,38 @@ max_attempts = 8
 
 ## 14. Client Library
 
+**Moved off this engine entirely** (`docs/fx_refactor.md` decision 3): fiat pricing
+and the checkout page both live on control-plane now, so the embed library talks to
+control-plane, not this engine directly. Served from
+`control-plane/static/moneropay-client.js` at `GET /static/moneropay-client.js` on
+whichever control-plane instance a merchant is using:
+
 ```html
-<script src="https://pay.example.com/static/moneropay-client.js"></script>
+<script src="https://cloud.example.com/static/moneropay-client.js"></script>
 <div id="checkout"></div>
 <script>
   const order = await MoneroPay.createOrder({
-    endpoint: "https://pay.example.com",
     publicKey: "pk_...",
-    merchantOrderId: "shop-order-1234",
     fiatAmount: 25.00,
     fiatCurrency: "USD",
   });
-  MoneroPay.mount("#checkout", order.paymentId, {
+  MoneroPay.mount("#checkout", order, {
     onPaid: (o) => window.location = "/thank-you.html",
     onExpired: () => alert("Payment window expired"),
   });
 </script>
 ```
 
-`mount()` injects an `<iframe src="https://pay.example.com/pay/v1/{pk}/{paymentId}">`
-and listens for `postMessage` events the page posts on status changes. All payment
-logic and UI lives server-side in the templates; the client library stays thin
+`createOrder()` posts to control-plane's own `POST /pay/{pk}/orders` (§10.3's
+XMR-only engine endpoint is never called from the browser); `mount()` injects an
+`<iframe src="https://cloud.example.com/pay/{pk}/orders/{paymentId}">` and listens for
+`postMessage` events that page posts on status changes. All payment logic and UI lives
+server-side in control-plane's own templates; the client library stays thin
 deliberately, since it is the one surface running as plain JS on an arbitrary
 third-party site with no build step assumed.
+
+A self-hoster running the engine alone, with no control-plane, has no equivalent of
+this file at all — see §10.4's closing note.
 
 ## 15. Build & Packaging
 

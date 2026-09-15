@@ -158,6 +158,10 @@ pub fn build_router(state: AppState) -> Router {
 
     let router = router.merge(pay_router);
 
+    // A plain static file, not state-changing - no rate limiter needed
+    // (`docs/fx_refactor.md` Phase 4.3), same as the engine's original.
+    let router = router.route("/static/moneropay-client.js", axum::routing::get(pay::client_library));
+
     // Test-only route exercising `AuthedUser` - see its doc comment.
     // Compiled only under `#[cfg(test)]`, so it never exists in the real
     // binary; nothing outside this crate's own tests should ever reach it.
