@@ -27,6 +27,7 @@ const DASHBOARD_HOME_TEMPLATE: &str = include_str!("../templates/dashboard_home.
 const NEW_STORE_PICKER_TEMPLATE: &str = include_str!("../templates/new_store_picker.html.hbs");
 const WOOCOMMERCE_INSTRUCTIONS_TEMPLATE: &str = include_str!("../templates/woocommerce_instructions.html.hbs");
 const STORE_DETAIL_TEMPLATE: &str = include_str!("../templates/store_detail.html.hbs");
+const STATUS_TEMPLATE: &str = include_str!("../templates/status.html.hbs");
 
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateError {
@@ -335,6 +336,60 @@ pub struct StoreDetailData {
     pub is_woocommerce: bool,
 }
 
+/// One Monero node's row on the status page - mirrors
+/// `engine_client::NodeStatus` but with presentation already done
+/// (`height_display`/`is_reachable`) since the control-plane is the one
+/// place that logic belongs now (see `http/status_page.rs`'s own doc
+/// comment on why the engine's own `/status` deliberately stays JSON-only).
+/// Handlebars-rust's `{{#if}}` treats the number `0` as falsy exactly like
+/// JS, so a genuine height of 0 must never be branched on directly in the
+/// template - `height_display` is always a pre-formatted string, same fix
+/// as `network_selected_flags`.
+#[derive(Debug, Serialize)]
+pub struct StatusNodeView {
+    pub label: String,
+    pub is_active: bool,
+    pub is_reachable: bool,
+    pub height_display: String,
+    pub error: Option<String>,
+}
+
+/// One network's scanner-loop row on the status page - mirrors
+/// `engine_client::ScannerStatusView` plus a single overall `status_label`
+/// ("healthy" / "stale" / "tick failing" / "has not been scanned yet") so
+/// the template renders one tag instead of re-deriving it from three bools.
+#[derive(Debug, Serialize)]
+pub struct StatusScannerView {
+    pub ever_ticked: bool,
+    pub status_label: String,
+    pub status_tag_class: String,
+    pub last_tick_display: String,
+    pub tick_count: u64,
+    pub tenants_scanned: usize,
+    pub last_error: Option<String>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct StatusNetworkView {
+    pub network: String,
+    pub nodes: Vec<StatusNodeView>,
+    pub scanner: StatusScannerView,
+}
+
+/// The view model `GET /status` takes. `engine_error`, when set, means the
+/// engine itself couldn't be reached at all (a genuinely different, more
+/// serious case than any one node or scanner being unhealthy) - the
+/// template shows a plain error banner instead of the networks table in
+/// that case, same "degrade honestly, don't fabricate data" approach the
+/// engine's own daemon fallback uses.
+#[derive(Debug, Default, Serialize)]
+pub struct StatusPageViewModel {
+    pub engine_error: Option<String>,
+    pub networks: Vec<StatusNetworkView>,
+    pub poll_interval_secs: u64,
+    pub generated_at_display: String,
+}
+
 pub struct TemplateEngine {
     handlebars: Handlebars<'static>,
 }
@@ -365,6 +420,7 @@ impl TemplateEngine {
         handlebars.register_template_string("new_store_picker", NEW_STORE_PICKER_TEMPLATE)?;
         handlebars.register_template_string("woocommerce_instructions", WOOCOMMERCE_INSTRUCTIONS_TEMPLATE)?;
         handlebars.register_template_string("store_detail", STORE_DETAIL_TEMPLATE)?;
+        handlebars.register_template_string("status", STATUS_TEMPLATE)?;
         Ok(TemplateEngine { handlebars })
     }
 
@@ -414,6 +470,10 @@ impl TemplateEngine {
 
     pub fn render_store_detail(&self, data: &StoreDetailViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("store_detail", data)?)
+    }
+
+    pub fn render_status(&self, data: &StatusPageViewModel) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("status", data)?)
     }
 }
 

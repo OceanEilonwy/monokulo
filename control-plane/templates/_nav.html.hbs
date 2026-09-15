@@ -3,8 +3,27 @@
 <a href="/" style="color:var(--paper);text-decoration:none;font-weight:700;letter-spacing:-0.02em;">[ MoneroPay Cloud ]</a>
 <div>
 <a href="/dashboard" style="color:var(--paper);margin-left:1.2em;">dashboard</a>
+<a href="/status" style="color:var(--paper);margin-left:1.2em;">status <span id="nav-status-dot" class="status-dot status-dot-unknown" title="checking..."></span></a>
 <a href="/dashboard/login" style="color:var(--paper);margin-left:1.2em;">log in</a>
 <a href="/dashboard/signup" style="color:var(--paper);margin-left:1.2em;">sign up</a>
 </div>
 </div>
 </div>
+<script>
+(function () {
+  var dot = document.getElementById("nav-status-dot");
+  if (!dot) return;
+  fetch("/status/summary").then(function (r) { return r.json(); }).then(function (data) {
+    if (data && data.healthy) {
+      dot.className = "status-dot status-dot-ok";
+      dot.title = "all systems healthy";
+    } else {
+      dot.className = "status-dot status-dot-error";
+      dot.title = "an issue was detected - see the status page";
+    }
+  }).catch(function () {
+    dot.className = "status-dot status-dot-unknown";
+    dot.title = "could not check status";
+  });
+})();
+</script>

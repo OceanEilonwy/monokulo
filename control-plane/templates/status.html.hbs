@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="refresh" content="30">
+<title>Status - MoneroPay Cloud</title>
+{{> styles}}
+</head>
+<body>
+{{> nav}}
+<div class="wrap">
+
+<h1>Engine status</h1>
+<p class="hint">Live, on every request - not cached. Generated {{generated_at_display}}, node heights refreshed at that
+moment. The scan loop polls every {{poll_interval_secs}}s.</p>
+
+{{#if engine_error}}
+<div class="error">The engine could not be reached: {{engine_error}}</div>
+{{else}}
+
+{{#if networks}}
+{{#each networks}}
+<div class="box">
+<h2>{{this.network}}</h2>
+
+<h3>Nodes</h3>
+<table>
+<thead><tr><th>Node</th><th>Active</th><th>Status</th><th>Height</th></tr></thead>
+<tbody>
+{{#each this.nodes}}
+<tr>
+<td><code>{{this.label}}</code></td>
+<td>{{#if this.is_active}}yes{{else}}<span class="muted">-</span>{{/if}}</td>
+<td>
+{{#if this.is_reachable}}
+<span class="tag tag-ok">reachable</span>
+{{else}}
+<span class="tag tag-error">error</span>
+{{/if}}
+</td>
+<td>{{this.height_display}}</td>
+</tr>
+{{#unless this.is_reachable}}
+<tr><td colspan="4" class="hint">{{this.error}}</td></tr>
+{{/unless}}
+{{/each}}
+</tbody>
+</table>
+
+<h3>Chain scanner</h3>
+<p>
+<span class="tag {{this.scanner.status_tag_class}}">{{this.scanner.status_label}}</span>
+{{#if this.scanner.ever_ticked}}
+&nbsp; last tick {{this.scanner.last_tick_display}} &middot; {{this.scanner.tick_count}} ticks total &middot;
+{{this.scanner.tenants_scanned}} tenants scanned last tick
+{{/if}}
+</p>
+{{#if this.scanner.last_error}}
+<div class="error">{{this.scanner.last_error}}</div>
+{{/if}}
+</div>
+{{/each}}
+{{else}}
+<div class="box"><p>No Monero nodes are configured on this engine.</p></div>
+{{/if}}
+
+{{/if}}
+
+</div>
+</body>
+</html>

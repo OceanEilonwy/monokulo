@@ -185,6 +185,16 @@ impl EngineClient {
             .await?;
         parse_response(response).await
     }
+
+    /// `GET {base_url}/status` — the engine's own live node/scanner report
+    /// (`src/http/status_page.rs` at the repo root). Unauthenticated, no
+    /// `sk_`/`pk_` involved — it reports on the whole instance, not any one
+    /// tenant. This is data only; the control plane's own `GET /status`
+    /// (`control-plane/src/http/status_page.rs`) is what renders it.
+    pub async fn get_status(&self) -> Result<EngineStatusResponse, EngineClientError> {
+        let response = self.http.get(format!("{}/status", self.base_url)).send().await?;
+        parse_response(response).await
+    }
 }
 
 async fn parse_response<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, EngineClientError> {
@@ -326,6 +336,46 @@ struct CreateWebhookResponse {
     signing_secret: String,
 }
 
+/// Mirrors the engine's own `NodeStatus` (`src/http/status_page.rs` at the
+/// repo root) field-for-field.
+#[derive(Debug, Deserialize)]
+pub struct NodeStatus {
+    pub label: String,
+    pub is_active: bool,
+    pub height: Option<u64>,
+    pub error: Option<String>,
+}
+
+/// Mirrors the engine's own `ScannerStatusView`.
+#[derive(Debug, Deserialize)]
+pub struct ScannerStatusView {
+    pub ever_ticked: bool,
+    pub last_tick_started_at: Option<i64>,
+    pub last_tick_finished_at: Option<i64>,
+    pub tick_count: u64,
+    pub tenants_scanned: usize,
+    pub last_tick_ok: bool,
+    pub last_error: Option<String>,
+    pub is_stale: bool,
+}
+
+/// Mirrors the engine's own `NetworkStatus`.
+#[derive(Debug, Deserialize)]
+pub struct NetworkStatus {
+    pub network: String,
+    pub nodes: Vec<NodeStatus>,
+    pub scanner: ScannerStatusView,
+}
+
+/// Mirrors the engine's own `EngineStatusResponse` — the whole body of
+/// `GET {base_url}/status`.
+#[derive(Debug, Deserialize)]
+pub struct EngineStatusResponse {
+    pub networks: Vec<NetworkStatus>,
+    pub poll_interval_secs: u64,
+    pub generated_at: i64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -412,5 +462,22 @@ mod tests {
         assert_eq!(webhooks.len(), 1);
         assert_eq!(webhooks[0].webhook_id, webhook_id);
         assert_eq!(webhooks[0].url, "https://merchant.example/hook");
+    }
+
+    /// `get_status` against a real engine — proves the DTOs above actually
+    /// deserialize the engine's real `EngineStatusResponse` JSON shape, not
+    /// just a plausible guess at its fields. `engine_test_support`'s harness
+    /// deliberately never populates `AppState::daemons` (see its own doc
+    /// comment), so an honest real response here has an empty `networks`
+    /// list — this proves the shape round-trips, not that any node exists.
+    #[tokio::test]
+    async fn get_status_round_trips_against_a_real_engine() {
+        let engine = engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let client = EngineClient::new(format!("http://{}", engine.addr));
+
+        let status = client.get_status().await.expect("get_status against a real engine should succeed");
+
+        assert_eq!(status.networks.len(), 0);
+        assert!(status.poll_interval_secs > 0);
     }
 }

@@ -88,14 +88,15 @@ pub struct AppState {
     pub configured_networks: Arc<std::collections::HashSet<monero::Network>>,
     /// One `FallbackDaemonClient` per configured network - the same
     /// instances the chain-scanner loop itself uses (`main.rs` clones the
-    /// `Arc` into both places), so the status page
-    /// (`GET /status`, `status_page.rs`) reports on the real node list
-    /// scanning is actually happening against, not a second, separately
-    /// -configured view of it. Concrete `Arc<FallbackDaemonClient>`, not
-    /// `Arc<dyn MoneroDaemonClient>` - only `FallbackDaemonClient` exposes
-    /// its own node list (`FallbackDaemonClient::nodes`), which is exactly
-    /// what the status page needs to query each node individually rather
-    /// than only the aggregate view `MoneroDaemonClient`'s own trait
+    /// `Arc` into both places), so `GET /status` (`status_page.rs` - a JSON
+    /// status *API*; the real, styled status *page* is served by the
+    /// control-plane, which calls this endpoint) reports on the real node
+    /// list scanning is actually happening against, not a second,
+    /// separately-configured view of it. Concrete `Arc<FallbackDaemonClient>`,
+    /// not `Arc<dyn MoneroDaemonClient>` - only `FallbackDaemonClient`
+    /// exposes its own node list (`FallbackDaemonClient::nodes`), which is
+    /// exactly what `/status` needs to report on each node individually
+    /// rather than only the aggregate view `MoneroDaemonClient`'s own trait
     /// methods give.
     pub daemons: Arc<HashMap<monero::Network, Arc<FallbackDaemonClient>>>,
     /// Live scan-tick history per network, updated by `main.rs`'s own scan
@@ -133,14 +134,14 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         )
         .route("/pay/v1/{pk}/{payment_id}", get(public::payment_page))
         .route("/static/moneropay-client.js", get(public::client_library))
+        // A JSON status *API*, not a page - the control-plane's own
+        // `GET /status` calls this and renders the real, styled page.
         // Deliberately unauthenticated (no `sk_`/`pk_` involved) and outside
         // the `/api/v1/...`/`/pay/v1/...` version prefixes those doc
-        // comments explain the reasoning for - this is operator-facing
-        // operational status, not tenant-scoped API surface, the same way
-        // a service's own `/healthz` typically sits outside its versioned
-        // API. Reports node/scanner health across *every* configured
-        // network at once, so scoping it under a tenant's own `pk_` would
-        // be the wrong shape even if it were authenticated.
+        // comments explain the reasoning for - this reports node/scanner
+        // health across *every* configured network at once, not tenant-
+        // scoped API surface, the same way a service's own `/healthz`
+        // typically sits outside its versioned API.
         .route("/status", get(status_page::status_page))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit_middleware))
         .layer(RequestBodyLimitLayer::new(max_body_bytes))

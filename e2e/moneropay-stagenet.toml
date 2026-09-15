@@ -3,13 +3,21 @@
 # real public stagenet node. See e2e/README.md for how this is used.
 
 [monero_node.stagenet]
-# Swapped from node.monerodevs.org after observing real, reproducible
-# multi-minute stalls (a stuck TCP send queue, per `ss -tnp`) against it during
-# WBS 1.4.5's live testing - not reproducible via simple curl requests, so
-# likely specific to long-lived/pooled-connection behavior. stagenet.xmr-tw.org
-# tested reliably fast (~0.9s) at the time of this change.
-host = "stagenet.xmr-tw.org"
-port = 38081
+# Switched back to monerodevs.org (the community-curated stagenet node - see
+# init_wizard.rs::curated_nodes) after stagenet.xmr-tw.org itself proved
+# unreliable during this session's own e2e work: real, reproducible
+# mid-request hangs/dropped connections against it (confirmed independently
+# against both this file's own e2e_stagenet.rs and the newer
+# e2e_dashboard_stagenet.rs, so not a fluke of one test). node2.monerodevs.org
+# is configured as an explicit fallback so a single node being briefly down
+# doesn't stall the whole e2e run.
+host = "node.monerodevs.org"
+port = 38089
+ssl = false
+
+[[monero_node.stagenet.fallbacks]]
+host = "node2.monerodevs.org"
+port = 38089
 ssl = false
 
 [wallet]

@@ -108,4 +108,20 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .pick-card h3 { margin-top: 0; }
 .steps { padding-left: 1.4em; }
 .steps li { margin: 0.5em 0; }
+.status-dot {
+  display: inline-block;
+  width: 0.6em;
+  height: 0.6em;
+  border-radius: 50%;
+  margin-left: 0.3em;
+  vertical-align: middle;
+  background: #888;
+}
+.status-dot-ok { background: #3dd15c; box-shadow: 0 0 6px 2px rgba(61,209,92,0.8); animation: status-pulse 2s ease-in-out infinite; }
+.status-dot-error { background: #ff3b3b; box-shadow: 0 0 6px 2px rgba(255,59,59,0.8); animation: status-pulse 1.2s ease-in-out infinite; }
+.status-dot-unknown { background: #888; box-shadow: none; animation: none; }
+@keyframes status-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
 </style>

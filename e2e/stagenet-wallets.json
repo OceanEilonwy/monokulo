@@ -25,7 +25,8 @@
       "01d06aebd3861db95d96448141b9dddcef260ee84cc2bf0c296a1ac01a91a362",
       "893696f9a24138a193bf404ef27423aecb601b1de7d579030189ccaf71d89902",
       "087d3c50861ed15f28a268eb8465ea4be58f34e41a468880f97cca9a25623bf1",
-      "4e9e9d80ce91b51a73c76ef1f54c4cf97ea050b65ff26aa5e6182ddf0475fdb0"
+      "4e9e9d80ce91b51a73c76ef1f54c4cf97ea050b65ff26aa5e6182ddf0475fdb0",
+      "c5207fbfb42162b4317e168c89576e9a9dd50ad6333d62f4a93f8b5f991cf159"
     ],
     "known_txids_comment": "Every txid that ever paid this wallet - the two original faucet payouts plus every test run's own tx (its change output pays the wallet again). tests/e2e_stagenet.rs scans all of these each run (skipping any not yet confirmed) and appends its own new tx here on success, so later runs automatically pick up earlier change without needing a fresh faucet payout every time. The three txids after the original nine were merged in from the main checkout's own copy of this file during WBS 1.4.5 (same customer address/keys - confirmed identical - so they're genuine real transactions to this same wallet, just not yet recorded in this worktree's copy since it branched before they were appended there); this worktree's own known_txids had been fully exhausted (0 spendable across all nine original entries - every one of them already spent) before this merge, confirmed via `StagenetSpendWallet::balance`.",
     "mnemonic": "affair cube ablaze cynical lurk gather arises last oatmeal guide sniff tufts lyrics wounded zigzags deftly tapestry tipsy pests ingested vain feast cottage duration wounded",

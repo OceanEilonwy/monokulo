@@ -53,6 +53,7 @@ mod login;
 mod logout;
 mod orders;
 mod signup;
+mod status_page;
 #[cfg(test)]
 mod tests;
 
@@ -94,6 +95,8 @@ pub struct AppState {
 pub fn build_router(state: AppState) -> Router {
     let router = Router::new()
         .route("/", axum::routing::get(home::landing))
+        .route("/status", axum::routing::get(status_page::status_page))
+        .route("/status/summary", axum::routing::get(status_page::status_summary))
         .route("/signup", post(signup::signup))
         .route("/login", post(login::login))
         .route("/logout", post(logout::logout))

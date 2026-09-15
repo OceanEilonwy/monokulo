@@ -40,6 +40,93 @@ Key architectural facts an agent should not have to rediscover:
 - No implementation code has been written yet. WBS item 0.1 (workspace
   setup) has not started as of this note.
 
+- **`GET /status` relocated from the engine to the control-plane
+  (user correction).** The entry below this one shipped the status page
+  directly on the engine - the user immediately corrected this: "You
+  placed the status page on the engine, it is meant to be on the
+  control-plane, accessible by a 'status' link (with a small glowing
+  status indicator) in the nav bar." A genuine misjudgment on layering,
+  not a misunderstanding of the feature itself - the engine has no
+  product-facing visual identity of its own (see the CSS-duplication
+  note in the original entry, which was itself a symptom of the wrong
+  layer), while the control-plane is the one place a merchant-facing page
+  actually belongs.
+  - Engine side (`src/http/status_page.rs`) rewritten from an
+    HTML/Handlebars page to a plain JSON API (`EngineStatusResponse` /
+    `NetworkStatus` / `NodeStatus` / `ScannerStatusView`) - data only, no
+    presentation. `is_stale`/`last_tick_ok` still computed on the engine
+    (it's the only place that knows its own `scan_poll_interval_secs`),
+    but relative-time formatting and the healthy/stale/failing label move
+    to whichever caller renders it for a person. The 7 old HTML-assertion
+    tests were rewritten (not deleted) to assert on the real JSON shape
+    instead - same coverage, new contract.
+  - Control-plane gained `EngineClient::get_status()` (DTOs mirroring the
+    engine's response field-for-field) and a real `GET /status` page
+    (`control-plane/src/http/status_page.rs` + `templates/status.html.hbs`,
+    using the shared `_styles`/`_nav` partials like every other page - no
+    more hand-copied CSS). Unauthenticated, same as the engine's own
+    `/status` - it's infrastructure health, not merchant data.
+  - `GET /status/summary`: a small JSON endpoint (`{"healthy": bool}`)
+    the nav bar's status dot fetches on every page load. **A real bug
+    caught by its own test**: the first `healthy` computation used
+    `networks.iter().all(...)`, which is vacuously `true` on an empty
+    list - an engine reporting zero configured networks read as
+    "healthy" instead of "nothing to be healthy about." Fixed with an
+    explicit `!networks.is_empty() && ...` guard once
+    `status_summary_reports_unhealthy_when_there_are_no_configured_networks`
+    failed on its first real run.
+  - Nav bar (`_nav.html.hbs`) gained a "status" link with a small
+    `<span class="status-dot">` next to it, plus a tiny inline script that
+    fetches `/status/summary` on load and sets the dot's class -
+    `status-dot-ok` (green, pulsing glow via `box-shadow` + a
+    `@keyframes` animation), `status-dot-error` (red, faster pulse), or
+    `status-dot-unknown` (grey, no glow - engine unreachable or the fetch
+    itself failed). CSS lives in `_styles.html.hbs` alongside everything
+    else, not duplicated per-page.
+  - Engine unreachable is a distinct, honestly-rendered case, not a 500:
+    `status_page` shows a plain `.error` banner
+    ("the engine could not be reached: ..."), `status_summary` reports
+    `{"healthy": false}` - both covered by real tests that point
+    `EngineClient` at a real closed port (`http://127.0.0.1:1`) rather
+    than mocking the failure.
+  - `cargo test --workspace`: clean throughout (7 rewritten JSON-shape
+    tests on the engine side, 2 new `relative_time` unit tests plus 4 new
+    real HTTP-level tests - reachable/no-configured-networks,
+    engine-unreachable degradation for both `/status` and
+    `/status/summary` - on the control-plane side). `cargo build --tests
+    --features e2e` (root + `mock-woocommerce`) also clean - the lesson
+    from the `tests/e2e_stagenet.rs` regression below was applied
+    proactively this time, not caught after the fact.
+  - Verified live via `scripts/dev-run.sh restart`: `/status` on
+    `127.0.0.1:8081` (control-plane) rendered the real box-per-network
+    layout with real node heights and a real scanner tick history that
+    visibly transitioned from "has not been scanned yet" ->
+    "stale" (cold-start window, correctly labeled) -> "healthy" as the
+    actual background scan loop caught up; `/status/summary` flipped
+    `false` -> `true` in lockstep; the nav bar's dot and its `fetch` call
+    were present on the rendered `/` page.
+  - Also this turn (user follow-up mid-work): added `<meta
+    http-equiv="refresh" content="30">` to the status page, and switched
+    the repo's one real "default" stagenet node config
+    (`e2e/moneropay-stagenet.toml`, used by `dev-run.sh` and both e2e
+    tests) from `stagenet.xmr-tw.org:38081` to `node.monerodevs.org:38089`
+    with `node2.monerodevs.org:38089` as an explicit `[[fallbacks]]` entry
+    - directly motivated by the real node flakiness documented in the
+    e2e-test entry below (the *same* xmr-tw.org node that hung mid-poll
+    during this session's background e2e run). The user's message listed
+    three URLs where the second and third were identical
+    (`node2.monerodevs.org:38089` twice) - treated as a likely typo rather
+    than guessed at (e.g. assuming a `node3` that was never confirmed to
+    exist): used the two genuinely distinct hosts given
+    (`node`/`node2`) rather than fabricating a third. Both nodes confirmed
+    live and reachable against the real running dev engine post-switch.
+    `.dev-run/engine/moneropay.toml` (a generated, gitignored copy of this
+    file `dev-run.sh` only (re)writes when absent) had to be deleted and
+    regenerated by hand to actually pick up the change on this session's
+    already-running dev stack - a real footgun of that script's own
+    "write once" design, worth keeping in mind for future config edits to
+    the source file it copies from.
+
 - New `tests/e2e_dashboard_stagenet.rs` (user-directed - the original ask
   this turn, resumed after the `/status` page interjection above): a full
   e2e test spanning the *whole* hosted stack, not just the engine -
@@ -137,7 +224,30 @@ Key architectural facts an agent should not have to rediscover:
     whenever the public stagenet node this repo already depends on for
     every one of its real e2e tests is behaving normally again; this isn't
     something further code changes here can fix.
+  - **Follow-up: the background run finished (248.23s).** It got further
+    than the earlier attempt - real connect, real login, real
+    advanced-connect flow, real order creation, and this time a real
+    signed+broadcast stagenet payment (tx
+    `c5207fbfb42162b4317e168c89576e9a9dd50ad6333d62f4a93f8b5f991cf159`)
+    all completed successfully. It failed only on the very next mempool
+    poll: `error sending request for url .../get_transaction_pool`, then
+    `.../get_height` - the same external node dropping connectivity
+    mid-poll, not a code defect. Strong direct evidence the new test's
+    own logic is correct end-to-end through the real send step; only
+    "does the dashboard eventually show it" couldn't be proven this
+    session, purely because of that node's live behavior. The real txid
+    was appended to `e2e/stagenet-wallets.json`'s `customer.known_txids`
+    by the test's own bookkeeping (a real, legitimate change from an
+    actual broadcast tx, not something to discard) and is included in
+    this session's commit. Node reliability is addressed below (the
+    default stagenet node switched to `node.monerodevs.org` + a real
+    fallback) - a re-run against the new config is the natural next
+    verification step, not more code changes here.
 
+- **Superseded by the relocation entry above** - kept as-is below for the
+  historical record of what was actually built and why, but the engine no
+  longer serves HTML at `/status`, and the CSS-duplication concern this
+  entry raises is exactly what the relocation fixed.
 - `GET /status` on the **engine** (user-directed, sent mid-turn as an
   interjection ahead of the e2e-test work below, which was paused and
   resumed after this was done): a real, unauthenticated, live operator
