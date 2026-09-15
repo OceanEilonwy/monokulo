@@ -622,7 +622,11 @@ async fn a_logged_in_user_submitting_valid_wallet_fields_gets_a_confirmation_pag
         .unwrap()
         .expect("a store_connections row for this public key must exist");
     assert_eq!(row.user_id, user.id);
-    assert_eq!(row.platform, "woocommerce");
+    // "custom", not "woocommerce" - this is the advanced/direct-API form,
+    // never routed through a WooCommerce plugin. Real user-reported bug:
+    // this was wrongly hardcoded to "woocommerce" for every advanced-form
+    // connection.
+    assert_eq!(row.platform, "custom");
     assert_eq!(row.site_url, "https://shop.example.com");
 }
 

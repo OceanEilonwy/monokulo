@@ -277,6 +277,7 @@ pub async fn store_detail(
         Err(_) => Vec::new(),
     };
 
+    let is_woocommerce = row.platform == "woocommerce";
     let view_model = crate::templates::StoreDetailViewModel {
         store: Some(crate::templates::StoreDetailData {
             connection_id: id,
@@ -289,6 +290,7 @@ pub async fn store_detail(
             health_label,
             created_at: row.created_at,
             recent_orders,
+            is_woocommerce,
         }),
     };
     let html =

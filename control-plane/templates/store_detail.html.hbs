@@ -49,7 +49,7 @@
 <p><a href="/dashboard/connections/{{store.connection_id}}/orders">all orders &rarr;</a>
 &nbsp;&middot;&nbsp;<a href="/dashboard/connections/{{store.connection_id}}/webhooks">webhooks &rarr;</a></p>
 
-{{> integration_help public_key=store.public_key endpoint=store.endpoint}}
+{{> integration_help public_key=store.public_key endpoint=store.endpoint is_woocommerce=store.is_woocommerce}}
 
 {{else}}
 <h1>Store not found</h1>

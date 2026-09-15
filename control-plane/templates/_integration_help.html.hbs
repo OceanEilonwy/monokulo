@@ -3,14 +3,20 @@
 <p>Your public key (safe to publish - it identifies your store, it can't move funds or read your data):</p>
 <pre>{{public_key}}</pre>
 
+{{#if is_woocommerce}}
+<p>This store is already connected via the WooCommerce plugin - nothing further to configure there.
+Need to connect a second WordPress site to this same store? From that site's plugin settings, click
+<strong>Connect</strong>, then choose <strong>use an existing store</strong> and pick this one.</p>
+{{else}}
 <p><strong>WooCommerce</strong> - the easiest path if your store runs WooCommerce:</p>
 <ol class="steps">
 <li>Install the <code>moneropay-cloud</code> plugin from your WordPress admin.</li>
 <li>Go to <strong>WooCommerce &rarr; Settings &rarr; Payments &rarr; MoneroPay</strong> and click <strong>Connect</strong>.</li>
-<li>The plugin talks to this public key automatically - nothing to paste in by hand.</li>
+<li>Choose <strong>use an existing store</strong> and pick this one - no keys to paste in again.</li>
 </ol>
+{{/if}}
 
-<p><strong>Anything else</strong> - create an order directly against the engine API and redirect the buyer to the returned checkout link:</p>
+<p><strong>Direct API integration</strong> - create an order directly against the engine and redirect the buyer to the returned checkout link:</p>
 <pre>POST {{endpoint}}/api/v1/t/{{public_key}}/orders
 Content-Type: application/json
 

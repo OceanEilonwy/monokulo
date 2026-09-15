@@ -115,6 +115,24 @@ pub struct PlatformConnectViewModel {
     pub network_mainnet_selected: bool,
     pub network_stagenet_selected: bool,
     pub network_testnet_selected: bool,
+    /// Every store this user already has connected (any platform) - lets
+    /// the confirm screen offer "use an existing store" instead of always
+    /// forcing a brand-new tenant to be provisioned. Empty for a user with
+    /// no stores yet, in which case the template shows only the
+    /// create-a-new-store form (`{{#if existing_stores}}` is falsy for an
+    /// empty vec, same convention `DashboardViewModel::has_stores` already
+    /// relies on).
+    pub existing_stores: Vec<ExistingStoreOption>,
+}
+
+/// One row of the "use an existing store" picker
+/// (`connect_platform.html.hbs`) - just enough to identify and label a
+/// choice, not the full [`crate::db::StoreConnectionRow`].
+#[derive(Debug, Serialize)]
+pub struct ExistingStoreOption {
+    pub connection_id: String,
+    pub display_name: String,
+    pub platform: String,
 }
 
 /// The three `<option>` "selected" flags both connect forms' network
@@ -297,6 +315,11 @@ pub struct StoreDetailData {
     pub health_label: String,
     pub created_at: i64,
     pub recent_orders: Vec<OrderRowViewModel>,
+    /// Drives which half of `_integration_help.html.hbs` renders -
+    /// handlebars-rust has no built-in string-equality helper (same reason
+    /// `network_selected_flags` exists), so this is `platform ==
+    /// "woocommerce"` computed once here rather than in the template.
+    pub is_woocommerce: bool,
 }
 
 pub struct TemplateEngine {
@@ -688,6 +711,7 @@ mod tests {
                     health_label: "unreachable".to_string(),
                     created_at: 1000,
                     recent_orders: vec![],
+                    is_woocommerce: true,
                 }),
             })
             .unwrap();
@@ -702,5 +726,39 @@ mod tests {
         assert!(html.contains("http://127.0.0.1:8080"));
         assert!(html.contains("tag-error"));
         assert!(html.contains("Integrate this store"));
+        // is_woocommerce: true must render the "already connected" copy,
+        // not the "install the plugin" onboarding steps - real bug: this
+        // used to always show WooCommerce onboarding instructions even for
+        // stores connected through the advanced/custom form.
+        assert!(html.contains("already connected via the WooCommerce plugin"));
+        assert!(!html.contains("Install the"), "should not show plugin-install instructions for an already-connected store");
+    }
+
+    /// The other half of the same real bug: a store connected via the
+    /// advanced (custom) form must show generic direct-API instructions,
+    /// never the WooCommerce-specific onboarding steps - it was never
+    /// connected through the plugin at all.
+    #[test]
+    fn store_detail_shows_generic_integration_help_for_a_non_woocommerce_store() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine
+            .render_store_detail(&StoreDetailViewModel {
+                store: Some(StoreDetailData {
+                    connection_id: "conn_1".to_string(),
+                    display_name: "shop.example.com".to_string(),
+                    platform: "custom".to_string(),
+                    site_url: "https://shop.example.com".to_string(),
+                    public_key: "pk_abc123".to_string(),
+                    endpoint: "http://127.0.0.1:8080".to_string(),
+                    health: "ok".to_string(),
+                    health_label: "healthy".to_string(),
+                    created_at: 1000,
+                    recent_orders: vec![],
+                    is_woocommerce: false,
+                }),
+            })
+            .unwrap();
+        assert!(html.contains("Install the"), "expected the WooCommerce onboarding steps to still be offered, got: {html}");
+        assert!(!html.contains("already connected via the WooCommerce plugin"));
     }
 }

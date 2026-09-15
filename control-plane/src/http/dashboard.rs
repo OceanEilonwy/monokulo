@@ -287,7 +287,16 @@ pub async fn connect_submit(
         form.allowed_origins.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
 
     let fields = CreateConnectionFields {
-        platform: "woocommerce".to_string(),
+        // "custom", not "woocommerce" - this is the advanced/direct-API
+        // form (WBS follow-up UI work's own "custom (advanced)" picker
+        // option, distinct from the real `/connect/{platform}` flow a
+        // WooCommerce plugin drives). Was wrongly hardcoded to
+        // "woocommerce" (a copy-paste leftover from before that picker
+        // existed) - real user-reported bug: a store connected here showed
+        // "woocommerce" as its platform on the dashboard and got shown
+        // WooCommerce-specific integration instructions on its store page,
+        // neither of which is true for a store connected this way.
+        platform: "custom".to_string(),
         site_url: form.site_url.clone(),
         view_key_hex: form.view_key_hex.clone(),
         spend_pubkey_hex: form.spend_pubkey_hex.clone(),

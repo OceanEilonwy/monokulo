@@ -42,6 +42,87 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- Real bug fix + real feature (both user-reported, in one message): (1) a
+  store connected via the advanced/custom form showed "woocommerce" as
+  its platform on the dashboard and got shown WooCommerce plugin-install
+  instructions on its store page, despite never touching WooCommerce at
+  all; (2) the real `/connect/{platform}` flow (what an actual WooCommerce
+  plugin drives) always minted a brand-new tenant, with no way to instead
+  attach the plugin to a store the merchant already has.
+  - **Bug (1) root cause**: `dashboard::connect_submit` (the advanced-form
+    handler) hardcoded `platform: "woocommerce".to_string()` - a leftover
+    from before the "custom (advanced)" vs. "simple -> woocommerce" picker
+    existed. Fixed to `"custom"`.
+  - `_integration_help.html.hbs` (the shared partial both the post-connect
+    success page and the store detail page use) is now platform-aware via
+    a new `is_woocommerce` bool (computed server-side - handlebars-rust
+    has no string-equality helper, same reason `network_selected_flags`
+    exists): a store actually connected through the plugin sees "already
+    connected, nothing to configure"; every other store sees the real
+    WooCommerce-onboarding + direct-API instructions, never a false claim
+    that it's plugin-connected.
+  - **Feature (2)**: `/connect/{platform}`'s confirm screen now lists the
+    merchant's existing stores (any platform) and offers to attach this
+    plugin visit to one of them instead of always creating a new tenant -
+    two separate `<form>`s on one page (`mode=existing` +
+    `connection_id=...`, or `mode=new` + the original key-paste fields),
+    the picker only shown when the user actually has at least one store
+    (`{{#if existing_stores}}`, same empty-vec-is-falsy convention
+    `DashboardViewModel::has_stores` already relies on).
+  - `connect::confirm_submit` now branches on `ConfirmForm::mode`
+    (`#[serde(default)]` to `"new"`, so every existing caller/test that
+    never sent this field keeps working unchanged) into `confirm_new_store`
+    (the original logic, unchanged in substance) and the new
+    `confirm_existing_store`. Both converge on a new shared
+    `mint_token_and_redirect` helper (factored out of the tail every path
+    already shared).
+  - **Security-critical, called out explicitly**: `confirm_existing_store`
+    verifies the submitted `connection_id` actually belongs to the
+    authenticated user before ever mining a token for it - without this, a
+    signed-in attacker could submit any other user's connection id and
+    have that store's genuine `sk_...` secret token delivered to their own
+    `return_url`. Same enumeration-defense convention `orders.rs`'s own
+    ownership check already documents (a nonexistent id and someone
+    else's id render identically - "That store could not be found.").
+    Directly tested (`connecting_with_a_connection_id_owned_by_a_different_user_is_rejected`).
+  - Judgment call, stated plainly: selecting an existing store does *not*
+    update that row's `site_url`/`platform` metadata to reflect the new
+    plugin visit - the dashboard keeps showing wherever/however the store
+    was first connected. Revisit if a real user actually wants "this
+    plugin visit is now the canonical site for this store" to mean
+    something more than "hand this plugin the same credentials."
+  - **A real bug caught in my own test code before it shipped**: an early
+    version of the "reuses the existing store, doesn't create a second
+    one" test called `state.db.lock().unwrap()` twice in one statement (once
+    as the method receiver, once inside an argument expression) - a
+    genuine self-deadlock on `std::sync::Mutex` (not reentrant), which
+    hung the test process past its own timeout. Caught immediately (the
+    test run never returned), fixed by splitting into two statements so
+    the first guard drops before the second lock is taken - grepped the
+    rest of the codebase afterward (`\.lock\(\).*\.lock\(\)`) and confirmed
+    no other occurrence of this pattern exists anywhere else.
+  - 9 new tests (2 template-level `is_woocommerce` branching tests, 7 real
+    end-to-end HTTP tests covering: no picker with zero existing stores,
+    picker shown and correctly listing a real store once one exists,
+    reusing an existing store mints a token for the *same* store (verified
+    by checking `/finish` returns the same `public_key`, and that no
+    second `store_connections` row was created), the ownership-check
+    rejection above, and a clear error when "existing" mode is submitted
+    with nothing chosen) plus the 1 existing test whose assertion on the
+    old wrong `"woocommerce"` platform value was corrected to `"custom"`.
+    `cargo test -p control-plane`: 108 passed (was 102).
+  - `cargo build --workspace`/`cargo test --workspace` clean throughout.
+  - Independently verified live, end to end, against the real running
+    control-plane + engine: created a real advanced/custom store, confirmed
+    the dashboard genuinely shows `custom` (not `woocommerce`) and the
+    store page shows generic (not plugin-connected) integration help; then
+    simulated a real WooCommerce plugin visit (`GET /connect/woocommerce`
+    with real `site_url`/`return_url`/`nonce` query params) and confirmed
+    the picker actually lists that real store; then submitted
+    `mode=existing` with its real connection id and got back a genuine
+    `302` redirect carrying a real, freshly-minted connect token - the
+    full loop, not just the unit tests.
+
 - Real UX bug fix (user-directed, immediate follow-up to the validation
   fix above): both connect forms (`/dashboard/connect` and
   `/connect/{platform}`) lost every field the merchant had typed the

@@ -39,11 +39,13 @@ use serde::{Deserialize, Serialize};
 use url::Url;
 
 use crate::crypto;
+use crate::db::UserRow;
 use crate::now_unix;
-use crate::templates::{network_selected_flags, PlatformConnectViewModel};
+use crate::templates::{network_selected_flags, ExistingStoreOption, PlatformConnectViewModel};
 
 use super::connections::{self, CreateConnectionError, CreateConnectionFields};
 use super::dashboard::redirect_302;
+use super::orders::display_name_for;
 use super::{AppState, AuthedUser};
 
 /// How long a connect token remains redeemable after issuance. It only
@@ -67,6 +69,11 @@ pub struct ConnectQuery {
 /// `ConnectViewModel`'s doc comment (`templates.rs`) for why every submitted
 /// field, including the two key hex fields, gets echoed back rather than
 /// lost.
+///
+/// Looks up `user_id`'s existing `store_connections` on every render so the
+/// "use an existing store" picker (`PlatformConnectViewModel::existing_stores`)
+/// is never stale - cheap, and consistent with `home::dashboard_home`
+/// already doing one query per connected store on every dashboard load.
 fn render_confirm_form(
     state: &AppState,
     platform: &str,
@@ -75,9 +82,23 @@ fn render_confirm_form(
     nonce: &str,
     error: Option<&str>,
     resubmit: Option<&ConfirmForm>,
+    user_id: &str,
 ) -> Response {
     let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
-        network_selected_flags(resubmit.map(|f| f.network.as_str()).unwrap_or("mainnet"));
+        network_selected_flags(resubmit.and_then(|f| f.network.as_deref()).unwrap_or("mainnet"));
+    let existing_stores = state
+        .db
+        .lock()
+        .unwrap()
+        .list_store_connections_for_user(user_id)
+        .unwrap_or_default()
+        .into_iter()
+        .map(|row| ExistingStoreOption {
+            connection_id: row.id,
+            display_name: display_name_for(&row.site_url),
+            platform: row.platform,
+        })
+        .collect();
     let html = state
         .templates
         .render_platform_connect(&PlatformConnectViewModel {
@@ -86,12 +107,13 @@ fn render_confirm_form(
             return_url: return_url.to_string(),
             nonce: nonce.to_string(),
             error: error.map(str::to_string),
-            view_key_hex: resubmit.map(|f| f.view_key_hex.clone()).unwrap_or_default(),
-            spend_pubkey_hex: resubmit.map(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
-            allowed_origins: resubmit.map(|f| f.allowed_origins.clone()).unwrap_or_default(),
+            view_key_hex: resubmit.and_then(|f| f.view_key_hex.clone()).unwrap_or_default(),
+            spend_pubkey_hex: resubmit.and_then(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
+            allowed_origins: resubmit.and_then(|f| f.allowed_origins.clone()).unwrap_or_default(),
             network_mainnet_selected,
             network_stagenet_selected,
             network_testnet_selected,
+            existing_stores,
         })
         .expect("the built-in platform-connect template must always render");
     axum::response::Html(html).into_response()
@@ -119,7 +141,7 @@ pub async fn start(
     Query(query): Query<ConnectQuery>,
     headers: HeaderMap,
 ) -> Response {
-    if super::resolve_authed_user(&state, &headers).is_none() {
+    let Some((user, _)) = super::resolve_authed_user(&state, &headers) else {
         let this_url = format!(
             "/connect/{}?site_url={}&return_url={}&nonce={}",
             platform,
@@ -128,9 +150,9 @@ pub async fn start(
             encode_query_value(&query.nonce),
         );
         return redirect_302(&format!("/dashboard/login?next={}", encode_query_value(&this_url)));
-    }
+    };
 
-    render_confirm_form(&state, &platform, &query.site_url, &query.return_url, &query.nonce, None, None)
+    render_confirm_form(&state, &platform, &query.site_url, &query.return_url, &query.nonce, None, None, &user.id)
 }
 
 /// `POST /connect/{platform}`'s form fields (WBS 1.4.1, step 4) - the same
@@ -138,15 +160,40 @@ pub async fn start(
 /// (shown, not editable, on the confirm screen) and the `return_url`/`nonce`
 /// hidden fields carried through from `GET /connect/{platform}`'s query
 /// string so they survive the round trip.
+fn default_confirm_mode() -> String {
+    "new".to_string()
+}
+
 #[derive(Deserialize)]
 pub struct ConfirmForm {
     pub site_url: String,
     pub return_url: String,
     pub nonce: String,
-    pub view_key_hex: String,
-    pub spend_pubkey_hex: String,
-    pub network: String,
-    pub allowed_origins: String,
+    /// `"new"` (provision a fresh tenant from the key fields below - the
+    /// only mode that ever existed before the "use an existing store"
+    /// picker) or `"existing"` (skip provisioning entirely and reuse
+    /// `connection_id`, an already-owned `store_connections` row).
+    /// `#[serde(default)]` to `"new"` keeps every pre-existing caller/test
+    /// that never sent this field parsing exactly as it always has.
+    #[serde(default = "default_confirm_mode")]
+    pub mode: String,
+    /// Required when `mode == "existing"`, ignored otherwise. Ownership is
+    /// verified against the authenticated user in `confirm_existing_store`
+    /// before it's ever trusted for anything - this is untrusted input, not
+    /// a capability.
+    #[serde(default)]
+    pub connection_id: Option<String>,
+    /// `Option`, not `String`: absent entirely on an "existing"-mode
+    /// submission, since the confirm screen's "use an existing store" form
+    /// never renders these fields at all - there is nothing to parse there.
+    #[serde(default)]
+    pub view_key_hex: Option<String>,
+    #[serde(default)]
+    pub spend_pubkey_hex: Option<String>,
+    #[serde(default)]
+    pub network: Option<String>,
+    #[serde(default)]
+    pub allowed_origins: Option<String>,
     /// Not shown on the confirm screen (no UI field for it yet) — carried purely so
     /// a caller who needs a non-default tenant `order_expiry_seconds` (e.g. WBS
     /// 1.4.4's forced-expiry test) has a real way to set it through this flow rather
@@ -176,76 +223,166 @@ pub struct ConfirmForm {
 }
 
 /// `POST /connect/{platform}` (behind [`AuthedUser`], WBS 1.4.1 step 4): the
-/// confirm-form submission. Provisions the tenant via the exact same
-/// [`connections::create_connection_for_user`] every other surface uses; on
-/// success, mints a single-use connect token and redirects to `return_url`
-/// with `token`/`nonce` appended (parsed and re-serialized via the `url`
-/// crate, so a `return_url` that already carries its own query string is
-/// handled correctly - never a naive string-concatenated `?`). On an engine
-/// rejection or internal error, re-renders the confirm form with a visible
-/// error - same pattern as `dashboard::connect_submit`.
+/// confirm-form submission - either mode (see [`ConfirmForm::mode`]) ends the
+/// same way, minting a single-use connect token and redirecting to
+/// `return_url` (`mint_token_and_redirect`).
 pub async fn confirm_submit(
     State(state): State<AppState>,
     AuthedUser(user, _token_hash): AuthedUser,
     Path(platform): Path<String>,
     Form(form): Form<ConfirmForm>,
 ) -> Response {
+    if form.mode == "existing" {
+        confirm_existing_store(&state, &user, &platform, &form).await
+    } else {
+        confirm_new_store(&state, &user, &platform, &form).await
+    }
+}
+
+/// `mode == "new"` (the only mode that existed before the "use an existing
+/// store" picker): provisions a brand-new tenant via the exact same
+/// [`connections::create_connection_for_user`] every other surface uses. On
+/// an engine rejection or internal error, re-renders the confirm form with a
+/// visible error - same pattern as `dashboard::connect_submit`.
+async fn confirm_new_store(state: &AppState, user: &UserRow, platform: &str, form: &ConfirmForm) -> Response {
     // Same comma-separated-list split every other wallet-connection form in
     // this crate uses (`dashboard::connect_submit`'s own comment explains
     // the reasoning).
-    let allowed_origins: Vec<String> =
-        form.allowed_origins.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
+    let allowed_origins: Vec<String> = form
+        .allowed_origins
+        .as_deref()
+        .unwrap_or("")
+        .split(',')
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .collect();
 
     let fields = CreateConnectionFields {
-        platform: platform.clone(),
+        platform: platform.to_string(),
         site_url: form.site_url.clone(),
-        view_key_hex: form.view_key_hex.clone(),
-        spend_pubkey_hex: form.spend_pubkey_hex.clone(),
-        network: Some(form.network.clone()),
+        view_key_hex: form.view_key_hex.clone().unwrap_or_default(),
+        spend_pubkey_hex: form.spend_pubkey_hex.clone().unwrap_or_default(),
+        network: form.network.clone(),
         allowed_origins,
         confirmations_required: form.confirmations_required,
         zero_conf_max_piconero: form.zero_conf_max_piconero,
         order_expiry_seconds: form.order_expiry_seconds,
     };
 
-    let outcome = match connections::create_connection_for_user(&state, &user, fields).await {
+    let outcome = match connections::create_connection_for_user(state, user, fields).await {
         Ok(outcome) => outcome,
         Err(CreateConnectionError::BadRequest(message)) => {
             return render_confirm_form(
-                &state,
-                &platform,
+                state,
+                platform,
                 &form.site_url,
                 &form.return_url,
                 &form.nonce,
                 Some(&message),
-                Some(&form),
+                Some(form),
+                &user.id,
             );
         }
         Err(CreateConnectionError::Internal) => {
             return render_confirm_form(
-                &state,
-                &platform,
+                state,
+                platform,
                 &form.site_url,
                 &form.return_url,
                 &form.nonce,
                 Some("Something went wrong. Please try again."),
-                Some(&form),
+                Some(form),
+                &user.id,
             );
         }
     };
 
+    mint_token_and_redirect(state, &outcome.connection_id, platform, form, &user.id)
+}
+
+/// `mode == "existing"`: no new tenant is provisioned at all - the plugin is
+/// handed credentials for a `store_connections` row the user already has,
+/// selected via `form.connection_id`. The ownership check below is a real
+/// security boundary, not a courtesy: without it, a signed-in attacker could
+/// submit *any* connection id (not just their own) and have that store's
+/// genuine `sk_...` secret token delivered to their own attacker-controlled
+/// `return_url` via `/connect/{platform}/finish` - exactly the kind of IDOR
+/// `orders.rs`'s own `load_owned_connection` already guards against
+/// elsewhere in this crate, applied here to the one place that grants a
+/// *credential*, not just a read.
+async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str, form: &ConfirmForm) -> Response {
+    let connection_id = match form.connection_id.as_deref().filter(|id| !id.is_empty()) {
+        Some(id) => id,
+        None => {
+            return render_confirm_form(
+                state,
+                platform,
+                &form.site_url,
+                &form.return_url,
+                &form.nonce,
+                Some("Choose a store to connect."),
+                Some(form),
+                &user.id,
+            );
+        }
+    };
+
+    let owned = match state.db.lock().unwrap().get_store_connection_by_id(connection_id) {
+        Ok(Some(row)) => row.user_id == user.id,
+        Ok(None) => false,
+        Err(_) => {
+            return render_confirm_form(
+                state,
+                platform,
+                &form.site_url,
+                &form.return_url,
+                &form.nonce,
+                Some("Something went wrong. Please try again."),
+                Some(form),
+                &user.id,
+            );
+        }
+    };
+    if !owned {
+        // Same enumeration-defense convention `orders.rs` documents for its
+        // own ownership check: a nonexistent id and someone else's id must
+        // be indistinguishable to the caller.
+        return render_confirm_form(
+            state,
+            platform,
+            &form.site_url,
+            &form.return_url,
+            &form.nonce,
+            Some("That store could not be found."),
+            Some(form),
+            &user.id,
+        );
+    }
+
+    mint_token_and_redirect(state, connection_id, platform, form, &user.id)
+}
+
+/// The step common to both modes once a connection id is settled on
+/// (freshly created, or an existing one the ownership check above already
+/// approved): mint a single-use connect token and redirect to `return_url`
+/// with `token`/`nonce` appended (parsed and re-serialized via the `url`
+/// crate, so a `return_url` that already carries its own query string is
+/// handled correctly - never a naive string-concatenated `?`).
+fn mint_token_and_redirect(state: &AppState, connection_id: &str, platform: &str, form: &ConfirmForm, user_id: &str) -> Response {
     let raw_token = shared::auth::generate_connect_token();
     let token_hash = shared::auth::hash_secret_token(&raw_token);
-    let stored = state.db.lock().unwrap().create_connect_token(&token_hash, &outcome.connection_id, &form.nonce, now_unix());
+    let stored = state.db.lock().unwrap().create_connect_token(&token_hash, connection_id, &form.nonce, now_unix());
     if stored.is_err() {
         return render_confirm_form(
-            &state,
-            &platform,
+            state,
+            platform,
             &form.site_url,
             &form.return_url,
             &form.nonce,
             Some("Something went wrong. Please try again."),
-            Some(&form),
+            Some(form),
+            user_id,
         );
     }
 
@@ -253,13 +390,14 @@ pub async fn confirm_submit(
         Ok(url) => url,
         Err(_) => {
             return render_confirm_form(
-                &state,
-                &platform,
+                state,
+                platform,
                 &form.site_url,
                 &form.return_url,
                 &form.nonce,
                 Some("Invalid return_url."),
-                Some(&form),
+                Some(form),
+                user_id,
             );
         }
     };
@@ -862,5 +1000,217 @@ mod tests {
         // bug) - confirmed here too so a future refactor can't silently
         // break that while fixing something else nearby.
         assert!(html.contains(r#"name="nonce" value="nonce-abc""#));
+    }
+
+    /// Creates a real `store_connections` row for the given session cookie
+    /// via the JSON `/connections` API (which accepts a session cookie the
+    /// same way it accepts a bearer token - `AuthedUser` takes either),
+    /// returning `(connection_id, public_key)`. Test-only setup for the
+    /// "use an existing store" tests below - a store to actually pick.
+    async fn create_a_store(router: &Router, cookie: &str, site_url: &str) -> (String, String) {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/connections")
+                    .header("content-type", "application/json")
+                    .header("cookie", cookie)
+                    .body(Body::from(
+                        serde_json::json!({
+                            "platform": "custom",
+                            "site_url": site_url,
+                            "view_key_hex": TEST_VIEW_KEY_HEX,
+                            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
+                            "network": "mainnet",
+                            "allowed_origins": [],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let body = body_json(response).await;
+        let obj = body.as_object().unwrap();
+        (
+            obj.get("connection_id").unwrap().as_str().unwrap().to_string(),
+            obj.get("public_key").unwrap().as_str().unwrap().to_string(),
+        )
+    }
+
+    #[tokio::test]
+    async fn the_confirm_screen_offers_no_existing_store_picker_for_a_user_with_no_stores_yet() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let cookie = signed_up_and_logged_in_session_cookie(&router, "no-stores-yet@example.com", "correct horse battery staple").await;
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fsettings&nonce=n")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(!html.contains("Use an existing store"), "a user with nothing connected yet shouldn't be offered a picker with nothing in it, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn the_confirm_screen_offers_an_existing_store_picker_once_the_user_has_one() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let cookie = signed_up_and_logged_in_session_cookie(&router, "has-a-store-already@example.com", "correct horse battery staple").await;
+        let (connection_id, public_key) = create_a_store(&router, &cookie, "https://my-existing-shop.example.com").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/connect/woocommerce?site_url=https%3A%2F%2Fnew-wp-site.example.com&return_url=https%3A%2F%2Fnew-wp-site.example.com%2Fsettings&nonce=n")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("Use an existing store"), "expected the picker, got: {html}");
+        assert!(html.contains(&format!(r#"value="{connection_id}""#)), "expected the store's connection id as an option, got: {html}");
+        assert!(html.contains("my-existing-shop.example.com"), "expected the store's derived display name, got: {html}");
+        assert!(!html.contains(&public_key), "the picker only needs to identify the store by name, not expose its public key on this page");
+    }
+
+    /// The actual feature: choosing "use an existing store" must not
+    /// provision a second tenant - it hands the plugin credentials for the
+    /// *same* store, and the store's own order history (a real signal that
+    /// no fresh tenant was minted) must be unaffected.
+    #[tokio::test]
+    async fn connecting_with_an_existing_store_reuses_it_instead_of_creating_a_new_one() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+
+        let cookie = signed_up_and_logged_in_session_cookie(&router, "reuse-existing@example.com", "correct horse battery staple").await;
+        let (connection_id, public_key) = create_a_store(&router, &cookie, "https://my-existing-shop.example.com").await;
+
+        let user_id = state.db.lock().unwrap().get_user_by_email("reuse-existing@example.com").unwrap().unwrap().id;
+        let connections_before = state.db.lock().unwrap().list_store_connections_for_user(&user_id).unwrap().len();
+        assert_eq!(connections_before, 1);
+
+        let post_response = router
+            .clone()
+            .oneshot(form_request(
+                "/connect/woocommerce",
+                Some(&cookie),
+                &[
+                    ("site_url", "https://new-wp-site.example.com"),
+                    ("return_url", "https://new-wp-site.example.com/settings"),
+                    ("nonce", "nonce-existing"),
+                    ("mode", "existing"),
+                    ("connection_id", &connection_id),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(post_response.status(), StatusCode::FOUND, "expected a redirect to return_url");
+        let location = post_response.headers().get("location").unwrap().to_str().unwrap().to_string();
+        let params = parse_query_params(&location);
+        let token = params.get("token").expect("expected a real connect token").clone();
+        assert_eq!(params.get("nonce").map(String::as_str), Some("nonce-existing"));
+
+        // No second store_connections row was created for this "existing"-mode
+        // submission.
+        let connections_after = state.db.lock().unwrap().list_store_connections_for_user(&user_id).unwrap().len();
+        assert_eq!(connections_after, 1, "using an existing store must not provision a second one");
+
+        // /finish hands back credentials for the *same* store - same
+        // public_key as the one already created, not a fresh one.
+        let finish_response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/connect/woocommerce/finish")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::json!({ "token": token }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(finish_response.status(), StatusCode::OK);
+        let finish_body = body_json(finish_response).await;
+        assert_eq!(finish_body["public_key"].as_str().unwrap(), public_key, "expected credentials for the same, already-existing store");
+    }
+
+    /// The real security boundary: a signed-in user must not be able to
+    /// attach *someone else's* store by guessing/copying its connection id -
+    /// that would hand its genuine `sk_...` secret token to their own
+    /// `return_url` via `/finish`.
+    #[tokio::test]
+    async fn connecting_with_a_connection_id_owned_by_a_different_user_is_rejected() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+
+        let victim_cookie = signed_up_and_logged_in_session_cookie(&router, "victim@example.com", "correct horse battery staple").await;
+        let (victim_connection_id, _victim_public_key) = create_a_store(&router, &victim_cookie, "https://victims-shop.example.com").await;
+
+        let attacker_cookie = signed_up_and_logged_in_session_cookie(&router, "attacker@example.com", "correct horse battery staple").await;
+
+        let post_response = router
+            .clone()
+            .oneshot(form_request(
+                "/connect/woocommerce",
+                Some(&attacker_cookie),
+                &[
+                    ("site_url", "https://attacker-site.example.com"),
+                    ("return_url", "https://attacker-site.example.com/settings"),
+                    ("nonce", "nonce-attack"),
+                    ("mode", "existing"),
+                    ("connection_id", &victim_connection_id),
+                ],
+            ))
+            .await
+            .unwrap();
+
+        // Not a redirect - never hand out a token for a store the caller
+        // doesn't own.
+        assert_eq!(post_response.status(), StatusCode::OK, "expected the confirm form re-rendered with an error, not a redirect");
+        let html = body_text(post_response).await;
+        assert!(html.contains("class=\"error\""), "expected a visible error, got: {html}");
+        assert!(!html.contains("token="), "must never leak a token for a store the caller doesn't own");
+    }
+
+    #[tokio::test]
+    async fn submitting_existing_mode_with_no_connection_id_chosen_shows_a_clear_error() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+
+        let cookie = signed_up_and_logged_in_session_cookie(&router, "forgot-to-pick@example.com", "correct horse battery staple").await;
+        let _ = create_a_store(&router, &cookie, "https://shop.example.com").await;
+
+        let post_response = router
+            .oneshot(form_request(
+                "/connect/woocommerce",
+                Some(&cookie),
+                &[
+                    ("site_url", "https://shop.example.com"),
+                    ("return_url", "https://shop.example.com/settings"),
+                    ("nonce", "nonce-nochoice"),
+                    ("mode", "existing"),
+                    ("connection_id", ""),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(post_response.status(), StatusCode::OK);
+        let html = body_text(post_response).await;
+        assert!(html.contains("Choose a store to connect."), "expected a clear error, got: {html}");
     }
 }
