@@ -25,6 +25,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (2, include_str!("../migrations/0002_sessions.sql")),
     (3, include_str!("../migrations/0003_store_connections.sql")),
     (4, include_str!("../migrations/0004_connect_tokens.sql")),
+    (5, include_str!("../migrations/0005_order_fiat_metadata.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -91,6 +92,21 @@ pub struct StoreConnectionRow {
     pub tenant_public_key: String,
     pub tenant_secret_token_encrypted: String,
     pub moneropay_endpoint: String,
+    pub created_at: i64,
+}
+
+/// A row from `order_fiat_metadata` (`docs/fx_refactor.md` Phase 1.2) - what
+/// a customer was quoted in fiat for one order, recorded at creation time.
+/// The engine has no concept of this at all; this is control-plane's own,
+/// sole copy of it - see the migration's own comment on why (and the
+/// accepted durability trade-off that implies, `docs/fx_refactor.md`
+/// decision 4).
+pub struct OrderFiatMetadataRow {
+    pub connection_id: String,
+    pub payment_id: String,
+    pub fiat_currency: String,
+    pub fiat_amount: String,
+    pub piconero_per_unit: u64,
     pub created_at: i64,
 }
 
@@ -288,6 +304,91 @@ impl Db {
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Records what a customer was quoted, in fiat, for one order
+    /// (`docs/fx_refactor.md` Phase 1.2) - called once, at order-creation
+    /// time, by the same handler that computes the XMR amount from this
+    /// exact rate (`http::orders`'s new order-creation endpoint, Phase
+    /// 1.4). `piconero_per_unit` is stored as `i64` (SQLite has no native
+    /// unsigned integer type) - safe: a real fiat-per-XMR rate is many
+    /// orders of magnitude below `i64::MAX`, this only guards against a
+    /// `u64` value SQLite genuinely cannot represent, not a plausible real
+    /// one.
+    pub fn create_order_fiat_metadata(
+        &self,
+        connection_id: &str,
+        payment_id: &str,
+        fiat_currency: &str,
+        fiat_amount: &str,
+        piconero_per_unit: u64,
+        created_at: i64,
+    ) -> Result<()> {
+        let piconero_per_unit = i64::try_from(piconero_per_unit)
+            .expect("piconero_per_unit out of i64 range - not a plausible real exchange rate");
+        self.conn.execute(
+            "INSERT INTO order_fiat_metadata
+                (connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            params![connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, created_at],
+        )?;
+        Ok(())
+    }
+
+    /// Looks up one order's fiat metadata - `None` when nothing was ever
+    /// recorded for this `(connection_id, payment_id)` pair (an order the
+    /// engine reports that predates this table, or one created directly
+    /// against the engine's own API rather than through control-plane).
+    pub fn get_order_fiat_metadata(&self, connection_id: &str, payment_id: &str) -> Result<Option<OrderFiatMetadataRow>> {
+        self.conn
+            .query_row(
+                "SELECT connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, created_at
+                 FROM order_fiat_metadata WHERE connection_id = ?1 AND payment_id = ?2",
+                params![connection_id, payment_id],
+                |row| {
+                    let piconero_per_unit: i64 = row.get(4)?;
+                    Ok(OrderFiatMetadataRow {
+                        connection_id: row.get(0)?,
+                        payment_id: row.get(1)?,
+                        fiat_currency: row.get(2)?,
+                        fiat_amount: row.get(3)?,
+                        piconero_per_unit: piconero_per_unit as u64,
+                        created_at: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(DbError::from)
+    }
+
+    /// Looks up fiat metadata for every order of one connection at once -
+    /// the orders-list/dashboard pages need this per-row, not one at a
+    /// time, to avoid an N+1 query pattern when rendering a whole list.
+    /// Returned as a map keyed by `payment_id` (already scoped to
+    /// `connection_id` by the query) for callers to look up by, not a
+    /// `Vec` they'd have to re-index themselves.
+    pub fn list_order_fiat_metadata_for_connection(
+        &self,
+        connection_id: &str,
+    ) -> Result<std::collections::HashMap<String, OrderFiatMetadataRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, created_at
+             FROM order_fiat_metadata WHERE connection_id = ?1",
+        )?;
+        let rows = stmt
+            .query_map(params![connection_id], |row| {
+                let piconero_per_unit: i64 = row.get(4)?;
+                Ok(OrderFiatMetadataRow {
+                    connection_id: row.get(0)?,
+                    payment_id: row.get(1)?,
+                    fiat_currency: row.get(2)?,
+                    fiat_amount: row.get(3)?,
+                    piconero_per_unit: piconero_per_unit as u64,
+                    created_at: row.get(5)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows.into_iter().map(|row| (row.payment_id.clone(), row)).collect())
     }
 
     /// Inserts a new single-use connect token (WBS 1.4.1) - `token_hash` is
@@ -611,5 +712,76 @@ mod tests {
         let _ = std::fs::remove_file(&path);
         let _ = std::fs::remove_file(path.with_extension("db-wal"));
         let _ = std::fs::remove_file(path.with_extension("db-shm"));
+    }
+
+    #[test]
+    fn creating_order_fiat_metadata_then_reading_it_back_round_trips() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        db.create_order_fiat_metadata(&connection_id, "pay_1", "USD", "25.00", 6_700_000_000, 1000).unwrap();
+
+        let row = db.get_order_fiat_metadata(&connection_id, "pay_1").unwrap().unwrap();
+        assert_eq!(row.connection_id, connection_id);
+        assert_eq!(row.payment_id, "pay_1");
+        assert_eq!(row.fiat_currency, "USD");
+        assert_eq!(row.fiat_amount, "25.00");
+        assert_eq!(row.piconero_per_unit, 6_700_000_000);
+        assert_eq!(row.created_at, 1000);
+    }
+
+    #[test]
+    fn looking_up_fiat_metadata_for_an_unknown_payment_id_returns_none() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        assert!(db.get_order_fiat_metadata(&connection_id, "nonexistent").unwrap().is_none());
+    }
+
+    #[test]
+    fn fiat_metadata_is_scoped_by_connection_id_even_for_the_same_payment_id() {
+        // Two different connections can each have their own order with the
+        // same payment_id (the engine's payment_id is only unique within one
+        // tenant) - the composite primary key must keep them apart.
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        db.create_user("user-2", "other@example.com", "hash", 1000).unwrap();
+        db.create_store_connection(
+            "conn-2",
+            "user-2",
+            "custom",
+            "https://other.example.com",
+            "pk_other",
+            "sk_other",
+            "http://127.0.0.1:8080",
+            1000,
+        )
+        .unwrap();
+
+        db.create_order_fiat_metadata(&connection_id, "pay_shared", "USD", "10.00", 1_000_000, 1000).unwrap();
+        db.create_order_fiat_metadata("conn-2", "pay_shared", "EUR", "20.00", 2_000_000, 2000).unwrap();
+
+        let first = db.get_order_fiat_metadata(&connection_id, "pay_shared").unwrap().unwrap();
+        let second = db.get_order_fiat_metadata("conn-2", "pay_shared").unwrap().unwrap();
+        assert_eq!(first.fiat_currency, "USD");
+        assert_eq!(second.fiat_currency, "EUR");
+    }
+
+    #[test]
+    fn listing_fiat_metadata_for_a_connection_returns_a_map_keyed_by_payment_id() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        db.create_order_fiat_metadata(&connection_id, "pay_a", "USD", "10.00", 1_000_000, 1000).unwrap();
+        db.create_order_fiat_metadata(&connection_id, "pay_b", "EUR", "20.00", 2_000_000, 2000).unwrap();
+
+        let map = db.list_order_fiat_metadata_for_connection(&connection_id).unwrap();
+        assert_eq!(map.len(), 2);
+        assert_eq!(map.get("pay_a").unwrap().fiat_currency, "USD");
+        assert_eq!(map.get("pay_b").unwrap().fiat_currency, "EUR");
+    }
+
+    #[test]
+    fn listing_fiat_metadata_for_a_connection_with_none_recorded_is_an_empty_map_not_an_error() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        assert!(db.list_order_fiat_metadata_for_connection(&connection_id).unwrap().is_empty());
     }
 }
