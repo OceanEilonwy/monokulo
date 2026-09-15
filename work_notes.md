@@ -42,6 +42,41 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- `scripts/dev-run.sh` (user-directed): a real start/stop/restart/status/logs
+  script for the local dev stack (engine + control-plane together), rather
+  than the ad hoc `nohup ... &`/`pkill`/manually-tracked-PID approach this
+  session had been using by hand up to this point.
+  - Reuses `e2e/moneropay-stagenet.toml` (the repo's own real e2e test
+    config, same worthless stagenet wallet) as the engine's dev config
+    rather than inventing a second wallet/config to keep in sync - only
+    `[server].bind` is overridden, to the fixed `127.0.0.1:8080`
+    `control-plane`'s own hardcoded `EngineClient` URL requires (a real,
+    documented placeholder in `control-plane/src/main.rs`, not something
+    this script can route around).
+  - A `CONTROL_PLANE_ENCRYPTION_KEY` is generated once (`openssl rand -hex
+    32`) and persisted under `.dev-run/`, so restarting doesn't invalidate
+    every stored `sk_...`/session on the control-plane's own database -
+    both real SQLite databases (engine + control-plane) also persist there
+    across restarts, `control-plane`'s by running it with `.dev-run/
+    control-plane` as its working directory (its own `main.rs` opens
+    `"control_plane.db"` as a path relative to CWD, not configurable
+    otherwise).
+  - `start` builds both binaries by default (`--no-build` skips it for a
+    faster restart) and is idempotent - safe to run again while already
+    up, just reports what's running rather than double-starting.
+    `stop`/`restart` track real PIDs in `.dev-run/*.pid`, `kill` then
+    `SIGKILL` after a bounded wait if still alive. `.dev-run/` itself is
+    gitignored (added a real entry, not just assumed).
+  - Every command (`start`, idempotent re-`start`, `status`, `logs` both
+    plain and per-target, `restart`, `stop`, idempotent re-`stop`, an
+    unknown `logs` target's error path) was actually run against this
+    session's own real running processes while writing it, not just
+    written and assumed correct - including confirming a real `restart`
+    genuinely gets new PIDs and that the control-plane's database survives
+    it. Left running at the end via this script (not the old manual
+    `nohup` invocations) for whoever picks this up next -
+    `scripts/dev-run.sh stop` to bring it down.
+
 - Two more user-directed pieces, done together: (A) the "use an existing
   store" flow now also merges the new site's origin into the tenant's
   real `allowed_origins` and updates the row's `site_url`; (B) a real
