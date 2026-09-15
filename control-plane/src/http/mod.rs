@@ -48,6 +48,7 @@
 mod connect;
 mod connections;
 mod dashboard;
+mod home;
 mod login;
 mod logout;
 mod orders;
@@ -92,13 +93,18 @@ pub struct AppState {
 
 pub fn build_router(state: AppState) -> Router {
     let router = Router::new()
+        .route("/", axum::routing::get(home::landing))
         .route("/signup", post(signup::signup))
         .route("/login", post(login::login))
         .route("/logout", post(logout::logout))
         .route("/connections", post(connections::create_connection))
+        .route("/dashboard", axum::routing::get(home::dashboard_home))
         .route("/dashboard/signup", axum::routing::get(dashboard::signup_form).post(dashboard::signup_submit))
         .route("/dashboard/login", axum::routing::get(dashboard::login_form).post(dashboard::login_submit))
         .route("/dashboard/connect", axum::routing::get(dashboard::connect_form).post(dashboard::connect_submit))
+        .route("/dashboard/connections/new", axum::routing::get(home::new_store_picker))
+        .route("/dashboard/connections/new/woocommerce", axum::routing::get(home::woocommerce_instructions))
+        .route("/dashboard/connections/{id}", axum::routing::get(orders::store_detail))
         .route("/dashboard/connections/{id}/orders", axum::routing::get(orders::orders_list))
         .route("/dashboard/connections/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
         .route("/dashboard/connections/{id}/webhooks", axum::routing::get(orders::webhooks_list))

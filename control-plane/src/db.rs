@@ -263,6 +263,33 @@ impl Db {
             .map_err(DbError::from)
     }
 
+    /// Every `store_connections` row belonging to `user_id`, newest first -
+    /// the dashboard home page's own data source. Deliberately no "display
+    /// name" column exists on this table (only `site_url`) - the dashboard
+    /// derives a display name from `site_url` itself rather than this query
+    /// growing a field nothing else needs; see `http/home.rs::display_name`.
+    pub fn list_store_connections_for_user(&self, user_id: &str) -> Result<Vec<StoreConnectionRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at
+             FROM store_connections WHERE user_id = ?1 ORDER BY created_at DESC",
+        )?;
+        let rows = stmt
+            .query_map(params![user_id], |row| {
+                Ok(StoreConnectionRow {
+                    id: row.get(0)?,
+                    user_id: row.get(1)?,
+                    platform: row.get(2)?,
+                    site_url: row.get(3)?,
+                    tenant_public_key: row.get(4)?,
+                    tenant_secret_token_encrypted: row.get(5)?,
+                    moneropay_endpoint: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Inserts a new single-use connect token (WBS 1.4.1) - `token_hash` is
     /// already hashed by the caller (`shared::auth::hash_secret_token`),
     /// never the raw token; see `http/connect.rs::confirm_submit`.

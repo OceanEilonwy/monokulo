@@ -1,0 +1,111 @@
+<style>
+/* Shared look for every control-plane page (registered as the "styles"
+   partial - see templates.rs). Minimalistic / tech / Monero / semi-
+   brutalist / web1.0: monospace throughout, hard black borders, no
+   rounded corners, no shadows or gradients, one accent color (Monero
+   orange). Deliberately hand-written, no framework, no external request. */
+:root {
+  --ink: #111111;
+  --paper: #f4f1ea;
+  --paper-raised: #ffffff;
+  --line: #111111;
+  --accent: #ff6600;
+  --accent-ink: #111111;
+  --error: #b00020;
+  --muted: #5a564c;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font-family: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+  font-size: 15px;
+  line-height: 1.5;
+}
+body { padding-bottom: 4rem; }
+a { color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; }
+a:hover { color: var(--accent); }
+h1, h2, h3 { font-weight: 700; letter-spacing: -0.01em; margin: 1.4em 0 0.6em; }
+h1 { font-size: 1.6rem; border-bottom: 3px solid var(--line); padding-bottom: 0.3em; }
+h2 { font-size: 1.15rem; border-bottom: 1px solid var(--line); padding-bottom: 0.2em; }
+p { margin: 0.6em 0; }
+code, pre {
+  font-family: inherit;
+  background: var(--paper-raised);
+  border: 1px solid var(--line);
+  padding: 0.1em 0.35em;
+}
+pre { padding: 0.8em; overflow-x: auto; white-space: pre-wrap; word-break: break-all; }
+.wrap { max-width: 880px; margin: 0 auto; padding: 0 1.2rem; }
+.error {
+  border: 2px solid var(--error);
+  color: var(--error);
+  padding: 0.6em 0.8em;
+  font-weight: 700;
+  margin: 1em 0;
+}
+.hint { color: var(--muted); font-size: 0.9em; }
+.box {
+  border: 2px solid var(--line);
+  background: var(--paper-raised);
+  padding: 1.1rem;
+  margin: 1.2rem 0;
+}
+.box + .box { margin-top: 1.2rem; }
+table { border-collapse: collapse; width: 100%; margin: 0.8em 0; }
+th, td { border: 1px solid var(--line); padding: 0.4em 0.6em; text-align: left; vertical-align: top; }
+th { background: var(--ink); color: var(--paper); font-weight: 700; }
+tr:nth-child(even) td { background: rgba(0,0,0,0.03); }
+form label { display: block; margin: 0.9em 0 0.3em; font-weight: 700; }
+form .field-help { display: block; font-weight: 400; color: var(--muted); margin-top: 0.15em; font-size: 0.88em; }
+input[type=text], input[type=email], input[type=password], input[type=url], select {
+  width: 100%;
+  font-family: inherit;
+  font-size: 1em;
+  padding: 0.45em 0.5em;
+  border: 2px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+}
+input:focus, select:focus { outline: 3px solid var(--accent); outline-offset: 0; }
+button, .btn {
+  display: inline-block;
+  font-family: inherit;
+  font-size: 1em;
+  font-weight: 700;
+  background: var(--ink);
+  color: var(--paper);
+  border: 2px solid var(--line);
+  padding: 0.55em 1.1em;
+  cursor: pointer;
+  text-decoration: none;
+  margin-top: 0.9em;
+}
+button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+.btn-secondary { background: var(--paper-raised); color: var(--ink); }
+.btn-secondary:hover { background: var(--accent); color: var(--accent-ink); }
+.tag {
+  display: inline-block;
+  border: 1px solid var(--line);
+  padding: 0.05em 0.5em;
+  font-size: 0.8em;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+.tag-ok { background: #dff5d8; }
+.tag-error { background: #f8d7da; }
+.tag-unknown { background: #eee; }
+.grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
+@media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
+.muted { color: var(--muted); }
+.rule { border: none; border-top: 2px dashed var(--line); margin: 1.6em 0; }
+.pick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; margin: 1.2rem 0; }
+@media (max-width: 640px) { .pick-grid { grid-template-columns: 1fr; } }
+.pick-card { border: 2px solid var(--line); background: var(--paper-raised); padding: 1.2rem; }
+.pick-card h3 { margin-top: 0; }
+.steps { padding-left: 1.4em; }
+.steps li { margin: 0.5em 0; }
+</style>

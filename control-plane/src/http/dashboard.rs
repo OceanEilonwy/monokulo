@@ -132,7 +132,7 @@ fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>) -> Re
 fn render_connect_form(state: &AppState, error: Option<&str>) -> Response {
     let html = state
         .templates
-        .render_connect(&ConnectViewModel { error: error.map(str::to_string), public_key: None })
+        .render_connect(&ConnectViewModel { error: error.map(str::to_string), public_key: None, endpoint: String::new() })
         .expect("the built-in connect template must always render");
     Html(html).into_response()
 }
@@ -140,7 +140,11 @@ fn render_connect_form(state: &AppState, error: Option<&str>) -> Response {
 fn render_connect_success(state: &AppState, public_key: &str) -> Response {
     let html = state
         .templates
-        .render_connect(&ConnectViewModel { error: None, public_key: Some(public_key.to_string()) })
+        .render_connect(&ConnectViewModel {
+            error: None,
+            public_key: Some(public_key.to_string()),
+            endpoint: state.engine_client.base_url().to_string(),
+        })
         .expect("the built-in connect template must always render");
     Html(html).into_response()
 }
@@ -213,18 +217,10 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
                 return (jar, redirect_302(next)).into_response();
             }
 
-            // No real dashboard content page exists yet (WBS 1.3.3, a later
-            // task), so a redirect to one would land on a 404. Rendering a
-            // minimal inline confirmation here instead is the honest
-            // option - it doesn't promise a destination that doesn't exist -
-            // and 1.3.3 can freely turn this into a redirect once there's
-            // somewhere real to go.
-            let body = Html(
-                "<!doctype html><html lang=\"en\"><head><meta charset=\"utf-8\">\
-                 <title>Logged in - MoneroPay Cloud</title></head><body>\
-                 <h1>You're logged in</h1><p>Your session is active.</p></body></html>",
-            );
-            (jar, body).into_response()
+            // A real dashboard home page exists now (`http/home.rs`) - a
+            // plain login with no `next` lands there, same as any other
+            // "you're logged in, here's your stuff" flow.
+            (jar, redirect_302("/dashboard")).into_response()
         }
         Err(LoginError::Unauthorized) => render_login(&state, Some("Invalid email or password."), form.next.as_deref()),
         Err(LoginError::Internal) => {

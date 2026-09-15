@@ -389,7 +389,11 @@ async fn posting_valid_form_encoded_login_data_sets_a_session_cookie() {
         ))
         .await
         .unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    // A plain login with no `next` redirects straight to the real dashboard
+    // home page (`http/home.rs`) now that one exists - see
+    // `dashboard::login_submit`'s own doc comment.
+    assert_eq!(response.status(), StatusCode::FOUND);
+    assert_eq!(response.headers().get("location").unwrap(), "/dashboard");
     let set_cookie = response.headers().get("set-cookie").unwrap().to_str().unwrap();
     assert!(set_cookie.starts_with("session="), "expected a `session` cookie, got: {set_cookie}");
     assert!(set_cookie.to_lowercase().contains("httponly"), "expected HttpOnly, got: {set_cookie}");
@@ -418,7 +422,7 @@ async fn the_session_cookie_from_dashboard_login_authenticates_against_a_protect
         ))
         .await
         .unwrap();
-    assert_eq!(login.status(), StatusCode::OK);
+    assert_eq!(login.status(), StatusCode::FOUND);
     let set_cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
     // Extract just `session=<value>` from the full `Set-Cookie` line (which
     // also carries `; HttpOnly; SameSite=Lax; Path=/`) - that's what a
@@ -550,7 +554,7 @@ async fn signed_up_and_logged_in_session_cookie(router: &Router, email: &str, pa
         .oneshot(form_request("/dashboard/login", &[("email", email), ("password", password)]))
         .await
         .unwrap();
-    assert_eq!(login.status(), StatusCode::OK);
+    assert_eq!(login.status(), StatusCode::FOUND);
     let set_cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
     set_cookie.split(';').next().unwrap().to_string()
 }
@@ -679,12 +683,17 @@ async fn a_successful_login_with_a_malicious_next_falls_back_to_the_default_conf
             .oneshot(form_request("/dashboard/login", &[("email", email), ("password", password), ("next", malicious_next)]))
             .await
             .unwrap();
-        // Not a redirect at all - a malicious `next` must be silently
-        // ignored, falling back to the exact same inline confirmation a
-        // `next`-less login gets, never followed anywhere.
-        assert_eq!(response.status(), StatusCode::OK, "a malicious next ({malicious_next}) must not produce a redirect");
-        assert!(response.headers().get("location").is_none(), "must not carry a Location header at all for {malicious_next}");
-        let html = body_text(response).await;
-        assert!(html.contains("You're logged in"), "expected the default confirmation, got: {html}");
+        // A malicious `next` must be silently ignored, falling back to the
+        // exact same `/dashboard` redirect a `next`-less login gets - never
+        // the attacker-controlled value. The response *is* a redirect
+        // either way now that a real dashboard exists (see
+        // `dashboard::login_submit`'s doc comment) - the load-bearing check
+        // is the `Location` value, not whether a redirect happened at all.
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(
+            response.headers().get("location").unwrap(),
+            "/dashboard",
+            "a malicious next ({malicious_next}) must never appear in Location - only the safe default"
+        );
     }
 }

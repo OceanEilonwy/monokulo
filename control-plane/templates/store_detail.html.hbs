@@ -1,0 +1,61 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Store - MoneroPay Cloud</title>
+{{> styles}}
+</head>
+<body>
+{{> nav}}
+<div class="wrap">
+
+{{#if store}}
+<h1>{{store.display_name}}</h1>
+<p>
+<span class="tag tag-{{store.health}}">{{store.health_label}}</span>
+&nbsp;<span class="muted">{{store.platform}}</span>
+&nbsp;&middot;&nbsp;<a href="{{store.site_url}}">{{store.site_url}}</a>
+</p>
+
+<div class="box">
+<table>
+<tr><th>Public key</th><td><code>{{store.public_key}}</code></td></tr>
+<tr><th>Engine endpoint</th><td><code>{{store.endpoint}}</code></td></tr>
+<tr><th>Connected</th><td>{{store.created_at}}</td></tr>
+</table>
+</div>
+
+<h2>Recent orders</h2>
+{{#if store.recent_orders}}
+<table>
+<thead>
+<tr><th>Payment ID</th><th>Status</th><th>Amount</th><th>Created</th></tr>
+</thead>
+<tbody>
+{{#each store.recent_orders}}
+<tr>
+<td><a href="/dashboard/connections/{{../store.connection_id}}/orders/{{this.payment_id}}">{{this.payment_id}}</a></td>
+<td>{{this.status}}</td>
+<td>{{this.fiat_amount}} {{this.fiat_currency}}</td>
+<td>{{this.created_at}}</td>
+</tr>
+{{/each}}
+</tbody>
+</table>
+{{else}}
+<p class="muted">No orders yet.</p>
+{{/if}}
+<p><a href="/dashboard/connections/{{store.connection_id}}/orders">all orders &rarr;</a>
+&nbsp;&middot;&nbsp;<a href="/dashboard/connections/{{store.connection_id}}/webhooks">webhooks &rarr;</a></p>
+
+{{> integration_help public_key=store.public_key endpoint=store.endpoint}}
+
+{{else}}
+<h1>Store not found</h1>
+<p>This store doesn't exist, or isn't connected to your account.</p>
+{{/if}}
+
+</div>
+</body>
+</html>

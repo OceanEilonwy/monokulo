@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dashboard - MoneroPay Cloud</title>
+{{> styles}}
+</head>
+<body>
+{{> nav}}
+<div class="wrap">
+
+<h1>Dashboard</h1>
+
+{{#if has_stores}}
+<div class="box">
+<strong>Total received (detected):</strong> {{total_received_xmr}} XMR across all connected stores
+</div>
+
+<h2>Your stores</h2>
+<table>
+<thead>
+<tr><th>Store</th><th>Platform</th><th>Public key</th><th>Status</th><th></th></tr>
+</thead>
+<tbody>
+{{#each stores}}
+<tr>
+<td>{{this.display_name}}</td>
+<td>{{this.platform}}</td>
+<td><code>{{this.public_key}}</code></td>
+<td><span class="tag tag-{{this.health}}">{{this.health_label}}</span></td>
+<td><a href="/dashboard/connections/{{this.connection_id}}">view &rarr;</a></td>
+</tr>
+{{/each}}
+</tbody>
+</table>
+<a class="btn btn-secondary" href="/dashboard/connections/new">+ add another store</a>
+
+<h2>Recent orders</h2>
+{{#if recent_orders}}
+<table>
+<thead>
+<tr><th>Store</th><th>Payment ID</th><th>Status</th><th>Amount</th><th>Created</th></tr>
+</thead>
+<tbody>
+{{#each recent_orders}}
+<tr>
+<td>{{this.display_name}}</td>
+<td><a href="/dashboard/connections/{{this.connection_id}}/orders/{{this.payment_id}}">{{this.payment_id}}</a></td>
+<td>{{this.status}}</td>
+<td>{{this.fiat_amount}} {{this.fiat_currency}}</td>
+<td>{{this.created_at}}</td>
+</tr>
+{{/each}}
+</tbody>
+</table>
+{{else}}
+<p class="muted">No orders yet.</p>
+{{/if}}
+
+{{else}}
+<div class="box">
+<h2>Connect your first store</h2>
+<p>You don't have any stores connected yet. Adding one takes a couple of minutes - pick the
+guided flow for WooCommerce, or the advanced form if you're integrating something custom.</p>
+<a class="btn" href="/dashboard/connections/new">+ add a store</a>
+</div>
+{{/if}}
+
+</div>
+</body>
+</html>

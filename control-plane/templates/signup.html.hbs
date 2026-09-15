@@ -2,18 +2,25 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign up - MoneroPay Cloud</title>
+{{> styles}}
 </head>
 <body>
+{{> nav}}
+<div class="wrap">
+
 <h1>Sign up</h1>
 {{#if error}}
 <p class="error">{{error}}</p>
 {{/if}}
 <form method="post" action="/dashboard/signup">
-<label>Email <input type="email" name="email" required></label><br>
-<label>Password <input type="password" name="password" required></label><br>
+<label>Email <input type="email" name="email" required></label>
+<label>Password <input type="password" name="password" required></label>
 <button type="submit">Sign up</button>
 </form>
 <p>Already have an account? <a href="/dashboard/login">Log in</a></p>
+
+</div>
 </body>
 </html>

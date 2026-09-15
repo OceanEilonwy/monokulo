@@ -2,9 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Webhooks - MoneroPay Cloud</title>
+{{> styles}}
 </head>
 <body>
+{{> nav}}
+<div class="wrap">
+
+<p><a href="/dashboard/connections/{{connection_id}}">&larr; back to store</a></p>
 <h1>Webhooks</h1>
 <table>
 <thead>
@@ -21,5 +27,7 @@
 {{/each}}
 </tbody>
 </table>
+
+</div>
 </body>
 </html>

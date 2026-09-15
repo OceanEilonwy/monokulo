@@ -2,9 +2,15 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Order detail - MoneroPay Cloud</title>
+{{> styles}}
 </head>
 <body>
+{{> nav}}
+<div class="wrap">
+
+<p><a href="/dashboard/connections/{{connection_id}}/orders">&larr; back to orders</a></p>
 {{#if order}}
 <h1>Order {{order.payment_id}}</h1>
 <table>
@@ -43,5 +49,7 @@
 <h1>Order not found</h1>
 <p>This order does not exist.</p>
 {{/if}}
+
+</div>
 </body>
 </html>

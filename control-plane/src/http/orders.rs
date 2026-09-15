@@ -203,6 +203,99 @@ pub async fn webhooks_list(
     Html(html).into_response()
 }
 
+/// Derives a human-readable store name from `site_url`, since
+/// `store_connections` has no dedicated display-name column (a real,
+/// deliberate scope decision - see `Db::list_store_connections_for_user`'s
+/// doc comment: adding a migration for a column nothing else needs wasn't
+/// worth it when the URL's own host is already a perfectly good name).
+/// Falls back to the raw `site_url` string if it doesn't parse as a URL at
+/// all, so this never panics or produces an empty name.
+pub(super) fn display_name_for(site_url: &str) -> String {
+    url::Url::parse(site_url).ok().and_then(|u| u.host_str().map(str::to_string)).unwrap_or_else(|| site_url.to_string())
+}
+
+/// The only store-health signal available without this service also probing
+/// the merchant's own `site_url` (nothing here does that): whether the
+/// engine actually answers `GET /api/v1/admin/tenant` for this connection's
+/// `sk_...`. `("ok", "healthy")`/`("error", "unreachable")` are used
+/// directly as a CSS class suffix (`tag-{{health}}`, see `_styles.html.hbs`)
+/// and a human label respectively - kept as two separate strings rather than
+/// deriving one from the other so the template never has to.
+pub(super) fn health_of_tenant_lookup<T>(result: &Result<T, EngineClientError>) -> (String, String) {
+    match result {
+        Ok(_) => ("ok".to_string(), "healthy".to_string()),
+        Err(_) => ("error".to_string(), "unreachable".to_string()),
+    }
+}
+
+/// `GET /dashboard/connections/{id}` - the store overview page: identity,
+/// health, recent orders, and the same integration-help content
+/// (`_integration_help.html.hbs`) shown right after a successful connect, so
+/// a merchant can always find it again later without re-connecting.
+pub async fn store_detail(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => {
+            let html = state
+                .templates
+                .render_store_detail(&crate::templates::StoreDetailViewModel { store: None })
+                .expect("the built-in store detail template must always render");
+            return (StatusCode::NOT_FOUND, Html(html)).into_response();
+        }
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let tenant_result = state.engine_client.get_tenant(&sk).await;
+    let (health, health_label) = health_of_tenant_lookup(&tenant_result);
+
+    // A store whose engine is currently unreachable still gets a real page -
+    // just with no order data available, rather than a hard error. The
+    // health tag above is what actually communicates the problem.
+    let recent_orders = match state.engine_client.list_orders(&sk).await {
+        Ok(mut orders) => {
+            orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+            orders
+                .into_iter()
+                .take(10)
+                .map(|o| OrderRowViewModel {
+                    payment_id: o.payment_id,
+                    status: o.status,
+                    fiat_amount: o.fiat_amount,
+                    fiat_currency: o.fiat_currency,
+                    created_at: o.created_at,
+                })
+                .collect()
+        }
+        Err(_) => Vec::new(),
+    };
+
+    let view_model = crate::templates::StoreDetailViewModel {
+        store: Some(crate::templates::StoreDetailData {
+            connection_id: id,
+            display_name: display_name_for(&row.site_url),
+            platform: row.platform,
+            site_url: row.site_url,
+            public_key: row.tenant_public_key,
+            endpoint: row.moneropay_endpoint,
+            health,
+            health_label,
+            created_at: row.created_at,
+            recent_orders,
+        }),
+    };
+    let html =
+        state.templates.render_store_detail(&view_model).expect("the built-in store detail template must always render");
+    Html(html).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use axum::Router;
@@ -512,6 +605,65 @@ mod tests {
                 .await
                 .unwrap();
             assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "expected 401 for {uri} with no session");
+        }
+    }
+
+    #[tokio::test]
+    async fn store_detail_shows_the_real_connected_stores_overview_and_integration_help() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(&router, "store-detail@example.com", "correct horse battery staple").await;
+        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let payment_id = seed_real_order(engine.addr, &public_key).await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+
+        assert!(html.contains(&public_key), "expected the store's public key, got: {html}");
+        assert!(html.contains("shop.example.com"), "expected a display name derived from site_url, got: {html}");
+        assert!(html.contains("tag-ok"), "the engine is genuinely reachable, so health must render as ok, got: {html}");
+        assert!(html.contains(&payment_id), "expected the seeded order in the recent-orders list, got: {html}");
+        // The integration-help partial - the same content the WBS asked to
+        // be "accessible from the store page for each connected store".
+        assert!(html.contains("Integrate this store"), "expected the integration help section, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn store_detail_for_an_unowned_or_unknown_connection_returns_404() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let owner_token = signed_up_and_logged_in_session_token(&router, "store-detail-owner@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &owner_token).await;
+
+        let other_token = signed_up_and_logged_in_session_token(&router, "store-detail-intruder@example.com", "correct horse battery staple").await;
+
+        for uri in [format!("/dashboard/connections/{connection_id}"), "/dashboard/connections/nonexistent".to_string()] {
+            let response = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("GET")
+                        .uri(uri.clone())
+                        .header("authorization", format!("Bearer {other_token}"))
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::NOT_FOUND, "expected 404 for {uri}");
         }
     }
 }

@@ -1,0 +1,23 @@
+<div class="box">
+<h2>Integrate this store</h2>
+<p>Your public key (safe to publish - it identifies your store, it can't move funds or read your data):</p>
+<pre>{{public_key}}</pre>
+
+<p><strong>WooCommerce</strong> - the easiest path if your store runs WooCommerce:</p>
+<ol class="steps">
+<li>Install the <code>moneropay-cloud</code> plugin from your WordPress admin.</li>
+<li>Go to <strong>WooCommerce &rarr; Settings &rarr; Payments &rarr; MoneroPay</strong> and click <strong>Connect</strong>.</li>
+<li>The plugin talks to this public key automatically - nothing to paste in by hand.</li>
+</ol>
+
+<p><strong>Anything else</strong> - create an order directly against the engine API and redirect the buyer to the returned checkout link:</p>
+<pre>POST {{endpoint}}/api/v1/t/{{public_key}}/orders
+Content-Type: application/json
+
+{
+  "fiat_currency": "USD",
+  "fiat_amount": "25.00"
+}</pre>
+<p class="hint">The response includes a <code>payment_id</code> - send the buyer to
+<code>{{endpoint}}/pay/v1/{{public_key}}/&lt;payment_id&gt;</code> to complete the payment. This endpoint needs no secret - it's safe to call directly from your storefront's backend.</p>
+</div>

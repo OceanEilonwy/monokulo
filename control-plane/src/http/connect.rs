@@ -443,7 +443,7 @@ mod tests {
 
         let login =
             router.clone().oneshot(form_request("/dashboard/login", None, &[("email", email), ("password", password)])).await.unwrap();
-        assert_eq!(login.status(), StatusCode::OK);
+        assert_eq!(login.status(), StatusCode::FOUND);
         let set_cookie = login.headers().get("set-cookie").unwrap().to_str().unwrap().to_string();
         set_cookie.split(';').next().unwrap().to_string()
     }

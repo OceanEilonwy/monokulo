@@ -42,6 +42,119 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Progress log
 
+- Control-plane UI/UX pass (not a numbered WBS item - user-directed work
+  after checking out the running control plane + engine locally): a real
+  visual identity plus the pages the WBS's own dashboard tasks (1.3.1/1.3.2/
+  1.3.3/1.4.1) had never actually gotten around to building. User's brief:
+  "minimalistic, tech, monero, crypto, semi-brutalist, web1.0," a landing
+  page, a real dashboard home (connected stores, recent orders, total
+  received XMR, health), an obvious empty-state CTA, two connect flows
+  ("custom (advanced)" vs. "simple -> woocommerce"), much more explanatory
+  copy + sensible defaults on the advanced form, and integration-help
+  content reachable from each store's own page, not just shown once.
+  - **Shared look**: `control-plane/templates/_styles.html.hbs` (one
+    hand-written CSS block - monospace, hard black borders, no rounded
+    corners/shadows/gradients, Monero-orange accent) and `_nav.html.hbs`,
+    both registered as handlebars partials (`{{> styles}}`/`{{> nav}}`) and
+    included on every page, old and new alike - so the whole surface reads
+    as one product, not a patchwork of before/after styles.
+  - **New pages**: `landing.html.hbs` (`GET /`, unauthenticated, explains
+    the non-custodial model, CTA to signup), `dashboard_home.html.hbs`
+    (`GET /dashboard` - real aggregation, not mock data: iterates the
+    user's `store_connections`, calls the real engine's
+    `get_tenant`/`list_orders` per connection, sums `amount_received_piconero`
+    across every order for "total received XMR that has been detected"),
+    `new_store_picker.html.hbs` (`GET /dashboard/connections/new` - the
+    custom-vs-simple choice), `woocommerce_instructions.html.hbs`
+    (`GET /dashboard/connections/new/woocommerce`), and
+    `store_detail.html.hbs` (`GET /dashboard/connections/{id}` - a real
+    per-store overview page that didn't exist before; only `/orders` and
+    `/webhooks` sub-pages did).
+  - **A genuine, deliberate scope call on the "simple" flow**: the real
+    `/connect/{platform}` protocol needs a `site_url`/`return_url`/`nonce`
+    only a plugin can supply (`http/connect.rs`'s own module doc comment) -
+    the dashboard has no way to manufacture a legitimate return path into
+    someone else's WordPress admin. So `woocommerce_instructions.html.hbs`
+    is real instructions (install plugin -> WooCommerce settings -> click
+    Connect), not a live form pretending to be one. Flagged to the user
+    before starting, not decided silently.
+  - **Another real, deliberate scope call**: `store_connections` has no
+    user-facing display-name column - `http/orders.rs::display_name_for`
+    derives one from `site_url`'s own host rather than a new migration for
+    a field nothing else needs. Also flagged before starting.
+  - **Shared integration-help partial**
+    (`_integration_help.html.hbs` + `templates::IntegrationHelpViewModel`,
+    though the actual call sites pass hash params directly rather than
+    that struct - see `store_detail.html.hbs`'s
+    `{{> integration_help public_key=... endpoint=...}}`): the exact same
+    content renders right after a successful advanced-connect *and* on the
+    store detail page, so the two can never drift. Proven by a real test
+    checking the partial actually receives per-store data via its hash
+    params, not a stale/shared context.
+  - **A real bug caught and fixed via live testing, not just unit tests**:
+    the post-connect success page initially rendered a hardcoded placeholder
+    string for the engine endpoint in the integration snippet instead of the
+    real one, even though `state.engine_client.base_url()` was sitting right
+    there in the handler - only surfaced by actually driving the flow
+    end-to-end against the two locally-running processes (signup -> login ->
+    connect -> dashboard -> store detail, via real `curl` + a cookie jar,
+    not mocked) and eyeballing the rendered HTML. Fixed by threading a real
+    `endpoint` field through `ConnectViewModel`.
+  - `dashboard::login_submit`'s old placeholder behavior (a hardcoded inline
+    "you're logged in" HTML page, with a doc comment explicitly noting "no
+    real dashboard content page exists yet") now redirects to the real
+    `/dashboard` - the doc comment's own stated condition for making that
+    change. Updated 9 existing tests whose assertions depended on the old
+    placeholder status/body (all in `http/tests.rs`/`http/connect.rs`, via a
+    shared `signed_up_and_logged_in_session_*` test helper each file had its
+    own copy of) - including strengthening the open-redirect regression test
+    (`a_successful_login_with_a_malicious_next_...`) to assert the exact
+    `Location: /dashboard` value now that the safe-fallback path is itself a
+    redirect, not just "not a redirect at all."
+  - **A real rustfmt hazard hit again this session, caught before
+    committing**: running `rustfmt` even scoped to only the files actually
+    touched still reflowed hundreds of pre-existing, untouched lines in
+    those files to stock rustfmt defaults (confirmed no `rustfmt.toml`
+    exists anywhere in this repo - the codebase's long-line style is
+    maintained by hand convention only, not enforced by config), and
+    separately, passing `http/mod.rs` to rustfmt cascaded into reformatting
+    every sibling module it `mod`-declares (connections.rs/login.rs/
+    logout.rs/signup.rs), none of which this task touched at all. Caught via
+    `git diff --stat` showing far more churn than the real edits justified;
+    fixed by reverting every affected file to HEAD and manually re-applying
+    only the real, intended edits by hand (confirmed via a second, clean
+    `git diff --stat` afterward - net diff is now proportional to the actual
+    change, no formatting noise). Restated plainly for whoever reads this
+    next: **do not run `rustfmt`/`cargo fmt` in this repo at all, on any
+    file, scoped or not** - hand-format new code to match the surrounding
+    file's existing style instead. The earlier "scope fmt to touched files"
+    lesson in this log was already an under-correction; this replaces it.
+  - New tests: 7 template-render tests (`templates.rs`, including the
+    partial-hash-param proof above), 3 pure-function tests for the
+    piconero-to-XMR formatter, and 8 real HTTP-handler tests across
+    `http/home.rs` and `http/orders.rs` (landing/dashboard/picker/
+    instructions reachability and auth, a full real-engine-backed dashboard
+    aggregation test, store-detail ownership enumeration-defense) - all
+    using the same real-engine test harness (`engine_test_support`) every
+    other control-plane test in this codebase already uses, not mocks.
+    `cargo test -p control-plane`: 98 passed (was 80 at the start of this
+    piece of work; +18 net, after the 9 pre-existing tests above were
+    updated in place rather than counted as new).
+  - Independently verified live, twice (once before the rustfmt cleanup,
+    once after, both against the actually-rebuilt binary): real signup ->
+    login -> dashboard (empty state) -> picker -> advanced connect form ->
+    submit against the real locally-running engine (stagenet) -> dashboard
+    now showing the real store and its real public key -> store detail page
+    showing the same, plus working integration-help with the real endpoint.
+  - Full workspace re-verified after the rustfmt cleanup:
+    `cargo build --workspace` and `cargo test --workspace` both clean, every
+    other crate's count unchanged from the last known-good baseline.
+  - Committed separately from WBS 2.2 (already committed earlier this
+    session, before this UI work started): 2.2 is a numbered WBS
+    deliverable, this styling/dashboard work is user-directed follow-up, not
+    itself a WBS line item, even though it fills a real gap the WBS's own
+    1.3.x/1.4.1 tasks left open.
+
 - WBS 2.2 done (2.2.1 attestation-verification tooling + 2.2.2 deployment
   scripting for AMD SEV-SNP bare metal) - closes out Track B's cloud/
   attestation steps. Real decisions made this item (the user answered these
