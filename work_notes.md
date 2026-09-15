@@ -29,6 +29,58 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **User-requested follow-up (not part of `fx_refactor.md`'s own WBS,
+  post-completion): the FX rate provider and the exact rate used are now
+  recorded per order and shown on the order detail page.** Control-plane
+  already recorded `piconero_per_unit` (Phase 1.2) but not which provider
+  quoted it - a merchant looking at an order later had the number but no
+  way to tell whether it came from a `fixed` config value or a live
+  `coingecko` fetch (materially different trust/drift properties).
+  - New migration `control-plane/migrations/0006_order_fiat_metadata_provider.sql`
+    - `ALTER TABLE order_fiat_metadata ADD COLUMN provider TEXT NOT NULL
+    DEFAULT 'unknown'`. `'unknown'`, not a guessed `'fixed'`, for rows that
+    predate this column - this database genuinely cannot recover which
+    provider quoted an already-recorded rate, so claiming one would be
+    asserting something unproven.
+  - `ExchangeRateConfig::provider_name(&self) -> &'static str` (new method,
+    `"fixed"`/`"coingecko"`) - the missing piece: the trait object
+    `AppState.exchange_rate` holds can't answer "which concrete impl is
+    this" (same limitation the engine's own `key_custody_backend` field
+    works around), so a sibling `AppState.exchange_rate_provider: &'static
+    str` field now carries it alongside, computed once at boot in
+    `main.rs` from the same `ExchangeRateConfig` that builds the provider
+    itself - not re-derived, so the two can never disagree. Every one of
+    this workspace's ~15 test-only `AppState` construction sites (control-
+    plane's own test modules, `mock-woocommerce`, `tests/e2e_dashboard_
+    stagenet.rs`) updated to supply it.
+  - `Db::create_order_fiat_metadata` takes one more `provider: &str`
+    parameter now; both real call sites (`http::pay::create_order`, the
+    production storefront-facing endpoint, and `orders::create_order`, the
+    dashboard's own "create a test order" button) pass
+    `state.exchange_rate_provider` straight through - no new computation,
+    just recording what was already known at that point.
+  - `OrderDetailData` gained `fiat_rate_display` (e.g. `"0.006700000000 XMR
+    per 1 USD"`, formatted via `shared::exchange_rate::format_piconero_as_xmr`
+    - deliberately not `"1 USD = ... XMR"`: handlebars' default escaped
+    helper HTML-entity-encodes `=`, which is correct but made an early
+    draft's test assertion ugly for no real benefit) and `fiat_rate_provider`,
+    both falling back to the same `"—"` dash `checkout.rs` already
+    established for an order with no local fiat metadata at all (predates
+    the feature, or created directly against the engine). Two new rows on
+    `order_detail.html.hbs`: "Exchange rate" and "Rate provider".
+  - Real test added/extended, not just "it compiles": extended the
+    existing `creating_an_order_from_the_dashboard_redirects_to_its_real_
+    detail_page` test (which already creates a real order end-to-end and
+    loads its real detail page) with assertions for the exact rate string
+    and provider name, rather than adding a parallel near-duplicate test.
+  - Live-verified against the real dev stack (same manual
+    `CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES` override pattern used
+    throughout this session): migration 0006 applied cleanly to the
+    existing on-disk db; a real `$25.00` order at a real `0.0067` fixed
+    rate showed `0.006700000000 XMR per 1 USD` / `fixed` on its real
+    detail page, reached via a genuine signup -> login -> connect ->
+    order-creation -> dashboard flow, not a fabricated fixture.
+
 - **`fx_refactor.md` execution: Phases 4 (remainder), 5, and 6 done - the
   document's entire WBS is now complete.** Continued fully autonomously per
   the user's original "start work autonomously" instruction; no further
