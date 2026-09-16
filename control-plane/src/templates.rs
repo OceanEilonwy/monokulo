@@ -221,6 +221,42 @@ pub fn display_timestamp(value: i64) -> String {
     value.to_string()
 }
 
+/// A moment.js-style relative duration until `target_unix` ("12h", "4h
+/// 15m", "2d 4h") - at most the two largest non-zero units (days, hours,
+/// minutes), a zero unit skipped rather than shown ("1d 30m", never "1d 0h
+/// 30m" or "1d 0h"). `"any moment"` once `target_unix` has passed.
+///
+/// Computed here, server-side, rather than by client JavaScript from a raw
+/// timestamp - `checkout.html.hbs` (the only caller) is the real customer-
+/// facing payment page, which must stay fully meaningful with JavaScript
+/// disabled.
+pub fn format_duration_until(target_unix: i64, now_unix: i64) -> String {
+    let seconds_left = target_unix - now_unix;
+    if seconds_left <= 0 {
+        return "any moment".to_string();
+    }
+    let seconds_left = seconds_left as u64;
+    let days = seconds_left / 86400;
+    let hours = (seconds_left % 86400) / 3600;
+    let minutes = (seconds_left % 3600) / 60;
+
+    let mut parts = Vec::with_capacity(2);
+    if days > 0 {
+        parts.push(format!("{days}d"));
+    }
+    if hours > 0 {
+        parts.push(format!("{hours}h"));
+    }
+    if minutes > 0 && parts.len() < 2 {
+        parts.push(format!("{minutes}m"));
+    }
+    if parts.is_empty() {
+        parts.push("<1m".to_string());
+    }
+    parts.truncate(2);
+    parts.join(" ")
+}
+
 /// One payment row inside the order detail page's `payments` table -
 /// mirrors the engine's own `PaymentView`, but with every timestamp/
 /// optional field already rendered to a display string (`Option<i64>` ->
@@ -433,19 +469,32 @@ pub struct StoreDetailData {
     /// `network_selected_flags` exists), so this is `platform ==
     /// "woocommerce"` computed once here rather than in the template.
     pub is_woocommerce: bool,
-    /// Set only when the "create a test order" form on this page (see
+    /// Set only when the "create an order" form on this page (see
     /// `http/orders.rs::create_order`) was just rejected - the engine's own
     /// validation error (an unsupported currency, an unparseable amount),
     /// surfaced verbatim, same convention `WebhooksViewModel::error` already
     /// applies to webhook creation. `None` on a plain page load.
     pub order_creation_error: Option<String>,
+    /// Every currency the "create an order" form's dropdown can offer right
+    /// now (`exchange_rate_config::ExchangeRateProviders::
+    /// supported_currencies_for`) - always includes `"XMR"` first, plus
+    /// whatever this store's `fx_provider` currently supports. `XMR` is
+    /// always first in this list, so it's also the `<select>`'s default
+    /// choice with no `selected` attribute needed.
+    pub order_currency_options: Vec<String>,
+    /// `true` exactly when `order_currency_options` is `["XMR"]` alone (no
+    /// fiat provider enabled/configured for this store) - the template
+    /// shows a plain `readonly` "XMR" field instead of a one-option
+    /// dropdown, since a `<select>` with nothing to actually choose between
+    /// is misleading busywork, not a real choice.
+    pub order_currency_is_locked_to_xmr: bool,
     /// The tenant's current confirmation threshold, as last fetched from
     /// the engine (`TenantView::confirmations_required`) - `0` when the
     /// engine is currently unreachable (`health == "error"`), same
     /// "degrade honestly, show *something* real-ish rather than fail the
     /// whole page" approach `recent_orders` already takes for that case.
     pub confirmations_required: u64,
-    /// This store's chosen exchange-rate provider name (`"fixed"`/`"coingecko"`,
+    /// This store's chosen exchange-rate provider name (e.g. `"coingecko"`,
     /// `db::StoreConnectionRow::fx_provider`) - shown as read-only text
     /// alongside the dropdown below, useful precisely when it's *not* one
     /// of `fx_provider_options` any more (an admin disabled a provider a
@@ -577,8 +626,18 @@ pub struct CheckoutViewModel {
     pub confirmations: u64,
     pub confirmations_required: u64,
     pub is_terminal: bool,
+    /// Presence only - gates the `{{#if}}` banner in the template. The
+    /// actual text comes from `double_spend_detected_at_display` below,
+    /// pre-rendered server-side.
     pub double_spend_detected_at: Option<i64>,
-    pub expires_at: i64,
+    pub double_spend_detected_at_display: String,
+    /// A moment.js-style relative duration ("12h", "4h 15m", "2d 4h"),
+    /// pre-rendered server-side by `format_duration_until` - this page is
+    /// customer-facing and must stay fully meaningful with JavaScript
+    /// disabled, so nothing about it (including this) may depend on
+    /// `<script>` to be understandable. Only shown when `!is_terminal`;
+    /// meaningless (and unused) otherwise.
+    pub expires_in_display: String,
     pub merchant_order_id: Option<String>,
     pub pk: String,
     pub payments: Vec<CheckoutPaymentViewModel>,
@@ -721,6 +780,37 @@ mod tests {
         assert_eq!(display_or_dash(Some("real value")), "real value");
         assert_eq!(display_or_dash(None), NO_VALUE);
         assert_eq!(display_or_dash(Some("")), NO_VALUE, "an empty string is not a real value either");
+    }
+
+    #[test]
+    fn format_duration_until_matches_the_moment_js_style_examples() {
+        let now = 1_700_000_000;
+        assert_eq!(format_duration_until(now + 12 * 3600, now), "12h");
+        assert_eq!(format_duration_until(now + 4 * 3600 + 15 * 60, now), "4h 15m");
+        assert_eq!(format_duration_until(now + 2 * 86400 + 4 * 3600, now), "2d 4h");
+    }
+
+    #[test]
+    fn format_duration_until_skips_a_zero_unit_rather_than_showing_it() {
+        let now = 1_700_000_000;
+        // 1 day, 0 hours, 30 minutes - the zero hour must not crowd out the
+        // real second part or appear as "1d 0h".
+        assert_eq!(format_duration_until(now + 86400 + 30 * 60, now), "1d 30m");
+    }
+
+    #[test]
+    fn format_duration_until_never_shows_more_than_two_parts() {
+        let now = 1_700_000_000;
+        // 2 days, 4 hours, 30 minutes - minutes is dropped, not appended as a third part.
+        assert_eq!(format_duration_until(now + 2 * 86400 + 4 * 3600 + 30 * 60, now), "2d 4h");
+    }
+
+    #[test]
+    fn format_duration_until_handles_under_a_minute_and_already_passed() {
+        let now = 1_700_000_000;
+        assert_eq!(format_duration_until(now + 30, now), "<1m");
+        assert_eq!(format_duration_until(now, now), "any moment");
+        assert_eq!(format_duration_until(now - 100, now), "any moment", "an already-passed target must not show a negative duration");
     }
 
     #[test]
@@ -1032,8 +1122,10 @@ mod tests {
                     is_woocommerce: true,
                     order_creation_error: None,
                     confirmations_required: 10,
-                    fx_provider: "fixed".to_string(),
-                    fx_provider_options: vec![FxProviderOption { name: "fixed".to_string(), selected: true }],
+                    order_currency_options: vec!["XMR".to_string(), "USD".to_string()],
+                    order_currency_is_locked_to_xmr: false,
+                    fx_provider: "coingecko".to_string(),
+                    fx_provider_options: vec![FxProviderOption { name: "coingecko".to_string(), selected: true }],
                     settings_error: None,
                 }),
                 logged_in: true,
@@ -1081,8 +1173,10 @@ mod tests {
                     is_woocommerce: false,
                     order_creation_error: None,
                     confirmations_required: 10,
-                    fx_provider: "fixed".to_string(),
-                    fx_provider_options: vec![FxProviderOption { name: "fixed".to_string(), selected: true }],
+                    order_currency_options: vec!["XMR".to_string(), "USD".to_string()],
+                    order_currency_is_locked_to_xmr: false,
+                    fx_provider: "coingecko".to_string(),
+                    fx_provider_options: vec![FxProviderOption { name: "coingecko".to_string(), selected: true }],
                     settings_error: None,
                 }),
                 logged_in: true,
@@ -1111,8 +1205,10 @@ mod tests {
                     is_woocommerce: false,
                     order_creation_error: Some("unsupported currency: XYZ".to_string()),
                     confirmations_required: 10,
-                    fx_provider: "fixed".to_string(),
-                    fx_provider_options: vec![FxProviderOption { name: "fixed".to_string(), selected: true }],
+                    order_currency_options: vec!["XMR".to_string(), "USD".to_string()],
+                    order_currency_is_locked_to_xmr: false,
+                    fx_provider: "coingecko".to_string(),
+                    fx_provider_options: vec![FxProviderOption { name: "coingecko".to_string(), selected: true }],
                     settings_error: None,
                 }),
                 logged_in: true,

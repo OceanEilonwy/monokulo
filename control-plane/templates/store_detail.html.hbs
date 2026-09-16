@@ -50,9 +50,8 @@
 <p><a href="/dashboard/connections/{{store.connection_id}}/orders">all orders &rarr;</a>
 &nbsp;&middot;&nbsp;<a href="/dashboard/connections/{{store.connection_id}}/webhooks">webhooks &rarr;</a></p>
 
-<h2>Create a test order</h2>
-<p class="hint">Creates a real order on the engine and takes you straight to its payment page - a quick way to
-try the flow without wiring up a real storefront yet.</p>
+<h2>Create an order</h2>
+<p class="hint">Creates a real order on the engine and takes you straight to its payment page.</p>
 {{#if store.order_creation_error}}
 <div class="error">{{store.order_creation_error}}</div>
 {{/if}}
@@ -60,9 +59,19 @@ try the flow without wiring up a real storefront yet.</p>
 <label for="amount">Amount</label>
 <input type="text" id="amount" name="amount" value="10.00" required>
 <label for="currency">Currency</label>
-<input type="text" id="currency" name="currency" value="XMR" required>
-<span class="field-help">"XMR" always works, with no provider needed. Any other currency needs this store's
-exchange rate provider (below) enabled on this instance.</span>
+{{#if store.order_currency_is_locked_to_xmr}}
+<input type="text" id="currency" name="currency" value="XMR" readonly>
+<span class="field-help">"XMR" - the only currency this instance can price an order in right now. Enable an
+exchange rate provider (below) to offer others.</span>
+{{else}}
+<select id="currency" name="currency">
+{{#each store.order_currency_options}}
+<option value="{{this}}">{{this}}</option>
+{{/each}}
+</select>
+<span class="field-help">"XMR" always works, with no provider needed. Any other currency here comes from this
+store's own exchange rate provider (below).</span>
+{{/if}}
 <button type="submit">Create order</button>
 </form>
 
@@ -88,7 +97,7 @@ faster but riskier (a transaction can still be replaced before it's confirmed); 
 {{/each}}
 </select>
 <span class="field-help">Where this store's orders get their live market rate from, for any currency other than
-XMR (which always works, needing no provider at all - see "create a test order" above). "coingecko" looks up a
+XMR (which always works, needing no provider at all - see "create an order" above). "coingecko" looks up a
 live market rate (cached briefly before the next lookup refreshes it).</span>
 </label>
 <button type="submit">Update</button>

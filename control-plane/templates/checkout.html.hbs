@@ -69,7 +69,7 @@ body { padding: 1rem; }
 {{#if double_spend_detected_at}}
 <div id="double-spend-banner" class="error" role="alert">
 A payment toward this order was reversed by a blockchain double-spend, detected at
-<span id="double-spend-time" data-timestamp="{{double_spend_detected_at}}">{{double_spend_detected_at}}</span>.
+<span id="double-spend-time">{{{double_spend_detected_at_display}}}</span>.
 {{#unless is_terminal}}This order's status above reflects only still-valid payments.{{/unless}}
 </div>
 {{/if}}
@@ -118,7 +118,7 @@ A payment toward this order was reversed by a blockchain double-spend, detected 
 
 <div class="meta">
 Payment ID: {{payment_id}}<br>
-{{#unless is_terminal}}Expires in <span id="expires-at" data-timestamp="{{expires_at}}">{{expires_at}}</span>{{/unless}}
+{{#unless is_terminal}}Expires in {{expires_in_display}}{{/unless}}
 </div>
 
 </div>
@@ -129,40 +129,6 @@ Payment ID: {{payment_id}}<br>
   var isTerminal = {{#if is_terminal}}true{{else}}false{{/if}};
   var confirmationsRequired = {{confirmations_required}};
   var statusUrl = '/pay/{{pk}}/orders/{{payment_id}}/status';
-
-  function formatTimestamp(el) {
-    var ts = el.getAttribute('data-timestamp');
-    if (!ts) return;
-    var date = new Date(parseInt(ts, 10) * 1000);
-    el.textContent = date.toLocaleString();
-  }
-  document.querySelectorAll('[data-timestamp]:not(#expires-at)').forEach(formatTimestamp);
-
-  // "Expires in" reads as a moment.js-style relative duration ("12h",
-  // "4h 15m", "2d 4h") rather than an absolute date/time - at most the two
-  // largest non-zero units, a zero unit is skipped rather than shown
-  // ("1d 30m", never "1d 0h 30m" or "1d 0h").
-  function formatDuration(totalSeconds) {
-    if (totalSeconds <= 0) return 'any moment';
-    var days = Math.floor(totalSeconds / 86400);
-    var hours = Math.floor((totalSeconds % 86400) / 3600);
-    var minutes = Math.floor((totalSeconds % 3600) / 60);
-    var parts = [];
-    if (days > 0) parts.push(days + 'd');
-    if (hours > 0) parts.push(hours + 'h');
-    if (minutes > 0 && parts.length < 2) parts.push(minutes + 'm');
-    if (parts.length === 0) parts.push('<1m');
-    return parts.slice(0, 2).join(' ');
-  }
-  function updateExpiresIn() {
-    var el = document.getElementById('expires-at');
-    if (!el) return;
-    var ts = el.getAttribute('data-timestamp');
-    if (!ts) return;
-    var secondsLeft = parseInt(ts, 10) - Math.floor(Date.now() / 1000);
-    el.textContent = formatDuration(secondsLeft);
-  }
-  updateExpiresIn();
 
   document.getElementById('copy-btn').addEventListener('click', function () {
     var text = document.getElementById('address').textContent;
@@ -206,12 +172,6 @@ Payment ID: {{payment_id}}<br>
       }
       var pct = Math.min(100, Math.round((data.confirmations / confirmationsRequired) * 100));
       document.getElementById('progress-fill').style.width = pct + '%';
-
-      // Re-derived every poll (piggybacking on the existing 3s cadence,
-      // not a separate timer) so "Expires in" stays roughly accurate for a
-      // tab left open a while, rather than being frozen at whatever it
-      // said on page load.
-      updateExpiresIn();
 
       if (data.status !== lastStatus) {
         // A real status transition - simplest correct thing is a reload,

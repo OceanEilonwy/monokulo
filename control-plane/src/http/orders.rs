@@ -482,6 +482,13 @@ async fn render_store_detail_page(
         .into_iter()
         .map(|name| crate::templates::FxProviderOption { selected: name == row.fx_provider, name: name.to_string() })
         .collect();
+    // A live Coingecko failure here degrades to "XMR only" rather than
+    // failing this whole page - same "show something real-ish rather than
+    // fail outright" approach `health`/`recent_orders` above already take
+    // for their own engine-reachability failures.
+    let order_currency_options =
+        state.exchange_rate.supported_currencies_for(&row).await.unwrap_or_else(|_| vec!["XMR".to_string()]);
+    let order_currency_is_locked_to_xmr = order_currency_options.len() == 1 && order_currency_options[0] == "XMR";
     let view_model = crate::templates::StoreDetailViewModel {
         store: Some(crate::templates::StoreDetailData {
             connection_id: row.id,
@@ -496,6 +503,8 @@ async fn render_store_detail_page(
             recent_orders,
             is_woocommerce,
             order_creation_error,
+            order_currency_options,
+            order_currency_is_locked_to_xmr,
             confirmations_required,
             fx_provider: row.fx_provider,
             fx_provider_options,
@@ -1579,6 +1588,63 @@ mod tests {
         // any more.
         assert!(!html.contains(r#"<option value="coingecko""#), "expected no coingecko <option> since this instance never enabled it, got: {html}");
         assert!(!html.contains(r#"<option value="fixed""#), "the removed \"fixed\" provider must never appear as a real option, got: {html}");
+        // The real point of this follow-up: with no fiat provider available
+        // at all, the "create an order" currency field must be a plain
+        // readonly "XMR" field, not a one-option `<select>` (a dropdown with
+        // nothing to actually choose between is misleading busywork).
+        assert!(
+            html.contains(r#"<input type="text" id="currency" name="currency" value="XMR" readonly>"#),
+            "expected a readonly XMR currency field, got: {html}"
+        );
+        assert!(!html.contains(r#"<select id="currency""#), "expected no currency dropdown when only XMR is available, got: {html}");
+    }
+
+    /// A store with a real Coingecko-backed provider enabled must offer a
+    /// real `<select>` for the "create an order" currency field, listing
+    /// every currency this instance currently supports - not the readonly
+    /// XMR-only field the no-provider case above shows.
+    #[tokio::test]
+    async fn a_store_with_coingecko_enabled_gets_a_real_currency_dropdown() {
+        async fn supported_currencies() -> axum::response::Response {
+            use axum::response::IntoResponse;
+            ([("content-type", "application/json")], r#"["usd","eur"]"#).into_response()
+        }
+        let mock_coingecko = axum::Router::new()
+            .route("/api/v3/simple/supported_vs_currencies", axum::routing::get(supported_currencies));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let mock_coingecko_addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, mock_coingecko).await.unwrap();
+        });
+
+        let (mut state, _engine) = test_state_with_real_engine().await;
+        state.exchange_rate = std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(
+            format!("http://{mock_coingecko_addr}"),
+        ));
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "fx-provider-dropdown@example.com", "correct horse battery staple")
+                .await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(response).await;
+        assert!(html.contains(r#"<select id="currency" name="currency">"#), "expected a real currency dropdown, got: {html}");
+        assert!(!html.contains(r#"id="currency" name="currency" value="XMR" readonly"#), "must not be readonly once a provider is enabled, got: {html}");
+        assert!(html.contains(r#"<option value="XMR">XMR</option>"#), "expected XMR always offered, got: {html}");
+        assert!(html.contains(r#"<option value="USD">USD</option>"#), "expected the live-discovered USD option, got: {html}");
+        assert!(html.contains(r#"<option value="EUR">EUR</option>"#), "expected the live-discovered EUR option, got: {html}");
     }
 
     #[tokio::test]

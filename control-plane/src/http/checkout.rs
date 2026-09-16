@@ -164,7 +164,8 @@ pub async fn checkout_page(State(state): State<AppState>, Path((pk, payment_id))
         confirmations_required,
         is_terminal,
         double_spend_detected_at: detail.order.double_spend_detected_at,
-        expires_at: detail.order.expires_at,
+        double_spend_detected_at_display: crate::templates::display_timestamp_or_dash(detail.order.double_spend_detected_at),
+        expires_in_display: crate::templates::format_duration_until(detail.order.expires_at, crate::now_unix()),
         merchant_order_id: detail.order.merchant_order_id.clone(),
         pk,
         payments: detail
@@ -411,6 +412,13 @@ mod tests {
         // string that can only appear if `{{> nav}}` genuinely ran.
         assert!(!html.contains(r#"<nav class="site-nav">"#), "the checkout page must not carry the site nav, got: {html}");
         assert!(!html.contains("MoneroPay Cloud"), "the checkout page must not carry the site brand/logo, got: {html}");
+        // The real point of this follow-up: "Expires in" must be a real,
+        // already-formatted relative duration baked into the server
+        // response - this page must stay meaningful with JavaScript
+        // disabled, so nothing on it may rely on `data-timestamp` +
+        // client-side formatting any more.
+        assert!(html.contains("Expires in"), "expected a server-rendered expiry duration, got: {html}");
+        assert!(!html.contains("data-timestamp"), "the checkout page must not depend on JS to format any timestamp, got: {html}");
     }
 
     #[tokio::test]
