@@ -17,11 +17,16 @@
 //! rate doesn't make sense given dynamic crypto pricing.
 //!
 //! - `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED` (`"true"`/`"false"`,
-//!   default `false`) - turns Coingecko on as a selectable provider for
-//!   this instance at all. A store can only pick a provider this instance
-//!   actually enabled (`available_providers`); with this unset, no store
-//!   can price anything in a non-XMR currency (XMR-priced orders are
-//!   unaffected either way).
+//!   default `true`) - turns Coingecko on as a selectable provider for
+//!   this instance at all. On by default: the keyless public API needs no
+//!   key and works out of the box, so a fresh instance can already price
+//!   fiat orders with zero configuration. Set to `"false"` to turn it off
+//!   (an instance that only ever wants XMR-priced orders, or one that
+//!   wants to force the explicit `_BASE_URL` override below before any
+//!   live request goes out). A store can only pick a provider this
+//!   instance actually enabled (`available_providers`); with this `false`,
+//!   no store can price anything in a non-XMR currency (XMR-priced orders
+//!   are unaffected either way).
 //! - `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_BASE_URL` - overrides the
 //!   Coingecko API base URL (default `https://api.coingecko.com`, the real
 //!   keyless public API - see
@@ -86,7 +91,9 @@ pub struct ExchangeRateConfig {
 /// this module's own doc comment for why).
 pub fn parse<F: Fn(&str) -> Option<String>>(get_env: F) -> Result<ExchangeRateConfig, ExchangeRateConfigError> {
     let coingecko_enabled = match get_env("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED") {
-        None => false,
+        // On by default - the keyless public API needs no key, so a fresh
+        // instance can already price fiat orders with zero configuration.
+        None => true,
         Some(raw) => match raw.as_str() {
             "true" => true,
             "false" => false,
@@ -261,12 +268,12 @@ mod tests {
     }
 
     #[test]
-    fn no_env_vars_at_all_defaults_to_coingecko_disabled() {
+    fn no_env_vars_at_all_defaults_to_coingecko_enabled() {
         let config = parse(|_| None).unwrap();
         assert_eq!(
             config,
             ExchangeRateConfig {
-                coingecko_enabled: false,
+                coingecko_enabled: true,
                 coingecko_base_url: DEFAULT_COINGECKO_BASE_URL.to_string(),
                 cache_seconds: DEFAULT_CACHE_SECONDS,
             }
