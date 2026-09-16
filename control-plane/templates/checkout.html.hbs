@@ -32,20 +32,23 @@ body { padding: 1rem; }
 .status-pending, .status-unconfirmed, .status-confirming, .status-partial { background: #fff3cd; }
 .status-paid { background: #dff5d8; }
 .status-expired, .status-unknown { background: #f8d7da; }
-.amount { font-size: 1.8rem; font-weight: 700; margin: 0.6em 0 0.2em; }
-.fiat-amount { color: var(--muted); margin-bottom: 1em; }
-.qr-wrap { text-align: center; margin: 1em 0; }
-.qr-wrap svg { width: 200px; height: 200px; border: 2px solid var(--line); background: var(--paper-raised); padding: 0.6em; }
-/* `.box` already supplies the border/background/padding; this only adds
-   the flex layout the address + copy button need alongside it. */
-.address-box { display: flex; gap: 0.5em; align-items: center; margin-bottom: 1em; }
+.amount { font-size: 1.8rem; font-weight: 700; margin: 0.8em 0 0.2em; }
+.fiat-amount { color: var(--muted); margin-bottom: 1.4em; }
+.qr-wrap { text-align: center; margin: 1.4em 0; }
+.qr-wrap svg { width: 200px; height: 200px; }
+/* Deliberately no border/box of its own - one bordered container per
+   screen (the card itself) reads as a page; a border around every
+   individual piece inside it reads as boxes stacked on boxes. A plain
+   top rule (the same `.rule` weight `_styles.html.hbs` already uses
+   elsewhere) is enough to separate the address from what's above it. */
+.address-row { display: flex; gap: 0.6em; align-items: center; padding-top: 1.2em; margin-top: 1.2em; border-top: 1px solid var(--line); }
 .address-text { font-size: 0.8em; word-break: break-all; flex: 1; }
 .copy-btn { margin-top: 0; flex-shrink: 0; }
 .progress-row { display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 0.3em; }
 .progress-bar { border: 1px solid var(--line); height: 0.6em; background: var(--paper-raised); }
 .progress-fill { height: 100%; background: var(--accent); }
-.payments-table { font-size: 0.8em; margin-top: 0.8em; }
-.meta { margin-top: 1em; font-size: 0.8em; color: var(--muted); }
+.payments-table { font-size: 0.8em; margin-top: 1.2em; }
+.meta { margin-top: 1.4em; font-size: 0.8em; color: var(--muted); }
 .visually-hidden {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
@@ -82,7 +85,7 @@ A payment toward this order was reversed by a blockchain double-spend, detected 
 <div class="qr-wrap">{{{qr_code_svg}}}</div>
 
 <span class="visually-hidden" id="address-label">Payment address</span>
-<div class="box address-box">
+<div class="address-row">
 <span class="address-text" id="address" aria-labelledby="address-label">{{address}}</span>
 <button class="btn-secondary copy-btn" id="copy-btn" type="button" aria-label="Copy payment address to clipboard" aria-live="polite">Copy</button>
 </div>
@@ -115,7 +118,7 @@ A payment toward this order was reversed by a blockchain double-spend, detected 
 
 <div class="meta">
 Payment ID: {{payment_id}}<br>
-{{#unless is_terminal}}Expires <span id="expires-at" data-timestamp="{{expires_at}}">{{expires_at}}</span>{{/unless}}
+{{#unless is_terminal}}Expires in <span id="expires-at" data-timestamp="{{expires_at}}">{{expires_at}}</span>{{/unless}}
 </div>
 
 </div>
@@ -133,7 +136,33 @@ Payment ID: {{payment_id}}<br>
     var date = new Date(parseInt(ts, 10) * 1000);
     el.textContent = date.toLocaleString();
   }
-  document.querySelectorAll('[data-timestamp]').forEach(formatTimestamp);
+  document.querySelectorAll('[data-timestamp]:not(#expires-at)').forEach(formatTimestamp);
+
+  // "Expires in" reads as a moment.js-style relative duration ("12h",
+  // "4h 15m", "2d 4h") rather than an absolute date/time - at most the two
+  // largest non-zero units, a zero unit is skipped rather than shown
+  // ("1d 30m", never "1d 0h 30m" or "1d 0h").
+  function formatDuration(totalSeconds) {
+    if (totalSeconds <= 0) return 'any moment';
+    var days = Math.floor(totalSeconds / 86400);
+    var hours = Math.floor((totalSeconds % 86400) / 3600);
+    var minutes = Math.floor((totalSeconds % 3600) / 60);
+    var parts = [];
+    if (days > 0) parts.push(days + 'd');
+    if (hours > 0) parts.push(hours + 'h');
+    if (minutes > 0 && parts.length < 2) parts.push(minutes + 'm');
+    if (parts.length === 0) parts.push('<1m');
+    return parts.slice(0, 2).join(' ');
+  }
+  function updateExpiresIn() {
+    var el = document.getElementById('expires-at');
+    if (!el) return;
+    var ts = el.getAttribute('data-timestamp');
+    if (!ts) return;
+    var secondsLeft = parseInt(ts, 10) - Math.floor(Date.now() / 1000);
+    el.textContent = formatDuration(secondsLeft);
+  }
+  updateExpiresIn();
 
   document.getElementById('copy-btn').addEventListener('click', function () {
     var text = document.getElementById('address').textContent;
@@ -177,6 +206,12 @@ Payment ID: {{payment_id}}<br>
       }
       var pct = Math.min(100, Math.round((data.confirmations / confirmationsRequired) * 100));
       document.getElementById('progress-fill').style.width = pct + '%';
+
+      // Re-derived every poll (piggybacking on the existing 3s cadence,
+      // not a separate timer) so "Expires in" stays roughly accurate for a
+      // tab left open a while, rather than being frozen at whatever it
+      // said on page load.
+      updateExpiresIn();
 
       if (data.status !== lastStatus) {
         // A real status transition - simplest correct thing is a reload,
