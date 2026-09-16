@@ -29,6 +29,98 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **User-requested round of 4 feedback items, actioned fully autonomously
+  ("proceed with this autonomously making judgement calls" - full report of
+  judgment calls delivered to the user in-conversation, summarized here):
+  per-store FX provider selection, dropped the Coingecko background-polling
+  loop for an async pull-with-TTL-cache design, dashboard pk-column
+  ellipsis with a pure-CSS native-find highlight, restyled the iframe
+  checkout page to the site's own motif, and a shareable "payment link"
+  page for orders.**
+  - **Per-store FX provider.** The `ExchangeRateProvider` trait (shared by
+    `FixedRateProvider`/`CoingeckoRateProvider`) is gone entirely - the two
+    real implementations have genuinely different call shapes (an instant
+    sync lookup vs. an async TTL-cached fetch), and forcing them behind one
+    trait would've meant a pointless async wrapper on the fixed provider.
+    New `control_plane::exchange_rate_config::ExchangeRateProviders`
+    dispatcher holds both concrete providers plus the admin's
+    `cache_seconds`, with `piconero_per_unit(provider_name, fiat_currency)`
+    as the one async entry point every caller now goes through. New column
+    `store_connections.fx_provider` (migration `0007_store_fx_provider.sql`,
+    `DEFAULT 'fixed'`) is the per-store selection, set via a new dropdown on
+    the store settings page; both order-creation call sites
+    (`http::pay::create_order`, `http::orders::create_order`) now pass
+    `row.fx_provider` through instead of a global. The dropdown only offers
+    `ExchangeRateProviders::available_providers()` - what this instance
+    actually has configured, not a hardcoded list - and picking an
+    unconfigured one is rejected with a clear error, not silently accepted
+    or silently falling back to `fixed`. The underlying `fixed` rate table
+    itself stays a single global admin-configured value (`CONTROL_PLANE_
+    EXCHANGE_RATE_FIXED_RATES`) - only the *choice* of provider is
+    per-store, not per-store custom rates, since the feedback only asked
+    for the former.
+  - **Async pull instead of background polling.** `CoingeckoRateProvider`
+    replaced its `Arc<RwLock<HashMap>>` + externally-supervised polling loop
+    (removed from `main.rs` entirely - no more `run_coingecko_refresh_loop`/
+    `supervise` for it) with `Arc<tokio::sync::Mutex<CoingeckoCache>>` and a
+    new `piconero_per_unit_cached(currency, max_age)`: locks the mutex
+    across the potential await (deliberately - serializes concurrent
+    stale-cache callers onto one real HTTP fetch instead of a thundering
+    herd), refreshes only if `fetched_at.elapsed() >= max_age`, and never
+    marks a failed fetch as fresh. The TTL is `CONTROL_PLANE_EXCHANGE_RATE_
+    CACHE_SECONDS`, admin-only (not store/user-configurable, per the
+    feedback), defaulted to the requested 30s. `CONTROL_PLANE_EXCHANGE_
+    RATE_PROVIDER` (the old global-provider-choice env var) and `CONTROL_
+    PLANE_EXCHANGE_RATE_CURRENCIES` (renamed to `..._COINGECKO_CURRENCIES`)
+    are breaking env var changes - judged acceptable under this project's
+    established "no customers yet" precedent for breaking changes.
+  - **Store list pk column: ellipsis + CSS-only find highlight.** `.ellipsis`
+    utility class (`text-overflow: ellipsis` + friends) applied only to the
+    "Your stores" table's public-key `<code>` cell, not other pk displays
+    site-wide - CSS ellipsis is purely visual and never removes the text
+    from the DOM, so a browser's native Ctrl+F/find-in-page still matches
+    the full underlying key even when visually clipped. The "searchable
+    text browser API" the feedback asked for is `::target-text` - the
+    pseudo-element a browser paints over a native find match - combined
+    with `:has()`: `tr:has(::target-text) { background: ... }`, wrapped in
+    `@supports selector(:has(::target-text))` for progressive enhancement.
+    No JS, per the feedback's explicit constraint.
+  - **Checkout iframe restyle.** Reused the site's existing shared
+    components (`.tag`/`.tag-ok`/`.tag-error`/`.box`) instead of inventing
+    parallel ad-hoc CSS - the status badge dropped a whole duplicated base-
+    shape ruleset in favor of layering 3 color rules on `.tag`, and the
+    amount/address boxes now sit inside `.box` cards matching the rest of
+    the control-plane site's semi-brutalist/monospace motif.
+  - **Payment link.** New route `/pay/{pk}/orders/{payment_id}/share`
+    renders a real nav-bearing page (`checkout_share.html.hbs`) iframing the
+    existing bare checkout page, styled to feel like part of the site
+    rather than a bare iframe - its not-found state also keeps the site nav
+    (the bare checkout page's own not-found state doesn't, since that page
+    is meant to be iframed and never visited directly). The order detail
+    page gained a "Payment link" row built from the *request's own*
+    `Host`/`X-Forwarded-Proto` headers, since control-plane has no
+    configured external base URL concept yet - a real, working judgment
+    call rather than new required configuration, but one worth revisiting
+    if the app ever sits behind a proxy that doesn't set those headers
+    faithfully.
+  - Real tests added throughout (TTL-cache freshness/staleness/failure
+    behavior, dropdown option availability and rejection of an unconfigured
+    provider, the share page's real HTML and its not-found state, a real
+    payment-link URL asserted on a real rendered order-detail page) - not
+    just "it compiles". `cargo test --workspace` and `cargo build
+    --workspace --tests --features e2e` (both root and `mock-woocommerce`)
+    both clean.
+  - Live-verified all 4 points against the real dev stack via a genuine
+    signup -> login -> connect -> create-order -> dashboard flow (not
+    fixtures): the pk column truncates with `class="ellipsis"` and the
+    `::target-text`/`:has()` rule is present on the page; the fx-provider
+    dropdown renders with `fixed` pre-selected and only configured
+    providers listed; a real order's detail page showed a real absolute
+    payment link; following it to `/pay/{pk}/orders/{payment_id}/share`
+    rendered a real nav-bearing page with a working `<iframe>` pointing at
+    the real checkout page, which itself rendered with the restyled
+    `.tag`/`.box` classes.
+
 - **User-requested follow-up (not part of `fx_refactor.md`'s own WBS,
   post-completion): the FX rate provider and the exact rate used are now
   recorded per order and shown on the order detail page.** Control-plane
