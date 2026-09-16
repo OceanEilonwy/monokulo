@@ -29,6 +29,140 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **User-requested follow-up to the previous round: removed the "fixed" FX
+  provider entirely, added a trivial XMR identity provider, and dropped the
+  Coingecko currency whitelist in favor of live discovery.** The user's own
+  framing: "it simply doesn't make sense from a user perspective to have
+  rates fixed like that considering dynamic crypto pricing" plus "when the
+  currency of the order is XMR ... there should be no FX provider needed."
+  A proposal was written and approved before implementing (see this
+  session's own conversation) - three explicit decision points were
+  confirmed, a fourth (how Coingecko gets enabled without a whitelist) was
+  a judgment call flagged and then implemented.
+  - **`FixedRateProvider` deleted from `shared::exchange_rate`.** No
+    replacement "admin-pegged rate" concept exists any more, anywhere -
+    not even for tests (see below). New `XmrIdentityProvider`: a
+    zero-I/O, no-cache type whose `piconero_per_unit()` is always
+    `PICONERO_PER_XMR` (new `pub const` in `shared::xmr_amount`, `1e12`) -
+    a real, named counterpart to `CoingeckoRateProvider`, not a bare
+    `"XMR"` string check buried in the dispatcher.
+  - **Currency renamed to `currency`/`amount` everywhere - DB, HTTP API,
+    UI - since it's no longer necessarily fiat.** `order_fiat_metadata`
+    (table) -> `order_currency_metadata`; its `fiat_currency`/`fiat_amount`
+    columns -> `currency`/`amount` (migration `0009_rename_fiat_to_currency.sql`,
+    real `ALTER TABLE ... RENAME COLUMN`/`RENAME TO`, not a rebuild).
+    Every Rust struct/field of the same shape renamed to match
+    (`OrderFiatMetadataRow` -> `OrderCurrencyMetadataRow`,
+    `CreateOrderForm`/`CreateOrderRequest` fields, `OrderDetailData`/
+    `CheckoutViewModel`/`OrderRowViewModel`/`DashboardOrderRow` fields,
+    `fiat_rate_display`/`fiat_rate_provider` -> `rate_display`/
+    `rate_provider`). **Breaking change to the real public JSON API**
+    (`POST /pay/{pk}/orders`'s `fiat_amount`/`fiat_currency` request
+    fields, and the response's echo of them) and to the embed client
+    library's own JS-facing API (`moneropay-client.js`'s `createOrder({
+    fiatAmount, fiatCurrency })` -> `createOrder({ amount, currency })`) -
+    judged acceptable under this project's established "no customers yet"
+    precedent (already invoked for a prior env-var rename), confirmed with
+    the user before implementing rather than assumed. `_integration_help.html.hbs`'s
+    own example code/JSON updated to match, so the docs a merchant actually
+    reads never drifted out of sync with the real API during this change.
+  - **Dispatch by currency first, store second.**
+    `ExchangeRateProviders::piconero_per_unit_for(store, currency)`
+    replaces the old `piconero_per_unit(provider_name, currency)`:
+    `currency.eq_ignore_ascii_case("XMR")` short-circuits straight to the
+    identity provider *before even reading* `store.fx_provider` - an XMR
+    order's price is settled fact regardless of what FX provider a store
+    happens to have configured. Every other currency dispatches through
+    the store's own `fx_provider` column, which - now that "fixed" is
+    gone - can only ever really mean `"coingecko"` today. Returns
+    `(rate, provider_name)` together in one call (`Result<Option<(u64,
+    &'static str)>, _>`), not two separate calls a caller could let
+    drift out of sync with each other.
+  - **A real precision bug caught and fixed while building this**: the
+    first pass reused `compute_xmr_amount` (fiat-shaped, ≤2 decimal
+    places, cents-based) for *every* currency including XMR - which would
+    have silently capped every XMR-denominated order to 0.01 XMR
+    granularity, a real loss of precision for what is, for an XMR order,
+    not a fiat amount at all. Fixed with a new
+    `shared::exchange_rate::compute_order_amount(currency, amount,
+    piconero_per_unit)`: XMR is parsed at its own native 12-decimal
+    precision via `parse_xmr_to_piconero` (ignoring `piconero_per_unit`
+    entirely - the rate is trivially exact, not something to multiply
+    through), every other currency still goes through
+    `compute_xmr_amount` unchanged. Caught by the real e2e-stagenet test
+    fixtures (see below), which need exactly this precision (0.000335
+    XMR) - not a hypothetical.
+  - **No more startup currency whitelist for Coingecko.**
+    `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_CURRENCIES` is gone.
+    `CoingeckoRateProvider` gained `supported_currencies_cached(max_age)`,
+    hitting Coingecko's own keyless `/api/v3/simple/supported_vs_currencies`
+    endpoint (uppercased, cached with the same TTL machinery as a rate
+    lookup - its own independent cache entry, not tied to any one
+    currency's rate cache), confirmed live in this session against the
+    real API with no API key. The per-currency rate cache itself also
+    changed shape: no more pre-configured `currencies: Vec<String>`
+    field + one shared `fetched_at` for a batch fetch - each currency now
+    gets its own independent `(rate, fetched_at)` cache entry, fetched
+    lazily the first time (or first time after going stale) anyone
+    actually asks for it. A currency Coingecko doesn't support is simply
+    never cached, discovered live rather than rejected against a
+    config-time list.
+  - **Turning Coingecko on is now an explicit boolean, not implied by a
+    non-empty currency list.** New `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED`
+    (`"true"`/`"false"`, default `false`) - a real judgment call, since
+    removing the whitelist also removed the thing that used to double as
+    "is Coingecko configured at all" (a non-empty currency list). New
+    `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_BASE_URL` (default
+    `https://api.coingecko.com`, the real keyless public API - confirmed
+    live, no key needed) lets an advanced operator point at a paid tier or
+    a proxy, per the user's own explicit ask.
+  - **`store_connections.fx_provider`**: new stores get `'coingecko'`
+    explicitly from `Db::create_store_connection` now (SQLite can't
+    cheaply change a column's own `DEFAULT` in place after "fixed"'s
+    removal, and there's no functional need to - an XMR order never reads
+    this column at all). Existing `'fixed'` rows are backfilled to
+    `'coingecko'` by migration `0008_remove_fixed_fx_provider.sql` - inert
+    until an admin actually enables Coingecko, same as an unconfigured
+    `'fixed'` store was before. `available_providers()`/the settings
+    dropdown can now legitimately be *empty* (no fiat provider enabled at
+    all) - `store_detail.html.hbs` handles that case explicitly (a muted
+    "none enabled on this instance" message, no broken empty `<select>`),
+    and the "create a test order" form's currency field now defaults to
+    `"XMR"` rather than `"USD"`, since that's what's guaranteed to work
+    with zero configuration.
+  - **Test infrastructure**: the old `ExchangeRateProviders::fixed_only(...)`
+    (used by ~9 test-only `AppState` construction sites purely to avoid a
+    real network call, not to test FX logic itself) is gone. Two real
+    replacements: `xmr_only()` (no provider at all - what most call sites
+    now use, since their tests just create `"XMR"`-denominated orders and
+    genuinely need no provider) and `coingecko_only(base_url)` (a real
+    `CoingeckoRateProvider` pointed at a caller-given base URL - used only
+    by `pay.rs`'s own tests, which specifically exercise the fiat-quote
+    path end to end against a small local mock HTTP server, same
+    no-mocking-library pattern this codebase already uses elsewhere). The
+    two real-network stagenet e2e suites (`mock-woocommerce/tests/
+    e2e_stagenet_connect_flow.rs`, `tests/e2e_dashboard_stagenet.rs`,
+    both explicitly "nothing here is mocked except the plugin itself")
+    were **not** given a mock Coingecko server - instead switched to a
+    directly XMR-denominated order (`"0.000335"` XMR, the same tiny
+    335,000,000-piconero target both already used, now reached via the
+    new 12-decimal-precision path rather than a fiat-rate multiplication)
+    so the real stagenet run stays genuinely unmocked end to end, and
+    incidentally exercises the exact new capability this whole round
+    added.
+  - `cargo test --workspace` (every crate - control-plane 178, moneropay-core
+    273, shared, engine-test-support, key-custody-server, snp_attest, etc. -
+    all passing, 0 failing) and `cargo build --workspace --tests --features
+    e2e` (both root and `mock-woocommerce`) both clean.
+  - Live-verified against the real dev stack, twice: once with no FX
+    provider configured (a real XMR order created and displayed - "1.000000000000
+    XMR per 1 XMR" / "xmr" - with zero rate-related env vars set, and the
+    settings page correctly showing "none enabled on this instance"), once
+    with `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED=true` (the
+    dropdown offered `coingecko`, and a real $10.00 USD order was priced
+    against Coingecko's real live API - `0.001965833808 XMR per 1 USD`,
+    the real market rate at the time, not a fixture).
+
 - **User-requested round of 4 feedback items, actioned fully autonomously
   ("proceed with this autonomously making judgement calls" - full report of
   judgment calls delivered to the user in-conversation, summarized here):
