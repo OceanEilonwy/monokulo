@@ -77,20 +77,20 @@ pub async fn orders_list(
     };
     // The engine has no concept of fiat any more (`docs/fx_refactor.md` Phase
     // 3) - fiat display comes entirely from control-plane's own local
-    // `order_fiat_metadata`, keyed by payment_id, fetched once for the whole
+    // `order_currency_metadata`, keyed by payment_id, fetched once for the whole
     // list rather than per-row.
-    let fiat_metadata = state.db.lock().unwrap().list_order_fiat_metadata_for_connection(&row.id).unwrap_or_default();
+    let fiat_metadata = state.db.lock().unwrap().list_order_currency_metadata_for_connection(&row.id).unwrap_or_default();
 
     let view_model = OrdersViewModel {
         connection_id: id,
         orders: orders
             .into_iter()
             .map(|o| {
-                let (fiat_amount, fiat_currency) = match fiat_metadata.get(&o.payment_id) {
-                    Some(m) => (m.fiat_amount.clone(), m.fiat_currency.clone()),
+                let (amount, currency) = match fiat_metadata.get(&o.payment_id) {
+                    Some(m) => (m.amount.clone(), m.currency.clone()),
                     None => ("—".to_string(), "".to_string()),
                 };
-                OrderRowViewModel { payment_id: o.payment_id, status: o.status, fiat_amount, fiat_currency, created_at: o.created_at }
+                OrderRowViewModel { payment_id: o.payment_id, status: o.status, amount, currency, created_at: o.created_at }
             })
             .collect(),
         logged_in: true,
@@ -140,16 +140,16 @@ pub async fn order_detail(
         Ok(detail) => {
             // The engine has no concept of fiat any more (`docs/fx_refactor.md`
             // Phase 3) - fiat display comes entirely from control-plane's own
-            // local `order_fiat_metadata`, absent for any order that predates
+            // local `order_currency_metadata`, absent for any order that predates
             // this record (falls back to a dash rather than failing the page).
-            let metadata = state.db.lock().unwrap().get_order_fiat_metadata(&row.id, &payment_id).ok().flatten();
-            let (fiat_amount, fiat_currency) = match &metadata {
-                Some(m) => (m.fiat_amount.clone(), m.fiat_currency.clone()),
+            let metadata = state.db.lock().unwrap().get_order_currency_metadata(&row.id, &payment_id).ok().flatten();
+            let (amount, currency) = match &metadata {
+                Some(m) => (m.amount.clone(), m.currency.clone()),
                 None => ("—".to_string(), "".to_string()),
             };
-            let (fiat_rate_display, fiat_rate_provider) = match &metadata {
+            let (rate_display, rate_provider) = match &metadata {
                 Some(m) => (
-                    format!("{} XMR per 1 {}", shared::exchange_rate::format_piconero_as_xmr(m.piconero_per_unit), m.fiat_currency),
+                    format!("{} XMR per 1 {}", shared::exchange_rate::format_piconero_as_xmr(m.piconero_per_unit), m.currency),
                     m.provider.clone(),
                 ),
                 None => ("—".to_string(), "—".to_string()),
@@ -160,10 +160,10 @@ pub async fn order_detail(
                     payment_id: detail.order.payment_id,
                     merchant_order_id: detail.order.merchant_order_id,
                     address: detail.order.address,
-                    fiat_currency,
-                    fiat_amount,
-                    fiat_rate_display,
-                    fiat_rate_provider,
+                    currency,
+                    amount,
+                    rate_display,
+                    rate_provider,
                     xmr_amount_piconero: detail.order.xmr_amount_piconero,
                     amount_received_piconero: detail.order.amount_received_piconero,
                     status: detail.order.status,
@@ -459,16 +459,16 @@ async fn render_store_detail_page(
         Ok(mut orders) => {
             orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
             let fiat_metadata =
-                state.db.lock().unwrap().list_order_fiat_metadata_for_connection(&row.id).unwrap_or_default();
+                state.db.lock().unwrap().list_order_currency_metadata_for_connection(&row.id).unwrap_or_default();
             orders
                 .into_iter()
                 .take(10)
                 .map(|o| {
-                    let (fiat_amount, fiat_currency) = match fiat_metadata.get(&o.payment_id) {
-                        Some(m) => (m.fiat_amount.clone(), m.fiat_currency.clone()),
+                    let (amount, currency) = match fiat_metadata.get(&o.payment_id) {
+                        Some(m) => (m.amount.clone(), m.currency.clone()),
                         None => ("—".to_string(), "".to_string()),
                     };
-                    OrderRowViewModel { payment_id: o.payment_id, status: o.status, fiat_amount, fiat_currency, created_at: o.created_at }
+                    OrderRowViewModel { payment_id: o.payment_id, status: o.status, amount, currency, created_at: o.created_at }
                 })
                 .collect()
         }
@@ -510,8 +510,8 @@ async fn render_store_detail_page(
 
 #[derive(Deserialize)]
 pub struct CreateOrderForm {
-    pub fiat_amount: String,
-    pub fiat_currency: String,
+    pub amount: String,
+    pub currency: String,
 }
 
 /// `POST /dashboard/connections/{id}/orders/new` - creates a real order
@@ -535,42 +535,48 @@ pub async fn create_order(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    let fiat_amount = form.fiat_amount.trim();
-    let fiat_currency = form.fiat_currency.trim();
-    if fiat_amount.is_empty() || fiat_currency.is_empty() {
+    let amount = form.amount.trim();
+    let currency = form.currency.trim();
+    if amount.is_empty() || currency.is_empty() {
         return render_store_detail_page(&state, row, Some("Enter an amount and a currency.".to_string()), None).await;
     }
 
-    // The engine has no concept of fiat any more (`docs/fx_refactor.md` Phase
-    // 3) - control-plane's own exchange rate does the same computation
-    // `http::pay::create_order` does for a real storefront call, dispatched
-    // by this store's own chosen provider (`row.fx_provider`).
-    let piconero_per_unit = match state.exchange_rate.piconero_per_unit(&row.fx_provider, fiat_currency).await {
-        Ok(Some(rate)) => rate,
+    // The engine has no concept of currency any more (`docs/fx_refactor.md`
+    // Phase 3) - control-plane's own exchange rate does the same computation
+    // `http::pay::create_order` does for a real storefront call. `"XMR"`
+    // always uses the trivial identity rate regardless of this store's
+    // chosen `fx_provider`; every other currency goes through it.
+    let (piconero_per_unit, provider) = match state.exchange_rate.piconero_per_unit_for(&row, currency).await {
+        Ok(Some(result)) => result,
         Ok(None) => {
-            return render_store_detail_page(&state, row, Some(format!("unsupported currency: {fiat_currency}")), None)
-                .await
+            return render_store_detail_page(&state, row, Some(format!("unsupported currency: {currency}")), None).await
+        }
+        Err(crate::exchange_rate_config::ExchangeRateLookupError::ProviderNotConfigured(_)) => {
+            // Not a real failure - this store's provider (or no provider at
+            // all) simply can't price this currency on this instance, same
+            // user-facing meaning as `Ok(None)` above.
+            return render_store_detail_page(&state, row, Some(format!("unsupported currency: {currency}")), None).await
         }
         Err(e) => {
-            eprintln!("exchange rate lookup failed for connection {} (provider {:?}): {e}", row.id, row.fx_provider);
+            eprintln!("exchange rate lookup failed for connection {} (currency {currency:?}): {e}", row.id);
             return render_store_detail_page(&state, row, Some("Something went wrong looking up the exchange rate. Please try again.".to_string()), None)
                 .await;
         }
     };
-    let xmr_amount_piconero = match shared::exchange_rate::compute_xmr_amount(fiat_amount, piconero_per_unit) {
+    let xmr_amount_piconero = match shared::exchange_rate::compute_order_amount(currency, amount, piconero_per_unit) {
         Ok(amount) => amount,
         Err(e) => return render_store_detail_page(&state, row, Some(e.to_string()), None).await,
     };
 
     match state.engine_client.create_order(&row.tenant_public_key, xmr_amount_piconero).await {
         Ok(order) => {
-            if let Err(e) = state.db.lock().unwrap().create_order_fiat_metadata(
+            if let Err(e) = state.db.lock().unwrap().create_order_currency_metadata(
                 &row.id,
                 &order.payment_id,
-                fiat_currency,
-                fiat_amount,
+                currency,
+                amount,
                 piconero_per_unit,
-                &row.fx_provider,
+                provider,
                 crate::now_unix(),
             ) {
                 eprintln!(
@@ -714,21 +720,20 @@ mod tests {
     const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
     const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
 
-    /// A fixed, arbitrary exchange rate for a test-only currency - only its
-    /// non-zero-ness matters, since `compute_xmr_amount` (engine crate) is
-    /// exact integer arithmetic regardless of the rate's real-world
-    /// plausibility.
-    const TEST_CURRENCY: &str = "USD";
+    /// `"XMR"` deliberately, not a fiat currency: these tests are about the
+    /// dashboard's own order-creation/display plumbing, not about exercising
+    /// a real (mocked) fiat provider - and an XMR-denominated order needs no
+    /// provider configured at all (`XmrIdentityProvider`), so `TEST_STATE`
+    /// stays free of any network dependency. `pay.rs`'s own tests are the
+    /// ones that genuinely exercise a fiat quote.
+    const TEST_CURRENCY: &str = "XMR";
     const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
-    /// A fixed-rate `FixedRateProvider` for `AppState.exchange_rate` in
-    /// tests that don't actually exercise fiat conversion themselves - see
-    /// `AppState`'s own doc comment.
+    /// An `AppState.exchange_rate` with no fiat provider configured at all -
+    /// every test in this module prices its orders in `TEST_CURRENCY`
+    /// (`"XMR"`), which needs none.
     fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::fixed_only(std::collections::HashMap::from([(
-            TEST_CURRENCY.to_string(),
-            TEST_RATE_PICONERO_PER_UNIT,
-        )])))
+        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
     }
 
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
@@ -1390,7 +1395,7 @@ mod tests {
             .oneshot(form_post_request(
                 &format!("/dashboard/connections/{connection_id}/orders/new"),
                 &session_token,
-                &[("fiat_amount", "10.00"), ("fiat_currency", TEST_CURRENCY)],
+                &[("amount", "10.00"), ("currency", TEST_CURRENCY)],
             ))
             .await
             .unwrap();
@@ -1417,12 +1422,14 @@ mod tests {
         assert!(html.contains(TEST_CURRENCY), "expected the real, just-created order's detail page, got: {html}");
         // The real point of this test: the exact rate used and which
         // provider quoted it are both recorded and shown, not just the
-        // resulting fiat amount.
+        // resulting amount - including for an XMR-denominated order, which
+        // still records a real rate (the trivial 1:1 identity) and a real
+        // provider name ("xmr"), not a blank/special-cased display.
         assert!(
-            html.contains("1.000000000000 XMR per 1 USD"),
-            "expected the real exchange rate used (1e12 piconero/USD == 1 XMR/USD) on the page, got: {html}"
+            html.contains("1.000000000000 XMR per 1 XMR"),
+            "expected the real exchange rate used (the identity rate) on the page, got: {html}"
         );
-        assert!(html.contains("fixed"), "expected the real rate provider (\"fixed\", from test_exchange_rate_provider) on the page, got: {html}");
+        assert!(html.contains("xmr"), "expected the real rate provider (\"xmr\", from the identity provider) on the page, got: {html}");
     }
 
     #[tokio::test]
@@ -1438,7 +1445,7 @@ mod tests {
             .oneshot(form_post_request(
                 &format!("/dashboard/connections/{connection_id}/orders/new"),
                 &session_token,
-                &[("fiat_amount", "10.00"), ("fiat_currency", "NOTREAL")],
+                &[("amount", "10.00"), ("currency", "NOTREAL")],
             ))
             .await
             .unwrap();
@@ -1464,7 +1471,7 @@ mod tests {
             .oneshot(form_post_request(
                 &format!("/dashboard/connections/{connection_id}/orders/new"),
                 &intruder_token,
-                &[("fiat_amount", "10.00"), ("fiat_currency", TEST_CURRENCY)],
+                &[("amount", "10.00"), ("currency", TEST_CURRENCY)],
             ))
             .await
             .unwrap();
@@ -1539,7 +1546,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_new_store_defaults_to_the_fixed_fx_provider_and_offers_only_configured_providers() {
+    async fn a_new_store_defaults_to_coingecko_and_offers_no_options_when_none_are_enabled() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -1560,12 +1567,18 @@ mod tests {
             .await
             .unwrap();
         let html = body_text(response).await;
-        assert!(html.contains(r#"<option value="fixed" selected>fixed</option>"#), "expected fixed pre-selected by default, got: {html}");
-        // `test_exchange_rate_provider()` only configures a fixed rate - no
-        // Coingecko currencies - so the dropdown must not offer it as an
-        // actual `<option>`, even though the field's own static help text
-        // mentions the word "coingecko" generically.
-        assert!(!html.contains(r#"<option value="coingecko""#), "expected no coingecko option since this test's instance never configured it, got: {html}");
+        // Every new store is created with `fx_provider = "coingecko"` (the
+        // only real provider left - see `Db::create_store_connection`), shown
+        // as this store's current choice even though this test's instance
+        // (`test_exchange_rate_provider()`, `xmr_only()`) never actually
+        // enabled it - a store's own setting and what an instance currently
+        // offers are two different things.
+        assert!(html.contains("Exchange rate provider"), "expected the settings section present, got: {html}");
+        // The dropdown itself must offer zero real `<option>`s - nothing is
+        // enabled on this instance, and there is no "fixed" to fall back to
+        // any more.
+        assert!(!html.contains(r#"<option value="coingecko""#), "expected no coingecko <option> since this instance never enabled it, got: {html}");
+        assert!(!html.contains(r#"<option value="fixed""#), "the removed \"fixed\" provider must never appear as a real option, got: {html}");
     }
 
     #[tokio::test]

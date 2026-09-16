@@ -59,17 +59,16 @@ async fn main() {
     let templates =
         std::sync::Arc::new(TemplateEngine::new().expect("built-in signup/login templates must parse"));
     let exchange_rate_cfg = exchange_rate_config::from_real_env().expect(
-        "invalid exchange-rate configuration - check CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES/\
-         CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_CURRENCIES/CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS",
+        "invalid exchange-rate configuration - check CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED/\
+         CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_BASE_URL/CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS",
     );
     // No background refresh loop any more (`docs/fx_refactor.md` follow-up:
     // "looked up with an async call, rather than having it poll in the
-    // background") - `ExchangeRateProviders::piconero_per_unit` does a live
+    // background") - `ExchangeRateProviders::piconero_per_unit_for` does a live
     // Coingecko fetch inline the first time (or first time after its cache
-    // goes stale) a request actually needs one.
-    let exchange_rate = Arc::new(
-        ExchangeRateProviders::build(&exchange_rate_cfg).expect("invalid CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES entry"),
-    );
+    // goes stale) a request actually needs one; an XMR-denominated order
+    // never needs one at all.
+    let exchange_rate = Arc::new(ExchangeRateProviders::build(&exchange_rate_cfg));
     let rate_limiter = Arc::new(RateLimiter::new(rate_limit_per_ip_per_min_from_env()));
     let app_state = AppState {
         db,

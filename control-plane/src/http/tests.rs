@@ -19,10 +19,7 @@ use super::{AppState, build_router};
 /// `/connections` handler, which does need a real spawned engine.
 /// See `AppState`'s own doc comment on `exchange_rate`.
 fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-    std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::fixed_only(std::collections::HashMap::from([(
-        "USD".to_string(),
-        1_000_000_000_000u64,
-    )])))
+    std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
 }
 
 fn test_app_state() -> AppState {

@@ -9,6 +9,12 @@
 //! function that genuinely is about fiat, and stays in that module; it reuses
 //! `split_decimal`/`AmountError` from here rather than duplicating them.
 
+/// Piconero per whole XMR - the fixed unit conversion factor (1 XMR = 1e12
+/// piconero), used both by this module's own decimal<->piconero conversions
+/// and by `exchange_rate::XmrIdentityProvider` (an XMR-denominated order
+/// needs exactly this, not a looked-up rate).
+pub const PICONERO_PER_XMR: u64 = 1_000_000_000_000;
+
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum AmountError {
     #[error("amount is not a valid decimal number")]

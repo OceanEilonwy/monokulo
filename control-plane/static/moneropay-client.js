@@ -67,16 +67,16 @@
     if (!publicKey) {
       return Promise.reject(new Error("MoneroPay.createOrder: publicKey is required"));
     }
-    if (params.fiatAmount === undefined || params.fiatAmount === null || !params.fiatCurrency) {
-      return Promise.reject(new Error("MoneroPay.createOrder: fiatAmount and fiatCurrency are required"));
+    if (params.amount === undefined || params.amount === null || !params.currency) {
+      return Promise.reject(new Error("MoneroPay.createOrder: amount and currency are required (currency: \"XMR\", or any fiat currency this store's exchange rate provider supports)"));
     }
 
     return fetch(endpoint + "/pay/" + encodeURIComponent(publicKey) + "/orders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
-        fiat_amount: String(params.fiatAmount),
-        fiat_currency: params.fiatCurrency,
+        amount: String(params.amount),
+        currency: params.currency,
       }),
     })
       .then(function (response) {
@@ -97,8 +97,8 @@
           paymentId: data.payment_id,
           address: data.address,
           xmrAmountPiconero: data.xmr_amount_piconero,
-          fiatAmount: data.fiat_amount,
-          fiatCurrency: data.fiat_currency,
+          amount: data.amount,
+          currency: data.currency,
           expiresAt: data.expires_at,
           endpoint: endpoint,
           publicKey: publicKey,

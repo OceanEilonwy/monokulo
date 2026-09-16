@@ -18,7 +18,7 @@
 //! just not the nav.
 //!
 //! Fiat display comes entirely from control-plane's own locally recorded
-//! quote (`Db::get_order_fiat_metadata`) - the engine has no concept of
+//! quote (`Db::get_order_currency_metadata`) - the engine has no concept of
 //! fiat at all any more (`docs/fx_refactor.md` Phase 3), so an order with no
 //! local record (predates this feature, or was created directly against the
 //! engine rather than through control-plane's own `http::pay` endpoint)
@@ -137,9 +137,9 @@ pub async fn checkout_page(State(state): State<AppState>, Path((pk, payment_id))
     // display.
     let confirmations_required = state.engine_client.get_tenant(&sk).await.map(|t| t.confirmations_required).unwrap_or(10);
 
-    let (fiat_amount, fiat_currency) =
-        match state.db.lock().unwrap().get_order_fiat_metadata(&row.id, &payment_id) {
-            Ok(Some(metadata)) => (metadata.fiat_amount, metadata.fiat_currency),
+    let (amount, currency) =
+        match state.db.lock().unwrap().get_order_currency_metadata(&row.id, &payment_id) {
+            Ok(Some(metadata)) => (metadata.amount, metadata.currency),
             _ => ("—".to_string(), "".to_string()),
         };
 
@@ -158,8 +158,8 @@ pub async fn checkout_page(State(state): State<AppState>, Path((pk, payment_id))
         qr_code_svg,
         xmr_amount: shared::exchange_rate::format_piconero_as_xmr(detail.order.xmr_amount_piconero),
         amount_received_xmr: shared::exchange_rate::format_piconero_as_xmr(detail.order.amount_received_piconero),
-        fiat_amount,
-        fiat_currency,
+        amount,
+        currency,
         confirmations: detail.order.confirmations,
         confirmations_required,
         is_terminal,
@@ -263,14 +263,14 @@ mod tests {
     const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
     const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
     const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
-    const TEST_CURRENCY: &str = "USD";
-    const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
+    // `"XMR"`, not a fiat currency - this module's tests are about the
+    // checkout page's own rendering, not about exercising a real (mocked)
+    // fiat provider (`pay.rs`'s own tests do that), and an XMR-denominated
+    // order needs no provider configured at all.
+    const TEST_CURRENCY: &str = "XMR";
 
     fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::fixed_only(std::collections::HashMap::from([(
-            TEST_CURRENCY.to_string(),
-            TEST_RATE_PICONERO_PER_UNIT,
-        )])))
+        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
     }
 
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
@@ -358,7 +358,7 @@ mod tests {
         body_json(response).await.as_object().unwrap().get("public_key").unwrap().as_str().unwrap().to_string()
     }
 
-    async fn create_order(router: &Router, pk: &str, fiat_amount: &str) -> String {
+    async fn create_order(router: &Router, pk: &str, amount: &str) -> String {
         let response = router
             .clone()
             .oneshot(
@@ -367,7 +367,7 @@ mod tests {
                     .uri(format!("/pay/{pk}/orders"))
                     .header("content-type", "application/json")
                     .body(Body::from(
-                        serde_json::json!({ "fiat_amount": fiat_amount, "fiat_currency": TEST_CURRENCY }).to_string(),
+                        serde_json::json!({ "amount": amount, "currency": TEST_CURRENCY }).to_string(),
                     ))
                     .unwrap(),
             )

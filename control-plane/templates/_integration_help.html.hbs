@@ -24,8 +24,8 @@ Need to connect a second WordPress site to this same store? From that site's plu
 document.getElementById('moneropay-buy-button').addEventListener('click', function () {
   MoneroPay.createOrder({
     publicKey: '{{public_key}}',
-    fiatAmount: 9.99,                         // replace with the real amount
-    fiatCurrency: 'USD',
+    amount: 9.99,                             // replace with the real amount
+    currency: 'USD',                          // or 'XMR' - always works, no provider needed
   }).then(function (order) {
     MoneroPay.mount('#moneropay-checkout', order, {
       onPaid: function () { /* e.g. window.location = '/thank-you.html'; */ },
@@ -43,8 +43,8 @@ returned checkout link:</p>
 Content-Type: application/json
 
 {
-  "fiat_currency": "USD",
-  "fiat_amount": "25.00"
+  "currency": "USD",
+  "amount": "25.00"
 }</pre>
 <p class="hint">Send this request to wherever this dashboard is hosted (the same origin this page is on). The
 response includes a <code>payment_id</code> - send the buyer to

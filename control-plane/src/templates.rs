@@ -174,8 +174,8 @@ pub fn network_selected_flags(network: &str) -> (bool, bool, bool) {
 pub struct OrderRowViewModel {
     pub payment_id: String,
     pub status: String,
-    pub fiat_amount: String,
-    pub fiat_currency: String,
+    pub amount: String,
+    pub currency: String,
     pub created_at: i64,
 }
 
@@ -258,16 +258,16 @@ pub struct OrderDetailData {
     /// `order_detail.html.hbs`'s own `{{#if}}` handling of `None`.
     pub merchant_order_id: Option<String>,
     pub address: String,
-    pub fiat_currency: String,
-    pub fiat_amount: String,
+    pub currency: String,
+    pub amount: String,
     /// e.g. `"0.006700000000 XMR per 1 USD"`, or a muted dash for an order
     /// with no local fiat metadata (predates the feature, or was created
     /// directly against the engine rather than through control-plane).
-    pub fiat_rate_display: String,
-    /// Which provider (`"fixed"`/`"coingecko"`) quoted `fiat_rate_display` -
+    pub rate_display: String,
+    /// Which provider (`"fixed"`/`"coingecko"`) quoted `rate_display` -
     /// `"unknown"` for a row that predates recording this at all (migration
-    /// 0006), or a muted dash alongside `fiat_rate_display` for no metadata.
-    pub fiat_rate_provider: String,
+    /// 0006), or a muted dash alongside `rate_display` for no metadata.
+    pub rate_provider: String,
     pub xmr_amount_piconero: u64,
     pub amount_received_piconero: u64,
     pub status: String,
@@ -366,8 +366,8 @@ pub struct DashboardOrderRow {
     pub display_name: String,
     pub payment_id: String,
     pub status: String,
-    pub fiat_amount: String,
-    pub fiat_currency: String,
+    pub amount: String,
+    pub currency: String,
     pub created_at: i64,
 }
 
@@ -572,8 +572,8 @@ pub struct CheckoutViewModel {
     pub qr_code_svg: String,
     pub xmr_amount: String,
     pub amount_received_xmr: String,
-    pub fiat_amount: String,
-    pub fiat_currency: String,
+    pub amount: String,
+    pub currency: String,
     pub confirmations: u64,
     pub confirmations_required: u64,
     pub is_terminal: bool,
@@ -974,8 +974,8 @@ mod tests {
                     display_name: "shop.example.com".to_string(),
                     payment_id: "pay_xyz".to_string(),
                     status: "paid".to_string(),
-                    fiat_amount: "25.00".to_string(),
-                    fiat_currency: "USD".to_string(),
+                    amount: "25.00".to_string(),
+                    currency: "USD".to_string(),
                     created_at: 1000,
                 }],
                 total_received_xmr: "1.234567890123".to_string(),

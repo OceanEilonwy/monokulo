@@ -96,13 +96,13 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
         if let Ok(orders) = state.engine_client.list_orders(&sk).await {
             // The engine has no concept of fiat any more (`docs/fx_refactor.md`
             // Phase 3) - fiat display comes entirely from control-plane's own
-            // local `order_fiat_metadata`.
+            // local `order_currency_metadata`.
             let fiat_metadata =
-                state.db.lock().unwrap().list_order_fiat_metadata_for_connection(&row.id).unwrap_or_default();
+                state.db.lock().unwrap().list_order_currency_metadata_for_connection(&row.id).unwrap_or_default();
             for o in orders {
                 total_received_piconero += o.amount_received_piconero as u128;
-                let (fiat_amount, fiat_currency) = match fiat_metadata.get(&o.payment_id) {
-                    Some(m) => (m.fiat_amount.clone(), m.fiat_currency.clone()),
+                let (amount, currency) = match fiat_metadata.get(&o.payment_id) {
+                    Some(m) => (m.amount.clone(), m.currency.clone()),
                     None => ("—".to_string(), "".to_string()),
                 };
                 all_orders.push(DashboardOrderRow {
@@ -110,8 +110,8 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
                     display_name: display_name.clone(),
                     payment_id: o.payment_id,
                     status: o.status,
-                    fiat_amount,
-                    fiat_currency,
+                    amount,
+                    currency,
                     created_at: o.created_at,
                 });
             }
@@ -189,15 +189,11 @@ mod tests {
         const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
         const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
         const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
-        const TEST_CURRENCY: &str = "USD";
         const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
         /// See `AppState`'s own doc comment on `exchange_rate`.
         fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-            std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::fixed_only(std::collections::HashMap::from([(
-                TEST_CURRENCY.to_string(),
-                TEST_RATE_PICONERO_PER_UNIT,
-            )])))
+            std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
         }
 
         async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {

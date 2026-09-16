@@ -28,6 +28,8 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (5, include_str!("../migrations/0005_order_fiat_metadata.sql")),
     (6, include_str!("../migrations/0006_order_fiat_metadata_provider.sql")),
     (7, include_str!("../migrations/0007_store_fx_provider.sql")),
+    (8, include_str!("../migrations/0008_remove_fixed_fx_provider.sql")),
+    (9, include_str!("../migrations/0009_rename_fiat_to_currency.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -95,29 +97,33 @@ pub struct StoreConnectionRow {
     pub tenant_secret_token_encrypted: String,
     pub moneropay_endpoint: String,
     pub created_at: i64,
-    /// `"fixed"` or `"coingecko"` (`exchange_rate_config::{FIXED, COINGECKO}`)
-    /// - which exchange-rate provider *this store* uses, a genuine
-    /// per-merchant choice (a real follow-up to `docs/fx_refactor.md`) set
-    /// via its own settings page, not an instance-wide setting.
+    /// `"coingecko"` (`exchange_rate_config::COINGECKO`) today - which
+    /// fiat exchange-rate provider *this store* uses for a non-XMR order, a
+    /// genuine per-merchant choice (a real follow-up to
+    /// `docs/fx_refactor.md`) set via its own settings page, not an
+    /// instance-wide setting. Irrelevant for an XMR-denominated order,
+    /// which always uses the trivial identity rate regardless of this
+    /// value - see `exchange_rate_config::ExchangeRateProviders::
+    /// piconero_per_unit_for`.
     pub fx_provider: String,
 }
 
-/// A row from `order_fiat_metadata` (`docs/fx_refactor.md` Phase 1.2) - what
-/// a customer was quoted in fiat for one order, recorded at creation time.
-/// The engine has no concept of this at all; this is control-plane's own,
-/// sole copy of it - see the migration's own comment on why (and the
-/// accepted durability trade-off that implies, `docs/fx_refactor.md`
-/// decision 4).
-pub struct OrderFiatMetadataRow {
+/// A row from `order_currency_metadata` (`docs/fx_refactor.md` Phase 1.2) -
+/// what a customer was quoted for one order (in fiat, or in XMR itself),
+/// recorded at creation time. The engine has no concept of this at all;
+/// this is control-plane's own, sole copy of it - see the migration's own
+/// comment on why (and the accepted durability trade-off that implies,
+/// `docs/fx_refactor.md` decision 4).
+pub struct OrderCurrencyMetadataRow {
     pub connection_id: String,
     pub payment_id: String,
-    pub fiat_currency: String,
-    pub fiat_amount: String,
+    pub currency: String,
+    pub amount: String,
     pub piconero_per_unit: u64,
-    /// Which `ExchangeRateConfig` variant produced `piconero_per_unit` -
-    /// `"fixed"` or `"coingecko"` (`exchange_rate_config::ExchangeRateConfig
-    /// ::provider_name`), or `"unknown"` for a row recorded before this
-    /// field existed (migration 0006).
+    /// Which provider produced `piconero_per_unit` - `"xmr"` (the trivial
+    /// identity rate), `"coingecko"`, `"unknown"` for a row recorded before
+    /// this field existed (migration 0006), or a stale `"fixed"` for a row
+    /// recorded before that provider's removal.
     pub provider: String,
     pub created_at: i64,
 }
@@ -247,10 +253,19 @@ impl Db {
         moneropay_endpoint: &str,
         created_at: i64,
     ) -> Result<()> {
+        // `fx_provider` explicit here (`'coingecko'`), not left to the
+        // column's own `DEFAULT` - SQLite can't cheaply change a column
+        // `DEFAULT` in place, so after `"fixed"`'s removal this is the one
+        // real place a new store's initial provider is decided. Harmless
+        // even on an instance that never enables Coingecko: an XMR-priced
+        // order never reads this column at all (see `StoreConnectionRow::
+        // fx_provider`'s own doc comment), and a merchant can still pick a
+        // different available provider from their store's settings page
+        // the moment one exists.
         self.conn.execute(
             "INSERT INTO store_connections
-                (id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+                (id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at, fx_provider)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'coingecko')",
             params![
                 id,
                 user_id,
@@ -293,8 +308,8 @@ impl Db {
     }
 
     /// Updates a store's chosen exchange-rate provider - the settings-page
-    /// counterpart to `create_store_connection`'s `DEFAULT 'fixed'`. The
-    /// caller (`http::orders::update_fx_provider`) is responsible for
+    /// counterpart to `create_store_connection`'s explicit initial
+    /// `'coingecko'`. The caller (`http::orders::update_fx_provider`) is responsible for
     /// validating `fx_provider` against `ExchangeRateProviders::
     /// available_providers` first; this layer stores whatever string it's
     /// given, same as every other plain column update in this file.
@@ -331,7 +346,7 @@ impl Db {
         Ok(rows)
     }
 
-    /// Records what a customer was quoted, in fiat, for one order
+    /// Records what a customer was quoted for one order
     /// (`docs/fx_refactor.md` Phase 1.2) - called once, at order-creation
     /// time, by the same handler that computes the XMR amount from this
     /// exact rate (`http::orders`'s new order-creation endpoint, Phase
@@ -341,12 +356,12 @@ impl Db {
     /// `u64` value SQLite genuinely cannot represent, not a plausible real
     /// one.
     #[allow(clippy::too_many_arguments)]
-    pub fn create_order_fiat_metadata(
+    pub fn create_order_currency_metadata(
         &self,
         connection_id: &str,
         payment_id: &str,
-        fiat_currency: &str,
-        fiat_amount: &str,
+        currency: &str,
+        amount: &str,
         piconero_per_unit: u64,
         provider: &str,
         created_at: i64,
@@ -354,31 +369,31 @@ impl Db {
         let piconero_per_unit = i64::try_from(piconero_per_unit)
             .expect("piconero_per_unit out of i64 range - not a plausible real exchange rate");
         self.conn.execute(
-            "INSERT INTO order_fiat_metadata
-                (connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, provider, created_at)
+            "INSERT INTO order_currency_metadata
+                (connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, provider, created_at],
+            params![connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at],
         )?;
         Ok(())
     }
 
-    /// Looks up one order's fiat metadata - `None` when nothing was ever
+    /// Looks up one order's currency metadata - `None` when nothing was ever
     /// recorded for this `(connection_id, payment_id)` pair (an order the
     /// engine reports that predates this table, or one created directly
     /// against the engine's own API rather than through control-plane).
-    pub fn get_order_fiat_metadata(&self, connection_id: &str, payment_id: &str) -> Result<Option<OrderFiatMetadataRow>> {
+    pub fn get_order_currency_metadata(&self, connection_id: &str, payment_id: &str) -> Result<Option<OrderCurrencyMetadataRow>> {
         self.conn
             .query_row(
-                "SELECT connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, provider, created_at
-                 FROM order_fiat_metadata WHERE connection_id = ?1 AND payment_id = ?2",
+                "SELECT connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at
+                 FROM order_currency_metadata WHERE connection_id = ?1 AND payment_id = ?2",
                 params![connection_id, payment_id],
                 |row| {
                     let piconero_per_unit: i64 = row.get(4)?;
-                    Ok(OrderFiatMetadataRow {
+                    Ok(OrderCurrencyMetadataRow {
                         connection_id: row.get(0)?,
                         payment_id: row.get(1)?,
-                        fiat_currency: row.get(2)?,
-                        fiat_amount: row.get(3)?,
+                        currency: row.get(2)?,
+                        amount: row.get(3)?,
                         piconero_per_unit: piconero_per_unit as u64,
                         provider: row.get(5)?,
                         created_at: row.get(6)?,
@@ -389,28 +404,28 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    /// Looks up fiat metadata for every order of one connection at once -
+    /// Looks up currency metadata for every order of one connection at once -
     /// the orders-list/dashboard pages need this per-row, not one at a
     /// time, to avoid an N+1 query pattern when rendering a whole list.
     /// Returned as a map keyed by `payment_id` (already scoped to
     /// `connection_id` by the query) for callers to look up by, not a
     /// `Vec` they'd have to re-index themselves.
-    pub fn list_order_fiat_metadata_for_connection(
+    pub fn list_order_currency_metadata_for_connection(
         &self,
         connection_id: &str,
-    ) -> Result<std::collections::HashMap<String, OrderFiatMetadataRow>> {
+    ) -> Result<std::collections::HashMap<String, OrderCurrencyMetadataRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT connection_id, payment_id, fiat_currency, fiat_amount, piconero_per_unit, provider, created_at
-             FROM order_fiat_metadata WHERE connection_id = ?1",
+            "SELECT connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at
+             FROM order_currency_metadata WHERE connection_id = ?1",
         )?;
         let rows = stmt
             .query_map(params![connection_id], |row| {
                 let piconero_per_unit: i64 = row.get(4)?;
-                Ok(OrderFiatMetadataRow {
+                Ok(OrderCurrencyMetadataRow {
                     connection_id: row.get(0)?,
                     payment_id: row.get(1)?,
-                    fiat_currency: row.get(2)?,
-                    fiat_amount: row.get(3)?,
+                    currency: row.get(2)?,
+                    amount: row.get(3)?,
                     piconero_per_unit: piconero_per_unit as u64,
                     provider: row.get(5)?,
                     created_at: row.get(6)?,
@@ -600,7 +615,7 @@ mod tests {
         assert_eq!(row.tenant_secret_token_encrypted, "sk_abc");
         assert_eq!(row.moneropay_endpoint, "http://127.0.0.1:8080");
         assert_eq!(row.created_at, 3000);
-        assert_eq!(row.fx_provider, "fixed", "every new store defaults to the fixed provider");
+        assert_eq!(row.fx_provider, "coingecko", "every new store defaults to coingecko");
     }
 
     #[test]
@@ -626,6 +641,36 @@ mod tests {
         // Nothing else changed.
         assert_eq!(row.site_url, "https://shop.example.com");
         assert_eq!(row.tenant_public_key, "pk_abc");
+    }
+
+    #[test]
+    fn migration_0008_backfills_a_stale_fixed_fx_provider_to_coingecko() {
+        // Reproduces a real pre-upgrade database: a store still set to the
+        // now-removed "fixed" provider (`create_store_connection` could
+        // only ever write that value before migration 0007 added a real
+        // choice, and every store predating that migration has it) must
+        // land on "coingecko", not be left pointing at a provider name
+        // that no longer means anything.
+        let conn = Connection::open_in_memory().unwrap();
+        shared::migrations::apply(&conn, &MIGRATIONS[..7]).unwrap();
+        conn.execute(
+            "INSERT INTO users (id, email, password_hash, created_at) VALUES ('user-1', 'a@example.com', 'hash', 1000)",
+            [],
+        )
+        .unwrap();
+        conn.execute(
+            "INSERT INTO store_connections
+                (id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at, fx_provider)
+             VALUES ('conn-1', 'user-1', 'woocommerce', 'https://shop.example.com', 'pk_abc', 'sk_abc', 'http://127.0.0.1:8080', 3000, 'fixed')",
+            [],
+        )
+        .unwrap();
+
+        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+
+        let db = Db { conn };
+        let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
+        assert_eq!(row.fx_provider, "coingecko");
     }
 
     #[test]
@@ -774,13 +819,13 @@ mod tests {
     fn creating_order_fiat_metadata_then_reading_it_back_round_trips() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_order_fiat_metadata(&connection_id, "pay_1", "USD", "25.00", 6_700_000_000, "fixed", 1000).unwrap();
+        db.create_order_currency_metadata(&connection_id, "pay_1", "USD", "25.00", 6_700_000_000, "fixed", 1000).unwrap();
 
-        let row = db.get_order_fiat_metadata(&connection_id, "pay_1").unwrap().unwrap();
+        let row = db.get_order_currency_metadata(&connection_id, "pay_1").unwrap().unwrap();
         assert_eq!(row.connection_id, connection_id);
         assert_eq!(row.payment_id, "pay_1");
-        assert_eq!(row.fiat_currency, "USD");
-        assert_eq!(row.fiat_amount, "25.00");
+        assert_eq!(row.currency, "USD");
+        assert_eq!(row.amount, "25.00");
         assert_eq!(row.piconero_per_unit, 6_700_000_000);
         assert_eq!(row.provider, "fixed");
         assert_eq!(row.created_at, 1000);
@@ -790,7 +835,7 @@ mod tests {
     fn looking_up_fiat_metadata_for_an_unknown_payment_id_returns_none() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        assert!(db.get_order_fiat_metadata(&connection_id, "nonexistent").unwrap().is_none());
+        assert!(db.get_order_currency_metadata(&connection_id, "nonexistent").unwrap().is_none());
     }
 
     #[test]
@@ -813,13 +858,13 @@ mod tests {
         )
         .unwrap();
 
-        db.create_order_fiat_metadata(&connection_id, "pay_shared", "USD", "10.00", 1_000_000, "fixed", 1000).unwrap();
-        db.create_order_fiat_metadata("conn-2", "pay_shared", "EUR", "20.00", 2_000_000, "coingecko", 2000).unwrap();
+        db.create_order_currency_metadata(&connection_id, "pay_shared", "USD", "10.00", 1_000_000, "fixed", 1000).unwrap();
+        db.create_order_currency_metadata("conn-2", "pay_shared", "EUR", "20.00", 2_000_000, "coingecko", 2000).unwrap();
 
-        let first = db.get_order_fiat_metadata(&connection_id, "pay_shared").unwrap().unwrap();
-        let second = db.get_order_fiat_metadata("conn-2", "pay_shared").unwrap().unwrap();
-        assert_eq!(first.fiat_currency, "USD");
-        assert_eq!(second.fiat_currency, "EUR");
+        let first = db.get_order_currency_metadata(&connection_id, "pay_shared").unwrap().unwrap();
+        let second = db.get_order_currency_metadata("conn-2", "pay_shared").unwrap().unwrap();
+        assert_eq!(first.currency, "USD");
+        assert_eq!(second.currency, "EUR");
         assert_eq!(first.provider, "fixed");
         assert_eq!(second.provider, "coingecko");
     }
@@ -828,19 +873,19 @@ mod tests {
     fn listing_fiat_metadata_for_a_connection_returns_a_map_keyed_by_payment_id() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_order_fiat_metadata(&connection_id, "pay_a", "USD", "10.00", 1_000_000, "fixed", 1000).unwrap();
-        db.create_order_fiat_metadata(&connection_id, "pay_b", "EUR", "20.00", 2_000_000, "fixed", 2000).unwrap();
+        db.create_order_currency_metadata(&connection_id, "pay_a", "USD", "10.00", 1_000_000, "fixed", 1000).unwrap();
+        db.create_order_currency_metadata(&connection_id, "pay_b", "EUR", "20.00", 2_000_000, "fixed", 2000).unwrap();
 
-        let map = db.list_order_fiat_metadata_for_connection(&connection_id).unwrap();
+        let map = db.list_order_currency_metadata_for_connection(&connection_id).unwrap();
         assert_eq!(map.len(), 2);
-        assert_eq!(map.get("pay_a").unwrap().fiat_currency, "USD");
-        assert_eq!(map.get("pay_b").unwrap().fiat_currency, "EUR");
+        assert_eq!(map.get("pay_a").unwrap().currency, "USD");
+        assert_eq!(map.get("pay_b").unwrap().currency, "EUR");
     }
 
     #[test]
     fn listing_fiat_metadata_for_a_connection_with_none_recorded_is_an_empty_map_not_an_error() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        assert!(db.list_order_fiat_metadata_for_connection(&connection_id).unwrap().is_empty());
+        assert!(db.list_order_currency_metadata_for_connection(&connection_id).unwrap().is_empty());
     }
 }

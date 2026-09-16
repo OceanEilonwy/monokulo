@@ -1,40 +1,52 @@
 //! control-plane's own exchange-rate configuration surface, plus the small
-//! dispatcher (`ExchangeRateProviders`) that picks between the two concrete
-//! provider types on a *per-store* basis - environment-variable-driven, same
-//! as every other piece of control-plane config today (`main.rs`'s own
-//! `encryption_key_from_env`): no TOML config file exists here yet.
+//! dispatcher (`ExchangeRateProviders`) that picks the right provider for a
+//! given order - environment-variable-driven, same as every other piece of
+//! control-plane config today (`main.rs`'s own `encryption_key_from_env`):
+//! no TOML config file exists here yet.
 //!
-//! **Per-store selection, not one global mode.** Every store connection
-//! picks its own `fx_provider` (`"fixed"` or `"coingecko"`,
-//! `store_connections.fx_provider` - see `db::StoreConnectionRow`), a real
-//! per-merchant choice rather than one instance-wide setting. Both provider
-//! *instances* are still built once, at boot, from this env-var config -
-//! only the dispatch (which one a given order actually uses) happens
-//! per-request. This is a genuine, intentional shape change from an earlier
-//! version of this module, which had `CONTROL_PLANE_EXCHANGE_RATE_PROVIDER`
-//! pick exactly one provider for the whole instance; that's gone, replaced
-//! by "fixed rates, if any are configured, are always available" plus
-//! "coingecko, if configured, is *also* always available" - a store can
-//! only pick a provider this instance actually configured (`available_providers`).
+//! **Dispatch is by currency first, store second.** An order priced in
+//! `"XMR"` always uses `shared::exchange_rate::XmrIdentityProvider` - a
+//! trivial 1:1 unit conversion, no live rate, no I/O, and (deliberately) no
+//! regard for the store's own `fx_provider` setting at all, since there is
+//! nothing for that setting to mean when the order's own currency already
+//! *is* XMR. Every other currency goes through the store's chosen
+//! `fx_provider` (`store_connections.fx_provider` - see
+//! `db::StoreConnectionRow`), currently always `"coingecko"` - the "fixed"
+//! (admin-pegged) provider that used to exist here has been removed
+//! entirely as a product feature: real user feedback was that a hand-pegged
+//! rate doesn't make sense given dynamic crypto pricing.
 //!
-//! - `CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES` is a JSON object of
-//!   `{"USD": "0.0067", ...}` (currency -> XMR-per-unit decimal string per
-//!   key). Missing or empty means no store can use `"fixed"` - any store
-//!   still set to it gets a clear "unsupported currency"/"provider not
-//!   configured" error at order-creation time, not a silent wrong amount.
-//! - `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_CURRENCIES` (comma-separated,
-//!   e.g. `"USD,EUR"`) - if set and non-empty, a live `CoingeckoRateProvider`
-//!   is built and `"coingecko"` becomes a selectable provider; if unset or
-//!   empty, no store can select `"coingecko"` on this instance.
+//! - `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED` (`"true"`/`"false"`,
+//!   default `false`) - turns Coingecko on as a selectable provider for
+//!   this instance at all. A store can only pick a provider this instance
+//!   actually enabled (`available_providers`); with this unset, no store
+//!   can price anything in a non-XMR currency (XMR-priced orders are
+//!   unaffected either way).
+//! - `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_BASE_URL` - overrides the
+//!   Coingecko API base URL (default `https://api.coingecko.com`, the real
+//!   keyless public API - see
+//!   <https://docs.coingecko.com/docs/keyless-public-api>, no key
+//!   required). For advanced operators pointing at a paid tier or a proxy;
+//!   most instances never need to set this.
 //! - `CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS` - how long a Coingecko
-//!   lookup result is trusted before the next request for that currency
-//!   triggers a fresh live fetch (`CoingeckoRateProvider::piconero_per_unit_cached`).
-//!   Defaults to 30. **Deliberately a control-plane-admin setting, not a
-//!   per-store or per-request one** - a merchant picks *which* provider
-//!   their store uses, not how aggressively it's cached; that's an
-//!   operational tuning knob for whoever runs this instance, the same
-//!   reasoning `CONTROL_PLANE_RATE_LIMIT_PER_IP_PER_MIN` is an admin knob
-//!   and not something a request can override.
+//!   lookup result (a rate *or* the supported-currency list - both use this
+//!   same TTL) is trusted before the next request triggers a fresh live
+//!   fetch (`CoingeckoRateProvider::piconero_per_unit_cached`/
+//!   `supported_currencies_cached`). Defaults to 30. **Deliberately a
+//!   control-plane-admin setting, not a per-store or per-request one** - a
+//!   merchant picks *which* provider their store uses, not how
+//!   aggressively it's cached; that's an operational tuning knob for
+//!   whoever runs this instance, the same reasoning
+//!   `CONTROL_PLANE_RATE_LIMIT_PER_IP_PER_MIN` is an admin knob and not
+//!   something a request can override.
+//!
+//! **No startup currency whitelist any more.** An earlier version of this
+//! module required `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_CURRENCIES`, a
+//! comma-separated list of currencies to track. That's gone -
+//! `CoingeckoRateProvider` now discovers what it supports live from
+//! Coingecko itself (`supported_currencies_cached`), so any currency
+//! Coingecko actually prices XMR in just works, with no config-time
+//! enumeration step.
 //!
 //! `parse` takes a plain lookup function rather than reading
 //! `std::env::var` directly, specifically so it's unit-testable without the
@@ -42,74 +54,55 @@
 //! parallel test threads (`std::env::set_var` is not itself synchronized
 //! against concurrent reads elsewhere in the same test binary).
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use shared::exchange_rate::{AmountError, CoingeckoRateProvider, ExchangeRateError, FixedRateProvider, parse_xmr_to_piconero};
+use shared::exchange_rate::{CoingeckoRateProvider, ExchangeRateError, XmrIdentityProvider};
+
+use crate::db::StoreConnectionRow;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ExchangeRateConfigError {
-    #[error("CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES must be a JSON object of currency -> XMR-decimal-string: {0}")]
-    InvalidFixedRatesJson(String),
-    #[error("CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES has an invalid rate for {currency:?}: {source}")]
-    InvalidRate { currency: String, source: AmountError },
+    #[error("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED must be \"true\" or \"false\", got {0:?}")]
+    InvalidCoingeckoEnabled(String),
     #[error("CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS must be a positive integer, got {0:?}")]
     InvalidCacheSeconds(String),
 }
 
 const DEFAULT_CACHE_SECONDS: u64 = 30;
+const DEFAULT_COINGECKO_BASE_URL: &str = "https://api.coingecko.com";
 
 /// Already-validated, ready-to-build configuration - `main.rs` calls
-/// `build_providers` on this once, at boot.
+/// `ExchangeRateProviders::build` on this once, at boot.
 #[derive(Debug, PartialEq, Eq)]
 pub struct ExchangeRateConfig {
-    pub fixed_rates: HashMap<String, String>,
-    pub coingecko_currencies: Vec<String>,
+    pub coingecko_enabled: bool,
+    pub coingecko_base_url: String,
     pub cache_seconds: u64,
-}
-
-impl ExchangeRateConfig {
-    fn build_fixed_rate_provider(&self) -> Result<FixedRateProvider, ExchangeRateConfigError> {
-        let mut piconero_rates = HashMap::new();
-        for (currency, xmr_decimal) in &self.fixed_rates {
-            let piconero_per_unit = parse_xmr_to_piconero(xmr_decimal)
-                .map_err(|source| ExchangeRateConfigError::InvalidRate { currency: currency.clone(), source })?;
-            piconero_rates.insert(currency.clone(), piconero_per_unit);
-        }
-        Ok(FixedRateProvider::new(piconero_rates))
-    }
-
-    /// Always points at the real `https://api.coingecko.com` - nothing in
-    /// this env-var surface overrides it (`CoingeckoRateProvider::new`'s own
-    /// doc comment: the base URL is a constructor parameter for tests, not
-    /// for operators).
-    fn build_coingecko_rate_provider(&self) -> CoingeckoRateProvider {
-        CoingeckoRateProvider::new("https://api.coingecko.com", self.coingecko_currencies.clone())
-    }
 }
 
 /// Parses the exchange-rate config from a plain key -> value lookup (a real
 /// `std::env::var` wrapper in production, an in-memory map in tests - see
 /// this module's own doc comment for why).
 pub fn parse<F: Fn(&str) -> Option<String>>(get_env: F) -> Result<ExchangeRateConfig, ExchangeRateConfigError> {
-    let raw = get_env("CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES").unwrap_or_else(|| "{}".to_string());
-    let fixed_rates: HashMap<String, String> =
-        serde_json::from_str(&raw).map_err(|e| ExchangeRateConfigError::InvalidFixedRatesJson(e.to_string()))?;
+    let coingecko_enabled = match get_env("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED") {
+        None => false,
+        Some(raw) => match raw.as_str() {
+            "true" => true,
+            "false" => false,
+            _ => return Err(ExchangeRateConfigError::InvalidCoingeckoEnabled(raw)),
+        },
+    };
 
-    let coingecko_currencies: Vec<String> = get_env("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_CURRENCIES")
-        .unwrap_or_default()
-        .split(',')
-        .map(|s| s.trim().to_string())
-        .filter(|s| !s.is_empty())
-        .collect();
+    let coingecko_base_url =
+        get_env("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_BASE_URL").unwrap_or_else(|| DEFAULT_COINGECKO_BASE_URL.to_string());
 
     let cache_seconds = match get_env("CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS") {
         None => DEFAULT_CACHE_SECONDS,
         Some(raw) => raw.parse::<u64>().map_err(|_| ExchangeRateConfigError::InvalidCacheSeconds(raw))?,
     };
 
-    Ok(ExchangeRateConfig { fixed_rates, coingecko_currencies, cache_seconds })
+    Ok(ExchangeRateConfig { coingecko_enabled, coingecko_base_url, cache_seconds })
 }
 
 /// Real `main.rs` entry point - reads the actual process environment.
@@ -118,9 +111,10 @@ pub fn from_real_env() -> Result<ExchangeRateConfig, ExchangeRateConfigError> {
 }
 
 /// A store's chosen provider names a provider this instance either never
-/// configured at all, or a genuinely unrecognized string (e.g. a stale
-/// value from before a provider was removed from this instance's
-/// configuration).
+/// enabled at all, or a genuinely unrecognized string (e.g. a stale value
+/// from before a provider was removed from this instance's configuration -
+/// `"fixed"`, for any row that predates its removal and hasn't been
+/// migrated).
 #[derive(Debug, thiserror::Error)]
 pub enum ExchangeRateLookupError {
     #[error("exchange rate provider {0:?} is not configured on this instance")]
@@ -129,80 +123,109 @@ pub enum ExchangeRateLookupError {
     Coingecko(#[from] ExchangeRateError),
 }
 
-/// The real per-store dispatcher `AppState.exchange_rate` holds - built once
-/// at boot (`build_providers`) from the parsed `ExchangeRateConfig`, then
-/// shared read-only across every request. `piconero_per_unit` is the single
-/// entry point every caller (`http::pay::create_order`, `http::orders::create_order`)
-/// uses; which concrete provider actually answers a given call is decided
-/// entirely by the `provider_name` the caller passes in (the store's own
-/// `fx_provider` column), not by anything on this struct.
+/// The real per-order dispatcher `AppState.exchange_rate` holds - built once
+/// at boot (`build`) from the parsed `ExchangeRateConfig`, then shared
+/// read-only across every request. `piconero_per_unit_for` is the single
+/// entry point every caller (`http::pay::create_order`,
+/// `http::orders::create_order`) uses.
 #[derive(Debug)]
 pub struct ExchangeRateProviders {
-    fixed: Arc<FixedRateProvider>,
+    xmr: XmrIdentityProvider,
     coingecko: Option<Arc<CoingeckoRateProvider>>,
     cache_seconds: u64,
 }
 
-/// The two provider names a store can ever select - `db::StoreConnectionRow::fx_provider`
-/// is validated against a subset of these (whichever this instance actually
-/// configured, see `ExchangeRateProviders::available_providers`) wherever a
-/// merchant sets it.
-pub const FIXED: &str = "fixed";
+/// The one real provider name a store can select on this instance today -
+/// `db::StoreConnectionRow::fx_provider` is validated against a subset of
+/// this (whichever this instance actually enabled, see
+/// `ExchangeRateProviders::available_providers`) wherever a merchant sets
+/// it. Deliberately *not* a name a store ever needs for XMR - see the
+/// module doc comment.
 pub const COINGECKO: &str = "coingecko";
 
 impl ExchangeRateProviders {
-    /// Builds a dispatcher directly from an already-resolved fixed-rate
-    /// table (piconero per unit, not the decimal-XMR-string shape
-    /// `ExchangeRateConfig::fixed_rates` holds) with no Coingecko provider
-    /// at all - what every test-only `AppState` in this workspace needs (a
-    /// real order-creation flow that never performs a live network call).
-    /// Production always goes through `build`, which parses
-    /// `ExchangeRateConfig`'s own decimal-string rates first.
-    pub fn fixed_only(rates: HashMap<String, u64>) -> Self {
-        ExchangeRateProviders { fixed: Arc::new(FixedRateProvider::new(rates)), coingecko: None, cache_seconds: DEFAULT_CACHE_SECONDS }
+    /// Builds a dispatcher directly with a live Coingecko provider pointed
+    /// at `base_url` (a local test server, in every real caller) - what
+    /// every test-only `AppState` in this workspace that needs a real,
+    /// non-XMR fiat quote uses, so it can exercise that path without a real
+    /// network call.
+    pub fn coingecko_only(base_url: impl Into<String>) -> Self {
+        ExchangeRateProviders {
+            xmr: XmrIdentityProvider,
+            coingecko: Some(Arc::new(CoingeckoRateProvider::new(base_url))),
+            cache_seconds: DEFAULT_CACHE_SECONDS,
+        }
     }
 
-    pub fn build(config: &ExchangeRateConfig) -> Result<Self, ExchangeRateConfigError> {
-        let fixed = Arc::new(config.build_fixed_rate_provider()?);
-        let coingecko = if config.coingecko_currencies.is_empty() {
-            None
-        } else {
-            Some(Arc::new(config.build_coingecko_rate_provider()))
-        };
-        Ok(ExchangeRateProviders { fixed, coingecko, cache_seconds: config.cache_seconds })
+    /// Builds a dispatcher with no fiat provider configured at all - only
+    /// XMR-denominated orders can ever be priced. What most of this
+    /// workspace's test-only `AppState`s use, since most tests don't
+    /// actually exercise a fiat quote at all (real order-creation flow
+    /// tests just use `currency = "XMR"`, per
+    /// `docs/fx_refactor.md`'s follow-up).
+    pub fn xmr_only() -> Self {
+        ExchangeRateProviders { xmr: XmrIdentityProvider, coingecko: None, cache_seconds: DEFAULT_CACHE_SECONDS }
     }
 
-    /// Piconero per one whole unit of `fiat_currency`, via whichever
-    /// provider `provider_name` names - `Ok(None)` for a real, configured
-    /// provider that simply has no rate for this currency (the existing
-    /// "unsupported currency" case each provider already had), `Err` for a
-    /// `provider_name` this instance never configured at all, or a genuine
-    /// Coingecko request failure.
-    ///
-    /// `async` even for the `"fixed"` branch (an instant, synchronous
-    /// lookup under the hood) so every caller has one uniform call shape
-    /// regardless of which provider a store happens to have picked -
-    /// `http::pay::create_order` doesn't know or care which branch it's
-    /// hitting.
-    pub async fn piconero_per_unit(&self, provider_name: &str, fiat_currency: &str) -> Result<Option<u64>, ExchangeRateLookupError> {
-        match provider_name {
-            FIXED => Ok(self.fixed.piconero_per_unit(fiat_currency)),
+    pub fn build(config: &ExchangeRateConfig) -> Self {
+        let coingecko =
+            if config.coingecko_enabled { Some(Arc::new(CoingeckoRateProvider::new(config.coingecko_base_url.clone()))) } else { None };
+        ExchangeRateProviders { xmr: XmrIdentityProvider, coingecko, cache_seconds: config.cache_seconds }
+    }
+
+    /// Piconero per one whole unit of `currency`, plus the name of whichever
+    /// provider actually answered - computed together so the two can never
+    /// disagree (a call site recording "what rate, from which provider" for
+    /// an order gets both from one call, not two independent branches that
+    /// could drift). `currency == "XMR"` (case-insensitively) always uses
+    /// the identity provider, regardless of `store.fx_provider` - see the
+    /// module doc comment. `Ok(None)` for a real, configured provider that
+    /// simply has no rate for this currency; `Err` for a provider this
+    /// instance never enabled at all, or a genuine Coingecko request
+    /// failure.
+    pub async fn piconero_per_unit_for(
+        &self,
+        store: &StoreConnectionRow,
+        currency: &str,
+    ) -> Result<Option<(u64, &'static str)>, ExchangeRateLookupError> {
+        if currency.eq_ignore_ascii_case("XMR") {
+            return Ok(Some((self.xmr.piconero_per_unit(), "xmr")));
+        }
+        match store.fx_provider.as_str() {
             COINGECKO => match &self.coingecko {
-                Some(provider) => Ok(provider.piconero_per_unit_cached(fiat_currency, Duration::from_secs(self.cache_seconds)).await?),
-                None => Err(ExchangeRateLookupError::ProviderNotConfigured(provider_name.to_string())),
+                Some(provider) => {
+                    let rate = provider.piconero_per_unit_cached(currency, Duration::from_secs(self.cache_seconds)).await?;
+                    Ok(rate.map(|r| (r, COINGECKO)))
+                }
+                None => Err(ExchangeRateLookupError::ProviderNotConfigured(COINGECKO.to_string())),
             },
             other => Err(ExchangeRateLookupError::ProviderNotConfigured(other.to_string())),
         }
     }
 
+    /// Every currency an order for `store` could actually be priced in
+    /// right now: always `"XMR"`, plus (if `store.fx_provider` names an
+    /// enabled provider) whatever that provider currently supports. Drives
+    /// UI/validation that wants a real list rather than relying solely on
+    /// `piconero_per_unit_for` returning `None` after the fact.
+    pub async fn supported_currencies_for(&self, store: &StoreConnectionRow) -> Result<Vec<String>, ExchangeRateLookupError> {
+        let mut currencies = vec!["XMR".to_string()];
+        if store.fx_provider == COINGECKO {
+            if let Some(provider) = &self.coingecko {
+                let mut fiat = provider.supported_currencies_cached(Duration::from_secs(self.cache_seconds)).await?;
+                currencies.append(&mut fiat);
+            }
+        }
+        Ok(currencies)
+    }
+
     /// Which provider names a store can actually pick on this instance -
-    /// `"fixed"` always (even with an empty rate table: a store can still
-    /// select it, and simply gets "unsupported currency" for everything
-    /// until an admin configures a rate), `"coingecko"` only if this
-    /// instance was actually configured with currencies to track. Drives
-    /// the dropdown `http::orders`'s store-settings page renders.
+    /// `"coingecko"` only if this instance was actually enabled with it.
+    /// Never includes `"xmr"` - that's not a store setting, see the module
+    /// doc comment. Drives the dropdown `http::orders`'s store-settings
+    /// page renders.
     pub fn available_providers(&self) -> Vec<&'static str> {
-        let mut providers = vec![FIXED];
+        let mut providers = Vec::new();
         if self.coingecko.is_some() {
             providers.push(COINGECKO);
         }
@@ -217,51 +240,60 @@ impl ExchangeRateProviders {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::collections::HashMap;
 
     fn env_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
         pairs.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
     }
 
+    fn test_store(fx_provider: &str) -> StoreConnectionRow {
+        StoreConnectionRow {
+            id: "conn-1".to_string(),
+            user_id: "user-1".to_string(),
+            platform: "custom".to_string(),
+            site_url: "https://shop.example.com".to_string(),
+            tenant_public_key: "pk_test".to_string(),
+            tenant_secret_token_encrypted: "sk_test".to_string(),
+            moneropay_endpoint: "http://127.0.0.1:8080".to_string(),
+            created_at: 0,
+            fx_provider: fx_provider.to_string(),
+        }
+    }
+
     #[test]
-    fn no_env_vars_at_all_defaults_to_no_rates_and_no_coingecko() {
+    fn no_env_vars_at_all_defaults_to_coingecko_disabled() {
         let config = parse(|_| None).unwrap();
         assert_eq!(
             config,
-            ExchangeRateConfig { fixed_rates: HashMap::new(), coingecko_currencies: Vec::new(), cache_seconds: DEFAULT_CACHE_SECONDS }
+            ExchangeRateConfig {
+                coingecko_enabled: false,
+                coingecko_base_url: DEFAULT_COINGECKO_BASE_URL.to_string(),
+                cache_seconds: DEFAULT_CACHE_SECONDS,
+            }
         );
     }
 
-    #[tokio::test]
-    async fn fixed_rates_parse_from_json() {
-        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES", r#"{"USD":"0.0067","EUR":"0.0071"}"#)]);
-        let config = parse(|k| env.get(k).cloned()).unwrap();
-        assert_eq!(config.fixed_rates.get("USD").map(String::as_str), Some("0.0067"));
-        assert_eq!(config.fixed_rates.get("EUR").map(String::as_str), Some("0.0071"));
+    #[test]
+    fn coingecko_enabled_parses_true_and_false() {
+        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED", "true")]);
+        assert!(parse(|k| env.get(k).cloned()).unwrap().coingecko_enabled);
 
-        let providers = ExchangeRateProviders::build(&config).unwrap();
-        assert_eq!(providers.piconero_per_unit(FIXED, "USD").await.unwrap(), Some(6_700_000_000));
+        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED", "false")]);
+        assert!(!parse(|k| env.get(k).cloned()).unwrap().coingecko_enabled);
     }
 
     #[test]
-    fn fixed_rates_with_malformed_json_is_a_clear_error() {
-        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES", "not json")]);
+    fn an_invalid_coingecko_enabled_value_is_a_clear_error() {
+        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED", "yes")]);
         let err = parse(|k| env.get(k).cloned()).unwrap_err();
-        assert!(matches!(err, ExchangeRateConfigError::InvalidFixedRatesJson(_)), "got {err:?}");
+        assert_eq!(err, ExchangeRateConfigError::InvalidCoingeckoEnabled("yes".to_string()));
     }
 
     #[test]
-    fn building_providers_rejects_an_invalid_fixed_rate_string() {
-        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES", r#"{"USD":"not_a_number"}"#)]);
+    fn coingecko_base_url_overrides_the_real_default() {
+        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_BASE_URL", "http://127.0.0.1:9999")]);
         let config = parse(|k| env.get(k).cloned()).unwrap();
-        let err = ExchangeRateProviders::build(&config).unwrap_err();
-        assert!(matches!(err, ExchangeRateConfigError::InvalidRate { .. }), "got {err:?}");
-    }
-
-    #[test]
-    fn coingecko_currencies_parse_as_a_trimmed_list() {
-        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_CURRENCIES", " USD, EUR ,GBP")]);
-        let config = parse(|k| env.get(k).cloned()).unwrap();
-        assert_eq!(config.coingecko_currencies, vec!["USD".to_string(), "EUR".to_string(), "GBP".to_string()]);
+        assert_eq!(config.coingecko_base_url, "http://127.0.0.1:9999");
     }
 
     #[test]
@@ -285,45 +317,61 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_store_with_no_coingecko_configured_gets_a_clear_provider_not_configured_error() {
-        let config = ExchangeRateConfig { fixed_rates: HashMap::new(), coingecko_currencies: Vec::new(), cache_seconds: 30 };
-        let providers = ExchangeRateProviders::build(&config).unwrap();
-        let err = providers.piconero_per_unit(COINGECKO, "USD").await.unwrap_err();
+    async fn an_xmr_order_is_always_priced_at_the_identity_rate_regardless_of_the_stores_provider() {
+        let providers = ExchangeRateProviders::xmr_only();
+        let store = test_store("coingecko"); // not even configured - must not matter for XMR
+        let (rate, provider) = providers.piconero_per_unit_for(&store, "XMR").await.unwrap().unwrap();
+        assert_eq!(rate, 1_000_000_000_000);
+        assert_eq!(provider, "xmr");
+
+        // Case-insensitive, same as every other currency lookup in this codebase.
+        let (rate, _) = providers.piconero_per_unit_for(&store, "xmr").await.unwrap().unwrap();
+        assert_eq!(rate, 1_000_000_000_000);
+    }
+
+    #[tokio::test]
+    async fn a_store_with_no_coingecko_configured_gets_a_clear_provider_not_configured_error_for_fiat() {
+        let providers = ExchangeRateProviders::xmr_only();
+        let store = test_store(COINGECKO);
+        let err = providers.piconero_per_unit_for(&store, "USD").await.unwrap_err();
         assert!(matches!(err, ExchangeRateLookupError::ProviderNotConfigured(ref p) if p == COINGECKO), "got {err:?}");
     }
 
     #[tokio::test]
     async fn an_unrecognized_provider_name_is_a_clear_error_not_a_panic() {
-        let config = ExchangeRateConfig { fixed_rates: HashMap::new(), coingecko_currencies: Vec::new(), cache_seconds: 30 };
-        let providers = ExchangeRateProviders::build(&config).unwrap();
-        let err = providers.piconero_per_unit("haveno", "USD").await.unwrap_err();
-        assert!(matches!(err, ExchangeRateLookupError::ProviderNotConfigured(ref p) if p == "haveno"), "got {err:?}");
+        let providers = ExchangeRateProviders::xmr_only();
+        let store = test_store("fixed"); // a stale pre-removal value
+        let err = providers.piconero_per_unit_for(&store, "USD").await.unwrap_err();
+        assert!(matches!(err, ExchangeRateLookupError::ProviderNotConfigured(ref p) if p == "fixed"), "got {err:?}");
     }
 
-    #[tokio::test]
-    async fn fixed_is_always_available_coingecko_only_when_configured() {
-        let no_coingecko = ExchangeRateConfig { fixed_rates: HashMap::new(), coingecko_currencies: Vec::new(), cache_seconds: 30 };
-        let providers = ExchangeRateProviders::build(&no_coingecko).unwrap();
-        assert_eq!(providers.available_providers(), vec![FIXED]);
-        assert!(providers.is_available(FIXED));
+    #[test]
+    fn coingecko_is_only_available_when_actually_configured() {
+        let providers = ExchangeRateProviders::xmr_only();
+        assert_eq!(providers.available_providers(), Vec::<&str>::new());
         assert!(!providers.is_available(COINGECKO));
 
-        let with_coingecko =
-            ExchangeRateConfig { fixed_rates: HashMap::new(), coingecko_currencies: vec!["USD".to_string()], cache_seconds: 30 };
-        let providers = ExchangeRateProviders::build(&with_coingecko).unwrap();
-        assert_eq!(providers.available_providers(), vec![FIXED, COINGECKO]);
+        let providers = ExchangeRateProviders::coingecko_only("http://127.0.0.1:0");
+        assert_eq!(providers.available_providers(), vec![COINGECKO]);
         assert!(providers.is_available(COINGECKO));
     }
 
     #[tokio::test]
-    async fn fixed_lookup_returns_none_for_an_unconfigured_currency_not_an_error() {
-        let config = ExchangeRateConfig {
-            fixed_rates: HashMap::from([("USD".to_string(), "0.0067".to_string())]),
-            coingecko_currencies: Vec::new(),
-            cache_seconds: 30,
-        };
-        let providers = ExchangeRateProviders::build(&config).unwrap();
-        assert_eq!(providers.piconero_per_unit(FIXED, "USD").await.unwrap(), Some(6_700_000_000));
-        assert_eq!(providers.piconero_per_unit(FIXED, "EUR").await.unwrap(), None);
+    async fn supported_currencies_for_always_includes_xmr_even_with_nothing_configured() {
+        let providers = ExchangeRateProviders::xmr_only();
+        let store = test_store(COINGECKO);
+        let currencies = providers.supported_currencies_for(&store).await.unwrap();
+        assert_eq!(currencies, vec!["XMR".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn supported_currencies_for_a_store_on_an_unenabled_provider_still_lists_xmr_only() {
+        // Coingecko is configured on this instance, but this particular store
+        // still names a provider that was never enabled (or is stale) - it
+        // must not error, just report what's actually usable.
+        let providers = ExchangeRateProviders::coingecko_only("http://127.0.0.1:0");
+        let store = test_store("fixed");
+        let currencies = providers.supported_currencies_for(&store).await.unwrap();
+        assert_eq!(currencies, vec!["XMR".to_string()]);
     }
 }

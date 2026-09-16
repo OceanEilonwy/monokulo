@@ -589,10 +589,7 @@ mod tests {
     /// actually exercise fiat conversion, just need `AppState.exchange_rate`
     /// populated with something real - see `AppState`'s own doc comment.
     fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::fixed_only(std::collections::HashMap::from([(
-            "USD".to_string(),
-            1_000_000_000_000u64,
-        )])))
+        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
     }
 
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {

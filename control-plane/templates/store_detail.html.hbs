@@ -38,7 +38,7 @@
 <tr>
 <td><a href="/dashboard/connections/{{../store.connection_id}}/orders/{{this.payment_id}}">{{this.payment_id}}</a></td>
 <td>{{this.status}}</td>
-<td>{{this.fiat_amount}} {{this.fiat_currency}}</td>
+<td>{{this.amount}} {{this.currency}}</td>
 <td>{{this.created_at}}</td>
 </tr>
 {{/each}}
@@ -57,10 +57,12 @@ try the flow without wiring up a real storefront yet.</p>
 <div class="error">{{store.order_creation_error}}</div>
 {{/if}}
 <form method="post" action="/dashboard/connections/{{store.connection_id}}/orders/new">
-<label for="fiat_amount">Amount</label>
-<input type="text" id="fiat_amount" name="fiat_amount" value="10.00" required>
-<label for="fiat_currency">Currency</label>
-<input type="text" id="fiat_currency" name="fiat_currency" value="USD" required>
+<label for="amount">Amount</label>
+<input type="text" id="amount" name="amount" value="10.00" required>
+<label for="currency">Currency</label>
+<input type="text" id="currency" name="currency" value="XMR" required>
+<span class="field-help">"XMR" always works, with no provider needed. Any other currency needs this store's
+exchange rate provider (below) enabled on this instance.</span>
 <button type="submit">Create order</button>
 </form>
 
@@ -77,6 +79,7 @@ faster but riskier (a transaction can still be replaced before it's confirmed); 
 <button type="submit">Update</button>
 </form>
 
+{{#if store.fx_provider_options}}
 <form method="post" action="/dashboard/connections/{{store.connection_id}}/settings/fx-provider">
 <label>Exchange rate provider
 <select name="fx_provider">
@@ -84,12 +87,17 @@ faster but riskier (a transaction can still be replaced before it's confirmed); 
 <option value="{{this.name}}" {{#if this.selected}}selected{{/if}}>{{this.name}}</option>
 {{/each}}
 </select>
-<span class="field-help">Where this store's orders get their fiat-to-XMR rate from. "fixed" uses a rate an
-admin of this MoneroPay Cloud instance has configured; "coingecko" looks up a live market rate (cached briefly
-before the next lookup refreshes it).</span>
+<span class="field-help">Where this store's orders get their live market rate from, for any currency other than
+XMR (which always works, needing no provider at all - see "create a test order" above). "coingecko" looks up a
+live market rate (cached briefly before the next lookup refreshes it).</span>
 </label>
 <button type="submit">Update</button>
 </form>
+{{else}}
+<p><strong>Exchange rate provider:</strong> <span class="muted">none enabled on this instance</span></p>
+<p class="hint">Only XMR-denominated orders can be created until an admin of this MoneroPay Cloud instance
+enables a provider (e.g. Coingecko).</p>
+{{/if}}
 
 {{else}}
 <h1>Store not found</h1>

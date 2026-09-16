@@ -79,16 +79,17 @@ use mock_woocommerce::{create_order, run_connect_flow_with_wallet, ConnectFlowWa
 const CONFIG_PATH: &str = "../e2e/moneropay-stagenet.toml";
 const WALLETS_PATH: &str = "../e2e/stagenet-wallets.json";
 
-/// $0.05 at `TEST_RATE_PICONERO_PER_UNIT` (1 USD = 0.0067 XMR =
-/// 6_700_000_000 piconero, this test's own `spawn_test_control_plane` rate -
-/// the engine itself has no concept of fiat any more, `docs/fx_refactor.md`
-/// Phase 3) -> a genuinely tiny real stagenet payment, matching
-/// `tests/e2e_stagenet.rs`'s own 335_000_000-piconero target at the repo
-/// root, so both real-stagenet tests move the same order of magnitude of
-/// real (worthless, stagenet) XMR.
-const TEST_FIAT_AMOUNT: &str = "0.05";
-const TEST_CURRENCY: &str = "USD";
-const TEST_RATE_PICONERO_PER_UNIT: u64 = 6_700_000_000;
+/// A real, directly XMR-denominated order (`docs/fx_refactor.md` follow-up:
+/// XMR needs no exchange rate provider at all, not even a real one this
+/// suite could otherwise keep nothing-mocked about) - 335_000_000 piconero
+/// (0.000335 XMR), matching `tests/e2e_stagenet.rs`'s own tiny-payment
+/// target at the repo root, so both real-stagenet tests move the same order
+/// of magnitude of real (worthless, stagenet) XMR. Parsed at XMR's own
+/// native 12-decimal precision (`shared::exchange_rate::compute_order_amount`),
+/// not fiat's 2-decimal-place rounding - this amount genuinely needs that
+/// precision (0.01 XMR granularity would round it to zero).
+const TEST_ORDER_AMOUNT: &str = "0.000335";
+const TEST_CURRENCY: &str = "XMR";
 
 /// 0.01 XMR - the same zero-conf ceiling `e2e/moneropay-stagenet.toml` uses, comfortably
 /// (~30x) covering this test's ~0.000335 XMR payment.
@@ -213,13 +214,10 @@ async fn spawn_test_control_plane(engine_addr: std::net::SocketAddr) -> TestCont
             TemplateEngine::new().expect("built-in control-plane templates must parse"),
         ),
         status_cache: control_plane::http::status_page::new_status_cache(),
-        // Matches `TEST_RATE_PICONERO_PER_UNIT` below - this is a real
-        // stagenet run against a shared, faucet-funded wallet, so the rate
-        // must keep `TEST_FIAT_AMOUNT` mapping to a genuinely tiny payment,
-        // not an arbitrary test value.
-        exchange_rate: Arc::new(control_plane::exchange_rate_config::ExchangeRateProviders::fixed_only(
-            std::collections::HashMap::from([(TEST_CURRENCY.to_string(), TEST_RATE_PICONERO_PER_UNIT)]),
-        )),
+        // `TEST_CURRENCY` is `"XMR"` - needs no provider at all, so this
+        // stays genuinely unconfigured, same as everything else in this
+        // suite that isn't the "plugin" itself.
+        exchange_rate: Arc::new(control_plane::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
     };
     let router = build_router(state);
@@ -381,7 +379,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     let order = create_order(
         &control_plane_base_url,
         &credentials.public_key,
-        TEST_FIAT_AMOUNT,
+        TEST_ORDER_AMOUNT,
         TEST_CURRENCY,
     )
     .await

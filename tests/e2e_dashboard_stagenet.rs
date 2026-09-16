@@ -231,13 +231,12 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         status_cache: control_plane::http::status_page::new_status_cache(),
         // `docs/fx_refactor.md` Phase 5: order creation now goes through
         // control-plane's own `/pay/{pk}/orders`, the real path a production
-        // storefront takes - this is the rate that computation actually uses.
-        // Tuned (with the "0.01" fiat amount below) to land on the same
-        // genuinely-tiny 335_000_000-piconero target `tests/e2e_stagenet.rs`
-        // and `mock-woocommerce`'s own real-stagenet test use.
-        exchange_rate: Arc::new(control_plane::exchange_rate_config::ExchangeRateProviders::fixed_only(
-            std::collections::HashMap::from([("USD".to_string(), 33_500_000_000u64)]),
-        )),
+        // storefront takes. The order below is priced directly in `"XMR"` -
+        // needs no exchange rate provider configured at all - at a genuinely
+        // tiny 335_000_000-piconero (0.000335 XMR) amount, matching
+        // `tests/e2e_stagenet.rs`'s own target and `mock-woocommerce`'s own
+        // real-stagenet test.
+        exchange_rate: Arc::new(control_plane::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
     };
     let cp_router = build_control_plane_router(cp_state);
@@ -322,7 +321,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
                 .method("POST")
                 .uri(format!("/pay/{public_key}/orders"))
                 .header("content-type", "application/json")
-                .body(Body::from(json!({ "fiat_amount": "0.01", "fiat_currency": "USD" }).to_string()))
+                .body(Body::from(json!({ "amount": "0.000335", "currency": "XMR" }).to_string()))
                 .unwrap(),
         )
         .await

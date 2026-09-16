@@ -14,7 +14,7 @@
 //! the engine's own (now XMR-only, `docs/fx_refactor.md` Phase 3) public
 //! order-creation endpoint - control-plane's computation is the only rate
 //! computation in the whole system now. The fiat amount/currency the
-//! caller asked for is recorded locally (`Db::create_order_fiat_metadata`)
+//! caller asked for is recorded locally (`Db::create_order_currency_metadata`)
 //! for display purposes only; the engine never sees or stores it.
 
 use axum::extract::{Path, State};
@@ -28,8 +28,8 @@ use super::{ApiError, AppState};
 
 #[derive(Deserialize)]
 pub struct CreateOrderRequest {
-    pub fiat_amount: String,
-    pub fiat_currency: String,
+    pub amount: String,
+    pub currency: String,
 }
 
 /// Mirrors the engine's own `public::CreateOrderResponse` field-for-field -
@@ -37,16 +37,16 @@ pub struct CreateOrderRequest {
 /// directly today already expects, so migrating a storefront from calling
 /// the engine to calling this endpoint instead is a base-URL change, not a
 /// response-parsing rewrite.
-/// `fiat_amount`/`fiat_currency` echo back what the caller asked for
-/// (`req.fiat_amount`/`req.fiat_currency`), not anything the engine
+/// `amount`/`currency` echo back what the caller asked for
+/// (`req.amount`/`req.currency`), not anything the engine
 /// returned - the engine has no concept of fiat at all any more.
 #[derive(Debug, Serialize)]
 pub struct CreateOrderResponse {
     pub payment_id: String,
     pub address: String,
     pub xmr_amount_piconero: u64,
-    pub fiat_amount: String,
-    pub fiat_currency: String,
+    pub amount: String,
+    pub currency: String,
     pub expires_at: i64,
 }
 
@@ -65,18 +65,26 @@ pub async fn create_order(
     // Control-plane's own exchange rate is the only rate computation left in
     // the whole system (`docs/fx_refactor.md` Phase 3) - a real, fast `400`
     // for an unsupported currency or a malformed amount, before the engine
-    // (which has no concept of fiat at all) is ever called. Dispatched by
-    // *this store's own* chosen provider (`row.fx_provider`), a per-merchant
-    // setting, not one shared instance-wide choice.
-    let piconero_per_unit = match state.exchange_rate.piconero_per_unit(&row.fx_provider, &req.fiat_currency).await {
-        Ok(Some(rate)) => rate,
-        Ok(None) => return ApiError::BadRequest(format!("unsupported currency: {}", req.fiat_currency)).into_response(),
+    // (which has no concept of currency at all) is ever called.
+    // `"XMR"` always uses the trivial identity rate regardless of this
+    // store's chosen `fx_provider`; every other currency is dispatched by
+    // *this store's own* chosen provider, a per-merchant setting, not one
+    // shared instance-wide choice.
+    let (piconero_per_unit, provider) = match state.exchange_rate.piconero_per_unit_for(&row, &req.currency).await {
+        Ok(Some(result)) => result,
+        Ok(None) => return ApiError::BadRequest(format!("unsupported currency: {}", req.currency)).into_response(),
+        Err(crate::exchange_rate_config::ExchangeRateLookupError::ProviderNotConfigured(_)) => {
+            // Not a real failure - this store's provider (or no provider at
+            // all) simply can't price this currency on this instance, same
+            // user-facing meaning as `Ok(None)` above.
+            return ApiError::BadRequest(format!("unsupported currency: {}", req.currency)).into_response();
+        }
         Err(e) => {
-            eprintln!("exchange rate lookup failed for connection {} (provider {:?}): {e}", row.id, row.fx_provider);
+            eprintln!("exchange rate lookup failed for connection {} (currency {:?}): {e}", row.id, req.currency);
             return ApiError::Internal.into_response();
         }
     };
-    let xmr_amount_piconero = match shared::exchange_rate::compute_xmr_amount(&req.fiat_amount, piconero_per_unit) {
+    let xmr_amount_piconero = match shared::exchange_rate::compute_order_amount(&req.currency, &req.amount, piconero_per_unit) {
         Ok(amount) => amount,
         Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
     };
@@ -90,13 +98,13 @@ pub async fn create_order(
             // payment address. Losing this one local record is a strictly
             // smaller problem than telling a customer their real order
             // failed when it didn't.
-            if let Err(e) = state.db.lock().unwrap().create_order_fiat_metadata(
+            if let Err(e) = state.db.lock().unwrap().create_order_currency_metadata(
                 &row.id,
                 &order.payment_id,
-                &req.fiat_currency,
-                &req.fiat_amount,
+                &req.currency,
+                &req.amount,
                 piconero_per_unit,
-                &row.fx_provider,
+                provider,
                 now_unix(),
             ) {
                 eprintln!(
@@ -111,8 +119,8 @@ pub async fn create_order(
                 payment_id: order.payment_id,
                 address: order.address,
                 xmr_amount_piconero: order.xmr_amount_piconero,
-                fiat_amount: req.fiat_amount,
-                fiat_currency: req.fiat_currency,
+                amount: req.amount,
+                currency: req.currency,
                 expires_at: order.expires_at,
             })
             .into_response()
@@ -161,14 +169,38 @@ mod tests {
     const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
     const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
     const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
+    // This module's own tests deliberately exercise a real fiat quote (via a
+    // local mock Coingecko server below), not just XMR - `http::pay::create_order`
+    // is the real production storefront-facing endpoint, so its own tests are
+    // the ones that should prove a real fiat currency actually works end to
+    // end, unlike most other modules' tests (see `orders.rs`'s own doc
+    // comment on why those use `"XMR"` instead).
     const TEST_CURRENCY: &str = "USD";
+    // A mock price of exactly $1.00 makes the resulting piconero-per-unit
+    // exactly 1e12 (`1_000_000_000_000.0 / 1.0`), a clean round number to
+    // assert against without any floating-point rounding to account for.
     const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
-    fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::fixed_only(std::collections::HashMap::from([(
-            TEST_CURRENCY.to_string(),
-            TEST_RATE_PICONERO_PER_UNIT,
-        )])))
+    /// Spins up a real local HTTP server standing in for Coingecko - same
+    /// no-mocking-library pattern `shared::exchange_rate`'s own tests use.
+    /// Returns the base URL a `CoingeckoRateProvider` can be pointed at.
+    async fn spawn_mock_coingecko() -> String {
+        async fn price() -> axum::response::Response {
+            use axum::response::IntoResponse;
+            ([("content-type", "application/json")], r#"{"monero":{"usd":1.0}}"#).into_response()
+        }
+        let app = Router::new().route("/api/v3/simple/price", axum::routing::get(price));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    async fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
+        let base_url = spawn_mock_coingecko().await;
+        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::coingecko_only(base_url))
     }
 
     async fn test_state_with_real_engine() -> (AppState, engine_test_support::TestEngineHandle) {
@@ -183,7 +215,7 @@ mod tests {
             encryption_key: TEST_ENCRYPTION_KEY,
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
             status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: test_exchange_rate_provider(),
+            exchange_rate: test_exchange_rate_provider().await,
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         };
         (state, engine)
@@ -254,12 +286,12 @@ mod tests {
         body_json(response).await.as_object().unwrap().get("public_key").unwrap().as_str().unwrap().to_string()
     }
 
-    fn create_order_request(pk: &str, fiat_amount: &str, fiat_currency: &str) -> Request<Body> {
+    fn create_order_request(pk: &str, amount: &str, currency: &str) -> Request<Body> {
         Request::builder()
             .method("POST")
             .uri(format!("/pay/{pk}/orders"))
             .header("content-type", "application/json")
-            .body(Body::from(serde_json::json!({ "fiat_amount": fiat_amount, "fiat_currency": fiat_currency }).to_string()))
+            .body(Body::from(serde_json::json!({ "amount": amount, "currency": currency }).to_string()))
             .unwrap()
     }
 
@@ -278,8 +310,8 @@ mod tests {
         let obj = body.as_object().unwrap();
         assert!(obj.get("payment_id").unwrap().as_str().unwrap().starts_with("pay_"));
         assert!(!obj.get("address").unwrap().as_str().unwrap().is_empty());
-        assert_eq!(obj.get("fiat_currency").unwrap().as_str().unwrap(), TEST_CURRENCY);
-        assert_eq!(obj.get("fiat_amount").unwrap().as_str().unwrap(), "25.00");
+        assert_eq!(obj.get("currency").unwrap().as_str().unwrap(), TEST_CURRENCY);
+        assert_eq!(obj.get("amount").unwrap().as_str().unwrap(), "25.00");
     }
 
     /// The other half of the test above: proves the local fiat-metadata
@@ -305,10 +337,10 @@ mod tests {
 
         let connection_id =
             state.db.lock().unwrap().get_store_connection_by_public_key(&pk).unwrap().unwrap().id;
-        let metadata = state.db.lock().unwrap().get_order_fiat_metadata(&connection_id, &payment_id).unwrap();
+        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&connection_id, &payment_id).unwrap();
         let metadata = metadata.expect("expected a real local fiat-metadata row for the order just created");
-        assert_eq!(metadata.fiat_currency, TEST_CURRENCY);
-        assert_eq!(metadata.fiat_amount, "10.00");
+        assert_eq!(metadata.currency, TEST_CURRENCY);
+        assert_eq!(metadata.amount, "10.00");
         assert_eq!(metadata.piconero_per_unit, TEST_RATE_PICONERO_PER_UNIT);
     }
 

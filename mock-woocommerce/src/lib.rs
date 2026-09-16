@@ -610,15 +610,15 @@ async fn expect_ok(response: reqwest::Response, step: &str) -> Result<(), Connec
 pub async fn create_order(
     control_plane_base_url: &str,
     public_key: &str,
-    fiat_amount: &str,
-    fiat_currency: &str,
+    amount: &str,
+    currency: &str,
 ) -> Result<CreatedOrder, ConnectFlowError> {
     let client = reqwest::Client::new();
     let response = client
         .post(format!("{control_plane_base_url}/pay/{public_key}/orders"))
         .json(&serde_json::json!({
-            "fiat_amount": fiat_amount,
-            "fiat_currency": fiat_currency,
+            "amount": amount,
+            "currency": currency,
         }))
         .send()
         .await?;
@@ -897,9 +897,7 @@ mod tests {
                 TemplateEngine::new().expect("built-in control-plane templates must parse"),
             ),
             status_cache: control_plane::http::status_page::new_status_cache(),
-            exchange_rate: Arc::new(control_plane::exchange_rate_config::ExchangeRateProviders::fixed_only(
-                std::collections::HashMap::from([("USD".to_string(), 1_000_000_000_000u64)]),
-            )),
+            exchange_rate: Arc::new(control_plane::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         };
         let router = build_router(state);
@@ -988,7 +986,9 @@ mod tests {
 
     /// A test-only currency code, matching control-plane's own fixed test
     /// exchange rate (`spawn_test_control_plane`'s `AppState.exchange_rate`).
-    const TEST_CURRENCY: &str = "USD";
+    // "XMR" - needs no exchange rate provider at all, matching this test
+    // module's own `spawn_test_control_plane` (`ExchangeRateProviders::xmr_only()`).
+    const TEST_CURRENCY: &str = "XMR";
 
     /// WBS 1.4.3: runs the full connect flow to get real, working
     /// credentials against a real engine (reusing [`run_connect_flow`]
@@ -998,9 +998,9 @@ mod tests {
     /// just plausibly shaped. The final assertion fetches the returned
     /// `checkout_url` directly with a plain `reqwest::get` (standing in for
     /// the customer's browser being redirected there) and confirms it's a
-    /// real, working checkout page, not just a well-formed string - control-
-    /// plane's own exchange rate (`spawn_test_control_plane`) is what makes
-    /// order creation succeed here, not anything configured on the engine.
+    /// real, working checkout page, not just a well-formed string. Priced in
+    /// `"XMR"` - needs no exchange rate provider configured at all
+    /// (`spawn_test_control_plane`'s `xmr_only()`), unlike a fiat currency.
     #[tokio::test]
     async fn create_order_against_a_real_engine_yields_a_working_checkout_redirect() {
         let engine =

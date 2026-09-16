@@ -1,0 +1,13 @@
+-- The "fixed" (admin-pegged) exchange rate provider has been removed
+-- entirely as a product feature: real user feedback was that a hand-pegged
+-- rate doesn't make sense given dynamic crypto pricing. Any store still set
+-- to "fixed" is migrated to "coingecko", the only real fiat provider left -
+-- inert until an admin actually enables Coingecko
+-- (`CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED`), same as an
+-- unconfigured "fixed" store was before this change. New rows get
+-- "coingecko" explicitly from application code now (`Db::create_store_connection`),
+-- not this column's own `DEFAULT` - SQLite can't cheaply change a column's
+-- `DEFAULT` in place, and there's no functional need to: an XMR-currency
+-- order never even looks at this column
+-- (`exchange_rate_config::ExchangeRateProviders::piconero_per_unit_for`).
+UPDATE store_connections SET fx_provider = 'coingecko' WHERE fx_provider = 'fixed';
