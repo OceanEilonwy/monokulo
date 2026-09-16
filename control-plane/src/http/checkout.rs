@@ -26,14 +26,14 @@
 
 use axum::extract::{Path, State};
 use axum::response::{Html, IntoResponse, Json, Response};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use qrcode::render::svg;
 use qrcode::QrCode;
 use serde::Serialize;
 
 use crate::db::StoreConnectionRow;
 use crate::engine_client::{EngineClientError, OrderDetailResponse};
-use crate::templates::{CheckoutPaymentViewModel, CheckoutViewModel};
+use crate::templates::{CheckoutPaymentViewModel, CheckoutShareViewModel, CheckoutViewModel};
 
 use super::{ApiError, AppState};
 
@@ -207,6 +207,46 @@ pub async fn checkout_status(State(state): State<AppState>, Path((pk, payment_id
     }
 }
 
+/// `GET /pay/{pk}/orders/{payment_id}/share` - a real follow-up to
+/// `docs/fx_refactor.md`: "on the order details page you should be able to
+/// obtain a payment link which can be shared to someone who needs to pay
+/// for the order". `checkout_page` above is deliberately bare (no nav, no
+/// site branding at all - see this module's own doc comment) since it's
+/// built to be iframed inside a *merchant's* own page; handed directly to a
+/// customer with no page of their own around it, that bareness reads as a
+/// broken or unbranded link, not a real invoice. This route wraps the exact
+/// same checkout page in an iframe, inside a real, nav-bearing
+/// control-plane page, so a link shared over chat/email lands somewhere
+/// that visibly is MoneroPay Cloud - "cohesive" per the same follow-up's
+/// own wording, not a second copy of the payment logic (all of it - status
+/// polling, the QR code, the copy button - still lives in the one iframed
+/// page).
+///
+/// Confirms the order actually exists first (the same `load_order` every
+/// other route on this page uses) purely to render an honest not-found
+/// state with the site's own nav around it, rather than a page whose only
+/// content is a broken iframe.
+pub async fn checkout_share_page(
+    State(state): State<AppState>,
+    Path((pk, payment_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let found = match load_order(&state, &pk, &payment_id).await {
+        Ok(_) => true,
+        Err(LoadError::NotFound) => false,
+        Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let status = if found { StatusCode::OK } else { StatusCode::NOT_FOUND };
+    let view = CheckoutShareViewModel {
+        pk,
+        payment_id,
+        found,
+        logged_in: super::resolve_authed_user(&state, &headers).is_some(),
+    };
+    let html = state.templates.render_checkout_share(&view).expect("the built-in checkout-share template must always render");
+    (status, Html(html)).into_response()
+}
+
 #[cfg(test)]
 mod tests {
     use axum::Router;
@@ -226,8 +266,8 @@ mod tests {
     const TEST_CURRENCY: &str = "USD";
     const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
-    fn test_exchange_rate_provider() -> std::sync::Arc<dyn shared::exchange_rate::ExchangeRateProvider> {
-        std::sync::Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
+    fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
+        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::fixed_only(std::collections::HashMap::from([(
             TEST_CURRENCY.to_string(),
             TEST_RATE_PICONERO_PER_UNIT,
         )])))
@@ -246,7 +286,6 @@ mod tests {
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
-            exchange_rate_provider: "fixed",
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         };
         (state, engine)
@@ -448,5 +487,71 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_share_page_wraps_the_real_checkout_page_with_the_site_nav() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "checkout-share@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let payment_id = create_order(&router, &pk, "25.00").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/pay/{pk}/orders/{payment_id}/share"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        // Unlike the bare checkout page itself, this one *does* carry the
+        // real site nav - the whole point of this page's existence.
+        assert!(html.contains(r#"<nav class="site-nav">"#), "expected the real site nav, got: {html}");
+        assert!(html.contains("MoneroPay Cloud"), "expected the real site brand, got: {html}");
+        // The iframe must point at the real, unwrapped checkout page for
+        // this exact order - not a second copy of the payment UI.
+        assert!(
+            html.contains(&format!(r#"src="/pay/{pk}/orders/{payment_id}""#)),
+            "expected an iframe pointing at the real checkout page, got: {html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn the_share_page_shows_a_real_not_found_state_with_the_site_nav_for_an_unknown_order() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "checkout-share-not-found@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let pk = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/pay/{pk}/orders/nonexistent/share"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+        let html = body_text(response).await;
+        assert!(html.to_lowercase().contains("not found"), "got: {html}");
+        // Unlike the bare checkout page's own not-found state, this one
+        // still carries the site nav - it's never meant to be iframed.
+        assert!(html.contains(r#"<nav class="site-nav">"#), "expected the real site nav even on the not-found state, got: {html}");
+        assert!(!html.contains("<iframe"), "must not render a broken iframe pointing at a nonexistent order");
     }
 }

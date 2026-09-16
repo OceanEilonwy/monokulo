@@ -588,8 +588,8 @@ mod tests {
     /// A fixed 1-XMR-per-unit `FixedRateProvider` for tests that don't
     /// actually exercise fiat conversion, just need `AppState.exchange_rate`
     /// populated with something real - see `AppState`'s own doc comment.
-    fn test_exchange_rate_provider() -> std::sync::Arc<dyn shared::exchange_rate::ExchangeRateProvider> {
-        std::sync::Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
+    fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
+        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::fixed_only(std::collections::HashMap::from([(
             "USD".to_string(),
             1_000_000_000_000u64,
         )])))
@@ -605,7 +605,6 @@ mod tests {
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
-            exchange_rate_provider: "fixed",
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         };
         (state, engine)

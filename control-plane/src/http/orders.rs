@@ -21,7 +21,7 @@
 //! one.
 
 use axum::extract::{Form, Path, State};
-use axum::http::StatusCode;
+use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use serde::Deserialize;
 
@@ -111,6 +111,7 @@ pub async fn order_detail(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path((id, payment_id)): Path<(String, String)>,
+    headers: HeaderMap,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
@@ -121,6 +122,19 @@ pub async fn order_detail(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    // A real, absolute, copy-pasteable URL - not just the path - since the
+    // whole point is something a merchant can paste into an email or chat
+    // to someone who isn't already looking at this dashboard. This
+    // instance has no configured "external base URL" of its own yet, so
+    // this is built from the *incoming* request's own `Host` header (what
+    // the merchant's own browser just used to reach this page - reliably
+    // the right host for a link they're about to copy from it) plus
+    // `X-Forwarded-Proto` if a reverse proxy set it (the common way a
+    // self-hosted instance behind real TLS termination communicates that
+    // inward), falling back to plain `http` for local/dev use.
+    let host = headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let scheme = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).unwrap_or("http");
+    let payment_link = format!("{scheme}://{host}/pay/{}/orders/{}/share", row.tenant_public_key, payment_id);
 
     match state.engine_client.get_order_detail(&sk, &payment_id).await {
         Ok(detail) => {
@@ -171,6 +185,7 @@ pub async fn order_detail(
                             voided_at_display: display_timestamp_or_dash(p.voided_at),
                         })
                         .collect(),
+                    payment_link,
                 }),
                 logged_in: true,
             };
@@ -461,6 +476,12 @@ async fn render_store_detail_page(
     };
 
     let is_woocommerce = row.platform == "woocommerce";
+    let fx_provider_options = state
+        .exchange_rate
+        .available_providers()
+        .into_iter()
+        .map(|name| crate::templates::FxProviderOption { selected: name == row.fx_provider, name: name.to_string() })
+        .collect();
     let view_model = crate::templates::StoreDetailViewModel {
         store: Some(crate::templates::StoreDetailData {
             connection_id: row.id,
@@ -476,6 +497,8 @@ async fn render_store_detail_page(
             is_woocommerce,
             order_creation_error,
             confirmations_required,
+            fx_provider: row.fx_provider,
+            fx_provider_options,
             settings_error,
         }),
         logged_in: true,
@@ -520,12 +543,18 @@ pub async fn create_order(
 
     // The engine has no concept of fiat any more (`docs/fx_refactor.md` Phase
     // 3) - control-plane's own exchange rate does the same computation
-    // `http::pay::create_order` does for a real storefront call.
-    let piconero_per_unit = match state.exchange_rate.piconero_per_unit(fiat_currency) {
-        Some(rate) => rate,
-        None => {
+    // `http::pay::create_order` does for a real storefront call, dispatched
+    // by this store's own chosen provider (`row.fx_provider`).
+    let piconero_per_unit = match state.exchange_rate.piconero_per_unit(&row.fx_provider, fiat_currency).await {
+        Ok(Some(rate)) => rate,
+        Ok(None) => {
             return render_store_detail_page(&state, row, Some(format!("unsupported currency: {fiat_currency}")), None)
                 .await
+        }
+        Err(e) => {
+            eprintln!("exchange rate lookup failed for connection {} (provider {:?}): {e}", row.id, row.fx_provider);
+            return render_store_detail_page(&state, row, Some("Something went wrong looking up the exchange rate. Please try again.".to_string()), None)
+                .await;
         }
     };
     let xmr_amount_piconero = match shared::exchange_rate::compute_xmr_amount(fiat_amount, piconero_per_unit) {
@@ -541,7 +570,7 @@ pub async fn create_order(
                 fiat_currency,
                 fiat_amount,
                 piconero_per_unit,
-                state.exchange_rate_provider,
+                &row.fx_provider,
                 crate::now_unix(),
             ) {
                 eprintln!(
@@ -612,6 +641,59 @@ pub async fn update_confirmations_required(
     }
 }
 
+#[derive(Deserialize)]
+pub struct UpdateFxProviderForm {
+    pub fx_provider: String,
+}
+
+/// `POST /dashboard/connections/{id}/settings/fx-provider` - a per-store
+/// choice of exchange-rate provider (a real follow-up to
+/// `docs/fx_refactor.md`: "the FX provider should be configurable on a
+/// per-store basis"). Unlike `update_confirmations_required`, this never
+/// calls the engine at all - `fx_provider` is entirely control-plane's own
+/// concept (`db::StoreConnectionRow::fx_provider`), so a plain local update
+/// plus a redirect is the whole handler. Validated against
+/// `ExchangeRateProviders::available_providers` (this instance's own real
+/// configuration) rather than accepted verbatim - a merchant selecting
+/// `"coingecko"` on an instance with no Coingecko currencies configured
+/// would otherwise silently create orders that fail at order-creation time
+/// instead of being told clearly, right here, that the choice doesn't work.
+pub async fn update_fx_provider(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Form(form): Form<UpdateFxProviderForm>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    if !state.exchange_rate.is_available(&form.fx_provider) {
+        return render_store_detail_page(
+            &state,
+            row,
+            None,
+            Some(format!("{:?} is not an available exchange rate provider on this instance.", form.fx_provider)),
+        )
+        .await;
+    }
+
+    // Bound to a local first, not matched on directly: a `MutexGuard`
+    // temporary created in a `match` scrutinee is kept alive for every arm
+    // of that match (a real Rust footgun, not an oversight) - held across
+    // the `Err` arm's own `.await` below, it would make this handler's
+    // future `!Send` and fail to compile as an axum route at all.
+    let update_result = state.db.lock().unwrap().update_store_connection_fx_provider(&row.id, &form.fx_provider);
+    match update_result {
+        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}")),
+        Err(_) => {
+            render_store_detail_page(&state, row, None, Some("Something went wrong. Please try again.".to_string())).await
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use axum::Router;
@@ -642,8 +724,8 @@ mod tests {
     /// A fixed-rate `FixedRateProvider` for `AppState.exchange_rate` in
     /// tests that don't actually exercise fiat conversion themselves - see
     /// `AppState`'s own doc comment.
-    fn test_exchange_rate_provider() -> std::sync::Arc<dyn shared::exchange_rate::ExchangeRateProvider> {
-        std::sync::Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
+    fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
+        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::fixed_only(std::collections::HashMap::from([(
             TEST_CURRENCY.to_string(),
             TEST_RATE_PICONERO_PER_UNIT,
         )])))
@@ -662,7 +744,6 @@ mod tests {
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
-            exchange_rate_provider: "fixed",
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         };
         (state, engine)
@@ -811,6 +892,7 @@ mod tests {
                     .method("GET")
                     .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
+                    .header("host", "test.example")
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -834,6 +916,14 @@ mod tests {
         assert!(html.contains("muted"), "expected a muted placeholder for the unset merchant order id, got: {html}");
         assert!(html.contains(r#"<meta http-equiv="refresh""#), "expected an auto-refresh meta tag, got: {html}");
         assert!(html.contains("refreshes automatically"), "expected the refresh interval noted on the page, got: {html}");
+        // The real point of this follow-up: a real, absolute, shareable
+        // payment link for this exact order, built from the request's own
+        // Host header (`test.example` here, set by `oneshot`'s default) -
+        // not a placeholder or a bare relative path.
+        assert!(
+            html.contains(&format!("http://test.example/pay/{public_key}/orders/{payment_id}/share")),
+            "expected a real absolute payment link, got: {html}"
+        );
     }
 
     #[tokio::test]
@@ -1445,6 +1535,62 @@ mod tests {
             html.to_lowercase().contains("0 would treat an unconfirmed transaction as final")
                 || html.contains("class=\"error\""),
             "expected the engine's real validation error surfaced, got: {html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_new_store_defaults_to_the_fixed_fx_provider_and_offers_only_configured_providers() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "fx-provider-default@example.com", "correct horse battery staple")
+                .await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(response).await;
+        assert!(html.contains(r#"<option value="fixed" selected>fixed</option>"#), "expected fixed pre-selected by default, got: {html}");
+        // `test_exchange_rate_provider()` only configures a fixed rate - no
+        // Coingecko currencies - so the dropdown must not offer it as an
+        // actual `<option>`, even though the field's own static help text
+        // mentions the word "coingecko" generically.
+        assert!(!html.contains(r#"<option value="coingecko""#), "expected no coingecko option since this test's instance never configured it, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn updating_the_fx_provider_to_an_unconfigured_one_is_a_clear_error_not_silently_accepted() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "fx-provider-invalid@example.com", "correct horse battery staple")
+                .await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/fx-provider"),
+                &session_token,
+                &[("fx_provider", "coingecko")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "a rejected provider re-renders the page, it doesn't redirect");
+        let html = body_text(response).await;
+        assert!(
+            html.contains("not an available exchange rate provider"),
+            "expected a clear rejection message, got: {html}"
         );
     }
 

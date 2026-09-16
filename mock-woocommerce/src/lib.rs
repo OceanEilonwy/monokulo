@@ -897,11 +897,9 @@ mod tests {
                 TemplateEngine::new().expect("built-in control-plane templates must parse"),
             ),
             status_cache: control_plane::http::status_page::new_status_cache(),
-            exchange_rate: Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
-                "USD".to_string(),
-                1_000_000_000_000u64,
-            )]))),
-            exchange_rate_provider: "fixed",
+            exchange_rate: Arc::new(control_plane::exchange_rate_config::ExchangeRateProviders::fixed_only(
+                std::collections::HashMap::from([("USD".to_string(), 1_000_000_000_000u64)]),
+            )),
             rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         };
         let router = build_router(state);

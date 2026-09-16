@@ -1,0 +1,11 @@
+-- Per-store FX provider selection (a real follow-up to `docs/fx_refactor.md`,
+-- once that document's own decision - one exchange-rate provider for the
+-- whole control-plane instance - turned out to be too coarse): each store
+-- now picks its own provider ("fixed" or "coingecko",
+-- `exchange_rate_config::{FIXED, COINGECKO}`) rather than sharing one
+-- instance-wide choice. `DEFAULT 'fixed'` for both new rows (a store is
+-- always created with this default, changed later via its own settings
+-- page) and existing ones (a real, working default every already-deployed
+-- store can keep using unchanged - "fixed" was already this project's own
+-- fallback default before this column existed).
+ALTER TABLE store_connections ADD COLUMN fx_provider TEXT NOT NULL DEFAULT 'fixed';

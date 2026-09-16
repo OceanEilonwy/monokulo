@@ -235,11 +235,9 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         // Tuned (with the "0.01" fiat amount below) to land on the same
         // genuinely-tiny 335_000_000-piconero target `tests/e2e_stagenet.rs`
         // and `mock-woocommerce`'s own real-stagenet test use.
-        exchange_rate: Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
-            "USD".to_string(),
-            33_500_000_000u64,
-        )]))),
-        exchange_rate_provider: "fixed",
+        exchange_rate: Arc::new(control_plane::exchange_rate_config::ExchangeRateProviders::fixed_only(
+            std::collections::HashMap::from([("USD".to_string(), 33_500_000_000u64)]),
+        )),
         rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
     };
     let cp_router = build_control_plane_router(cp_state);

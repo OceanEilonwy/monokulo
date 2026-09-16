@@ -239,8 +239,8 @@ mod tests {
         const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
 
         /// See `AppState`'s own doc comment on `exchange_rate`.
-        fn test_exchange_rate_provider() -> std::sync::Arc<dyn shared::exchange_rate::ExchangeRateProvider> {
-            std::sync::Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
+        fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
+            std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::fixed_only(std::collections::HashMap::from([(
                 "USD".to_string(),
                 1_000_000_000_000u64,
             )])))
@@ -278,7 +278,6 @@ mod tests {
                 templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
                 status_cache: new_status_cache(),
                 exchange_rate: test_exchange_rate_provider(),
-                exchange_rate_provider: "fixed",
                 rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             }
         }

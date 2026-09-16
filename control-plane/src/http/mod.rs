@@ -104,17 +104,11 @@ pub struct AppState {
     /// endpoint (`docs/fx_refactor.md` Phase 1.4) - the engine no longer
     /// has any concept of this (per that document's own resolved
     /// decisions), so control-plane computes the XMR amount itself before
-    /// ever calling the engine.
-    pub exchange_rate: Arc<dyn shared::exchange_rate::ExchangeRateProvider>,
-    /// `"fixed"` or `"coingecko"` - which concrete provider `exchange_rate`
-    /// above actually is (`exchange_rate_config::ExchangeRateConfig::
-    /// provider_name`). The trait object alone can't answer "which
-    /// implementation is this" (same reasoning as the engine's own
-    /// `AppState.key_custody_backend`, `moneropay_core::http::AppState`'s
-    /// own doc comment), so this is recorded alongside it - needed to
-    /// stamp every order's local fiat metadata with which provider quoted
-    /// it, not just the numeric rate.
-    pub exchange_rate_provider: &'static str,
+    /// ever calling the engine. Dispatches per-request to whichever
+    /// provider the *store* (not this instance globally) has chosen - see
+    /// `exchange_rate_config::ExchangeRateProviders` and
+    /// `db::StoreConnectionRow::fx_provider`.
+    pub exchange_rate: Arc<crate::exchange_rate_config::ExchangeRateProviders>,
     /// Per-source-IP budget for control-plane's own new public,
     /// unauthenticated endpoints (`docs/fx_refactor.md` Phase 1.3/1.4) -
     /// see `http::rate_limit`'s own module doc comment for why control-plane
@@ -145,6 +139,10 @@ pub fn build_router(state: AppState) -> Router {
             "/dashboard/connections/{id}/settings/confirmations",
             axum::routing::post(orders::update_confirmations_required),
         )
+        .route(
+            "/dashboard/connections/{id}/settings/fx-provider",
+            axum::routing::post(orders::update_fx_provider),
+        )
         .route("/dashboard/connections/{id}/orders", axum::routing::get(orders::orders_list))
         .route("/dashboard/connections/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
         .route("/dashboard/connections/{id}/webhooks", axum::routing::get(orders::webhooks_list).post(orders::webhooks_create))
@@ -163,6 +161,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/pay/{pk}/orders", post(pay::create_order))
         .route("/pay/{pk}/orders/{payment_id}", axum::routing::get(checkout::checkout_page))
         .route("/pay/{pk}/orders/{payment_id}/status", axum::routing::get(checkout::checkout_status))
+        // A real follow-up to `docs/fx_refactor.md`: a nav-bearing,
+        // shareable page wrapping the (nav-less) checkout page above in an
+        // iframe - see `checkout::checkout_share_page`'s own doc comment.
+        .route("/pay/{pk}/orders/{payment_id}/share", axum::routing::get(checkout::checkout_share_page))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit::rate_limit_middleware));
 
     let router = router.merge(pay_router);

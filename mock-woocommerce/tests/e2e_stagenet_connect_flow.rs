@@ -217,11 +217,9 @@ async fn spawn_test_control_plane(engine_addr: std::net::SocketAddr) -> TestCont
         // stagenet run against a shared, faucet-funded wallet, so the rate
         // must keep `TEST_FIAT_AMOUNT` mapping to a genuinely tiny payment,
         // not an arbitrary test value.
-        exchange_rate: Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
-            TEST_CURRENCY.to_string(),
-            TEST_RATE_PICONERO_PER_UNIT,
-        )]))),
-        exchange_rate_provider: "fixed",
+        exchange_rate: Arc::new(control_plane::exchange_rate_config::ExchangeRateProviders::fixed_only(
+            std::collections::HashMap::from([(TEST_CURRENCY.to_string(), TEST_RATE_PICONERO_PER_UNIT)]),
+        )),
         rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
     };
     let router = build_router(state);

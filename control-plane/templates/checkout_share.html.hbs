@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pay with Monero</title>
+{{> styles}}
+<style>
+.share-wrap { max-width: 480px; margin: 2.4rem auto; }
+.share-frame {
+  width: 100%;
+  /* Tall enough that the real checkout page (`checkout.html.hbs`) never
+     needs its own inner scrollbar for the common case - a payment amount,
+     QR code, address, and progress bar all fit without one. */
+  height: 760px;
+  border: 2px solid var(--line);
+  background: var(--paper-raised);
+}
+</style>
+</head>
+<body>
+{{> nav}}
+<div class="wrap share-wrap">
+{{#if found}}
+<h1>Pay with Monero</h1>
+<p class="hint">Complete the payment below - this page stays up to date on its own, so it's safe to bookmark or
+come back to later.</p>
+<iframe class="share-frame" src="/pay/{{pk}}/orders/{{payment_id}}" title="Monero payment"></iframe>
+{{else}}
+<h1>Order not found</h1>
+<p>This payment link is invalid, or the order it refers to no longer exists.</p>
+{{/if}}
+</div>
+</body>
+</html>

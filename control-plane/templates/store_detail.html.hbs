@@ -77,6 +77,20 @@ faster but riskier (a transaction can still be replaced before it's confirmed); 
 <button type="submit">Update</button>
 </form>
 
+<form method="post" action="/dashboard/connections/{{store.connection_id}}/settings/fx-provider">
+<label>Exchange rate provider
+<select name="fx_provider">
+{{#each store.fx_provider_options}}
+<option value="{{this.name}}" {{#if this.selected}}selected{{/if}}>{{this.name}}</option>
+{{/each}}
+</select>
+<span class="field-help">Where this store's orders get their fiat-to-XMR rate from. "fixed" uses a rate an
+admin of this MoneroPay Cloud instance has configured; "coingecko" looks up a live market rate (cached briefly
+before the next lookup refreshes it).</span>
+</label>
+<button type="submit">Update</button>
+</form>
+
 {{else}}
 <h1>Store not found</h1>
 <p>This store doesn't exist, or isn't connected to your account.</p>

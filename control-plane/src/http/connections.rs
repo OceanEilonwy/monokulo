@@ -205,8 +205,8 @@ mod tests {
     /// See `AppState`'s own doc comment on `exchange_rate` -
     /// `connections.rs`'s own tests don't exercise fiat conversion, so a
     /// fixed, arbitrary provider is enough.
-    fn test_exchange_rate_provider() -> std::sync::Arc<dyn shared::exchange_rate::ExchangeRateProvider> {
-        std::sync::Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
+    fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
+        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::fixed_only(std::collections::HashMap::from([(
             "USD".to_string(),
             1_000_000_000_000u64,
         )])))
@@ -222,7 +222,6 @@ mod tests {
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
-            exchange_rate_provider: "fixed",
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         };
         (state, engine)

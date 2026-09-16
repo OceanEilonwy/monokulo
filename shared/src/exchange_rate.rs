@@ -8,10 +8,22 @@
 //! for complete removal in that same document's Phase 3/4 - by the end of
 //! that migration this module has exactly one real caller, not two.
 //!
-//! Two implementations of the provider trait exist: `FixedRateProvider`,
-//! useful for pegging a rate manually (or for testing), and
-//! `CoingeckoRateProvider`, which fetches live rates from Coingecko's
-//! public API.
+//! Two provider types exist: `FixedRateProvider`, useful for pegging a rate
+//! manually (or for testing), and `CoingeckoRateProvider`, which fetches
+//! live rates from Coingecko's public API. They're deliberately *not*
+//! behind one shared trait any more - control-plane picks between them
+//! per-store (a merchant's own choice, `docs/fx_refactor.md` follow-up:
+//! "the FX provider should be configurable on a per-store basis"), and the
+//! two now have genuinely different call shapes: `FixedRateProvider::
+//! piconero_per_unit` is a plain synchronous map lookup, while
+//! `CoingeckoRateProvider::piconero_per_unit_cached` is `async` (it may
+//! perform a real HTTP round trip) and takes a caller-supplied cache
+//! lifetime. A shared trait would have to lowest-common-denominator down to
+//! the `async` shape for both, forcing a pointless `Box::pin`-wrapped
+//! future out of the fixed provider's instant lookup. Control-plane's own
+//! small dispatcher (`control_plane::exchange_rate_config::ExchangeRateProviders`)
+//! matches on the store's chosen provider name and calls whichever concrete
+//! type is relevant - see that module for the per-store selection story.
 //!
 //! Money is never a float anywhere in this system (see `docs/DESIGN.md` §8.1) -
 //! `compute_xmr_amount` does the fiat-decimal-string -> piconero conversion as exact
@@ -25,12 +37,6 @@
 //! `f64`; the float only exists between deserializing that number and rounding it
 //! into the one `u64` `piconero_per_unit` stores.
 
-pub trait ExchangeRateProvider: Send + Sync {
-    /// Piconero per one whole unit of `fiat_currency` (e.g. per $1.00), or `None`
-    /// if this provider doesn't have a rate for that currency.
-    fn piconero_per_unit(&self, fiat_currency: &str) -> Option<u64>;
-}
-
 #[derive(Debug)]
 pub struct FixedRateProvider {
     rates: std::collections::HashMap<String, u64>,
@@ -40,10 +46,11 @@ impl FixedRateProvider {
     pub fn new(rates: std::collections::HashMap<String, u64>) -> Self {
         FixedRateProvider { rates }
     }
-}
 
-impl ExchangeRateProvider for FixedRateProvider {
-    fn piconero_per_unit(&self, fiat_currency: &str) -> Option<u64> {
+    /// Piconero per one whole unit of `fiat_currency` (e.g. per $1.00), or
+    /// `None` if this provider has no configured rate for that currency.
+    /// Plain synchronous map lookup - a fixed rate never involves I/O.
+    pub fn piconero_per_unit(&self, fiat_currency: &str) -> Option<u64> {
         self.rates.get(fiat_currency).copied()
     }
 }
@@ -67,30 +74,45 @@ pub enum ExchangeRateError {
 /// `{"monero":{"usd":530.68,"eur":457.01}}` - a currency Coingecko doesn't know is
 /// simply absent from the inner object, not an error and not `null`).
 ///
-/// `ExchangeRateProvider::piconero_per_unit` is called synchronously from the
-/// order-creation HTTP path (`http::public::create_order`) - it cannot become
-/// `async` without that rippling through the whole engine, for a provider whose
-/// underlying value only ever needs to change on the order of once a minute. So
-/// this type splits the two concerns: `piconero_per_unit` is a cheap, synchronous
-/// read of an in-memory cache; the real HTTP round trip lives in a separate async
-/// `refresh()` that replaces the cache's contents. Nothing in this type ever
-/// spawns its own background task - `main.rs` calls `refresh()` once at boot and
-/// then owns a `supervise`d loop that calls it again on `cache_seconds`'s
-/// interval, exactly like every other background loop in this codebase. Keeping
-/// the scheduling external is also what makes this type trivially testable
-/// without a runtime dependency baked into its constructor.
+/// **Pull-based with a caller-supplied TTL, not a background-polled cache.**
+/// An earlier version of this type had `piconero_per_unit` as a cheap
+/// synchronous cache read, with a separate `supervise`d background loop
+/// elsewhere calling `refresh()` on a fixed interval regardless of whether
+/// anything was actually asking for a rate. Per this project's own explicit
+/// follow-up direction, that's gone: `piconero_per_unit_cached` is the real
+/// entry point now, is itself `async`, and does the live HTTP round trip
+/// inline the first time (or the first time *after* the caller-supplied
+/// `max_age` has elapsed) a rate is actually needed - no request in flight,
+/// no network call, ever. `refresh()` still exists as the raw fetch-and-merge
+/// primitive (used directly by this module's own tests, and by
+/// `piconero_per_unit_cached` when the cache is stale); it no longer has any
+/// caller that runs it on a timer.
 ///
-/// The cache is a plain `std::sync::RwLock`, not `tokio::sync::RwLock`: every
-/// access is a fast, synchronous map lookup or replacement, never held across an
-/// `.await`, so there is no async-cancellation or lock-across-await hazard a Tokio
-/// lock would exist to solve (`daemon_fallback`'s `current` index makes the same
-/// call for the same reason).
+/// The cache is a `tokio::sync::Mutex`, not `std::sync::RwLock`: unlike the
+/// old design, a lookup can now genuinely hold the lock *across* an `.await`
+/// (the HTTP round trip a stale cache triggers) - a `std::sync::RwLock` guard
+/// held across an await point doesn't compile (it's not `Send`), and would be
+/// the wrong tool even if it did. Holding the lock for the whole
+/// check-then-maybe-refresh sequence is deliberate, not an oversight: it
+/// serializes concurrent callers that all observe a stale cache at once onto
+/// a single real refresh, rather than each firing its own redundant request
+/// at Coingecko.
 #[derive(Debug)]
 pub struct CoingeckoRateProvider {
     base_url: String,
     currencies: Vec<String>,
     client: reqwest::Client,
-    cache: std::sync::Arc<std::sync::RwLock<std::collections::HashMap<String, u64>>>,
+    cache: std::sync::Arc<tokio::sync::Mutex<CoingeckoCache>>,
+}
+
+#[derive(Debug, Default)]
+struct CoingeckoCache {
+    rates: std::collections::HashMap<String, u64>,
+    /// `None` until the first *successful* `refresh()` - a failed refresh
+    /// never sets this, so a Coingecko outage is retried on the very next
+    /// lookup rather than being treated as "fresh" for a whole `max_age`
+    /// window on the strength of a failure.
+    fetched_at: Option<std::time::Instant>,
 }
 
 impl CoingeckoRateProvider {
@@ -100,7 +122,7 @@ impl CoingeckoRateProvider {
     /// server instead of the real internet, per this task's "no live network call
     /// in CI" requirement. `currencies` are the fiat codes to track, in whatever
     /// casing the caller configured (e.g. `["USD", "EUR"]`) - that exact casing is
-    /// what `piconero_per_unit` looks its keys up by afterwards, matching
+    /// what `piconero_per_unit_cached` looks its keys up by afterwards, matching
     /// `FixedRateProvider`'s own case-sensitive-verbatim behavior (the caller -
     /// control-plane's `http::pay::create_order` - passes `fiat_currency` straight
     /// through unnormalized). Coingecko's own API is queried and matched
@@ -108,8 +130,8 @@ impl CoingeckoRateProvider {
     /// `vs_currencies` parameter and response keys actually work - confirmed
     /// live, not assumed.
     ///
-    /// The cache starts empty: `piconero_per_unit` returns `None` for every
-    /// configured currency until the first successful `refresh()` - the same
+    /// The cache starts empty: `piconero_per_unit_cached` returns `None` for
+    /// every configured currency until the first successful fetch - the same
     /// "no rate configured yet = no rate available" behavior `FixedRateProvider`
     /// already has for a currency nobody configured a rate for, so
     /// nothing downstream needs new handling for it.
@@ -127,7 +149,7 @@ impl CoingeckoRateProvider {
                 .user_agent(concat!("moneropay-core/", env!("CARGO_PKG_VERSION")))
                 .build()
                 .unwrap(),
-            cache: std::sync::Arc::new(std::sync::RwLock::new(std::collections::HashMap::new())),
+            cache: std::sync::Arc::new(tokio::sync::Mutex::new(CoingeckoCache::default())),
         }
     }
 
@@ -156,13 +178,26 @@ impl CoingeckoRateProvider {
     ///   value has no business holding hostage the good ones it happened to be
     ///   batched with).
     pub async fn refresh(&self) -> Result<(), ExchangeRateError> {
+        let mut cache = self.cache.lock().await;
+        self.refresh_locked(&mut cache).await
+    }
+
+    /// The real fetch-and-merge body, operating on an already-locked cache -
+    /// shared by `refresh()` (locks once, for a direct/manual refresh) and
+    /// `piconero_per_unit_cached` (which needs to hold the same lock across
+    /// its own staleness check *and* this call, so a second caller blocked
+    /// on the mutex sees the result of the first caller's refresh rather than
+    /// triggering a redundant one of its own).
+    async fn refresh_locked(&self, cache: &mut CoingeckoCache) -> Result<(), ExchangeRateError> {
         if self.currencies.is_empty() {
-            // Nothing to fetch. `config::ExchangeRateConfig` rejects this at
-            // startup (empty `currencies` under `provider = "coingecko"` is a
-            // config error, not a silent no-op) - this early return exists only
-            // so a provider built directly (as every test here does) never makes
-            // a pointless request rather than because production is expected to
-            // hit it.
+            // Nothing to fetch. Config validation upstream (`exchange_rate_config`)
+            // never produces an empty-currencies Coingecko config - this early
+            // return exists only so a provider built directly (as several of
+            // this module's own tests do) never makes a pointless request,
+            // not because production is expected to hit it. Deliberately
+            // does *not* set `fetched_at`: there is nothing to consider
+            // "fresh" here, so every subsequent lookup keeps checking (at
+            // negligible cost - the branch above returns immediately).
             return Ok(());
         }
 
@@ -213,17 +248,47 @@ impl CoingeckoRateProvider {
             updated.insert(currency.clone(), piconero_per_unit as u64);
         }
 
-        let mut cache = self.cache.write().unwrap();
         for (currency, piconero_per_unit) in updated {
-            cache.insert(currency, piconero_per_unit);
+            cache.rates.insert(currency, piconero_per_unit);
         }
+        cache.fetched_at = Some(std::time::Instant::now());
         Ok(())
     }
-}
 
-impl ExchangeRateProvider for CoingeckoRateProvider {
-    fn piconero_per_unit(&self, fiat_currency: &str) -> Option<u64> {
-        self.cache.read().unwrap().get(fiat_currency).copied()
+    /// The real, production entry point (`docs/fx_refactor.md` follow-up:
+    /// "the exchange rate be looked up with an async call, rather than
+    /// having it poll in the background"): returns the cached rate if it was
+    /// fetched within `max_age`, otherwise performs one live Coingecko fetch
+    /// first. `max_age` is a caller-supplied parameter, not a field on this
+    /// type, so this type carries no opinion about how long a rate should be
+    /// trusted for - control-plane's own admin-configured
+    /// `CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS` (`exchange_rate_config`)
+    /// is what actually decides that value; this just applies whatever it's
+    /// given.
+    ///
+    /// A failed refresh propagates as `Err` rather than silently falling
+    /// back to a stale cached value - the caller (control-plane's own
+    /// order-creation handler) decides what a lookup failure means for an
+    /// in-progress order, which is not this type's concern.
+    pub async fn piconero_per_unit_cached(&self, fiat_currency: &str, max_age: std::time::Duration) -> Result<Option<u64>, ExchangeRateError> {
+        let mut cache = self.cache.lock().await;
+        let stale = match cache.fetched_at {
+            Some(fetched_at) => fetched_at.elapsed() >= max_age,
+            None => true,
+        };
+        if stale {
+            self.refresh_locked(&mut cache).await?;
+        }
+        Ok(cache.rates.get(fiat_currency).copied())
+    }
+
+    /// A pure cache read, with no staleness check and no possibility of a
+    /// network call - test-only (production always goes through
+    /// `piconero_per_unit_cached`, which is the only method that can ever
+    /// populate a cache lookup would find non-empty in real use).
+    #[cfg(test)]
+    async fn peek(&self, fiat_currency: &str) -> Option<u64> {
+        self.cache.lock().await.rates.get(fiat_currency).copied()
     }
 }
 
@@ -420,10 +485,10 @@ mod tests {
             // independently of the implementation (Python: round(1e12/149.23)).
             let url = spawn_price_server(|_| json_body(r#"{"monero":{"usd":149.23}}"#)).await;
             let provider = CoingeckoRateProvider::new(url, vec!["USD".to_string()]);
-            assert_eq!(provider.piconero_per_unit("USD"), None, "cache starts empty before the first refresh");
+            assert_eq!(provider.peek("USD").await, None, "cache starts empty before the first refresh");
 
             provider.refresh().await.unwrap();
-            assert_eq!(provider.piconero_per_unit("USD"), Some(6_701_065_469));
+            assert_eq!(provider.peek("USD").await, Some(6_701_065_469));
         }
 
         #[tokio::test]
@@ -432,8 +497,8 @@ mod tests {
             let provider = CoingeckoRateProvider::new(url, vec!["USD".to_string(), "EUR".to_string()]);
 
             provider.refresh().await.unwrap();
-            assert_eq!(provider.piconero_per_unit("USD"), Some(6_666_666_667));
-            assert_eq!(provider.piconero_per_unit("EUR"), None);
+            assert_eq!(provider.peek("USD").await, Some(6_666_666_667));
+            assert_eq!(provider.peek("EUR").await, None);
         }
 
         #[tokio::test]
@@ -459,9 +524,9 @@ mod tests {
                 CoingeckoRateProvider::new(url, vec!["USD".to_string(), "EUR".to_string(), "GBP".to_string()]);
 
             provider.refresh().await.unwrap();
-            assert_eq!(provider.piconero_per_unit("USD"), None, "a zero price must not become a free order");
-            assert_eq!(provider.piconero_per_unit("EUR"), None, "a negative price must not be accepted either");
-            assert_eq!(provider.piconero_per_unit("GBP"), Some(6_666_666_667), "the one good value in the batch must still land");
+            assert_eq!(provider.peek("USD").await, None, "a zero price must not become a free order");
+            assert_eq!(provider.peek("EUR").await, None, "a negative price must not be accepted either");
+            assert_eq!(provider.peek("GBP").await, Some(6_666_666_667), "the one good value in the batch must still land");
         }
 
         #[tokio::test]
@@ -471,7 +536,7 @@ mod tests {
             let provider = CoingeckoRateProvider::new("http://127.0.0.1:0", vec!["USD".to_string()]);
             let err = provider.refresh().await.unwrap_err();
             assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
-            assert_eq!(provider.piconero_per_unit("USD"), None);
+            assert_eq!(provider.peek("USD").await, None);
         }
 
         #[tokio::test]
@@ -492,12 +557,12 @@ mod tests {
             let provider = CoingeckoRateProvider::new(url, vec!["USD".to_string()]);
 
             provider.refresh().await.unwrap();
-            assert_eq!(provider.piconero_per_unit("USD"), Some(6_666_666_667));
+            assert_eq!(provider.peek("USD").await, Some(6_666_666_667));
 
             let err = provider.refresh().await.unwrap_err();
             assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
             assert_eq!(
-                provider.piconero_per_unit("USD"),
+                provider.peek("USD").await,
                 Some(6_666_666_667),
                 "a transient outage must not make an already-priced currency suddenly unavailable"
             );
@@ -508,8 +573,8 @@ mod tests {
             let url = spawn_price_server(|_| json_body(r#"{"monero":{"usd":150.0}}"#)).await;
             let provider = CoingeckoRateProvider::new(url, vec!["USD".to_string()]);
             provider.refresh().await.unwrap();
-            assert_eq!(provider.piconero_per_unit("USD"), Some(6_666_666_667));
-            assert_eq!(provider.piconero_per_unit("usd"), None, "lookup casing must match configured casing exactly, same as FixedRateProvider");
+            assert_eq!(provider.peek("USD").await, Some(6_666_666_667));
+            assert_eq!(provider.peek("usd").await, None, "lookup casing must match configured casing exactly, same as FixedRateProvider");
         }
 
         #[tokio::test]
@@ -521,9 +586,16 @@ mod tests {
         async fn manual_smoke_test_against_the_real_coingecko_api() {
             let provider =
                 CoingeckoRateProvider::new("https://api.coingecko.com", vec!["USD".to_string(), "EUR".to_string()]);
-            provider.refresh().await.expect("real refresh() call against Coingecko failed");
-            let usd = provider.piconero_per_unit("USD").expect("no USD rate came back from the real API");
-            let eur = provider.piconero_per_unit("EUR").expect("no EUR rate came back from the real API");
+            let usd = provider
+                .piconero_per_unit_cached("USD", std::time::Duration::from_secs(30))
+                .await
+                .expect("real piconero_per_unit_cached call against Coingecko failed")
+                .expect("no USD rate came back from the real API");
+            let eur = provider
+                .piconero_per_unit_cached("EUR", std::time::Duration::from_secs(30))
+                .await
+                .expect("real piconero_per_unit_cached call against Coingecko failed")
+                .expect("no EUR rate came back from the real API");
             println!("live coingecko smoke test: piconero_per_unit(\"USD\") = {usd}, piconero_per_unit(\"EUR\") = {eur}");
             assert!(usd > 0);
             assert!(eur > 0);
@@ -537,6 +609,73 @@ mod tests {
             // test since nothing stops a future caller from doing this directly.
             let provider = CoingeckoRateProvider::new("http://127.0.0.1:0", vec![]);
             provider.refresh().await.unwrap();
+        }
+
+        #[tokio::test]
+        async fn piconero_per_unit_cached_performs_a_real_fetch_on_an_empty_cache() {
+            let calls = std::sync::Arc::new(AtomicUsize::new(0));
+            let calls_for_handler = calls.clone();
+            let url = spawn_price_server(move |_| {
+                calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                json_body(r#"{"monero":{"usd":150.0}}"#)
+            })
+            .await;
+            let provider = CoingeckoRateProvider::new(url, vec!["USD".to_string()]);
+
+            let rate = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap();
+            assert_eq!(rate, Some(6_666_666_667));
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "an empty cache must trigger exactly one real fetch");
+        }
+
+        #[tokio::test]
+        async fn piconero_per_unit_cached_reuses_a_fresh_cache_without_a_second_fetch() {
+            let calls = std::sync::Arc::new(AtomicUsize::new(0));
+            let calls_for_handler = calls.clone();
+            let url = spawn_price_server(move |_| {
+                calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                json_body(r#"{"monero":{"usd":150.0}}"#)
+            })
+            .await;
+            let provider = CoingeckoRateProvider::new(url, vec!["USD".to_string()]);
+
+            // A generous 30s max_age: the second call happens well within that
+            // window, so it must be served entirely from cache.
+            provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap();
+            let rate = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap();
+            assert_eq!(rate, Some(6_666_666_667));
+            assert_eq!(calls.load(Ordering::SeqCst), 1, "a lookup within max_age must not trigger a second fetch");
+        }
+
+        #[tokio::test]
+        async fn piconero_per_unit_cached_refetches_once_max_age_has_elapsed() {
+            let calls = std::sync::Arc::new(AtomicUsize::new(0));
+            let calls_for_handler = calls.clone();
+            let url = spawn_price_server(move |_| {
+                calls_for_handler.fetch_add(1, Ordering::SeqCst);
+                json_body(r#"{"monero":{"usd":150.0}}"#)
+            })
+            .await;
+            let provider = CoingeckoRateProvider::new(url, vec!["USD".to_string()]);
+
+            provider.piconero_per_unit_cached("USD", std::time::Duration::ZERO).await.unwrap();
+            // A zero max_age means "never fresh" - every call must re-fetch,
+            // proving staleness genuinely drives a real second network call,
+            // not just a timestamp update with no consequence.
+            provider.piconero_per_unit_cached("USD", std::time::Duration::ZERO).await.unwrap();
+            assert_eq!(calls.load(Ordering::SeqCst), 2, "a max_age of zero must force a fresh fetch every single call");
+        }
+
+        #[tokio::test]
+        async fn piconero_per_unit_cached_never_marks_a_failed_fetch_as_fresh() {
+            let url = spawn_price_server(|_| axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response()).await;
+            let provider = CoingeckoRateProvider::new(url, vec!["USD".to_string()]);
+
+            let err = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap_err();
+            assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
+            // A second call, even with a generous max_age, must try again -
+            // a failure must never be cached as if it were a real quote.
+            let err = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap_err();
+            assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
         }
     }
 }

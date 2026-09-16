@@ -63,10 +63,9 @@ mod tests {
             encryption_key: TEST_ENCRYPTION_KEY,
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
             status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: std::sync::Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from(
-                [("USD".to_string(), 1_000_000_000_000u64)],
-            ))),
-            exchange_rate_provider: "fixed",
+            exchange_rate: std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::fixed_only(
+                std::collections::HashMap::from([("USD".to_string(), 1_000_000_000_000u64)]),
+            )),
             rate_limiter: std::sync::Arc::new(RateLimiter::new(limit_per_minute)),
         }
     }

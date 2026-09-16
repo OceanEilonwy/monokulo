@@ -27,6 +27,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (4, include_str!("../migrations/0004_connect_tokens.sql")),
     (5, include_str!("../migrations/0005_order_fiat_metadata.sql")),
     (6, include_str!("../migrations/0006_order_fiat_metadata_provider.sql")),
+    (7, include_str!("../migrations/0007_store_fx_provider.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -94,6 +95,11 @@ pub struct StoreConnectionRow {
     pub tenant_secret_token_encrypted: String,
     pub moneropay_endpoint: String,
     pub created_at: i64,
+    /// `"fixed"` or `"coingecko"` (`exchange_rate_config::{FIXED, COINGECKO}`)
+    /// - which exchange-rate provider *this store* uses, a genuine
+    /// per-merchant choice (a real follow-up to `docs/fx_refactor.md`) set
+    /// via its own settings page, not an instance-wide setting.
+    pub fx_provider: String,
 }
 
 /// A row from `order_fiat_metadata` (`docs/fx_refactor.md` Phase 1.2) - what
@@ -265,7 +271,7 @@ impl Db {
     pub fn get_store_connection_by_id(&self, id: &str) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at
+                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at, fx_provider
                  FROM store_connections WHERE id = ?1",
                 params![id],
                 |row| {
@@ -278,11 +284,23 @@ impl Db {
                         tenant_secret_token_encrypted: row.get(5)?,
                         moneropay_endpoint: row.get(6)?,
                         created_at: row.get(7)?,
+                        fx_provider: row.get(8)?,
                     })
                 },
             )
             .optional()
             .map_err(DbError::from)
+    }
+
+    /// Updates a store's chosen exchange-rate provider - the settings-page
+    /// counterpart to `create_store_connection`'s `DEFAULT 'fixed'`. The
+    /// caller (`http::orders::update_fx_provider`) is responsible for
+    /// validating `fx_provider` against `ExchangeRateProviders::
+    /// available_providers` first; this layer stores whatever string it's
+    /// given, same as every other plain column update in this file.
+    pub fn update_store_connection_fx_provider(&self, id: &str, fx_provider: &str) -> Result<()> {
+        self.conn.execute("UPDATE store_connections SET fx_provider = ?2 WHERE id = ?1", params![id, fx_provider])?;
+        Ok(())
     }
 
     /// Every `store_connections` row belonging to `user_id`, newest first -
@@ -292,7 +310,7 @@ impl Db {
     /// growing a field nothing else needs; see `http/home.rs::display_name`.
     pub fn list_store_connections_for_user(&self, user_id: &str) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at
+            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at, fx_provider
              FROM store_connections WHERE user_id = ?1 ORDER BY created_at DESC",
         )?;
         let rows = stmt
@@ -306,6 +324,7 @@ impl Db {
                     tenant_secret_token_encrypted: row.get(5)?,
                     moneropay_endpoint: row.get(6)?,
                     created_at: row.get(7)?,
+                    fx_provider: row.get(8)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -460,7 +479,7 @@ impl Db {
     pub fn get_store_connection_by_public_key(&self, tenant_public_key: &str) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at
+                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at, fx_provider
                  FROM store_connections WHERE tenant_public_key = ?1",
                 params![tenant_public_key],
                 |row| {
@@ -473,6 +492,7 @@ impl Db {
                         tenant_secret_token_encrypted: row.get(5)?,
                         moneropay_endpoint: row.get(6)?,
                         created_at: row.get(7)?,
+                        fx_provider: row.get(8)?,
                     })
                 },
             )
@@ -580,6 +600,32 @@ mod tests {
         assert_eq!(row.tenant_secret_token_encrypted, "sk_abc");
         assert_eq!(row.moneropay_endpoint, "http://127.0.0.1:8080");
         assert_eq!(row.created_at, 3000);
+        assert_eq!(row.fx_provider, "fixed", "every new store defaults to the fixed provider");
+    }
+
+    #[test]
+    fn updating_a_store_connections_fx_provider_only_touches_that_field() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user("user-1", "a@example.com", "hash", 1000).unwrap();
+        db.create_store_connection(
+            "conn-1",
+            "user-1",
+            "woocommerce",
+            "https://shop.example.com",
+            "pk_abc",
+            "sk_abc",
+            "http://127.0.0.1:8080",
+            3000,
+        )
+        .unwrap();
+
+        db.update_store_connection_fx_provider("conn-1", "coingecko").unwrap();
+
+        let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
+        assert_eq!(row.fx_provider, "coingecko");
+        // Nothing else changed.
+        assert_eq!(row.site_url, "https://shop.example.com");
+        assert_eq!(row.tenant_public_key, "pk_abc");
     }
 
     #[test]

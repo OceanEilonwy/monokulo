@@ -65,10 +65,16 @@ pub async fn create_order(
     // Control-plane's own exchange rate is the only rate computation left in
     // the whole system (`docs/fx_refactor.md` Phase 3) - a real, fast `400`
     // for an unsupported currency or a malformed amount, before the engine
-    // (which has no concept of fiat at all) is ever called.
-    let piconero_per_unit = match state.exchange_rate.piconero_per_unit(&req.fiat_currency) {
-        Some(rate) => rate,
-        None => return ApiError::BadRequest(format!("unsupported currency: {}", req.fiat_currency)).into_response(),
+    // (which has no concept of fiat at all) is ever called. Dispatched by
+    // *this store's own* chosen provider (`row.fx_provider`), a per-merchant
+    // setting, not one shared instance-wide choice.
+    let piconero_per_unit = match state.exchange_rate.piconero_per_unit(&row.fx_provider, &req.fiat_currency).await {
+        Ok(Some(rate)) => rate,
+        Ok(None) => return ApiError::BadRequest(format!("unsupported currency: {}", req.fiat_currency)).into_response(),
+        Err(e) => {
+            eprintln!("exchange rate lookup failed for connection {} (provider {:?}): {e}", row.id, row.fx_provider);
+            return ApiError::Internal.into_response();
+        }
     };
     let xmr_amount_piconero = match shared::exchange_rate::compute_xmr_amount(&req.fiat_amount, piconero_per_unit) {
         Ok(amount) => amount,
@@ -90,7 +96,7 @@ pub async fn create_order(
                 &req.fiat_currency,
                 &req.fiat_amount,
                 piconero_per_unit,
-                state.exchange_rate_provider,
+                &row.fx_provider,
                 now_unix(),
             ) {
                 eprintln!(
@@ -158,8 +164,8 @@ mod tests {
     const TEST_CURRENCY: &str = "USD";
     const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
-    fn test_exchange_rate_provider() -> std::sync::Arc<dyn shared::exchange_rate::ExchangeRateProvider> {
-        std::sync::Arc::new(shared::exchange_rate::FixedRateProvider::new(std::collections::HashMap::from([(
+    fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
+        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::fixed_only(std::collections::HashMap::from([(
             TEST_CURRENCY.to_string(),
             TEST_RATE_PICONERO_PER_UNIT,
         )])))
@@ -178,7 +184,6 @@ mod tests {
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
-            exchange_rate_provider: "fixed",
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         };
         (state, engine)

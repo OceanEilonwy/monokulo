@@ -72,6 +72,30 @@ th, td { border: 1px solid var(--line); padding: 0.4em 0.6em; text-align: left; 
 td code, td pre, th code, th pre { background: none; border: none; padding: 0; }
 th { background: var(--ink); color: var(--paper); font-weight: 700; }
 tr:nth-child(even) td { background: rgba(0,0,0,0.03); }
+/* Truncates long inline content (e.g. a public key in a list table) with an
+   ellipsis, without letting it force its containing table wider than its
+   own header row. Purely visual: CSS truncation never removes the full text
+   from the DOM/accessibility tree, so the browser's own native find-in-page
+   (see `tr:has(::target-text)` below) still matches against every character
+   that's actually there, ellipsised or not. */
+.ellipsis {
+  display: inline-block;
+  max-width: 16em;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  vertical-align: bottom;
+}
+/* Highlights the whole row containing a native browser find-in-page match
+   (Ctrl+F / Cmd+F) - no JS. `::target-text` is the pseudo-element the
+   browser itself paints over a find match; `:has()` lets a plain selector
+   react to an arbitrary descendant existing, reaching up from the matched
+   text to the row around it. `@supports selector(...)` makes this a no-op,
+   not a parse error, in a browser that doesn't understand
+   `:has(::target-text)` yet. */
+@supports selector(:has(::target-text)) {
+  tr:has(::target-text) { background: #ffe3cc; }
+}
 form label { display: block; margin: 0.9em 0 0.3em; font-weight: 700; }
 form .field-help { display: block; font-weight: 400; color: var(--muted); margin-top: 0.15em; font-size: 0.88em; }
 input[type=text], input[type=email], input[type=password], input[type=url], select, textarea {

@@ -30,6 +30,7 @@ const STORE_DETAIL_TEMPLATE: &str = include_str!("../templates/store_detail.html
 const STATUS_TEMPLATE: &str = include_str!("../templates/status.html.hbs");
 const CHECKOUT_TEMPLATE: &str = include_str!("../templates/checkout.html.hbs");
 const CHECKOUT_NOT_FOUND_TEMPLATE: &str = include_str!("../templates/checkout_not_found.html.hbs");
+const CHECKOUT_SHARE_TEMPLATE: &str = include_str!("../templates/checkout_share.html.hbs");
 
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateError {
@@ -280,6 +281,15 @@ pub struct OrderDetailData {
     pub expires_at_display: String,
     pub updated_at_display: String,
     pub payments: Vec<PaymentRowViewModel>,
+    /// `/pay/{pk}/orders/{payment_id}/share` - the real follow-up to
+    /// `docs/fx_refactor.md`: a "payment link" a merchant can hand to
+    /// whoever needs to pay this order. Precomputed here (a relative path,
+    /// not an absolute URL - this instance doesn't reliably know its own
+    /// externally-reachable origin, and a relative link resolves correctly
+    /// regardless of what it's copied into) rather than built in the
+    /// template, matching this codebase's own "compute in Rust, not in
+    /// handlebars" convention for anything beyond plain field access.
+    pub payment_link: String,
 }
 
 /// The view model `GET /dashboard/connections/{id}/orders/{payment_id}`
@@ -435,13 +445,35 @@ pub struct StoreDetailData {
     /// "degrade honestly, show *something* real-ish rather than fail the
     /// whole page" approach `recent_orders` already takes for that case.
     pub confirmations_required: u64,
+    /// This store's chosen exchange-rate provider name (`"fixed"`/`"coingecko"`,
+    /// `db::StoreConnectionRow::fx_provider`) - shown as read-only text
+    /// alongside the dropdown below, useful precisely when it's *not* one
+    /// of `fx_provider_options` any more (an admin disabled a provider a
+    /// store was previously using), which the dropdown alone can't
+    /// represent.
+    pub fx_provider: String,
+    /// Every provider name this instance actually has configured
+    /// (`exchange_rate_config::ExchangeRateProviders::available_providers`),
+    /// each flagged with whether it's this store's current choice - drives
+    /// the settings dropdown. `selected` is precomputed here rather than a
+    /// template-side string comparison for the same reason
+    /// `network_selected_flags` exists: handlebars-rust has no built-in
+    /// equality helper.
+    pub fx_provider_options: Vec<FxProviderOption>,
     /// Set only when the "update settings" form on this page (see
-    /// `http/orders.rs::update_confirmations_required`) was just rejected -
-    /// the engine's own validation error, surfaced verbatim. Shared by
-    /// every settings sub-form on this page (just confirmations for now),
-    /// since only one can ever be submitted at a time. `None` on a plain
-    /// page load.
+    /// `http/orders.rs::update_confirmations_required`/`update_fx_provider`)
+    /// was just rejected - the engine's own validation error, or this
+    /// page's own "not a provider this instance offers" message, surfaced
+    /// verbatim. Shared by every settings sub-form on this page, since only
+    /// one can ever be submitted at a time. `None` on a plain page load.
     pub settings_error: Option<String>,
+}
+
+/// One row of the FX-provider settings dropdown (`StoreDetailData::fx_provider_options`).
+#[derive(Debug, Serialize)]
+pub struct FxProviderOption {
+    pub name: String,
+    pub selected: bool,
 }
 
 /// One Monero node's row on the status page - mirrors
@@ -552,6 +584,25 @@ pub struct CheckoutViewModel {
     pub payments: Vec<CheckoutPaymentViewModel>,
 }
 
+/// The view model `GET /pay/{pk}/orders/{payment_id}/share` takes (a real
+/// follow-up to `docs/fx_refactor.md` - see `http::checkout::checkout_share_page`'s
+/// own doc comment). Unlike `CheckoutViewModel` this page *does* carry the
+/// site nav, so `logged_in` is real here, computed the same
+/// authenticated-or-not way `status_page.rs`'s own unauthenticated page
+/// does - the customer paying an invoice usually isn't a logged-in
+/// merchant, but the nav should reflect reality either way, not assume one.
+#[derive(Debug, Serialize)]
+pub struct CheckoutShareViewModel {
+    pub pk: String,
+    pub payment_id: String,
+    /// Whether the order actually exists - `false` renders a real
+    /// not-found state (still with the site's own nav around it, unlike
+    /// `checkout_not_found`'s bare equivalent), rather than a page whose
+    /// only content is a broken iframe.
+    pub found: bool,
+    pub logged_in: bool,
+}
+
 pub struct TemplateEngine {
     handlebars: Handlebars<'static>,
 }
@@ -585,6 +636,7 @@ impl TemplateEngine {
         handlebars.register_template_string("status", STATUS_TEMPLATE)?;
         handlebars.register_template_string("checkout", CHECKOUT_TEMPLATE)?;
         handlebars.register_template_string("checkout_not_found", CHECKOUT_NOT_FOUND_TEMPLATE)?;
+        handlebars.register_template_string("checkout_share", CHECKOUT_SHARE_TEMPLATE)?;
         Ok(TemplateEngine { handlebars })
     }
 
@@ -646,6 +698,10 @@ impl TemplateEngine {
 
     pub fn render_checkout_not_found(&self) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("checkout_not_found", &())?)
+    }
+
+    pub fn render_checkout_share(&self, data: &CheckoutShareViewModel) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("checkout_share", data)?)
     }
 }
 
@@ -976,6 +1032,8 @@ mod tests {
                     is_woocommerce: true,
                     order_creation_error: None,
                     confirmations_required: 10,
+                    fx_provider: "fixed".to_string(),
+                    fx_provider_options: vec![FxProviderOption { name: "fixed".to_string(), selected: true }],
                     settings_error: None,
                 }),
                 logged_in: true,
@@ -1023,6 +1081,8 @@ mod tests {
                     is_woocommerce: false,
                     order_creation_error: None,
                     confirmations_required: 10,
+                    fx_provider: "fixed".to_string(),
+                    fx_provider_options: vec![FxProviderOption { name: "fixed".to_string(), selected: true }],
                     settings_error: None,
                 }),
                 logged_in: true,
@@ -1051,6 +1111,8 @@ mod tests {
                     is_woocommerce: false,
                     order_creation_error: Some("unsupported currency: XYZ".to_string()),
                     confirmations_required: 10,
+                    fx_provider: "fixed".to_string(),
+                    fx_provider_options: vec![FxProviderOption { name: "fixed".to_string(), selected: true }],
                     settings_error: None,
                 }),
                 logged_in: true,

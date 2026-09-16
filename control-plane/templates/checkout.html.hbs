@@ -9,35 +9,36 @@
 /* This page is meant to be embedded in a merchant's own checkout flow via
    iframe - deliberately no site nav partial included, no top bar, nothing
    that reads as "you've left the merchant's site". Just the payment
-   widget itself. */
+   widget itself - but everything inside it reuses the same tokens and
+   components (`.box`, `.tag`, `table`) every other control-plane page
+   builds on (`_styles.html.hbs`), styled with real hand-picked properties
+   only where the shared partial genuinely has nothing to offer (the amount
+   display, the QR code, the progress bar), so it never reads as a
+   foreign, third-party-widget-looking thing dropped into a merchant's page. */
 body { padding: 1rem; }
 .checkout-card { max-width: 420px; margin: 0 auto; }
-.status-badge {
-  display: inline-block;
-  border: 1px solid var(--line);
-  padding: 0.2em 0.7em;
-  font-weight: 700;
-  text-transform: uppercase;
-  letter-spacing: 0.03em;
-  font-size: 0.8em;
-  margin-bottom: 0.8em;
-}
+/* The card itself: same hard-bordered, flat-background container
+   (`.box`, `_styles.html.hbs`) every other grouped section on the site
+   uses - this page had no card feel of its own before, just elements
+   stacked directly on the page background. */
+.checkout-box { padding: 1.4rem; }
+/* `.status-*` sets only the color per order status; the badge's actual
+   shape (border, padding, uppercase, letter-spacing) comes from the
+   shared `.tag` class every other status indicator on the site already
+   uses (`store_detail.html.hbs`'s health tag, the dashboard's own) -
+   this used to hand-roll an equivalent shape under a different name,
+   which is exactly the kind of drift that makes one page quietly stop
+   matching the rest over time. */
 .status-pending, .status-unconfirmed, .status-confirming, .status-partial { background: #fff3cd; }
 .status-paid { background: #dff5d8; }
 .status-expired, .status-unknown { background: #f8d7da; }
-.amount { font-size: 1.8rem; font-weight: 700; margin: 0.2em 0; }
+.amount { font-size: 1.8rem; font-weight: 700; margin: 0.6em 0 0.2em; }
 .fiat-amount { color: var(--muted); margin-bottom: 1em; }
 .qr-wrap { text-align: center; margin: 1em 0; }
-.qr-wrap svg { width: 200px; height: 200px; }
-.address-box {
-  display: flex;
-  gap: 0.5em;
-  align-items: center;
-  border: 2px solid var(--line);
-  background: var(--paper-raised);
-  padding: 0.6em;
-  margin-bottom: 1em;
-}
+.qr-wrap svg { width: 200px; height: 200px; border: 2px solid var(--line); background: var(--paper-raised); padding: 0.6em; }
+/* `.box` already supplies the border/background/padding; this only adds
+   the flex layout the address + copy button need alongside it. */
+.address-box { display: flex; gap: 0.5em; align-items: center; margin-bottom: 1em; }
 .address-text { font-size: 0.8em; word-break: break-all; flex: 1; }
 .copy-btn { margin-top: 0; flex-shrink: 0; }
 .progress-row { display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 0.3em; }
@@ -53,13 +54,14 @@ body { padding: 1rem; }
 </head>
 <body>
 <div class="wrap checkout-card">
+<div class="box checkout-box">
 
 <h1 class="visually-hidden">Monero payment of {{xmr_amount}} XMR</h1>
 
 <!-- role="status" gets an implicit aria-live="polite"/aria-atomic="true" -
      matters here because a status transition this page detects without a
      full reload would otherwise never be announced. -->
-<span id="status-badge" class="status-badge {{status_class}}" role="status" aria-atomic="true">{{status_label}}</span>
+<span id="status-badge" class="tag {{status_class}}" role="status" aria-atomic="true">{{status_label}}</span>
 
 {{#if double_spend_detected_at}}
 <div id="double-spend-banner" class="error" role="alert">
@@ -80,7 +82,7 @@ A payment toward this order was reversed by a blockchain double-spend, detected 
 <div class="qr-wrap">{{{qr_code_svg}}}</div>
 
 <span class="visually-hidden" id="address-label">Payment address</span>
-<div class="address-box">
+<div class="box address-box">
 <span class="address-text" id="address" aria-labelledby="address-label">{{address}}</span>
 <button class="btn-secondary copy-btn" id="copy-btn" type="button" aria-label="Copy payment address to clipboard" aria-live="polite">Copy</button>
 </div>
@@ -116,6 +118,7 @@ Payment ID: {{payment_id}}<br>
 {{#unless is_terminal}}Expires <span id="expires-at" data-timestamp="{{expires_at}}">{{expires_at}}</span>{{/unless}}
 </div>
 
+</div>
 </div>
 
 <script>
