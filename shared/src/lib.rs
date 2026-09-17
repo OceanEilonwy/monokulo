@@ -12,6 +12,7 @@
 
 pub mod auth;
 pub mod exchange_rate;
+pub mod http_cache;
 pub mod key_custody;
 pub mod migrations;
 pub mod network;

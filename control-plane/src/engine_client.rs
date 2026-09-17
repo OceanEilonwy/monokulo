@@ -32,19 +32,34 @@ use serde::{Deserialize, Serialize};
 /// `base_url` is always given explicitly by the caller — this type never
 /// guesses or defaults it.
 ///
-/// `Clone` is free: `reqwest::Client` is internally `Arc`-backed (cloning
-/// shares the same connection pool, it doesn't open a new one) and
-/// `base_url` is a plain `String`. This is what lets `EngineClient` live on
-/// `AppState`, which axum clones per-request.
+/// `Clone` is free: `ClientWithMiddleware` (like the plain `reqwest::Client` it
+/// wraps) is internally `Arc`-backed (cloning shares the same connection pool
+/// and cache, it doesn't open a new one) and `base_url` is a plain `String`.
+/// This is what lets `EngineClient` live on `AppState`, which axum clones
+/// per-request.
+///
+/// Goes through `shared::http_cache`'s byte-bounded, cache-aware transport
+/// (`docs/order_rescan_wbs.md` Phase 3.1) for every method, not only the
+/// rescan ones that motivated adding it - safe as a blanket default because
+/// only a response the engine explicitly marks cacheable (`Cache-Control:
+/// max-age=N`) is ever cached, and today that's exactly one endpoint
+/// (`GET .../tenant/rescans` - see `list_active_rescans`); every other engine
+/// response carries no such header and is never cached.
 #[derive(Clone)]
 pub struct EngineClient {
     base_url: String,
-    http: reqwest::Client,
+    http: reqwest_middleware::ClientWithMiddleware,
 }
 
 impl EngineClient {
     pub fn new(base_url: impl Into<String>) -> Self {
-        EngineClient { base_url: base_url.into(), http: reqwest::Client::new() }
+        EngineClient {
+            base_url: base_url.into(),
+            http: shared::http_cache::build_client(
+                concat!("control-plane/", env!("CARGO_PKG_VERSION")),
+                shared::http_cache::max_cache_bytes_from_env(),
+            ),
+        }
     }
 
     /// The engine base URL this client was constructed with — e.g. so a
@@ -108,6 +123,66 @@ impl EngineClient {
             .bearer_auth(sk)
             .send()
             .await?;
+        parse_response(response).await
+    }
+
+    /// `POST {base_url}/api/v1/admin/tenant/orders/{payment_id}/rescan` —
+    /// triggers an order rescan (`docs/order_rescan_wbs.md` Phase 2.1). `mode`
+    /// is `"simple"` or `"advanced"`; `from`/`to` are unix timestamps, sent
+    /// regardless of mode but only meaningful to the engine for `"advanced"`
+    /// (it ignores them for `"simple"`, same as the request body shape 2.1
+    /// itself defines). A second trigger while one is already running for this
+    /// order is not an error on the engine's own side — this method reflects
+    /// that as-is, returning whatever job the engine hands back.
+    pub async fn trigger_rescan(
+        &self,
+        sk: &str,
+        payment_id: &str,
+        mode: &str,
+        from: Option<i64>,
+        to: Option<i64>,
+    ) -> Result<RescanStatusView, EngineClientError> {
+        let response = self
+            .http
+            .post(format!("{}/api/v1/admin/tenant/orders/{payment_id}/rescan", self.base_url))
+            .bearer_auth(sk)
+            .json(&TriggerRescanRequest { mode: mode.to_string(), from, to })
+            .send()
+            .await?;
+        parse_response(response).await
+    }
+
+    /// `GET {base_url}/api/v1/admin/tenant/orders/{payment_id}/rescan` — the
+    /// most recently triggered rescan for one order, if any (WBS 2.2). `Ok(None)`
+    /// for the engine's own `404` ("no rescan was ever triggered") rather than
+    /// an error — that's the ordinary case for almost every order, not a
+    /// failure this caller needs to handle specially.
+    pub async fn get_rescan_status(
+        &self,
+        sk: &str,
+        payment_id: &str,
+    ) -> Result<Option<RescanStatusView>, EngineClientError> {
+        let response = self
+            .http
+            .get(format!("{}/api/v1/admin/tenant/orders/{payment_id}/rescan", self.base_url))
+            .bearer_auth(sk)
+            .send()
+            .await?;
+        if response.status() == reqwest::StatusCode::NOT_FOUND {
+            return Ok(None);
+        }
+        Ok(Some(parse_response(response).await?))
+    }
+
+    /// `GET {base_url}/api/v1/admin/tenant/rescans` — every currently-`running`
+    /// rescan for `sk`'s tenant (WBS 2.3); in practice zero or one, given the
+    /// engine's own one-job-per-tenant guardrail. This is the one endpoint that
+    /// actually exercises `EngineClient`'s cache-aware transport in practice:
+    /// the engine marks this response `Cache-Control: max-age=...`, so a second
+    /// call within that window never reaches the engine at all.
+    pub async fn list_active_rescans(&self, sk: &str) -> Result<Vec<RescanStatusView>, EngineClientError> {
+        let response =
+            self.http.get(format!("{}/api/v1/admin/tenant/rescans", self.base_url)).bearer_auth(sk).send().await?;
         parse_response(response).await
     }
 
@@ -312,6 +387,12 @@ async fn parse_response<T: serde::de::DeserializeOwned>(response: reqwest::Respo
 pub enum EngineClientError {
     #[error("request to engine failed: {0}")]
     Request(#[from] reqwest::Error),
+    /// From the shared HTTP-cache-aware transport's own middleware layer
+    /// (`shared::http_cache`) - see `ExchangeRateError::Middleware`'s own doc
+    /// comment (its exact sibling in `shared::exchange_rate`) for why this is a
+    /// distinct variant from `Request` above rather than a merge.
+    #[error("request to engine failed: {0}")]
+    Middleware(#[from] reqwest_middleware::Error),
     #[error("engine responded with {status}: {message}")]
     EngineError { status: reqwest::StatusCode, message: String },
 }
@@ -379,6 +460,30 @@ pub struct PaymentView {
     pub first_seen_at: i64,
     pub block_height: Option<i64>,
     pub voided_at: Option<i64>,
+}
+
+#[derive(Serialize)]
+struct TriggerRescanRequest {
+    mode: String,
+    from: Option<i64>,
+    to: Option<i64>,
+}
+
+/// Mirrors the engine's own `RescanStatusView` (`src/http/admin.rs` at the repo
+/// root) field-for-field.
+#[derive(Debug, Clone, Deserialize)]
+pub struct RescanStatusView {
+    pub rescan_id: String,
+    pub payment_id: String,
+    pub mode: String,
+    pub status: String,
+    pub from_height: u64,
+    pub to_height: u64,
+    pub current_height: u64,
+    pub percent_complete: u8,
+    pub error: Option<String>,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
 }
 
 /// Mirrors the engine's own `OrderDetailResponse` — a flattened `OrderView`
@@ -609,5 +714,149 @@ mod tests {
 
         assert_eq!(status.networks.len(), 0);
         assert!(status.poll_interval_secs > 0);
+    }
+
+    // -- Order rescans (`docs/order_rescan_wbs.md` Phase 3.1) ---------------
+
+    /// `engine_test_support::spawn_test_engine_with_networks` deliberately never
+    /// populates `AppState::daemons` (see its own doc comment), so a rescan
+    /// trigger that would actually *succeed* needs a real daemon this harness
+    /// can't provide - out of this crate's scope (Phase 2's own engine-side
+    /// tests already cover a real trigger end to end). What every one of these
+    /// tests proves instead is the wire shape: the real engine's rejection/
+    /// not-found responses round-trip through `EngineClient`'s own types
+    /// exactly as expected.
+    #[tokio::test]
+    async fn trigger_rescan_against_a_non_expired_order_is_rejected_by_the_real_engine() {
+        let engine = engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let client = EngineClient::new(format!("http://{}", engine.addr));
+        let created = client.create_tenant(test_create_tenant_request()).await.unwrap();
+        let order = client.create_order(&created.public_key, 100_000_000_000, None).await.unwrap();
+
+        let err = client
+            .trigger_rescan(&created.secret_token, &order.payment_id, "simple", None, None)
+            .await
+            .unwrap_err();
+
+        match err {
+            EngineClientError::EngineError { status, message } => {
+                assert_eq!(status, reqwest::StatusCode::BAD_REQUEST);
+                assert!(message.contains("expired"), "expected the real reason, got: {message}");
+            }
+            other => panic!("expected a real 400 from the engine, got: {other}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn get_rescan_status_with_none_ever_triggered_is_none_against_a_real_engine() {
+        let engine = engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let client = EngineClient::new(format!("http://{}", engine.addr));
+        let created = client.create_tenant(test_create_tenant_request()).await.unwrap();
+        let order = client.create_order(&created.public_key, 100_000_000_000, None).await.unwrap();
+
+        let status = client.get_rescan_status(&created.secret_token, &order.payment_id).await.unwrap();
+        assert!(status.is_none());
+    }
+
+    #[tokio::test]
+    async fn list_active_rescans_is_empty_with_nothing_running_against_a_real_engine() {
+        let engine = engine_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let client = EngineClient::new(format!("http://{}", engine.addr));
+        let created = client.create_tenant(test_create_tenant_request()).await.unwrap();
+
+        let running = client.list_active_rescans(&created.secret_token).await.unwrap();
+        assert!(running.is_empty());
+    }
+
+    /// A hand-rolled server standing in for the engine's own exact response
+    /// shape (`src/http/admin.rs::with_rescan_cache_headers` at the repo root),
+    /// with a caller-controlled `Cache-Control` and a real call counter - the
+    /// same technique `shared::http_cache`'s own tests use, applied here to
+    /// prove `EngineClient` itself (not the engine) actually respects that
+    /// transport, matching WBS 3.1's own explicit test requirement: a second
+    /// `list_active_rescans` call inside the cache window must never reach the
+    /// server at all.
+    async fn spawn_counting_server(
+        path: &'static str,
+        cache_control: Option<&'static str>,
+        body: serde_json::Value,
+    ) -> (String, std::sync::Arc<std::sync::atomic::AtomicU64>) {
+        use axum::response::IntoResponse;
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let calls_for_handler = calls.clone();
+        let app = axum::Router::new().route(
+            path,
+            axum::routing::get(move || {
+                let calls = calls_for_handler.clone();
+                let body = body.clone();
+                async move {
+                    calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    let mut response = axum::response::Json(body).into_response();
+                    if let Some(cc) = cache_control {
+                        response.headers_mut().insert(
+                            axum::http::header::CACHE_CONTROL,
+                            axum::http::HeaderValue::from_static(cc),
+                        );
+                        response.headers_mut().insert(
+                            axum::http::header::ETAG,
+                            axum::http::HeaderValue::from_static("\"fixed\""),
+                        );
+                    }
+                    response
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}"), calls)
+    }
+
+    #[tokio::test]
+    async fn a_second_list_active_rescans_call_within_the_cache_window_never_reaches_the_server() {
+        let (base_url, calls) =
+            spawn_counting_server("/api/v1/admin/tenant/rescans", Some("max-age=60"), serde_json::json!([])).await;
+        let client = EngineClient::new(base_url);
+
+        let first = client.list_active_rescans("sk_whatever").await.unwrap();
+        let second = client.list_active_rescans("sk_whatever").await.unwrap();
+
+        assert!(first.is_empty());
+        assert!(second.is_empty());
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the second call within the cache-control window must be served from EngineClient's own cache"
+        );
+    }
+
+    /// The other half of adopting this transport as a blanket default (WBS
+    /// 3.1's own explicit safety requirement): an ordinary engine call whose
+    /// response carries no `Cache-Control` at all - `get_order_detail`, exactly
+    /// like every engine endpoint before this feature - must never be served
+    /// from cache, proven the same way: a real call-count assertion, not just
+    /// a claim.
+    #[tokio::test]
+    async fn get_order_detail_is_never_cached() {
+        let order_body = serde_json::json!({
+            "payment_id": "pay_1", "merchant_order_id": null, "address": "addr",
+            "xmr_amount_piconero": 1, "amount_received_piconero": 0, "status": "pending",
+            "confirmations": 0, "double_spend_detected_at": null, "refund_address": null,
+            "created_at": 1000, "expires_at": 2000, "updated_at": 1000, "payments": []
+        });
+        let (base_url, calls) =
+            spawn_counting_server("/api/v1/admin/tenant/orders/{payment_id}", None, order_body).await;
+        let client = EngineClient::new(base_url);
+
+        client.get_order_detail("sk_whatever", "pay_1").await.unwrap();
+        client.get_order_detail("sk_whatever", "pay_1").await.unwrap();
+
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "an ordinary, non-cache-control-bearing response must never be served from cache"
+        );
     }
 }

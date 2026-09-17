@@ -87,6 +87,12 @@ impl XmrIdentityProvider {
 pub enum ExchangeRateError {
     #[error("request to Coingecko failed: {0}")]
     Request(#[from] reqwest::Error),
+    /// From the shared HTTP-cache-aware transport's own middleware layer
+    /// (`shared::http_cache`) - distinct from `Request` above only in *which*
+    /// crate's `Result` the `?` operator was unwrapping at the call site; both
+    /// ultimately mean "the request to Coingecko failed."
+    #[error("request to Coingecko failed: {0}")]
+    Middleware(#[from] reqwest_middleware::Error),
     #[error("Coingecko response was not shaped as expected: {0}")]
     UnexpectedResponse(String),
 }
@@ -117,7 +123,7 @@ pub enum ExchangeRateError {
 #[derive(Debug)]
 pub struct CoingeckoRateProvider {
     base_url: String,
-    client: reqwest::Client,
+    client: reqwest_middleware::ClientWithMiddleware,
     cache: std::sync::Arc<tokio::sync::Mutex<CoingeckoCache>>,
 }
 
@@ -152,16 +158,21 @@ impl CoingeckoRateProvider {
     pub fn new(base_url: impl Into<String>) -> Self {
         CoingeckoRateProvider {
             base_url: base_url.into(),
-            // A default (blank) `reqwest::Client` gets a flat `403` from the real
-            // API - confirmed live while building this, not assumed: Coingecko's
-            // edge rejects any request without a "descriptive User-Agent" (its own
-            // error message's wording), which a bare `reqwest::Client::new()`
-            // never sends. `unwrap()` is safe here - a static header value can't
-            // fail to parse.
-            client: reqwest::Client::builder()
-                .user_agent(concat!("moneropay-core/", env!("CARGO_PKG_VERSION")))
-                .build()
-                .unwrap(),
+            // Goes through the same shared, byte-bounded HTTP-cache-aware
+            // transport every other outbound call in this workspace now uses
+            // (`docs/order_rescan_wbs.md` Phase 3.1) - safe here specifically
+            // because Coingecko's real responses (checked live against the actual
+            // API) carry no `Cache-Control` header at all, so this changes
+            // nothing about Coingecko's own observed behavior; it just means a
+            // future Coingecko response that *did* start advertising one would be
+            // respected rather than silently ignored. The user agent requirement
+            // itself predates this change - a default (blank) client gets a flat
+            // `403` from the real API without a "descriptive User-Agent" (its own
+            // error message's wording).
+            client: crate::http_cache::build_client(
+                concat!("moneropay-core/", env!("CARGO_PKG_VERSION")),
+                crate::http_cache::max_cache_bytes_from_env(),
+            ),
             cache: std::sync::Arc::new(tokio::sync::Mutex::new(CoingeckoCache::default())),
         }
     }
@@ -565,7 +576,12 @@ mod tests {
             // "nothing is listening" without racing a real bind/drop.
             let provider = CoingeckoRateProvider::new("http://127.0.0.1:0");
             let err = provider.piconero_per_unit_cached("USD", std::time::Duration::from_secs(30)).await.unwrap_err();
-            assert!(matches!(err, ExchangeRateError::Request(_)), "got {err:?}");
+            // A genuine connection failure surfaces through the shared HTTP-
+            // cache-aware transport's own middleware layer (`shared::http_cache`),
+            // not directly as a bare `reqwest::Error` - see `ExchangeRateError::
+            // Middleware`'s own doc comment for why these are still the same
+            // failure in substance.
+            assert!(matches!(err, ExchangeRateError::Middleware(_)), "got {err:?}");
         }
 
         #[tokio::test]

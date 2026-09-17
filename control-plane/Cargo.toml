@@ -13,6 +13,7 @@ hex = "0.4.3"
 # same version/feature set the engine's own (soon-removed) equivalent uses.
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
+reqwest-middleware = { version = "0.5.2", features = ["rustls", "json"] }
 rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde = { version = "1.0.229", features = ["derive"] }
 serde_json = "1.0.151"
