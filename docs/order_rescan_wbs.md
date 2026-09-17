@@ -59,7 +59,12 @@ up later, same convention `docs/fx_refactor.md` already established.
 3. **One lightweight, real-HTTP-cached endpoint** —
    `GET /api/v1/admin/tenant/rescans`, using genuine `ETag`/`Cache-Control`/
    `If-None-Match` semantics (not a bespoke in-process TTL cache dressed up
-   to look like one) — see 2.3/3.1 below.
+   to look like one) — see 2.3/3.1 below. **Broadened while resolving
+   this**: the HTTP-cache-aware client becomes control-plane's *default*
+   transport for every outbound call (`EngineClient` and
+   `CoingeckoRateProvider` both), not hand-wired for this one endpoint —
+   see 3.1's own note on why that's safe by construction, and on keeping
+   memory bounded.
 4. **Guardrails, plus a real two-mode trigger UI.** One rescan job per
    tenant at a time (a second trigger while one is running returns the
    existing job's status, not a new one — real load-safety against a real
@@ -263,43 +268,71 @@ up later, same convention `docs/fx_refactor.md` already established.
 
 ## 3. Control-plane: trigger UI and progress display
 
-- 3.1 `EngineClient` gains the three new calls
-  - outcome: `trigger_rescan`, `get_rescan_status`, `list_active_rescans` -
-    the first two are the same thin-wrapper shape `get_order_detail`/
-    `set_confirmations_required` (`engine_client.rs:104`/`214`) already
-    establish: build the URL, `bearer_auth(sk)`, send, parse
-  - what (`list_active_rescans` actually participates in 2.3's HTTP
-    caching, decision 3): a plain `reqwest::Client` (what `EngineClient`
-    uses everywhere else) does not honor `Cache-Control`/`ETag` on its
-    own - this one call needs an HTTP-cache-aware client, e.g. the
-    `http-cache-reqwest` middleware (a new, small dependency, scoped to
-    exactly this one call so every other `EngineClient` method keeps
-    getting genuinely fresh data - order/payment status must never be
-    served stale). Confirm this dependency choice before building it;
-    the alternative (hand-rolling a small ETag-aware cache) reinvents
-    what the crate already does correctly, so it's the fallback only if
-    pulling in a new dependency for one call turns out to be unwelcome.
-  - test: same style as every other `EngineClient` method's own tests
-    (mirrors the existing coverage for `get_order_detail`), plus a real
-    test proving a second `list_active_rescans` call within the
+- 3.1 A shared HTTP-cache-aware client, adopted as control-plane's default
+  transport - plus `EngineClient`'s three new calls
+  - outcome: a single `reqwest-middleware`-wrapped client (the
+    `http-cache-reqwest` crate, layered on plain `reqwest`) becomes the
+    transport **every** outbound HTTP call in control-plane goes through -
+    `EngineClient` (every method, not just the new ones) and
+    `CoingeckoRateProvider` (`shared`, so this crate gains the new
+    dependency too) - rather than something hand-wired for one endpoint.
+    `EngineClient` also gains `trigger_rescan`, `get_rescan_status`,
+    `list_active_rescans` - the first two the same thin-wrapper shape
+    `get_order_detail`/`set_confirmations_required`
+    (`engine_client.rs:104`/`214`) already establish.
+  - what (this is safe as a blanket default, not just for the one new
+    endpoint): standards-compliant HTTP caching only ever caches a
+    response the server explicitly marked cacheable (`Cache-Control`/
+    `ETag`/`Expires`/`Last-Modified`) - a response with none of those
+    (every existing engine endpoint today, and real-world confirmation:
+    Coingecko's own actual response headers should be checked once this
+    phase starts, not assumed) is simply never cached, so switching the
+    default transport doesn't silently start caching order/payment status
+    or anything else that isn't explicitly marked as OK to cache. Confirm
+    the exact cache-manager backend and its default `CacheMode` semantics
+    against the crate's own docs for whatever version gets pinned before
+    wiring this in - the intent (only cache what's explicitly marked
+    cacheable, at RFC 7234's default strictness) needs to match what's
+    actually configured, not just assumed from the crate's name.
+  - what (memory - the user's own question, answered concretely rather
+    than just reassured): back the cache with a **bounded** in-memory
+    store (an entry-count and/or total-byte ceiling, not an unbounded
+    map) - `http-cache-reqwest`'s pluggable `CacheManager` trait supports
+    this (a `moka`-backed manager is the natural fit, `moka` already
+    supports both max-entry and weighted-size eviction out of the box).
+    In practice the whole cacheable surface here is tiny by construction -
+    one rescan-status endpoint keyed by tenant, plus Coingecko's own rate
+    lookups keyed by currency (a few dozen at most) - so a modest cap
+    (e.g. a few hundred entries, or a low-single-digit-MB weight ceiling)
+    would never realistically be approached; it exists as a hard backstop,
+    not a limit this feature is expected to bump into.
+  - test: same style as every other `EngineClient`/`CoingeckoRateProvider`
+    method's own tests (mirrors the existing coverage), plus a real test
+    proving a second `list_active_rescans` call within the
     `Cache-Control` window doesn't re-hit the engine at all (a call-count
     assertion against the test daemon/engine, same pattern this session's
-    own Coingecko cache tests already used)
+    own Coingecko cache tests already used) - and a real test proving an
+    ordinary, non-cache-control-bearing engine call (e.g.
+    `get_order_detail`) is *not* cached, so the blanket adoption is
+    proven safe, not just asserted
 - 3.2 Order-detail page: the trigger form and progress display
   - outcome: on `order_detail.html.hbs`, for an `Expired` order with no
     rescan ever triggered, a plain form (decision 5 - only shown for
     `Expired`) offering both modes at once, no JS needed to switch between
-    them: a radio choice between "Simple - rescan the last `X` days" and
-    "Advanced - choose a range", with two native `<input type="date" min=
-    "..." max="...">` fields for the advanced case. The handler computes
-    each field's real `min` (`max(order.created_at, now − N days)`,
-    decision 4) and `max` (`today`) server-side and renders them as real
-    HTML attributes - the browser itself refuses an out-of-range pick, and
-    a line of plain text states the same bound in words ("orders can only
-    be rescanned from their own creation date (<real date>) or the last
-    `N` days, whichever is later") - decision 4's own "make this apparent
-    to them," not just enforced silently by the `400` 2.1 already gives an
-    out-of-range submission regardless. Once a job exists, the same simple
+    them: a radio choice between **"Rescan from &lt;date&gt;"** (simple -
+    the label states the real, already-computed date (`max(order.created_at,
+    now − X days)`) outright, not an abstract "last `X` days" the merchant
+    has to do the math on themselves) and "Advanced - choose a range", with
+    two native `<input type="date" min="..." max="...">` fields for the
+    advanced case. The handler computes each field's real `min`
+    (`max(order.created_at, now − N days)`, decision 4) and `max` (`today`)
+    server-side and renders them as real HTML attributes - the browser
+    itself refuses an out-of-range pick, and a line of plain text states
+    the same bound in words ("orders can only be rescanned from their own
+    creation date (<real date>) or the last `N` days, whichever is later")
+    - decision 4's own "make this apparent to them," not just enforced
+    silently by the `400` 2.1 already gives an out-of-range submission
+    regardless. Once a job exists, the same simple
     server-computed progress bar pattern `checkout.html.hbs` already
     established (a real `progress_percent` computed in the Rust handler,
     not client JS).
@@ -318,26 +351,50 @@ up later, same convention `docs/fx_refactor.md` already established.
     a real test asserting the rendered date inputs' `min` attribute is the
     real, computed bound (not a hardcoded guess) for both an order younger
     than `N` days and one older than `N` days
-- 3.3 Tightened meta-refresh while a rescan is active
-  - outcome: `order_detail.html.hbs`'s existing static `content="15"`
-    becomes conditional - a shorter interval (e.g. `5`) while this order's
-    own rescan is `running`, the normal `15` otherwise
-  - what: the handler already loads this order's own detail via the engine
-    - 3.1's `get_rescan_status` is one more call on the same request,
-    already-paid-for round trip
-  - test: real test asserting the shorter interval appears exactly when a
-    rescan is genuinely in progress, and the normal one otherwise
+- 3.3 Order-detail page: the in-progress indicator, and a tightened
+  meta-refresh
+  - outcome: while this order's own rescan is `running`, its status area
+    (next to the existing status `.tag`) gains a second small badge - e.g.
+    `<span class="tag tag-syncing">Syncing 42%</span>` - and the page's
+    existing static `<meta http-equiv="refresh" content="15">` becomes
+    conditional, a shorter interval (e.g. `5`) while `running`, the normal
+    `15` otherwise. Below it, the real progress bar 3.2 already describes
+    (server-computed `progress_percent`, same component `checkout.html.hbs`
+    established) carries the detail - the badge is the at-a-glance summary,
+    the bar is the "how far along, really" answer for someone who scrolls
+    to it.
+  - what (design - reuses an existing component rather than inventing a
+    new one): `.tag`/the accent color are already this site's established
+    "something real is happening" language (`_styles.html.hbs`'s own
+    `.tag-ok`/`.tag-error` family, and separately the pulsing
+    `.status-dot`/`@keyframes status-pulse` the nav's own live health
+    indicator already uses) - a new `.tag-syncing` (accent-colored,
+    optionally reusing the same pulse animation) stays visually consistent
+    with both rather than introducing a third visual language for "in
+    progress"
+  - test: real test asserting the shorter interval and the badge appear
+    exactly when a rescan is genuinely in progress, and neither does
+    otherwise
 - 3.4 Dashboard-home: awareness of any in-progress rescan
   - outcome: `dashboard_home.html.hbs` also tightens its own meta-refresh
     when 2.3's `list_active_rescans` (called once per store connection, or
     once if 2.3 is made connection-agnostic - confirm shape once 2.3 is
-    built) reports anything running for any of this merchant's stores,
-    plus a small "syncing" indicator so a merchant landing on the plain
-    dashboard (not the specific order page) can tell something is
-    happening
+    built) reports anything running for any of this merchant's stores. A
+    per-listed-order badge (mirroring 3.3's) would be noisy on a page that
+    can list many orders across many stores for what's realistically at
+    most one or two active jobs at a time (decision 4's one-per-tenant
+    guardrail) - instead, one small banner near the top of the page,
+    reusing the same `.tag-syncing` component: "Syncing 1 order for
+    possible late payments - <a href="...">pay_abc123 &rarr;</a>" (plural
+    phrasing, one link per active job, if a merchant has more than one
+    store each mid-rescan) - always says *why* the page is refreshing
+    faster than usual, never a silent behavior change, consistent with
+    every other auto-refreshing page on this site already stating its own
+    interval in plain text
   - test: real test - dashboard page during a real in-progress rescan shows
-    the shorter interval and the indicator; a plain dashboard with nothing
-    running doesn't
+    the shorter interval and the real banner text/link; two simultaneous
+    rescans across two different stores both listed; a plain dashboard
+    with nothing running shows neither
 
 ## 4. Documentation
 
