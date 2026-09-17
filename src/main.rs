@@ -206,6 +206,7 @@ async fn main() {
         scan_poll_interval_secs,
         default_rescan_lookback_days: config.payment.default_rescan_lookback_days,
         max_rescan_lookback_days: config.payment.max_rescan_lookback_days,
+        expired_order_grace_period_seconds: config.payment.expired_order_grace_period_minutes * 60,
     };
 
     let allow_private_urls = config.webhooks.allow_private_urls;

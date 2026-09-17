@@ -199,6 +199,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
         scan_poll_interval_secs: 2,
         default_rescan_lookback_days: 7,
         max_rescan_lookback_days: 90,
+        expired_order_grace_period_seconds: 0,
     };
     let router = build_router(app_state, 1_000_000);
 

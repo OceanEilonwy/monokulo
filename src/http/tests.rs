@@ -16,6 +16,7 @@ use monero::{Network, PrivateKey, PublicKey};
 use tower::ServiceExt;
 
 use crate::daemon::fake::FakeDaemonClient;
+use crate::daemon::MoneroDaemonClient;
 use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use crate::key_custody::{KeyCustody, PlainKeyCustody};
 use crate::scanner_status::new_scanner_status_map;
@@ -70,6 +71,7 @@ fn test_app_state() -> AppState {
         scan_poll_interval_secs: 2,
         default_rescan_lookback_days: 7,
         max_rescan_lookback_days: 90,
+        expired_order_grace_period_seconds: 21_600,
     }
 }
 
@@ -1236,6 +1238,7 @@ fn rescan_test_app_state() -> (AppState, Arc<FakeDaemonClient>) {
         scan_poll_interval_secs: 2,
         default_rescan_lookback_days: 7,
         max_rescan_lookback_days: 90,
+        expired_order_grace_period_seconds: 21_600,
     };
     (state, fake_daemon)
 }
@@ -1587,4 +1590,159 @@ async fn list_rescans_is_empty_with_nothing_running_then_reflects_a_real_job_and
     assert_eq!(response.status(), StatusCode::OK, "progress moved on - the old etag must no longer match");
     let fresh_etag = response.headers().get("etag").unwrap().to_str().unwrap().to_string();
     assert_ne!(fresh_etag, running_etag);
+}
+
+// -- Phase 5.2's gap-prevention guardrail --------------------------------
+
+/// Builds an expired order directly against the store (not through the router's
+/// public order-creation API, unlike `create_expired_order` above) so its
+/// `created_at` can be set far enough in the past that block timestamps close to
+/// "now" - needed here so `find_height_at_or_before` can resolve to a *specific*
+/// non-tip height, not just "the tip" (the shortcut every other advanced-mode
+/// test relies on) - never trip decision 4's own "not before the order's own
+/// creation" bound. Returns `(payment_id, secret_token)`.
+async fn create_expired_order_with_room_for_a_historical_advanced_range(
+    router: &Router,
+    store: &crate::store::SharedStore,
+    seed: u8,
+) -> (String, String) {
+    let tenant = create_tenant(router, seed, vec!["https://merchant.example"]).await;
+    let now = crate::now_unix();
+    let payment_id = {
+        let s = store.lock().unwrap();
+        let tenant_row = s.find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap();
+        let minor_index = s.allocate_minor_index(&tenant_row.id).unwrap();
+        let order = s
+            .create_order(crate::store::NewOrder {
+                tenant_id: tenant_row.id,
+                merchant_order_id: None,
+                minor_index,
+                address: format!("sub_{minor_index}"),
+                xmr_amount_piconero: 100,
+                description: None,
+                created_at: now - 86_400,
+                expires_at: now - 3_600,
+            })
+            .unwrap();
+        let (_, status) = s.recompute_order_status(&order.id, 0, now).unwrap();
+        assert_eq!(status, crate::status::OrderStatus::Expired, "test setup must actually produce an expired order");
+        order.id
+    };
+    (payment_id, tenant.secret_token)
+}
+
+/// Pushes `count` blocks whose timestamps end at `now` and count backwards by 2
+/// minutes each - real, recent timestamps (not the fake chain's own default 2023
+/// anchor, which real wall-clock time has since drifted more than the 90-day
+/// lookback ceiling past) so `find_height_at_or_before` can resolve a request
+/// timestamp to a *specific* height rather than always landing on the tip.
+fn seed_recent_chain(daemon: &FakeDaemonClient, count: u64, now: i64) {
+    for h in 1..=count {
+        daemon.push_block(&format!("blk_{h}"), vec![]);
+        daemon.set_block_timestamp(h, (now - (count - h) as i64 * 120).max(0) as u64);
+    }
+}
+
+#[tokio::test]
+async fn advanced_mode_to_one_block_before_last_scanned_height_is_rejected() {
+    let (state, daemon) = rescan_test_app_state();
+    let now = crate::now_unix();
+    seed_recent_chain(&daemon, 300, now);
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let (payment_id, secret_token) =
+        create_expired_order_with_room_for_a_historical_advanced_range(&router, &store, 1).await;
+
+    // The order was already scanned up through height 200 by some prior activity.
+    store.lock().unwrap().bump_scanned_range_for_order(&payment_id, 50, 200).unwrap();
+
+    let to_ts = daemon.get_block_timestamp(199).await.unwrap();
+    let from_ts = daemon.get_block_timestamp(150).await.unwrap();
+    let req = trigger_rescan_request(
+        &payment_id,
+        &secret_token,
+        serde_json::json!({ "mode": "advanced", "from": from_ts, "to": to_ts }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "one block earlier than last_scanned_height must be rejected");
+    let body = body_json(response).await;
+    assert!(
+        body["error"].as_str().unwrap().contains("already-scanned"),
+        "expected the real gap-prevention reason, got: {body}"
+    );
+}
+
+#[tokio::test]
+async fn advanced_mode_to_exactly_equal_to_last_scanned_height_succeeds() {
+    let (state, daemon) = rescan_test_app_state();
+    let now = crate::now_unix();
+    seed_recent_chain(&daemon, 300, now);
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let (payment_id, secret_token) =
+        create_expired_order_with_room_for_a_historical_advanced_range(&router, &store, 2).await;
+
+    store.lock().unwrap().bump_scanned_range_for_order(&payment_id, 50, 200).unwrap();
+
+    let to_ts = daemon.get_block_timestamp(200).await.unwrap();
+    let from_ts = daemon.get_block_timestamp(150).await.unwrap();
+    let req = trigger_rescan_request(
+        &payment_id,
+        &secret_token,
+        serde_json::json!({ "mode": "advanced", "from": from_ts, "to": to_ts }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "to exactly equal to last_scanned_height must succeed - the bound is inclusive"
+    );
+}
+
+#[tokio::test]
+async fn advanced_mode_to_comfortably_later_than_last_scanned_height_succeeds_and_narrows_the_walk() {
+    let (state, daemon) = rescan_test_app_state();
+    let now = crate::now_unix();
+    seed_recent_chain(&daemon, 300, now);
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let (payment_id, secret_token) =
+        create_expired_order_with_room_for_a_historical_advanced_range(&router, &store, 3).await;
+
+    store.lock().unwrap().bump_scanned_range_for_order(&payment_id, 50, 200).unwrap();
+
+    // Comfortably later than 200, but still well short of "now" (block 300) -
+    // proving the guardrail rejects only genuinely gap-creating requests, not
+    // every narrow one.
+    let to_ts = daemon.get_block_timestamp(250).await.unwrap();
+    let from_ts = daemon.get_block_timestamp(210).await.unwrap();
+    let req = trigger_rescan_request(
+        &payment_id,
+        &secret_token,
+        serde_json::json!({ "mode": "advanced", "from": from_ts, "to": to_ts }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    assert_eq!(body["to_height"], 250, "the walk's own end must reflect the narrower requested range, not the tip");
+}
+
+#[tokio::test]
+async fn simple_mode_never_reaches_the_gap_prevention_guardrail() {
+    let (state, daemon) = rescan_test_app_state();
+    let now = crate::now_unix();
+    seed_recent_chain(&daemon, 300, now);
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let (payment_id, secret_token) =
+        create_expired_order_with_room_for_a_historical_advanced_range(&router, &store, 4).await;
+
+    // Scanned all the way to the tip already - an advanced request with any `to`
+    // short of the tip would be rejected by the guardrail, but `simple` mode's own
+    // `to` is always "now" by construction, so it must succeed regardless.
+    store.lock().unwrap().bump_scanned_range_for_order(&payment_id, 1, 300).unwrap();
+
+    let req = trigger_rescan_request(&payment_id, &secret_token, serde_json::json!({ "mode": "simple" }));
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED, "simple mode must never be subject to this check at all");
 }

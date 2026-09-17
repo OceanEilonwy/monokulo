@@ -415,6 +415,10 @@ impl TestEngineConfig {
             scan_poll_interval_secs: BACKGROUND_LOOP_INTERVAL.as_secs().max(1),
             default_rescan_lookback_days: 7,
             max_rescan_lookback_days: 90,
+            // Matches `run_scan_tick_now`'s own hardcoded `0` - this harness's
+            // background loops don't exercise grace-period timing (see that
+            // method's own doc comment).
+            expired_order_grace_period_seconds: 0,
         };
         let router = build_router(app_state, MAX_BODY_BYTES);
 

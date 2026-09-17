@@ -221,6 +221,27 @@ pub fn display_timestamp(value: i64) -> String {
     value.to_string()
 }
 
+/// `docs/order_rescan_wbs.md` Phase 5.4 - the order-detail page's "Scan range"
+/// row, computed once here rather than branched on in the template.
+/// `first_scanned_height` gates everything: `None` means nothing has ever
+/// examined this order (predates the feature, or hasn't had its first tick yet),
+/// which the other two fields can't meaningfully qualify.
+pub fn display_scan_range(
+    first_scanned_height: Option<i64>,
+    last_scanned_height: Option<i64>,
+    currently_scanning: bool,
+) -> String {
+    let Some(first) = first_scanned_height else {
+        return NO_VALUE.to_string();
+    };
+    let last = last_scanned_height.unwrap_or(first);
+    if currently_scanning {
+        format!("{first}+")
+    } else {
+        format!("{first} - {last}")
+    }
+}
+
 /// A moment.js-style relative duration until `target_unix` ("12h", "4h
 /// 15m", "2d 4h") - at most the two largest non-zero units (days, hours,
 /// minutes), a zero unit skipped rather than shown ("1d 30m", never "1d 0h
@@ -396,6 +417,14 @@ pub struct OrderDetailData {
     /// template, matching this codebase's own "compute in Rust, not in
     /// handlebars" convention for anything beyond plain field access.
     pub payment_link: String,
+    /// `docs/order_rescan_wbs.md` Phase 5.4 - `"{first} - {last}"` once fully
+    /// covered, `"{first}+"` while still growing (`currently_scanning`), or a
+    /// muted dash if `first_scanned_height` is still `None` (an order that
+    /// predates this feature, or genuinely hasn't had its first tick yet).
+    /// Trusted HTML (the muted-dash fallback carries a real `<span>`), same
+    /// convention `NO_VALUE`-backed fields elsewhere on this page already use -
+    /// rendered with `{{{ }}}`, never `{{ }}`.
+    pub scan_range_display: String,
     /// `docs/order_rescan_wbs.md` Phase 3.2/3.3 - present only for an
     /// `Expired` order (decision 5), `None` for every other status so the
     /// template's own `{{#if}}` is what actually gates the whole rescan
@@ -1498,6 +1527,7 @@ mod tests {
             updated_at_display: "1000".to_string(),
             payments: vec![],
             payment_link: "http://127.0.0.1:8081/pay/pk_abc123/orders/pay_abc123/share".to_string(),
+            scan_range_display: NO_VALUE.to_string(),
             rescan: None,
             rescan_error: None,
         }

@@ -449,6 +449,11 @@ pub struct OrderView {
     pub created_at: i64,
     pub expires_at: i64,
     pub updated_at: i64,
+    /// `docs/order_rescan_wbs.md` Phase 5.3 - mirrors the engine's own
+    /// `OrderView` field-for-field.
+    pub first_scanned_height: Option<i64>,
+    pub last_scanned_height: Option<i64>,
+    pub currently_scanning: bool,
 }
 
 /// Mirrors the engine's own `PaymentView`.
@@ -844,7 +849,9 @@ mod tests {
             "payment_id": "pay_1", "merchant_order_id": null, "address": "addr",
             "xmr_amount_piconero": 1, "amount_received_piconero": 0, "status": "pending",
             "confirmations": 0, "double_spend_detected_at": null, "refund_address": null,
-            "created_at": 1000, "expires_at": 2000, "updated_at": 1000, "payments": []
+            "created_at": 1000, "expires_at": 2000, "updated_at": 1000,
+            "first_scanned_height": null, "last_scanned_height": null, "currently_scanning": true,
+            "payments": []
         });
         let (base_url, calls) =
             spawn_counting_server("/api/v1/admin/tenant/orders/{payment_id}", None, order_body).await;

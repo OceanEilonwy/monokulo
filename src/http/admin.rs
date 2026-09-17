@@ -7,7 +7,7 @@ use crate::auth::generate_webhook_secret;
 use crate::daemon::MoneroDaemonClient;
 use crate::key_custody::{KeyCustodyError, SubaddressIndex, WalletMaterial};
 use crate::status::OrderStatus;
-use crate::store::{NewOrderRescan, NewTenant, Order, OrderPaymentRow, OrderRescan, RescanMode, TenantConfigPatch, TriggerRescanOutcome, Webhook};
+use crate::store::{NewOrderRescan, NewTenant, Order, OrderPaymentRow, OrderRescan, RescanMode, Store, TenantConfigPatch, TriggerRescanOutcome, Webhook};
 
 use super::{resolve_wallet_handle, AppState, ApiError, AuthedTenant, network_str, now_unix, parse_network, parse_status_query};
 
@@ -250,25 +250,49 @@ pub struct OrderView {
     created_at: i64,
     expires_at: i64,
     updated_at: i64,
+    /// `docs/order_rescan_wbs.md` Phase 5.3 - mirrors `Order::first_scanned_height`/
+    /// `last_scanned_height` (Phase 5.1) unchanged.
+    first_scanned_height: Option<i64>,
+    last_scanned_height: Option<i64>,
+    /// Computed, not a stored column - `true` if this order is presently examined
+    /// by anything at all (`Store::is_order_currently_scanning`): the live
+    /// scanner's own in-scope set (non-terminal, or `Expired` within its grace
+    /// window), *or* a currently-`running` manual rescan. One engine-computed
+    /// boolean rather than a caller re-deriving the same scope logic itself from
+    /// the raw fields above.
+    currently_scanning: bool,
 }
 
-impl From<Order> for OrderView {
-    fn from(o: Order) -> Self {
-        OrderView {
-            payment_id: o.id,
-            merchant_order_id: o.merchant_order_id,
-            address: o.address,
-            xmr_amount_piconero: o.xmr_amount_piconero,
-            amount_received_piconero: o.amount_received_piconero,
-            status: o.status.as_str().to_string(),
-            confirmations: o.confirmations,
-            double_spend_detected_at: o.double_spend_detected_at,
-            refund_address: o.refund_address,
-            created_at: o.created_at,
-            expires_at: o.expires_at,
-            updated_at: o.updated_at,
-        }
-    }
+/// Builds an `OrderView`, including the one field (`currently_scanning`) that
+/// can't come from `Order` alone - a real `Store` query, since it also depends on
+/// `order_rescans` and on wall-clock time (Phase 4's grace window). Deliberately
+/// not a plain `From<Order>` impl for that reason - every call site needs the
+/// same `now`/`grace_period_seconds` a caller-supplied `impl From` has no way to
+/// thread through.
+fn build_order_view(
+    store: &Store,
+    order: Order,
+    now: i64,
+    grace_period_seconds: i64,
+) -> std::result::Result<OrderView, crate::store::StoreError> {
+    let currently_scanning = store.is_order_currently_scanning(&order.id, now, grace_period_seconds)?;
+    Ok(OrderView {
+        payment_id: order.id,
+        merchant_order_id: order.merchant_order_id,
+        address: order.address,
+        xmr_amount_piconero: order.xmr_amount_piconero,
+        amount_received_piconero: order.amount_received_piconero,
+        status: order.status.as_str().to_string(),
+        confirmations: order.confirmations,
+        double_spend_detected_at: order.double_spend_detected_at,
+        refund_address: order.refund_address,
+        created_at: order.created_at,
+        expires_at: order.expires_at,
+        updated_at: order.updated_at,
+        first_scanned_height: order.first_scanned_height,
+        last_scanned_height: order.last_scanned_height,
+        currently_scanning,
+    })
 }
 
 #[derive(Deserialize)]
@@ -285,8 +309,14 @@ pub async fn list_orders(
 ) -> Result<Json<Vec<OrderView>>, ApiError> {
     let status_filter: Option<OrderStatus> = q.status.as_deref().map(parse_status_query).transpose()?;
     let limit = q.limit.unwrap_or(50).min(200);
-    let orders = state.store.lock().unwrap().list_orders(&tenant.id, status_filter, limit, q.cursor)?;
-    Ok(Json(orders.into_iter().map(OrderView::from).collect()))
+    let now = now_unix();
+    let store = state.store.lock().unwrap();
+    let orders = store.list_orders(&tenant.id, status_filter, limit, q.cursor)?;
+    let views: std::result::Result<Vec<OrderView>, _> = orders
+        .into_iter()
+        .map(|o| build_order_view(&store, o, now, state.expired_order_grace_period_seconds))
+        .collect();
+    Ok(Json(views?))
 }
 
 #[derive(Serialize)]
@@ -327,8 +357,9 @@ pub async fn get_order_detail(
     let store = state.store.lock().unwrap();
     let order = store.get_order(&tenant.id, &payment_id)?.ok_or(ApiError::NotFound)?;
     let payments = store.get_all_payments(&order.id)?;
+    let order_view = build_order_view(&store, order, now_unix(), state.expired_order_grace_period_seconds)?;
     Ok(Json(OrderDetailResponse {
-        order: OrderView::from(order),
+        order: order_view,
         payments: payments.into_iter().map(PaymentView::from).collect(),
     }))
 }
@@ -560,6 +591,27 @@ pub async fn trigger_rescan(
         .find_height_at_or_before(to_ts.max(0) as u64)
         .await
         .map_err(|e| ApiError::Internal(format!("failed to resolve the rescan's end height: {e}")))?;
+
+    // WBS 5.2's gap-prevention guardrail - advanced mode only (`simple`'s own `to`
+    // is always "now" by construction, which can never be earlier than a height
+    // this order was already scanned to). Without this, a merchant could pick a
+    // narrow advanced-mode window ending before the order's existing
+    // `last_scanned_height`, leaving a real, silent gap between the old high-water
+    // mark and the new rescan's own end - one Phase 5.1's simple min/max range
+    // would then hide entirely, displaying a continuous range that claims full
+    // coverage across a span with an actual hole in it. Inclusive `>=`, not `>`:
+    // `to` exactly equal to the existing high-water mark is a legitimate, gap-free
+    // request, not a rejected one.
+    if mode == RescanMode::Advanced {
+        if let Some(last_scanned) = order.last_scanned_height {
+            if (to_height as i64) < last_scanned {
+                return Err(ApiError::BadRequest(format!(
+                    "\"to\" resolves to block {to_height}, which is earlier than this order's already-scanned \
+                     height {last_scanned} - choose a later end, or leave \"to\" at its default of now"
+                )));
+            }
+        }
+    }
 
     let handle = resolve_wallet_handle(&state, &tenant).await?;
 

@@ -36,6 +36,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (5, include_str!("../migrations/0005_drop_order_fiat_columns.sql")),
     (6, include_str!("../migrations/0006_drop_tenant_template_dir.sql")),
     (7, include_str!("../migrations/0007_order_rescans.sql")),
+    (8, include_str!("../migrations/0008_order_scanned_range.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -165,6 +166,12 @@ pub struct Order {
     pub created_at: i64,
     pub expires_at: i64,
     pub updated_at: i64,
+    /// `docs/order_rescan_wbs.md` Phase 5.1 - the actual block-height range this
+    /// order has ever been examined across, accumulated (never replaced) by both
+    /// ordinary live scanning and any manual rescan. `None` until the order's very
+    /// first tick.
+    pub first_scanned_height: Option<i64>,
+    pub last_scanned_height: Option<i64>,
 }
 
 pub struct NewOrder {
@@ -783,6 +790,8 @@ impl Store {
             created_at: row.get("created_at")?,
             expires_at: row.get("expires_at")?,
             updated_at: row.get("updated_at")?,
+            first_scanned_height: row.get("first_scanned_height")?,
+            last_scanned_height: row.get("last_scanned_height")?,
         })
     }
 
@@ -1403,6 +1412,97 @@ impl Store {
         Ok(())
     }
 
+    // -- Scanned block range (`docs/order_rescan_wbs.md` Phase 5.1) -------
+
+    /// Bumps every one of `tenant_id`'s currently-in-scope orders (the exact same
+    /// widened predicate `active_tenant_ids`/`non_terminal_order_ids` use, Phase 4's
+    /// grace window included) to `height` - one bulk `UPDATE`, not a per-order loop.
+    /// Called once per active tenant per scan tick (`scanner::run_scan_tick`), after
+    /// its block-scanning pass. `first_scanned_height` only moves via `COALESCE`
+    /// (set once, on an order's first tick, and never again) - `last_scanned_height`
+    /// moves every call while the order stays in scope, and simply stops moving
+    /// (not reset) the moment it falls out of scope, since this predicate then no
+    /// longer selects it.
+    pub fn bump_scanned_heights_for_tenant(
+        &self,
+        tenant_id: &str,
+        height: u64,
+        now: i64,
+        grace_period_seconds: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "UPDATE orders
+             SET last_scanned_height = ?2, first_scanned_height = COALESCE(first_scanned_height, ?2)
+             WHERE tenant_id = ?1 AND (status IN (?3, ?4, ?5, ?6) OR (status = ?7 AND expires_at >= ?8))",
+            params![
+                tenant_id,
+                height as i64,
+                status_to_str(OrderStatus::Pending),
+                status_to_str(OrderStatus::Unconfirmed),
+                status_to_str(OrderStatus::Confirming),
+                status_to_str(OrderStatus::Partial),
+                status_to_str(OrderStatus::Expired),
+                now - grace_period_seconds,
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Extends (never replaces) one order's scanned range by a rescan's own
+    /// `[from_height, to_height]` - `Store::trigger_rescan`'s `from_height` is
+    /// always the *original*, immutable value fixed at trigger time (never the
+    /// resume point a restarted job's own `rescan_order` call happens to start
+    /// walking from), so a resumed rescan never narrows `first_scanned_height`
+    /// back down to wherever it merely resumed from. `COALESCE(MIN(...), ...)`/
+    /// `COALESCE(MAX(...), ...)` rather than a bare `MIN`/`MAX`: SQLite's scalar
+    /// `MIN`/`MAX` return `NULL` if *either* argument is `NULL`, which would wipe
+    /// out a still-unset column instead of seeding it on an order's first-ever
+    /// rescan.
+    pub fn bump_scanned_range_for_order(&self, order_id: &str, from_height: u64, to_height: u64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE orders
+             SET first_scanned_height = COALESCE(MIN(first_scanned_height, ?2), ?2),
+                 last_scanned_height = COALESCE(MAX(last_scanned_height, ?3), ?3)
+             WHERE id = ?1",
+            params![order_id, from_height as i64, to_height as i64],
+        )?;
+        Ok(())
+    }
+
+    /// `true` if this order is presently examined by anything at all - either it's
+    /// in the live scanner's own in-scope set (the same widened predicate
+    /// `bump_scanned_heights_for_tenant` uses) or it has a currently-`running`
+    /// rescan job. One engine-computed boolean (`docs/order_rescan_wbs.md` 5.3)
+    /// rather than a caller re-deriving the same scope logic from raw fields -
+    /// exactly one place decides this.
+    pub fn is_order_currently_scanning(&self, order_id: &str, now: i64, grace_period_seconds: i64) -> Result<bool> {
+        let in_scope: bool = self.conn.query_row(
+            "SELECT EXISTS(
+                 SELECT 1 FROM orders
+                 WHERE id = ?1 AND (status IN (?2, ?3, ?4, ?5) OR (status = ?6 AND expires_at >= ?7))
+             )",
+            params![
+                order_id,
+                status_to_str(OrderStatus::Pending),
+                status_to_str(OrderStatus::Unconfirmed),
+                status_to_str(OrderStatus::Confirming),
+                status_to_str(OrderStatus::Partial),
+                status_to_str(OrderStatus::Expired),
+                now - grace_period_seconds,
+            ],
+            |row| row.get(0),
+        )?;
+        if in_scope {
+            return Ok(true);
+        }
+        let has_running_rescan: bool = self.conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM order_rescans WHERE order_id = ?1 AND status = 'running')",
+            params![order_id],
+            |row| row.get(0),
+        )?;
+        Ok(has_running_rescan)
+    }
+
     // -- Webhooks -------------------------------------------------------
 
     pub fn create_webhook(
@@ -1960,6 +2060,62 @@ mod tests {
         // Past even the grace window - excluded again.
         assert!(!store.active_tenant_ids("mainnet", 2601, 600).unwrap().contains(&tenant.tenant.id));
         assert!(!store.non_terminal_order_ids("mainnet", 2601, 600).unwrap().contains(&order.id));
+    }
+
+    #[test]
+    fn is_order_currently_scanning_covers_every_real_lifecycle_point() {
+        // `docs/order_rescan_wbs.md` Phase 5.3 - `currently_scanning` is `true` if
+        // *either* mechanism is watching this order: the live scanner's own
+        // in-scope set (non-terminal, or `Expired` within grace), or a
+        // currently-`running` manual rescan - `false` only when neither applies.
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+
+        let pending_order = new_order(&store, &tenant.tenant.id, 1); // expires_at = 2000, status defaults to pending
+        assert!(
+            store.is_order_currently_scanning(&pending_order.id, 2000, 0).unwrap(),
+            "a non-terminal order must be currently scanning regardless of grace"
+        );
+
+        let expired_in_grace = new_order(&store, &tenant.tenant.id, 2);
+        store.conn.execute("UPDATE orders SET status = 'expired' WHERE id = ?1", params![expired_in_grace.id]).unwrap();
+        assert!(
+            store.is_order_currently_scanning(&expired_in_grace.id, 2500, 600).unwrap(),
+            "an expired order still inside its grace window must be currently scanning"
+        );
+
+        let expired_past_grace_no_rescan = new_order(&store, &tenant.tenant.id, 3);
+        store
+            .conn
+            .execute("UPDATE orders SET status = 'expired' WHERE id = ?1", params![expired_past_grace_no_rescan.id])
+            .unwrap();
+        assert!(
+            !store.is_order_currently_scanning(&expired_past_grace_no_rescan.id, 2601, 600).unwrap(),
+            "an expired order past its grace window with no running rescan must not be currently scanning"
+        );
+
+        let expired_past_grace_with_rescan = new_order(&store, &tenant.tenant.id, 4);
+        store
+            .conn
+            .execute("UPDATE orders SET status = 'expired' WHERE id = ?1", params![expired_past_grace_with_rescan.id])
+            .unwrap();
+        store
+            .trigger_rescan(
+                NewOrderRescan {
+                    order_id: expired_past_grace_with_rescan.id.clone(),
+                    tenant_id: tenant.tenant.id.clone(),
+                    minor_index: 4,
+                    mode: RescanMode::Simple,
+                    from_height: 1,
+                    to_height: 100,
+                },
+                1000,
+            )
+            .unwrap();
+        assert!(
+            store.is_order_currently_scanning(&expired_past_grace_with_rescan.id, 2601, 600).unwrap(),
+            "an expired order past its grace window with a running rescan must still be currently scanning"
+        );
     }
 
     #[test]
@@ -2549,21 +2705,24 @@ mod tests {
                 tenant.tenant.id
             ))
             .unwrap();
-        let order = store.get_order_by_id(order_id).unwrap().unwrap();
+        // Not fetched back via `get_order_by_id` here - `row_to_order` now selects
+        // columns (`first_scanned_height`/`last_scanned_height`, Phase 5.1) that
+        // don't exist yet at this pre-migration-8 schema version; `order_id` is
+        // already the exact id just inserted, so there's nothing this would add.
+        //
         // Inserted directly rather than through `record_payment_match`, whose
         // conflict target names a constraint this schema version doesn't have yet.
         store
             .execute_raw_for_test(&format!(
                 "INSERT INTO order_payments (order_id, txid, output_index, amount_piconero,
                     key_images_json, first_seen_at, block_height, voided_at)
-                 VALUES ('{}', 'tx_from_before_the_upgrade', 2, 4242, '[\"ki_a\"]', 1500, 77, 1600)",
-                order.id
+                 VALUES ('{order_id}', 'tx_from_before_the_upgrade', 2, 4242, '[\"ki_a\"]', 1500, 77, 1600)"
             ))
             .unwrap();
 
         shared::migrations::apply(&store.conn, MIGRATIONS).unwrap();
 
-        let payments = store.get_all_payments(&order.id).unwrap();
+        let payments = store.get_all_payments(order_id).unwrap();
         assert_eq!(payments.len(), 1, "the pre-upgrade payment must survive the table rebuild");
         assert_eq!(payments[0].txid, "tx_from_before_the_upgrade");
         assert_eq!(payments[0].output_index, 2);

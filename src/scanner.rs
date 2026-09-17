@@ -854,6 +854,16 @@ pub async fn run_rescan_job(
             if let Err(e) = store.lock().unwrap().update_rescan_progress(rescan_id, height, now) {
                 eprintln!("rescan {rescan_id}: failed to persist progress at height {height}: {e}");
             }
+            // `docs/order_rescan_wbs.md` Phase 5.1 - same throttled cadence as the
+            // progress write above, so this bookkeeping genuinely survives a
+            // restart-and-resume rather than only updating on a clean finish.
+            // Deliberately `job.from_height` (the row's own *original*, immutable
+            // value) here, never `height` or the resume point `rescan_order` was
+            // actually called with - a resumed job must not narrow
+            // `first_scanned_height` back down to wherever it merely resumed from.
+            if let Err(e) = store.lock().unwrap().bump_scanned_range_for_order(&job.order_id, job.from_height, height) {
+                eprintln!("rescan {rescan_id}: failed to bump order {}'s scanned range: {e}", job.order_id);
+            }
             last_persisted = height;
         }
     };
@@ -1177,6 +1187,34 @@ pub async fn run_scan_tick(
                     );
                     break 'heights;
                 }
+            }
+        }
+    }
+
+    // `docs/order_rescan_wbs.md` Phase 5.1: bumps every currently-in-scope order's
+    // scanned-range bookkeeping to whatever height is now confirmed-scanned on this
+    // network - once per active tenant, not a per-order loop. Runs unconditionally
+    // every tick, not only when this tick's own block-scanning pass made progress:
+    // `max_scanned_height` still reflects genuine prior coverage on a tick where no
+    // new block happened to arrive, which is exactly what lets a brand-new order
+    // get its `first_scanned_height` set on its own very first eligible tick
+    // (`ranges` is a fresh query every tick) rather than only on a tick that
+    // happens to also process a new block. `None` (nothing has ever been scanned on
+    // this network at all yet) is skipped entirely, correctly leaving every order's
+    // range still `NULL`.
+    let scanned_through = store.lock().unwrap().max_scanned_height(network).ok().flatten();
+    if let Some(scanned_through) = scanned_through {
+        for (tenant_id, _, _) in &ranges {
+            if let Err(e) = store.lock().unwrap().bump_scanned_heights_for_tenant(
+                tenant_id,
+                scanned_through,
+                now,
+                expired_order_grace_period_seconds,
+            ) {
+                eprintln!(
+                    "failed to bump scanned-range bookkeeping for tenant {tenant_id} on {network} - its \
+                     orders' displayed scan range may lag until a later tick succeeds: {e}"
+                );
             }
         }
     }
@@ -1818,6 +1856,272 @@ mod tests {
         );
         let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
         assert_eq!(order.status, crate::status::OrderStatus::Expired, "must remain untouched");
+    }
+
+    // -- Scanned block range (`docs/order_rescan_wbs.md` Phase 5.1) ---------
+
+    #[tokio::test]
+    async fn a_fresh_orders_first_scanned_height_is_set_on_its_very_first_tick_not_backfilled_to_created_at() {
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let daemon = FakeDaemonClient::new();
+        for h in 1..=500 {
+            daemon.push_block(&format!("blk_{h}"), vec![]);
+        }
+        let store = store.into_shared();
+
+        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+
+        let order = store.lock().unwrap().get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert_ne!(
+            order.first_scanned_height,
+            Some(1000),
+            "must never be backfilled to created_at's own value (1000)"
+        );
+        // Bootstrap seeds one block behind the tip (500) before the loop, so 500
+        // is the first (and only, this tick) height actually reached.
+        assert_eq!(order.first_scanned_height, Some(500));
+        assert_eq!(order.last_scanned_height, Some(500));
+    }
+
+    #[tokio::test]
+    async fn last_scanned_height_advances_tick_over_tick_then_freezes_once_the_order_leaves_scope() {
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let daemon = FakeDaemonClient::new();
+        for h in 1..=100 {
+            daemon.push_block(&format!("blk_{h}"), vec![]);
+        }
+        let store = store.into_shared();
+
+        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        assert_eq!(
+            store.lock().unwrap().get_order(&tenant_id, &order_id).unwrap().unwrap().last_scanned_height,
+            Some(100)
+        );
+
+        for h in 101..=150 {
+            daemon.push_block(&format!("blk_{h}"), vec![]);
+        }
+        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        assert_eq!(
+            store.lock().unwrap().get_order(&tenant_id, &order_id).unwrap().unwrap().last_scanned_height,
+            Some(150),
+            "must have advanced with the chain while still in scope"
+        );
+
+        // Settle the order (a real payment, not a forced status write) - takes it
+        // terminal and out of scope. `setup()`'s tenant requires 10 confirmations,
+        // so the payment needs 9 more blocks on top of the one it's mined in
+        // before the order actually reaches a terminal status.
+        daemon.push_block("blk_settle", vec![fixture_tx()]); // height 151
+        for h in 152..=160 {
+            daemon.push_block(&format!("blk_{h}"), vec![]);
+        }
+        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        let settled = store.lock().unwrap().get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert!(
+            matches!(settled.status, crate::status::OrderStatus::Paid | crate::status::OrderStatus::Overpaid),
+            "expected a terminal status after 10 confirmations, got {:?}",
+            settled.status
+        );
+        assert_eq!(settled.last_scanned_height, Some(160));
+
+        for h in 161..=200 {
+            daemon.push_block(&format!("blk_{h}"), vec![]);
+        }
+        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        let frozen = store.lock().unwrap().get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert_eq!(
+            frozen.last_scanned_height,
+            Some(160),
+            "must freeze (not keep advancing, not reset) once the order is terminal and out of scope"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_single_rescan_extends_both_bounds_beyond_what_live_scanning_alone_reached() {
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let daemon = FakeDaemonClient::new();
+        for h in 1..=100 {
+            daemon.push_block(&format!("blk_{h}"), vec![]);
+        }
+        let store = store.into_shared();
+        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        let before = store.lock().unwrap().get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert_eq!((before.first_scanned_height, before.last_scanned_height), (Some(100), Some(100)));
+
+        for h in 101..=200 {
+            daemon.push_block(&format!("blk_{h}"), vec![]);
+        }
+        let job = store
+            .lock()
+            .unwrap()
+            .trigger_rescan(
+                NewOrderRescan {
+                    order_id: order_id.clone(),
+                    tenant_id: tenant_id.clone(),
+                    minor_index: 1,
+                    mode: RescanMode::Advanced,
+                    from_height: 10,
+                    to_height: 200,
+                },
+                crate::now_unix(),
+            )
+            .unwrap()
+            .into_job();
+        run_rescan_job(&store, &key_custody, &daemon, handle, &job.id).await;
+
+        let after = store.lock().unwrap().get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert_eq!(after.first_scanned_height, Some(10), "must extend earlier than live scanning alone ever reached");
+        assert_eq!(after.last_scanned_height, Some(200), "must extend later than live scanning alone ever reached");
+    }
+
+    #[tokio::test]
+    async fn two_sequential_rescans_each_further_out_accumulate_rather_than_overwrite() {
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let daemon = FakeDaemonClient::new();
+        for h in 1..=300 {
+            daemon.push_block(&format!("blk_{h}"), vec![]);
+        }
+        let store = store.into_shared();
+
+        let job1 = store
+            .lock()
+            .unwrap()
+            .trigger_rescan(
+                NewOrderRescan {
+                    order_id: order_id.clone(),
+                    tenant_id: tenant_id.clone(),
+                    minor_index: 1,
+                    mode: RescanMode::Advanced,
+                    from_height: 100,
+                    to_height: 150,
+                },
+                crate::now_unix(),
+            )
+            .unwrap()
+            .into_job();
+        run_rescan_job(&store, &key_custody, &daemon, handle, &job1.id).await;
+        let after1 = store.lock().unwrap().get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert_eq!((after1.first_scanned_height, after1.last_scanned_height), (Some(100), Some(150)));
+
+        // A second rescan, further out on *both* sides - must not overwrite the
+        // first's own bounds, only extend past them.
+        let job2 = store
+            .lock()
+            .unwrap()
+            .trigger_rescan(
+                NewOrderRescan {
+                    order_id: order_id.clone(),
+                    tenant_id: tenant_id.clone(),
+                    minor_index: 1,
+                    mode: RescanMode::Advanced,
+                    from_height: 50,
+                    to_height: 250,
+                },
+                crate::now_unix(),
+            )
+            .unwrap()
+            .into_job();
+        assert_ne!(job2.id, job1.id, "the first job must have completed and freed the one-per-tenant slot");
+        run_rescan_job(&store, &key_custody, &daemon, handle, &job2.id).await;
+        let after2 = store.lock().unwrap().get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert_eq!(after2.first_scanned_height, Some(50), "must extend further out, not overwrite or narrow");
+        assert_eq!(after2.last_scanned_height, Some(250), "must extend further out, not overwrite or narrow");
+    }
+
+    #[tokio::test]
+    async fn a_resumed_rescan_still_extends_the_scanned_range_from_the_jobs_original_from_height() {
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let daemon = FakeDaemonClient::new();
+        for h in 1..=200 {
+            daemon.push_block(&format!("blk_{h}"), vec![]);
+        }
+        let store = store.into_shared();
+
+        let job = store
+            .lock()
+            .unwrap()
+            .trigger_rescan(
+                NewOrderRescan {
+                    order_id: order_id.clone(),
+                    tenant_id: tenant_id.clone(),
+                    minor_index: 1,
+                    mode: RescanMode::Advanced,
+                    from_height: 10,
+                    to_height: 200,
+                },
+                crate::now_unix(),
+            )
+            .unwrap()
+            .into_job();
+        // Simulate a prior partial run that had already persisted progress to
+        // height 100 before the process died - the exact state a restart resumes
+        // from. The bug this test would catch: a design that (wrongly) used the
+        // resume point (100) instead of the job's own immutable `from_height`
+        // (10) as the "first" bound, silently narrowing the displayed range.
+        store.lock().unwrap().update_rescan_progress(&job.id, 100, crate::now_unix()).unwrap();
+
+        run_rescan_job(&store, &key_custody, &daemon, handle, &job.id).await;
+
+        let order = store.lock().unwrap().get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert_eq!(order.first_scanned_height, Some(10), "must reflect the job's original from_height, not the resume point");
+        assert_eq!(order.last_scanned_height, Some(200));
+    }
+
+    #[tokio::test]
+    async fn an_order_in_its_grace_window_with_a_simultaneous_rescan_has_its_range_advanced_correctly_by_both() {
+        let now = crate::now_unix();
+        let (store, key_custody, handle, tenant_id, order_id) = setup_with_expiry(now - 60).await;
+        let (_, status) = store.recompute_order_status(&order_id, 0, now).unwrap();
+        assert_eq!(status, crate::status::OrderStatus::Expired, "test setup must actually produce an expired order");
+
+        let daemon = FakeDaemonClient::new();
+        for h in 1..=100 {
+            daemon.push_block(&format!("blk_{h}"), vec![]);
+        }
+        let store = store.into_shared();
+
+        // Ordinary live scanning, widened by a generous grace window, bumps the
+        // range first.
+        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 3600).await.unwrap();
+        assert_eq!(
+            store.lock().unwrap().get_order(&tenant_id, &order_id).unwrap().unwrap().last_scanned_height,
+            Some(100)
+        );
+
+        for h in 101..=150 {
+            daemon.push_block(&format!("blk_{h}"), vec![]);
+        }
+        let job = store
+            .lock()
+            .unwrap()
+            .trigger_rescan(
+                NewOrderRescan {
+                    order_id: order_id.clone(),
+                    tenant_id: tenant_id.clone(),
+                    minor_index: 1,
+                    mode: RescanMode::Advanced,
+                    from_height: 1,
+                    to_height: 150,
+                },
+                now,
+            )
+            .unwrap()
+            .into_job();
+        run_rescan_job(&store, &key_custody, &daemon, handle, &job.id).await;
+
+        for h in 151..=200 {
+            daemon.push_block(&format!("blk_{h}"), vec![]);
+        }
+        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 3600).await.unwrap();
+
+        let order = store.lock().unwrap().get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert_eq!(order.first_scanned_height, Some(1), "the rescan's earlier start must be preserved");
+        assert_eq!(
+            order.last_scanned_height,
+            Some(200),
+            "live scanning must still be able to advance the range further after the rescan finished"
+        );
     }
 
     // -- Order rescans (`docs/order_rescan_wbs.md` Phase 1) -----------------

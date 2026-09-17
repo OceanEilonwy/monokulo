@@ -29,9 +29,9 @@ use crate::crypto;
 use crate::db::{StoreConnectionRow, UserRow};
 use crate::engine_client::{EngineClientError, RescanStatusView};
 use crate::templates::{
-    display_or_dash, display_timestamp, display_timestamp_or_dash, unix_to_date_string, OrderDetailData,
-    OrderDetailViewModel, OrderRescanSectionViewModel, OrderRowViewModel, OrdersViewModel, PaymentRowViewModel,
-    RescanProgressViewModel, RescanTriggerFormViewModel, WebhookRowViewModel, WebhooksViewModel,
+    display_or_dash, display_scan_range, display_timestamp, display_timestamp_or_dash, unix_to_date_string,
+    OrderDetailData, OrderDetailViewModel, OrderRescanSectionViewModel, OrderRowViewModel, OrdersViewModel,
+    PaymentRowViewModel, RescanProgressViewModel, RescanTriggerFormViewModel, WebhookRowViewModel, WebhooksViewModel,
 };
 
 use super::dashboard::redirect_302;
@@ -282,6 +282,11 @@ async fn render_order_detail_page(
                         })
                         .collect(),
                     payment_link,
+                    scan_range_display: display_scan_range(
+                        detail.order.first_scanned_height,
+                        detail.order.last_scanned_height,
+                        detail.order.currently_scanning,
+                    ),
                     rescan,
                     rescan_error,
                 }),
@@ -926,6 +931,7 @@ mod tests {
 
     use crate::db::Db;
     use crate::engine_client::EngineClient;
+    use crate::templates::{OrderDetailData, OrderDetailViewModel};
 
     use super::super::{AppState, build_router};
     use super::parse_extra_headers;
@@ -2220,5 +2226,161 @@ mod tests {
             !html.contains(r#"<meta http-equiv="refresh""#),
             "expected no meta-refresh at all with nothing syncing, got: {html}"
         );
+    }
+
+    // -- "Scan range" row (`docs/order_rescan_wbs.md` Phase 5.4) ------------
+
+    #[tokio::test]
+    async fn scan_range_row_shows_a_muted_dash_for_an_order_with_no_first_tick_yet() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "scan-range-fresh-owner@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let payment_id = seed_real_order(engine.addr, &public_key).await;
+        // Deliberately no `bump_scanned_range_for_order` call - this harness runs
+        // no background scan loop, so a freshly seeded order genuinely has never
+        // been examined by anything yet.
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("host", "test.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("Scan range"), "expected the row's own label, got: {html}");
+        assert!(html.contains(r#"<span class="muted">-</span>"#), "expected the muted-dash fallback, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn scan_range_row_shows_a_growing_range_while_the_order_is_still_being_watched() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "scan-range-growing-owner@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let payment_id = seed_real_order(engine.addr, &public_key).await;
+        // Still `pending` (non-terminal) - genuinely still in scope, so the range
+        // must read as still growing ("N+"), not a closed span.
+        engine.store().lock().unwrap().bump_scanned_range_for_order(&payment_id, 100, 250).unwrap();
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("host", "test.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("100+"), "expected the still-growing range display, got: {html}");
+        assert!(!html.contains("100 - 250"), "must not show a closed range while still in scope, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn scan_range_row_shows_a_growing_range_while_a_rescan_is_running() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "scan-range-rescanning-owner@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let payment_id = seed_real_order(engine.addr, &public_key).await;
+        force_order_expired(engine.store(), &public_key, &payment_id);
+        engine.store().lock().unwrap().bump_scanned_range_for_order(&payment_id, 10, 50).unwrap();
+        seed_running_rescan(engine.store(), &public_key, &payment_id, 5);
+        engine.store().lock().unwrap().bump_scanned_range_for_order(&payment_id, 1, 60).unwrap();
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("host", "test.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(
+            html.contains("1+"),
+            "a currently-running rescan must show a still-growing range even for an otherwise expired order, got: {html}"
+        );
+    }
+
+    /// `currently_scanning: false` (a closed, no-longer-growing range) needs an
+    /// order genuinely past both its own deadline *and* the grace window in real
+    /// wall-clock terms - this harness runs no background scan loop and seeds
+    /// orders with a real ~30-minute-out `expires_at`, so reaching that state
+    /// against a real order would mean an actual wait. Tested directly against the
+    /// template instead, the same way this page's other conditional rows
+    /// (`order_detail_hides_the_double_spend_row_entirely_when_none_was_detected`)
+    /// already are - `display_scan_range`'s own unit-level correctness is what
+    /// this is really about, and the wiring that reaches it is already proven by
+    /// the two tests above.
+    #[test]
+    fn scan_range_row_shows_a_closed_range_once_no_longer_being_watched() {
+        let engine = crate::templates::TemplateEngine::new().unwrap();
+        let order = OrderDetailData {
+            payment_id: "pay_abc123".to_string(),
+            merchant_order_id: None,
+            address: "addr".to_string(),
+            currency: "XMR".to_string(),
+            amount: "0.5".to_string(),
+            rate_display: "1.000000000000 XMR per 1 XMR".to_string(),
+            rate_provider: "xmr".to_string(),
+            xmr_amount_piconero: 500_000_000_000,
+            amount_received_piconero: 500_000_000_000,
+            status: "paid".to_string(),
+            confirmations: 10,
+            double_spend_detected_at: None,
+            double_spend_detected_at_display: crate::templates::display_timestamp_or_dash(None),
+            refund_address: None,
+            created_at_display: "1000".to_string(),
+            expires_at_display: "2000".to_string(),
+            updated_at_display: "1000".to_string(),
+            payments: vec![],
+            payment_link: "http://127.0.0.1:8081/pay/pk_abc123/orders/pay_abc123/share".to_string(),
+            scan_range_display: crate::templates::display_scan_range(Some(100), Some(250), false),
+            rescan: None,
+            rescan_error: None,
+        };
+        let html = engine
+            .render_order_detail(&OrderDetailViewModel {
+                connection_id: "conn_1".to_string(),
+                order: Some(order),
+                meta_refresh_secs: 15,
+                logged_in: true,
+            })
+            .unwrap();
+        assert!(html.contains("100 - 250"), "expected the closed range display, got: {html}");
+        assert!(!html.contains("100+"), "must not show a still-growing range once no longer being watched, got: {html}");
     }
 }

@@ -121,6 +121,13 @@ pub struct AppState {
     /// never holds a `Config` itself (see this struct's own field-by-field shape).
     pub default_rescan_lookback_days: u32,
     pub max_rescan_lookback_days: u32,
+    /// `docs/order_rescan_wbs.md` Phase 4/5.3 -
+    /// `config.payment.expired_order_grace_period_minutes * 60`, threaded down the
+    /// same way the two lookback-day fields above already are. Needed here (not
+    /// only inside `scanner::run_scan_tick`) because `admin::build_order_view`'s
+    /// `currently_scanning` computation uses the identical widened in-scope
+    /// predicate the live scanner itself uses.
+    pub expired_order_grace_period_seconds: i64,
 }
 
 pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
