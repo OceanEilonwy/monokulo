@@ -179,6 +179,7 @@ impl TestEngineHandle {
             network_str(network),
             &tenants,
             reorg_check_depth,
+            0, // no grace period - this helper's own callers don't test expiry timing
         )
         .await
     }
@@ -471,6 +472,7 @@ impl TestEngineConfig {
                                 network_str(*network),
                                 &tenants,
                                 20,
+                                0,
                             )
                             .await;
                         }

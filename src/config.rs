@@ -177,6 +177,11 @@ impl Config {
         require("payment.mempool_poll_interval_ms", self.payment.mempool_poll_interval_ms, 100, 3_600_000, "at least 100ms and at most an hour")?;
         require("payment.default_rescan_lookback_days", self.payment.default_rescan_lookback_days, 1, 3650, "at least 1 day and at most 3650 (10 years)")?;
         require("payment.max_rescan_lookback_days", self.payment.max_rescan_lookback_days, 1, 3650, "at least 1 day and at most 3650 (10 years)")?;
+        // `0` is a legitimate choice here (disables the grace period entirely,
+        // reverting to the pre-Phase-4 behavior of dropping out of live scanning
+        // the instant every order is terminal) - unlike every other knob above,
+        // it is not a silent-failure trap, so the lower bound is 0, not 1.
+        require("payment.expired_order_grace_period_minutes", self.payment.expired_order_grace_period_minutes, 0, 60 * 24 * 365, "at least 0 and at most a year")?;
         if self.payment.default_rescan_lookback_days > self.payment.max_rescan_lookback_days {
             return Err(ConfigError::OutOfRange {
                 field: "payment.default_rescan_lookback_days",
@@ -377,6 +382,17 @@ pub struct PaymentConfig {
     /// clamped. Exists so a merchant can't accidentally (or a hostile caller
     /// deliberately) trigger a walk covering years of blocks against one order.
     pub max_rescan_lookback_days: u32,
+    /// `docs/order_rescan_wbs.md` Phase 4 - how long after `expires_at` an
+    /// `Expired` order's subaddress keeps getting checked by ordinary live
+    /// scanning (`Store::active_tenant_ids`/`non_terminal_order_ids`), the
+    /// automatic first line of defense for a payment that arrives just after
+    /// an order's own deadline - no merchant action needed, unlike the
+    /// manual rescan this instance also offers for after this window has
+    /// already elapsed. Default `360` (6h) - generous enough to catch
+    /// "sent it right as it expired, arrived a bit late" and mempool-
+    /// congestion cases automatically, without keeping every expired
+    /// order's subaddress in the hot scan path indefinitely.
+    pub expired_order_grace_period_minutes: i64,
 }
 
 impl Default for PaymentConfig {
@@ -390,6 +406,7 @@ impl Default for PaymentConfig {
             mempool_poll_interval_ms: 1000,
             default_rescan_lookback_days: 7,
             max_rescan_lookback_days: 90,
+            expired_order_grace_period_minutes: 360,
         }
     }
 }
@@ -667,6 +684,22 @@ mod tests {
         // Equal is fine - simple mode's window would just equal the ceiling exactly.
         let config = config_with("[payment]\ndefault_rescan_lookback_days = 7\nmax_rescan_lookback_days = 7");
         config.validate().unwrap();
+    }
+
+    #[test]
+    fn expired_order_grace_period_minutes_allows_zero_but_rejects_negative_or_too_large() {
+        // Unlike every knob in `every_numeric_knob_with_a_silent_failure_mode_at_zero_is_rejected`,
+        // 0 here is a legitimate choice (disables the grace period entirely) - it
+        // must validate cleanly, not be lumped in with that test's rejections.
+        config_with("[payment]\nexpired_order_grace_period_minutes = 0").validate().unwrap();
+        config_with("[payment]\nexpired_order_grace_period_minutes = 360").validate().unwrap();
+
+        let err = config_with("[payment]\nexpired_order_grace_period_minutes = -1").validate().unwrap_err();
+        assert!(matches!(err, ConfigError::OutOfRange { field: "payment.expired_order_grace_period_minutes", .. }));
+
+        let err =
+            config_with(&format!("[payment]\nexpired_order_grace_period_minutes = {}", 60 * 24 * 365 + 1)).validate().unwrap_err();
+        assert!(matches!(err, ConfigError::OutOfRange { field: "payment.expired_order_grace_period_minutes", .. }));
     }
 
     #[test]

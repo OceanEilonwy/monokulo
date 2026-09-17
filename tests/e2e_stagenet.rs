@@ -245,7 +245,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     let tenants = vec![(created.tenant.id.clone(), handle)];
     let mut last_status = String::new();
     for attempt in 1..=30 {
-        run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(Network::Stagenet), &tenants, config.payment.reorg_check_depth)
+        run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(Network::Stagenet), &tenants, config.payment.reorg_check_depth, 0)
             .await
             .expect("scan tick failed");
 

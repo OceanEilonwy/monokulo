@@ -222,6 +222,7 @@ async fn main() {
     });
 
     let reorg_check_depth = config.payment.reorg_check_depth;
+    let expired_order_grace_period_seconds = config.payment.expired_order_grace_period_minutes * 60;
     let poll_interval = Duration::from_millis(config.payment.mempool_poll_interval_ms);
 
     // Cloned before the scanner loop's own `move` closure below consumes the
@@ -240,6 +241,7 @@ async fn main() {
             daemons.clone(),
             wallet_handles.clone(),
             reorg_check_depth,
+            expired_order_grace_period_seconds,
             poll_interval,
             scanner_status.clone(),
         )
@@ -565,6 +567,7 @@ async fn run_scanner_loop(
     daemons: Arc<HashMap<Network, Arc<FallbackDaemonClient>>>,
     wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
     reorg_check_depth: u64,
+    expired_order_grace_period_seconds: i64,
     poll_interval: Duration,
     scanner_status: ScannerStatusMap,
 ) {
@@ -573,9 +576,16 @@ async fn run_scanner_loop(
             wallet_handles.read().unwrap().iter().map(|(id, h)| (id.clone(), *h)).collect();
         for (network, daemon) in daemons.iter() {
             let started_at = now_unix();
-            let result =
-                run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(*network), &tenants, reorg_check_depth)
-                    .await;
+            let result = run_scan_tick(
+                &store,
+                key_custody.as_ref(),
+                daemon.as_ref(),
+                network_str(*network),
+                &tenants,
+                reorg_check_depth,
+                expired_order_grace_period_seconds,
+            )
+            .await;
             let finished_at = now_unix();
             if let Err(e) = &result {
                 eprintln!("scan tick failed for {network:?}: {e}");

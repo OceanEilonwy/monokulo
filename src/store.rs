@@ -584,11 +584,19 @@ impl Store {
     /// watchlist for "this tick, this network" must not include a tenant that
     /// happens to be active but belongs to a different chain - it has nothing to
     /// do with the daemon this call is about to use.
-    pub fn active_tenant_ids(&self, network: &str) -> Result<Vec<String>> {
+    /// `now`/`grace_period_seconds` widen the watchlist to also include a
+    /// tenant whose only remaining activity is an order that went `Expired`
+    /// within the last `grace_period_seconds` (`docs/order_rescan_wbs.md`
+    /// Phase 4 - `config.payment.expired_order_grace_period_minutes`) - the
+    /// automatic, no-merchant-action-needed first line of defense for a
+    /// payment that lands just after an order's own deadline, distinct from
+    /// the manual rescan (`scanner::rescan_order`) which exists for after
+    /// this window has already elapsed.
+    pub fn active_tenant_ids(&self, network: &str, now: i64, grace_period_seconds: i64) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT o.tenant_id FROM orders o
              JOIN tenants t ON t.id = o.tenant_id
-             WHERE o.status IN (?1, ?2, ?3, ?4) AND t.network = ?5",
+             WHERE (o.status IN (?1, ?2, ?3, ?4) OR (o.status = ?5 AND o.expires_at >= ?6)) AND t.network = ?7",
         )?;
         let rows = stmt
             .query_map(
@@ -597,6 +605,8 @@ impl Store {
                     status_to_str(OrderStatus::Unconfirmed),
                     status_to_str(OrderStatus::Confirming),
                     status_to_str(OrderStatus::Partial),
+                    status_to_str(OrderStatus::Expired),
+                    now - grace_period_seconds,
                     network,
                 ],
                 |row| row.get::<_, String>(0),
@@ -619,11 +629,13 @@ impl Store {
     /// forever, and an unpaid order sails past `expires_at` without ever becoming
     /// `expired`. Both were live bugs when the scanner recomputed only the orders
     /// whose transactions it matched during that same tick.
-    pub fn non_terminal_order_ids(&self, network: &str) -> Result<Vec<String>> {
+    /// `now`/`grace_period_seconds` - see `active_tenant_ids`'s own doc
+    /// comment (the same widening, one level down).
+    pub fn non_terminal_order_ids(&self, network: &str, now: i64, grace_period_seconds: i64) -> Result<Vec<String>> {
         let mut stmt = self.conn.prepare(
             "SELECT o.id FROM orders o
              JOIN tenants t ON t.id = o.tenant_id
-             WHERE o.status IN (?1, ?2, ?3, ?4) AND t.network = ?5",
+             WHERE (o.status IN (?1, ?2, ?3, ?4) OR (o.status = ?5 AND o.expires_at >= ?6)) AND t.network = ?7",
         )?;
         let rows = stmt
             .query_map(
@@ -632,6 +644,8 @@ impl Store {
                     status_to_str(OrderStatus::Unconfirmed),
                     status_to_str(OrderStatus::Confirming),
                     status_to_str(OrderStatus::Partial),
+                    status_to_str(OrderStatus::Expired),
+                    now - grace_period_seconds,
                     network,
                 ],
                 |row| row.get::<_, String>(0),
@@ -1911,7 +1925,7 @@ mod tests {
             tenants_by_status.insert(status, tenant.tenant.id);
         }
 
-        let active: std::collections::HashSet<String> = store.active_tenant_ids("mainnet").unwrap().into_iter().collect();
+        let active: std::collections::HashSet<String> = store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().into_iter().collect();
 
         for status in [OrderStatus::Pending, OrderStatus::Unconfirmed, OrderStatus::Confirming, OrderStatus::Partial] {
             assert!(active.contains(&tenants_by_status[&status]), "{status} must be active");
@@ -1922,10 +1936,37 @@ mod tests {
     }
 
     #[test]
+    fn an_expired_order_is_active_within_its_grace_period_and_not_once_it_elapses() {
+        // `docs/order_rescan_wbs.md` Phase 4 - both `active_tenant_ids` and
+        // `non_terminal_order_ids` get the identical widened predicate, tested
+        // together here since they share the exact same boundary condition.
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, &tenant.tenant.id, 1); // expires_at = 2000
+        store.conn.execute("UPDATE orders SET status = 'expired' WHERE id = ?1", params![order.id]).unwrap();
+
+        // Exactly at the boundary (`expires_at >= now - grace`) - inclusive.
+        assert!(store.active_tenant_ids("mainnet", 2000, 0).unwrap().contains(&tenant.tenant.id));
+        assert!(store.non_terminal_order_ids("mainnet", 2000, 0).unwrap().contains(&order.id));
+
+        // One second past, with no grace at all - excluded.
+        assert!(!store.active_tenant_ids("mainnet", 2001, 0).unwrap().contains(&tenant.tenant.id));
+        assert!(!store.non_terminal_order_ids("mainnet", 2001, 0).unwrap().contains(&order.id));
+
+        // A real grace window: still within it.
+        assert!(store.active_tenant_ids("mainnet", 2500, 600).unwrap().contains(&tenant.tenant.id));
+        assert!(store.non_terminal_order_ids("mainnet", 2500, 600).unwrap().contains(&order.id));
+
+        // Past even the grace window - excluded again.
+        assert!(!store.active_tenant_ids("mainnet", 2601, 600).unwrap().contains(&tenant.tenant.id));
+        assert!(!store.non_terminal_order_ids("mainnet", 2601, 600).unwrap().contains(&order.id));
+    }
+
+    #[test]
     fn tenant_with_no_orders_at_all_is_not_active() {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
-        assert!(!store.active_tenant_ids("mainnet").unwrap().contains(&tenant.tenant.id));
+        assert!(!store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id));
     }
 
     #[test]
@@ -1940,19 +1981,19 @@ mod tests {
         let tenant = new_tenant(&store);
         let order_a = new_order(&store, &tenant.tenant.id, 1);
 
-        assert!(store.active_tenant_ids("mainnet").unwrap().contains(&tenant.tenant.id));
+        assert!(store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id));
 
         store.record_payment_match(&order_a.id, "tx_a", 0, 100, "[]", 1500, Some(50)).unwrap();
         let (_, status) = store.recompute_order_status(&order_a.id, 59, 1600).unwrap();
         assert_eq!(status, OrderStatus::Paid);
         assert!(
-            !store.active_tenant_ids("mainnet").unwrap().contains(&tenant.tenant.id),
+            !store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id),
             "tenant must drop off once its only order is fully settled"
         );
 
         let order_b = new_order(&store, &tenant.tenant.id, 2);
         assert!(
-            store.active_tenant_ids("mainnet").unwrap().contains(&tenant.tenant.id),
+            store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id),
             "a fresh order must bring the tenant straight back onto the watchlist"
         );
         let _ = order_b;
@@ -1969,7 +2010,7 @@ mod tests {
         store.recompute_order_status(&order_a.id, 59, 1600).unwrap();
 
         assert!(
-            store.active_tenant_ids("mainnet").unwrap().contains(&tenant.tenant.id),
+            store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap().contains(&tenant.tenant.id),
             "order_b is still pending, so the tenant must stay active even though order_a settled"
         );
     }
@@ -2110,11 +2151,11 @@ mod tests {
             .unwrap();
         new_order(&store, &stagenet_tenant.tenant.id, 1);
 
-        let mainnet_active = store.active_tenant_ids("mainnet").unwrap();
+        let mainnet_active = store.active_tenant_ids("mainnet", i64::MAX, 0).unwrap();
         assert!(mainnet_active.contains(&mainnet_tenant.tenant.id));
         assert!(!mainnet_active.contains(&stagenet_tenant.tenant.id), "a stagenet tenant must never appear in a mainnet query");
 
-        let stagenet_active = store.active_tenant_ids("stagenet").unwrap();
+        let stagenet_active = store.active_tenant_ids("stagenet", i64::MAX, 0).unwrap();
         assert!(stagenet_active.contains(&stagenet_tenant.tenant.id));
         assert!(!stagenet_active.contains(&mainnet_tenant.tenant.id));
     }
@@ -2340,7 +2381,7 @@ mod tests {
         }
 
         let ids: std::collections::HashSet<String> =
-            store.non_terminal_order_ids("mainnet").unwrap().into_iter().collect();
+            store.non_terminal_order_ids("mainnet", i64::MAX, 0).unwrap().into_iter().collect();
         for status in [OrderStatus::Pending, OrderStatus::Unconfirmed, OrderStatus::Confirming, OrderStatus::Partial] {
             assert!(ids.contains(&ids_by_status[&status]), "{status} orders must be recomputed every tick");
         }
@@ -2364,8 +2405,8 @@ mod tests {
             )
             .unwrap();
         let stagenet_order = new_order(&store, &stagenet.tenant.id, 1);
-        assert!(!store.non_terminal_order_ids("mainnet").unwrap().contains(&stagenet_order.id));
-        assert!(store.non_terminal_order_ids("stagenet").unwrap().contains(&stagenet_order.id));
+        assert!(!store.non_terminal_order_ids("mainnet", i64::MAX, 0).unwrap().contains(&stagenet_order.id));
+        assert!(store.non_terminal_order_ids("stagenet", i64::MAX, 0).unwrap().contains(&stagenet_order.id));
     }
 
     #[test]

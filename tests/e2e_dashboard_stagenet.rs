@@ -352,7 +352,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     let mut last_dashboard_html = String::new();
     for attempt in 1..=30 {
         let tenants: Vec<(String, WalletHandle)> = wallet_handles.read().unwrap().iter().map(|(id, h)| (id.clone(), *h)).collect();
-        run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(Network::Stagenet), &tenants, config.payment.reorg_check_depth)
+        run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(Network::Stagenet), &tenants, config.payment.reorg_check_depth, 0)
             .await
             .expect("scan tick failed");
 
