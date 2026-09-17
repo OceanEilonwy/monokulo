@@ -29,6 +29,37 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Follow-up to the same-day rescan bug below: a real `UtcDate` type, not
+  just the arithmetic fix.** The user asked directly - would a typed date
+  value have caught this, and should the code be made stronger that way?
+  Agreed: `from` and `earliest_allowed` were both bare `i64`, so a
+  day-granular value and a precise instant could be compared with a plain
+  `<` that compiled regardless of which side actually meant what - exactly
+  why the mismatch shipped silently. Added `UtcDate` (`crates/scanner/src/
+  http/admin.rs`) as a small newtype wrapping a UTC-midnight unix timestamp,
+  with no `PartialOrd<i64>` impl - pulling it back into instant-space for a
+  comparison now requires an explicit `.unix()` call, so a future edit
+  comparing a day against an instant has to consciously say so instead of it
+  just quietly compiling.
+  - **Scoped down from the first pass**: initially also made `from`/`to`
+    require an *exact* UTC-midnight value (rejecting any precise instant
+    outright). That broke 5 existing tests, 3 of which (the engine's own
+    gap-prevention-guardrail tests) deliberately use precise, sub-day block
+    timestamps as `from`/`to` to pin exact height boundaries - a legitimate
+    technique the original bug never had anything to do with. Reverted that
+    part: `from`/`to` stay plain, flexible instants exactly as documented
+    ("same convention `created_at`/`expires_at` already use") - only the
+    *ceiling* (`earliest_allowed`) is a `UtcDate`, converted back via `.unix()`
+    at the one comparison site that needs it. Gets the real type-safety
+    property (this specific mismatch can't silently reappear) without
+    tightening accepted input beyond what fixing the actual bug required.
+  - No behavior change beyond the previous commit's fix - same comparison,
+    same result, just impossible to accidentally get wrong at this callsite
+    again. `cargo test --workspace` clean (322 scanner/209 monokulo, 0
+    failed, unchanged pass counts) - the 5 tests that broke during the
+    scoped-too-wide first pass passed again once reverted, no fixture
+    changes needed.
+
 - **Database date/datetime columns renamed with a `_utc` suffix, plus a real
   same-day rescan bug found and fixed along the way.** The user asked for two
   things after the rename/rebrand round: (1) make sure the advanced-mode

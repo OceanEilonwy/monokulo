@@ -518,17 +518,44 @@ pub struct TriggerRescanRequest {
     /// `"simple"` or `"advanced"` - see `resolve_rescan_window`.
     mode: String,
     /// `advanced` mode only: unix timestamps, same convention `created_at`/
-    /// `expires_at` already use everywhere else in this API.
+    /// `expires_at` already use everywhere else in this API. Not required to
+    /// land on a UTC day boundary - the one real caller (monokulo's own
+    /// `<input type="date">` form) only ever sends a UTC-midnight value in
+    /// practice, but nothing here depends on that being true (see
+    /// `resolve_rescan_window`'s own doc comment for why the bound check is
+    /// correct either way).
     from: Option<i64>,
     to: Option<i64>,
 }
 
-/// Floors a unix timestamp to the start (00:00:00) of its own UTC calendar
-/// day. Plain integer arithmetic, not a civil-calendar computation - a unix
-/// timestamp's UTC day boundary is just `ts - (ts mod 86_400)`, no
-/// year/month/day math needed the way rendering a `YYYY-MM-DD` string would.
-fn utc_day_start(ts: i64) -> i64 {
-    ts.div_euclid(SECONDS_PER_DAY) * SECONDS_PER_DAY
+/// A UTC calendar day - identified by its own midnight (00:00:00 UTC) as a unix
+/// timestamp, never an arbitrary instant. Exists specifically so "a day" and "an
+/// instant" can't be silently compared against each other as bare `i64`s the way
+/// `resolve_rescan_window`'s own `from`/`earliest_allowed` bound once was (a real
+/// bug this type exists to make impossible to reintroduce, not a hypothetical
+/// one - see that function's own doc comment). Deliberately carries no
+/// `PartialOrd<i64>` impl against a plain `i64`: pulling a `UtcDate` back into
+/// instant-space to compare against one always goes through the named [`unix`]
+/// method below, so that conversion is a visible, deliberate choice at every
+/// call site, not implicit i64 arithmetic that happens to compile either way
+/// regardless of which side actually means what.
+///
+/// [`unix`]: UtcDate::unix
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+struct UtcDate(i64);
+
+impl UtcDate {
+    /// The UTC calendar day containing `ts`, rounding down. Plain integer
+    /// arithmetic, not a civil-calendar computation - a unix timestamp's UTC day
+    /// boundary is just `ts - (ts mod 86_400)`, no year/month/day math needed the
+    /// way rendering a `YYYY-MM-DD` string would.
+    fn containing(ts: i64) -> Self {
+        UtcDate(ts.div_euclid(SECONDS_PER_DAY) * SECONDS_PER_DAY)
+    }
+
+    fn unix(self) -> i64 {
+        self.0
+    }
 }
 
 /// Resolves a trigger request's requested window to concrete unix timestamps
@@ -539,25 +566,42 @@ fn utc_day_start(ts: i64) -> i64 {
 /// creation time and the `max_rescan_lookback_days` ceiling, if `to` is in the
 /// future, or if `to` precedes `from`.
 ///
-/// The `from` bound is checked against [`utc_day_start`] of that ceiling, not the
-/// ceiling's own exact second - `advanced` mode's `from`/`to` are unix timestamps
-/// in this API generally, but the *only* real caller that exists (monokulo's own
-/// `<input type="date">` form, via `date_string_to_unix_midnight`) can only ever
-/// submit a UTC-midnight value, never a specific time of day. Comparing that
-/// day-granular value against `order.created_at`'s own exact second meant a
-/// same-day rescan could never actually pick a valid "from" at all: today's own
-/// midnight is *always* earlier than a creation timestamp later that same day, so
-/// the earliest date the UI's own `min` attribute ever offered (`created_at`'s
-/// calendar day) was rejected outright the moment anyone actually picked it - a
-/// real, previously-unnoticed gap, not a hypothetical one (confirmed against a
-/// live request before this fix landed). Flooring the ceiling to its own day
-/// start widens what's accepted by less than 24h in the worst case, never
-/// narrows it - safe for the same reason `RESCAN_START_HEIGHT_CUSHION_BLOCKS`
-/// (`scanner.rs`) already treats "scans a little more chain than strictly asked"
-/// as harmless: this order's subaddress is unique to it (never reused across
-/// orders), so scanning from its own creation day's midnight instead of its exact
-/// creation second can only ever examine additional blocks that provably can't
-/// contain a real payment to it, never miss or double-count anything that could.
+/// The `from` bound is checked against [`UtcDate::containing`] of that ceiling
+/// (via its own `.unix()`, not the ceiling's raw exact second: `advanced` mode's
+/// `from`/`to` are unix timestamps in this API generally, but the *only* real
+/// caller that exists (monokulo's own `<input type="date">` form, via
+/// `date_string_to_unix_midnight`) can only ever submit a UTC-midnight value,
+/// never a specific time of day. Comparing that day-granular value against
+/// `order.created_at`'s own exact second meant a same-day rescan could never
+/// actually pick a valid "from" at all: today's own midnight is *always* earlier
+/// than a creation timestamp later that same day, so the earliest date the UI's
+/// own `min` attribute ever offered (`created_at`'s calendar day) was rejected
+/// outright the moment anyone actually picked it - a real, previously-unnoticed
+/// bug (confirmed against a live request before this fix landed), not a
+/// hypothetical one, and exactly the class of bug [`UtcDate`] exists to make
+/// impossible to reintroduce: `from`/`earliest_allowed` were both bare `i64`, so
+/// nothing stopped comparing a day-floor value against a precise instant with a
+/// plain `<` that compiled regardless of which side meant what - `UtcDate`
+/// forces an explicit `.unix()` at the comparison site instead, so a future edit
+/// comparing a day against an instant has to consciously say so.
+///
+/// `from` itself is deliberately *not* required to land on a day boundary -
+/// only the ceiling it's compared against is. A caller sending a genuinely
+/// precise `from` (later than midnight on its own day) is still handled
+/// correctly by this same comparison (still `>=` the day start, so still
+/// accepted), and this API was always documented as accepting arbitrary
+/// instants here, not just whole days - rejecting a legitimate precise value
+/// nothing about this bug required rejecting would be tightening the API well
+/// past what fixing the actual bug needs.
+///
+/// Rounding the ceiling down to its own day start widens what's accepted by
+/// less than 24h in the worst case, never narrows it - safe for the same reason
+/// `RESCAN_START_HEIGHT_CUSHION_BLOCKS` (`scanner.rs`) already treats "scans a
+/// little more chain than strictly asked" as harmless: this order's subaddress
+/// is unique to it (never reused across orders), so scanning from its own
+/// creation day's midnight instead of its exact creation second can only ever
+/// examine additional blocks that provably can't contain a real payment to it,
+/// never miss or double-count anything that could.
 fn resolve_rescan_window(
     req: &TriggerRescanRequest,
     order: &Order,
@@ -566,7 +610,7 @@ fn resolve_rescan_window(
     now: i64,
 ) -> Result<(RescanMode, i64, i64), ApiError> {
     let earliest_allowed = order.created_at.max(now - max_lookback_days as i64 * SECONDS_PER_DAY);
-    let earliest_allowed_day_start = utc_day_start(earliest_allowed);
+    let earliest_allowed_day = UtcDate::containing(earliest_allowed);
     match req.mode.as_str() {
         "simple" => {
             let from = order.created_at.max(now - default_lookback_days as i64 * SECONDS_PER_DAY);
@@ -575,11 +619,12 @@ fn resolve_rescan_window(
         "advanced" => {
             let from = req.from.ok_or_else(|| ApiError::BadRequest("advanced mode requires \"from\"".into()))?;
             let to = req.to.unwrap_or(now);
-            if from < earliest_allowed_day_start {
+            if from < earliest_allowed_day.unix() {
                 return Err(ApiError::BadRequest(format!(
-                    "\"from\" ({from}) cannot be earlier than {earliest_allowed_day_start} (the start of the UTC day \
-                     containing {earliest_allowed}) - the later of this order's own creation time ({}) and the \
+                    "\"from\" ({from}) cannot be earlier than {} (the start of the UTC day containing \
+                     {earliest_allowed}) - the later of this order's own creation time ({}) and the \
                      {max_lookback_days}-day lookback ceiling",
+                    earliest_allowed_day.unix(),
                     order.created_at
                 )));
             }
