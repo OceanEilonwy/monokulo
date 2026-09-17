@@ -165,6 +165,23 @@ async fn render_checkout_page(
     };
 
     let (status_text, status_class, is_terminal) = status_label(&detail.order.status);
+    // A subtle, progressive color shift as expiry nears (research on real
+    // crypto-checkout UIs: a big alarming red countdown creates anxiety: a
+    // quiet color change at 5 minutes, then 2, communicates urgency without
+    // it) - computed here, server-side, same reasoning as `progress_percent`
+    // above: this page has no `<script>` at all, so anything time-sensitive
+    // has to already be correct in the HTML this handler returns, refreshed
+    // by the meta-refresh tag rather than a client-side timer.
+    let seconds_until_expiry = detail.order.expires_at - crate::now_unix();
+    let expiry_urgency_class = if is_terminal {
+        String::new()
+    } else if seconds_until_expiry <= 120 {
+        "expiry-urgent".to_string()
+    } else if seconds_until_expiry <= 300 {
+        "expiry-soon".to_string()
+    } else {
+        String::new()
+    };
     // Computed here, server-side, not by client JS from a live poll - this
     // page has no `<script>` at all any more (a meta-refresh re-fetches the
     // whole page instead), so the progress bar's fill has to already be
@@ -193,6 +210,7 @@ async fn render_checkout_page(
         double_spend_detected_at: detail.order.double_spend_detected_at,
         double_spend_detected_at_display: crate::templates::display_timestamp_or_dash(detail.order.double_spend_detected_at),
         expires_in_display: crate::templates::format_duration_until(detail.order.expires_at, crate::now_unix()),
+        expiry_urgency_class,
         merchant_order_id: detail.order.merchant_order_id.clone(),
         refund_address: detail.order.refund_address.clone(),
         refund_address_error,

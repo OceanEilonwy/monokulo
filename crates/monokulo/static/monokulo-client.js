@@ -170,7 +170,21 @@
     iframe.title = "Monero Payment";
     iframe.style.border = "none";
     iframe.style.width = options.width || "420px";
-    iframe.style.height = options.height || "640px";
+    // 900px, not the previous 640px: the checkout page's amount, QR, address
+    // card, progress bar, and refund-address form alone already run past
+    // 900px at this default 420px width - 640px was silently cutting real
+    // content off into the frame's own inner scrollbar for every order, not
+    // just wide/edge-case ones. True auto-sizing (matching the framed page's
+    // real content height, the way checkout_share.html.hbs's own same-origin
+    // script does) isn't available here - this iframe's origin is the
+    // caller's own site, not monokulo's, so cross-origin restrictions block
+    // reading its content height directly, and the framed page itself
+    // carries no script of its own to report it out (see the no-script
+    // note just below - a deliberate rule for a real-money payment page, not
+    // an oversight this could route around). A caller who wants a
+    // specifically sized/no-scroll embed should still pass an explicit
+    // `height` in `options`.
+    iframe.style.height = options.height || "900px";
     // No "allow-scripts" - the page this iframes carries none by design
     // (see this file's own doc comment above); this mount()'s own polling
     // below, running in the merchant's page rather than inside the frame,

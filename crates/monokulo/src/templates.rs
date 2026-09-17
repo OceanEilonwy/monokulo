@@ -838,6 +838,13 @@ pub struct CheckoutViewModel {
     /// `<script>` to be understandable. Only shown when `!is_terminal`;
     /// meaningless (and unused) otherwise.
     pub expires_in_display: String,
+    /// `""`, `"expiry-soon"`, or `"expiry-urgent"` - a CSS class picked
+    /// server-side from how much time is actually left (see
+    /// `http::checkout::render_checkout_page`), so the timer can shift color
+    /// as expiry nears without any client-side timer/JS of its own. Always
+    /// `""` once `is_terminal` (an expired/paid/overpaid order has nothing
+    /// left to be urgent about).
+    pub expiry_urgency_class: String,
     pub merchant_order_id: Option<String>,
     /// `Some` once a customer (or their storefront, on their behalf) has
     /// set one via the form below - shown read-only from then on. `None`
@@ -1484,6 +1491,7 @@ mod tests {
             double_spend_detected_at: None,
             double_spend_detected_at_display: display_timestamp_or_dash(None),
             expires_in_display: "30m".to_string(),
+            expiry_urgency_class: String::new(),
             merchant_order_id: None,
             refund_address: None,
             refund_address_error: None,

@@ -29,6 +29,90 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **UI feedback round: connect-flow button placement, branding copy/layout
+  fixes, and a real checkout-page redesign researched against other crypto
+  payment UIs.** Four independent pieces of user feedback on the just-shipped
+  rebrand/logo work and the (pre-existing) checkout page.
+  - **"Back to dashboard" moved to the top** of the advanced-connect success
+    state (`connect.html.hbs`) - was at the very bottom, after the full
+    integration guide; now the first thing on the page, before the guide.
+  - **Branding correction**: the landing page's own naming footnote said
+    "mono (one) + okulo (eye)" - wrong etymology, caught by the user. It's
+    actually "mon(ero) + okulo (eye)" - a Monero eye, not "one eye". Fixed
+    the copy; also reworked the hero layout (`_styles.html.hbs`'s `.hero`) -
+    the logo was `align-items: center`'d against the *whole* text block
+    (heading + paragraph), leaving it floating oddly high relative to the
+    heading it's meant to pair with; switched to top-aligned with a small
+    nudge and shrank it (88px -> 64px) to read as a normal "icon beside a
+    headline" pairing instead of an oversized, disconnected mark.
+  - **Checkout page redesign**, after researching real crypto-checkout UIs
+    (BTCPay Server, OpenNode, Coinbase Commerce, and general crypto-checkout
+    UX writeups) for what they actually do differently: QR codes at >=200px
+    (not smaller - scan failures below that), an explicit copy affordance
+    right next to the address rather than relying on the customer already
+    knowing to select-all a readonly field, a low-key expiry timer (a quiet
+    color shift near zero, not a big red countdown the whole time), and
+    genuinely responsive layouts rather than one narrow column stretched by
+    the viewport meta tag alone.
+    - **Wider on desktop, real single-column on mobile**: `checkout.html.hbs`
+      now goes two-column (QR+amount+address on the left, progress/refund/
+      history on the right) above 700px, single column below it - was a
+      flat 380px-max-width column regardless of how wide the surrounding
+      iframe actually was, which is what made a desktop visitor's payment
+      page look letterboxed and, combined with a too-short fixed iframe
+      height on both the share page and the JS widget's own default, cut
+      real content off into an inner scrollbar.
+    - **The actual "cut off, requires scrolling" cause**: found by rendering
+      the real page at the JS widget's own default size (420x640) - actual
+      content height there is closer to 900-1000px even for a fresh order
+      with no payments yet, so the 640px default was silently clipping
+      *every* real order, not just edge cases. Bumped
+      `static/monokulo-client.js`'s default height to 900px (true
+      content-matched auto-sizing isn't available there - that iframe is
+      cross-origin from the merchant's own page, and the framed checkout
+      page itself deliberately carries zero script to report its own height
+      out with - a real-money payment page staying usable and trustworthy
+      with JavaScript off is a hard rule here, not an oversight). Where it
+      *is* same-origin (`checkout_share.html.hbs`, monokulo hosting both
+      sides), added a real same-origin auto-resize script instead - a
+      genuine progressive enhancement (a working static fallback height
+      either way), not a workaround for the no-script rule on the framed
+      page itself.
+    - **Copy-address UI**: wrapped the existing readonly `<textarea>` in a
+      real `<label>` (clicking/tapping anywhere in a `<label>` focuses its
+      associated control - genuine HTML behavior, no JS needed) styled as an
+      obvious card with a copy-glyph icon and a `:focus-within` highlight,
+      instead of a bare unstyled text box with only a small caption hinting
+      at what to do with it.
+    - **Refund-address field**: was genuinely cut off - a 54-character
+      placeholder ("Your own Monero address, in case a refund is ever
+      needed") inside a narrow input, silently truncated by the box itself
+      with no other explanation of the field's purpose visible. Shortened
+      the placeholder and moved the actual explanation into a real,
+      always-visible `.field-help` line below the field (the established
+      convention every other form in this app already uses) - a vanishing
+      placeholder was never the right place for that anyway.
+    - A new `expiry_urgency_class` field (`""` / `"expiry-soon"` /
+      `"expiry-urgent"`) computed server-side in
+      `http::checkout::render_checkout_page` from real seconds-until-expiry
+      drives the timer pill's color - same "already correct in the HTML this
+      handler returns, no client-side timer" discipline this page's meta-
+      refresh already relies on.
+  - Caught and fixed twice while iterating: writing "`<script>`"/"postMessage"
+    literally inside a CSS/JS *comment* still lands in the rendered response
+    body, which the existing no-script/no-postMessage regression tests check
+    for as a raw substring - broke, then fixed, two of the checkout page's
+    own tests this way before landing on wording that says the same thing
+    without the literal token.
+  - Verified every new layout with real headless-Chromium screenshots at
+    both desktop and mobile widths before calling it done, not just by
+    reading the markup - caught the "logo floating oddly high" issue and
+    confirmed the two-column checkout layout actually fits without scrolling
+    this way, rather than assuming from the HTML alone.
+  - `cargo test --workspace` clean (322 scanner/209 monokulo, 0 failed,
+    unchanged pass counts - this was a template/CSS/JS round, no new tests
+    needed beyond the ones already covering this page's structure).
+
 - **Follow-up to the same-day rescan bug below: a real `UtcDate` type, not
   just the arithmetic fix.** The user asked directly - would a typed date
   value have caught this, and should the code be made stronger that way?

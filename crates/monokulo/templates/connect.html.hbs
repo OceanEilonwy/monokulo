@@ -11,14 +11,13 @@
 <div class="wrap">
 
 {{#if public_key}}
+<a class="btn" href="/dashboard">&larr; back to dashboard</a>
 <h1>Store connected</h1>
 <p>Your public key: <code>{{public_key}}</code></p>
 <p class="hint">Keep this value handy. Your secret token is stored securely and is never shown
 here - the control plane keeps it on your behalf for the calls it makes on your store's behalf.</p>
 
 {{> integration_help public_key=public_key endpoint=endpoint is_woocommerce=false}}
-
-<a class="btn" href="/dashboard">back to dashboard</a>
 {{else}}
 <h1>Connect your store (advanced)</h1>
 <p class="hint">This form provisions your store directly from a watch-only key pair - no plugin
