@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{{#if active_rescans}}<meta http-equiv="refresh" content="5">{{/if}}
 <title>Dashboard - MoneroPay Cloud</title>
 {{> styles}}
 </head>
@@ -11,6 +12,19 @@
 <div class="wrap">
 
 <h1>Dashboard</h1>
+
+{{#if active_rescans}}
+<div class="box">
+<span class="tag tag-syncing">Syncing</span> {{active_rescans_count_label}} for possible late payments - this page
+refreshes every 5s while that's true.
+<ul>
+{{#each active_rescans}}
+<li><a href="/dashboard/connections/{{this.connection_id}}/orders/{{this.payment_id}}">{{this.payment_id}}
+({{this.percent_complete}}%) &rarr;</a></li>
+{{/each}}
+</ul>
+</div>
+{{/if}}
 
 {{#if has_stores}}
 <div class="box">

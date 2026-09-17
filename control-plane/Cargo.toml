@@ -28,4 +28,5 @@ uuid = { version = "1.26.0", features = ["v4"] }
 engine-test-support = { path = "../engine-test-support" }
 http-body-util = "0.1.5"
 monero = "0.22.0"
+moneropay-core = { path = ".." }
 tower = { version = "0.5.3", features = ["util"] }

@@ -182,6 +182,17 @@ impl TestEngineHandle {
         )
         .await
     }
+
+    /// This engine's own real, live `SharedStore` - for a caller that needs to
+    /// force state a plain HTTP call against the engine can't reach directly
+    /// (e.g. `docs/order_rescan_wbs.md` Phase 3's own tests driving an order
+    /// straight to `Expired` via `recompute_order_status` against a `now` past
+    /// its deadline, rather than waiting out a real 30-minute default expiry).
+    /// Same "give the test real, direct access rather than a narrower purpose-
+    /// built method per caller" reasoning as `run_scan_tick_now` above.
+    pub fn store(&self) -> &moneropay_core::store::SharedStore {
+        &self.store
+    }
 }
 
 impl Drop for TestEngineHandle {

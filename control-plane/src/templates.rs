@@ -257,6 +257,68 @@ pub fn format_duration_until(target_unix: i64, now_unix: i64) -> String {
     parts.join(" ")
 }
 
+/// Days since the Unix epoch (1970-01-01) for a proleptic Gregorian calendar
+/// date - Howard Hinnant's well-known constant-time algorithm
+/// (<http://howardhinnant.github.io/date_algorithms.html>), used instead of
+/// pulling calendar formatting/parsing into the `time` crate dependency this
+/// crate already has (currently used here only for `time::Duration::ZERO` on
+/// a cookie) for one narrow, exactly-specified need: converting between a
+/// `<input type="date">`'s `YYYY-MM-DD` value and a unix timestamp for the
+/// order-rescan form's date bounds (`docs/order_rescan_wbs.md` Phase 3.2).
+fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
+    let y = if m <= 2 { y - 1 } else { y };
+    let era = (if y >= 0 { y } else { y - 399 }) / 400;
+    let yoe = y - era * 400; // [0, 399]
+    let mp = (m as i64 + 9) % 12; // [0, 11]
+    let doy = (153 * mp + 2) / 5 + d as i64 - 1; // [0, 365]
+    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
+    era * 146097 + doe - 719468
+}
+
+/// The inverse of [`days_from_civil`] - the proleptic Gregorian calendar date
+/// `z` days after the Unix epoch.
+fn civil_from_days(z: i64) -> (i64, u32, u32) {
+    let z = z + 719468;
+    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
+    let doe = z - era * 146097; // [0, 146096]
+    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
+    let y = yoe + era * 400;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
+    let mp = (5 * doy + 2) / 153; // [0, 11]
+    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
+    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
+    let y = if m <= 2 { y + 1 } else { y };
+    (y, m, d)
+}
+
+/// A unix timestamp as a `YYYY-MM-DD` UTC calendar date - the exact format
+/// `<input type="date">`'s `value`/`min`/`max` attributes require.
+pub fn unix_to_date_string(ts: i64) -> String {
+    let (y, m, d) = civil_from_days(ts.div_euclid(86_400));
+    format!("{y:04}-{m:02}-{d:02}")
+}
+
+/// The inverse of [`unix_to_date_string`] - a `<input type="date">`'s
+/// submitted `YYYY-MM-DD` value as the unix timestamp of that date's own UTC
+/// midnight. `None` for anything not shaped like a real, syntactically valid
+/// date (a browser's own native date picker should never submit one, but
+/// this is form input from the network regardless - never trusted at face
+/// value). Deliberately does not reject a date `days_from_civil` can compute
+/// but that isn't a *real* calendar date (e.g. April 31st) - the native
+/// picker itself won't offer one, and `Store::trigger_rescan`'s own `from`/
+/// `to` bounds checking is what actually decides whether the resulting
+/// timestamp is acceptable, not this parser.
+pub fn date_string_to_unix_midnight(s: &str) -> Option<i64> {
+    let mut parts = s.splitn(3, '-');
+    let y = parts.next()?.parse::<i64>().ok()?;
+    let m = parts.next()?.parse::<u32>().ok()?;
+    let d = parts.next()?.parse::<u32>().ok()?;
+    if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
+        return None;
+    }
+    Some(days_from_civil(y, m, d) * 86_400)
+}
+
 /// One payment row inside the order detail page's `payments` table -
 /// mirrors the engine's own `PaymentView`, but with every timestamp/
 /// optional field already rendered to a display string (`Option<i64>` ->
@@ -334,6 +396,67 @@ pub struct OrderDetailData {
     /// template, matching this codebase's own "compute in Rust, not in
     /// handlebars" convention for anything beyond plain field access.
     pub payment_link: String,
+    /// `docs/order_rescan_wbs.md` Phase 3.2/3.3 - present only for an
+    /// `Expired` order (decision 5), `None` for every other status so the
+    /// template's own `{{#if}}` is what actually gates the whole rescan
+    /// section, not a separate status string comparison duplicated in
+    /// handlebars.
+    pub rescan: Option<OrderRescanSectionViewModel>,
+    /// Set only immediately after a rejected trigger submission - deliberately
+    /// independent of `rescan` above (which can be `None` here, e.g. a real
+    /// race where the order stopped being `Expired` between page load and
+    /// form submit): a rejection must always be shown to the merchant who
+    /// just clicked something, whether or not the rescan section itself
+    /// renders anything at all.
+    pub rescan_error: Option<String>,
+}
+
+/// The order-rescan section of the order detail page - either a trigger form
+/// (`form`, when nothing has run or the last run finished) or a live
+/// progress view (`progress`, while one is `running`); never both. Built
+/// entirely server-side (`http/orders.rs::order_detail`), same "compute in
+/// Rust, not in handlebars" convention as the rest of this page.
+#[derive(Debug, Serialize)]
+pub struct OrderRescanSectionViewModel {
+    pub form: Option<RescanTriggerFormViewModel>,
+    pub progress: Option<RescanProgressViewModel>,
+}
+
+/// What the trigger form (`docs/order_rescan_wbs.md` Phase 3.2) needs to
+/// render both modes at once, no JavaScript required to switch between them -
+/// simple mode's own label states the real, already-computed date outright
+/// ("Rescan from 2026-08-10"), and advanced mode's two native
+/// `<input type="date">` fields get their real, server-computed `min`/`max`
+/// as HTML attributes, not merely enforced silently by the engine's own
+/// `400` on an out-of-range submission.
+#[derive(Debug, Serialize)]
+pub struct RescanTriggerFormViewModel {
+    /// e.g. `"Rescan from 2026-08-10"` - `max(order.created_at, now - X
+    /// days)`, already formatted, so the merchant never does the "last X
+    /// days" math themselves.
+    pub simple_label: String,
+    /// `YYYY-MM-DD` - `max(order.created_at, now - N days)`, the same bound
+    /// decision 4 imposes for advanced mode, rendered as the real `min`
+    /// attribute on both date inputs.
+    pub min_date: String,
+    /// `YYYY-MM-DD` - today, the real `max` attribute on both date inputs.
+    pub max_date: String,
+    /// The same bound restated in plain words next to the form - decision
+    /// 4's "make this apparent to them," not just enforced silently by a
+    /// `400` on submission.
+    pub bound_text: String,
+}
+
+/// The live view of a rescan that's currently `running` - `http/orders.rs::
+/// order_detail` only ever builds this when the engine's own status really
+/// is `"running"`; a `completed`/`failed` job renders the trigger form again
+/// instead (a merchant can re-trigger it, and its actual effect - a found
+/// payment, or none - is already visible in the order's own status/payments
+/// table above, not restated here).
+#[derive(Debug, Serialize)]
+pub struct RescanProgressViewModel {
+    pub percent_complete: u8,
+    pub mode: String,
 }
 
 /// The view model `GET /dashboard/connections/{id}/orders/{payment_id}`
@@ -344,6 +467,11 @@ pub struct OrderDetailData {
 pub struct OrderDetailViewModel {
     pub connection_id: String,
     pub order: Option<OrderDetailData>,
+    /// `docs/order_rescan_wbs.md` Phase 3.3 - `5` while this order has a
+    /// rescan genuinely `running`, `15` otherwise (this page's own original,
+    /// unconditional interval) - computed once in `http/orders.rs::
+    /// order_detail`, never branched on again in the template.
+    pub meta_refresh_secs: u32,
     /// Always `true` - every caller is behind `AuthedUser`.
     pub logged_in: bool,
 }
@@ -434,8 +562,29 @@ pub struct DashboardViewModel {
     /// status, since a partially-paid or still-confirming order has still
     /// genuinely had funds detected for it.
     pub total_received_xmr: String,
+    /// `docs/order_rescan_wbs.md` Phase 3.4 - every currently-`running`
+    /// rescan across every one of this user's connected stores (in practice
+    /// almost always empty or a single entry, given the engine's own
+    /// one-job-per-tenant guardrail) - drives the "syncing" banner and its
+    /// tightened meta-refresh, one link per active job so a merchant with
+    /// more than one store mid-rescan sees all of them, not just the first.
+    pub active_rescans: Vec<DashboardRescanRow>,
+    /// e.g. `"1 order"`/`"2 orders"` - precomputed here rather than a plural
+    /// check in handlebars (this codebase's own "compute in Rust, not in
+    /// handlebars" convention). Empty (and never read - the template gates
+    /// the whole banner on `active_rescans` being non-empty) when nothing is
+    /// running.
+    pub active_rescans_count_label: String,
     /// Always `true` - every caller is behind `AuthedUser`.
     pub logged_in: bool,
+}
+
+/// One entry in the dashboard-home "syncing" banner (Phase 3.4).
+#[derive(Debug, Serialize)]
+pub struct DashboardRescanRow {
+    pub connection_id: String,
+    pub payment_id: String,
+    pub percent_complete: u8,
 }
 
 /// The view model the integration-help partial (`_integration_help.html.hbs`)
@@ -801,6 +950,38 @@ mod tests {
     }
 
     #[test]
+    fn unix_to_date_string_matches_known_dates() {
+        assert_eq!(unix_to_date_string(0), "1970-01-01");
+        assert_eq!(unix_to_date_string(86_399), "1970-01-01", "one second before the next day rolls over");
+        assert_eq!(unix_to_date_string(86_400), "1970-01-02");
+        // 2024-02-29 12:00:00 UTC - a real leap day, not a hypothetical one.
+        assert_eq!(unix_to_date_string(1_709_208_000), "2024-02-29");
+        // 2026-01-01 00:00:00 UTC.
+        assert_eq!(unix_to_date_string(1_767_225_600), "2026-01-01");
+        // A negative timestamp (before the epoch) must still resolve to a real
+        // date, not panic or wrap - `div_euclid` is what makes this correct.
+        assert_eq!(unix_to_date_string(-1), "1969-12-31");
+    }
+
+    #[test]
+    fn date_string_to_unix_midnight_round_trips_with_unix_to_date_string() {
+        for ts in [0i64, 86_400, 1_709_208_000, 1_767_225_600, 1_700_000_000] {
+            let date = unix_to_date_string(ts);
+            let midnight = date_string_to_unix_midnight(&date).unwrap();
+            assert_eq!(unix_to_date_string(midnight), date, "midnight of {date} must itself format back to {date}");
+        }
+        // A known, hand-checked pair, not just an internal round trip.
+        assert_eq!(date_string_to_unix_midnight("2024-02-29").unwrap(), 1_709_164_800);
+    }
+
+    #[test]
+    fn date_string_to_unix_midnight_rejects_malformed_input_rather_than_panicking() {
+        for bad in ["", "not-a-date", "2024-02", "2024-13-01", "2024-01-32", "2024-01-01-extra", "2024/01/01"] {
+            assert!(date_string_to_unix_midnight(bad).is_none(), "expected {bad:?} to be rejected");
+        }
+    }
+
+    #[test]
     fn display_or_dash_shows_the_muted_placeholder_for_none_or_empty() {
         assert_eq!(display_or_dash(Some("real value")), "real value");
         assert_eq!(display_or_dash(None), NO_VALUE);
@@ -1062,6 +1243,8 @@ mod tests {
                 stores: vec![],
                 recent_orders: vec![],
                 total_received_xmr: "0".to_string(),
+                active_rescans: vec![],
+                active_rescans_count_label: String::new(),
                 logged_in: true,
             })
             .unwrap();
@@ -1094,6 +1277,8 @@ mod tests {
                     created_at: 1000,
                 }],
                 total_received_xmr: "1.234567890123".to_string(),
+                active_rescans: vec![],
+                active_rescans_count_label: String::new(),
                 logged_in: true,
             })
             .unwrap();
@@ -1313,6 +1498,8 @@ mod tests {
             updated_at_display: "1000".to_string(),
             payments: vec![],
             payment_link: "http://127.0.0.1:8081/pay/pk_abc123/orders/pay_abc123/share".to_string(),
+            rescan: None,
+            rescan_error: None,
         }
     }
 
@@ -1320,7 +1507,12 @@ mod tests {
     fn order_detail_hides_the_double_spend_row_entirely_when_none_was_detected() {
         let engine = TemplateEngine::new().unwrap();
         let html = engine
-            .render_order_detail(&OrderDetailViewModel { connection_id: "conn_1".to_string(), order: Some(test_order_detail_data(None)), logged_in: true })
+            .render_order_detail(&OrderDetailViewModel {
+                connection_id: "conn_1".to_string(),
+                order: Some(test_order_detail_data(None)),
+                meta_refresh_secs: 15,
+                logged_in: true,
+            })
             .unwrap();
         // The real point of this follow-up: no dash, no row at all - a
         // permanently-visible "Double-spend detected at" label reads as a
@@ -1335,6 +1527,7 @@ mod tests {
             .render_order_detail(&OrderDetailViewModel {
                 connection_id: "conn_1".to_string(),
                 order: Some(test_order_detail_data(Some(1_700_000_000))),
+                meta_refresh_secs: 15,
                 logged_in: true,
             })
             .unwrap();

@@ -145,6 +145,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/dashboard/connections/{id}/orders", axum::routing::get(orders::orders_list))
         .route("/dashboard/connections/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
+        .route(
+            "/dashboard/connections/{id}/orders/{payment_id}/rescan",
+            axum::routing::post(orders::trigger_rescan),
+        )
         .route("/dashboard/connections/{id}/webhooks", axum::routing::get(orders::webhooks_list).post(orders::webhooks_create))
         .route("/dashboard/connections/{id}/webhooks/{webhook_id}/delete", axum::routing::post(orders::webhooks_delete))
         .route("/connect/{platform}", axum::routing::get(connect::start).post(connect::confirm_submit))

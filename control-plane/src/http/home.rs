@@ -8,7 +8,7 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 
-use crate::templates::{DashboardOrderRow, DashboardStoreRow, DashboardViewModel};
+use crate::templates::{DashboardOrderRow, DashboardRescanRow, DashboardStoreRow, DashboardViewModel};
 
 use super::orders::{display_name_for, health_of_tenant_lookup};
 use super::{resolve_authed_user, AppState, AuthedUser};
@@ -68,6 +68,15 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
     let mut stores = Vec::with_capacity(rows.len());
     let mut all_orders: Vec<DashboardOrderRow> = Vec::new();
     let mut total_received_piconero: u128 = 0;
+    // `docs/order_rescan_wbs.md` Phase 3.4 - every currently-running rescan
+    // across every one of this user's stores, one `list_active_rescans` call
+    // per connection (this instance has no cross-tenant "all my rescans" engine
+    // endpoint - each connection is its own tenant on its own `sk_...`). Rides
+    // the same shared HTTP-cache-aware transport `EngineClient` now uses for
+    // everything (`docs/order_rescan_wbs.md` Phase 3.1), so a merchant with the
+    // dashboard open in two tabs doesn't double the real engine traffic this
+    // adds.
+    let mut active_rescans: Vec<DashboardRescanRow> = Vec::new();
 
     for row in rows {
         let sk = match crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted) {
@@ -92,6 +101,14 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
             health,
             health_label,
         });
+
+        if let Ok(running) = state.engine_client.list_active_rescans(&sk).await {
+            active_rescans.extend(running.into_iter().map(|job| DashboardRescanRow {
+                connection_id: row.id.clone(),
+                payment_id: job.payment_id,
+                percent_complete: job.percent_complete,
+            }));
+        }
 
         if let Ok(orders) = state.engine_client.list_orders(&sk).await {
             // The engine has no concept of fiat any more (`docs/fx_refactor.md`
@@ -121,11 +138,15 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
     all_orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     all_orders.truncate(10);
 
+    let active_rescans_count_label =
+        if active_rescans.len() == 1 { "1 order".to_string() } else { format!("{} orders", active_rescans.len()) };
     let view_model = DashboardViewModel {
         has_stores: !stores.is_empty(),
         stores,
         recent_orders: all_orders,
         total_received_xmr: format_piconero_as_xmr(total_received_piconero),
+        active_rescans,
+        active_rescans_count_label,
         logged_in: true,
     };
     let html = state

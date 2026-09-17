@@ -3,7 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<meta http-equiv="refresh" content="15">
+<meta http-equiv="refresh" content="{{meta_refresh_secs}}">
 <title>Order detail - MoneroPay Cloud</title>
 {{> styles}}
 <style>
@@ -24,6 +24,8 @@
 }
 .share-btn:hover { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
 .share-btn svg { width: 60%; height: 60%; }
+.progress-bar { border: 1px solid var(--line); height: 0.5em; background: var(--paper); margin: 0.6em 0 1em; }
+.progress-fill { height: 100%; background: var(--accent); }
 </style>
 </head>
 <body>
@@ -55,7 +57,7 @@ needs to pay this order.</p>
 <tr><th>Rate provider</th><td>{{order.rate_provider}}</td></tr>
 <tr><th>XMR amount (piconero)</th><td>{{order.xmr_amount_piconero}}</td></tr>
 <tr><th>Amount received (piconero)</th><td>{{order.amount_received_piconero}}</td></tr>
-<tr><th>Status</th><td>{{order.status}}</td></tr>
+<tr><th>Status</th><td>{{order.status}}{{#if order.rescan.progress}} <span class="tag tag-syncing">Syncing {{order.rescan.progress.percent_complete}}%</span>{{/if}}</td></tr>
 <tr><th>Confirmations</th><td>{{order.confirmations}}</td></tr>
 {{#if order.double_spend_detected_at}}
 <tr><th>Double-spend detected at</th><td>{{{order.double_spend_detected_at_display}}}</td></tr>
@@ -83,6 +85,34 @@ needs to pay this order.</p>
 {{/each}}
 </tbody>
 </table>
+
+{{#if order.rescan_error}}<p class="error">{{order.rescan_error}}</p>{{/if}}
+{{#if order.rescan}}
+<h2>Rescan for late payment</h2>
+{{#if order.rescan.progress}}
+<p class="hint">Rescanning ({{order.rescan.progress.mode}} mode) - this can take a while for a wide date range.</p>
+<div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
+     aria-valuenow="{{order.rescan.progress.percent_complete}}"
+     aria-valuetext="{{order.rescan.progress.percent_complete}}% complete">
+<div class="progress-fill" style="width: {{order.rescan.progress.percent_complete}}%"></div>
+</div>
+{{/if}}
+{{#if order.rescan.form}}
+<p class="hint">This order expired before a payment was detected. If the customer says they sent funds anyway,
+scan the chain again for a late arrival.</p>
+<form method="post" action="/dashboard/connections/{{connection_id}}/orders/{{order.payment_id}}/rescan">
+<p><label><input type="radio" name="mode" value="simple" checked> {{order.rescan.form.simple_label}}</label></p>
+<p><label><input type="radio" name="mode" value="advanced"> Advanced - choose a range</label></p>
+<p class="grid-2">
+<label>From <input type="date" name="from" min="{{order.rescan.form.min_date}}" max="{{order.rescan.form.max_date}}"></label>
+<label>To <input type="date" name="to" min="{{order.rescan.form.min_date}}" max="{{order.rescan.form.max_date}}"></label>
+</p>
+<p class="hint">{{order.rescan.form.bound_text}}</p>
+<button type="submit" class="btn">Rescan for late payment</button>
+</form>
+{{/if}}
+{{/if}}
+
 {{else}}
 <h1>Order not found</h1>
 <p>This order does not exist.</p>

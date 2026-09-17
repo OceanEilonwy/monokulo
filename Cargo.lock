@@ -410,6 +410,7 @@ dependencies = [
  "hex",
  "http-body-util",
  "monero",
+ "moneropay-core",
  "qrcode",
  "reqwest",
  "reqwest-middleware",
