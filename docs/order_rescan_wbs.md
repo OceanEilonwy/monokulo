@@ -491,13 +491,82 @@ this up later, same convention `docs/fx_refactor.md` already established.
     rescans across two different stores both listed; a plain dashboard
     with nothing running shows neither
 
-## 4. Documentation
+## 4. Engine: a default grace period for recently-expired orders
 
-- 4.1 `docs/DESIGN.md`: new subsection under Data Model (the `order_rescans`
+**Fully independent of phases 0-3** - no dependency on the daemon
+timestamp lookup, the rescan primitive, or the admin API, so it can ship
+first, standalone, regardless of whether the manual rescan ships at all.
+Placed here in the doc for narrative reasons (it came up as a follow-up
+question), not because it depends on anything above it.
+
+Prompted directly by the user asking whether the current code already
+keeps watching an order for some time after it expires. It doesn't -
+confirmed by reading the code, not assumed: `Store::active_tenant_ids`
+(`store.rs:486`) is a plain `WHERE o.status IN (Pending, Unconfirmed,
+Confirming, Partial)`, no time/expiry clause at all. The moment a
+tenant's every order is terminal, that tenant drops out of live scanning
+immediately, with zero grace period.
+
+- 4.1 Widen the live scanner's own "in scope" definition with a grace
+  window
+  - outcome: `Store::active_tenant_ids` (`store.rs:486`, decides which
+    subaddresses the per-tick block walk checks) and its sibling
+    `Store::non_terminal_order_ids` (`store.rs:521`, decides which orders
+    get `recompute_order_status` called on them each tick) both gain an
+    `OR` - a tenant/order also counts as in-scope if `status = 'expired'
+    AND expires_at >= now - grace_seconds`, not just the existing 4
+    non-terminal statuses. Confirmed these are two independent queries
+    today (identical shape, not one shared function) - both need the same
+    widened predicate; a `now`/`grace_seconds` parameter threads into both
+    call sites.
+  - why this needs no scanner-core changes beyond those two queries -
+    confirmed directly, not assumed: a late match recorded against an
+    order that was already `Expired` before the tick started still gets
+    `recompute_order_status` called on it the *same tick*, regardless of
+    whether it was in the base non-terminal sweep. `record_scan_match`
+    (`scanner.rs:85`) adds every matched order to a tick-scoped `touched`
+    set unconditionally (no status check gates it); `touched` is then
+    *unioned*, not filtered, into the recompute set
+    (`scanner.rs:1014-1020`) - the code's own comment there states this
+    union exists specifically for "a just-matched order may already be
+    terminal ... yet still need its amounts refreshed." So widening only
+    the two "what's in scope" queries is sufficient - the match-recording
+    and status-flip machinery downstream already handles a recently-
+    expired order correctly, today, with no gap to close there.
+  - what (config): a new `PaymentConfig` knob,
+    `expired_order_grace_period_minutes` (same naming convention as the
+    existing `order_expiry_minutes`) - how long after `expires_at` an
+    order's subaddress keeps getting checked by ordinary live scanning
+    (distinct from the manual rescan below, which exists for after this
+    window has already elapsed). Suggested default: a few hours (e.g.
+    `360` / 6h) - generous enough to catch "sent it right as it expired,
+    arrived a bit late" and mempool-congestion cases automatically, with
+    no merchant action, without keeping every expired order's subaddress
+    in the hot scan path indefinitely. Treat this as a starting point to
+    adjust, not a tightly-reasoned number.
+  - how this relates to the manual rescan (phases 1-3): this grace period
+    is the automatic first line of defense - no merchant action, catches
+    most "paid a little late" cases on its own. The manual rescan exists
+    for what this can't cover: a customer reporting a payment *after* the
+    grace window has already elapsed (the original stated use case this
+    whole feature was built for). Not redundant with each other - one is
+    a short, automatic safety margin every order gets for free, the other
+    is an on-demand tool for genuinely old reports.
+  - test: real test - an order expires, its grace window hasn't elapsed
+    yet, a payment lands in a new block; assert it's still matched and the
+    order flips to `Paid` with no rescan triggered. A second real test -
+    same setup, but the grace window *has* elapsed before the payment
+    arrives; assert it's genuinely not matched by ordinary live scanning
+    (proving the boundary is real, not just documented) - exactly the gap
+    the manual rescan exists to close.
+
+## 5. Documentation
+
+- 5.1 `docs/DESIGN.md`: new subsection under Data Model (the `order_rescans`
   table), under HTTP API Surface (the three new admin routes), and under
   Configuration Surface (`default_rescan_lookback_days`,
-  `max_rescan_lookback_days`, `CONTROL_PLANE_HTTP_CACHE_MAX_MB`, and
-  whatever 1.1's safety-margin constant ends up being, if it becomes
-  configurable rather than fixed)
-- 4.2 `work_notes.md`: a real entry once each phase lands, same practice
+  `max_rescan_lookback_days`, `expired_order_grace_period_minutes`,
+  `CONTROL_PLANE_HTTP_CACHE_MAX_MB`, and whatever 1.1's safety-margin
+  constant ends up being, if it becomes configurable rather than fixed)
+- 5.2 `work_notes.md`: a real entry once each phase lands, same practice
   every other multi-session piece of work in this repo already gets
