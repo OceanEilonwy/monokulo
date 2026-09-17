@@ -13,8 +13,7 @@ endpoint, and control-plane's dashboard/order-detail pages — read this
 before starting any leaf below, and keep `work_notes.md` in sync as each
 phase lands, same convention `docs/fx_refactor.md` established.
 
-**Nothing below is implemented yet. This is a plan for review — several
-items under "Open questions" need your decision before Phase 1 starts.**
+**Nothing below is implemented yet. This is a plan for review.**
 
 ## Why this is needed (confirmed by reading the code, not assumed)
 
@@ -39,49 +38,41 @@ the real gap this feature closes — not a bug in confirmation counting or
 status derivation (`derive_status`, `status.rs:70`, and `record_scan_match`,
 `scanner.rs:85`, already handle a late match correctly *once* it's found).
 
-## Open questions (need your decision before Phase 1)
+## Decisions (resolved)
 
-1. **Scope: one-shot bounded rescan, or indefinite re-activation?**
-   Recommendation: **one-shot**. The rescan walks from a computed start
-   height up to the chain tip *as of when it's triggered*, then stops —
-   it does not re-enroll the order in ongoing live scanning. Matches
-   "trigger a sync" (a specific, on-demand action) rather than "make this
-   order live again," and avoids open-ended questions about when a
-   reactivated order should go back to sleep. If the customer's payment
-   still hasn't landed by the time the rescan finishes, the merchant can
-   trigger it again later.
-2. **Where does rescan job/progress state live: a new durable table, or an
-   in-memory map (the existing `ScannerStatusMap`,
-   `scanner_status.rs:38`, is the only precedent, and it's ephemeral,
-   per-network operational telemetry, not merchant-facing job state)?**
-   Recommendation: **a new durable table** (survives an engine restart
-   mid-job with an honest "interrupted" state; a merchant may check back
-   on progress after closing the dashboard). This is more state than the
-   engine has ever owned for a background operation, so flagging it
-   explicitly rather than assuming.
-3. **How does the dashboard cheaply know "is anything rescanning right
-   now" across every order, for the "dashboard should also refresh"
-   requirement — without an N+1 status check per listed order?**
-   Recommendation: one new lightweight endpoint,
-   `GET /api/v1/admin/tenant/rescans` (active rescans for this tenant,
-   typically zero or one), that control-plane's dashboard-home handler
-   calls once per render.
-4. **Guardrails: how far back can a merchant reach, and can they run more
-   than one rescan at once?**
-   Recommendation: **one rescan job per tenant at a time** (a second
-   trigger while one is running returns the existing job's status rather
-   than starting a duplicate — real load-safety, not just a UX nicety,
-   since this walks real historical blocks against a real daemon), and a
-   **configurable maximum lookback** (e.g. reject a rescan whose computed
-   start height is more than N days back) so this can't be turned into an
-   accidental full-chain rescan by an old order.
-5. **UI: only offer the button on `Expired` orders, or any order?**
-   Recommendation: **`Expired` only** — every other status is already
-   covered by live scanning, so a rescan there would just be redundant
-   daemon load for no benefit. Matches the stated use case exactly.
+All five were open questions in this doc's first draft; the user resolved
+each directly before work started. Recorded here for anyone picking this
+up later, same convention `docs/fx_refactor.md` already established.
 
-Everything below assumes these five land as recommended; each phase notes
-where it would change if you decide differently.
+1. **One-shot bounded rescan, not indefinite re-activation.** The rescan
+   walks from a computed start height up to the chain tip *as of when it's
+   triggered*, then stops — it does not re-enroll the order in ongoing live
+   scanning. If the customer's payment still hasn't landed by the time the
+   rescan finishes, the merchant triggers it again.
+2. **Job/progress state is durable** (a new table, not the existing
+   in-memory-only `ScannerStatusMap`, `scanner_status.rs:38`, which is
+   per-network operational telemetry, not merchant-facing job state) —
+   **and a restart mid-job resumes, it doesn't discard progress.** The
+   whole point of persisting `current_height` durably is that a restart
+   doesn't throw away real, already-done work — see 1.2/1.3's resume design
+   below for exactly how.
+3. **One lightweight, real-HTTP-cached endpoint** —
+   `GET /api/v1/admin/tenant/rescans`, using genuine `ETag`/`Cache-Control`/
+   `If-None-Match` semantics (not a bespoke in-process TTL cache dressed up
+   to look like one) — see 2.3/3.1 below.
+4. **Guardrails, plus a real two-mode trigger UI.** One rescan job per
+   tenant at a time (a second trigger while one is running returns the
+   existing job's status, not a new one — real load-safety against a real
+   daemon, not just a UX nicety). Triggering offers **simple** (rescan the
+   last `X` days) and **advanced** (pick an explicit date range, capped at
+   `N` days wide) modes; in both, the earliest reachable date is
+   `max(order.created_at, now − N days)` — a rescan can never reach earlier
+   than the order's own creation (there's nothing to find before an order
+   exists) or further back than the configured cap — and the UI makes that
+   bound visible, not just enforced server-side. See 2.1/3.2 below.
+5. **The "sync" control only appears on `Expired` orders** — every other
+   status is already covered by live scanning, so it would just be
+   redundant daemon load there.
 
 ---
 
@@ -158,36 +149,57 @@ where it would change if you decide differently.
 - 1.2 A durable rescan-job table and its state machine
   - outcome: a new table (e.g. `order_rescans`, migration next in sequence)
     - one row per triggered job: `tenant_id`, `payment_id`, `status`
-    (`running`/`completed`/`failed`/`interrupted`), `from_height`,
+    (`running`/`completed`/`failed`), `mode` (`simple`/`advanced`, purely
+    informational - what actually governs the walk is `from_height`/
+    `to_height`, already resolved at trigger time), `from_height`,
     `to_height`, `current_height` (the simple progress metric - "blocks
     scanned / blocks to scan" is just `(current_height - from_height) /
-    (to_height - from_height)`), `started_at`, `finished_at`
-  - what: `interrupted` exists specifically for "the engine restarted
-    mid-job" (open question 2's durability requirement) - on boot, any row
-    still `running` gets marked `interrupted` rather than silently
-    forgotten or silently resumed (resuming automatically on every restart
-    is its own decision - simplest correct default is "the merchant
-    triggers it again," matching the one-shot framing in open question 1)
-  - what (one-job-per-tenant guardrail, open question 4): a partial unique
-    index or an application-level check on `(tenant_id) WHERE status =
-    'running'` - a second trigger while one is active returns the existing
-    row's status, not a new job
+    (to_height - from_height)`), `started_at`, `finished_at`, `updated_at`
+    (bumped on every progress write - doubles as 2.3's cache-freshness
+    signal)
+  - what (restart-survives-and-resumes, decision 2): **no `interrupted`
+    state** - a restart is not a terminal outcome. On boot, the engine
+    queries for any row still `status = 'running'` and re-spawns 1.3's
+    runner for each one, resuming from that row's own `current_height`
+    (not `from_height` - the already-scanned prefix is real, durable work
+    and must not be redone) up through the **same, original**
+    `to_height` (never recomputed against a new "current tip" on resume -
+    a fixed target chosen once at trigger time, so a job converges even
+    across several restarts rather than chasing a moving tip forever). The
+    resumed walk starts scanning *at* `current_height` again, not
+    `current_height + 1` - guarantees at-least-once coverage of whatever
+    block was mid-flight when the process stopped, relying on the same
+    idempotent match-recording primitives (`record_scan_match`,
+    `scanner.rs:85`) the live scanner's own block-by-block resumability
+    already depends on - no new idempotency logic needed, this is an
+    existing property being leaned on, not invented here.
+  - what (one-job-per-tenant guardrail, decision 4): a partial unique index
+    or an application-level check on `(tenant_id) WHERE status = 'running'`
+    - a second trigger while one is active returns the existing row's
+    status, not a new job
   - test: real sqlite round-trip tests (same style every other table in
-    this codebase already gets), plus a real "engine restart mid-job marks
-    it interrupted" test
+    this codebase already gets); a real "kill the process mid-job, restart
+    it, confirm the resumed job picks up from its last `current_height` and
+    still reaches the same original `to_height`" test - the one genuinely
+    new piece of behavior this whole feature adds, so it earns its own
+    dedicated test rather than being asserted incidentally elsewhere
 - 1.3 The actual background job runner
   - outcome: a genuinely new spawn shape - `shared::supervise::supervise`
     (used everywhere else in this codebase) is loop-only and wraps a `Fn`
     that never returns; this needs a **bounded**, run-once-to-completion
-    task instead
-  - what: a plain `tokio::spawn` per triggered job is probably sufficient
+    task instead, callable both from the trigger endpoint (2.1) and from
+    boot-time resume (1.2)
+  - what: a plain `tokio::spawn` per running job is probably sufficient
     (not every background task in this codebase needs the same
     infinite-retry supervision the scanner/webhook/reorg loops do) -
     updates 1.2's row as it progresses (say, once every N blocks or every
     few seconds, not every single block - real write load on every block
     would be wasteful for a rescan that might cover tens of thousands of
     blocks), catches a panic and marks the row `failed` rather than
-    silently vanishing
+    silently vanishing (a `failed` job does not auto-resume on a later
+    restart - `failed` is terminal, the merchant re-triggers deliberately;
+    only a row that was genuinely still `running` when the process stopped
+    gets picked back up)
   - why this needs its own decision, not reuse: flagged explicitly in the
     research because no bounded-job precedent exists anywhere in this
     codebase today - this is genuinely new shape, budget real design time
@@ -196,62 +208,116 @@ where it would change if you decide differently.
 ## 2. Engine: admin API surface
 
 - 2.1 `POST /api/v1/admin/tenant/orders/{payment_id}/rescan` - trigger
-  - outcome: computes `from_height` (0.2's lookup against the order's own
-    `created_at`, minus 1.1's safety margin), `to_height` (current tip via
-    `get_height()`), inserts a 1.2 row, spawns 1.3's runner, returns the
+  - outcome: request body carries `mode: "simple" | "advanced"` plus, for
+    `advanced`, an explicit `from`/`to` (dates or unix timestamps - exact
+    wire shape TBD); the handler resolves the real `(from_height,
+    to_height)` pair, inserts a 1.2 row, spawns 1.3's runner, returns the
     job's initial state (`202 Accepted` with a small JSON body - job
     already-running is not an error, it's the same response with the
     existing job's current progress)
-  - what (guardrail, open question 4): reject with a clear `400` if the
-    order isn't `Expired` (open question 5) or if the computed lookback
-    exceeds the configured maximum (open question 4's second half - a new
-    `PaymentConfig` knob, e.g. `max_rescan_lookback_days`)
-  - test: real end-to-end - trigger, poll to completion, assert the
-    previously-invisible late payment is now recorded and the order's
-    status reflects it; a second trigger while the first is still running
-    returns the same job, not a new one; a non-expired order is rejected;
-    an over-the-lookback-limit order is rejected
+  - what (resolving the requested window, decision 4): two new
+    `PaymentConfig` knobs - `default_rescan_lookback_days` (`X`, simple
+    mode's fixed window, measured back from *now*) and
+    `max_rescan_lookback_days` (`N`, the hard ceiling both modes share).
+    `simple` resolves to `from = max(order.created_at, now − X days)`,
+    `to = now`. `advanced` takes the caller's own `from`/`to`, clamped/
+    rejected (a real `400`, not silent clamping - the caller asked for
+    something invalid, say so) if `from < max(order.created_at, now − N
+    days)`, if `to > now`, or if `to < from`. Both modes then run 0.2's
+    timestamp→height lookup (minus 1.1's safety margin) to turn the
+    resolved `from`/`to` timestamps into `from_height`/`to_height`.
+  - what (guardrail, decision 5): reject with a clear `400` if the order
+    isn't `Expired`
+  - test: real end-to-end for both modes - `simple` trigger, poll to
+    completion, assert the previously-invisible late payment is now
+    recorded and the order's status reflects it; `advanced` trigger with an
+    explicit range that includes the payment, same assertion; `advanced`
+    with a `from` before the order's own `created_at` is rejected with a
+    clear error, not silently clamped; `advanced` spanning more than `N`
+    days is rejected; a second trigger while the first is still running
+    returns the same job, not a new one; a non-expired order is rejected
 - 2.2 `GET /api/v1/admin/tenant/orders/{payment_id}/rescan` - status/progress
   - outcome: current 1.2 row for this order (or `404` if none was ever
     triggered) - status, percent complete (derived from
     `current_height`/`from_height`/`to_height`), started/finished times
   - test: real poll-during-a-real-rescan test asserting percent complete
     increases monotonically and reaches 100 on completion
-- 2.3 `GET /api/v1/admin/tenant/rescans` - the dashboard-wide check (open
-  question 3)
+- 2.3 `GET /api/v1/admin/tenant/rescans` - the dashboard-wide check
+  (decision 3, real HTTP caching)
   - outcome: every currently-`running` rescan for this tenant (in practice
     almost always zero or one, given 1.2's one-job-per-tenant guardrail) -
     lets control-plane's dashboard-home page answer "is anything syncing
     right now" with one call instead of one per listed order
+  - what (real HTTP caching, not a bespoke cache): the handler computes a
+    cheap `ETag` from 1.2's own state - `"none"` when nothing is running,
+    otherwise something like `"{job_id}:{updated_at}"` (a single indexed
+    query, no scan) - and sets `Cache-Control: max-age=<a few seconds>`.
+    Honors `If-None-Match`: a matching `ETag` gets a bodyless `304 Not
+    Modified`, cheap on both ends. This is the same mechanism a browser or
+    CDN would use, applied here between control-plane and the engine.
   - test: real test asserting an empty list with nothing running, and the
-    real in-progress job while one is active
+    real in-progress job while one is active; a real conditional-request
+    test (send `If-None-Match` with the current `ETag`, assert `304`; bump
+    the job's progress, assert the same `If-None-Match` now gets a fresh
+    `200` with a new `ETag`)
 
 ## 3. Control-plane: trigger UI and progress display
 
 - 3.1 `EngineClient` gains the three new calls
   - outcome: `trigger_rescan`, `get_rescan_status`, `list_active_rescans` -
-    same thin-wrapper shape `get_order_detail`/`set_confirmations_required`
-    (`engine_client.rs:104`/`214`) already establish: build the URL,
-    `bearer_auth(sk)`, send, parse
+    the first two are the same thin-wrapper shape `get_order_detail`/
+    `set_confirmations_required` (`engine_client.rs:104`/`214`) already
+    establish: build the URL, `bearer_auth(sk)`, send, parse
+  - what (`list_active_rescans` actually participates in 2.3's HTTP
+    caching, decision 3): a plain `reqwest::Client` (what `EngineClient`
+    uses everywhere else) does not honor `Cache-Control`/`ETag` on its
+    own - this one call needs an HTTP-cache-aware client, e.g. the
+    `http-cache-reqwest` middleware (a new, small dependency, scoped to
+    exactly this one call so every other `EngineClient` method keeps
+    getting genuinely fresh data - order/payment status must never be
+    served stale). Confirm this dependency choice before building it;
+    the alternative (hand-rolling a small ETag-aware cache) reinvents
+    what the crate already does correctly, so it's the fallback only if
+    pulling in a new dependency for one call turns out to be unwelcome.
   - test: same style as every other `EngineClient` method's own tests
-    (mirrors the existing coverage for `get_order_detail`)
-- 3.2 Order-detail page: the trigger button and progress display
+    (mirrors the existing coverage for `get_order_detail`), plus a real
+    test proving a second `list_active_rescans` call within the
+    `Cache-Control` window doesn't re-hit the engine at all (a call-count
+    assertion against the test daemon/engine, same pattern this session's
+    own Coingecko cache tests already used)
+- 3.2 Order-detail page: the trigger form and progress display
   - outcome: on `order_detail.html.hbs`, for an `Expired` order with no
-    rescan ever triggered, a plain form button ("Sync from order creation
-    date", confirmed per open question 5's recommendation - only shown for
-    `Expired`). Once one exists, the same simple server-computed progress
-    bar pattern `checkout.html.hbs` already established (a real
-    `progress_percent` computed in the Rust handler, not client JS - this
-    page already uses a `<meta http-equiv="refresh">`, not JavaScript, for
-    its own "stay current" behavior, so this follows the same convention
-    rather than introducing a new one)
-  - what: this is a real, direct reuse of a pattern this session already
-    built and proved out (the checkout page's progress bar / meta-refresh
-    approach) - not a new UI idiom
-  - test: real HTTP-level test - trigger via the form, assert the
-    in-progress page shows a real percentage; poll through to completion,
-    assert the button/progress UI is gone and (if the rescan found the
-    payment) the order's own status/payments table reflects it
+    rescan ever triggered, a plain form (decision 5 - only shown for
+    `Expired`) offering both modes at once, no JS needed to switch between
+    them: a radio choice between "Simple - rescan the last `X` days" and
+    "Advanced - choose a range", with two native `<input type="date" min=
+    "..." max="...">` fields for the advanced case. The handler computes
+    each field's real `min` (`max(order.created_at, now − N days)`,
+    decision 4) and `max` (`today`) server-side and renders them as real
+    HTML attributes - the browser itself refuses an out-of-range pick, and
+    a line of plain text states the same bound in words ("orders can only
+    be rescanned from their own creation date (<real date>) or the last
+    `N` days, whichever is later") - decision 4's own "make this apparent
+    to them," not just enforced silently by the `400` 2.1 already gives an
+    out-of-range submission regardless. Once a job exists, the same simple
+    server-computed progress bar pattern `checkout.html.hbs` already
+    established (a real `progress_percent` computed in the Rust handler,
+    not client JS).
+  - what: the progress-bar/meta-refresh half of this is a real, direct
+    reuse of a pattern this session already built and proved out on the
+    checkout page - not a new UI idiom. The two-mode form is new, but
+    deliberately still zero-JS (both modes' fields are always present in
+    one plain form; the server reads whichever the submitted `mode` radio
+    selected and ignores the other's fields), consistent with this
+    codebase's general preference for plain HTML forms over client-side
+    show/hide.
+  - test: real HTTP-level test for each mode - trigger via the form,
+    assert the in-progress page shows a real percentage; poll through to
+    completion, assert the button/progress UI is gone and (if the rescan
+    found the payment) the order's own status/payments table reflects it;
+    a real test asserting the rendered date inputs' `min` attribute is the
+    real, computed bound (not a hardcoded guess) for both an order younger
+    than `N` days and one older than `N` days
 - 3.3 Tightened meta-refresh while a rescan is active
   - outcome: `order_detail.html.hbs`'s existing static `content="15"`
     becomes conditional - a shorter interval (e.g. `5`) while this order's
@@ -277,8 +343,8 @@ where it would change if you decide differently.
 
 - 4.1 `docs/DESIGN.md`: new subsection under Data Model (the `order_rescans`
   table), under HTTP API Surface (the three new admin routes), and under
-  Configuration Surface (`max_rescan_lookback_days` and whatever 1.1's
-  safety-margin constant ends up being, if it becomes configurable rather
-  than fixed)
+  Configuration Surface (`default_rescan_lookback_days`,
+  `max_rescan_lookback_days`, and whatever 1.1's safety-margin constant
+  ends up being, if it becomes configurable rather than fixed)
 - 4.2 `work_notes.md`: a real entry once each phase lands, same practice
   every other multi-session piece of work in this repo already gets
