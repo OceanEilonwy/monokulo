@@ -29,6 +29,56 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 6 done -
+  documentation. This is the seventh and final phase - the whole feature
+  (`docs/order_rescan_wbs.md`) is now fully landed, phases 0 through 6, all
+  merged sequentially in this session per the user's own explicit
+  "begin the sequenced implementation of the WBS yourself" instruction.**
+  - `docs/DESIGN.md` gains: a new §7.8 ("Merchant-triggered order rescan")
+    narratively summarizing the whole feature - the problem (§7.3's active
+    watchlist drops a tenant the instant every order is terminal, with zero
+    grace), the two-layer defense (the automatic grace period, and the
+    manual rescan for after it elapses), the durability/restart-resume
+    guarantee, and the scanned-range guardrail - each point cross-linked to
+    `docs/order_rescan_wbs.md` for the full reasoning rather than
+    duplicating it; a new §8.3 documenting `order_rescans`' real DDL and
+    `orders`' two new columns; three new rows in §10.2's admin API table
+    for the rescan trigger/status/list routes, plus a note on `OrderView`'s
+    three new fields; and the new `[payment]` knobs
+    (`default_rescan_lookback_days`/`max_rescan_lookback_days`/
+    `expired_order_grace_period_minutes`) plus a note on the two
+    knobs that live *outside* this file's TOML entirely
+    (`RESCAN_START_HEIGHT_CUSHION_BLOCKS`, a fixed constant not yet
+    configurable; `CONTROL_PLANE_HTTP_CACHE_MAX_MB`, control-plane's own
+    env var) added to §13's configuration sketch.
+  - `work_notes.md` already had a real entry per phase as it landed
+    (Phase 0 through 5, each its own commit) - this entry is the closing
+    one, not a first one; §6.2's own ask ("a real entry once each phase
+    lands, same practice every other multi-session piece of work in this
+    repo already gets") was satisfied incrementally throughout, not
+    retrofitted here.
+  - **The whole feature, landed across this session, phase by phase**:
+    Phase 0 (daemon timestamp→height lookup), Phase 1 (the bounded
+    one-order historical rescan primitive, durable job table, restart-
+    resume, background runner), Phase 2 (the engine's admin HTTP surface -
+    trigger/status/cached-list), Phase 3 (control-plane's trigger UI,
+    progress display, and the shared byte-bounded HTTP-cache-aware
+    transport adopted everywhere), Phase 4 (the default grace period for
+    recently-expired orders), Phase 5 (tracking and displaying each
+    order's actually-scanned block range, plus the gap-prevention
+    guardrail the user's own review caught), Phase 6 (this entry). Every
+    phase landed as a real code commit plus a separate `work_notes.md`
+    commit, `cargo test --workspace` and `cargo build --workspace --tests
+    --features e2e` (both this repo and `mock-woocommerce`'s own
+    workspace view) verified clean after every one - no phase merged on
+    faith. Two real bugs were caught and fixed along the way, not shipped:
+    a self-caught assertion bug in a Phase 0 test (fixed the test, not the
+    implementation - the implementation was already correct), and a real
+    `std::sync::Mutex` deadlock in Phase 5 (an `if let` scrutinee holding
+    a `MutexGuard` for the whole statement, not just its condition, while
+    a nested call tried to take the same non-reentrant lock again) -
+    caught by every scanner test hanging, not by inspection.
+
 - **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 5 done -
   tracking and displaying each order's actually-scanned block range.**
   Sixth of seven phases, and the last with real engine+UI work - only
