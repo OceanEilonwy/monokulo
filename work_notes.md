@@ -29,6 +29,83 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 5 done -
+  tracking and displaying each order's actually-scanned block range.**
+  Sixth of seven phases, and the last with real engine+UI work - only
+  documentation (Phase 6) is left.
+  - `orders` gains `first_scanned_height`/`last_scanned_height`
+    (migration 0008), accumulated (never replaced) by two independent
+    writers: `Store::bump_scanned_heights_for_tenant` (ordinary live
+    scanning - one bulk `UPDATE` per active tenant per tick, using the
+    exact widened in-scope predicate Phase 4 already established) and
+    `Store::bump_scanned_range_for_order` (a manual rescan, called from
+    `run_rescan_job`'s own progress-persist closure at the same throttled
+    cadence). Both use `COALESCE(MIN/MAX(...), ...)` rather than a bare
+    `MIN`/`MAX` - SQLite's scalar form returns `NULL` if *either* side is
+    `NULL`, which would wipe out a still-unset column instead of seeding
+    it. **A resumed rescan deliberately uses the job's own immutable
+    `from_height` (not the resume point `rescan_order` actually starts
+    walking from)** for the "first" bound - using the resume point would
+    silently narrow `first_scanned_height` back down on every restart,
+    the same class of bug the gap-prevention guardrail below exists to
+    prevent on the trigger side. Six real, individually-named tests cover
+    this (fresh order's first tick, freeze-on-terminal, a single rescan
+    extending both bounds, two sequential rescans accumulating rather than
+    overwriting, a resumed rescan using the original `from_height`, and
+    grace-window-plus-simultaneous-rescan not double-counting).
+  - **A real deadlock, caught immediately by the test suite hanging, not
+    shipped**: the first version of the per-tick bump loop wrote
+    `if let Ok(Some(h)) = store.lock().unwrap().max_scanned_height(...) {
+    for tenant in &ranges { store.lock().unwrap()... } }` - a real Rust
+    footgun, not a logic bug: an `if let` scrutinee's temporaries
+    (including a `MutexGuard`) live for the whole `if let` statement,
+    not just the condition, so the outer lock was still held when the
+    loop tried to take it again on the same (non-reentrant)
+    `std::sync::Mutex`. Every test calling `run_scan_tick` hung
+    indefinitely; `cargo test` had to be backgrounded and killed after
+    its 60s per-test warning fired repeatedly. Fixed by binding the
+    guard's result to an owned `let` first (whose temporary drops at the
+    statement's own end) before the `if let`/loop. Worth naming for
+    whoever next writes `store.lock().unwrap().foo()` inside an `if let`
+    or `match` scrutinee in this codebase - the pattern is easy to reach
+    for and silently deadlocks rather than erroring.
+  - Guardrail (5.2): the trigger endpoint rejects (`400`, real inclusive
+    `>=` boundary, advanced mode only) an advanced-mode `to` that resolves
+    earlier than the order's existing `last_scanned_height` - the "gap
+    correctness trap" the user themselves spotted during the original
+    WBS review. Four dedicated tests pin the boundary exactly (one block
+    early rejected, exactly equal accepted, comfortably later accepted
+    and genuinely narrows the walk, simple mode structurally never reaches
+    the check at all). These needed a `FakeDaemonClient` chain with
+    *real, recent* timestamps (`Store::set_block_timestamp`, not the
+    fake chain's own default 2023 anchor) - real wall-clock time has now
+    drifted more than the 90-day lookback ceiling past that anchor, which
+    would otherwise reject every advanced-mode request in the test
+    regardless of what it's actually trying to prove.
+  - `OrderView` (engine's admin API) gains the two range fields plus a
+    computed `currently_scanning: bool` (`Store::is_order_currently_scanning`
+    - in the live scanner's own widened in-scope set, *or* a currently-
+    `running` rescan) - one engine-decided boolean, not scope logic
+    re-derived downstream. `AppState` gained
+    `expired_order_grace_period_seconds` to support this (mirrors the
+    lookback-day fields Phase 2 already added the same way).
+  - Control-plane: a new "Scan range" row on the order-detail page -
+    `"{first} - {last}"` once settled, `"{first}+"` while still growing,
+    a muted dash before an order's first tick. Real tests for the dash
+    and both growing cases against a real engine; the closed-range case
+    is tested directly against the template (the same convention this
+    page's other conditional rows already use) rather than end to end,
+    since reaching a genuinely past-grace order in this test harness
+    (no background scan loop, a real ~30-minute default expiry) would
+    mean an actual wait - noted explicitly in that test's own comment
+    rather than silently narrowing coverage.
+  - `cargo test --workspace` clean (317 engine/207 control-plane passing,
+    up from 312/203) in both the root workspace and `mock-woocommerce`'s
+    own view with `--features e2e`; `cargo build --workspace --tests
+    --features e2e` clean in both locations too.
+  - Proceeding into Phase 6 next (documentation - `docs/DESIGN.md` and a
+    final work_notes entry) - the last phase, closing out this WBS.
+
 - **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 4 done - a
   default grace period for recently-expired orders.** Fifth of seven
   phases, and (per the WBS's own note) fully independent of every phase
