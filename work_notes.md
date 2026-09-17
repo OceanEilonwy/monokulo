@@ -29,6 +29,114 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 1 done - the
+  bounded, one-order historical rescan primitive, its durable job table
+  with real restart-resume, and the background runner that drives it.**
+  Second of seven phases. Still entirely engine-internal - no HTTP surface
+  yet (that's Phase 2), so nothing merchant-visible lands until then, but
+  every piece a trigger endpoint will call is now real and tested.
+  - `scanner::rescan_order(store, key_custody, daemon, tenant_id, handle,
+    minor_index, from_height, to_height, now, on_progress)` - walks
+    `from_height..=to_height` block by block, narrowed to one
+    `minor_index` via the same `Range<u32>` `scan_transaction`/
+    `record_scan_match` (`scanner.rs:85`) already take for the live
+    scanner. Not a rewrite: this is the exact primitive the WBS's own
+    research identified as reusable, called from a new site rather than a
+    new implementation. Errors propagate with `?` (unlike the live
+    scanner's log-and-retry-next-tick) - a one-shot job has no "next tick,"
+    so its caller (`run_rescan_job`) is what decides a failure means
+    "mark this row `failed`," not "silently stall forever at an unscanned
+    height."
+  - Ends with WBS 1.4's final mempool pass (catches a payment broadcast
+    but not yet mined by the time the historical walk reaches `to_height`)
+    and, deliberately, **no held-back buffer on the tip side** - scans all
+    the way to the literal current height. This is safe specifically
+    because `check_for_reorg_and_reconcile` (`scanner.rs:208`) has no
+    order-status filter at all, already proven for a terminal order by the
+    existing `a_settled_order_is_walked_back_when_a_reorg_deeper_than_...`
+    test - a payment the rescan records, even one that immediately settles
+    the order, inherits that same ongoing reorg protection automatically.
+    New test `a_rescan_found_payment_is_still_walked_back_by_a_later_reorg`
+    proves this end to end (trigger a rescan, let it settle the order,
+    reorg the chain that carried the payment, confirm the order is walked
+    back to `pending` with `double_spend_detected_at` set) rather than
+    leaving it as reasoning in a doc comment.
+  - The start side, unlike the end side, does get a fixed cushion:
+    `rescan_start_height()` subtracts `RESCAN_START_HEIGHT_CUSHION_BLOCKS`
+    (240, ~8h of block time) from a timestamp-derived start height, a
+    safety margin against Phase 0's binary search landing slightly late on
+    a non-strictly-monotonic block timestamp. Lives as its own small pure
+    function, separate from `rescan_order` itself, so `rescan_order`'s own
+    contract stays simple ("walk exactly what I'm given") - Phase 2's
+    trigger endpoint is what will call this before invoking `rescan_order`.
+  - New table `order_rescans` (`migrations/0007_order_rescans.sql`): one
+    row per triggered job - `status` is only ever `running`/`completed`/
+    `failed`, deliberately **no `interrupted` state** (decision 2) - a row
+    still `running` when the process stopped simply *is* still running, as
+    far as this table is concerned. `current_height` is the resumable
+    progress cursor; `to_height` is fixed once at trigger time and never
+    recomputed against a later tip, so a job converges even across several
+    restarts. A partial unique index (`order_rescans_one_running_per_tenant`
+    on `tenant_id WHERE status = 'running'`) enforces the one-job-per-tenant
+    guardrail (decision 4) atomically at the DB level - `Store::
+    trigger_rescan` catches the constraint violation and hands back the
+    existing running row instead of erroring, so a race between two
+    concurrent trigger requests can't create two jobs for one tenant.
+  - `scanner::run_rescan_job` runs one job to completion (or failure),
+    resuming from the row's own `current_height` - **not** `from_height` -
+    which is the one genuinely new piece of behavior this feature adds.
+    Re-scanning `current_height` itself on resume (not `current_height + 1`)
+    is intentional, not an off-by-one: it guarantees at-least-once coverage
+    of whatever block was mid-flight when the process stopped, leaning on
+    `record_scan_match`'s existing idempotency
+    (`UNIQUE(order_id, txid, output_index)`) rather than inventing new
+    idempotency logic. Progress is persisted every
+    `RESCAN_PROGRESS_PERSIST_INTERVAL_BLOCKS` (50) blocks, not every
+    single one - a rescan can cover tens of thousands of blocks, and a
+    real write per block would be wasteful. New test
+    `a_resumed_rescan_continues_from_its_persisted_current_height_not_from_height`
+    proves this directly: manually advances a job's `current_height` to
+    50 (simulating a process that died after persisting that much
+    progress), re-runs `run_rescan_job` against a fresh daemon wrapped to
+    record which heights it's asked for, and asserts the minimum height
+    seen is 50, not the job's `from_height` of 1.
+  - `scanner::spawn_rescan_job` is the real fire-and-forget production
+    shape - a genuinely new spawn pattern for this codebase (flagged as
+    such in the WBS itself): `shared::supervise::supervise` is loop-only
+    and wraps a closure that never returns, but a rescan job is bounded
+    and must run once to completion. Implemented as a double `tokio::spawn`
+    (an outer task supervising an inner one) rather than pulling in a
+    `catch_unwind` dependency - a panic in the inner task surfaces as an
+    `Err` on its `JoinHandle` that the outer task reacts to by marking the
+    row `failed`. `run_rescan_job` itself already handles an ordinary
+    `Err` from `rescan_order` the same way, so the outer layer only has to
+    cover the panic case.
+  - **Restart-resume wired for real, not just unit-tested**: `main.rs`
+    gained `resume_running_rescans`, called once at boot right after
+    `wallet_handles` is populated - reads `Store::list_running_rescans`
+    once and calls `spawn_rescan_job` for each row found, resolving each
+    job's `WalletHandle` and `Network`/daemon from already-boot-time state
+    the same way `register_all_tenants` does. A row whose tenant or wallet
+    handle no longer exists at boot (tenant disabled/deleted between
+    trigger and restart) is marked `failed` rather than left `running`
+    forever, which would otherwise permanently occupy that tenant's
+    one-job slot.
+  - Store-level round-trip tests for the whole `order_rescans` state
+    machine (trigger/progress/complete/fail, the one-running-per-tenant
+    guardrail holding within a tenant and not leaking across tenants,
+    `list_running_rescans` reflecting exactly the still-running set,
+    `get_latest_rescan_for_order` picking the most recent by
+    `started_at`) - "real sqlite round-trip tests, same style every other
+    table in this codebase already gets," per the WBS's own test bullet.
+  - `cargo test --workspace` clean across both the root workspace (292
+    passing/10 ignored, up from 279/10) and `mock-woocommerce`'s own
+    workspace view with `--features e2e` (190 passing there); `cargo build
+    --workspace --tests --features e2e` clean in both locations too.
+  - Proceeding into Phase 2 next (the engine's admin HTTP surface: trigger
+    with simple/advanced modes, a status endpoint, and a genuinely
+    HTTP-cached list-active-rescans endpoint) - this is what finally makes
+    Phase 1's primitives reachable by anything outside a test.
+
 - **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 0 done -
   the engine's daemon layer gains a real timestamp→block-height lookup.**
   A planned, multi-phase feature (user-requested WBS, reviewed and
