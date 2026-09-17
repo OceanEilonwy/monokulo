@@ -29,6 +29,83 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 2 done - the
+  engine's admin HTTP surface for triggering and watching a rescan.** Third
+  of seven phases. This is the first phase with anything reachable from
+  outside a test - a merchant-facing control-plane UI (Phase 3) can now be
+  built entirely against real endpoints rather than mocks.
+  - `POST /api/v1/admin/tenant/orders/{payment_id}/rescan` - `{"mode":
+    "simple"}` or `{"mode": "advanced", "from": <unix ts>, "to": <unix ts
+    (optional, defaults to now)>}`. Rejects (`400`) an order that isn't
+    `Expired` (decision 5), an advanced `from` earlier than
+    `max(order.created_at, now - max_rescan_lookback_days)`, a `to` in the
+    future, or `to < from` - all real rejections, never silently clamped,
+    per the WBS's own explicit requirement. Resolves the window to real
+    block heights via Phase 0's `find_height_at_or_before`, applies Phase
+    1's start-side cushion (`scanner::rescan_start_height`) to the start
+    only, inserts the durable job row, and spawns the runner. Returns `202`
+    with the job's initial state - triggering again while it's still
+    running for *this* order returns the same job (not an error); while
+    a *different* order on the same tenant is running, a real `400`.
+  - **A real bug caught before it shipped, not after**: `Store::
+    trigger_rescan`'s original Phase 1 signature returned a bare
+    `OrderRescan` with no way to tell "I just started this" from "this was
+    already running" apart. The admin handler's job is to decide whether to
+    spawn a runner - spawning unconditionally on that ambiguous return would
+    have spawned a *second* runner against an already-running job's row
+    every time a merchant's browser retried a trigger request (or double-
+    clicked the button, the exact UI Phase 3 is about to build), racing two
+    `run_rescan_job` calls against the same `current_height` writes. Fixed
+    by changing `trigger_rescan` to return `TriggerRescanOutcome::{Started,
+    AlreadyRunning}` instead - the handler only spawns on `Started`. Cost:
+    updating every Phase 1 test call site (`.into_job()` where the
+    distinction doesn't matter, an explicit `matches!` where it does) -
+    a legitimate API tightening mid-WBS, not scope creep.
+  - `GET /api/v1/admin/tenant/orders/{payment_id}/rescan` - the most
+    recently triggered rescan for this order (`Store::
+    get_latest_rescan_for_order`, added this phase), `404` if none ever
+    was. Reports `percent_complete` (derived, not stored -
+    `(current_height - from_height) / (to_height - from_height)`, clamped).
+  - `GET /api/v1/admin/tenant/rescans` - decision 3's dashboard-wide check,
+    with **real HTTP caching**, not a bespoke in-process cache: an `ETag`
+    built from the one running job's own `(id, updated_at)` (or the fixed
+    string `"none"`), `Cache-Control: max-age=3`, and genuine
+    `If-None-Match` handling - a matching etag gets a bodyless `304`, same
+    mechanism a browser or CDN would use between control-plane and the
+    engine. Real conditional-request test proves it: same etag gets `304`,
+    a progress update on the underlying job (as the real runner would make)
+    changes the etag and the same `If-None-Match` now gets a fresh `200`.
+  - Two new config knobs, `payment.default_rescan_lookback_days` (7) and
+    `payment.max_rescan_lookback_days` (90), validated (`1..=3650` each,
+    and default must not exceed max - a config where simple mode's own
+    fixed window would itself violate advanced mode's ceiling is refused
+    at startup, not left to surprise a merchant at trigger time). Carried
+    into `AppState` the same way `scan_poll_interval_secs` already is -
+    `AppState` still never holds a whole `Config`.
+  - **Test-timing correctness worth naming for whoever writes the next
+    HTTP-layer test here**: several new tests initially triggered a rescan
+    through the real HTTP endpoint and then made follow-up assertions
+    expecting the job to still be `running`. Against `FakeDaemonClient`
+    with no real I/O latency, the spawned background runner can finish a
+    300-block walk before the test's own next `.await` yields back to
+    it - a genuine race, not a hypothetical one. Fixed by seeding the
+    "already running" state directly via `Store::trigger_rescan` in tests
+    that are actually about the *endpoint's* behavior (the guardrail
+    rejection, the list endpoint's caching), reserving a real end-to-end
+    HTTP trigger for the one test that only checks the job id stays
+    consistent across the trigger and status calls, which holds regardless
+    of how fast the runner finishes. Confirmed hermetic by rerunning the
+    whole rescan test set five times in a row with 8 threads - no flakes.
+  - `cargo test --workspace` clean (302 passing/10 ignored, up from
+    292/10) in both the root workspace and `mock-woocommerce`'s own view
+    with `--features e2e`; `cargo build --workspace --tests --features
+    e2e` clean in both locations too.
+  - Proceeding into Phase 3 next (control-plane: the shared HTTP-cache-
+    aware client adopted as the default transport, the trigger UI with its
+    simple/advanced form, and the in-progress indicator on both the order
+    and dashboard pages) - the phase that finally makes this feature
+    something a merchant can actually click.
+
 - **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 1 done - the
   bounded, one-order historical rescan primitive, its durable job table
   with real restart-resume, and the background runner that drives it.**
