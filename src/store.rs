@@ -35,6 +35,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (4, include_str!("../migrations/0004_order_scoped_payment_uniqueness.sql")),
     (5, include_str!("../migrations/0005_drop_order_fiat_columns.sql")),
     (6, include_str!("../migrations/0006_drop_tenant_template_dir.sql")),
+    (7, include_str!("../migrations/0007_order_rescans.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -199,6 +200,87 @@ pub struct Webhook {
     pub signing_secret: String,
     pub enabled: bool,
     pub created_at: i64,
+}
+
+/// One row of `order_rescans` - see `docs/order_rescan_wbs.md` Phase 1.2 and that
+/// migration's own doc comment for the state machine this represents.
+#[derive(Debug, Clone)]
+pub struct OrderRescan {
+    pub id: String,
+    pub order_id: String,
+    pub tenant_id: String,
+    pub minor_index: u32,
+    pub mode: RescanMode,
+    pub status: RescanStatus,
+    pub from_height: u64,
+    pub to_height: u64,
+    pub current_height: u64,
+    pub error: Option<String>,
+    pub started_at: i64,
+    pub finished_at: Option<i64>,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RescanMode {
+    Simple,
+    Advanced,
+}
+
+impl RescanMode {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RescanMode::Simple => "simple",
+            RescanMode::Advanced => "advanced",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RescanStatus {
+    Running,
+    Completed,
+    Failed,
+}
+
+impl RescanStatus {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RescanStatus::Running => "running",
+            RescanStatus::Completed => "completed",
+            RescanStatus::Failed => "failed",
+        }
+    }
+}
+
+fn rescan_mode_from_str(s: &str) -> RescanMode {
+    match s {
+        "simple" => RescanMode::Simple,
+        "advanced" => RescanMode::Advanced,
+        other => panic!("unknown rescan mode in database: {other}"), // schema CHECK constraint makes this unreachable
+    }
+}
+
+fn rescan_status_from_str(s: &str) -> RescanStatus {
+    match s {
+        "running" => RescanStatus::Running,
+        "completed" => RescanStatus::Completed,
+        "failed" => RescanStatus::Failed,
+        other => panic!("unknown rescan status in database: {other}"), // schema CHECK constraint makes this unreachable
+    }
+}
+
+/// Everything needed to start a new rescan job - `from_height`/`to_height` are
+/// already fully resolved (including the start-side cushion, `scanner::
+/// rescan_start_height`) by whoever calls `Store::trigger_rescan`; this table never
+/// recomputes them itself.
+pub struct NewOrderRescan {
+    pub order_id: String,
+    pub tenant_id: String,
+    pub minor_index: u32,
+    pub mode: RescanMode,
+    pub from_height: u64,
+    pub to_height: u64,
 }
 
 fn status_to_str(s: OrderStatus) -> &'static str {
@@ -1138,6 +1220,143 @@ impl Store {
         self.conn.execute(
             "DELETE FROM scanned_blocks WHERE network = ?1 AND height < ?2",
             params![network, min_height as i64],
+        )?;
+        Ok(())
+    }
+
+    // -- Rescans ----------------------------------------------------------
+
+    fn row_to_rescan(row: &rusqlite::Row) -> rusqlite::Result<OrderRescan> {
+        let mode_str: String = row.get("mode")?;
+        let status_str: String = row.get("status")?;
+        Ok(OrderRescan {
+            id: row.get("id")?,
+            order_id: row.get("order_id")?,
+            tenant_id: row.get("tenant_id")?,
+            minor_index: row.get::<_, i64>("minor_index")? as u32,
+            mode: rescan_mode_from_str(&mode_str),
+            status: rescan_status_from_str(&status_str),
+            from_height: row.get::<_, i64>("from_height")? as u64,
+            to_height: row.get::<_, i64>("to_height")? as u64,
+            current_height: row.get::<_, i64>("current_height")? as u64,
+            error: row.get("error")?,
+            started_at: row.get("started_at")?,
+            finished_at: row.get("finished_at")?,
+            updated_at: row.get("updated_at")?,
+        })
+    }
+
+    pub fn get_rescan(&self, id: &str) -> Result<Option<OrderRescan>> {
+        self.conn
+            .query_row("SELECT * FROM order_rescans WHERE id = ?1", params![id], Self::row_to_rescan)
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// The at-most-one `running` row for this tenant (the one-job-per-tenant
+    /// guardrail, WBS 1.2 decision 4) - `None` if nothing is currently running.
+    pub fn get_running_rescan_for_tenant(&self, tenant_id: &str) -> Result<Option<OrderRescan>> {
+        self.conn
+            .query_row(
+                "SELECT * FROM order_rescans WHERE tenant_id = ?1 AND status = 'running'",
+                params![tenant_id],
+                Self::row_to_rescan,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// The most recently started rescan for one order, if it has ever had one -
+    /// used for status display (WBS Phase 2.2/Phase 5) regardless of whether that
+    /// rescan is still running.
+    pub fn get_latest_rescan_for_order(&self, order_id: &str) -> Result<Option<OrderRescan>> {
+        self.conn
+            .query_row(
+                "SELECT * FROM order_rescans WHERE order_id = ?1 ORDER BY started_at DESC LIMIT 1",
+                params![order_id],
+                Self::row_to_rescan,
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Every row still `running` - read once at boot so the engine can re-spawn
+    /// `scanner::run_rescan_job` for each one (WBS 1.2's restart-resume guarantee).
+    pub fn list_running_rescans(&self) -> Result<Vec<OrderRescan>> {
+        let mut stmt = self.conn.prepare("SELECT * FROM order_rescans WHERE status = 'running'")?;
+        let rows = stmt.query_map([], Self::row_to_rescan)?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Starts a new rescan job, or - if one is already `running` for this tenant -
+    /// hands back that existing row instead of erroring. The partial unique index
+    /// `order_rescans_one_running_per_tenant` is what actually enforces the
+    /// guardrail; catching its violation here (rather than a separate check-then-
+    /// insert) keeps the check race-free under concurrent trigger requests.
+    /// `current_height` starts equal to `from_height` - nothing scanned yet, so the
+    /// walk's first step is to scan `from_height` itself.
+    pub fn trigger_rescan(&self, new: NewOrderRescan, now: i64) -> Result<OrderRescan> {
+        let id = new_id("rsc");
+        let inserted = self.conn.execute(
+            "INSERT INTO order_rescans
+                (id, order_id, tenant_id, minor_index, mode, status,
+                 from_height, to_height, current_height, started_at, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7, ?6, ?8, ?8)",
+            params![
+                id,
+                new.order_id,
+                new.tenant_id,
+                new.minor_index,
+                new.mode.as_str(),
+                new.from_height as i64,
+                new.to_height as i64,
+                now,
+            ],
+        );
+        match inserted {
+            Ok(_) => self.get_rescan(&id)?.ok_or(StoreError::NotFound),
+            Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::ConstraintViolation => self
+                .get_running_rescan_for_tenant(&new.tenant_id)?
+                .ok_or(StoreError::NotFound),
+            Err(e) => Err(e.into()),
+        }
+    }
+
+    /// Advances the resumable progress cursor. Not called on every scanned block -
+    /// see `scanner::RESCAN_PROGRESS_PERSIST_INTERVAL_BLOCKS` - a real write on every
+    /// single block would be wasteful for a rescan that might cover tens of
+    /// thousands of them.
+    pub fn update_rescan_progress(&self, id: &str, current_height: u64, now: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE order_rescans SET current_height = ?2, updated_at = ?3 WHERE id = ?1 AND status = 'running'",
+            params![id, current_height as i64, now],
+        )?;
+        Ok(())
+    }
+
+    /// Marks a job `completed` - terminal, never auto-resumed. Sets
+    /// `current_height` to `to_height` so a caller reading progress off this row
+    /// afterwards sees 100% without special-casing the `completed` status.
+    pub fn complete_rescan(&self, id: &str, now: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE order_rescans
+             SET status = 'completed', current_height = to_height, finished_at = ?2, updated_at = ?2
+             WHERE id = ?1 AND status = 'running'",
+            params![id, now],
+        )?;
+        Ok(())
+    }
+
+    /// Marks a job `failed` - terminal, never auto-resumed (WBS 1.3: a failed job
+    /// does not get picked back up at the next boot; the merchant re-triggers
+    /// deliberately). `current_height` is left exactly where it was - a genuinely
+    /// informative "how far did it get" for whatever message the merchant sees.
+    pub fn fail_rescan(&self, id: &str, error: &str, now: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE order_rescans
+             SET status = 'failed', error = ?2, finished_at = ?3, updated_at = ?3
+             WHERE id = ?1 AND status = 'running'",
+            params![id, error, now],
         )?;
         Ok(())
     }
@@ -2452,5 +2671,154 @@ mod tests {
         assert_eq!(found[0].txid, "tx_a");
 
         assert!(store.find_payment_by_key_image("not_present").unwrap().is_empty());
+    }
+
+    // -- Rescans (`docs/order_rescan_wbs.md` Phase 1.2) --------------------
+
+    fn new_rescan(order: &Order, tenant_id: &str, from_height: u64, to_height: u64) -> NewOrderRescan {
+        NewOrderRescan {
+            order_id: order.id.clone(),
+            tenant_id: tenant_id.to_string(),
+            minor_index: order.minor_index,
+            mode: RescanMode::Simple,
+            from_height,
+            to_height,
+        }
+    }
+
+    #[test]
+    fn triggering_a_rescan_round_trips_every_field() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, &tenant.tenant.id, 1);
+
+        let job = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 10, 500), 1000).unwrap();
+
+        assert_eq!(job.order_id, order.id);
+        assert_eq!(job.tenant_id, tenant.tenant.id);
+        assert_eq!(job.minor_index, 1);
+        assert_eq!(job.mode, RescanMode::Simple);
+        assert_eq!(job.status, RescanStatus::Running);
+        assert_eq!(job.from_height, 10);
+        assert_eq!(job.to_height, 500);
+        assert_eq!(job.current_height, 10, "nothing scanned yet - starts equal to from_height");
+        assert_eq!(job.started_at, 1000);
+        assert_eq!(job.finished_at, None);
+        assert_eq!(store.get_rescan(&job.id).unwrap().unwrap().id, job.id);
+    }
+
+    #[test]
+    fn a_second_trigger_while_one_is_running_for_the_same_tenant_returns_the_existing_row() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order_a = new_order(&store, &tenant.tenant.id, 1);
+        let order_b = new_order(&store, &tenant.tenant.id, 2);
+
+        let first = store.trigger_rescan(new_rescan(&order_a, &tenant.tenant.id, 1, 100), 1000).unwrap();
+        let second = store.trigger_rescan(new_rescan(&order_b, &tenant.tenant.id, 1, 999), 1001).unwrap();
+
+        assert_eq!(second.id, first.id);
+        assert_eq!(second.order_id, order_a.id, "the second request's order must never have taken effect");
+        assert_eq!(store.get_running_rescan_for_tenant(&tenant.tenant.id).unwrap().unwrap().id, first.id);
+    }
+
+    #[test]
+    fn two_different_tenants_can_each_have_their_own_running_rescan() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant_a = new_tenant(&store);
+        let tenant_b = new_tenant(&store);
+        let order_a = new_order(&store, &tenant_a.tenant.id, 1);
+        let order_b = new_order(&store, &tenant_b.tenant.id, 1);
+
+        let a = store.trigger_rescan(new_rescan(&order_a, &tenant_a.tenant.id, 1, 100), 1000).unwrap();
+        let b = store.trigger_rescan(new_rescan(&order_b, &tenant_b.tenant.id, 1, 100), 1000).unwrap();
+
+        assert_ne!(a.id, b.id, "the one-running-per-tenant guardrail must not leak across tenants");
+    }
+
+    #[test]
+    fn progress_updates_and_completion_round_trip() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, &tenant.tenant.id, 1);
+        let job = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1000).unwrap();
+
+        store.update_rescan_progress(&job.id, 55, 1050).unwrap();
+        let mid = store.get_rescan(&job.id).unwrap().unwrap();
+        assert_eq!(mid.current_height, 55);
+        assert_eq!(mid.updated_at, 1050);
+        assert_eq!(mid.status, RescanStatus::Running);
+
+        store.complete_rescan(&job.id, 1100).unwrap();
+        let done = store.get_rescan(&job.id).unwrap().unwrap();
+        assert_eq!(done.status, RescanStatus::Completed);
+        assert_eq!(done.current_height, 100, "snapped to to_height on completion");
+        assert_eq!(done.finished_at, Some(1100));
+        assert!(
+            store.get_running_rescan_for_tenant(&tenant.tenant.id).unwrap().is_none(),
+            "a completed job must free up the one-running-per-tenant slot"
+        );
+
+        // A completed (terminal) row is never touched by a further progress update -
+        // it already reflects its own final state.
+        store.update_rescan_progress(&job.id, 77, 1200).unwrap();
+        assert_eq!(store.get_rescan(&job.id).unwrap().unwrap().current_height, 100);
+    }
+
+    #[test]
+    fn a_failed_rescan_frees_the_tenant_slot_and_is_never_auto_resumed() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, &tenant.tenant.id, 1);
+        let job = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1000).unwrap();
+        store.update_rescan_progress(&job.id, 40, 1050).unwrap();
+
+        store.fail_rescan(&job.id, "daemon unreachable", 1075).unwrap();
+
+        let failed = store.get_rescan(&job.id).unwrap().unwrap();
+        assert_eq!(failed.status, RescanStatus::Failed);
+        assert_eq!(failed.error, Some("daemon unreachable".to_string()));
+        assert_eq!(failed.current_height, 40, "left exactly where it got to, not reset or advanced");
+        assert_eq!(failed.finished_at, Some(1075));
+        assert!(store.get_running_rescan_for_tenant(&tenant.tenant.id).unwrap().is_none());
+        assert!(
+            store.list_running_rescans().unwrap().is_empty(),
+            "a failed job must never be picked up again at the next boot"
+        );
+
+        // Freed slot: a new trigger for the same tenant now succeeds as a genuinely
+        // new job rather than returning the failed one.
+        let retried = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1100).unwrap();
+        assert_ne!(retried.id, job.id);
+    }
+
+    #[test]
+    fn list_running_rescans_is_exactly_the_still_running_set() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant_a = new_tenant(&store);
+        let tenant_b = new_tenant(&store);
+        let order_a = new_order(&store, &tenant_a.tenant.id, 1);
+        let order_b = new_order(&store, &tenant_b.tenant.id, 1);
+
+        let running = store.trigger_rescan(new_rescan(&order_a, &tenant_a.tenant.id, 1, 100), 1000).unwrap();
+        let will_complete = store.trigger_rescan(new_rescan(&order_b, &tenant_b.tenant.id, 1, 100), 1000).unwrap();
+        store.complete_rescan(&will_complete.id, 1100).unwrap();
+
+        let still_running: Vec<String> = store.list_running_rescans().unwrap().into_iter().map(|j| j.id).collect();
+        assert_eq!(still_running, vec![running.id]);
+    }
+
+    #[test]
+    fn get_latest_rescan_for_order_picks_the_most_recently_started_one() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, &tenant.tenant.id, 1);
+
+        let first = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1000).unwrap();
+        store.fail_rescan(&first.id, "boom", 1010).unwrap();
+        let second = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1020).unwrap();
+
+        let latest = store.get_latest_rescan_for_order(&order.id).unwrap().unwrap();
+        assert_eq!(latest.id, second.id);
     }
 }

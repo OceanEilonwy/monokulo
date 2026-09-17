@@ -14,7 +14,7 @@ use monero::Transaction;
 
 use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
 use crate::key_custody::{KeyCustody, KeyCustodyError, WalletHandle};
-use crate::store::{Store, StoreError};
+use crate::store::{SharedStore, Store, StoreError};
 
 #[derive(Debug, thiserror::Error)]
 pub enum ScannerError {
@@ -704,6 +704,228 @@ pub async fn revalidate_recent_double_spend_voids(
     Ok(recovered_orders)
 }
 
+// ---------------------------------------------------------------------------
+// Order rescans (`docs/order_rescan_wbs.md` Phase 1) - a bounded, one-order
+// historical rescan, separate from the live per-network scanner above.
+// ---------------------------------------------------------------------------
+
+/// Blocks subtracted from a rescan's computed start height, as a safety margin
+/// against [`crate::daemon::MoneroDaemonClient::find_height_at_or_before`]'s
+/// best-effort binary search landing slightly late because of Monero's non-strictly-
+/// monotonic block timestamps (see that method's own doc comment). Roughly 8 hours
+/// at Monero's ~2-minute block time - generous next to any realistic timestamp
+/// jitter, negligible next to the rescan ranges this feature targets (days, not
+/// hours).
+///
+/// Deliberately one-sided: only ever applied to the *start* height. The *end* side
+/// (near the tip) gets no equivalent buffer - see `rescan_order`'s own doc comment
+/// for why the existing reorg/double-spend reconciliation pass already covers that
+/// case without one.
+pub const RESCAN_START_HEIGHT_CUSHION_BLOCKS: u64 = 240;
+
+/// Applies [`RESCAN_START_HEIGHT_CUSHION_BLOCKS`] to a timestamp-derived height,
+/// saturating at genesis rather than underflowing.
+pub fn rescan_start_height(target_height: u64) -> u64 {
+    target_height.saturating_sub(RESCAN_START_HEIGHT_CUSHION_BLOCKS)
+}
+
+/// How often [`run_rescan_job`] persists `order_rescans.current_height` while
+/// walking a block range - not on every single block, since a real write per block
+/// would be wasteful for a rescan that might cover tens of thousands of them
+/// (WBS 1.3). The final height is always persisted regardless of this interval,
+/// via `Store::complete_rescan`/`fail_rescan`.
+pub const RESCAN_PROGRESS_PERSIST_INTERVAL_BLOCKS: u64 = 50;
+
+/// Rescans one tenant's one `minor_index` across `from_height..=to_height`, then
+/// does one final pass over the current mempool - the bounded, one-order historical
+/// rescan primitive (WBS 1.1/1.4). Reuses the exact same `scan_transaction`/
+/// `record_scan_match` primitives the live scanner (`run_scan_tick`) already calls,
+/// narrowed to this one `minor_index` via the `Range<u32>` both already take - not a
+/// rewrite, a different caller of the same building blocks.
+///
+/// Unlike `run_scan_tick`, a failure here propagates with `?` rather than being
+/// logged and treated as "retry next tick": this is a one-shot bounded job, not a
+/// perpetual loop, so `run_rescan_job` (its caller) is what decides what a failure
+/// means - it marks the job's row `failed`, a terminal state the merchant sees and
+/// can retry from, rather than silently stalling forever at an unscanned height the
+/// way a live scanner tick would.
+///
+/// Calls `daemon.get_height()` once at the very end, after both the block walk and
+/// the mempool check, purely to give `recompute_and_notify` a current tip to derive
+/// confirmation counts against - `to_height` itself is not a safe substitute (it's
+/// the rescan's own fixed target, potentially already behind the real tip by the
+/// time a long rescan finishes).
+///
+/// Deliberately scans all the way to the literal tip with no held-back buffer on the
+/// end side, unlike the start side's `RESCAN_START_HEIGHT_CUSHION_BLOCKS`: the
+/// existing reorg/double-spend reconciliation pass (`check_for_reorg_and_reconcile`,
+/// above, backed by `Store::find_payments_at_or_after_height`) has **no order-status
+/// filter at all** - it re-examines every recorded, non-voided payment within
+/// `reorg_check_depth` blocks of the tip regardless of whether that payment's order
+/// is terminal, already proven for a terminal order by
+/// `a_settled_order_is_walked_back_when_a_reorg_deeper_than_confirmations_required_orphans_its_payment`
+/// below. A payment this rescan records - even one that immediately flips the order
+/// to `Paid` - inherits that same ongoing protection automatically. A manual
+/// tip-side buffer here would only create a blind spot that mechanism doesn't need.
+#[allow(clippy::too_many_arguments)]
+pub async fn rescan_order(
+    store: &SharedStore,
+    key_custody: &dyn KeyCustody,
+    daemon: &dyn MoneroDaemonClient,
+    tenant_id: &str,
+    handle: WalletHandle,
+    minor_index: u32,
+    from_height: u64,
+    to_height: u64,
+    now: i64,
+    mut on_progress: impl FnMut(u64),
+) -> Result<()> {
+    let minor_range = minor_index..(minor_index + 1);
+    let mut touched: HashSet<String> = HashSet::new();
+
+    for height in from_height..=to_height {
+        let block_txs = daemon.get_block_transactions(height).await?;
+        for tx in &block_txs {
+            let scan = scan_transaction(key_custody, handle, tx, minor_range.clone()).await?;
+            let s = store.lock().unwrap();
+            touched.extend(record_scan_match(&s, tenant_id, &scan, now, Some(height))?);
+        }
+        on_progress(height);
+    }
+
+    // WBS 1.4: catches a payment that was broadcast but not yet mined by the time
+    // the historical walk reaches the tip - a real "network delay" case, not an
+    // error condition. Recorded at zero confirmations, same as the live scanner
+    // would record it; nothing here waits for it to confirm (decision 6).
+    for tx in &daemon.get_mempool_transactions().await? {
+        let scan = scan_transaction(key_custody, handle, tx, minor_range.clone()).await?;
+        let s = store.lock().unwrap();
+        touched.extend(record_scan_match(&s, tenant_id, &scan, now, None)?);
+    }
+
+    let tip = daemon.get_height().await?;
+    for order_id in &touched {
+        let s = store.lock().unwrap();
+        recompute_and_notify(&s, order_id, tip, now)?;
+    }
+
+    Ok(())
+}
+
+/// Runs rescan job `rescan_id` to completion (or failure), persisting
+/// `order_rescans.current_height` periodically as it walks and marking the row
+/// `completed`/`failed` when done (WBS 1.3). Resumes from the row's own
+/// `current_height` - not `from_height` - so calling this again for a job that was
+/// already partway through (e.g. after a server restart; see
+/// `Store::list_running_rescans`) picks up where it left off rather than redoing
+/// already-scanned blocks. Re-scanning `current_height` itself is intentional, not
+/// an off-by-one: it guarantees at-least-once coverage of whatever block was
+/// mid-flight when the process stopped, relying on `record_scan_match`'s existing
+/// idempotency (`UNIQUE(order_id, txid, output_index)`) rather than inventing new
+/// idempotency logic here.
+///
+/// Awaitable directly - every test below does exactly that. [`spawn_rescan_job`] is
+/// the fire-and-forget production wrapper that additionally catches a panic here and
+/// marks the row `failed` rather than letting it vanish silently.
+pub async fn run_rescan_job(
+    store: &SharedStore,
+    key_custody: &dyn KeyCustody,
+    daemon: &dyn MoneroDaemonClient,
+    handle: WalletHandle,
+    rescan_id: &str,
+) {
+    let job = match store.lock().unwrap().get_rescan(rescan_id) {
+        Ok(Some(job)) => job,
+        Ok(None) => {
+            eprintln!("rescan {rescan_id}: row vanished before the job could run - nothing to do");
+            return;
+        }
+        Err(e) => {
+            eprintln!("rescan {rescan_id}: failed to load its own row - cannot start: {e}");
+            return;
+        }
+    };
+
+    let to_height = job.to_height;
+    let mut last_persisted = job.current_height;
+    let on_progress = |height: u64| {
+        if height == to_height || height.saturating_sub(last_persisted) >= RESCAN_PROGRESS_PERSIST_INTERVAL_BLOCKS {
+            let now = crate::now_unix();
+            if let Err(e) = store.lock().unwrap().update_rescan_progress(rescan_id, height, now) {
+                eprintln!("rescan {rescan_id}: failed to persist progress at height {height}: {e}");
+            }
+            last_persisted = height;
+        }
+    };
+
+    let now = crate::now_unix();
+    let result = rescan_order(
+        store,
+        key_custody,
+        daemon,
+        &job.tenant_id,
+        handle,
+        job.minor_index,
+        job.current_height,
+        job.to_height,
+        now,
+        on_progress,
+    )
+    .await;
+
+    let now = crate::now_unix();
+    match result {
+        Ok(()) => {
+            if let Err(e) = store.lock().unwrap().complete_rescan(rescan_id, now) {
+                eprintln!("rescan {rescan_id}: failed to mark completed: {e}");
+            }
+        }
+        Err(e) => {
+            eprintln!("rescan {rescan_id} failed: {e}");
+            if let Err(e2) = store.lock().unwrap().fail_rescan(rescan_id, &e.to_string(), now) {
+                eprintln!("rescan {rescan_id}: failed to mark failed after a genuine error: {e2}");
+            }
+        }
+    }
+}
+
+/// The real, fire-and-forget production shape for [`run_rescan_job`] - a genuinely
+/// new spawn shape for this codebase (WBS 1.3): `shared::supervise::supervise` is
+/// loop-only and wraps a closure that never returns, but a rescan job is bounded and
+/// must run once to completion, not forever.
+///
+/// The double `tokio::spawn` (an outer task supervising an inner one) is what makes
+/// a panic inside the job catchable without pulling in a separate `catch_unwind`
+/// dependency: a panic propagating through the inner `JoinHandle` surfaces as an
+/// `Err` the outer task can react to - marking the row `failed` - rather than
+/// silently killing whatever spawned it. `run_rescan_job` itself already handles an
+/// ordinary `Err` result from `rescan_order` (marking the row `failed` from inside),
+/// so this outer layer only ever needs to handle the panic case.
+pub fn spawn_rescan_job(
+    store: SharedStore,
+    key_custody: std::sync::Arc<dyn KeyCustody>,
+    daemon: std::sync::Arc<dyn MoneroDaemonClient>,
+    handle: WalletHandle,
+    rescan_id: String,
+) {
+    let outer_store = store.clone();
+    let outer_rescan_id = rescan_id.clone();
+    tokio::spawn(async move {
+        let inner = tokio::spawn(async move {
+            run_rescan_job(&store, key_custody.as_ref(), daemon.as_ref(), handle, &rescan_id).await;
+        });
+        if let Err(join_err) = inner.await {
+            eprintln!("rescan {outer_rescan_id} background task panicked: {join_err} - marking it failed");
+            let now = crate::now_unix();
+            if let Err(e) =
+                outer_store.lock().unwrap().fail_rescan(&outer_rescan_id, &format!("panicked: {join_err}"), now)
+            {
+                eprintln!("rescan {outer_rescan_id}: failed to mark failed after a panic: {e}");
+            }
+        }
+    });
+}
+
 /// One full scan tick for one network: mempool, any new confirmed blocks, then a
 /// reorg check - composing the primitives above into what a production scanner
 /// loop actually runs on an interval. `network` scopes everything to one chain: the
@@ -1164,7 +1386,7 @@ mod tests {
     use crate::daemon::fake::FakeDaemonClient;
     use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
     use crate::key_custody::{KeyCustodyError, MatchedOutput, Network, PlainKeyCustody, SubaddressIndex, WalletMaterial};
-    use crate::store::{NewOrder, NewTenant};
+    use crate::store::{NewOrder, NewOrderRescan, NewTenant, RescanMode};
     use monero::consensus::encode::deserialize;
     use monero::{Address, PrivateKey, PublicKey};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -1481,6 +1703,257 @@ mod tests {
             .unwrap();
 
         (store, key_custody, handle, tenant_id, order.id)
+    }
+
+    // -- Order rescans (`docs/order_rescan_wbs.md` Phase 1) -----------------
+
+    #[test]
+    fn rescan_start_height_subtracts_the_cushion_and_saturates_at_genesis() {
+        assert_eq!(rescan_start_height(1000), 1000 - RESCAN_START_HEIGHT_CUSHION_BLOCKS);
+        assert_eq!(rescan_start_height(0), 0, "must saturate rather than underflow near genesis");
+        assert_eq!(
+            rescan_start_height(RESCAN_START_HEIGHT_CUSHION_BLOCKS - 1),
+            0,
+            "a target inside the cushion window of genesis still saturates to 0, not a negative height"
+        );
+    }
+
+    /// Wraps `FakeDaemonClient`, recording every height `get_block_transactions` was
+    /// called for - the direct way to prove a resumed rescan job actually starts
+    /// walking from its persisted `current_height` rather than `from_height` again.
+    struct HeightRecordingDaemon {
+        inner: FakeDaemonClient,
+        heights_seen: std::sync::Mutex<Vec<u64>>,
+    }
+
+    impl HeightRecordingDaemon {
+        fn new(inner: FakeDaemonClient) -> Self {
+            Self { inner, heights_seen: std::sync::Mutex::new(Vec::new()) }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MoneroDaemonClient for HeightRecordingDaemon {
+        async fn get_height(&self) -> std::result::Result<u64, DaemonError> {
+            self.inner.get_height().await
+        }
+        async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
+            self.inner.get_block_hash(height).await
+        }
+        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
+            self.inner.get_block_timestamp(height).await
+        }
+        async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            self.heights_seen.lock().unwrap().push(height);
+            self.inner.get_block_transactions(height).await
+        }
+        async fn get_mempool_transactions(&self) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            self.inner.get_mempool_transactions().await
+        }
+        async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
+            self.inner.locate_transaction(txid).await
+        }
+        async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+            self.inner.is_key_image_spent(key_images).await
+        }
+    }
+
+    /// Builds a chain of `height` filler blocks with `tx` mined at `tx_at`, and
+    /// records every one of those blocks as already-scanned in `store` (as they
+    /// realistically would be by the live scanner, which keeps running against this
+    /// same network the whole time an order sits `expired`) - so a later reorg test
+    /// against this chain has something to compare against.
+    fn chain_with_tx_at(store: &Store, height: u64, tx_at: u64, tx: &Transaction, prefix: &str) -> FakeDaemonClient {
+        let daemon = FakeDaemonClient::new();
+        for h in 1..=height {
+            let txs = if h == tx_at { vec![tx.clone()] } else { vec![] };
+            daemon.push_block(&format!("{prefix}_{h}"), txs);
+        }
+        for h in 1..=height {
+            store.set_scanned_block("mainnet", h, &format!("{prefix}_{h}")).unwrap();
+        }
+        daemon
+    }
+
+    #[tokio::test]
+    async fn rescan_order_walks_a_historical_range_and_finds_a_late_payment() {
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let tx = fixture_tx();
+        let daemon = chain_with_tx_at(&store, 105, 60, &tx, "hist");
+        let store = store.into_shared();
+
+        rescan_order(&store, &key_custody, &daemon, &tenant_id, handle, 1, 1, 105, 2000, |_| {})
+            .await
+            .unwrap();
+
+        let s = store.lock().unwrap();
+        let payments = s.get_all_payments(&order_id).unwrap();
+        assert_eq!(payments.len(), 1);
+        assert_eq!(payments[0].block_height, Some(60));
+        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert!(
+            matches!(order.status, crate::status::OrderStatus::Paid | crate::status::OrderStatus::Overpaid),
+            "a rescan-found payment must recompute the order's status, not just record the payment row: {:?}",
+            order.status
+        );
+    }
+
+    /// WBS 1.4: a payment broadcast but not yet mined by the time the historical
+    /// walk reaches `to_height` must still be found via the final mempool pass, at
+    /// zero confirmations - not silently missed because it was never in a block.
+    #[tokio::test]
+    async fn rescan_order_finds_a_still_unconfirmed_payment_via_the_final_mempool_check() {
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let tx = fixture_tx();
+        let daemon = FakeDaemonClient::new();
+        for h in 1..=10 {
+            daemon.push_block(&format!("filler_{h}"), vec![]);
+        }
+        daemon.set_mempool(vec![tx]);
+        let store = store.into_shared();
+
+        rescan_order(&store, &key_custody, &daemon, &tenant_id, handle, 1, 1, 10, 2000, |_| {})
+            .await
+            .unwrap();
+
+        let s = store.lock().unwrap();
+        let payments = s.get_all_payments(&order_id).unwrap();
+        assert_eq!(payments.len(), 1);
+        assert_eq!(payments[0].block_height, None, "found via the mempool, not a block");
+    }
+
+    /// The one genuinely new piece of behavior this whole feature adds (WBS 1.2):
+    /// a rescan job that was already partway through when the process stopped must
+    /// resume from its own persisted `current_height`, not restart from
+    /// `from_height` - re-walking already-scanned blocks would be wasted work at
+    /// best and, for a long rescan, could make a restart-heavy deployment never
+    /// converge.
+    #[tokio::test]
+    async fn a_resumed_rescan_continues_from_its_persisted_current_height_not_from_height() {
+        let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
+        let now = 2000;
+
+        let job = store
+            .trigger_rescan(
+                NewOrderRescan {
+                    order_id: _order_id.clone(),
+                    tenant_id: tenant_id.clone(),
+                    minor_index: 1,
+                    mode: RescanMode::Simple,
+                    from_height: 1,
+                    to_height: 110,
+                },
+                now,
+            )
+            .unwrap();
+        // Simulate the process having already made it to height 50 (persisted) before
+        // it died mid-job - exactly the state a restart finds a still-`running` row in.
+        store.update_rescan_progress(&job.id, 50, now).unwrap();
+
+        let inner = FakeDaemonClient::new();
+        for h in 1..=110 {
+            inner.push_block(&format!("blk_{h}"), vec![]);
+        }
+        let daemon = HeightRecordingDaemon::new(inner);
+        let store = store.into_shared();
+
+        run_rescan_job(&store, &key_custody, &daemon, handle, &job.id).await;
+
+        let heights_seen = daemon.heights_seen.lock().unwrap();
+        assert_eq!(
+            heights_seen.iter().min().copied(),
+            Some(50),
+            "must resume at the persisted current_height, not redo from_height=1"
+        );
+        assert_eq!(
+            heights_seen.iter().max().copied(),
+            Some(110),
+            "must still reach the same original to_height"
+        );
+        drop(heights_seen);
+
+        let resumed = store.lock().unwrap().get_rescan(&job.id).unwrap().unwrap();
+        assert_eq!(resumed.status, crate::store::RescanStatus::Completed);
+        assert_eq!(resumed.current_height, 110);
+    }
+
+    /// A second trigger while one rescan is already `running` for a tenant must not
+    /// start a competing job - it hands back the existing row instead (WBS 1.2
+    /// decision 4's one-job-per-tenant guardrail).
+    #[tokio::test]
+    async fn triggering_a_second_rescan_while_one_is_running_returns_the_existing_job() {
+        let (store, _key_custody, _handle, tenant_id, order_id) = setup().await;
+        let first = store
+            .trigger_rescan(
+                NewOrderRescan {
+                    order_id: order_id.clone(),
+                    tenant_id: tenant_id.clone(),
+                    minor_index: 1,
+                    mode: RescanMode::Simple,
+                    from_height: 1,
+                    to_height: 100,
+                },
+                1000,
+            )
+            .unwrap();
+
+        let second = store
+            .trigger_rescan(
+                NewOrderRescan {
+                    order_id,
+                    tenant_id,
+                    minor_index: 1,
+                    mode: RescanMode::Advanced,
+                    from_height: 5,
+                    to_height: 200,
+                },
+                1001,
+            )
+            .unwrap();
+
+        assert_eq!(second.id, first.id, "must return the existing running row, not start a new one");
+        assert_eq!(second.mode, RescanMode::Simple, "unchanged - the second trigger's request never took effect");
+    }
+
+    /// Proves the reliance described in `rescan_order`'s own doc comment actually
+    /// holds, not just reasoned about: a payment a rescan records - even one that
+    /// immediately settles the order - still gets walked back by the ordinary reorg
+    /// path if the chain that carried it is later orphaned. This is *why* the
+    /// rescan itself scans all the way to the tip with no held-back buffer.
+    #[tokio::test]
+    async fn a_rescan_found_payment_is_still_walked_back_by_a_later_reorg() {
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let tx = fixture_tx();
+        let daemon = chain_with_tx_at(&store, 100, 80, &tx, "old");
+        let store = store.into_shared();
+
+        rescan_order(&store, &key_custody, &daemon, &tenant_id, handle, 1, 1, 100, 2000, |_| {}).await.unwrap();
+        {
+            let s = store.lock().unwrap();
+            let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+            assert!(
+                matches!(order.status, crate::status::OrderStatus::Paid | crate::status::OrderStatus::Overpaid),
+                "must have settled off the rescan-found payment before the reorg: {:?}",
+                order.status
+            );
+        }
+
+        // The chain that carried the payment is now orphaned: it never mined that
+        // transaction, and its inputs are proven spent by something else.
+        for ki in &key_images_of(&tx) {
+            daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
+        }
+        reorg_to_new_chain(&daemon, 80, 100, None);
+
+        let report = check_for_reorg_and_reconcile(&store, &daemon, "mainnet", 20, 3000).await.unwrap();
+        assert_eq!(report.reorg_detected_at, Some(80));
+        assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
+
+        let s = store.lock().unwrap();
+        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        assert_eq!(order.amount_received_piconero, 0, "the rescan-found payment must stop counting once orphaned");
+        assert_eq!(order.status, crate::status::OrderStatus::Pending);
+        assert!(order.double_spend_detected_at.is_some());
     }
 
     #[tokio::test]

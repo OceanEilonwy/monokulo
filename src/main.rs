@@ -191,6 +191,7 @@ async fn main() {
 
     bootstrap_self_hosted_tenant(&store, &key_custody, &config).await;
     let wallet_handles = Arc::new(RwLock::new(register_all_tenants(&store, &key_custody).await));
+    resume_running_rescans(&store, &key_custody, &daemons, &wallet_handles).await;
 
     let app_state = AppState {
         store: store.clone(),
@@ -447,6 +448,77 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
         }
     }
     handles
+}
+
+/// Re-spawns `scanner::run_rescan_job` for every rescan job still `running` when
+/// this process starts - the restart-resume half of `docs/order_rescan_wbs.md`
+/// Phase 1.2's durability guarantee. A row left `running` when the previous process
+/// stopped is not a terminal state (the table has no `interrupted` status); this is
+/// what actually resumes it, reading `Store::list_running_rescans` once at boot
+/// rather than polling for it - each job's own row is what tracks its progress from
+/// here on, the same way `register_all_tenants` seeds `wallet_handles` once and then
+/// relies on the running system to keep it current.
+///
+/// Only two things can make a still-`running` row unresumable, both of which mean
+/// the world it was triggered against no longer exists at all: its tenant's wallet
+/// isn't registered (`KeyCustody` lost its material, or the tenant was disabled
+/// between trigger and this boot), or the tenant row itself is gone. Either is
+/// marked `failed` rather than silently left `running` forever - a `running` row
+/// that can never actually run again would otherwise permanently occupy that
+/// tenant's one-job-at-a-time slot (WBS 1.2 decision 4).
+async fn resume_running_rescans(
+    store: &SharedStore,
+    key_custody: &Arc<dyn KeyCustody>,
+    daemons: &Arc<HashMap<Network, Arc<FallbackDaemonClient>>>,
+    wallet_handles: &Arc<RwLock<HashMap<String, WalletHandle>>>,
+) {
+    let running = match store.lock().unwrap().list_running_rescans() {
+        Ok(rows) => rows,
+        Err(e) => {
+            eprintln!("failed to list still-running rescan jobs at boot - none will be resumed: {e}");
+            return;
+        }
+    };
+    for job in running {
+        let tenant = store.lock().unwrap().get_tenant_by_id(&job.tenant_id).ok().flatten();
+        let Some(tenant) = tenant else {
+            eprintln!("rescan {}: tenant {} no longer exists - cannot resume, marking failed", job.id, job.tenant_id);
+            let _ = store.lock().unwrap().fail_rescan(&job.id, "tenant no longer exists", now_unix());
+            continue;
+        };
+        let Some(handle) = wallet_handles.read().unwrap().get(&job.tenant_id).copied() else {
+            eprintln!(
+                "rescan {}: tenant {} has no registered wallet handle at boot - cannot resume, marking failed",
+                job.id, job.tenant_id
+            );
+            let _ = store.lock().unwrap().fail_rescan(&job.id, "tenant wallet not registered at boot", now_unix());
+            continue;
+        };
+        let Ok(network) = moneropay_core::network::parse_network(&tenant.network) else {
+            eprintln!(
+                "rescan {}: tenant {} has an unrecognized network {:?} - cannot resume, marking failed",
+                job.id, job.tenant_id, tenant.network
+            );
+            let _ = store.lock().unwrap().fail_rescan(&job.id, "tenant network unrecognized", now_unix());
+            continue;
+        };
+        let Some(daemon) = daemons.get(&network) else {
+            eprintln!(
+                "rescan {}: no daemon configured for tenant {}'s network {:?} - cannot resume, marking failed",
+                job.id, job.tenant_id, network
+            );
+            let _ = store.lock().unwrap().fail_rescan(&job.id, "no daemon configured for tenant's network", now_unix());
+            continue;
+        };
+        println!("resuming rescan {} for order {} from height {} to {}", job.id, job.order_id, job.current_height, job.to_height);
+        moneropay_core::scanner::spawn_rescan_job(
+            store.clone(),
+            key_custody.clone(),
+            daemon.clone() as Arc<dyn moneropay_core::daemon::MoneroDaemonClient>,
+            handle,
+            job.id,
+        );
+    }
 }
 
 async fn run_webhook_delivery_loop(
