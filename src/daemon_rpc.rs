@@ -264,12 +264,14 @@ struct GetHeightResponse {
     height: u64,
 }
 
-/// Matches `block_header_response`'s `hash` field: `std::string hash`, plain
-/// `KV_SERIALIZE` (always present). The real struct carries ~20 more always-present
-/// fields (`height`, `difficulty`, `timestamp`, `reward`, ...) nothing here reads.
+/// Matches `block_header_response`'s `hash`/`timestamp` fields: `std::string hash`,
+/// `uint64_t timestamp`, both plain `KV_SERIALIZE` (always present). The real
+/// struct carries ~18 more always-present fields (`height`, `difficulty`, `reward`,
+/// ...) nothing here reads.
 #[derive(Deserialize)]
 struct BlockHeader {
     hash: String,
+    timestamp: u64,
 }
 
 /// Matches `COMMAND_RPC_GET_BLOCK::response_t`: `block_header` and `tx_hashes` are
@@ -401,6 +403,11 @@ impl MoneroDaemonClient for RpcDaemonClient {
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
         let block: GetBlockResult = self.post_json_rpc("get_block", json!({ "height": height })).await?;
         self.fetch_transactions(&block.tx_hashes).await
+    }
+
+    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
+        let resp: GetBlockResult = self.post_json_rpc("get_block", json!({ "height": height })).await?;
+        Ok(resp.block_header.timestamp)
     }
 
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
@@ -674,8 +681,10 @@ mod tests {
         // nothing was missed - a hard `Vec` on either would turn a normal response
         // into a parse error and stall the scanner.
         let block: GetBlockResult =
-            serde_json::from_value(json!({ "block_header": { "hash": "abc" } })).unwrap();
+            serde_json::from_value(json!({ "block_header": { "hash": "abc", "timestamp": 1_700_000_000u64 } }))
+                .unwrap();
         assert_eq!(block.block_header.hash, "abc");
+        assert_eq!(block.block_header.timestamp, 1_700_000_000);
         assert!(block.tx_hashes.is_empty());
 
         let txs: GetTransactionsResponse =
@@ -762,6 +771,28 @@ mod live_node_tests {
         // 5+ confirmations deep at the time, this block's hash is permanent.
         let hash = client().get_block_hash(3_755_690).await.unwrap();
         assert_eq!(hash, "61dcf348728fd124895e5e9e5188cc34a13c483f84ddfb5d3998f38d0ae55aa4");
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn real_node_get_block_timestamp_matches_a_known_immutable_block() {
+        // Same block as `real_node_get_block_hash_matches_a_known_immutable_block`
+        // above - captured live against this exact node while building this
+        // client.
+        let timestamp = client().get_block_timestamp(3_755_690).await.unwrap();
+        assert_eq!(timestamp, 1_788_593_344);
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn real_node_find_height_at_or_before_matches_the_known_block() {
+        // The default trait method (`daemon.rs`), exercised here against the
+        // real RPC-backed `get_height`/`get_block_timestamp` rather than the
+        // fake - proves the binary search itself, not just its two
+        // primitives, works against the real node's actual (not perfectly
+        // monotonic) timestamps.
+        let height = client().find_height_at_or_before(1_788_593_344).await.unwrap();
+        assert_eq!(height, 3_755_690);
     }
 
     #[tokio::test]

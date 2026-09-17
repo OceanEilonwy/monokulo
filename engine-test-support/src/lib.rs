@@ -85,6 +85,10 @@ impl MoneroDaemonClient for NoopDaemonClient {
         Ok(format!("noop-block-{height}"))
     }
 
+    async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
+        Ok(0)
+    }
+
     async fn get_block_transactions(
         &self,
         _height: u64,
@@ -749,6 +753,10 @@ mod tests {
 
         async fn get_block_hash(&self, _height: u64) -> Result<String, DaemonError> {
             Ok("h1".to_string())
+        }
+
+        async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
+            Ok(0)
         }
 
         async fn get_block_transactions(

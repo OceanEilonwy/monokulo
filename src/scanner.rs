@@ -1229,6 +1229,9 @@ mod tests {
         async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
             self.inner.get_block_hash(height).await
         }
+        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
+            self.inner.get_block_timestamp(height).await
+        }
         async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_block_transactions(height).await
         }
@@ -1268,6 +1271,9 @@ mod tests {
                 return Err(DaemonError::Request(format!("simulated failure reading the hash of block {height}")));
             }
             self.inner.get_block_hash(height).await
+        }
+        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
+            self.inner.get_block_timestamp(height).await
         }
         async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_block_transactions(height).await
@@ -1365,6 +1371,9 @@ mod tests {
         }
         async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
             self.inner.get_block_hash(height).await
+        }
+        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
+            self.inner.get_block_timestamp(height).await
         }
         async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.gate(DaemonCall::BlockTransactions).await?;
@@ -3458,6 +3467,9 @@ mod tests {
         }
         async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
             self.inner.get_block_hash(height).await
+        }
+        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
+            self.inner.get_block_timestamp(height).await
         }
         async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_block_transactions(height).await

@@ -137,6 +137,25 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         Err(last_err.unwrap_or_else(Self::note_all_failed))
     }
 
+    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
+        let start = self.current.load(Ordering::Relaxed);
+        let mut last_err = None;
+        for offset in 0..self.nodes.len() {
+            let idx = (start + offset) % self.nodes.len();
+            match self.nodes[idx].client.get_block_timestamp(height).await {
+                Ok(v) => {
+                    self.note_success(idx);
+                    return Ok(v);
+                }
+                Err(e) => {
+                    self.note_failure(idx, &e);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(Self::note_all_failed))
+    }
+
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
         let start = self.current.load(Ordering::Relaxed);
         let mut last_err = None;
@@ -334,6 +353,10 @@ mod tests {
             unimplemented!("not exercised by these tests")
         }
 
+        async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
+            unimplemented!("not exercised by these tests")
+        }
+
         async fn get_block_transactions(&self, _height: u64) -> Result<Vec<Transaction>, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
@@ -459,6 +482,9 @@ mod tests {
             unimplemented!("not exercised by these tests")
         }
         async fn get_block_hash(&self, _height: u64) -> Result<String, DaemonError> {
+            unimplemented!("not exercised by these tests")
+        }
+        async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
         async fn get_block_transactions(&self, _height: u64) -> Result<Vec<Transaction>, DaemonError> {
