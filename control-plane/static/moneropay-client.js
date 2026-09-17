@@ -12,7 +12,14 @@
  *
  * All payment logic and status rendering lives server-side in the
  * `/pay/{pk}/orders/{payment_id}` page this library iframes; this file only
- * creates orders, mounts that iframe, and relays its postMessage events.
+ * creates orders, mounts that iframe, and polls control-plane's own
+ * `/status` endpoint directly to drive `onStatusChange`/`onPaid`/
+ * `onExpired`. The iframed page itself is deliberately plain, script-free
+ * HTML (a `<meta http-equiv="refresh">` re-fetches it on its own) - a real
+ * customer paying real money must be able to trust and use it with
+ * JavaScript disabled, so it never posts a message back to this library;
+ * this file's own polling (running here, in the merchant's page, not
+ * inside the frame) is what makes the callbacks below fire.
  */
 (function (global) {
   "use strict";
@@ -146,12 +153,9 @@
     }
 
     var iframeSrc = endpoint + "/pay/" + encodeURIComponent(publicKey) + "/orders/" + encodeURIComponent(paymentId);
-    // The only origin whose messages this mount will ever act on. Derived from the
-    // frame's own URL rather than configured separately, so it cannot drift out of
-    // sync with what was actually mounted.
-    var expectedOrigin;
+    var statusUrl = iframeSrc + "/status";
     try {
-      expectedOrigin = new URL(iframeSrc, global.location.href).origin;
+      new URL(iframeSrc, global.location.href);
     } catch (e) {
       throw new Error("MoneroPay.mount: endpoint is not a valid URL: " + endpoint);
     }
@@ -162,45 +166,64 @@
     iframe.style.border = "none";
     iframe.style.width = options.width || "420px";
     iframe.style.height = options.height || "640px";
-    iframe.setAttribute("sandbox", "allow-scripts allow-same-origin allow-popups");
+    // No "allow-scripts" - the page this iframes carries none by design
+    // (see this file's own doc comment above); this mount()'s own polling
+    // below, running in the merchant's page rather than inside the frame,
+    // is what drives the callbacks now.
+    iframe.setAttribute("sandbox", "allow-same-origin allow-popups");
 
     el.innerHTML = "";
     el.appendChild(iframe);
 
-    function onMessage(event) {
-      // `window.addEventListener("message", ...)` receives messages from *every*
-      // script that can reach this window - a third-party ad, an analytics tag, any
-      // other embedded frame on the merchant's page. The fields inside `event.data`
-      // are attacker-chosen and prove nothing, so checking `data.source` and
-      // `data.paymentId` alone let any such script forge
-      // `{source:"moneropay", paymentId: <visible in the DOM>, status:"paid"}` and
-      // drive the merchant's own `onPaid` handler. Only the browser-supplied
-      // `event.origin` and `event.source` are trustworthy here:
-      //   - origin pins the message to the payment server that served this frame,
-      //   - source pins it to *this* frame instance specifically, so a second,
-      //     unrelated frame from the same origin can't speak for this order either.
-      if (event.origin !== expectedOrigin) return;
-      if (event.source !== iframe.contentWindow) return;
-
-      var data = event.data;
-      if (!data || data.source !== "moneropay" || data.paymentId !== paymentId) return;
-      if (typeof options.onStatusChange === "function") options.onStatusChange(data.status, data);
-      if ((data.status === "paid" || data.status === "overpaid") && typeof options.onPaid === "function") {
-        options.onPaid(data);
-      }
-      if (data.status === "expired" && typeof options.onExpired === "function") {
-        options.onExpired(data);
-      }
-    }
-    global.addEventListener("message", onMessage);
-
+    var TERMINAL_STATUSES = { paid: true, overpaid: true, expired: true };
     var destroyed = false;
+    var pollTimer = null;
+    var lastStatus = null;
+
+    function poll() {
+      if (destroyed) return;
+      fetch(statusUrl)
+        .then(function (r) {
+          // A non-2xx response (a transient rate limit or 5xx) still has a
+          // JSON body, so `.json()` alone would "succeed" with `data.status`
+          // simply `undefined`. Checking `r.ok` first routes any non-2xx
+          // into the same catch/retry path as a network failure.
+          if (!r.ok) { throw new Error("status check failed: " + r.status); }
+          return r.json();
+        })
+        .then(function (data) {
+          if (destroyed) return;
+          if (data.status !== lastStatus) {
+            lastStatus = data.status;
+            if (typeof options.onStatusChange === "function") options.onStatusChange(data.status, data);
+            if ((data.status === "paid" || data.status === "overpaid") && typeof options.onPaid === "function") {
+              options.onPaid(data);
+            }
+            if (data.status === "expired" && typeof options.onExpired === "function") {
+              options.onExpired(data);
+            }
+            // The mounted iframe only refreshes itself on its own
+            // meta-refresh timer - reload it here too so what the customer
+            // *sees* catches up with the status change this poll just
+            // detected, rather than waiting for the frame's own next tick.
+            iframe.src = iframeSrc;
+          }
+          if (!TERMINAL_STATUSES[data.status]) {
+            pollTimer = setTimeout(poll, 3000);
+          }
+        })
+        .catch(function () {
+          if (!destroyed) pollTimer = setTimeout(poll, 5000);
+        });
+    }
+    pollTimer = setTimeout(poll, 3000);
+
     var handle = {
       iframe: iframe,
       destroy: function () {
         if (destroyed) return;
         destroyed = true;
-        global.removeEventListener("message", onMessage);
+        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
         if (activeMounts.get(el) === handle) activeMounts["delete"](el);
         if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
       },

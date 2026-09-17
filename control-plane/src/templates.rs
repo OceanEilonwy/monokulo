@@ -625,6 +625,12 @@ pub struct CheckoutViewModel {
     pub currency: String,
     pub confirmations: u64,
     pub confirmations_required: u64,
+    /// `min(100, round(confirmations / confirmations_required * 100))`,
+    /// pre-computed server-side - the progress bar's fill width is a plain
+    /// `style="width: {{progress_percent}}%"`, not something a `<script>`
+    /// sets after load (this page has none - see `expires_in_display`'s own
+    /// doc comment on why).
+    pub progress_percent: u8,
     pub is_terminal: bool,
     /// Presence only - gates the `{{#if}}` banner in the template. The
     /// actual text comes from `double_spend_detected_at_display` below,
@@ -1216,5 +1222,52 @@ mod tests {
             .unwrap();
         assert!(html.contains("unsupported currency: XYZ"), "expected the real error surfaced, got: {html}");
         assert!(html.contains("<form"), "the create-order form must still be present on error");
+    }
+
+    fn test_checkout_view_model(is_terminal: bool) -> CheckoutViewModel {
+        CheckoutViewModel {
+            payment_id: "pay_abc123".to_string(),
+            status: if is_terminal { "paid".to_string() } else { "pending".to_string() },
+            status_label: if is_terminal { "Paid".to_string() } else { "Waiting for payment".to_string() },
+            status_class: if is_terminal { "status-paid".to_string() } else { "status-pending".to_string() },
+            address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
+            qr_code_svg: "<svg></svg>".to_string(),
+            xmr_amount: "0.500000000000".to_string(),
+            amount_received_xmr: "0.000000000000".to_string(),
+            amount: "0.5".to_string(),
+            currency: "XMR".to_string(),
+            confirmations: 0,
+            confirmations_required: 10,
+            progress_percent: 0,
+            is_terminal,
+            double_spend_detected_at: None,
+            double_spend_detected_at_display: display_timestamp_or_dash(None),
+            expires_in_display: "30m".to_string(),
+            merchant_order_id: None,
+            pk: "pk_abc123".to_string(),
+            payments: vec![],
+        }
+    }
+
+    #[test]
+    fn checkout_page_carries_no_script_and_meta_refreshes_a_still_in_progress_order() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine.render_checkout(&test_checkout_view_model(false)).unwrap();
+        assert!(!html.contains("<script"), "the checkout page must carry no JavaScript at all, got: {html}");
+        assert!(
+            html.contains(r#"<meta http-equiv="refresh""#),
+            "expected a meta-refresh directive on a still-in-progress order, got: {html}"
+        );
+    }
+
+    #[test]
+    fn checkout_page_stops_meta_refreshing_once_the_order_is_terminal() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine.render_checkout(&test_checkout_view_model(true)).unwrap();
+        assert!(!html.contains("<script"), "the checkout page must carry no JavaScript at all, got: {html}");
+        assert!(
+            !html.contains(r#"<meta http-equiv="refresh""#),
+            "a paid/terminal order must not keep re-fetching itself, got: {html}"
+        );
     }
 }

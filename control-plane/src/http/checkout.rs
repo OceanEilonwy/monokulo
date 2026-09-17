@@ -149,6 +149,16 @@ pub async fn checkout_page(State(state): State<AppState>, Path((pk, payment_id))
     };
 
     let (status_text, status_class, is_terminal) = status_label(&detail.order.status);
+    // Computed here, server-side, not by client JS from a live poll - this
+    // page has no `<script>` at all any more (a meta-refresh re-fetches the
+    // whole page instead), so the progress bar's fill has to already be
+    // correct in the HTML this handler returns. `confirmations_required ==
+    // 0` (zero-conf trusted) means any receipt already counts as done.
+    let progress_percent: u8 = if confirmations_required == 0 {
+        100
+    } else {
+        ((detail.order.confirmations as f64 / confirmations_required as f64) * 100.0).round().min(100.0) as u8
+    };
     let view = CheckoutViewModel {
         payment_id: detail.order.payment_id.clone(),
         status: detail.order.status.clone(),
@@ -162,6 +172,7 @@ pub async fn checkout_page(State(state): State<AppState>, Path((pk, payment_id))
         currency,
         confirmations: detail.order.confirmations,
         confirmations_required,
+        progress_percent,
         is_terminal,
         double_spend_detected_at: detail.order.double_spend_detected_at,
         double_spend_detected_at_display: crate::templates::display_timestamp_or_dash(detail.order.double_spend_detected_at),
@@ -419,6 +430,15 @@ mod tests {
         // client-side formatting any more.
         assert!(html.contains("Expires in"), "expected a server-rendered expiry duration, got: {html}");
         assert!(!html.contains("data-timestamp"), "the checkout page must not depend on JS to format any timestamp, got: {html}");
+        // The real point of this follow-up: no JavaScript at all on this
+        // page - a meta-refresh re-fetches it instead of a poll loop, and
+        // the progress bar's fill is a real inline style already baked in.
+        assert!(!html.contains("<script"), "the checkout page must carry no JavaScript at all, got: {html}");
+        assert!(
+            html.contains(r#"<meta http-equiv="refresh" content="10">"#),
+            "expected a meta-refresh directive on a still-in-progress order, got: {html}"
+        );
+        assert!(html.contains("style=\"width: 0%\""), "expected a real, already-computed progress-bar fill, got: {html}");
     }
 
     #[tokio::test]

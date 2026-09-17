@@ -3,52 +3,67 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{{#unless is_terminal}}<meta http-equiv="refresh" content="10">{{/unless}}
 <title>Pay with Monero</title>
 {{> styles}}
 <style>
 /* This page is meant to be embedded in a merchant's own checkout flow via
    iframe - deliberately no site nav partial included, no top bar, nothing
-   that reads as "you've left the merchant's site". Just the payment
-   widget itself - but everything inside it reuses the same tokens and
-   components (`.box`, `.tag`, `table`) every other control-plane page
-   builds on (`_styles.html.hbs`), styled with real hand-picked properties
-   only where the shared partial genuinely has nothing to offer (the amount
-   display, the QR code, the progress bar), so it never reads as a
-   foreign, third-party-widget-looking thing dropped into a merchant's page. */
-body { padding: 1rem; }
-.checkout-card { max-width: 420px; margin: 0 auto; }
-/* The card itself: same hard-bordered, flat-background container
-   (`.box`, `_styles.html.hbs`) every other grouped section on the site
-   uses - this page had no card feel of its own before, just elements
-   stacked directly on the page background. */
-.checkout-box { padding: 1.4rem; }
-/* `.status-*` sets only the color per order status; the badge's actual
-   shape (border, padding, uppercase, letter-spacing) comes from the
-   shared `.tag` class every other status indicator on the site already
-   uses (`store_detail.html.hbs`'s health tag, the dashboard's own) -
-   this used to hand-roll an equivalent shape under a different name,
-   which is exactly the kind of drift that makes one page quietly stop
-   matching the rest over time. */
+   that reads as "you've left the merchant's site". It also carries
+   *no script element at all* - a real customer paying real money must be able
+   to trust and use this page with JavaScript disabled; a `<meta
+   http-equiv="refresh">` above re-fetches the whole page every 10s while
+   the order is still in progress (stopped once `is_terminal`, same as the
+   old poll loop's own "stop once done" rule), and every value below
+   (status, amounts, the progress bar's fill, the relative "expires in"
+   time) is already correct in the HTML this response returns - see
+   `http::checkout::checkout_page` and `templates::format_duration_until`.
+   Reuses the same tokens `_styles.html.hbs` defines (monospace, hard
+   borders, the one accent color) so it never reads as a foreign,
+   third-party-widget-looking thing dropped into a merchant's page - but
+   deliberately just ONE bordered surface for the whole widget, not a card
+   nested inside another card: stacking a border around every sub-section
+   the way an earlier version of this page did reads as a picture-in-
+   picture video call, not a payment screen. */
+body { padding: 1.2rem; background: var(--paper-raised); }
+.pay-wrap { max-width: 380px; margin: 0 auto; text-align: center; }
 .status-pending, .status-unconfirmed, .status-confirming, .status-partial { background: #fff3cd; }
 .status-paid { background: #dff5d8; }
 .status-expired, .status-unknown { background: #f8d7da; }
-.amount { font-size: 1.8rem; font-weight: 700; margin: 0.8em 0 0.2em; }
-.fiat-amount { color: var(--muted); margin-bottom: 1.4em; }
-.qr-wrap { text-align: center; margin: 1.4em 0; }
-.qr-wrap svg { width: 200px; height: 200px; }
-/* Deliberately no border/box of its own - one bordered container per
-   screen (the card itself) reads as a page; a border around every
-   individual piece inside it reads as boxes stacked on boxes. A plain
-   top rule (the same `.rule` weight `_styles.html.hbs` already uses
-   elsewhere) is enough to separate the address from what's above it. */
-.address-row { display: flex; gap: 0.6em; align-items: center; padding-top: 1.2em; margin-top: 1.2em; border-top: 1px solid var(--line); }
-.address-text { font-size: 0.8em; word-break: break-all; flex: 1; }
-.copy-btn { margin-top: 0; flex-shrink: 0; }
-.progress-row { display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 0.3em; }
-.progress-bar { border: 1px solid var(--line); height: 0.6em; background: var(--paper-raised); }
+#status-badge { font-size: 0.85em; }
+.amount { font-size: 2.2rem; font-weight: 700; margin: 0.7em 0 0.1em; letter-spacing: -0.01em; }
+.fiat-amount { color: var(--muted); margin-bottom: 1.6em; }
+.qr-wrap { margin: 0 0 1.6em; }
+.qr-wrap svg { width: 190px; height: 190px; }
+/* The address itself: plain monospace text, no button, no box of its own -
+   select-and-copy (a long-press on mobile, a click-drag or triple-click on
+   desktop) needs no JavaScript at all. A `<textarea readonly>` rather than
+   a plain `<span>`/`<code>` specifically because a textarea's own native
+   "click to focus, then select all" behavior (Ctrl+A, or most mobile
+   browsers' own long-press "Select All" menu item) is real, JS-free
+   platform behavior a plain text node doesn't get. */
+.address-label { display: block; color: var(--muted); font-size: 0.8em; margin: 0 0 0.4em; }
+.address-text {
+  width: 100%;
+  font-size: 0.85em;
+  text-align: center;
+  resize: none;
+  border: 1px solid var(--line);
+  background: none;
+  padding: 0.6em;
+  height: 3.4em;
+}
+.section {
+  text-align: left;
+  margin-top: 1.6em;
+  padding-top: 1.4em;
+  border-top: 1px solid var(--line);
+}
+.progress-row { display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 0.4em; }
+.progress-bar { border: 1px solid var(--line); height: 0.5em; background: var(--paper); }
 .progress-fill { height: 100%; background: var(--accent); }
 .payments-table { font-size: 0.8em; margin-top: 1.2em; }
-.meta { margin-top: 1.4em; font-size: 0.8em; color: var(--muted); }
+.meta { margin-top: 1.4em; font-size: 0.8em; color: var(--muted); text-align: left; }
 .visually-hidden {
   position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
   overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
@@ -56,15 +71,11 @@ body { padding: 1rem; }
 </style>
 </head>
 <body>
-<div class="wrap checkout-card">
-<div class="box checkout-box">
+<div class="pay-wrap">
 
 <h1 class="visually-hidden">Monero payment of {{xmr_amount}} XMR</h1>
 
-<!-- role="status" gets an implicit aria-live="polite"/aria-atomic="true" -
-     matters here because a status transition this page detects without a
-     full reload would otherwise never be announced. -->
-<span id="status-badge" class="tag {{status_class}}" role="status" aria-atomic="true">{{status_label}}</span>
+<span id="status-badge" class="tag {{status_class}}">{{status_label}}</span>
 
 {{#if double_spend_detected_at}}
 <div id="double-spend-banner" class="error" role="alert">
@@ -84,20 +95,19 @@ A payment toward this order was reversed by a blockchain double-spend, detected 
      itself) rather than announced as an unlabeled image. -->
 <div class="qr-wrap">{{{qr_code_svg}}}</div>
 
-<span class="visually-hidden" id="address-label">Payment address</span>
-<div class="address-row">
-<span class="address-text" id="address" aria-labelledby="address-label">{{address}}</span>
-<button class="btn-secondary copy-btn" id="copy-btn" type="button" aria-label="Copy payment address to clipboard" aria-live="polite">Copy</button>
-</div>
+<span class="address-label" id="address-label">Payment address (tap to focus, then select all to copy)</span>
+<textarea class="address-text" id="address" readonly aria-labelledby="address-label">{{address}}</textarea>
 
-<div class="progress-row" aria-live="polite" aria-atomic="true">
+<div class="section">
+<div class="progress-row">
 <span id="confirmations-label">{{confirmations}} / {{confirmations_required}} confirmations</span>
 <span id="received-label">{{amount_received_xmr}} XMR received</span>
 </div>
 <div class="progress-bar" id="progress-bar" role="progressbar" aria-labelledby="confirmations-label"
      aria-valuemin="0" aria-valuemax="{{confirmations_required}}" aria-valuenow="{{confirmations}}"
      aria-valuetext="{{confirmations}} of {{confirmations_required}} confirmations">
-<div class="progress-fill" id="progress-fill" style="width: 0%"></div>
+<div class="progress-fill" id="progress-fill" style="width: {{progress_percent}}%"></div>
+</div>
 </div>
 
 {{#if payments}}
@@ -122,72 +132,5 @@ Payment ID: {{payment_id}}<br>
 </div>
 
 </div>
-</div>
-
-<script>
-(function () {
-  var isTerminal = {{#if is_terminal}}true{{else}}false{{/if}};
-  var confirmationsRequired = {{confirmations_required}};
-  var statusUrl = '/pay/{{pk}}/orders/{{payment_id}}/status';
-
-  document.getElementById('copy-btn').addEventListener('click', function () {
-    var text = document.getElementById('address').textContent;
-    navigator.clipboard.writeText(text).then(function () {
-      var btn = document.getElementById('copy-btn');
-      var original = btn.textContent;
-      btn.textContent = 'Copied!';
-      setTimeout(function () { btn.textContent = original; }, 1500);
-    });
-  });
-
-  function postToParent(status) {
-    if (window.parent !== window) {
-      window.parent.postMessage({ source: 'moneropay', paymentId: '{{payment_id}}', status: status }, '*');
-    }
-  }
-  postToParent('{{status}}');
-
-  if (isTerminal) return;
-
-  var lastStatus = '{{status}}';
-  var lastConfirmations = {{confirmations}};
-
-  function poll() {
-    fetch(statusUrl).then(function (r) {
-      // A non-2xx response (429 from the per-IP rate limit is the realistic
-      // one - this loop polls every 3s on its own - but any transient 5xx
-      // too) still has a JSON body, so `.json()` alone would "succeed" with
-      // `data.status` simply `undefined`. Checking `r.ok` first routes any
-      // non-2xx into the same catch/retry path as a network failure.
-      if (!r.ok) { throw new Error('status check failed: ' + r.status); }
-      return r.json();
-    }).then(function (data) {
-      if (data.confirmations !== lastConfirmations) {
-        lastConfirmations = data.confirmations;
-        document.getElementById('confirmations-label').textContent =
-          data.confirmations + ' / ' + confirmationsRequired + ' confirmations';
-        var bar = document.getElementById('progress-bar');
-        bar.setAttribute('aria-valuenow', data.confirmations);
-        bar.setAttribute('aria-valuetext', data.confirmations + ' of ' + confirmationsRequired + ' confirmations');
-      }
-      var pct = Math.min(100, Math.round((data.confirmations / confirmationsRequired) * 100));
-      document.getElementById('progress-fill').style.width = pct + '%';
-
-      if (data.status !== lastStatus) {
-        // A real status transition - simplest correct thing is a reload,
-        // which re-renders the full page from the server-rendered template
-        // rather than duplicating that logic in JS.
-        postToParent(data.status);
-        window.location.reload();
-        return;
-      }
-      setTimeout(poll, 3000);
-    }).catch(function () {
-      setTimeout(poll, 5000);
-    });
-  }
-  setTimeout(poll, 3000);
-})();
-</script>
 </body>
 </html>

@@ -412,5 +412,11 @@ mod tests {
         assert!(js.contains("/orders/\" + encodeURIComponent(paymentId)"), "should iframe control-plane's own checkout page, got: {js}");
         assert!(!js.contains("/api/v1/t/"), "must not reference the engine's own API directly: {js}");
         assert!(!js.contains("/pay/v1/"), "must not reference the engine's own (deleted) checkout route: {js}");
+        // The real point of this follow-up: the iframed checkout page is
+        // now plain, script-free HTML (a meta-refresh, not a poll loop) -
+        // it never posts a message back, so `mount()` must drive its own
+        // callbacks by polling the status endpoint directly instead.
+        assert!(!js.contains("postMessage"), "the embed library must not depend on the iframe posting a message any more, got: {js}");
+        assert!(js.contains(r#"var statusUrl = iframeSrc + "/status";"#), "expected mount() to poll the status endpoint directly, got: {js}");
     }
 }
