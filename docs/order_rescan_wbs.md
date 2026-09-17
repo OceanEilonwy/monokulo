@@ -135,9 +135,11 @@ up later, same convention `docs/fx_refactor.md` already established.
     0.2 belongs here: subtract a fixed cushion (e.g. a few hundred blocks,
     or however many correspond to a comfortable multiple of Monero's
     ~2-minute block time relative to real-world timestamp jitter) from the
-    computed start height before the walk begins, so a slightly-late
+    computed **start** height before the walk begins, so a slightly-late
     binary-search hit can never cause a missed payment right at the
-    boundary
+    boundary. **This cushion only ever applies to the start side** - see
+    1.4 for why the end side (near the tip) deliberately gets no equivalent
+    buffer.
   - why a new function rather than parameterizing the real scan loop: the
     live loop (`run_scan_tick`, `scanner.rs:869`) is block-driven and
     network-wide by design (one high-water mark, every active tenant, every
@@ -209,6 +211,60 @@ up later, same convention `docs/fx_refactor.md` already established.
     research because no bounded-job precedent exists anywhere in this
     codebase today - this is genuinely new shape, budget real design time
     here rather than assuming a quick fit into `supervise`
+- 1.4 End-of-range handling: a final mempool check, and deliberately no
+  buffer held back from the tip
+  - outcome: after the historical block walk reaches `to_height`, the
+    rescan does one last pass over the current mempool for this one
+    minor_index (reusing the scanner's existing mempool-scanning path,
+    narrowed the same way 1.1 narrows block scanning) - catches a payment
+    that was broadcast but not yet mined by the time the rescan finishes
+    (a real "network delay" case: the customer genuinely already sent it,
+    it just hasn't confirmed).
+  - what (why the end side gets no buffer, unlike the start side - a real
+    reorg question, answered by reading the code, not assumed): the
+    existing reorg/double-spend reconciliation pass
+    (`check_for_reorg_and_reconcile`, `scanner.rs:208`, backed by
+    `find_payments_at_or_after_height`, `store.rs:881`) has **no order-
+    status filter at all** - confirmed directly against its candidate-set
+    query, which joins `orders`/`tenants` only to scope by network, never
+    by status. It re-examines every recorded, non-voided payment within
+    `reorg_check_depth` blocks of the tip regardless of whether that
+    payment's order is terminal - a real, already-tested case:
+    `a_settled_order_is_walked_back_when_a_reorg_deeper_than_confirmations_required_orphans_its_payment`
+    (`scanner.rs:2898`) drives an order to `Overpaid`, then a real reorg +
+    proven double-spend walks it back to `Pending` with
+    `double_spend_detected_at` set. So a payment the rescan records via
+    `record_scan_match` - even one that immediately flips the order to
+    `Paid` - inherits the exact same ongoing reorg protection every other
+    payment already gets, automatically, no special-casing needed here.
+    Scanning all the way to the literal tip and recording whatever's found
+    is therefore *more* correct than holding back N blocks "to be safe" -
+    a manual tip-side buffer would only create a blind spot (a payment in
+    the last N blocks the rescan itself refuses to look at) that the
+    existing mechanism doesn't need and gains nothing from.
+  - what (the mempool check's own loose end, worth deciding now rather
+    than discovering it later): if that final mempool check finds a
+    payment that still needs confirmations before the order can move to
+    `Paid` (not covered by `zero_conf_max_xmr`), the rescan has already
+    finished (decision 1: one-shot) and the order stays outside ongoing
+    live scanning - nothing continues watching this specific sighting
+    toward confirmation on its own. Recommendation: record what was seen
+    (an unconfirmed match, same as the live scanner would) and let the
+    merchant see it on the order's own page - a real payment, zero
+    confirmations, visibly progressing, rather than invisible. If it still
+    hasn't confirmed by the time the merchant checks back, they trigger
+    the rescan again, which picks it up from the mempool the same way.
+    Simpler than stretching "one-shot" into "one-shot, but waits
+    indefinitely for whatever it found to settle" - flag if you'd rather
+    it keep running until that specific payment confirms instead.
+  - test: real test - a payment sitting only in the mempool (not yet
+    mined) at the moment a rescan is triggered is still found and
+    recorded, at zero confirmations; a real reorg-after-rescan test -
+    trigger a rescan, let it record a match that flips the order to
+    `Paid`, then run a real reorg through `check_for_reorg_and_reconcile`
+    that orphans that exact payment, and confirm the order is walked back
+    correctly - proving the reliance on the existing mechanism isn't just
+    reasoned about but actually holds
 
 ## 2. Engine: admin API surface
 
@@ -296,16 +352,29 @@ up later, same convention `docs/fx_refactor.md` already established.
     actually configured, not just assumed from the crate's name.
   - what (memory - the user's own question, answered concretely rather
     than just reassured): back the cache with a **bounded** in-memory
-    store (an entry-count and/or total-byte ceiling, not an unbounded
-    map) - `http-cache-reqwest`'s pluggable `CacheManager` trait supports
-    this (a `moka`-backed manager is the natural fit, `moka` already
-    supports both max-entry and weighted-size eviction out of the box).
-    In practice the whole cacheable surface here is tiny by construction -
-    one rescan-status endpoint keyed by tenant, plus Coingecko's own rate
-    lookups keyed by currency (a few dozen at most) - so a modest cap
-    (e.g. a few hundred entries, or a low-single-digit-MB weight ceiling)
-    would never realistically be approached; it exists as a hard backstop,
-    not a limit this feature is expected to bump into.
+    store (an entry-count ceiling, not an unbounded map) -
+    `http-cache-reqwest`'s pluggable `CacheManager` trait supports this (a
+    `moka`-backed manager is the natural fit - `max_capacity` is exactly
+    this bound, built in). In practice the whole cacheable surface here is
+    tiny by construction - one rescan-status endpoint keyed by tenant, plus
+    Coingecko's own rate lookups keyed by currency (a few dozen at most) -
+    so the default would never realistically be approached; it exists as a
+    hard backstop, not a limit this feature is expected to bump into.
+  - what (config, easily tunable rather than a hardcoded constant): a new
+    `CONTROL_PLANE_HTTP_CACHE_MAX_ENTRIES` env var - same
+    parse-with-a-clear-error-and-a-default convention every other
+    control-plane numeric knob already uses
+    (`exchange_rate_config::parse`'s own `CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS`
+    is the closest sibling to copy). Defaults to `512` - comfortably above
+    the realistic cacheable surface above (low hundreds of entries even
+    generously counted) without being unbounded; an operator who somehow
+    needs more headroom (many more connected stores, or a much larger
+    Coingecko currency list) can raise it without a code change.
+  - test: a real test that the configured cap actually evicts - fill the
+    cache past `CONTROL_PLANE_HTTP_CACHE_MAX_ENTRIES` (a small test-only
+    value, not 512) with distinct cacheable responses and confirm the
+    oldest entry is gone, proving the bound is real and enforced, not just
+    configured and ignored
   - test: same style as every other `EngineClient`/`CoingeckoRateProvider`
     method's own tests (mirrors the existing coverage), plus a real test
     proving a second `list_active_rescans` call within the
