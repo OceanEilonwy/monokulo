@@ -29,6 +29,97 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 3 done -
+  control-plane's trigger UI and progress display. Fourth of seven phases,
+  and the first with anything a merchant can actually click.**
+  - **3.1**: `shared::http_cache` (new module) is now the default transport
+    for every outbound call in the workspace - `EngineClient` (every
+    method) and `CoingeckoRateProvider`. Hand-rolled rather than the
+    off-the-shelf `http-cache-reqwest` crate - discovered live while
+    building this that its published release pins `reqwest-middleware
+    ^0.4`/`reqwest ^0.12`, a different major version from what this
+    workspace already runs (`0.5`/`0.13`), which Cargo resolves as two
+    separate, mutually-incompatible copies of both crates - its `Cache`
+    middleware type structurally cannot attach to our `ClientBuilder`. Full
+    reasoning and the real `cargo tree -i reqwest` evidence are in that
+    module's own doc comment. Only a `GET` response carrying
+    `Cache-Control: max-age=N` is ever cached (real, byte-weighted
+    `moka::future::Cache`, sized by `CONTROL_PLANE_HTTP_CACHE_MAX_MB`,
+    default 16MB) - real tests prove both directions: a cache-control-
+    bearing response is served from cache within its window (a real
+    call-count assertion, not just equal output), and an ordinary response
+    with none is never cached, plus a real eviction test (fill a 3KB-capped
+    cache with ~1KB entries, confirm at least one real refetch afterward -
+    `moka`'s async housekeeping needed a `~500ms` wait past its own
+    `LOG_SYNC_INTERVAL_MILLIS`, not the `50ms` first tried, to actually
+    observe the eviction). `EngineClient` gains `trigger_rescan`/
+    `get_rescan_status`/`list_active_rescans`.
+  - **A real design bug caught by the compiler before it shipped**:
+    `Store::trigger_rescan` (Phase 1) originally returned a bare
+    `OrderRescan` with no way to tell "I just started this" from "this was
+    already running." An admin handler that spawns a runner unconditionally
+    on that return would spawn a *second* runner against an already-running
+    job's row on a retried or double-clicked trigger request - exactly the
+    UI this phase builds. Fixed in Phase 2's own landing by changing the
+    return type to `TriggerRescanOutcome::{Started, AlreadyRunning}`; worth
+    restating here because Phase 3's UI is the reason that fix mattered, not
+    an abstract concern.
+  - **3.2/3.3**: the order-detail page's rescan section - for an `Expired`
+    order (decision 5), either a two-mode trigger form (simple: "Rescan from
+    &lt;date&gt;" stating the real, already-computed date outright; advanced:
+    two native `<input type="date" min="..." max="...">` fields, the bound
+    also restated in plain words) or, while a job is genuinely `running`, a
+    small `.tag-syncing` "Syncing NN%" badge next to the order's own status
+    plus a server-computed progress bar (`checkout.html.hbs`'s own existing
+    component, reused verbatim) - the two are mutually exclusive, computed
+    server-side in `http/orders.rs::build_rescan_section`, no client JS.
+    The page's meta-refresh tightens from 15s to 5s while genuinely
+    `running`. A rejected trigger (the engine's own real `400`, or a
+    locally-unparseable date) re-renders the page with the error shown - a
+    **separate top-level field** (`OrderDetailData::rescan_error`), not
+    threaded through the rescan section itself, specifically because a real
+    race exists (the order stops being `Expired` between page load and
+    submit) where the rescan section wouldn't render at all but the
+    rejection still must be shown - caught by a real test, not reasoned
+    about after the fact.
+  - **Hand-rolled calendar math, not a new dependency**: `<input
+    type="date">`'s `min`/`max`/submitted value all need real `YYYY-MM-DD`
+    strings; rather than pull calendar formatting/parsing into the `time`
+    crate this codebase already depends on (currently used for exactly one
+    thing, a cookie's `Duration::ZERO`) with unconfirmed feature flags,
+    `templates::{unix_to_date_string, date_string_to_unix_midnight}` use
+    Howard Hinnant's well-known constant-time civil-calendar algorithm
+    directly - a handful of real tests (known dates including a leap day,
+    round-tripping, malformed-input rejection) rather than trusting
+    hand-rolled arithmetic by inspection.
+  - **3.4**: the dashboard-home page gains a "Syncing N order(s) for
+    possible late payments" banner (one link per active job) whenever
+    `list_active_rescans` reports anything running for any of the user's
+    connected stores - one call per store connection per page load, riding
+    the same cache-aware transport 3.1 just adopted. The page's meta-refresh
+    (previously nonexistent - the dashboard never auto-refreshed at all)
+    only appears while something is genuinely syncing, same "presence, not
+    interval" pattern `checkout.html.hbs` already established.
+  - **`engine-test-support` gained one new accessor**: `TestEngineHandle::
+    store()`, returning the real live `SharedStore` a spawned test engine
+    runs against - needed because this harness configures no real daemon
+    (documented, deliberate), so a rescan that genuinely runs to completion
+    via HTTP isn't reachable in these tests; what they're actually about is
+    control-plane's own rendering of a job's state (badge, progress bar,
+    date bounds, banner), not the engine's rescan mechanics (already proven
+    end to end by the engine's own Phase 1/2 tests) - so these tests seed a
+    `running`/`Expired` state directly against the real store, same
+    shortcut the engine's own scanner tests already use for reaching a
+    terminal status without a real wait.
+  - `cargo test --workspace` clean (root workspace and `mock-woocommerce`'s
+    own view, `--features e2e` both places) throughout landing this phase.
+  - Proceeding into Phase 4 next (a default grace period for recently-
+    expired orders, widening `active_tenant_ids`/`non_terminal_order_ids`
+    with a configurable `expired_order_grace_period_minutes`) - fully
+    independent of every phase so far, closes the "does the current code
+    keep scanning after expiry" gap the user asked about early in this
+    WBS's own review.
+
 - **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 2 done - the
   engine's admin HTTP surface for triggering and watching a rescan.** Third
   of seven phases. This is the first phase with anything reachable from
