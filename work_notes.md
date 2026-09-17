@@ -29,6 +29,73 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 4 done - a
+  default grace period for recently-expired orders.** Fifth of seven
+  phases, and (per the WBS's own note) fully independent of every phase
+  before it - this closes the "does the scanner keep watching an order for
+  a while after it expires" gap the user asked about directly mid-review.
+  It didn't, confirmed by reading the code before this phase started:
+  `Store::active_tenant_ids` and `Store::non_terminal_order_ids` were a
+  plain `status IN (Pending, Unconfirmed, Confirming, Partial)`, no time
+  clause at all - the instant every one of a tenant's orders went terminal,
+  that tenant (and any newly-`Expired` order) dropped out of live scanning
+  with zero grace.
+  - Both queries gain an `OR (status = 'expired' AND expires_at >= now -
+    grace_period_seconds)`, taking `now`/`grace_period_seconds` as real
+    parameters now (previously neither took any time input at all).
+    `Store::trigger_rescan`'s own store methods aside, no other scanner-core
+    change was needed - confirmed directly (not assumed) in the WBS's own
+    research: `record_scan_match` already adds every matched order to a
+    tick's `touched` set unconditionally, unioned (not filtered) into the
+    recompute sweep regardless of whether the order was in the base
+    non-terminal set, so a late payment against an already-`Expired` order
+    already gets its status correctly recomputed the same tick once it's
+    merely *found* - widening only "what's in scope to scan" was the whole
+    fix.
+  - New config knob `payment.expired_order_grace_period_minutes`, default
+    `360` (6h). Unlike every other numeric knob in `config.rs`, `0` is a
+    real, valid choice here (disables the grace period outright, reverting
+    to the exact pre-Phase-4 behavior) rather than a silent-failure trap -
+    called out explicitly in both the validation bound (`0..=525600`, not
+    `1..=...`) and its own dedicated test, kept separate from the "every
+    knob that's unsafe at zero" table test so it doesn't get swept into
+    that list by accident.
+  - **Real mechanical blast radius, handled directly**: `run_scan_tick`
+    gained a new required parameter (`expired_order_grace_period_seconds`),
+    which - being called from ~85 sites across this session's own extensive
+    scanner test suite plus `main.rs`/`engine-test-support`/both e2e test
+    binaries - was scripted (a small Python pass balancing parens to find
+    every real call site, inserting `, 0` to preserve exact prior behavior
+    for every test that isn't about the grace period itself) rather than
+    hand-edited one at a time. The script's first pass produced three
+    `,, 0` double-comma syntax errors (multi-line calls whose last
+    argument already ended in a trailing comma before the closing paren) -
+    caught immediately by `cargo build`, fixed by hand at those three
+    sites. `main.rs`'s own real call is the one site that does *not* get
+    `0` - it's wired to the real
+    `config.payment.expired_order_grace_period_minutes * 60`.
+  - Two real scanner-level tests prove the boundary is genuine, not just
+    documented: an order forced `Expired` moments ago, a payment landing in
+    the mempool with a generous grace period - still matched, order comes
+    alive again (`Unconfirmed`, no zero-conf ceiling configured in this
+    fixture - the point isn't reaching `Paid`, it's not staying silently
+    stuck at `Expired`). Same setup with the order's deadline 10,000 seconds
+    in the past and a 60-second grace period - genuinely not matched at
+    all, proving the cutoff really excludes what it's supposed to. Plus a
+    focused `Store`-level test pinning the exact inclusive boundary
+    (`expires_at >= now - grace`, tested one second on each side of it, at
+    both `grace=0` and a real window) for both widened queries directly.
+  - `cargo test --workspace` clean (306 passing/10 ignored, up from
+    302/10) in both the root workspace and `mock-woocommerce`'s own view
+    with `--features e2e`; `cargo build --workspace --tests --features
+    e2e` clean in both locations too.
+  - Proceeding into Phase 5 next (tracking and displaying each order's
+    actually-scanned block range - `first_scanned_height`/
+    `last_scanned_height` columns, the gap-prevention guardrail on
+    advanced-mode `to` the user specifically praised catching during
+    review, and the "Scan range" UI row) - the last phase with real
+    engine+UI work; Phase 6 (documentation) closes out the WBS after it.
+
 - **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 3 done -
   control-plane's trigger UI and progress display. Fourth of seven phases,
   and the first with anything a merchant can actually click.**
