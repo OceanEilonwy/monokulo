@@ -110,6 +110,20 @@ A payment toward this order was reversed by a blockchain double-spend, detected 
 </div>
 </div>
 
+<div class="section">
+{{#if refund_address}}
+<span class="address-label" id="refund-address-label">Refund address</span>
+<textarea class="address-text" id="refund-address" readonly aria-labelledby="refund-address-label">{{refund_address}}</textarea>
+{{else}}
+<form method="post" action="/pay/{{pk}}/orders/{{payment_id}}/refund-address">
+<label class="address-label" for="refund_address">Refund address (optional)</label>
+{{#if refund_address_error}}<div class="error">{{refund_address_error}}</div>{{/if}}
+<input type="text" id="refund_address" name="refund_address" placeholder="Your own Monero address, in case a refund is ever needed">
+<button type="submit" class="btn-secondary">Save</button>
+</form>
+{{/if}}
+</div>
+
 {{#if payments}}
 <table class="payments-table">
 <caption class="visually-hidden">Individual payments received toward this order</caption>

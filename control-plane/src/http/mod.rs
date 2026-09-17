@@ -161,6 +161,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/pay/{pk}/orders", post(pay::create_order))
         .route("/pay/{pk}/orders/{payment_id}", axum::routing::get(checkout::checkout_page))
         .route("/pay/{pk}/orders/{payment_id}/status", axum::routing::get(checkout::checkout_status))
+        .route(
+            "/pay/{pk}/orders/{payment_id}/refund-address",
+            axum::routing::post(checkout::set_refund_address),
+        )
         // A real follow-up to `docs/fx_refactor.md`: a nav-bearing,
         // shareable page wrapping the (nav-less) checkout page above in an
         // iframe - see `checkout::checkout_share_page`'s own doc comment.

@@ -84,6 +84,10 @@
       body: JSON.stringify({
         amount: String(params.amount),
         currency: params.currency,
+        // Optional - a storefront's own order/cart id, undefined/omitted
+        // when the caller doesn't have one (the server's own `#[serde(default)]`
+        // treats a missing key the same as an explicit `null`).
+        merchant_order_id: params.merchantOrderId || undefined,
       }),
     })
       .then(function (response) {
@@ -106,6 +110,7 @@
           xmrAmountPiconero: data.xmr_amount_piconero,
           amount: data.amount,
           currency: data.currency,
+          merchantOrderId: data.merchant_order_id,
           expiresAt: data.expires_at,
           endpoint: endpoint,
           publicKey: publicKey,

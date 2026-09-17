@@ -26,6 +26,7 @@ document.getElementById('moneropay-buy-button').addEventListener('click', functi
     publicKey: '{{public_key}}',
     amount: 9.99,                             // replace with the real amount
     currency: 'USD',                          // or 'XMR' - always works, no provider needed
+    merchantOrderId: 'order-1234',            // optional - your own order/cart id, shown on the order's dashboard page
   }).then(function (order) {
     MoneroPay.mount('#moneropay-checkout', order, {
       onPaid: function () { /* e.g. window.location = '/thank-you.html'; */ },
@@ -44,8 +45,10 @@ Content-Type: application/json
 
 {
   "currency": "USD",
-  "amount": "25.00"
+  "amount": "25.00",
+  "merchant_order_id": "order-1234"
 }</pre>
+<p class="hint"><code>merchant_order_id</code> is optional - your own order/cart id, if you have one.</p>
 <p class="hint">Send this request to wherever this dashboard is hosted (the same origin this page is on). The
 response includes a <code>payment_id</code> - send the buyer to
 <code>/pay/{{public_key}}/orders/&lt;payment_id&gt;</code> (same origin) to complete the payment. This endpoint

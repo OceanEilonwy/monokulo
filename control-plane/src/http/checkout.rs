@@ -24,17 +24,18 @@
 //! engine rather than through control-plane's own `http::pay` endpoint)
 //! simply shows a dash rather than a fabricated amount.
 
-use axum::extract::{Path, State};
+use axum::extract::{Form, Path, State};
 use axum::response::{Html, IntoResponse, Json, Response};
 use axum::http::{HeaderMap, StatusCode};
 use qrcode::render::svg;
 use qrcode::QrCode;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 
 use crate::db::StoreConnectionRow;
 use crate::engine_client::{EngineClientError, OrderDetailResponse};
 use crate::templates::{CheckoutPaymentViewModel, CheckoutShareViewModel, CheckoutViewModel};
 
+use super::dashboard::redirect_302;
 use super::{ApiError, AppState};
 
 /// `pending`/`unconfirmed`/`confirming`/`partial` are still "in progress";
@@ -129,7 +130,22 @@ pub async fn checkout_page(State(state): State<AppState>, Path((pk, payment_id))
         }
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    render_checkout_page(&state, pk, row, sk, detail, None).await
+}
 
+/// The real body of the checkout page, shared by the plain `GET` above and
+/// `set_refund_address`'s own error paths below (re-rendering the exact
+/// same page with an inline error, rather than a bare error response, on a
+/// rejected refund-address submission) - both already hold a freshly
+/// loaded `(row, sk, detail)` from `load_order`, so this never re-fetches.
+async fn render_checkout_page(
+    state: &AppState,
+    pk: String,
+    row: StoreConnectionRow,
+    sk: String,
+    detail: OrderDetailResponse,
+    refund_address_error: Option<String>,
+) -> Response {
     // A reasonable, safe-side default if the engine is briefly unreachable
     // for this one extra call - the order data itself already loaded fine
     // above, so this page still shows something real rather than failing
@@ -138,7 +154,7 @@ pub async fn checkout_page(State(state): State<AppState>, Path((pk, payment_id))
     let confirmations_required = state.engine_client.get_tenant(&sk).await.map(|t| t.confirmations_required).unwrap_or(10);
 
     let (amount, currency) =
-        match state.db.lock().unwrap().get_order_currency_metadata(&row.id, &payment_id) {
+        match state.db.lock().unwrap().get_order_currency_metadata(&row.id, &detail.order.payment_id) {
             Ok(Some(metadata)) => (metadata.amount, metadata.currency),
             _ => ("—".to_string(), "".to_string()),
         };
@@ -178,6 +194,8 @@ pub async fn checkout_page(State(state): State<AppState>, Path((pk, payment_id))
         double_spend_detected_at_display: crate::templates::display_timestamp_or_dash(detail.order.double_spend_detected_at),
         expires_in_display: crate::templates::format_duration_until(detail.order.expires_at, crate::now_unix()),
         merchant_order_id: detail.order.merchant_order_id.clone(),
+        refund_address: detail.order.refund_address.clone(),
+        refund_address_error,
         pk,
         payments: detail
             .payments
@@ -196,6 +214,60 @@ pub async fn checkout_page(State(state): State<AppState>, Path((pk, payment_id))
 
     let html = state.templates.render_checkout(&view).expect("the built-in checkout template must always render");
     Html(html).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct SetRefundAddressForm {
+    pub refund_address: String,
+}
+
+/// `POST /pay/{pk}/orders/{payment_id}/refund-address` - the checkout
+/// page's own plain HTML form for a customer to record where a refund
+/// should go, forwarding to the engine's own real endpoint
+/// (`EngineClient::set_refund_address`) - control-plane stores nothing of
+/// its own here, same "engine owns order state, control-plane owns
+/// pricing/presentation" split every other order-mutating call in this
+/// module already follows. A real, previously-missing capability: the
+/// engine has supported this since `src/http/public.rs::set_refund_address`
+/// existed, but nothing before this handler ever exposed a way to call it -
+/// a customer paying through the checkout widget had no path to set one at
+/// all.
+///
+/// Plain form POST, not `fetch`/JSON - this page carries no JavaScript at
+/// all (see its own doc comment). Redirects back to the plain checkout page
+/// on success (POST-redirect-GET, same convention the dashboard's own forms
+/// use); an empty submission or a real engine failure re-renders the same
+/// page with an inline error instead of a bare error response - a customer
+/// typing the wrong thing here shouldn't lose their place mid-payment.
+pub async fn set_refund_address(
+    State(state): State<AppState>,
+    Path((pk, payment_id)): Path<(String, String)>,
+    Form(form): Form<SetRefundAddressForm>,
+) -> Response {
+    let (row, sk, detail) = match load_order(&state, &pk, &payment_id).await {
+        Ok(loaded) => loaded,
+        Err(LoadError::NotFound) => {
+            let html = state
+                .templates
+                .render_checkout_not_found()
+                .expect("the built-in checkout-not-found template must always render");
+            return (StatusCode::NOT_FOUND, Html(html)).into_response();
+        }
+        Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let refund_address = form.refund_address.trim();
+    if refund_address.is_empty() {
+        return render_checkout_page(&state, pk, row, sk, detail, Some("Enter a refund address.".to_string())).await;
+    }
+
+    match state.engine_client.set_refund_address(&pk, &payment_id, refund_address).await {
+        Ok(()) => redirect_302(&format!("/pay/{pk}/orders/{payment_id}")),
+        Err(e) => {
+            eprintln!("failed to set refund address for order {payment_id} on connection {}: {e}", row.id);
+            render_checkout_page(&state, pk, row, sk, detail, Some("Something went wrong saving that. Please try again.".to_string())).await
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -439,6 +511,102 @@ mod tests {
             "expected a meta-refresh directive on a still-in-progress order, got: {html}"
         );
         assert!(html.contains("style=\"width: 0%\""), "expected a real, already-computed progress-bar fill, got: {html}");
+    }
+
+    /// A real, previously-missing capability: the engine has supported a
+    /// customer-settable refund address since `src/http/public.rs::
+    /// set_refund_address` existed, but nothing in control-plane's own
+    /// checkout page ever exposed a way to call it. Plain form POST, no
+    /// JS - this page carries none.
+    #[tokio::test]
+    async fn setting_a_refund_address_through_the_checkout_pages_own_form_persists_it_on_the_engine() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "checkout-refund-address@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let pk = create_connection(&router, &session_token).await;
+        let payment_id = create_order(&router, &pk, "25.00").await;
+
+        // Before setting one, the checkout page must show the form, not a
+        // refund address that was never set.
+        let before = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/pay/{pk}/orders/{payment_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let before_html = body_text(before).await;
+        assert!(before_html.contains("id=\"refund_address\""), "expected the refund-address form present before one is set, got: {before_html}");
+
+        let refund_address = "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC";
+        let submit = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pay/{pk}/orders/{payment_id}/refund-address"))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from(format!("refund_address={refund_address}")))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(submit.status(), StatusCode::FOUND, "expected a redirect back to the plain checkout page");
+
+        let after = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/pay/{pk}/orders/{payment_id}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let after_html = body_text(after).await;
+        assert!(after_html.contains(refund_address), "expected the real, just-saved refund address shown, got: {after_html}");
+        assert!(!after_html.contains("id=\"refund_address\""), "expected the form gone once a refund address is set, got: {after_html}");
+    }
+
+    #[tokio::test]
+    async fn submitting_an_empty_refund_address_shows_a_clear_error_not_a_bare_error_page() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "checkout-refund-address-empty@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let pk = create_connection(&router, &session_token).await;
+        let payment_id = create_order(&router, &pk, "25.00").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pay/{pk}/orders/{payment_id}/refund-address"))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .body(Body::from("refund_address="))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "a rejected submission re-renders the page, it doesn't redirect");
+        let html = body_text(response).await;
+        assert!(html.contains("Enter a refund address."), "expected a clear inline error, got: {html}");
+        assert!(html.contains(&payment_id), "the real checkout page must still be shown, not a bare error, got: {html}");
     }
 
     #[tokio::test]

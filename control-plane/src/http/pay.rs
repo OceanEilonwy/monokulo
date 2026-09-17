@@ -30,6 +30,15 @@ use super::{ApiError, AppState};
 pub struct CreateOrderRequest {
     pub amount: String,
     pub currency: String,
+    /// Optional caller-supplied identifier (a storefront's own order/cart
+    /// id) - passed straight through to the engine's own `create_order`
+    /// (`EngineClient::create_order`'s own `merchant_order_id` parameter)
+    /// and shown on the dashboard's order detail page, so a merchant can
+    /// match a MoneroPay order back to their own records. `None`/omitted
+    /// when a caller doesn't have one, same `Option` default-to-`None`
+    /// convention this whole codebase already uses for an optional field.
+    #[serde(default)]
+    pub merchant_order_id: Option<String>,
 }
 
 /// Mirrors the engine's own `public::CreateOrderResponse` field-for-field -
@@ -47,6 +56,7 @@ pub struct CreateOrderResponse {
     pub xmr_amount_piconero: u64,
     pub amount: String,
     pub currency: String,
+    pub merchant_order_id: Option<String>,
     pub expires_at: i64,
 }
 
@@ -89,7 +99,7 @@ pub async fn create_order(
         Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
     };
 
-    match state.engine_client.create_order(&pk, xmr_amount_piconero).await {
+    match state.engine_client.create_order(&pk, xmr_amount_piconero, req.merchant_order_id.clone()).await {
         Ok(order) => {
             // Best-effort: a failure to record the local metadata row must
             // never fail an order that the engine has *already* genuinely
@@ -121,6 +131,7 @@ pub async fn create_order(
                 xmr_amount_piconero: order.xmr_amount_piconero,
                 amount: req.amount,
                 currency: req.currency,
+                merchant_order_id: req.merchant_order_id,
                 expires_at: order.expires_at,
             })
             .into_response()
@@ -226,6 +237,11 @@ mod tests {
         serde_json::from_slice(&bytes).unwrap()
     }
 
+    async fn body_text(response: axum::response::Response) -> String {
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
     async fn signed_up_and_logged_in_session_token(router: &Router, email: &str, password: &str) -> String {
         let signup = router
             .clone()
@@ -312,6 +328,89 @@ mod tests {
         assert!(!obj.get("address").unwrap().as_str().unwrap().is_empty());
         assert_eq!(obj.get("currency").unwrap().as_str().unwrap(), TEST_CURRENCY);
         assert_eq!(obj.get("amount").unwrap().as_str().unwrap(), "25.00");
+    }
+
+    /// A real, previously-missing capability: `EngineClient::create_order`
+    /// used to silently drop `merchant_order_id` no matter what a caller
+    /// asked for - every order's own merchant order id always showed as
+    /// unset on the dashboard regardless. Proves it's genuinely recorded on
+    /// the engine now (not just echoed by control-plane), by reading it
+    /// back through the real dashboard order-detail page, not just this
+    /// endpoint's own response.
+    #[tokio::test]
+    async fn creating_a_real_order_with_a_merchant_order_id_records_it_on_the_engine() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pay-endpoint-merchant-order-id@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+
+        let connect_response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/connections")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::from(
+                        serde_json::json!({
+                            "platform": "custom",
+                            "site_url": "https://shop.example.com",
+                            "view_key_hex": TEST_VIEW_KEY_HEX,
+                            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
+                            "network": "mainnet",
+                            "allowed_origins": [],
+                        })
+                        .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(connect_response.status(), StatusCode::CREATED);
+        let connect_body = body_json(connect_response).await;
+        let pk = connect_body["public_key"].as_str().unwrap().to_string();
+        let connection_id = connect_body["connection_id"].as_str().unwrap().to_string();
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/pay/{pk}/orders"))
+                    .header("content-type", "application/json")
+                    .body(Body::from(
+                        serde_json::json!({ "amount": "25.00", "currency": TEST_CURRENCY, "merchant_order_id": "order-1234" })
+                            .to_string(),
+                    ))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        let payment_id = body["payment_id"].as_str().unwrap().to_string();
+        assert_eq!(body["merchant_order_id"], "order-1234", "expected the real merchant_order_id echoed back, got: {body}");
+
+        let detail_response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail_response.status(), StatusCode::OK);
+        let html = body_text(detail_response).await;
+        assert!(html.contains("order-1234"), "expected the real merchant_order_id shown on the dashboard, got: {html}");
     }
 
     /// The other half of the test above: proves the local fiat-metadata

@@ -168,6 +168,7 @@ pub async fn order_detail(
                     amount_received_piconero: detail.order.amount_received_piconero,
                     status: detail.order.status,
                     confirmations: detail.order.confirmations,
+                    double_spend_detected_at: detail.order.double_spend_detected_at,
                     double_spend_detected_at_display: display_timestamp_or_dash(detail.order.double_spend_detected_at),
                     refund_address: detail.order.refund_address,
                     created_at_display: display_timestamp(detail.order.created_at),
@@ -521,6 +522,12 @@ async fn render_store_detail_page(
 pub struct CreateOrderForm {
     pub amount: String,
     pub currency: String,
+    /// A blank field submits as `Some("")` (a plain HTML form always sends
+    /// the input's value, even empty) - trimmed and turned into a real
+    /// `None` before reaching `EngineClient::create_order`, same "empty
+    /// means unset" handling `amount`/`currency` above already get.
+    #[serde(default)]
+    pub merchant_order_id: String,
 }
 
 /// `POST /dashboard/connections/{id}/orders/new` - creates a real order
@@ -576,8 +583,12 @@ pub async fn create_order(
         Ok(amount) => amount,
         Err(e) => return render_store_detail_page(&state, row, Some(e.to_string()), None).await,
     };
+    let merchant_order_id = {
+        let trimmed = form.merchant_order_id.trim();
+        if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
+    };
 
-    match state.engine_client.create_order(&row.tenant_public_key, xmr_amount_piconero).await {
+    match state.engine_client.create_order(&row.tenant_public_key, xmr_amount_piconero, merchant_order_id).await {
         Ok(order) => {
             if let Err(e) = state.db.lock().unwrap().create_order_currency_metadata(
                 &row.id,
@@ -1417,7 +1428,7 @@ mod tests {
             .oneshot(form_post_request(
                 &format!("/dashboard/connections/{connection_id}/orders/new"),
                 &session_token,
-                &[("amount", "10.00"), ("currency", TEST_CURRENCY)],
+                &[("amount", "10.00"), ("currency", TEST_CURRENCY), ("merchant_order_id", "order-5678")],
             ))
             .await
             .unwrap();
@@ -1442,6 +1453,11 @@ mod tests {
         assert_eq!(detail_response.status(), StatusCode::OK);
         let html = body_text(detail_response).await;
         assert!(html.contains(TEST_CURRENCY), "expected the real, just-created order's detail page, got: {html}");
+        // A real, previously-missing capability: `EngineClient::create_order`
+        // used to silently drop `merchant_order_id` no matter what the
+        // dashboard's own "create an order" form submitted - every order's
+        // own field always showed as unset regardless of caller intent.
+        assert!(html.contains("order-5678"), "expected the real merchant_order_id shown, not a dash, got: {html}");
         // The real point of this test: the exact rate used and which
         // provider quoted it are both recorded and shown, not just the
         // resulting amount - including for an XMR-denominated order, which

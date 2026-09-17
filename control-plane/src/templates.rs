@@ -308,6 +308,14 @@ pub struct OrderDetailData {
     pub amount_received_piconero: u64,
     pub status: String,
     pub confirmations: u64,
+    /// Presence only - gates the whole "Double-spend detected at" row in
+    /// the template so it's simply absent for the overwhelming majority of
+    /// orders that never had one, rather than a permanently-visible row
+    /// showing a dash - a real, alarming-sounding label sitting on every
+    /// order's page regardless of relevance reads as a warning even when
+    /// it says nothing happened. The actual text comes from
+    /// `double_spend_detected_at_display` below, pre-rendered server-side.
+    pub double_spend_detected_at: Option<i64>,
     pub double_spend_detected_at_display: String,
     /// Same caller-supplied-text caveat as `merchant_order_id` above (set
     /// via the engine's `set_refund_address` endpoint) - raw, escaped by
@@ -645,6 +653,17 @@ pub struct CheckoutViewModel {
     /// meaningless (and unused) otherwise.
     pub expires_in_display: String,
     pub merchant_order_id: Option<String>,
+    /// `Some` once a customer (or their storefront, on their behalf) has
+    /// set one via the form below - shown read-only from then on. `None`
+    /// shows the form instead. Raw, not pre-rendered to a trusted-HTML
+    /// display string - a refund address is caller-supplied free text (the
+    /// engine's own `set_refund_address` does no format validation of its
+    /// own either), so it stays ordinary escaped template output, same
+    /// caveat `merchant_order_id`'s own doc comment already carries.
+    pub refund_address: Option<String>,
+    /// Set only when the refund-address form below was just rejected (empty
+    /// submission, or a real engine failure) - `None` on a plain page load.
+    pub refund_address_error: Option<String>,
     pub pk: String,
     pub payments: Vec<CheckoutPaymentViewModel>,
 }
@@ -1244,6 +1263,8 @@ mod tests {
             double_spend_detected_at_display: display_timestamp_or_dash(None),
             expires_in_display: "30m".to_string(),
             merchant_order_id: None,
+            refund_address: None,
+            refund_address_error: None,
             pk: "pk_abc123".to_string(),
             payments: vec![],
         }
@@ -1269,5 +1290,55 @@ mod tests {
             !html.contains(r#"<meta http-equiv="refresh""#),
             "a paid/terminal order must not keep re-fetching itself, got: {html}"
         );
+    }
+
+    fn test_order_detail_data(double_spend_detected_at: Option<i64>) -> OrderDetailData {
+        OrderDetailData {
+            payment_id: "pay_abc123".to_string(),
+            merchant_order_id: None,
+            address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
+            currency: "XMR".to_string(),
+            amount: "0.5".to_string(),
+            rate_display: "1.000000000000 XMR per 1 XMR".to_string(),
+            rate_provider: "xmr".to_string(),
+            xmr_amount_piconero: 500_000_000_000,
+            amount_received_piconero: 0,
+            status: "pending".to_string(),
+            confirmations: 0,
+            double_spend_detected_at,
+            double_spend_detected_at_display: display_timestamp_or_dash(double_spend_detected_at),
+            refund_address: None,
+            created_at_display: "1000".to_string(),
+            expires_at_display: "2000".to_string(),
+            updated_at_display: "1000".to_string(),
+            payments: vec![],
+            payment_link: "http://127.0.0.1:8081/pay/pk_abc123/orders/pay_abc123/share".to_string(),
+        }
+    }
+
+    #[test]
+    fn order_detail_hides_the_double_spend_row_entirely_when_none_was_detected() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine
+            .render_order_detail(&OrderDetailViewModel { connection_id: "conn_1".to_string(), order: Some(test_order_detail_data(None)), logged_in: true })
+            .unwrap();
+        // The real point of this follow-up: no dash, no row at all - a
+        // permanently-visible "Double-spend detected at" label reads as a
+        // warning even when it says nothing happened.
+        assert!(!html.contains("Double-spend detected at"), "expected the row fully absent when no double-spend occurred, got: {html}");
+    }
+
+    #[test]
+    fn order_detail_shows_the_double_spend_row_when_one_was_detected() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine
+            .render_order_detail(&OrderDetailViewModel {
+                connection_id: "conn_1".to_string(),
+                order: Some(test_order_detail_data(Some(1_700_000_000))),
+                logged_in: true,
+            })
+            .unwrap();
+        assert!(html.contains("Double-spend detected at"), "expected the row present when a double-spend was detected, got: {html}");
+        assert!(html.contains("1700000000"), "expected the real detected-at timestamp shown, got: {html}");
     }
 }

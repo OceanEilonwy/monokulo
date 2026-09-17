@@ -236,14 +236,39 @@ impl EngineClient {
     /// of fiat at all any more, so `xmr_amount_piconero` here is the exact
     /// amount already computed from control-plane's own exchange rate -
     /// this is the only rate computation left in the whole system.
-    pub async fn create_order(&self, pk: &str, xmr_amount_piconero: u64) -> Result<CreateOrderResponse, EngineClientError> {
+    pub async fn create_order(
+        &self,
+        pk: &str,
+        xmr_amount_piconero: u64,
+        merchant_order_id: Option<String>,
+    ) -> Result<CreateOrderResponse, EngineClientError> {
         let response = self
             .http
             .post(format!("{}/api/v1/t/{pk}/orders", self.base_url))
-            .json(&CreateOrderRequest { xmr_amount_piconero })
+            .json(&CreateOrderRequest { xmr_amount_piconero, merchant_order_id })
             .send()
             .await?;
         parse_response(response).await
+    }
+
+    /// `POST {base_url}/api/v1/t/{pk}/orders/{payment_id}/refund-address` -
+    /// the engine's own public endpoint for a customer (or their storefront,
+    /// on their behalf) to record where a refund should go, called here the
+    /// same server-to-server, no-auth way `create_order` above is. The
+    /// engine does no format validation of its own (confirmed by reading
+    /// `src/http/public.rs::set_refund_address` - it stores whatever string
+    /// it's given verbatim, the same as every other stored free-text field
+    /// in this system), so neither does this call; a human reviews it
+    /// before ever sending anything back to it.
+    pub async fn set_refund_address(&self, pk: &str, payment_id: &str, refund_address: &str) -> Result<(), EngineClientError> {
+        let response = self
+            .http
+            .post(format!("{}/api/v1/t/{pk}/orders/{payment_id}/refund-address", self.base_url))
+            .json(&SetRefundAddressRequest { refund_address: refund_address.to_string() })
+            .send()
+            .await?;
+        check_status(response).await?;
+        Ok(())
     }
 
     /// `GET {base_url}/status` — the engine's own live node/scanner report
@@ -257,7 +282,12 @@ impl EngineClient {
     }
 }
 
-async fn parse_response<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, EngineClientError> {
+/// The shared "is this a real success" check both `parse_response` (a JSON
+/// body expected) and `set_refund_address` (a bare `200` with no body at
+/// all - the engine's own handler returns `Result<(), ApiError>`, which
+/// axum serializes as an empty response, not `null` or `{}`) need - trying
+/// to `.json()` an empty body would fail even on a genuine success.
+async fn check_status(response: reqwest::Response) -> Result<reqwest::Response, EngineClientError> {
     let status = response.status();
     if !status.is_success() {
         // The engine's own `ApiError::into_response` (`src/http/mod.rs` at the
@@ -270,6 +300,11 @@ async fn parse_response<T: serde::de::DeserializeOwned>(response: reqwest::Respo
             .unwrap_or(body);
         return Err(EngineClientError::EngineError { status, message });
     }
+    Ok(response)
+}
+
+async fn parse_response<T: serde::de::DeserializeOwned>(response: reqwest::Response) -> Result<T, EngineClientError> {
+    let response = check_status(response).await?;
     Ok(response.json::<T>().await?)
 }
 
@@ -374,14 +409,19 @@ struct PatchTenantRequest {
     confirmations_required: Option<u64>,
 }
 
-/// Mirrors the engine's own `public::CreateOrderRequest` - only the field
-/// this client's `create_order` caller needs (`merchant_order_id`/
-/// `description` are left unset by omitting them, same `Option` field
-/// default-to-`None`-on-a-missing-key convention `PatchTenantRequest`
-/// already relies on).
+/// Mirrors the engine's own `public::CreateOrderRequest` - `description` is
+/// still left unset (nothing upstream of this client has a use for it yet),
+/// same `Option` field default-to-`None`-on-a-missing-key convention
+/// `PatchTenantRequest` already relies on. `merchant_order_id` used to be
+/// omitted the same way - a real gap, not a deliberate one: control-plane's
+/// own order-creation callers (`http::pay::create_order`,
+/// `http::orders::create_order`) had no way to pass one through at all,
+/// which is why every order's own `merchant_order_id` always showed as
+/// unset on the dashboard regardless of what a caller asked for.
 #[derive(Serialize)]
 struct CreateOrderRequest {
     xmr_amount_piconero: u64,
+    merchant_order_id: Option<String>,
 }
 
 /// Mirrors the engine's own `public::CreateOrderResponse`.
@@ -391,6 +431,12 @@ pub struct CreateOrderResponse {
     pub address: String,
     pub xmr_amount_piconero: u64,
     pub expires_at: i64,
+}
+
+/// Mirrors the engine's own `public::SetRefundAddressRequest`.
+#[derive(Serialize)]
+struct SetRefundAddressRequest {
+    refund_address: String,
 }
 
 /// Mirrors the engine's own `WebhookView`.
