@@ -938,6 +938,19 @@ mod tests {
             html.contains(&format!("http://test.example/pay/{public_key}/orders/{payment_id}/share")),
             "expected a real absolute payment link, got: {html}"
         );
+        // The real point of this follow-up: the link now lives as a share
+        // icon in the title banner, not its own row in the details table -
+        // and the title itself carries the real order id right alongside it.
+        assert!(html.contains(r#"<h1 class="order-title">"#), "expected the title banner to carry the share button, got: {html}");
+        assert!(
+            html.contains(&format!(r#"<span>Order {payment_id}</span>"#)),
+            "expected the order id inside the title banner, got: {html}"
+        );
+        assert!(
+            html.contains(r#"id="share-payment-link""#) && html.contains("aria-label=\"Share payment link\""),
+            "expected a real, labeled share button, got: {html}"
+        );
+        assert!(!html.contains("<th>Payment link</th>"), "the payment link must no longer be its own table row, got: {html}");
     }
 
     #[tokio::test]

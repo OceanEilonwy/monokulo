@@ -10,6 +10,20 @@
 .kv-table th { width: 14em; }
 .kv-table td, .payments-table td { word-break: break-all; overflow-wrap: anywhere; }
 .payments-table th { min-width: 8em; }
+.order-title { display: flex; align-items: center; justify-content: space-between; gap: 0.8em; }
+.share-btn {
+  flex-shrink: 0;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5em;
+  height: 1.5em;
+  border: 2px solid var(--line);
+  color: var(--ink);
+  text-decoration: none;
+}
+.share-btn:hover { color: var(--accent-ink); background: var(--accent); border-color: var(--accent); }
+.share-btn svg { width: 60%; height: 60%; }
 </style>
 </head>
 <body>
@@ -18,13 +32,23 @@
 
 <p><a href="/dashboard/connections/{{connection_id}}/orders">&larr; back to orders</a></p>
 {{#if order}}
-<h1>Order {{order.payment_id}}</h1>
-<p class="hint">This page refreshes automatically every 15s.</p>
+<h1 class="order-title">
+<span>Order {{order.payment_id}}</span>
+<a class="share-btn" id="share-payment-link" href="{{order.payment_link}}" target="_blank" rel="noopener"
+   aria-label="Share payment link" title="Share payment link">
+<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">
+<circle cx="18" cy="5" r="3"></circle>
+<circle cx="6" cy="12" r="3"></circle>
+<circle cx="18" cy="19" r="3"></circle>
+<line x1="8.59" y1="13.51" x2="15.42" y2="17.49"></line>
+<line x1="15.41" y1="6.51" x2="8.59" y2="10.49"></line>
+</svg>
+</a>
+</h1>
+<p class="hint">This page refreshes automatically every 15s. Share the payment link (icon above) with whoever
+needs to pay this order.</p>
 <table class="kv-table">
 <tr><th>Merchant order ID</th><td>{{#if order.merchant_order_id}}{{order.merchant_order_id}}{{else}}<span class="muted">-</span>{{/if}}</td></tr>
-<tr><th>Payment link</th><td><code>{{order.payment_link}}</code>
-<a class="btn-secondary" href="{{order.payment_link}}" target="_blank" rel="noopener">open &rarr;</a>
-<p class="hint">Share this link with whoever needs to pay this order.</p></td></tr>
 <tr><th>Address</th><td><code>{{order.address}}</code></td></tr>
 <tr><th>Amount</th><td>{{order.amount}} {{order.currency}}</td></tr>
 <tr><th>Exchange rate</th><td>{{order.rate_display}}</td></tr>
@@ -63,5 +87,22 @@
 {{/if}}
 
 </div>
+{{#if order}}
+<script>
+(function () {
+  // Progressive enhancement only - the share button is a real, working
+  // <a href> to the payment link either way (opens it in a new tab, same
+  // as the old "open" link this replaced). Where the native Web Share API
+  // is available (most mobile browsers, some desktop ones), this hands the
+  // link to the device's own share sheet instead of just navigating.
+  var link = document.getElementById("share-payment-link");
+  if (!link || typeof navigator.share !== "function") return;
+  link.addEventListener("click", function (event) {
+    event.preventDefault();
+    navigator.share({ title: "Pay this Monero order", url: link.href }).catch(function () {});
+  });
+})();
+</script>
+{{/if}}
 </body>
 </html>
