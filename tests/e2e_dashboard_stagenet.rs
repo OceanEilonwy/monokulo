@@ -208,6 +208,8 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         daemons: Arc::new(HashMap::from([(Network::Stagenet, fallback_daemon)])),
         scanner_status: new_scanner_status_map(),
         scan_poll_interval_secs: 2,
+        default_rescan_lookback_days: 7,
+        max_rescan_lookback_days: 90,
     };
     let engine_router = build_engine_router(engine_state, 1_000_000);
     let engine_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("failed to bind an ephemeral engine port");

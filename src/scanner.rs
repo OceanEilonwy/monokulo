@@ -1845,7 +1845,8 @@ mod tests {
                 },
                 now,
             )
-            .unwrap();
+            .unwrap()
+            .into_job();
         // Simulate the process having already made it to height 50 (persisted) before
         // it died mid-job - exactly the state a restart finds a still-`running` row in.
         store.update_rescan_progress(&job.id, 50, now).unwrap();
@@ -1896,6 +1897,8 @@ mod tests {
                 1000,
             )
             .unwrap();
+        assert!(matches!(first, crate::store::TriggerRescanOutcome::Started(_)));
+        let first = first.into_job();
 
         let second = store
             .trigger_rescan(
@@ -1910,6 +1913,11 @@ mod tests {
                 1001,
             )
             .unwrap();
+        assert!(
+            matches!(second, crate::store::TriggerRescanOutcome::AlreadyRunning(_)),
+            "a caller that spawns on `Started` but not `AlreadyRunning` must be able to tell these apart"
+        );
+        let second = second.into_job();
 
         assert_eq!(second.id, first.id, "must return the existing running row, not start a new one");
         assert_eq!(second.mode, RescanMode::Simple, "unchanged - the second trigger's request never took effect");

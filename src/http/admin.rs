@@ -1,14 +1,15 @@
 use axum::extract::{Path, Query, State};
-use axum::http::StatusCode;
-use axum::response::Json;
+use axum::http::{header, HeaderMap, StatusCode};
+use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::auth::generate_webhook_secret;
+use crate::daemon::MoneroDaemonClient;
 use crate::key_custody::{KeyCustodyError, SubaddressIndex, WalletMaterial};
 use crate::status::OrderStatus;
-use crate::store::{NewTenant, Order, OrderPaymentRow, TenantConfigPatch, Webhook};
+use crate::store::{NewOrderRescan, NewTenant, Order, OrderPaymentRow, OrderRescan, RescanMode, TenantConfigPatch, TriggerRescanOutcome, Webhook};
 
-use super::{AppState, ApiError, AuthedTenant, network_str, now_unix, parse_network, parse_status_query};
+use super::{resolve_wallet_handle, AppState, ApiError, AuthedTenant, network_str, now_unix, parse_network, parse_status_query};
 
 /// `KeyCustodyError::InvalidKeyMaterial` from `register_wallet`/`derive_subaddress`
 /// below means *this request's* `view_key_hex`/`spend_pubkey_hex` decoded to the
@@ -400,5 +401,268 @@ pub async fn delete_webhook(
     } else {
         Err(ApiError::NotFound)
     }
+}
+
+// -- Order rescans (`docs/order_rescan_wbs.md` Phase 2) --------------------
+
+const SECONDS_PER_DAY: i64 = 86_400;
+
+#[derive(Serialize)]
+pub struct RescanStatusView {
+    rescan_id: String,
+    payment_id: String,
+    mode: String,
+    status: String,
+    from_height: u64,
+    to_height: u64,
+    current_height: u64,
+    /// Derived, not stored - `(current_height - from_height) / (to_height -
+    /// from_height)`, clamped to `[0, 100]` so a resumed job's `current_height`
+    /// (which starts equal to `from_height`, never below it) and a completed job's
+    /// (snapped to `to_height` by `Store::complete_rescan`) both land cleanly at
+    /// their ends rather than needing a caller to special-case `status` to read this.
+    percent_complete: u8,
+    error: Option<String>,
+    started_at: i64,
+    finished_at: Option<i64>,
+}
+
+fn rescan_percent_complete(job: &OrderRescan) -> u8 {
+    if job.current_height >= job.to_height {
+        return 100;
+    }
+    let span = job.to_height.saturating_sub(job.from_height);
+    if span == 0 {
+        return 100; // a degenerate zero-width range is trivially "done"
+    }
+    let done = job.current_height.saturating_sub(job.from_height);
+    ((done as f64 / span as f64) * 100.0).clamp(0.0, 100.0) as u8
+}
+
+impl From<OrderRescan> for RescanStatusView {
+    fn from(job: OrderRescan) -> Self {
+        let percent_complete = rescan_percent_complete(&job);
+        RescanStatusView {
+            rescan_id: job.id,
+            payment_id: job.order_id,
+            mode: job.mode.as_str().to_string(),
+            status: job.status.as_str().to_string(),
+            from_height: job.from_height,
+            to_height: job.to_height,
+            current_height: job.current_height,
+            percent_complete,
+            error: job.error,
+            started_at: job.started_at,
+            finished_at: job.finished_at,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct TriggerRescanRequest {
+    /// `"simple"` or `"advanced"` - see `resolve_rescan_window`.
+    mode: String,
+    /// `advanced` mode only: unix timestamps, same convention `created_at`/
+    /// `expires_at` already use everywhere else in this API.
+    from: Option<i64>,
+    to: Option<i64>,
+}
+
+/// Resolves a trigger request's requested window to concrete unix timestamps
+/// (`(mode, from, to)`), enforcing WBS 2.1 decision 4's bounds: `simple` is always
+/// `max(order.created_at, now - default_rescan_lookback_days)` through `now`;
+/// `advanced` takes the caller's own `from`/`to`, rejected outright (a real `400`,
+/// never silently clamped) if `from` is earlier than the later of the order's own
+/// creation time and the `max_rescan_lookback_days` ceiling, if `to` is in the
+/// future, or if `to` precedes `from`.
+fn resolve_rescan_window(
+    req: &TriggerRescanRequest,
+    order: &Order,
+    default_lookback_days: u32,
+    max_lookback_days: u32,
+    now: i64,
+) -> Result<(RescanMode, i64, i64), ApiError> {
+    let earliest_allowed = order.created_at.max(now - max_lookback_days as i64 * SECONDS_PER_DAY);
+    match req.mode.as_str() {
+        "simple" => {
+            let from = order.created_at.max(now - default_lookback_days as i64 * SECONDS_PER_DAY);
+            Ok((RescanMode::Simple, from, now))
+        }
+        "advanced" => {
+            let from = req.from.ok_or_else(|| ApiError::BadRequest("advanced mode requires \"from\"".into()))?;
+            let to = req.to.unwrap_or(now);
+            if from < earliest_allowed {
+                return Err(ApiError::BadRequest(format!(
+                    "\"from\" ({from}) cannot be earlier than {earliest_allowed} - the later of this order's own \
+                     creation time ({}) and the {max_lookback_days}-day lookback ceiling",
+                    order.created_at
+                )));
+            }
+            if to > now {
+                return Err(ApiError::BadRequest(format!("\"to\" ({to}) cannot be in the future (now is {now})")));
+            }
+            if to < from {
+                return Err(ApiError::BadRequest(format!("\"to\" ({to}) cannot be earlier than \"from\" ({from})")));
+            }
+            Ok((RescanMode::Advanced, from, to))
+        }
+        other => {
+            Err(ApiError::BadRequest(format!("unknown rescan mode {other:?} - expected \"simple\" or \"advanced\"")))
+        }
+    }
+}
+
+/// `POST /api/v1/admin/tenant/orders/{payment_id}/rescan` - WBS 2.1. Resolves the
+/// requested window to real block heights (0.2/1.1's timestamp->height lookup, with
+/// 1.1's start-side cushion), inserts a durable job row, and spawns 1.3's runner.
+/// A second trigger while one is already running for this same order is not an
+/// error - it hands back that job's current state, same as a fresh trigger would
+/// (WBS 2.1's own "job already-running is not an error" outcome).
+pub async fn trigger_rescan(
+    AuthedTenant(tenant): AuthedTenant,
+    Path(payment_id): Path<String>,
+    State(state): State<AppState>,
+    Json(req): Json<TriggerRescanRequest>,
+) -> Result<(StatusCode, Json<RescanStatusView>), ApiError> {
+    let order = state.store.lock().unwrap().get_order(&tenant.id, &payment_id)?.ok_or(ApiError::NotFound)?;
+
+    // Decision 5's guardrail: a rescan exists to find a late payment on an order the
+    // merchant already gave up on waiting for - it has no meaning against an order
+    // still being live-scanned normally.
+    if order.status != OrderStatus::Expired {
+        return Err(ApiError::BadRequest(format!(
+            "a rescan can only be triggered for an expired order (this order is currently {})",
+            order.status.as_str()
+        )));
+    }
+
+    let now = now_unix();
+    let (mode, from_ts, to_ts) =
+        resolve_rescan_window(&req, &order, state.default_rescan_lookback_days, state.max_rescan_lookback_days, now)?;
+
+    let network = parse_network(&tenant.network)
+        .map_err(|e| ApiError::Internal(format!("tenant has an unrecognized network {:?}: {e}", tenant.network)))?;
+    let daemon = state
+        .daemons
+        .get(&network)
+        .ok_or_else(|| ApiError::Internal(format!("no daemon configured for network {network:?}")))?
+        .clone();
+
+    // 0.2's binary search, then 1.1's start-side-only safety cushion - see
+    // `scanner::rescan_start_height`'s own doc comment for why the end side never
+    // gets an equivalent buffer.
+    let raw_from_height = daemon
+        .find_height_at_or_before(from_ts.max(0) as u64)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to resolve the rescan's start height: {e}")))?;
+    let from_height = crate::scanner::rescan_start_height(raw_from_height);
+    let to_height = daemon
+        .find_height_at_or_before(to_ts.max(0) as u64)
+        .await
+        .map_err(|e| ApiError::Internal(format!("failed to resolve the rescan's end height: {e}")))?;
+
+    let handle = resolve_wallet_handle(&state, &tenant).await?;
+
+    let outcome = state.store.lock().unwrap().trigger_rescan(
+        NewOrderRescan {
+            order_id: order.id.clone(),
+            tenant_id: tenant.id.clone(),
+            minor_index: order.minor_index,
+            mode,
+            from_height,
+            to_height,
+        },
+        now,
+    )?;
+
+    let job = match outcome {
+        // Only a genuinely new row needs a runner - see `TriggerRescanOutcome`'s own
+        // doc comment for why spawning on `AlreadyRunning` too would race a second
+        // runner against whichever one already owns this row.
+        TriggerRescanOutcome::Started(job) => {
+            crate::scanner::spawn_rescan_job(
+                state.store.clone(),
+                state.key_custody.clone(),
+                daemon.clone() as std::sync::Arc<dyn crate::daemon::MoneroDaemonClient>,
+                handle,
+                job.id.clone(),
+            );
+            job
+        }
+        TriggerRescanOutcome::AlreadyRunning(job) if job.order_id == order.id => job,
+        TriggerRescanOutcome::AlreadyRunning(job) => {
+            return Err(ApiError::BadRequest(format!(
+                "a rescan is already running for order {} - only one rescan may run per tenant at a time",
+                job.order_id
+            )));
+        }
+    };
+
+    Ok((StatusCode::ACCEPTED, Json(RescanStatusView::from(job))))
+}
+
+/// `GET /api/v1/admin/tenant/orders/{payment_id}/rescan` - WBS 2.2. The most
+/// recently triggered rescan for this order, whatever its current status - `404` if
+/// none was ever triggered.
+pub async fn get_rescan_status(
+    AuthedTenant(tenant): AuthedTenant,
+    Path(payment_id): Path<String>,
+    State(state): State<AppState>,
+) -> Result<Json<RescanStatusView>, ApiError> {
+    let store = state.store.lock().unwrap();
+    let order = store.get_order(&tenant.id, &payment_id)?.ok_or(ApiError::NotFound)?;
+    let job = store.get_latest_rescan_for_order(&order.id)?.ok_or(ApiError::NotFound)?;
+    Ok(Json(RescanStatusView::from(job)))
+}
+
+/// How long a client may treat a `GET .../rescans` response as fresh without
+/// re-asking - WBS 2.3's "a few seconds": long enough that a dashboard polling
+/// every few seconds gets real cache hits, short enough that "is anything syncing"
+/// never looks stale for long once a rescan finishes.
+const RESCAN_LIST_CACHE_MAX_AGE_SECS: u64 = 3;
+
+fn rescan_list_etag(running: &Option<OrderRescan>) -> String {
+    match running {
+        Some(job) => format!("\"{}:{}\"", job.id, job.updated_at),
+        None => "\"none\"".to_string(),
+    }
+}
+
+fn with_rescan_cache_headers(mut response: Response, etag: &str) -> Response {
+    let headers = response.headers_mut();
+    headers.insert(
+        header::ETAG,
+        header::HeaderValue::from_str(etag).expect("etag is built from an id and an integer - always valid ASCII"),
+    );
+    headers.insert(
+        header::CACHE_CONTROL,
+        header::HeaderValue::from_str(&format!("max-age={RESCAN_LIST_CACHE_MAX_AGE_SECS}")).unwrap(),
+    );
+    response
+}
+
+/// `GET /api/v1/admin/tenant/rescans` - WBS 2.3, the dashboard-wide "is anything
+/// syncing right now" check. Every currently-`running` rescan for this tenant - in
+/// practice always zero or one, given the one-job-per-tenant guardrail
+/// (`Store::trigger_rescan`). Real HTTP caching, not a bespoke in-process cache: a
+/// cheap `ETag` derived from the running job's own `(id, updated_at)` (or the fixed
+/// string `"none"` when nothing is running), honoring `If-None-Match` with a
+/// bodyless `304` - the same mechanism a browser or CDN uses, applied here between
+/// control-plane and the engine.
+pub async fn list_rescans(
+    AuthedTenant(tenant): AuthedTenant,
+    State(state): State<AppState>,
+    headers: HeaderMap,
+) -> Result<Response, ApiError> {
+    let running = state.store.lock().unwrap().get_running_rescan_for_tenant(&tenant.id)?;
+    let etag = rescan_list_etag(&running);
+
+    let if_none_match = headers.get(header::IF_NONE_MATCH).and_then(|v| v.to_str().ok());
+    if if_none_match == Some(etag.as_str()) {
+        return Ok(with_rescan_cache_headers(StatusCode::NOT_MODIFIED.into_response(), &etag));
+    }
+
+    let body: Vec<RescanStatusView> = running.into_iter().map(RescanStatusView::from).collect();
+    Ok(with_rescan_cache_headers((StatusCode::OK, Json(body)).into_response(), &etag))
 }
 

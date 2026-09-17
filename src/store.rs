@@ -270,6 +270,25 @@ fn rescan_status_from_str(s: &str) -> RescanStatus {
     }
 }
 
+/// The outcome of `Store::trigger_rescan` - see that method's own doc comment for
+/// why this is a real distinction, not a redundant wrapper around a bare
+/// `OrderRescan`.
+pub enum TriggerRescanOutcome {
+    Started(OrderRescan),
+    AlreadyRunning(OrderRescan),
+}
+
+impl TriggerRescanOutcome {
+    /// Discards the started-vs-already-running distinction, for a caller that only
+    /// wants the row either way (every test in this codebase that isn't itself
+    /// testing the guardrail).
+    pub fn into_job(self) -> OrderRescan {
+        match self {
+            TriggerRescanOutcome::Started(job) | TriggerRescanOutcome::AlreadyRunning(job) => job,
+        }
+    }
+}
+
 /// Everything needed to start a new rescan job - `from_height`/`to_height` are
 /// already fully resolved (including the start-side cushion, `scanner::
 /// rescan_start_height`) by whoever calls `Store::trigger_rescan`; this table never
@@ -1295,7 +1314,14 @@ impl Store {
     /// insert) keeps the check race-free under concurrent trigger requests.
     /// `current_height` starts equal to `from_height` - nothing scanned yet, so the
     /// walk's first step is to scan `from_height` itself.
-    pub fn trigger_rescan(&self, new: NewOrderRescan, now: i64) -> Result<OrderRescan> {
+    ///
+    /// Returns [`TriggerRescanOutcome`], not a bare `OrderRescan`, specifically so a
+    /// caller that's about to `scanner::spawn_rescan_job` the result can tell the two
+    /// cases apart: `Started` genuinely needs a new runner spawned, `AlreadyRunning`
+    /// must not - the returned row already has one (whether for this exact request or
+    /// a wholly different order on the same tenant), and spawning a second runner
+    /// against the same row would race it against the first.
+    pub fn trigger_rescan(&self, new: NewOrderRescan, now: i64) -> Result<TriggerRescanOutcome> {
         let id = new_id("rsc");
         let inserted = self.conn.execute(
             "INSERT INTO order_rescans
@@ -1314,10 +1340,12 @@ impl Store {
             ],
         );
         match inserted {
-            Ok(_) => self.get_rescan(&id)?.ok_or(StoreError::NotFound),
-            Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::ConstraintViolation => self
-                .get_running_rescan_for_tenant(&new.tenant_id)?
-                .ok_or(StoreError::NotFound),
+            Ok(_) => Ok(TriggerRescanOutcome::Started(self.get_rescan(&id)?.ok_or(StoreError::NotFound)?)),
+            Err(rusqlite::Error::SqliteFailure(e, _)) if e.code == rusqlite::ErrorCode::ConstraintViolation => Ok(
+                TriggerRescanOutcome::AlreadyRunning(
+                    self.get_running_rescan_for_tenant(&new.tenant_id)?.ok_or(StoreError::NotFound)?,
+                ),
+            ),
             Err(e) => Err(e.into()),
         }
     }
@@ -2692,7 +2720,7 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
 
-        let job = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 10, 500), 1000).unwrap();
+        let job = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 10, 500), 1000).unwrap().into_job();
 
         assert_eq!(job.order_id, order.id);
         assert_eq!(job.tenant_id, tenant.tenant.id);
@@ -2715,7 +2743,11 @@ mod tests {
         let order_b = new_order(&store, &tenant.tenant.id, 2);
 
         let first = store.trigger_rescan(new_rescan(&order_a, &tenant.tenant.id, 1, 100), 1000).unwrap();
+        assert!(matches!(first, TriggerRescanOutcome::Started(_)));
+        let first = first.into_job();
         let second = store.trigger_rescan(new_rescan(&order_b, &tenant.tenant.id, 1, 999), 1001).unwrap();
+        assert!(matches!(second, TriggerRescanOutcome::AlreadyRunning(_)));
+        let second = second.into_job();
 
         assert_eq!(second.id, first.id);
         assert_eq!(second.order_id, order_a.id, "the second request's order must never have taken effect");
@@ -2730,8 +2762,8 @@ mod tests {
         let order_a = new_order(&store, &tenant_a.tenant.id, 1);
         let order_b = new_order(&store, &tenant_b.tenant.id, 1);
 
-        let a = store.trigger_rescan(new_rescan(&order_a, &tenant_a.tenant.id, 1, 100), 1000).unwrap();
-        let b = store.trigger_rescan(new_rescan(&order_b, &tenant_b.tenant.id, 1, 100), 1000).unwrap();
+        let a = store.trigger_rescan(new_rescan(&order_a, &tenant_a.tenant.id, 1, 100), 1000).unwrap().into_job();
+        let b = store.trigger_rescan(new_rescan(&order_b, &tenant_b.tenant.id, 1, 100), 1000).unwrap().into_job();
 
         assert_ne!(a.id, b.id, "the one-running-per-tenant guardrail must not leak across tenants");
     }
@@ -2741,7 +2773,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
-        let job = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1000).unwrap();
+        let job = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1000).unwrap().into_job();
 
         store.update_rescan_progress(&job.id, 55, 1050).unwrap();
         let mid = store.get_rescan(&job.id).unwrap().unwrap();
@@ -2770,7 +2802,7 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
-        let job = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1000).unwrap();
+        let job = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1000).unwrap().into_job();
         store.update_rescan_progress(&job.id, 40, 1050).unwrap();
 
         store.fail_rescan(&job.id, "daemon unreachable", 1075).unwrap();
@@ -2788,7 +2820,7 @@ mod tests {
 
         // Freed slot: a new trigger for the same tenant now succeeds as a genuinely
         // new job rather than returning the failed one.
-        let retried = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1100).unwrap();
+        let retried = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1100).unwrap().into_job();
         assert_ne!(retried.id, job.id);
     }
 
@@ -2800,8 +2832,8 @@ mod tests {
         let order_a = new_order(&store, &tenant_a.tenant.id, 1);
         let order_b = new_order(&store, &tenant_b.tenant.id, 1);
 
-        let running = store.trigger_rescan(new_rescan(&order_a, &tenant_a.tenant.id, 1, 100), 1000).unwrap();
-        let will_complete = store.trigger_rescan(new_rescan(&order_b, &tenant_b.tenant.id, 1, 100), 1000).unwrap();
+        let running = store.trigger_rescan(new_rescan(&order_a, &tenant_a.tenant.id, 1, 100), 1000).unwrap().into_job();
+        let will_complete = store.trigger_rescan(new_rescan(&order_b, &tenant_b.tenant.id, 1, 100), 1000).unwrap().into_job();
         store.complete_rescan(&will_complete.id, 1100).unwrap();
 
         let still_running: Vec<String> = store.list_running_rescans().unwrap().into_iter().map(|j| j.id).collect();
@@ -2814,9 +2846,9 @@ mod tests {
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1);
 
-        let first = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1000).unwrap();
+        let first = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1000).unwrap().into_job();
         store.fail_rescan(&first.id, "boom", 1010).unwrap();
-        let second = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1020).unwrap();
+        let second = store.trigger_rescan(new_rescan(&order, &tenant.tenant.id, 1, 100), 1020).unwrap().into_job();
 
         let latest = store.get_latest_rescan_for_order(&order.id).unwrap().unwrap();
         assert_eq!(latest.id, second.id);

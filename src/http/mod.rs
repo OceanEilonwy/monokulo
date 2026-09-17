@@ -114,6 +114,13 @@ pub struct AppState {
     /// happened in a while actually is, relative to what's actually
     /// configured, rather than against an arbitrary hardcoded guess.
     pub scan_poll_interval_secs: u64,
+    /// `docs/order_rescan_wbs.md` Phase 2 decision 4's two lookback knobs
+    /// (`config.payment.default_rescan_lookback_days`/`max_rescan_lookback_days`),
+    /// carried down the same way `scan_poll_interval_secs` above is - a handler
+    /// needs the resolved value, not the whole `Config`, and `AppState` deliberately
+    /// never holds a `Config` itself (see this struct's own field-by-field shape).
+    pub default_rescan_lookback_days: u32,
+    pub max_rescan_lookback_days: u32,
 }
 
 pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
@@ -158,6 +165,11 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route("/api/v1/admin/tenant/rotate-secret", post(admin::rotate_secret))
         .route("/api/v1/admin/tenant/orders", get(admin::list_orders))
         .route("/api/v1/admin/tenant/orders/{payment_id}", get(admin::get_order_detail))
+        .route("/api/v1/admin/tenant/rescans", get(admin::list_rescans))
+        .route(
+            "/api/v1/admin/tenant/orders/{payment_id}/rescan",
+            post(admin::trigger_rescan).get(admin::get_rescan_status),
+        )
         .route(
             "/api/v1/admin/tenant/webhooks",
             get(admin::list_webhooks).post(admin::create_webhook),

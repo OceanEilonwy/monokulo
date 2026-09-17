@@ -175,6 +175,15 @@ impl Config {
         require("payment.order_expiry_minutes", self.payment.order_expiry_minutes, 1, 60 * 24 * 365, "at least 1 minute and at most a year")?;
         require("payment.reorg_check_depth", self.payment.reorg_check_depth, 1, 10_000, "at least 1 block and at most 10000")?;
         require("payment.mempool_poll_interval_ms", self.payment.mempool_poll_interval_ms, 100, 3_600_000, "at least 100ms and at most an hour")?;
+        require("payment.default_rescan_lookback_days", self.payment.default_rescan_lookback_days, 1, 3650, "at least 1 day and at most 3650 (10 years)")?;
+        require("payment.max_rescan_lookback_days", self.payment.max_rescan_lookback_days, 1, 3650, "at least 1 day and at most 3650 (10 years)")?;
+        if self.payment.default_rescan_lookback_days > self.payment.max_rescan_lookback_days {
+            return Err(ConfigError::OutOfRange {
+                field: "payment.default_rescan_lookback_days",
+                value: self.payment.default_rescan_lookback_days.to_string(),
+                expected: "no greater than payment.max_rescan_lookback_days - simple mode must fit under the ceiling advanced mode is bound by",
+            });
+        }
         if self.payment.zero_conf_max_fiat.is_some() {
             return Err(ConfigError::ZeroConfCeilingRenamed);
         }
@@ -358,6 +367,16 @@ pub struct PaymentConfig {
     pub order_expiry_minutes: i64,
     pub reorg_check_depth: u64,
     pub mempool_poll_interval_ms: u64,
+    /// `docs/order_rescan_wbs.md` Phase 2 decision 4, "simple mode" - how far back
+    /// from *now* a merchant-triggered order rescan looks by default, measured in
+    /// days. The actual resolved start is `max(order.created_at, now - this)`, never
+    /// earlier than the order itself - see `http::admin::resolve_rescan_window`.
+    pub default_rescan_lookback_days: u32,
+    /// The hard ceiling both simple and advanced rescan modes share - an advanced
+    /// request asking to start further back than this is a real `400`, not silently
+    /// clamped. Exists so a merchant can't accidentally (or a hostile caller
+    /// deliberately) trigger a walk covering years of blocks against one order.
+    pub max_rescan_lookback_days: u32,
 }
 
 impl Default for PaymentConfig {
@@ -369,6 +388,8 @@ impl Default for PaymentConfig {
             order_expiry_minutes: 30,
             reorg_check_depth: 20,
             mempool_poll_interval_ms: 1000,
+            default_rescan_lookback_days: 7,
+            max_rescan_lookback_days: 90,
         }
     }
 }
@@ -603,6 +624,8 @@ mod tests {
             ("[payment]\norder_expiry_minutes = -30", "payment.order_expiry_minutes"),
             ("[payment]\nreorg_check_depth = 0", "payment.reorg_check_depth"),
             ("[payment]\nmempool_poll_interval_ms = 0", "payment.mempool_poll_interval_ms"),
+            ("[payment]\ndefault_rescan_lookback_days = 0", "payment.default_rescan_lookback_days"),
+            ("[payment]\nmax_rescan_lookback_days = 0", "payment.max_rescan_lookback_days"),
             ("[server]\nrate_limit_per_ip_per_min = 0", "server.rate_limit_per_ip_per_min"),
             ("[server]\nmax_body_bytes = 0", "server.max_body_bytes"),
             ("[server]\nworker_threads = 0", "server.worker_threads"),
@@ -629,6 +652,21 @@ mod tests {
         let config = config_with("[payment]\norder_expiry_minutes = 525600");
         config.validate().unwrap();
         assert!(config.payment.order_expiry_minutes.checked_mul(60).is_some());
+    }
+
+    #[test]
+    fn a_default_rescan_lookback_greater_than_the_max_is_rejected() {
+        // Simple mode's own fixed window must always fit under the ceiling advanced
+        // mode is bound by - otherwise the "simple" default would itself be an
+        // invalid advanced request.
+        let err = config_with("[payment]\ndefault_rescan_lookback_days = 30\nmax_rescan_lookback_days = 7")
+            .validate()
+            .unwrap_err();
+        assert!(matches!(err, ConfigError::OutOfRange { field: "payment.default_rescan_lookback_days", .. }));
+
+        // Equal is fine - simple mode's window would just equal the ceiling exactly.
+        let config = config_with("[payment]\ndefault_rescan_lookback_days = 7\nmax_rescan_lookback_days = 7");
+        config.validate().unwrap();
     }
 
     #[test]

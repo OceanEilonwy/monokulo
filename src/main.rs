@@ -204,6 +204,8 @@ async fn main() {
         daemons: daemons.clone(),
         scanner_status: scanner_status.clone(),
         scan_poll_interval_secs,
+        default_rescan_lookback_days: config.payment.default_rescan_lookback_days,
+        max_rescan_lookback_days: config.payment.max_rescan_lookback_days,
     };
 
     let allow_private_urls = config.webhooks.allow_private_urls;

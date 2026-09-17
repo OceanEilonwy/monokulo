@@ -197,6 +197,8 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
         )])),
         scanner_status: moneropay_core::scanner_status::new_scanner_status_map(),
         scan_poll_interval_secs: 2,
+        default_rescan_lookback_days: 7,
+        max_rescan_lookback_days: 90,
     };
     let router = build_router(app_state, 1_000_000);
 

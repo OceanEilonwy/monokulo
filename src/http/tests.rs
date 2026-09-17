@@ -19,7 +19,7 @@ use crate::daemon::fake::FakeDaemonClient;
 use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use crate::key_custody::{KeyCustody, PlainKeyCustody};
 use crate::scanner_status::new_scanner_status_map;
-use crate::store::Store;
+use crate::store::{NewOrderRescan, RescanMode, Store};
 
 use super::rate_limit::RateLimiter;
 use super::{AppState, build_router};
@@ -68,6 +68,8 @@ fn test_app_state() -> AppState {
         daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
         scanner_status: new_scanner_status_map(),
         scan_poll_interval_secs: 2,
+        default_rescan_lookback_days: 7,
+        max_rescan_lookback_days: 90,
     }
 }
 
@@ -873,6 +875,35 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
         .unwrap();
     assert_eq!(response.status(), StatusCode::NOT_FOUND);
 
+    // The rescan family (`docs/order_rescan_wbs.md` Phase 2) - both the trigger and
+    // the status route resolve their order the same tenant-scoped way `get_order`
+    // does, so they get the same IDOR check as every other order-scoped route above.
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("GET")
+                .uri(format!("/api/v1/admin/tenant/orders/{a_payment_id}/rescan"))
+                .header("authorization", format!("Bearer {}", b.secret_token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    let response = router
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/admin/tenant/orders/{a_payment_id}/rescan"),
+            Some(&b.secret_token),
+            None,
+            serde_json::json!({ "mode": "simple" }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+
     // B's listings show only B's own (empty) data, never A's.
     let orders = body_json(
         router
@@ -1176,4 +1207,384 @@ async fn status_endpoint_with_no_configured_networks_says_so_plainly() {
     let router = build_router(state, 1_000_000);
     let body = get_status_json(router).await;
     assert_eq!(body["networks"].as_array().unwrap().len(), 0);
+}
+
+// -- Order rescans (`docs/order_rescan_wbs.md` Phase 2) --------------------
+
+/// Like `test_app_state`, but hands back the mainnet `FakeDaemonClient` directly so
+/// a test can script real, findable block heights for `find_height_at_or_before` to
+/// resolve - `test_app_state`'s own daemon starts with no blocks at all, which is
+/// fine for every other test here (none of them trigger a rescan) but not for these.
+fn rescan_test_app_state() -> (AppState, Arc<FakeDaemonClient>) {
+    let store = Store::open_in_memory().unwrap().into_shared();
+    let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+    let fake_daemon = Arc::new(FakeDaemonClient::new());
+    let mainnet_daemon = Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+        label: "fake-node:18081".to_string(),
+        client: fake_daemon.clone(),
+    }]));
+    let state = AppState {
+        store,
+        key_custody,
+        key_custody_backend: "plain".to_string(),
+        wallet_handles: Arc::new(RwLock::new(HashMap::new())),
+        configured_networks: Arc::new(HashSet::from([Network::Mainnet])),
+        rate_limiter: Arc::new(RateLimiter::new(10_000)),
+        admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
+        daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
+        scanner_status: new_scanner_status_map(),
+        scan_poll_interval_secs: 2,
+        default_rescan_lookback_days: 7,
+        max_rescan_lookback_days: 90,
+    };
+    (state, fake_daemon)
+}
+
+/// Creates a real order via the public API and forces it `Expired` by recomputing
+/// its status against a `now` well past its (default, 30-minute) deadline -
+/// directly against the store, the same shortcut `scanner.rs`'s own tests use to
+/// reach a terminal status without an actual half-hour wait.
+async fn create_expired_order(router: &Router, store: &crate::store::SharedStore, pk: &str, origin: &str) -> String {
+    let req = json_request(
+        "POST",
+        &format!("/api/v1/t/{pk}/orders"),
+        None,
+        Some(origin),
+        serde_json::json!({ "xmr_amount_piconero": 100_000_000_000u64 }),
+    );
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    let payment_id = body["payment_id"].as_str().unwrap().to_string();
+
+    let (_, new_status) =
+        store.lock().unwrap().recompute_order_status(&payment_id, 0, crate::now_unix() + 1_801).unwrap();
+    assert_eq!(new_status, crate::status::OrderStatus::Expired, "test setup must actually produce an expired order");
+
+    payment_id
+}
+
+fn trigger_rescan_request(payment_id: &str, token: &str, body: serde_json::Value) -> Request<Body> {
+    json_request("POST", &format!("/api/v1/admin/tenant/orders/{payment_id}/rescan"), Some(token), None, body)
+}
+
+#[tokio::test]
+async fn trigger_rescan_rejects_a_non_expired_order() {
+    let (state, daemon) = rescan_test_app_state();
+    for h in 1..=300 {
+        daemon.push_block(&format!("blk_{h}"), vec![]);
+    }
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let req = json_request(
+        "POST",
+        &format!("/api/v1/t/{}/orders", tenant.public_key),
+        None,
+        Some("https://merchant.example"),
+        serde_json::json!({ "xmr_amount_piconero": 100_000_000_000u64 }),
+    );
+    let response = router.clone().oneshot(req).await.unwrap();
+    let payment_id = body_json(response).await["payment_id"].as_str().unwrap().to_string();
+
+    let req = trigger_rescan_request(&payment_id, &tenant.secret_token, serde_json::json!({ "mode": "simple" }));
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    assert!(body["error"].as_str().unwrap().contains("expired"), "expected the real reason, got: {body}");
+}
+
+#[tokio::test]
+async fn simple_mode_trigger_creates_a_running_job_and_the_status_endpoint_reflects_it() {
+    let (state, daemon) = rescan_test_app_state();
+    for h in 1..=300 {
+        daemon.push_block(&format!("blk_{h}"), vec![]);
+    }
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let payment_id = create_expired_order(&router, &store, &tenant.public_key, "https://merchant.example").await;
+
+    let req = trigger_rescan_request(&payment_id, &tenant.secret_token, serde_json::json!({ "mode": "simple" }));
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED);
+    let body = body_json(response).await;
+    assert_eq!(body["payment_id"], payment_id);
+    assert_eq!(body["mode"], "simple");
+    assert_eq!(body["status"], "running");
+    let rescan_id = body["rescan_id"].as_str().unwrap().to_string();
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/admin/tenant/orders/{payment_id}/rescan"))
+        .header("authorization", format!("Bearer {}", tenant.secret_token))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["rescan_id"], rescan_id, "the status endpoint must report the same job the trigger created");
+}
+
+#[tokio::test]
+async fn get_rescan_status_with_no_rescan_ever_triggered_is_not_found() {
+    let (state, daemon) = rescan_test_app_state();
+    for h in 1..=300 {
+        daemon.push_block(&format!("blk_{h}"), vec![]);
+    }
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let payment_id = create_expired_order(&router, &store, &tenant.public_key, "https://merchant.example").await;
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/admin/tenant/orders/{payment_id}/rescan"))
+        .header("authorization", format!("Bearer {}", tenant.secret_token))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn advanced_mode_with_a_from_before_the_orders_own_creation_is_rejected() {
+    let (state, daemon) = rescan_test_app_state();
+    for h in 1..=300 {
+        daemon.push_block(&format!("blk_{h}"), vec![]);
+    }
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let payment_id = create_expired_order(&router, &store, &tenant.public_key, "https://merchant.example").await;
+
+    let req = trigger_rescan_request(
+        &payment_id,
+        &tenant.secret_token,
+        serde_json::json!({ "mode": "advanced", "from": 1, "to": crate::now_unix() }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "a from before the order's own creation must be rejected, not clamped");
+    let body = body_json(response).await;
+    assert!(body["error"].as_str().unwrap().contains("cannot be earlier than"), "expected the real reason, got: {body}");
+}
+
+#[tokio::test]
+async fn advanced_mode_spanning_more_than_the_max_lookback_ceiling_is_rejected() {
+    let (state, daemon) = rescan_test_app_state();
+    for h in 1..=300 {
+        daemon.push_block(&format!("blk_{h}"), vec![]);
+    }
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let payment_id = create_expired_order(&router, &store, &tenant.public_key, "https://merchant.example").await;
+
+    // 90-day default ceiling - 200 days back is well past it, and well before the
+    // order's own (recent) creation time, so this is specifically the ceiling
+    // rejecting it, not the order-creation floor.
+    let now = crate::now_unix();
+    let req = trigger_rescan_request(
+        &payment_id,
+        &tenant.secret_token,
+        serde_json::json!({ "mode": "advanced", "from": now - 200 * 86_400, "to": now }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn advanced_mode_with_to_in_the_future_is_rejected() {
+    let (state, daemon) = rescan_test_app_state();
+    for h in 1..=300 {
+        daemon.push_block(&format!("blk_{h}"), vec![]);
+    }
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let payment_id = create_expired_order(&router, &store, &tenant.public_key, "https://merchant.example").await;
+
+    let now = crate::now_unix();
+    let req = trigger_rescan_request(
+        &payment_id,
+        &tenant.secret_token,
+        serde_json::json!({ "mode": "advanced", "from": now - 3600, "to": now + 3600 }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn a_second_trigger_for_the_same_order_returns_the_same_job_not_a_new_one() {
+    let (state, daemon) = rescan_test_app_state();
+    for h in 1..=300 {
+        daemon.push_block(&format!("blk_{h}"), vec![]);
+    }
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let payment_id = create_expired_order(&router, &store, &tenant.public_key, "https://merchant.example").await;
+
+    // Seeded directly, same reasoning as
+    // `triggering_a_rescan_while_a_different_order_is_already_rescanning_is_rejected`:
+    // `FakeDaemonClient`'s 300 empty blocks finish almost instantly once the
+    // background runner is actually spawned, so routing the *first* trigger through
+    // HTTP would race this test's own assertion against however fast that happens.
+    let tenant_id = store.lock().unwrap().find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
+    let order_row = store.lock().unwrap().get_order(&tenant_id, &payment_id).unwrap().unwrap();
+    let seeded = store
+        .lock()
+        .unwrap()
+        .trigger_rescan(
+            NewOrderRescan {
+                order_id: order_row.id,
+                tenant_id,
+                minor_index: order_row.minor_index,
+                mode: RescanMode::Simple,
+                from_height: 1,
+                to_height: 300,
+            },
+            crate::now_unix(),
+        )
+        .unwrap()
+        .into_job();
+
+    let req = trigger_rescan_request(&payment_id, &tenant.secret_token, serde_json::json!({ "mode": "simple" }));
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::ACCEPTED, "an already-running job is not an error");
+    let body = body_json(response).await;
+    assert_eq!(body["rescan_id"], seeded.id, "must be the same job, not a competing second one");
+}
+
+#[tokio::test]
+async fn triggering_a_rescan_while_a_different_order_is_already_rescanning_is_rejected() {
+    let (state, daemon) = rescan_test_app_state();
+    for h in 1..=300 {
+        daemon.push_block(&format!("blk_{h}"), vec![]);
+    }
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let order_a = create_expired_order(&router, &store, &tenant.public_key, "https://merchant.example").await;
+    let order_b = create_expired_order(&router, &store, &tenant.public_key, "https://merchant.example").await;
+
+    // Seeds order A's job directly against the store rather than through a real
+    // trigger request - the real background runner (`FakeDaemonClient`, 300 empty
+    // blocks) finishes almost immediately, so routing this through HTTP would race
+    // the assertion below against however fast that happens to complete. What this
+    // test is actually about is the guardrail check itself, not runner speed.
+    let tenant_id = store.lock().unwrap().find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
+    let order_a_row = store.lock().unwrap().get_order(&tenant_id, &order_a).unwrap().unwrap();
+    store
+        .lock()
+        .unwrap()
+        .trigger_rescan(
+            NewOrderRescan {
+                order_id: order_a_row.id,
+                tenant_id,
+                minor_index: order_a_row.minor_index,
+                mode: RescanMode::Simple,
+                from_height: 1,
+                to_height: 300,
+            },
+            crate::now_unix(),
+        )
+        .unwrap();
+
+    let req = trigger_rescan_request(&order_b, &tenant.secret_token, serde_json::json!({ "mode": "simple" }));
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::BAD_REQUEST,
+        "the one-job-per-tenant guardrail must surface as a clear rejection here, not silently return order A's job for a request about order B"
+    );
+}
+
+#[tokio::test]
+async fn list_rescans_is_empty_with_nothing_running_then_reflects_a_real_job_and_supports_conditional_requests() {
+    let (state, daemon) = rescan_test_app_state();
+    for h in 1..=300 {
+        daemon.push_block(&format!("blk_{h}"), vec![]);
+    }
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+
+    let list_req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/tenant/rescans")
+        .header("authorization", format!("Bearer {}", tenant.secret_token))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(list_req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let empty_etag = response.headers().get("etag").unwrap().to_str().unwrap().to_string();
+    let body = body_json(response).await;
+    assert_eq!(body.as_array().unwrap().len(), 0, "nothing running yet");
+
+    let payment_id = create_expired_order(&router, &store, &tenant.public_key, "https://merchant.example").await;
+    // Seeded directly against the store rather than through the real trigger
+    // endpoint - `FakeDaemonClient`'s 300 empty blocks let the real background
+    // runner finish almost instantly, which would race this test's own repeated
+    // list/conditional-request checks against however fast that completion happens.
+    // What this test is actually about is the list endpoint's own caching behavior,
+    // not the runner's speed.
+    let tenant_id = store.lock().unwrap().find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
+    let order_row = store.lock().unwrap().get_order(&tenant_id, &payment_id).unwrap().unwrap();
+    store
+        .lock()
+        .unwrap()
+        .trigger_rescan(
+            NewOrderRescan {
+                order_id: order_row.id,
+                tenant_id,
+                minor_index: order_row.minor_index,
+                mode: RescanMode::Simple,
+                from_height: 1,
+                to_height: 300,
+            },
+            crate::now_unix(),
+        )
+        .unwrap();
+
+    let list_req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/tenant/rescans")
+        .header("authorization", format!("Bearer {}", tenant.secret_token))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(list_req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let running_etag = response.headers().get("etag").unwrap().to_str().unwrap().to_string();
+    assert_ne!(running_etag, empty_etag, "a real job running must change the etag from the empty-list one");
+    let body = body_json(response).await;
+    let jobs = body.as_array().unwrap();
+    assert_eq!(jobs.len(), 1);
+    assert_eq!(jobs[0]["payment_id"], payment_id);
+
+    // Conditional request with the current etag: cheap 304, no body needed.
+    let conditional_req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/tenant/rescans")
+        .header("authorization", format!("Bearer {}", tenant.secret_token))
+        .header("if-none-match", &running_etag)
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(conditional_req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::NOT_MODIFIED);
+
+    // Progress moves on (as the real background runner would) - the same
+    // if-none-match now gets a fresh 200 with a new etag, not another 304.
+    let job_id = jobs[0]["rescan_id"].as_str().unwrap().to_string();
+    store.lock().unwrap().update_rescan_progress(&job_id, 5, crate::now_unix() + 1).unwrap();
+    let conditional_req = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/tenant/rescans")
+        .header("authorization", format!("Bearer {}", tenant.secret_token))
+        .header("if-none-match", &running_etag)
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(conditional_req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "progress moved on - the old etag must no longer match");
+    let fresh_etag = response.headers().get("etag").unwrap().to_str().unwrap().to_string();
+    assert_ne!(fresh_etag, running_etag);
 }

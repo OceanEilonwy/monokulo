@@ -401,6 +401,8 @@ impl TestEngineConfig {
             daemons: Arc::new(HashMap::new()),
             scanner_status: moneropay_core::scanner_status::new_scanner_status_map(),
             scan_poll_interval_secs: BACKGROUND_LOOP_INTERVAL.as_secs().max(1),
+            default_rescan_lookback_days: 7,
+            max_rescan_lookback_days: 90,
         };
         let router = build_router(app_state, MAX_BODY_BYTES);
 
