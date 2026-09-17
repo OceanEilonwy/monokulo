@@ -29,6 +29,15 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Follow-up correction to the rename below**: the user pointed out
+  `plugins/monokulo/` was redundant - everything under `plugins/` is
+  implicitly Monokulo's own, so the directory itself doesn't need to repeat
+  the product name. Moved to `plugins/woocommerce/` (`git mv`, history
+  preserved) - the plugin's own identity (`Plugin Name`, `Text Domain`,
+  gateway id, class name) is unaffected, since none of that is derived from
+  the directory name. `composer.json`'s package name followed the same
+  logic: `monokulo/monokulo` -> `monokulo/woocommerce`.
+
 - **Rename + restructure (user-requested, item 4 from the same review round
   above): `engine` -> `scanner`, `control-plane` -> `monokulo`, every
   crate moved under `crates/`, full brand rename, and a hand-drawn logo.**
