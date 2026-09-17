@@ -30,6 +30,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (7, include_str!("../migrations/0007_store_fx_provider.sql")),
     (8, include_str!("../migrations/0008_remove_fixed_fx_provider.sql")),
     (9, include_str!("../migrations/0009_rename_fiat_to_currency.sql")),
+    (10, include_str!("../migrations/0010_utc_suffix_date_columns.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -149,7 +150,7 @@ impl Db {
     /// [`DbError::is_unique_violation`]) if `email` is already taken.
     pub fn create_user(&self, id: &str, email: &str, password_hash: &str, created_at: i64) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO users (id, email, password_hash, created_at) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO users (id, email, password_hash, created_at_utc) VALUES (?1, ?2, ?3, ?4)",
             params![id, email, password_hash, created_at],
         )?;
         Ok(())
@@ -161,7 +162,7 @@ impl Db {
     pub fn get_user_by_email(&self, email: &str) -> Result<Option<UserRow>> {
         self.conn
             .query_row(
-                "SELECT id, email, password_hash, created_at FROM users WHERE email = ?1",
+                "SELECT id, email, password_hash, created_at_utc FROM users WHERE email = ?1",
                 params![email],
                 |row| {
                     Ok(UserRow {
@@ -181,7 +182,7 @@ impl Db {
     pub fn get_user_by_id(&self, id: &str) -> Result<Option<UserRow>> {
         self.conn
             .query_row(
-                "SELECT id, email, password_hash, created_at FROM users WHERE id = ?1",
+                "SELECT id, email, password_hash, created_at_utc FROM users WHERE id = ?1",
                 params![id],
                 |row| {
                     Ok(UserRow {
@@ -201,7 +202,7 @@ impl Db {
     /// see, a raw session token.
     pub fn create_session(&self, token_hash: &str, user_id: &str, created_at: i64) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO sessions (token, user_id, created_at) VALUES (?1, ?2, ?3)",
+            "INSERT INTO sessions (token, user_id, created_at_utc) VALUES (?1, ?2, ?3)",
             params![token_hash, user_id, created_at],
         )?;
         Ok(())
@@ -214,7 +215,7 @@ impl Db {
     pub fn find_session(&self, token_hash: &str) -> Result<Option<SessionRow>> {
         self.conn
             .query_row(
-                "SELECT token, user_id, created_at FROM sessions WHERE token = ?1",
+                "SELECT token, user_id, created_at_utc FROM sessions WHERE token = ?1",
                 params![token_hash],
                 |row| {
                     Ok(SessionRow { token_hash: row.get(0)?, user_id: row.get(1)?, created_at: row.get(2)? })
@@ -264,7 +265,7 @@ impl Db {
         // the moment one exists.
         self.conn.execute(
             "INSERT INTO store_connections
-                (id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at, fx_provider)
+                (id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_provider)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'coingecko')",
             params![
                 id,
@@ -286,7 +287,7 @@ impl Db {
     pub fn get_store_connection_by_id(&self, id: &str) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at, fx_provider
+                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_provider
                  FROM store_connections WHERE id = ?1",
                 params![id],
                 |row| {
@@ -325,8 +326,8 @@ impl Db {
     /// growing a field nothing else needs; see `http/home.rs::display_name`.
     pub fn list_store_connections_for_user(&self, user_id: &str) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at, fx_provider
-             FROM store_connections WHERE user_id = ?1 ORDER BY created_at DESC",
+            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_provider
+             FROM store_connections WHERE user_id = ?1 ORDER BY created_at_utc DESC",
         )?;
         let rows = stmt
             .query_map(params![user_id], |row| {
@@ -370,7 +371,7 @@ impl Db {
             .expect("piconero_per_unit out of i64 range - not a plausible real exchange rate");
         self.conn.execute(
             "INSERT INTO order_currency_metadata
-                (connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at)
+                (connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at_utc)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
             params![connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at],
         )?;
@@ -384,7 +385,7 @@ impl Db {
     pub fn get_order_currency_metadata(&self, connection_id: &str, payment_id: &str) -> Result<Option<OrderCurrencyMetadataRow>> {
         self.conn
             .query_row(
-                "SELECT connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at
+                "SELECT connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at_utc
                  FROM order_currency_metadata WHERE connection_id = ?1 AND payment_id = ?2",
                 params![connection_id, payment_id],
                 |row| {
@@ -415,7 +416,7 @@ impl Db {
         connection_id: &str,
     ) -> Result<std::collections::HashMap<String, OrderCurrencyMetadataRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at
+            "SELECT connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at_utc
              FROM order_currency_metadata WHERE connection_id = ?1",
         )?;
         let rows = stmt
@@ -440,15 +441,15 @@ impl Db {
     /// never the raw token; see `http/connect.rs::confirm_submit`.
     pub fn create_connect_token(&self, token_hash: &str, connection_id: &str, nonce: &str, created_at: i64) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO connect_tokens (token_hash, connection_id, nonce, created_at) VALUES (?1, ?2, ?3, ?4)",
+            "INSERT INTO connect_tokens (token_hash, connection_id, nonce, created_at_utc) VALUES (?1, ?2, ?3, ?4)",
             params![token_hash, connection_id, nonce, created_at],
         )?;
         Ok(())
     }
 
     /// Atomically checks and consumes a connect token (WBS 1.4.1): the
-    /// single `UPDATE ... WHERE token_hash = ? AND consumed_at IS NULL AND
-    /// created_at >= ?` statement, checked by its affected-row count (same
+    /// single `UPDATE ... WHERE token_hash = ? AND consumed_at_utc IS NULL AND
+    /// created_at_utc >= ?` statement, checked by its affected-row count (same
     /// "did this actually change something" pattern [`Self::delete_session`]'s
     /// boolean return already uses), is the one database write that can
     /// never let two concurrent `/finish` calls for the same token both
@@ -466,7 +467,7 @@ impl Db {
     pub fn consume_connect_token(&self, token_hash: &str, now: i64, ttl_seconds: i64) -> Result<Option<String>> {
         let cutoff = now - ttl_seconds;
         let affected = self.conn.execute(
-            "UPDATE connect_tokens SET consumed_at = ?1 WHERE token_hash = ?2 AND consumed_at IS NULL AND created_at >= ?3",
+            "UPDATE connect_tokens SET consumed_at_utc = ?1 WHERE token_hash = ?2 AND consumed_at_utc IS NULL AND created_at_utc >= ?3",
             params![now, token_hash, cutoff],
         )?;
         if affected == 0 {
@@ -494,7 +495,7 @@ impl Db {
     pub fn get_store_connection_by_public_key(&self, tenant_public_key: &str) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at, fx_provider
+                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_provider
                  FROM store_connections WHERE tenant_public_key = ?1",
                 params![tenant_public_key],
                 |row| {

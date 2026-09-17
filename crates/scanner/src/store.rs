@@ -37,6 +37,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (6, include_str!("../migrations/0006_drop_tenant_template_dir.sql")),
     (7, include_str!("../migrations/0007_order_rescans.sql")),
     (8, include_str!("../migrations/0008_order_scanned_range.sql")),
+    (9, include_str!("../migrations/0009_utc_suffix_date_columns.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -398,7 +399,7 @@ impl Store {
             "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
                 sealed_key_material, primary_address, network, next_minor_index,
                 confirmations_required, zero_conf_max_piconero, order_expiry_seconds,
-                allowed_origins, created_at)
+                allowed_origins, created_at_utc)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10, ?11, ?12)",
             params![
                 id,
@@ -438,8 +439,8 @@ impl Store {
                 .map(|v| v as u64),
             order_expiry_seconds: row.get("order_expiry_seconds")?,
             allowed_origins,
-            created_at: row.get("created_at")?,
-            disabled_at: row.get("disabled_at")?,
+            created_at: row.get("created_at_utc")?,
+            disabled_at: row.get("disabled_at_utc")?,
         })
     }
 
@@ -448,7 +449,7 @@ impl Store {
     /// in the HTTP layer (`http::resolve_wallet_handle`) is a fallback, not the
     /// only path.
     pub fn list_active_tenants(&self) -> Result<Vec<Tenant>> {
-        let mut stmt = self.conn.prepare("SELECT * FROM tenants WHERE disabled_at IS NULL")?;
+        let mut stmt = self.conn.prepare("SELECT * FROM tenants WHERE disabled_at_utc IS NULL")?;
         let rows = stmt.query_map([], Self::row_to_tenant)?.collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -468,7 +469,7 @@ impl Store {
     pub fn find_tenant_by_public_key(&self, public_key: &str) -> Result<Option<Tenant>> {
         self.conn
             .query_row(
-                "SELECT * FROM tenants WHERE public_key = ?1 AND disabled_at IS NULL",
+                "SELECT * FROM tenants WHERE public_key = ?1 AND disabled_at_utc IS NULL",
                 params![public_key],
                 Self::row_to_tenant,
             )
@@ -483,7 +484,7 @@ impl Store {
         let hash = hash_secret_token(raw_token);
         self.conn
             .query_row(
-                "SELECT * FROM tenants WHERE secret_token_hash = ?1 AND disabled_at IS NULL",
+                "SELECT * FROM tenants WHERE secret_token_hash = ?1 AND disabled_at_utc IS NULL",
                 params![hash],
                 Self::row_to_tenant,
             )
@@ -555,8 +556,8 @@ impl Store {
             "SELECT * FROM orders
              WHERE tenant_id = ?1
                AND (?2 IS NULL OR status = ?2)
-               AND (?3 IS NULL OR created_at < ?3)
-             ORDER BY created_at DESC
+               AND (?3 IS NULL OR created_at_utc < ?3)
+             ORDER BY created_at_utc DESC
              LIMIT ?4",
         )?;
         let rows = stmt
@@ -603,7 +604,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT o.tenant_id FROM orders o
              JOIN tenants t ON t.id = o.tenant_id
-             WHERE (o.status IN (?1, ?2, ?3, ?4) OR (o.status = ?5 AND o.expires_at >= ?6)) AND t.network = ?7",
+             WHERE (o.status IN (?1, ?2, ?3, ?4) OR (o.status = ?5 AND o.expires_at_utc >= ?6)) AND t.network = ?7",
         )?;
         let rows = stmt
             .query_map(
@@ -642,7 +643,7 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT o.id FROM orders o
              JOIN tenants t ON t.id = o.tenant_id
-             WHERE (o.status IN (?1, ?2, ?3, ?4) OR (o.status = ?5 AND o.expires_at >= ?6)) AND t.network = ?7",
+             WHERE (o.status IN (?1, ?2, ?3, ?4) OR (o.status = ?5 AND o.expires_at_utc >= ?6)) AND t.network = ?7",
         )?;
         let rows = stmt
             .query_map(
@@ -663,7 +664,7 @@ impl Store {
 
     pub fn disable_tenant(&self, tenant_id: &str, now: i64) -> Result<()> {
         let changed = self.conn.execute(
-            "UPDATE tenants SET disabled_at = ?2 WHERE id = ?1",
+            "UPDATE tenants SET disabled_at_utc = ?2 WHERE id = ?1",
             params![tenant_id, now],
         )?;
         if changed == 0 {
@@ -749,7 +750,7 @@ impl Store {
     fn insert_order(conn: &Connection, id: &str, new: &NewOrder) -> rusqlite::Result<()> {
         conn.execute(
             "INSERT INTO orders (id, tenant_id, merchant_order_id, minor_index, address,
-                xmr_amount_piconero, description, created_at, expires_at, updated_at)
+                xmr_amount_piconero, description, created_at_utc, expires_at_utc, updated_at_utc)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8)",
             params![
                 id,
@@ -784,12 +785,12 @@ impl Store {
             amount_received_piconero: row.get::<_, i64>("amount_received_piconero")? as u64,
             status: status_from_str(&status_str),
             confirmations: row.get::<_, i64>("confirmations")? as u64,
-            double_spend_detected_at: row.get("double_spend_detected_at")?,
+            double_spend_detected_at: row.get("double_spend_detected_at_utc")?,
             refund_address: row.get("refund_address")?,
             description: row.get("description")?,
-            created_at: row.get("created_at")?,
-            expires_at: row.get("expires_at")?,
-            updated_at: row.get("updated_at")?,
+            created_at: row.get("created_at_utc")?,
+            expires_at: row.get("expires_at_utc")?,
+            updated_at: row.get("updated_at_utc")?,
             first_scanned_height: row.get("first_scanned_height")?,
             last_scanned_height: row.get("last_scanned_height")?,
         })
@@ -880,11 +881,11 @@ impl Store {
         )?;
         self.conn.execute(
             "INSERT INTO order_payments (order_id, txid, output_index, amount_piconero,
-                key_images_json, first_seen_at, block_height)
+                key_images_json, first_seen_at_utc, block_height)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
              ON CONFLICT(order_id, txid, output_index) DO UPDATE SET
                  block_height = COALESCE(excluded.block_height, order_payments.block_height)
-             WHERE order_payments.voided_at IS NULL",
+             WHERE order_payments.voided_at_utc IS NULL",
             params![
                 order_id,
                 txid,
@@ -912,7 +913,7 @@ impl Store {
     ) -> Result<()> {
         self.conn.execute(
             "UPDATE order_payments SET block_height = ?4
-             WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at IS NULL",
+             WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at_utc IS NULL",
             params![order_id, txid, output_index, new_height],
         )?;
         Ok(())
@@ -924,8 +925,8 @@ impl Store {
     /// `false` if the row didn't exist or was already voided (idempotent).
     pub fn void_payment(&self, order_id: &str, txid: &str, output_index: i64, voided_at: i64) -> Result<bool> {
         let changed = self.conn.execute(
-            "UPDATE order_payments SET voided_at = ?4
-             WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at IS NULL",
+            "UPDATE order_payments SET voided_at_utc = ?4
+             WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at_utc IS NULL",
             params![order_id, txid, output_index, voided_at],
         )?;
         Ok(changed > 0)
@@ -940,8 +941,8 @@ impl Store {
     /// row didn't exist or wasn't voided (idempotent).
     pub fn unvoid_payment(&self, order_id: &str, txid: &str, output_index: i64) -> Result<bool> {
         let changed = self.conn.execute(
-            "UPDATE order_payments SET voided_at = NULL
-             WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at IS NOT NULL",
+            "UPDATE order_payments SET voided_at_utc = NULL
+             WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at_utc IS NOT NULL",
             params![order_id, txid, output_index],
         )?;
         Ok(changed > 0)
@@ -949,7 +950,7 @@ impl Store {
 
     pub fn get_valid_payments(&self, order_id: &str) -> Result<Vec<OrderPaymentRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT * FROM order_payments WHERE order_id = ?1 AND voided_at IS NULL",
+            "SELECT * FROM order_payments WHERE order_id = ?1 AND voided_at_utc IS NULL",
         )?;
         let rows = stmt
             .query_map(params![order_id], Self::row_to_payment)?
@@ -962,7 +963,7 @@ impl Store {
     pub fn get_all_payments(&self, order_id: &str) -> Result<Vec<OrderPaymentRow>> {
         let mut stmt = self
             .conn
-            .prepare("SELECT * FROM order_payments WHERE order_id = ?1 ORDER BY first_seen_at")?;
+            .prepare("SELECT * FROM order_payments WHERE order_id = ?1 ORDER BY first_seen_at_utc")?;
         let rows = stmt
             .query_map(params![order_id], Self::row_to_payment)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -977,9 +978,9 @@ impl Store {
             output_index: row.get("output_index")?,
             amount_piconero: row.get::<_, i64>("amount_piconero")? as u64,
             key_images_json: row.get("key_images_json")?,
-            first_seen_at: row.get("first_seen_at")?,
+            first_seen_at: row.get("first_seen_at_utc")?,
             block_height: row.get("block_height")?,
-            voided_at: row.get("voided_at")?,
+            voided_at: row.get("voided_at_utc")?,
         })
     }
 
@@ -1007,7 +1008,7 @@ impl Store {
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
-             WHERE op.voided_at IS NULL
+             WHERE op.voided_at_utc IS NULL
                AND (op.block_height >= ?1 OR op.block_height IS NULL)
                AND t.network = ?2",
         )?;
@@ -1036,7 +1037,7 @@ impl Store {
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
-             WHERE op.voided_at IS NOT NULL
+             WHERE op.voided_at_utc IS NOT NULL
                AND (op.block_height >= ?1 OR op.block_height IS NULL)
                AND t.network = ?2",
         )?;
@@ -1059,8 +1060,8 @@ impl Store {
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
-             WHERE op.voided_at IS NOT NULL
-               AND op.voided_at >= ?1
+             WHERE op.voided_at_utc IS NOT NULL
+               AND op.voided_at_utc >= ?1
                AND t.network = ?2",
         )?;
         let rows = stmt
@@ -1086,7 +1087,7 @@ impl Store {
             "SELECT op.* FROM order_payments op
              JOIN orders o ON o.id = op.order_id
              JOIN tenants t ON t.id = o.tenant_id
-             WHERE op.voided_at IS NULL
+             WHERE op.voided_at_utc IS NULL
                AND op.block_height IS NULL
                AND t.network = ?1",
         )?;
@@ -1103,7 +1104,7 @@ impl Store {
         let pattern = format!("%\"{key_image_hex}\"%");
         let mut stmt = self
             .conn
-            .prepare("SELECT * FROM order_payments WHERE key_images_json LIKE ?1 AND voided_at IS NULL")?;
+            .prepare("SELECT * FROM order_payments WHERE key_images_json LIKE ?1 AND voided_at_utc IS NULL")?;
         let rows = stmt
             .query_map(params![pattern], Self::row_to_payment)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1155,7 +1156,7 @@ impl Store {
         );
 
         self.conn.execute(
-            "UPDATE orders SET status = ?2, confirmations = ?3, amount_received_piconero = ?4, updated_at = ?5
+            "UPDATE orders SET status = ?2, confirmations = ?3, amount_received_piconero = ?4, updated_at_utc = ?5
              WHERE id = ?1",
             params![order_id, status_to_str(new_status), min_confirmations as i64, total as i64, now],
         )?;
@@ -1166,7 +1167,7 @@ impl Store {
     /// Sticky, first-occurrence-only - see schema comment on `double_spend_detected_at`.
     pub fn mark_double_spend_detected(&self, order_id: &str, at: i64) -> Result<bool> {
         let changed = self.conn.execute(
-            "UPDATE orders SET double_spend_detected_at = ?2 WHERE id = ?1 AND double_spend_detected_at IS NULL",
+            "UPDATE orders SET double_spend_detected_at_utc = ?2 WHERE id = ?1 AND double_spend_detected_at_utc IS NULL",
             params![order_id, at],
         )?;
         Ok(changed > 0)
@@ -1183,7 +1184,7 @@ impl Store {
     /// Returns `false` if the flag was already unset (idempotent).
     pub fn clear_double_spend_flag(&self, order_id: &str) -> Result<bool> {
         let changed = self.conn.execute(
-            "UPDATE orders SET double_spend_detected_at = NULL WHERE id = ?1 AND double_spend_detected_at IS NOT NULL",
+            "UPDATE orders SET double_spend_detected_at_utc = NULL WHERE id = ?1 AND double_spend_detected_at_utc IS NOT NULL",
             params![order_id],
         )?;
         Ok(changed > 0)
@@ -1282,9 +1283,9 @@ impl Store {
             to_height: row.get::<_, i64>("to_height")? as u64,
             current_height: row.get::<_, i64>("current_height")? as u64,
             error: row.get("error")?,
-            started_at: row.get("started_at")?,
-            finished_at: row.get("finished_at")?,
-            updated_at: row.get("updated_at")?,
+            started_at: row.get("started_at_utc")?,
+            finished_at: row.get("finished_at_utc")?,
+            updated_at: row.get("updated_at_utc")?,
         })
     }
 
@@ -1314,7 +1315,7 @@ impl Store {
     pub fn get_latest_rescan_for_order(&self, order_id: &str) -> Result<Option<OrderRescan>> {
         self.conn
             .query_row(
-                "SELECT * FROM order_rescans WHERE order_id = ?1 ORDER BY started_at DESC LIMIT 1",
+                "SELECT * FROM order_rescans WHERE order_id = ?1 ORDER BY started_at_utc DESC LIMIT 1",
                 params![order_id],
                 Self::row_to_rescan,
             )
@@ -1349,7 +1350,7 @@ impl Store {
         let inserted = self.conn.execute(
             "INSERT INTO order_rescans
                 (id, order_id, tenant_id, minor_index, mode, status,
-                 from_height, to_height, current_height, started_at, updated_at)
+                 from_height, to_height, current_height, started_at_utc, updated_at_utc)
              VALUES (?1, ?2, ?3, ?4, ?5, 'running', ?6, ?7, ?6, ?8, ?8)",
             params![
                 id,
@@ -1379,7 +1380,7 @@ impl Store {
     /// thousands of them.
     pub fn update_rescan_progress(&self, id: &str, current_height: u64, now: i64) -> Result<()> {
         self.conn.execute(
-            "UPDATE order_rescans SET current_height = ?2, updated_at = ?3 WHERE id = ?1 AND status = 'running'",
+            "UPDATE order_rescans SET current_height = ?2, updated_at_utc = ?3 WHERE id = ?1 AND status = 'running'",
             params![id, current_height as i64, now],
         )?;
         Ok(())
@@ -1391,7 +1392,7 @@ impl Store {
     pub fn complete_rescan(&self, id: &str, now: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE order_rescans
-             SET status = 'completed', current_height = to_height, finished_at = ?2, updated_at = ?2
+             SET status = 'completed', current_height = to_height, finished_at_utc = ?2, updated_at_utc = ?2
              WHERE id = ?1 AND status = 'running'",
             params![id, now],
         )?;
@@ -1405,7 +1406,7 @@ impl Store {
     pub fn fail_rescan(&self, id: &str, error: &str, now: i64) -> Result<()> {
         self.conn.execute(
             "UPDATE order_rescans
-             SET status = 'failed', error = ?2, finished_at = ?3, updated_at = ?3
+             SET status = 'failed', error = ?2, finished_at_utc = ?3, updated_at_utc = ?3
              WHERE id = ?1 AND status = 'running'",
             params![id, error, now],
         )?;
@@ -1433,7 +1434,7 @@ impl Store {
         self.conn.execute(
             "UPDATE orders
              SET last_scanned_height = ?2, first_scanned_height = COALESCE(first_scanned_height, ?2)
-             WHERE tenant_id = ?1 AND (status IN (?3, ?4, ?5, ?6) OR (status = ?7 AND expires_at >= ?8))",
+             WHERE tenant_id = ?1 AND (status IN (?3, ?4, ?5, ?6) OR (status = ?7 AND expires_at_utc >= ?8))",
             params![
                 tenant_id,
                 height as i64,
@@ -1479,7 +1480,7 @@ impl Store {
         let in_scope: bool = self.conn.query_row(
             "SELECT EXISTS(
                  SELECT 1 FROM orders
-                 WHERE id = ?1 AND (status IN (?2, ?3, ?4, ?5) OR (status = ?6 AND expires_at >= ?7))
+                 WHERE id = ?1 AND (status IN (?2, ?3, ?4, ?5) OR (status = ?6 AND expires_at_utc >= ?7))
              )",
             params![
                 order_id,
@@ -1515,7 +1516,7 @@ impl Store {
     ) -> Result<Webhook> {
         let id = new_id("wh");
         self.conn.execute(
-            "INSERT INTO webhooks (id, tenant_id, url, extra_headers, signing_secret, created_at)
+            "INSERT INTO webhooks (id, tenant_id, url, extra_headers, signing_secret, created_at_utc)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
             params![id, tenant_id, url, extra_headers_json, signing_secret, now],
         )?;
@@ -1541,7 +1542,7 @@ impl Store {
                     extra_headers: row.get("extra_headers")?,
                     signing_secret: row.get("signing_secret")?,
                     enabled: row.get::<_, i64>("enabled")? != 0,
-                    created_at: row.get("created_at")?,
+                    created_at: row.get("created_at_utc")?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1568,7 +1569,7 @@ impl Store {
         next_attempt_at: i64,
     ) -> Result<i64> {
         self.conn.execute(
-            "INSERT INTO webhook_deliveries (webhook_id, order_id, event_type, payload_json, next_attempt_at)
+            "INSERT INTO webhook_deliveries (webhook_id, order_id, event_type, payload_json, next_attempt_at_utc)
              VALUES (?1, ?2, ?3, ?4, ?5)",
             params![webhook_id, order_id, event_type, payload_json, next_attempt_at],
         )?;
@@ -1584,8 +1585,8 @@ impl Store {
                     w.url, w.extra_headers, w.signing_secret
              FROM webhook_deliveries d
              JOIN webhooks w ON w.id = d.webhook_id
-             WHERE d.delivered_at IS NULL AND d.next_attempt_at <= ?1 AND w.enabled = 1
-             ORDER BY d.next_attempt_at
+             WHERE d.delivered_at_utc IS NULL AND d.next_attempt_at_utc <= ?1 AND w.enabled = 1
+             ORDER BY d.next_attempt_at_utc
              LIMIT ?2",
         )?;
         let rows = stmt
@@ -1608,7 +1609,7 @@ impl Store {
 
     pub fn mark_webhook_delivered(&self, delivery_id: i64, response_status: u16, at: i64) -> Result<()> {
         self.conn.execute(
-            "UPDATE webhook_deliveries SET delivered_at = ?2, last_attempted_at = ?2, last_response_status = ?3
+            "UPDATE webhook_deliveries SET delivered_at_utc = ?2, last_attempted_at_utc = ?2, last_response_status = ?3
              WHERE id = ?1",
             params![delivery_id, at, response_status as i64],
         )?;
@@ -1626,8 +1627,8 @@ impl Store {
         self.conn.execute(
             "UPDATE webhook_deliveries
              SET attempt_count = attempt_count + 1,
-                 next_attempt_at = ?2,
-                 last_attempted_at = ?3,
+                 next_attempt_at_utc = ?2,
+                 last_attempted_at_utc = ?3,
                  last_response_status = ?4,
                  last_error = ?5
              WHERE id = ?1",
@@ -2690,7 +2691,21 @@ mod tests {
         shared::migrations::apply(&conn, &MIGRATIONS[..3]).unwrap();
         let store = Store { conn };
 
-        let tenant = new_tenant(&store);
+        // Inserted directly via raw SQL, not `new_tenant`/`Store::create_tenant`:
+        // those build against the *current* schema (as of migration 9,
+        // `created_at_utc`), which this pre-migration-4 snapshot (`created_at`,
+        // not yet renamed) doesn't have. Same reasoning as the orders/
+        // order_payments inserts just below - reproduce the pre-upgrade row
+        // shape directly rather than going through today's API.
+        let tenant_id = "tn_before_upgrade";
+        store
+            .execute_raw_for_test(
+                "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
+                    sealed_key_material, primary_address, allowed_origins, created_at)
+                 VALUES ('tn_before_upgrade', 'pk_before_upgrade', 'hash_before_upgrade', 'plain',
+                    x'00', '4addr', '[]', 1000)",
+            )
+            .unwrap();
         // Inserted directly via raw SQL, not `new_order`/`create_order`: those
         // now build an XMR-only `INSERT` (`docs/fx_refactor.md` Phase 3), which
         // this pre-migration-5 schema (fiat columns still `NOT NULL`) would
@@ -2701,8 +2716,7 @@ mod tests {
             .execute_raw_for_test(&format!(
                 "INSERT INTO orders (id, tenant_id, minor_index, address, fiat_currency, fiat_amount,
                     exchange_rate, xmr_amount_piconero, created_at, expires_at, updated_at)
-                 VALUES ('{order_id}', '{}', 1, 'sub_1', 'USD', '25.00', '0.0067', 100, 1000, 2000, 1000)",
-                tenant.tenant.id
+                 VALUES ('{order_id}', '{tenant_id}', 1, 'sub_1', 'USD', '25.00', '0.0067', 100, 1000, 2000, 1000)",
             ))
             .unwrap();
         // Not fetched back via `get_order_by_id` here - `row_to_order` now selects

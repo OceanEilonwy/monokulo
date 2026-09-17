@@ -5545,7 +5545,7 @@ mod tests {
         // however late it was covered.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         store
-            .execute_raw_for_test(&format!("UPDATE orders SET expires_at = {} WHERE id = '{order_id}'", crate::now_unix() - 1))
+            .execute_raw_for_test(&format!("UPDATE orders SET expires_at_utc = {} WHERE id = '{order_id}'", crate::now_unix() - 1))
             .unwrap();
         let store = store.into_shared();
 
