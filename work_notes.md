@@ -29,6 +29,76 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Database date/datetime columns renamed with a `_utc` suffix, plus a real
+  same-day rescan bug found and fixed along the way.** The user asked for two
+  things after the rename/rebrand round: (1) make sure the advanced-mode
+  rescan guardrail (upper date can't be behind the order's already-scanned
+  height) didn't regress from the UTC-labeling work, and (2) give every
+  date/datetime column in both databases an explicit `_utc` suffix, with
+  comparisons done in UTC.
+  - **The rename** (`crates/scanner/migrations/0009_utc_suffix_date_columns.sql`,
+    `crates/monokulo/migrations/0010_utc_suffix_date_columns.sql`, plus every
+    SQL string/`row.get` call in `store.rs`/`db.rs` that referenced the old
+    names): storage-layer only. Every value was already a unix-second
+    integer (inherently UTC, never a local wall-clock string) - confirmed no
+    `chrono::Local`/`time::OffsetDateTime::now_local` anywhere in the tree
+    before touching anything. Rust struct field names and the public JSON
+    API/webhook payload field names (`created_at`, `expires_at`, etc.) were
+    deliberately left unchanged - renaming those would have been a breaking
+    API change nobody asked for, and unix timestamps in JSON are already
+    unambiguous. `block_height`/`current_height`/`from_height`/`to_height`
+    and friends were left alone too - heights, not dates.
+  - **The regression check turned up a real, pre-existing bug**, not a
+    regression: for an order rescanned in advanced mode on the *same UTC
+    calendar day* it was created, the form's own `min` date attribute (e.g.
+    "2026-09-17") was rejected if actually submitted, because
+    `resolve_rescan_window`'s `from` bound compared a day-granular date
+    (all `<input type="date">` can ever send) against `order.created_at`'s
+    exact second - today's own midnight is *always* earlier than a creation
+    time later that same day. Confirmed against a live request before
+    touching any code (`min="2026-09-17" max="2026-09-17"`, then a real 400
+    on submitting exactly that date) rather than assumed from reading the
+    code alone. Flagged to the user before fixing it, since it changes a
+    previously-decided validation boundary ("WBS 2.1 decision 4") - approved,
+    with a request for real test coverage.
+  - **The fix** (`crates/scanner/src/http/admin.rs::resolve_rescan_window`):
+    floors the earliest-allowed ceiling to its own UTC day start
+    (`utc_day_start`, plain `ts.div_euclid(86_400) * 86_400` - no
+    civil-calendar math needed for a day *boundary*, unlike rendering a
+    `YYYY-MM-DD` string) before comparing. Widens acceptance by at most
+    <24h, never narrows it - safe for the same reason
+    `RESCAN_START_HEIGHT_CUSHION_BLOCKS` already treats "scans a little more
+    chain than strictly asked" as harmless: this order's subaddress is
+    never reused, so the extra hours can only ever cover blocks that
+    provably can't contain a real payment to it.
+  - **Real coverage added**, not just the fix: two new engine-level tests
+    pin the fix directly (`advanced_mode_with_from_on_the_orders_own_
+    creation_day_is_accepted`, and the flip side,
+    `..._on_the_day_before_..._is_still_rejected`, proving the widening
+    doesn't go further than one day). A third, at monokulo's own HTTP
+    layer (`advanced_mode_rescan_via_a_typed_date_still_hits_the_gap_
+    guardrail`), drives the *entire* real path end to end - a typed
+    `YYYY-MM-DD` string, through monokulo's own `date_string_to_unix_
+    midnight`, over a real HTTP round trip to a real engine, into the
+    engine's own gap-prevention guardrail (Phase 5.2) - not a synthetic
+    `i64` built directly against the engine's test layer the way the
+    existing 4 guardrail tests do. Writing that third test surfaced a
+    second, smaller gap: `scanner_test_support::TestEngineConfig` never
+    wired a real daemon into the spawned engine's `AppState::daemons` (an
+    explicit, previously-correct design decision - nothing needed it before
+    now), so `admin::trigger_rescan` always failed with an unconditional
+    500 through this harness regardless of what was being tested. Fixed
+    with a new opt-in builder, `with_admin_rescan_daemon()` (wires the same
+    inert `NoopDaemonClient` the background-loop opt-in already uses),
+    rather than turning it on unconditionally - two existing tests
+    (`status_page_is_reachable_with_no_authentication_and_shows_no_
+    configured_networks`, `get_status_round_trips_against_a_real_engine`)
+    specifically pin the *previous*, no-daemon behavior for their own
+    reasons, and broke the first time this was tried as a blanket default.
+  - `cargo test --workspace` clean (322 scanner/209 monokulo, up from
+    320/208, 0 failed) from both the root workspace and
+    `crates/mock-woocommerce`'s own view, with and without `--features e2e`.
+
 - **Follow-up correction to the rename below**: the user pointed out
   `plugins/monokulo/` was redundant - everything under `plugins/` is
   implicitly Monokulo's own, so the directory itself doesn't need to repeat

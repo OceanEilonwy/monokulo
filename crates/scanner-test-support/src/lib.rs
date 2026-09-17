@@ -36,6 +36,7 @@ use std::time::Duration;
 use key_custody_service::client::SocketKeyCustody;
 use monero::Network;
 use scanner::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
+use scanner::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use scanner::http::rate_limit::RateLimiter;
 use scanner::http::{build_router, AppState};
 use scanner::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
@@ -228,6 +229,9 @@ pub struct TestEngineConfig {
     /// `Some(path)` when [`TestEngineConfig::with_socket_key_custody`] has been
     /// used - see that method's own doc comment.
     key_custody_socket_path: Option<String>,
+    /// `true` when [`TestEngineConfig::with_admin_rescan_daemon`] has been used -
+    /// see that method's own doc comment.
+    admin_rescan_daemon: bool,
 }
 
 impl TestEngineConfig {
@@ -242,6 +246,24 @@ impl TestEngineConfig {
     /// needing a real tenant (via `create_tenant`) needs at least one.
     pub fn with_networks(mut self, networks: &[Network]) -> Self {
         self.networks = networks.to_vec();
+        self
+    }
+
+    /// Wires an inert [`NoopDaemonClient`] into `AppState::daemons` for every
+    /// configured network - opt-in, since most callers of this harness never
+    /// need it (see `spawn`'s own doc comment on `daemons` for why an empty
+    /// map is the honest default). A caller that drives the engine's real
+    /// `/api/v1/admin/tenant/orders/{id}/rescan` endpoint through a genuine
+    /// HTTP round trip - not a synthetic request built directly against the
+    /// engine's own test layer - needs this: `admin::trigger_rescan` looks a
+    /// daemon up from this map unconditionally and fails with a real 500
+    /// ("no daemon configured for network") without it, regardless of
+    /// whether the caller cares about actual chain-scanning results. Like
+    /// [`NoopDaemonClient`] itself, this can resolve request-shape logic
+    /// (bounds checking, the gap-prevention guardrail) but can never
+    /// simulate a real scan - height 0 and empty blocks/mempool always.
+    pub fn with_admin_rescan_daemon(mut self) -> Self {
+        self.admin_rescan_daemon = true;
         self
     }
 
@@ -408,9 +430,27 @@ impl TestEngineConfig {
             // This harness's own background scan loop (below) talks to a
             // bare `NoopDaemonClient` directly, never through
             // `AppState::daemons` - no caller of this crate exercises the
-            // engine's `/status` page, so an empty map here is honest, not
-            // a stub standing in for something real.
-            daemons: Arc::new(HashMap::new()),
+            // engine's `/status` page or its admin rescan-trigger endpoint by
+            // default, so an empty map here is honest, not a stub standing in
+            // for something real. See [`TestEngineConfig::with_admin_rescan_
+            // daemon`] for the opt-in that does wire one in, for a caller
+            // that specifically needs it.
+            daemons: Arc::new(if self.admin_rescan_daemon {
+                self.networks
+                    .iter()
+                    .map(|&network| {
+                        (
+                            network,
+                            Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+                                label: "noop-test-daemon".to_string(),
+                                client: Arc::new(NoopDaemonClient),
+                            }])),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>()
+            } else {
+                HashMap::new()
+            }),
             scanner_status: scanner::scanner_status::new_scanner_status_map(),
             scan_poll_interval_secs: BACKGROUND_LOOP_INTERVAL.as_secs().max(1),
             default_rescan_lookback_days: 7,

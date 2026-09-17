@@ -990,6 +990,34 @@ mod tests {
         (state, engine)
     }
 
+    /// Same as [`test_state_with_real_engine`], but with a real (if inert)
+    /// daemon wired into the engine's own `AppState::daemons` - needed only by
+    /// a caller that drives `admin::trigger_rescan` through a genuine HTTP
+    /// round trip (see `TestEngineConfig::with_admin_rescan_daemon`'s own doc
+    /// comment for why that endpoint specifically needs it and nothing else
+    /// here does). Kept separate from `test_state_with_real_engine` itself
+    /// rather than turned on there unconditionally, so every other test in
+    /// this file keeps the same daemon-less engine it always has.
+    async fn test_state_with_real_engine_and_admin_rescan_daemon() -> (AppState, scanner_test_support::TestEngineHandle)
+    {
+        let engine = scanner_test_support::TestEngineConfig::new()
+            .with_networks(&[monero::Network::Mainnet])
+            .with_admin_rescan_daemon()
+            .spawn()
+            .await;
+        let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+        let state = AppState {
+            db: Db::open_in_memory().unwrap().into_shared(),
+            engine_client,
+            encryption_key: TEST_ENCRYPTION_KEY,
+            templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
+            status_cache: crate::http::status_page::new_status_cache(),
+            exchange_rate: test_exchange_rate_provider(),
+            rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+        };
+        (state, engine)
+    }
+
     fn signup_request(email: &str, password: &str) -> Request<Body> {
         Request::builder()
             .method("POST")
@@ -2081,6 +2109,66 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK, "a rejected trigger re-renders the page, it doesn't redirect");
         let html = body_text(response).await;
         assert!(html.contains("expired"), "expected the engine's real rejection reason surfaced, got: {html}");
+    }
+
+    /// The full, real path a browser actually drives: a merchant picks a plain
+    /// `<input type="date">` value (no raw timestamp, no JS bypassing it) for an
+    /// order the engine already scanned past a real high-water mark - the exact
+    /// scenario `docs/order_rescan_wbs.md` Phase 5.2's gap-prevention guardrail
+    /// exists to catch, reached here through monokulo's own
+    /// `date_string_to_unix_midnight` conversion and a real HTTP round trip to
+    /// the engine, not a synthetic i64 constructed at the engine's own test
+    /// layer (the engine's `advanced_mode_to_one_block_before_last_scanned_
+    /// height_is_rejected` already covers that half). Exists specifically
+    /// because this session's UTC-date-labeling work touched exactly this path
+    /// - this pins that the two ends (monokulo's date parsing, the engine's own
+    /// guardrail) still agree once wired together for real.
+    #[tokio::test]
+    async fn advanced_mode_rescan_via_a_typed_date_still_hits_the_gap_guardrail() {
+        let (state, engine) = test_state_with_real_engine_and_admin_rescan_daemon().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "rescan-guardrail-owner@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let payment_id = seed_real_order(engine.addr, &public_key).await;
+        force_order_expired(engine.store(), &public_key, &payment_id);
+
+        // A real high-water mark, as if a previous (wider) rescan already
+        // covered up to block 500 - the same store-level shortcut
+        // `seed_running_rescan` above uses to reach a real, persisted state
+        // without waiting out an actual rescan.
+        {
+            let s = engine.store().lock().unwrap();
+            let tenant = s.find_tenant_by_public_key(&public_key).unwrap().unwrap();
+            let order = s.get_order(&tenant.id, &payment_id).unwrap().unwrap();
+            s.bump_scanned_range_for_order(&order.id, 0, 500).unwrap();
+        }
+
+        // The test harness's `NoopDaemonClient` (`scanner_test_support`'s own
+        // doc comment) resolves every timestamp to height 0 regardless of which
+        // date is chosen, so today's date - now a valid "from"/"to" for a
+        // same-day order after this session's day-floor fix - still resolves
+        // to a "to" height (0) earlier than the height-500 mark set above,
+        // exactly the gap this guardrail exists to catch.
+        let today = crate::templates::unix_to_date_string(crate::now_unix());
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/orders/{payment_id}/rescan"),
+                &session_token,
+                &[("mode", "advanced"), ("from", &today), ("to", &today)],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "a rejected trigger re-renders the page, it doesn't redirect");
+        let html = body_text(response).await;
+        assert!(
+            html.contains("already-scanned"),
+            "expected the engine's real gap-prevention rejection surfaced through the typed-date path, got: {html}"
+        );
     }
 
     #[tokio::test]

@@ -1403,6 +1403,71 @@ async fn advanced_mode_with_a_from_before_the_orders_own_creation_is_rejected() 
     assert!(body["error"].as_str().unwrap().contains("cannot be earlier than"), "expected the real reason, got: {body}");
 }
 
+/// A real, previously-broken case: an order rescanned in advanced mode on the
+/// *same UTC calendar day* it was created. `resolve_rescan_window`'s `from`
+/// bound used to compare a day-granular `from` (all `advanced` mode's one real
+/// caller, monokulo's own `<input type="date">` form, can ever submit) against
+/// `order.created_at`'s own exact second - so the earliest date monokulo's own
+/// rendered `min` attribute ever offered (this order's own creation day) was
+/// rejected the moment anyone actually picked it, since that day's UTC midnight
+/// is always earlier than a creation timestamp later the same day. Fixed by
+/// flooring the ceiling to its own UTC day start before comparing - this test
+/// pins that fix by constructing exactly the request shape monokulo's own form
+/// would send for a same-day order: `from` = today's UTC midnight.
+#[tokio::test]
+async fn advanced_mode_with_from_on_the_orders_own_creation_day_is_accepted() {
+    let (state, daemon) = rescan_test_app_state();
+    for h in 1..=300 {
+        daemon.push_block(&format!("blk_{h}"), vec![]);
+    }
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let payment_id = create_expired_order(&router, &store, &tenant.public_key, "https://merchant.example").await;
+
+    let now = crate::now_unix();
+    let todays_utc_midnight = now.div_euclid(86_400) * 86_400;
+    let req = trigger_rescan_request(
+        &payment_id,
+        &tenant.secret_token,
+        serde_json::json!({ "mode": "advanced", "from": todays_utc_midnight, "to": now }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(
+        response.status(),
+        StatusCode::ACCEPTED,
+        "a same-day-as-creation \"from\" (this order's own creation day's UTC midnight) must be accepted, not rejected"
+    );
+}
+
+/// The flip side of the test above: the fix only widens acceptance to the start
+/// of the *ceiling's own* UTC day, not indefinitely - a `from` on the day
+/// *before* the order's creation day must still be rejected.
+#[tokio::test]
+async fn advanced_mode_with_from_on_the_day_before_the_orders_creation_day_is_still_rejected() {
+    let (state, daemon) = rescan_test_app_state();
+    for h in 1..=300 {
+        daemon.push_block(&format!("blk_{h}"), vec![]);
+    }
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let payment_id = create_expired_order(&router, &store, &tenant.public_key, "https://merchant.example").await;
+
+    let now = crate::now_unix();
+    let todays_utc_midnight = now.div_euclid(86_400) * 86_400;
+    let yesterdays_utc_midnight = todays_utc_midnight - 86_400;
+    let req = trigger_rescan_request(
+        &payment_id,
+        &tenant.secret_token,
+        serde_json::json!({ "mode": "advanced", "from": yesterdays_utc_midnight, "to": now }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "the day before creation must still be rejected");
+    let body = body_json(response).await;
+    assert!(body["error"].as_str().unwrap().contains("cannot be earlier than"), "expected the real reason, got: {body}");
+}
+
 #[tokio::test]
 async fn advanced_mode_spanning_more_than_the_max_lookback_ceiling_is_rejected() {
     let (state, daemon) = rescan_test_app_state();

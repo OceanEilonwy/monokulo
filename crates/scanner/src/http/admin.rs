@@ -523,6 +523,14 @@ pub struct TriggerRescanRequest {
     to: Option<i64>,
 }
 
+/// Floors a unix timestamp to the start (00:00:00) of its own UTC calendar
+/// day. Plain integer arithmetic, not a civil-calendar computation - a unix
+/// timestamp's UTC day boundary is just `ts - (ts mod 86_400)`, no
+/// year/month/day math needed the way rendering a `YYYY-MM-DD` string would.
+fn utc_day_start(ts: i64) -> i64 {
+    ts.div_euclid(SECONDS_PER_DAY) * SECONDS_PER_DAY
+}
+
 /// Resolves a trigger request's requested window to concrete unix timestamps
 /// (`(mode, from, to)`), enforcing WBS 2.1 decision 4's bounds: `simple` is always
 /// `max(order.created_at, now - default_rescan_lookback_days)` through `now`;
@@ -530,6 +538,26 @@ pub struct TriggerRescanRequest {
 /// never silently clamped) if `from` is earlier than the later of the order's own
 /// creation time and the `max_rescan_lookback_days` ceiling, if `to` is in the
 /// future, or if `to` precedes `from`.
+///
+/// The `from` bound is checked against [`utc_day_start`] of that ceiling, not the
+/// ceiling's own exact second - `advanced` mode's `from`/`to` are unix timestamps
+/// in this API generally, but the *only* real caller that exists (monokulo's own
+/// `<input type="date">` form, via `date_string_to_unix_midnight`) can only ever
+/// submit a UTC-midnight value, never a specific time of day. Comparing that
+/// day-granular value against `order.created_at`'s own exact second meant a
+/// same-day rescan could never actually pick a valid "from" at all: today's own
+/// midnight is *always* earlier than a creation timestamp later that same day, so
+/// the earliest date the UI's own `min` attribute ever offered (`created_at`'s
+/// calendar day) was rejected outright the moment anyone actually picked it - a
+/// real, previously-unnoticed gap, not a hypothetical one (confirmed against a
+/// live request before this fix landed). Flooring the ceiling to its own day
+/// start widens what's accepted by less than 24h in the worst case, never
+/// narrows it - safe for the same reason `RESCAN_START_HEIGHT_CUSHION_BLOCKS`
+/// (`scanner.rs`) already treats "scans a little more chain than strictly asked"
+/// as harmless: this order's subaddress is unique to it (never reused across
+/// orders), so scanning from its own creation day's midnight instead of its exact
+/// creation second can only ever examine additional blocks that provably can't
+/// contain a real payment to it, never miss or double-count anything that could.
 fn resolve_rescan_window(
     req: &TriggerRescanRequest,
     order: &Order,
@@ -538,6 +566,7 @@ fn resolve_rescan_window(
     now: i64,
 ) -> Result<(RescanMode, i64, i64), ApiError> {
     let earliest_allowed = order.created_at.max(now - max_lookback_days as i64 * SECONDS_PER_DAY);
+    let earliest_allowed_day_start = utc_day_start(earliest_allowed);
     match req.mode.as_str() {
         "simple" => {
             let from = order.created_at.max(now - default_lookback_days as i64 * SECONDS_PER_DAY);
@@ -546,10 +575,11 @@ fn resolve_rescan_window(
         "advanced" => {
             let from = req.from.ok_or_else(|| ApiError::BadRequest("advanced mode requires \"from\"".into()))?;
             let to = req.to.unwrap_or(now);
-            if from < earliest_allowed {
+            if from < earliest_allowed_day_start {
                 return Err(ApiError::BadRequest(format!(
-                    "\"from\" ({from}) cannot be earlier than {earliest_allowed} - the later of this order's own \
-                     creation time ({}) and the {max_lookback_days}-day lookback ceiling",
+                    "\"from\" ({from}) cannot be earlier than {earliest_allowed_day_start} (the start of the UTC day \
+                     containing {earliest_allowed}) - the later of this order's own creation time ({}) and the \
+                     {max_lookback_days}-day lookback ceiling",
                     order.created_at
                 )));
             }
