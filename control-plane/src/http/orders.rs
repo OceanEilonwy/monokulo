@@ -143,7 +143,11 @@ fn build_rescan_section(
         if job.status == "running" {
             return Some(OrderRescanSectionViewModel {
                 form: None,
-                progress: Some(RescanProgressViewModel { percent_complete: job.percent_complete, mode: job.mode.clone() }),
+                progress: Some(RescanProgressViewModel {
+                    percent_complete: job.percent_complete,
+                    mode: job.mode.clone(),
+                    stalled: job.stalled,
+                }),
             });
         }
     }
@@ -153,12 +157,22 @@ fn build_rescan_section(
     let simple_from = order_created_at.max(now - default_days as i64 * 86_400);
     Some(OrderRescanSectionViewModel {
         form: Some(RescanTriggerFormViewModel {
-            simple_label: format!("Rescan from {}", unix_to_date_string(simple_from)),
+            // A small `<span data-utc-date="...">` around the date, not plain
+            // text - lets the order-detail page's own progressive-enhancement
+            // script (JS-enabled viewers only; the form works identically
+            // without it) append a local-time equivalent next to it. Fully
+            // server-computed, never user input, so trusting it as HTML here is
+            // safe - rendered with `{{{ }}}` in the template, same as every
+            // other trusted-HTML field on this page.
+            simple_label: format!(
+                r#"Rescan from <span class="utc-date" data-utc-date="{date}">{date} (UTC)</span>"#,
+                date = unix_to_date_string(simple_from)
+            ),
             min_date: unix_to_date_string(earliest_allowed),
             max_date: unix_to_date_string(now),
             bound_text: format!(
                 "Orders can only be rescanned from their own creation date ({}) or the last {max_days} days, \
-                 whichever is later.",
+                 whichever is later. Dates below are in UTC.",
                 unix_to_date_string(order_created_at)
             ),
         }),
@@ -2106,11 +2120,16 @@ mod tests {
         // collapses to `created_at` for a young order.
         let today = crate::templates::unix_to_date_string(crate::now_unix());
         assert!(
-            html.contains(&format!(r#"<input type="date" name="from" min="{today}""#)),
+            html.contains(&format!(r#"<input type="date" id="rescan-from" name="from" min="{today}""#)),
             "expected the advanced 'from' input's min to be today (this order's own creation date), got: {html}"
         );
-        assert!(html.contains(&format!("Rescan from {today}")), "expected the simple-mode label to state today's date, got: {html}");
+        assert!(html.contains("Rescan from"), "expected the simple-mode label present, got: {html}");
+        assert!(
+            html.contains(&format!(r#"data-utc-date="{today}">{today} (UTC)"#)),
+            "expected the simple-mode label to state today's date and be explicitly labeled UTC, got: {html}"
+        );
         assert!(html.contains("or the last 90 days"), "expected the plain-language bound text, got: {html}");
+        assert!(html.contains("Dates below are in UTC"), "expected the timezone note next to the date inputs, got: {html}");
     }
 
     #[tokio::test]
@@ -2152,6 +2171,48 @@ mod tests {
             html.contains(r#"<meta http-equiv="refresh" content="5">"#),
             "expected the tightened 5s meta-refresh while a rescan is running, got: {html}"
         );
+    }
+
+    #[tokio::test]
+    async fn order_detail_shows_a_stalled_badge_once_a_running_rescan_stops_making_progress() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "rescan-stalled-owner@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let payment_id = seed_real_order(engine.addr, &public_key).await;
+        force_order_expired(engine.store(), &public_key, &payment_id);
+        let rescan_id = seed_running_rescan(engine.store(), &public_key, &payment_id, 10);
+        // Backdate the last progress write well past the stall threshold - the
+        // exact state a merchant genuinely wants surfaced, distinct from a job
+        // that's simply still walking a wide range.
+        engine
+            .store()
+            .lock()
+            .unwrap()
+            .update_rescan_progress(&rescan_id, 10, moneropay_core::now_unix() - 600)
+            .unwrap();
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .header("host", "test.example")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("Stalled at 10%"), "expected the stalled badge with the real percentage, got: {html}");
+        assert!(!html.contains("Syncing 10%"), "must not show the ordinary syncing badge once stalled, got: {html}");
     }
 
     #[tokio::test]

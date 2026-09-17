@@ -460,9 +460,12 @@ pub struct OrderRescanSectionViewModel {
 /// `400` on an out-of-range submission.
 #[derive(Debug, Serialize)]
 pub struct RescanTriggerFormViewModel {
-    /// e.g. `"Rescan from 2026-08-10"` - `max(order.created_at, now - X
-    /// days)`, already formatted, so the merchant never does the "last X
-    /// days" math themselves.
+    /// e.g. `Rescan from <span data-utc-date="2026-08-10">2026-08-10
+    /// (UTC)</span>` - `max(order.created_at, now - X days)`, already
+    /// formatted, so the merchant never does the "last X days" math
+    /// themselves. Trusted HTML (the `data-utc-date` span the page's own
+    /// progressive-enhancement script hooks into to show a local-time
+    /// equivalent), never user input - rendered with `{{{ }}}`, never `{{ }}`.
     pub simple_label: String,
     /// `YYYY-MM-DD` - `max(order.created_at, now - N days)`, the same bound
     /// decision 4 imposes for advanced mode, rendered as the real `min`
@@ -486,6 +489,10 @@ pub struct RescanTriggerFormViewModel {
 pub struct RescanProgressViewModel {
     pub percent_complete: u8,
     pub mode: String,
+    /// Mirrors the engine's own `RescanStatusView.stalled` - a `running` job with
+    /// no recent progress write. Purely a different badge/copy, not a different
+    /// status: the underlying job is still genuinely `running`.
+    pub stalled: bool,
 }
 
 /// The view model `GET /dashboard/connections/{id}/orders/{payment_id}`
@@ -614,6 +621,7 @@ pub struct DashboardRescanRow {
     pub connection_id: String,
     pub payment_id: String,
     pub percent_complete: u8,
+    pub stalled: bool,
 }
 
 /// The view model the integration-help partial (`_integration_help.html.hbs`)

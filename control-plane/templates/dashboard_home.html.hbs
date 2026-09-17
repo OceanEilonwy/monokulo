@@ -20,7 +20,7 @@ refreshes every 5s while that's true.
 <ul>
 {{#each active_rescans}}
 <li><a href="/dashboard/connections/{{this.connection_id}}/orders/{{this.payment_id}}">{{this.payment_id}}
-({{this.percent_complete}}%) &rarr;</a></li>
+({{this.percent_complete}}%{{#if this.stalled}}, stalled{{/if}}) &rarr;</a></li>
 {{/each}}
 </ul>
 </div>

@@ -710,18 +710,27 @@ pub async fn revalidate_recent_double_spend_voids(
 // ---------------------------------------------------------------------------
 
 /// Blocks subtracted from a rescan's computed start height, as a safety margin
-/// against [`crate::daemon::MoneroDaemonClient::find_height_at_or_before`]'s
-/// best-effort binary search landing slightly late because of Monero's non-strictly-
-/// monotonic block timestamps (see that method's own doc comment). Roughly 8 hours
-/// at Monero's ~2-minute block time - generous next to any realistic timestamp
-/// jitter, negligible next to the rescan ranges this feature targets (days, not
-/// hours).
+/// against two independent sources of slop, both one-sided (only ever pushing the
+/// real start *earlier* than requested, never later):
+///
+/// 1. [`crate::daemon::MoneroDaemonClient::find_height_at_or_before`]'s best-effort
+///    binary search landing slightly late because of Monero's non-strictly-
+///    monotonic block timestamps (see that method's own doc comment).
+/// 2. The advanced-mode date inputs' own inherent timezone ambiguity - a plain
+///    `<input type="date">` carries no timezone at all, so a merchant's typed date
+///    is interpreted as UTC midnight server-side (control-plane labels the fields
+///    as UTC precisely because of this), which can be up to ~12h off whatever the
+///    merchant actually meant in their own local time.
+///
+/// Roughly 24 hours at Monero's ~2-minute block time - comfortably absorbs either
+/// source alone, or both at once, and is still negligible next to the rescan
+/// ranges this feature targets (days, not hours).
 ///
 /// Deliberately one-sided: only ever applied to the *start* height. The *end* side
 /// (near the tip) gets no equivalent buffer - see `rescan_order`'s own doc comment
 /// for why the existing reorg/double-spend reconciliation pass already covers that
 /// case without one.
-pub const RESCAN_START_HEIGHT_CUSHION_BLOCKS: u64 = 240;
+pub const RESCAN_START_HEIGHT_CUSHION_BLOCKS: u64 = 720;
 
 /// Applies [`RESCAN_START_HEIGHT_CUSHION_BLOCKS`] to a timestamp-derived height,
 /// saturating at genesis rather than underflowing.
@@ -767,6 +776,48 @@ pub const RESCAN_PROGRESS_PERSIST_INTERVAL_BLOCKS: u64 = 50;
 /// below. A payment this rescan records - even one that immediately flips the order
 /// to `Paid` - inherits that same ongoing protection automatically. A manual
 /// tip-side buffer here would only create a blind spot that mechanism doesn't need.
+/// How many times a single rescan step (one block's transactions, the final
+/// mempool pass, the closing tip lookup) is retried before the whole job gives up
+/// - a transient daemon hiccup mid-rescan (a dropped connection, a momentary
+/// non-200) no longer kills an otherwise-healthy job outright. Deliberately
+/// small and fast, not a substitute for `FallbackDaemonClient`'s own node-level
+/// failover (already engaged underneath this - a real node switch on a single
+/// call's failure) or `RpcDaemonClient`'s own 15s per-call timeout
+/// (`src/daemon_rpc.rs`) - this is the next layer up, for the case where every
+/// configured node briefly agrees on failure (a shared upstream blip, a
+/// reorg-in-progress hiccup) rather than one node being individually down.
+const RESCAN_STEP_MAX_ATTEMPTS: u32 = 3;
+const RESCAN_STEP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
+
+/// Retries `f` up to [`RESCAN_STEP_MAX_ATTEMPTS`] times, a short fixed delay
+/// apart, before giving up with its last error - the one bounded-retry point
+/// every daemon call inside [`rescan_order`] goes through.
+async fn retry_rescan_step<T, F, Fut>(mut f: F) -> std::result::Result<T, DaemonError>
+where
+    F: FnMut() -> Fut,
+    Fut: std::future::Future<Output = std::result::Result<T, DaemonError>>,
+{
+    let mut last_err = None;
+    for attempt in 1..=RESCAN_STEP_MAX_ATTEMPTS {
+        match f().await {
+            Ok(v) => return Ok(v),
+            Err(e) => {
+                if attempt < RESCAN_STEP_MAX_ATTEMPTS {
+                    eprintln!(
+                        "rescan: step failed (attempt {attempt}/{RESCAN_STEP_MAX_ATTEMPTS}), retrying in \
+                         {RESCAN_STEP_RETRY_DELAY:?}: {e}"
+                    );
+                    tokio::time::sleep(RESCAN_STEP_RETRY_DELAY).await;
+                }
+                last_err = Some(e);
+            }
+        }
+    }
+    // Always `Some` - the loop only exits without an early `return` after every
+    // one of `RESCAN_STEP_MAX_ATTEMPTS` iterations has taken the `Err` arm.
+    Err(last_err.expect("loop always records an error before exiting without returning"))
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn rescan_order(
     store: &SharedStore,
@@ -784,7 +835,7 @@ pub async fn rescan_order(
     let mut touched: HashSet<String> = HashSet::new();
 
     for height in from_height..=to_height {
-        let block_txs = daemon.get_block_transactions(height).await?;
+        let block_txs = retry_rescan_step(|| daemon.get_block_transactions(height)).await?;
         for tx in &block_txs {
             let scan = scan_transaction(key_custody, handle, tx, minor_range.clone()).await?;
             let s = store.lock().unwrap();
@@ -797,13 +848,13 @@ pub async fn rescan_order(
     // the historical walk reaches the tip - a real "network delay" case, not an
     // error condition. Recorded at zero confirmations, same as the live scanner
     // would record it; nothing here waits for it to confirm (decision 6).
-    for tx in &daemon.get_mempool_transactions().await? {
+    for tx in &retry_rescan_step(|| daemon.get_mempool_transactions()).await? {
         let scan = scan_transaction(key_custody, handle, tx, minor_range.clone()).await?;
         let s = store.lock().unwrap();
         touched.extend(record_scan_match(&s, tenant_id, &scan, now, None)?);
     }
 
-    let tip = daemon.get_height().await?;
+    let tip = retry_rescan_step(|| daemon.get_height()).await?;
     for order_id in &touched {
         let s = store.lock().unwrap();
         recompute_and_notify(&s, order_id, tip, now)?;
@@ -2175,6 +2226,91 @@ mod tests {
         async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             self.inner.is_key_image_spent(key_images).await
         }
+    }
+
+    /// Wraps `FakeDaemonClient`, failing the first `fail_count` calls to
+    /// `get_block_transactions` (regardless of which height) with a real
+    /// `DaemonError`, then delegating normally forever after - models a transient
+    /// hiccup every configured fallback node briefly agrees on (a shared upstream
+    /// blip), the case `RESCAN_STEP_MAX_ATTEMPTS` retries exist for.
+    struct FlakyBlockTransactionsDaemon {
+        inner: FakeDaemonClient,
+        remaining_failures: std::sync::atomic::AtomicU32,
+    }
+
+    impl FlakyBlockTransactionsDaemon {
+        fn new(inner: FakeDaemonClient, fail_count: u32) -> Self {
+            Self { inner, remaining_failures: std::sync::atomic::AtomicU32::new(fail_count) }
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl MoneroDaemonClient for FlakyBlockTransactionsDaemon {
+        async fn get_height(&self) -> std::result::Result<u64, DaemonError> {
+            self.inner.get_height().await
+        }
+        async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
+            self.inner.get_block_hash(height).await
+        }
+        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
+            self.inner.get_block_timestamp(height).await
+        }
+        async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            if self.remaining_failures.fetch_update(
+                std::sync::atomic::Ordering::SeqCst,
+                std::sync::atomic::Ordering::SeqCst,
+                |n| if n > 0 { Some(n - 1) } else { None },
+            ).is_ok()
+            {
+                return Err(DaemonError::Request("simulated transient failure".to_string()));
+            }
+            self.inner.get_block_transactions(height).await
+        }
+        async fn get_mempool_transactions(&self) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            self.inner.get_mempool_transactions().await
+        }
+        async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
+            self.inner.locate_transaction(txid).await
+        }
+        async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+            self.inner.is_key_image_spent(key_images).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_rescan_survives_fewer_transient_failures_than_the_retry_budget() {
+        let (store, key_custody, handle, tenant_id, order_id) = setup().await;
+        let tx = fixture_tx();
+        let inner = FakeDaemonClient::new();
+        for h in 1..=100 {
+            let txs = if h == 50 { vec![tx.clone()] } else { vec![] };
+            inner.push_block(&format!("blk_{h}"), txs);
+        }
+        // One fewer failure than the retry budget - the step must still succeed.
+        let daemon = FlakyBlockTransactionsDaemon::new(inner, RESCAN_STEP_MAX_ATTEMPTS - 1);
+        let store = store.into_shared();
+
+        rescan_order(&store, &key_custody, &daemon, &tenant_id, handle, 1, 1, 100, 2000, |_| {}).await.unwrap();
+
+        let payments = store.lock().unwrap().get_all_payments(&order_id).unwrap();
+        assert_eq!(payments.len(), 1, "a transient failure within the retry budget must not lose the payment");
+        assert_eq!(payments[0].block_height, Some(50));
+    }
+
+    #[tokio::test]
+    async fn a_rescan_still_fails_once_failures_exceed_the_retry_budget() {
+        let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
+        let inner = FakeDaemonClient::new();
+        for h in 1..=100 {
+            inner.push_block(&format!("blk_{h}"), vec![]);
+        }
+        // Persistently failing (well past the retry budget) must still surface as a
+        // real error, not be silently swallowed or retried forever.
+        let daemon = FlakyBlockTransactionsDaemon::new(inner, RESCAN_STEP_MAX_ATTEMPTS * 10);
+        let store = store.into_shared();
+
+        let err = rescan_order(&store, &key_custody, &daemon, &tenant_id, handle, 1, 1, 100, 2000, |_| {}).await;
+        assert!(err.is_err(), "must genuinely fail once the retry budget is exhausted, not hang or succeed");
     }
 
     /// Builds a chain of `height` filler blocks with `tx` mined at `tx_at`, and

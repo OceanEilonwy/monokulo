@@ -57,7 +57,15 @@ needs to pay this order.</p>
 <tr><th>Rate provider</th><td>{{order.rate_provider}}</td></tr>
 <tr><th>XMR amount (piconero)</th><td>{{order.xmr_amount_piconero}}</td></tr>
 <tr><th>Amount received (piconero)</th><td>{{order.amount_received_piconero}}</td></tr>
-<tr><th>Status</th><td>{{order.status}}{{#if order.rescan.progress}} <span class="tag tag-syncing">Syncing {{order.rescan.progress.percent_complete}}%</span>{{/if}}</td></tr>
+<tr><th>Status</th><td>{{order.status}}
+{{#if order.rescan.progress}}
+{{#if order.rescan.progress.stalled}}
+<span class="tag tag-stalled">Stalled at {{order.rescan.progress.percent_complete}}%</span>
+{{else}}
+<span class="tag tag-syncing">Syncing {{order.rescan.progress.percent_complete}}%</span>
+{{/if}}
+{{/if}}
+</td></tr>
 <tr><th>Confirmations</th><td>{{order.confirmations}}</td></tr>
 {{#if order.double_spend_detected_at}}
 <tr><th>Double-spend detected at</th><td>{{{order.double_spend_detected_at_display}}}</td></tr>
@@ -91,7 +99,12 @@ needs to pay this order.</p>
 {{#if order.rescan}}
 <h2>Rescan for late payment</h2>
 {{#if order.rescan.progress}}
+{{#if order.rescan.progress.stalled}}
+<p class="hint">This rescan hasn't made progress in a while - it may have stalled. It will resume on its own if
+the server restarts; otherwise you may want to wait a bit longer or check the server's own logs.</p>
+{{else}}
 <p class="hint">Rescanning ({{order.rescan.progress.mode}} mode) - this can take a while for a wide date range.</p>
+{{/if}}
 <div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
      aria-valuenow="{{order.rescan.progress.percent_complete}}"
      aria-valuetext="{{order.rescan.progress.percent_complete}}% complete">
@@ -102,11 +115,13 @@ needs to pay this order.</p>
 <p class="hint">This order expired before a payment was detected. If the customer says they sent funds anyway,
 scan the chain again for a late arrival.</p>
 <form method="post" action="/dashboard/connections/{{connection_id}}/orders/{{order.payment_id}}/rescan">
-<p><label><input type="radio" name="mode" value="simple" checked> {{order.rescan.form.simple_label}}</label></p>
+<p><label><input type="radio" name="mode" value="simple" checked> {{{order.rescan.form.simple_label}}}</label></p>
 <p><label><input type="radio" name="mode" value="advanced"> Advanced - choose a range</label></p>
 <p class="grid-2">
-<label>From <input type="date" name="from" min="{{order.rescan.form.min_date}}" max="{{order.rescan.form.max_date}}"></label>
-<label>To <input type="date" name="to" min="{{order.rescan.form.min_date}}" max="{{order.rescan.form.max_date}}"></label>
+<label>From <input type="date" id="rescan-from" name="from" min="{{order.rescan.form.min_date}}" max="{{order.rescan.form.max_date}}">
+<span class="hint" id="rescan-from-local"></span></label>
+<label>To <input type="date" id="rescan-to" name="to" min="{{order.rescan.form.min_date}}" max="{{order.rescan.form.max_date}}">
+<span class="hint" id="rescan-to-local"></span></label>
 </p>
 <p class="hint">{{order.rescan.form.bound_text}}</p>
 <button type="submit" class="btn">Rescan for late payment</button>
@@ -133,6 +148,42 @@ scan the chain again for a late arrival.</p>
   link.addEventListener("click", function (event) {
     event.preventDefault();
     navigator.share({ title: "Pay this Monero order", url: link.href }).catch(function () {});
+  });
+})();
+</script>
+<script>
+(function () {
+  // Progressive enhancement only - every rescan date shown/entered here is
+  // authoritative in UTC either way (server-rendered, server-validated); this
+  // only adds a local-time reading alongside it for a JS-enabled viewer's own
+  // convenience. Never changes what gets submitted.
+  if (typeof Intl === "undefined" || typeof Intl.DateTimeFormat !== "function") return;
+
+  function localLabel(dateStr) {
+    if (!dateStr) return "";
+    var d = new Date(dateStr + "T00:00:00Z");
+    if (isNaN(d.getTime())) return "";
+    return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+  }
+
+  var simpleDateSpan = document.querySelector("[data-utc-date]");
+  if (simpleDateSpan) {
+    var simpleLocal = localLabel(simpleDateSpan.getAttribute("data-utc-date"));
+    if (simpleLocal) {
+      simpleDateSpan.textContent += " (your time: " + simpleLocal + ")";
+    }
+  }
+
+  ["from", "to"].forEach(function (name) {
+    var input = document.getElementById("rescan-" + name);
+    var hint = document.getElementById("rescan-" + name + "-local");
+    if (!input || !hint) return;
+    function update() {
+      var local = localLabel(input.value);
+      hint.textContent = local ? "= " + local + " your time" : "";
+    }
+    input.addEventListener("change", update);
+    update();
   });
 })();
 </script>

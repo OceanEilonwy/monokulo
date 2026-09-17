@@ -453,10 +453,29 @@ pub struct RescanStatusView {
     /// (snapped to `to_height` by `Store::complete_rescan`) both land cleanly at
     /// their ends rather than needing a caller to special-case `status` to read this.
     percent_complete: u8,
+    /// `true` if this job is `status: "running"` but hasn't persisted any
+    /// progress (`updated_at`) in at least [`RESCAN_STALL_THRESHOLD_SECS`] -
+    /// purely informational, no behavior change. Every individual daemon call
+    /// inside a rescan already has its own bounded retries and a 15s hard
+    /// timeout (`RpcDaemonClient`), and the whole process is re-spawned on
+    /// restart (`Store::list_running_rescans`), so a `running` row can't
+    /// actually hang forever while the process stays up - this exists purely
+    /// so a merchant or operator can *see* "this looks wrong" without having to
+    /// infer it from a silent absence of progress, the same role `is_stale`
+    /// already plays for the live scanner on `/status`
+    /// (`http/status_page.rs::is_stale`).
+    stalled: bool,
     error: Option<String>,
     started_at: i64,
     finished_at: Option<i64>,
 }
+
+/// How long a `running` job's `updated_at` can go without moving before it's
+/// reported as `stalled` - deliberately much longer than
+/// `RESCAN_PROGRESS_PERSIST_INTERVAL_BLOCKS`' own typical cadence (a handful of
+/// blocks at real Monero block times is minutes, not seconds), so this never
+/// flags an ordinary rescan that's just legitimately walking a wide range.
+const RESCAN_STALL_THRESHOLD_SECS: i64 = 300;
 
 fn rescan_percent_complete(job: &OrderRescan) -> u8 {
     if job.current_height >= job.to_height {
@@ -470,22 +489,27 @@ fn rescan_percent_complete(job: &OrderRescan) -> u8 {
     ((done as f64 / span as f64) * 100.0).clamp(0.0, 100.0) as u8
 }
 
-impl From<OrderRescan> for RescanStatusView {
-    fn from(job: OrderRescan) -> Self {
-        let percent_complete = rescan_percent_complete(&job);
-        RescanStatusView {
-            rescan_id: job.id,
-            payment_id: job.order_id,
-            mode: job.mode.as_str().to_string(),
-            status: job.status.as_str().to_string(),
-            from_height: job.from_height,
-            to_height: job.to_height,
-            current_height: job.current_height,
-            percent_complete,
-            error: job.error,
-            started_at: job.started_at,
-            finished_at: job.finished_at,
-        }
+/// Builds a `RescanStatusView` from a real job row - a plain function rather
+/// than `impl From<OrderRescan>` since `stalled` needs `now`, which a caller-
+/// supplied `From` impl has no way to thread through (same reasoning as
+/// `build_order_view`'s own doc comment, its closest sibling in this file).
+fn build_rescan_status_view(job: OrderRescan, now: i64) -> RescanStatusView {
+    let percent_complete = rescan_percent_complete(&job);
+    let stalled =
+        job.status == crate::store::RescanStatus::Running && now - job.updated_at > RESCAN_STALL_THRESHOLD_SECS;
+    RescanStatusView {
+        rescan_id: job.id,
+        payment_id: job.order_id,
+        mode: job.mode.as_str().to_string(),
+        status: job.status.as_str().to_string(),
+        from_height: job.from_height,
+        to_height: job.to_height,
+        current_height: job.current_height,
+        percent_complete,
+        stalled,
+        error: job.error,
+        started_at: job.started_at,
+        finished_at: job.finished_at,
     }
 }
 
@@ -650,7 +674,7 @@ pub async fn trigger_rescan(
         }
     };
 
-    Ok((StatusCode::ACCEPTED, Json(RescanStatusView::from(job))))
+    Ok((StatusCode::ACCEPTED, Json(build_rescan_status_view(job, now))))
 }
 
 /// `GET /api/v1/admin/tenant/orders/{payment_id}/rescan` - WBS 2.2. The most
@@ -664,7 +688,7 @@ pub async fn get_rescan_status(
     let store = state.store.lock().unwrap();
     let order = store.get_order(&tenant.id, &payment_id)?.ok_or(ApiError::NotFound)?;
     let job = store.get_latest_rescan_for_order(&order.id)?.ok_or(ApiError::NotFound)?;
-    Ok(Json(RescanStatusView::from(job)))
+    Ok(Json(build_rescan_status_view(job, now_unix())))
 }
 
 /// How long a client may treat a `GET .../rescans` response as fresh without
@@ -714,7 +738,8 @@ pub async fn list_rescans(
         return Ok(with_rescan_cache_headers(StatusCode::NOT_MODIFIED.into_response(), &etag));
     }
 
-    let body: Vec<RescanStatusView> = running.into_iter().map(RescanStatusView::from).collect();
+    let now = now_unix();
+    let body: Vec<RescanStatusView> = running.into_iter().map(|job| build_rescan_status_view(job, now)).collect();
     Ok(with_rescan_cache_headers((StatusCode::OK, Json(body)).into_response(), &etag))
 }
 

@@ -1055,9 +1055,12 @@ max_attempts = 8
 Two rescan-related knobs live outside this file entirely:
 
 - **`RESCAN_START_HEIGHT_CUSHION_BLOCKS`** (`src/scanner.rs`) - the fixed safety margin
-  (240 blocks, ~8h) subtracted from a rescan's timestamp-derived start height (§7.8). A
-  compile-time constant, not configuration, for now - there has been no operational
-  need yet to tune it per deployment.
+  (720 blocks, ~24h) subtracted from a rescan's timestamp-derived start height (§7.8) -
+  covers both the timestamp binary search's own slop and the advanced-mode date
+  fields' inherent timezone ambiguity (control-plane labels them UTC; a plain
+  `<input type="date">` carries no timezone at all). A compile-time constant, not
+  configuration, for now - there has been no operational need yet to tune it per
+  deployment.
 - **`CONTROL_PLANE_HTTP_CACHE_MAX_MB`** - control-plane's own environment variable
   (default 16), not part of this engine's TOML at all. Sizes the byte-bounded HTTP
   response cache (`shared::http_cache`) control-plane uses for every outbound call to

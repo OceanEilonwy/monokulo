@@ -107,6 +107,7 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
                 connection_id: row.id.clone(),
                 payment_id: job.payment_id,
                 percent_complete: job.percent_complete,
+                stalled: job.stalled,
             }));
         }
 

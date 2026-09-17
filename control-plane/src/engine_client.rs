@@ -486,6 +486,9 @@ pub struct RescanStatusView {
     pub to_height: u64,
     pub current_height: u64,
     pub percent_complete: u8,
+    /// `true` if this job is `running` but has made no persisted progress in a
+    /// while - mirrors the engine's own `RescanStatusView.stalled` field-for-field.
+    pub stalled: bool,
     pub error: Option<String>,
     pub started_at: i64,
     pub finished_at: Option<i64>,

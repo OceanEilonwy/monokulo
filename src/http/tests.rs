@@ -1314,6 +1314,7 @@ async fn simple_mode_trigger_creates_a_running_job_and_the_status_endpoint_refle
     assert_eq!(body["payment_id"], payment_id);
     assert_eq!(body["mode"], "simple");
     assert_eq!(body["status"], "running");
+    assert_eq!(body["stalled"], false, "a job just triggered a moment ago must never read as stalled");
     let rescan_id = body["rescan_id"].as_str().unwrap().to_string();
 
     let req = Request::builder()
@@ -1326,6 +1327,37 @@ async fn simple_mode_trigger_creates_a_running_job_and_the_status_endpoint_refle
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["rescan_id"], rescan_id, "the status endpoint must report the same job the trigger created");
+}
+
+#[tokio::test]
+async fn a_running_job_with_no_recent_progress_write_reads_as_stalled() {
+    let (state, daemon) = rescan_test_app_state();
+    for h in 1..=300 {
+        daemon.push_block(&format!("blk_{h}"), vec![]);
+    }
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let payment_id = create_expired_order(&router, &store, &tenant.public_key, "https://merchant.example").await;
+
+    let req = trigger_rescan_request(&payment_id, &tenant.secret_token, serde_json::json!({ "mode": "simple" }));
+    let response = router.clone().oneshot(req).await.unwrap();
+    let rescan_id = body_json(response).await["rescan_id"].as_str().unwrap().to_string();
+
+    // Simulate a job that's been sitting `running` with no progress write for well
+    // past the stall threshold - the exact case a merchant/operator genuinely wants
+    // to notice, distinct from a job that's simply still walking a wide range.
+    store.lock().unwrap().update_rescan_progress(&rescan_id, 5, crate::now_unix() - 600).unwrap();
+
+    let req = Request::builder()
+        .method("GET")
+        .uri(format!("/api/v1/admin/tenant/orders/{payment_id}/rescan"))
+        .header("authorization", format!("Bearer {}", tenant.secret_token))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.oneshot(req).await.unwrap();
+    let body = body_json(response).await;
+    assert_eq!(body["stalled"], true, "expected a running job with no recent progress to read as stalled, got: {body}");
 }
 
 #[tokio::test]
