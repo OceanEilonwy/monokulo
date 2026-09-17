@@ -560,13 +560,105 @@ immediately, with zero grace period.
     (proving the boundary is real, not just documented) - exactly the gap
     the manual rescan exists to close.
 
-## 5. Documentation
+## 5. Track and display each order's scanned block range
 
-- 5.1 `docs/DESIGN.md`: new subsection under Data Model (the `order_rescans`
-  table), under HTTP API Surface (the three new admin routes), and under
-  Configuration Surface (`default_rescan_lookback_days`,
-  `max_rescan_lookback_days`, `expired_order_grace_period_minutes`,
-  `CONTROL_PLANE_HTTP_CACHE_MAX_MB`, and whatever 1.1's safety-margin
-  constant ends up being, if it becomes configurable rather than fixed)
-- 5.2 `work_notes.md`: a real entry once each phase lands, same practice
+Nothing today records which blocks have actually been examined for a
+given order - confirmed nothing like this exists on `orders` or anywhere
+else. A merchant currently has no way to tell "was the block range around
+when my customer says they paid actually checked" without asking someone
+to read logs. This closes that gap, and depends on phase 4 (the grace
+window) and phases 1-2 (the rescan) both existing, since it tracks
+coverage from *both*.
+
+- 5.1 Engine: two new columns on `orders`, updated by both live scanning
+  and the rescan job
+  - outcome: `orders` gains `first_scanned_height: Option<i64>` and
+    `last_scanned_height: Option<i64>` (migration, next in sequence) -
+    both `NULL` until an order is first examined by anything, which should
+    be essentially immediately after creation (the very next tick)
+  - what (ordinary live scanning): after processing block `H` for an
+    active tenant (the same in-scope predicate `active_tenant_ids`/
+    `non_terminal_order_ids` already use, already widened by phase 4's
+    grace window), bump every one of that tenant's currently-in-scope
+    orders: `last_scanned_height = H`,
+    `first_scanned_height = COALESCE(first_scanned_height, H)` - one bulk
+    `UPDATE` per active tenant per tick, not a per-order loop
+  - what (the rescan job, 1.1/1.3): as it walks `[from_height, to_height]`
+    for its one order, mirror the same two columns -
+    `first_scanned_height = min(existing, from_height)`,
+    `last_scanned_height = max(existing, current progress)` - updated
+    alongside 1.3's own existing `order_rescans.current_height` progress
+    write, same cadence
+  - why this reliably collapses to one continuous range rather than
+    silently hiding a gap: a completed rescan's own `to_height` is always
+    "the tip at the moment it was triggered," which is always later than
+    whatever `last_scanned_height` ordinary live scanning had already
+    reached before the order fell out of scope - so a rescan's range
+    always subsumes or reconnects with whatever came before it, *provided*
+    a new rescan's own `to` can never end earlier than the order's current
+    `last_scanned_height`. That's not automatic on its own - see 5.2, a
+    real guardrail this feature specifically needs, not a nice-to-have.
+  - test: real test - a fresh order gets `first_scanned_height` set on the
+    very first tick after creation, not backfilled to `created_at`'s own
+    height (proving ordinary live scanning genuinely never looked earlier
+    than that); `last_scanned_height` advances tick over tick while
+    in-scope, then stops advancing once the order falls out of scope; a
+    real rescan test - `first_scanned_height` moves earlier and
+    `last_scanned_height` moves later after a rescan that reaches further
+    in both directions than ordinary live scanning ever did
+- 5.2 Guardrail: a new rescan can never leave a gap before what's already
+  been scanned
+  - outcome: 2.1's trigger endpoint gains one more validation - `advanced`
+    mode's `to` must be `>= order.last_scanned_height` when it's already
+    set, rejected with a clear `400` otherwise ("choose a later end, or
+    leave `to` at its default of now")
+  - why this needs to exist, concretely: without it, a merchant could pick
+    a narrow advanced-mode window whose `to` is earlier than the order's
+    previous `last_scanned_height`, leaving a real, silent gap between the
+    old high-water mark and the new rescan's own end - a gap 5.1's simple
+    min/max range would then hide entirely, displaying a continuous range
+    that claims full coverage across a span with an actual hole in it.
+    Rejecting the request outright keeps 5.1's "one continuous range"
+    property genuinely guaranteed, not merely usually true.
+  - test: real test - an order with a real `last_scanned_height` already
+    set; an advanced-mode trigger whose `to` is earlier than that is
+    rejected with a clear error; one whose `to` is `>=` it succeeds
+    normally
+- 5.3 Engine admin API: expose the range, and whether it's still growing
+  - outcome: `OrderView` (`src/http/admin.rs`) gains
+    `first_scanned_height`/`last_scanned_height` (both `Option<i64>`,
+    mirroring 5.1) plus a computed `currently_scanning: bool` - `true` if
+    the order is presently in the live scanner's in-scope set (5.1's same
+    predicate, already widened by phase 4) *or* it has a currently-
+    `running` rescan job (`order_rescans`, 1.2) - one engine-computed
+    boolean rather than control-plane re-deriving the same scope logic
+    itself from raw fields, so there's exactly one place this is decided
+  - test: real test asserting `currently_scanning` is `true` for a
+    non-terminal order, `true` for an `Expired` order still inside its
+    grace window, `true` for an `Expired`, past-grace order with an active
+    rescan running, and `false` for an `Expired`, past-grace order with no
+    rescan running
+- 5.4 Control-plane: the "Scan range" row on the order-detail page
+  - outcome: a new row on `order_detail.html.hbs`, e.g. `<tr><th>Scan
+    range</th><td>{{order.scan_range_display}}</td></tr>` - computed
+    server-side (this codebase's own established "compute in Rust, not in
+    handlebars" convention) from 5.3's three fields: `"{first} - {last}"`
+    when `!currently_scanning`, `"{first}+"` when `currently_scanning`, or
+    a muted dash if `first_scanned_height` is still `None` (an order that
+    predates this feature, or genuinely hasn't had its first tick yet)
+  - test: real test for each of the three display states, against a real
+    order at each real point in its lifecycle (freshly created and still
+    being watched, expired and past grace with no rescan, mid-rescan)
+
+## 6. Documentation
+
+- 6.1 `docs/DESIGN.md`: new subsection under Data Model (the
+  `order_rescans` table, and `orders`' two new scanned-height columns),
+  under HTTP API Surface (the new admin routes, plus `OrderView`'s three
+  new fields), and under Configuration Surface
+  (`default_rescan_lookback_days`, `max_rescan_lookback_days`,
+  `expired_order_grace_period_minutes`, `CONTROL_PLANE_HTTP_CACHE_MAX_MB`,
+  and whatever 1.1's safety-margin constant ends up being, if it becomes
+  configurable rather than fixed)
+- 6.2 `work_notes.md`: a real entry once each phase lands, same practice
   every other multi-session piece of work in this repo already gets
