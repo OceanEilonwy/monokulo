@@ -29,6 +29,78 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 0 done -
+  the engine's daemon layer gains a real timestamp→block-height lookup.**
+  A planned, multi-phase feature (user-requested WBS, reviewed and
+  resolved before any code started) letting a merchant re-scan the chain
+  for one specific order from around its creation time, for a customer who
+  paid after the order expired. Phase 0 is the first of seven phases, and
+  the only one landed so far - a genuine prerequisite everything else
+  depends on, not a standalone feature merchants see yet.
+  - `MoneroDaemonClient` (`src/daemon.rs`) gains a new required primitive,
+    `get_block_timestamp(height) -> u64`, and a new **default** method,
+    `find_height_at_or_before(target_timestamp) -> u64` - binary search
+    over `[0, tip]` built purely from `get_height`/`get_block_timestamp`,
+    the same "one real method, every implementor gets this for free" shape
+    `is_key_image_spent_corroborated` already established. Deliberately a
+    *default* method, not something each implementor writes itself - the
+    whole point is writing the search once and having `RpcDaemonClient`,
+    `FakeDaemonClient`, and every scanner test double inherit it for free.
+  - `daemon_rpc.rs`'s `BlockHeader` struct gains the real `timestamp` field
+    monerod's `get_block` response already sends (confirmed - it was
+    always there, simply never deserialized until now); `RpcDaemonClient`'s
+    own `get_block_timestamp` is one more `get_block` call, same shape as
+    the existing `get_block_hash`.
+  - **Real blast radius, budgeted for rather than discovered mid-way**:
+    `MoneroDaemonClient` has *eleven* real implementors across this
+    codebase (`RpcDaemonClient`, `FallbackDaemonClient`, `FakeDaemonClient`,
+    plus eight narrow test-only wrappers in `daemon_fallback.rs`/
+    `scanner.rs`/`engine-test-support`) - every one needed a real
+    `get_block_timestamp` arm (a genuine RPC/failover call for the two real
+    clients, a scripted lookup for `FakeDaemonClient`, `unimplemented!`/a
+    plain stub for the narrow test doubles that never exercise it). Found
+    via `grep -rn "MoneroDaemonClient for"` (not the narrower `"impl
+    MoneroDaemonClient for"`, which silently misses a generic `impl<D:
+    MoneroDaemonClient> MoneroDaemonClient for DaemonFailingFrom<D>` -
+    the compiler caught the one grep missed, confirming eleven, not ten).
+  - `FakeDaemonClient` (this codebase's own established "test scanner
+    logic against a deterministic scripted fake, not a live node"
+    infrastructure, `daemon.rs`'s own module doc comment) gained a
+    `timestamp` field on `FakeBlock`, a deterministic default formula
+    (`push_block`/`seed_block_at` need no signature change - zero risk to
+    the existing, large scanner test suite) and a new `set_block_timestamp`
+    setter for a test that wants to script something else - including a
+    deliberately non-monotonic timestamp, since real Monero block
+    timestamps aren't strictly monotonic and `find_height_at_or_before`'s
+    own tolerance for that needed real test coverage, not just a doc
+    comment claiming it.
+  - Real tests, hermetic first: 6 new tests in `daemon.rs` against
+    `FakeDaemonClient` (exact match, between-two-blocks, at/after tip,
+    before genesis, single-block chain, non-monotonic timestamps not
+    panicking) - one of these caught a real bug in my own *test*, not the
+    implementation: an early draft asserted `find_height_at_or_before(0)`
+    on a single-block chain should return that one block, when the
+    correct "at or before" answer for a target genuinely before the only
+    real block's own timestamp is honestly "nothing" (genesis, `0`) - the
+    same answer the multi-block genesis test already established, and
+    what the actual (correct) implementation returned. Fixed the test, not
+    the code. Two new `#[ignore]`d live-node tests added to `daemon_rpc.rs`
+    (`get_block_timestamp` and `find_height_at_or_before` both verified
+    against the real project test node, same "captured live, not assumed"
+    convention every other RPC field in that file already follows) - run
+    for real this session (`cargo test ... -- --ignored`), both passing
+    against real, current mainnet data.
+  - `cargo test --workspace` (all crates, 0 failures, moneropay-core's own
+    suite 279 passing/10 ignored, up from 272/8) and `cargo build
+    --workspace --tests --features e2e` (both root and `mock-woocommerce`)
+    both clean.
+  - Proceeding sequentially into Phase 1 (the one-order historical rescan
+    primitive, reusing `scan_transaction`/`record_scan_match`) next, per
+    the WBS's own dependency ordering and the user's explicit "begin the
+    sequenced implementation... yourself" instruction. This is genuinely
+    large (7 phases, `docs/order_rescan_wbs.md`) - expect several more
+    entries here as it lands, not one entry when it's all done.
+
 - **User-requested follow-up to the previous round: removed the "fixed" FX
   provider entirely, added a trivial XMR identity provider, and dropped the
   Coingecko currency whitelist in favor of live discovery.** The user's own
