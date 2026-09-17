@@ -1,4 +1,4 @@
-# MoneroPay Cloud — WooCommerce MVP Work Breakdown Structure
+# Monokulo — WooCommerce MVP Work Breakdown Structure
 
 Companion to `docs/WOOCOMMERCE_ROADMAP.md` (read that first for the *why*;
 this is the *what, in what order*). Scope: everything needed to reach a
@@ -43,10 +43,10 @@ despite the two tracks above being independent on paper:
   - 0.1 Add the Cargo workspace and empty crate skeletons
     - outcome: `cargo build --workspace` and `cargo test --workspace` succeed
       across the existing engine plus three new empty crates
-      (`shared`, `control-plane`, `mock-woocommerce`)
+      (`shared`, `monokulo`, `mock-woocommerce`)
     - what: add `[workspace]` to the root `Cargo.toml`; scaffold each new
       crate with a minimal `lib.rs`/`main.rs`; give `mock-woocommerce` (and
-      any control-plane test target that wants one) `moneropay-core` itself
+      any monokulo test target that wants one) `scanner` itself
       as a path dependency — confirmed via `src/lib.rs` that every module
       (`http`, `store`, `key_custody`, ...) is already `pub`, so this is a
       real, usable library dependency, not just the binary
@@ -71,7 +71,7 @@ despite the two tracks above being independent on paper:
     - outcome: `shared::webhook_sign` provides sign/verify; the engine's
       `src/webhook_sign.rs` calls into it
     - what: same cut/move pattern as 0.2. Confirmed format: hex-encoded
-      HMAC-SHA256 over the raw payload bytes, header `X-MoneroPay-Signature`,
+      HMAC-SHA256 over the raw payload bytes, header `X-Monokulo-Signature`,
       verified with a constant-time comparison (`Mac::verify_slice`, not
       `==`) specifically to avoid a byte-at-a-time forgery oracle — that
       constant-time requirement matters again at 1.5.4, where it has to be
@@ -102,10 +102,10 @@ despite the two tracks above being independent on paper:
       nor_its_version_row` and `reopening_an_existing_database_file_does_
       not_reapply_migrations` — both are regression guards for exactly the
       failure modes a second, hand-rolled migration mechanism for the
-      control-plane database would otherwise risk reintroducing
+      monokulo database would otherwise risk reintroducing
   - 0.6 Cross-crate test harness for a real, bound engine instance
     - outcome: any crate in the workspace can start a real
-      `moneropay-core` instance bound to an ephemeral local port for the
+      `scanner` instance bound to an ephemeral local port for the
       duration of a test and get back its real address, then tear it down
     - what: a small helper (in `shared`, or a dev-only sibling crate) that
       takes a `Config`, builds the router via the now-confirmed-public
@@ -153,7 +153,7 @@ despite the two tracks above being independent on paper:
         `POST /api/v1/admin/tenants`, and a matching `get_tenant(sk_)`
         wrapping `GET /api/v1/admin/tenant` for 1.2.2's verification and the
         later "adopt"-equivalent needs
-      - what: `reqwest`-based client, in `shared` or `control-plane`.
+      - what: `reqwest`-based client, in `shared` or `monokulo`.
         Confirmed the real auth format from `AuthedTenant`'s extractor in
         `src/http/mod.rs`: a plain `Authorization: Bearer sk_...` header —
         worth stating explicitly here so the client is right on the first
@@ -230,7 +230,7 @@ despite the two tracks above being independent on paper:
       - outcome: connect registers a webhook at the mock's receiver URL;
         the mock verifies a real signed delivery
       - what: extend 1.4.1's finish step to register the webhook; add a
-        receiver route to the mock checking `X-MoneroPay-Signature`
+        receiver route to the mock checking `X-Monokulo-Signature`
       - test: unit test for signature verification against known vectors
         (via `shared::webhook_sign`); integration test — force a real
         delivery and assert the mock logs a verified event
@@ -259,9 +259,9 @@ despite the two tracks above being independent on paper:
     a webhook receiver — every real decision stays in the Rust engine.
     - 1.5.1 Gateway skeleton registers in WooCommerce
       - outcome: the plugin, installed on a WordPress site, shows "Monero
-        (via MoneroPay Cloud)" as a checkout option (disabled state is
+        (via Monokulo)" as a checkout option (disabled state is
         fine at this step)
-      - what: `WC_Gateway_MoneroPay` class + plugin bootstrap file
+      - what: `WC_Gateway_Monokulo` class + plugin bootstrap file
       - test: `wp-env`/WooCommerce PHPUnit test asserting the gateway ID
         appears in the available-gateways list
     - 1.5.2 `process_payment` → order creation → redirect
@@ -286,7 +286,7 @@ despite the two tracks above being independent on paper:
         status mapping, `event_id` dedupe via order meta. The HMAC check is
         a fresh PHP implementation — `shared::webhook_sign` (0.3) is Rust
         and can't be called from PHP — but it must match byte-for-byte: hex
-        HMAC-SHA256 over the raw body, header `X-MoneroPay-Signature`, and
+        HMAC-SHA256 over the raw body, header `X-Monokulo-Signature`, and
         **compared with `hash_equals()`, never `===`**. The Rust side uses a
         constant-time comparison specifically to avoid a byte-at-a-time
         forgery timing oracle (see `src/webhook_sign.rs`'s own doc comment);

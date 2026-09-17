@@ -1,4 +1,4 @@
-# MoneroPay — Design Document
+# Monokulo — Design Document
 
 Status: pre-implementation design. Everything here except the `key_custody` module
 (`src/key_custody/`) and the schema (`migrations/0001_init.sql`) is specification, not
@@ -88,7 +88,7 @@ difference is how many rows exist in `tenants`:
 
 ### 4.1 Onboarding tooling
 
-`moneropay-core --init` (optionally `--stagenet`/`--testnet`, `--config <path>`) is
+`scanner --init` (optionally `--stagenet`/`--testnet`, `--config <path>`) is
 an interactive wizard that produces or merges `moneropay.toml` — curated node
 choice with a live "test this connection now" check, the `[wallet]` bootstrap
 walked through field by field (or, on a re-run against an existing bootstrap,
@@ -113,7 +113,7 @@ front of it).
 The database always lives next to whichever config file was actually used
 (`moneropay.db` in the config's own directory, not the process's CWD) so these
 commands, and the server itself, reliably agree on which file they mean
-regardless of the directory `moneropay-core` happens to be launched from.
+regardless of the directory `scanner` happens to be launched from.
 
 ## 5. High-Level Architecture
 
@@ -164,11 +164,11 @@ Components, each with one clear owner of state:
 
 The diagram's "Static site (GH Pages) + client lib" box describes a self-hoster's own
 direct integration against this engine's plain JSON API (§10.3) - real, still
-supported, but no longer how the hosted SaaS product (control-plane) works.
+supported, but no longer how the hosted SaaS product (monokulo) works.
 `docs/fx_refactor.md` moved fiat pricing, the checkout page, and the embed client
-library off this engine entirely: a merchant using control-plane has *that* service
+library off this engine entirely: a merchant using monokulo has *that* service
 sitting where this diagram shows the static site talking to the engine directly, and
-control-plane is the one that talks to this engine's API on the merchant's behalf
+monokulo is the one that talks to this engine's API on the merchant's behalf
 (§10.4, §14). This engine's own diagram and JSON API are otherwise unchanged - it
 still just watches the chain and manages orders/tenants/webhooks; fiat/checkout is
 simply no longer any part of what it does.
@@ -657,7 +657,7 @@ illustrative of the model's shape, not a byte-for-byte current schema dump.
 `exchange_rate` and `tenants.template_dir` from the columns below — the engine has no
 concept of fiat/FX or per-tenant checkout customization left in it at all; `xmr_amount_piconero`
 is the sole source of truth for what an order is worth, and any fiat display is a
-control-plane concern (its own local `order_fiat_metadata` table, not part of this schema).
+monokulo concern (its own local `order_fiat_metadata` table, not part of this schema).
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -848,7 +848,7 @@ matches on `/api/v1/admin/*` exactly as easily as on a bare `/admin/*`.
 
 The engine no longer has a checkout/payment-link page of its own at all
 (`docs/fx_refactor.md` Phase 2-4): that HTML surface, and everything fiat/FX-shaped,
-moved to control-plane, which is now the only thing that renders a page a customer's
+moved to monokulo, which is now the only thing that renders a page a customer's
 browser ever sees. What follows in this section is strictly the engine's own remaining
 JSON API — `xmr_amount_piconero` only, no fiat concept anywhere in it.
 
@@ -909,28 +909,28 @@ No bearer auth — scoped by `pk_` in the path plus an `allowed_origins` check o
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/api/v1/t/{pk}/orders` | `{merchant_order_id?, xmr_amount_piconero, description?}` → `{payment_id, address, xmr_amount_piconero, expires_at}` — the caller (in practice, control-plane's own order-creation endpoint) supplies the exact piconero amount an order is worth; the engine does no fiat lookup of any kind (`docs/fx_refactor.md` Phase 3) |
+| `POST` | `/api/v1/t/{pk}/orders` | `{merchant_order_id?, xmr_amount_piconero, description?}` → `{payment_id, address, xmr_amount_piconero, expires_at}` — the caller (in practice, monokulo's own order-creation endpoint) supplies the exact piconero amount an order is worth; the engine does no fiat lookup of any kind (`docs/fx_refactor.md` Phase 3) |
 | `GET` | `/api/v1/t/{pk}/orders/{payment_id}` | Status poll |
 | `POST` | `/api/v1/t/{pk}/orders/{payment_id}/refund-address` | Records only; nothing ever sends it |
 
 ### 10.4 Checkout page and client library — moved off the engine
 
-Both now live on control-plane, not here (`docs/fx_refactor.md` Phases 2-4):
+Both now live on monokulo, not here (`docs/fx_refactor.md` Phases 2-4):
 
 - The checkout/payment-link page (iframe embed target and standalone customer-facing
-  link) is `GET /pay/{pk}/orders/{payment_id}` on control-plane
-  (`control-plane/src/http/checkout.rs`), not a route on this engine at all. It shows
+  link) is `GET /pay/{pk}/orders/{payment_id}` on monokulo
+  (`monokulo/src/http/checkout.rs`), not a route on this engine at all. It shows
   the recomputed `status`, a double-spend explanation banner whenever
   `double_spend_detected_at` is set (§7.6, unrelated to which `status` is currently
-  shown), and a fiat amount sourced entirely from control-plane's own local
+  shown), and a fiat amount sourced entirely from monokulo's own local
   `order_fiat_metadata` — this engine has nothing to contribute to that display since
   it stores no fiat data. There is no per-tenant template customization any more:
-  every tenant gets the same control-plane-rendered page.
-- The embeddable widget script (`MoneroPay.createOrder()`/`.mount()`) is served from
-  control-plane at `GET /static/moneropay-client.js` and calls control-plane's own
+  every tenant gets the same monokulo-rendered page.
+- The embeddable widget script (`Monokulo.createOrder()`/`.mount()`) is served from
+  monokulo at `GET /static/moneropay-client.js` and calls monokulo's own
   `POST /pay/{pk}/orders`, not this engine's API directly.
 
-A self-hoster running the engine alone, with no control-plane in front of it, has
+A self-hoster running the engine alone, with no monokulo in front of it, has
 neither of these — they get the plain JSON API in §10.3 and are expected to build
 their own checkout experience against it, per this project's own "power users write a
 custom integration" stance on that deployment shape.
@@ -951,12 +951,12 @@ custom integration" stance on that deployment shape.
   never the writer itself, so a slow or unresponsive merchant endpoint cannot stall
   order-state commits.
 - Each delivery is signed: HMAC-SHA256 of the body using the webhook's
-  `signing_secret`, sent as a header (`X-MoneroPay-Signature`).
+  `signing_secret`, sent as a header (`X-Monokulo-Signature`).
 - Every payload carries a common envelope alongside its event-specific fields:
   `event_id` (`evt_…`, minted once per *event* — every retry of that delivery re-sends
   the same id under the same signature), `event` (the event type, mirroring
-  `X-MoneroPay-Event`), and `created_at` (unix seconds). `event_id` is also sent as
-  `X-MoneroPay-Event-Id`, read back out of the signed body so header and body can
+  `X-Monokulo-Event`), and `created_at` (unix seconds). `event_id` is also sent as
+  `X-Monokulo-Event-Id`, read back out of the signed body so header and body can
   never disagree. Both fields are *inside* the signed body deliberately: without an
   id, a retry of a lost-ack delivery is byte-identical to a genuine second transition
   to the same status, and without a timestamp a captured delivery can be replayed
@@ -1015,10 +1015,10 @@ private_view_key = "..."
 
 # No [exchange_rate] section: the engine has no concept of fiat/FX at all
 # (`docs/fx_refactor.md` Phase 3/4) - `xmr_amount_piconero` is the only unit an order
-# is ever priced in here. A hosted-SaaS front end (control-plane) that wants to quote
+# is ever priced in here. A hosted-SaaS front end (monokulo) that wants to quote
 # fiat prices owns that lookup entirely on its own side, via its own
 # `CONTROL_PLANE_EXCHANGE_RATE_*` environment variables - see
-# `control-plane/src/exchange_rate_config.rs`, not this file.
+# `monokulo/src/exchange_rate_config.rs`, not this file.
 
 [payment]
 confirmations_required = 10
@@ -1057,49 +1057,49 @@ Two rescan-related knobs live outside this file entirely:
 - **`RESCAN_START_HEIGHT_CUSHION_BLOCKS`** (`src/scanner.rs`) - the fixed safety margin
   (720 blocks, ~24h) subtracted from a rescan's timestamp-derived start height (§7.8) -
   covers both the timestamp binary search's own slop and the advanced-mode date
-  fields' inherent timezone ambiguity (control-plane labels them UTC; a plain
+  fields' inherent timezone ambiguity (monokulo labels them UTC; a plain
   `<input type="date">` carries no timezone at all). A compile-time constant, not
   configuration, for now - there has been no operational need yet to tune it per
   deployment.
-- **`CONTROL_PLANE_HTTP_CACHE_MAX_MB`** - control-plane's own environment variable
+- **`CONTROL_PLANE_HTTP_CACHE_MAX_MB`** - monokulo's own environment variable
   (default 16), not part of this engine's TOML at all. Sizes the byte-bounded HTTP
-  response cache (`shared::http_cache`) control-plane uses for every outbound call to
+  response cache (`shared::http_cache`) monokulo uses for every outbound call to
   this engine's admin API and to Coingecko - see `shared/src/http_cache.rs`'s own
   module doc comment.
 
 ## 14. Client Library
 
 **Moved off this engine entirely** (`docs/fx_refactor.md` decision 3): fiat pricing
-and the checkout page both live on control-plane now, so the embed library talks to
-control-plane, not this engine directly. Served from
-`control-plane/static/moneropay-client.js` at `GET /static/moneropay-client.js` on
-whichever control-plane instance a merchant is using:
+and the checkout page both live on monokulo now, so the embed library talks to
+monokulo, not this engine directly. Served from
+`monokulo/static/moneropay-client.js` at `GET /static/moneropay-client.js` on
+whichever monokulo instance a merchant is using:
 
 ```html
 <script src="https://cloud.example.com/static/moneropay-client.js"></script>
 <div id="checkout"></div>
 <script>
-  const order = await MoneroPay.createOrder({
+  const order = await Monokulo.createOrder({
     publicKey: "pk_...",
     fiatAmount: 25.00,
     fiatCurrency: "USD",
   });
-  MoneroPay.mount("#checkout", order, {
+  Monokulo.mount("#checkout", order, {
     onPaid: (o) => window.location = "/thank-you.html",
     onExpired: () => alert("Payment window expired"),
   });
 </script>
 ```
 
-`createOrder()` posts to control-plane's own `POST /pay/{pk}/orders` (§10.3's
+`createOrder()` posts to monokulo's own `POST /pay/{pk}/orders` (§10.3's
 XMR-only engine endpoint is never called from the browser); `mount()` injects an
 `<iframe src="https://cloud.example.com/pay/{pk}/orders/{paymentId}">` and listens for
 `postMessage` events that page posts on status changes. All payment logic and UI lives
-server-side in control-plane's own templates; the client library stays thin
+server-side in monokulo's own templates; the client library stays thin
 deliberately, since it is the one surface running as plain JS on an arbitrary
 third-party site with no build step assumed.
 
-A self-hoster running the engine alone, with no control-plane, has no equivalent of
+A self-hoster running the engine alone, with no monokulo, has no equivalent of
 this file at all — see §10.4's closing note.
 
 ## 15. Build & Packaging

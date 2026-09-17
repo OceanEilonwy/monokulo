@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<!-- Monokulo favicon: a looking-glass/monocle lens (the "okulo" - eye - the
+     name is built on) with a Monero-orange pupil at its center. Deliberately
+     stripped down from static/logo.svg - no eye outline, no facet detail -
+     so the silhouette still reads at 16px. -->
+<circle cx="28" cy="28" r="16" fill="#f4f1ea" stroke="#111111" stroke-width="5"/>
+<line x1="39.3" y1="39.3" x2="56" y2="56" stroke="#111111" stroke-width="6" stroke-linecap="round"/>
+<circle cx="28" cy="28" r="6" fill="#ff6600"/>
+</svg>

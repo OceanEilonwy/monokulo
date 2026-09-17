@@ -1,6 +1,6 @@
-# Incident Runbook — Box Compromise (MoneroPay Cloud)
+# Incident Runbook — Box Compromise (Monokulo)
 
-WBS 2.3.2. Covers the scenario a hosted, multi-tenant `moneropay-core` instance
+WBS 2.3.2. Covers the scenario a hosted, multi-tenant `scanner` instance
 is actually exposed to when its box is compromised: **a privacy incident, not
 a funds-loss one.** This is not a hedge — it is a direct consequence of
 `docs/DESIGN.md` §6.1: every wallet this system ever holds is watch-only
@@ -51,12 +51,12 @@ finding, since not every read the attacker got is equally bad.
    it going forward. That is a merchant-facing, non-code decision (§4 below),
    not an on-call action. What *can* be rotated immediately, unilaterally, by
    an operator:
-   - Every `secret_token` (`moneropay-core --rotate-secret`, per tenant —
+   - Every `secret_token` (`scanner --rotate-secret`, per tenant —
      `docs/DESIGN.md` §4.1's onboarding-tooling flags operate directly on the
      local SQLite file, exactly the operation this calls for).
    - Every webhook signing secret (same admin surface).
-   - Any control-plane-issued OAuth/connect-flow tokens still outstanding
-     (`control-plane`'s `connect_tokens` — these are already single-use with
+   - Any monokulo-issued OAuth/connect-flow tokens still outstanding
+     (`monokulo`'s `connect_tokens` — these are already single-use with
      a 10-minute TTL per `docs/WOOCOMMERCE_WBS.md`'s connect-flow spec, so
      the exposure window for an *unused* token is already small, but any
      issued-and-unconsumed token from before the compromise should be treated

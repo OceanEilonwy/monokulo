@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WBS 2.3.1: restore a moneropay-core backup (produced by backup-database.sh)
+# WBS 2.3.1: restore a scanner backup (produced by backup-database.sh)
 # onto a fresh box.
 #
 # ============================================================================
@@ -8,7 +8,7 @@
 # "a backup taken from the running instance restores cleanly on a fresh box."
 # ============================================================================
 #
-#   1. Get a moneropay-core binary and its config (moneropay.toml) onto the
+#   1. Get a scanner binary and its config (moneropay.toml) onto the
 #      new box - same version that produced the backup, or newer (migrations
 #      in migrations/*.sql are forward-only and additive; an older binary
 #      than the one that wrote the backup may refuse to start against a
@@ -22,7 +22,7 @@
 #      and the .sha256 file backup-database.sh writes alongside each backup
 #      is exactly what you diff after that transfer to confirm nothing
 #      corrupted in transit).
-#   3. Do NOT start moneropay-core against the destination path yet. Run this
+#   3. Do NOT start scanner against the destination path yet. Run this
 #      script to place the backup at the config's expected database path
 #      first:
 #
@@ -44,7 +44,7 @@
 #      acceptance bar this WBS step names: diffing tenant/order counts
 #      before and after is the pass condition, not merely "the restore
 #      command exited 0."
-#   5. Only now start moneropay-core against the new box's config. On boot it
+#   5. Only now start scanner against the new box's config. On boot it
 #      re-applies (already-applied, so harmless - see src/store.rs's own
 #      comment on why migrations are re-run and re-checked every boot rather
 #      than assumed-already-done) migrations, unseals every non-disabled

@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Webhooks - Monokulo</title>
+{{> styles}}
+</head>
+<body>
+{{> nav}}
+<div class="wrap">
+
+<p><a href="/dashboard/connections/{{connection_id}}">&larr; back to store</a></p>
+<h1>Webhooks</h1>
+
+{{#if error}}
+<p class="error">{{error}}</p>
+{{/if}}
+
+{{#if created_webhook_signing_secret}}
+<div class="box">
+<h2>Webhook created</h2>
+<p>Its signing secret (verify the <code>X-Monokulo-Signature</code> header with this - shown once, right now, and never again):</p>
+<pre>{{created_webhook_signing_secret}}</pre>
+<p class="hint">Store it somewhere safe before leaving this page. If you lose it, delete this webhook and create a new one.</p>
+</div>
+{{/if}}
+
+<table>
+<thead>
+<tr><th>URL</th><th>Enabled</th><th>Created</th><th></th></tr>
+</thead>
+<tbody>
+{{#each webhooks}}
+<tr>
+<td>{{this.url}}</td>
+<td>{{#if this.enabled}}<span class="tag tag-ok">enabled</span>{{else}}<span class="tag tag-unknown">disabled</span>{{/if}}</td>
+<td>{{this.created_at}}</td>
+<td>
+<form method="post" action="/dashboard/connections/{{../connection_id}}/webhooks/{{this.webhook_id}}/delete" onsubmit="return confirm('Delete this webhook? Anything relying on it will stop receiving events immediately.');">
+<button type="submit" class="btn-secondary">Delete</button>
+</form>
+</td>
+</tr>
+{{/each}}
+</tbody>
+</table>
+{{#unless webhooks}}
+<p class="muted">No webhooks yet.</p>
+{{/unless}}
+
+<div class="box">
+<h2>Add a webhook</h2>
+<form method="post" action="/dashboard/connections/{{connection_id}}/webhooks">
+<label>URL
+<input type="url" name="url" placeholder="https://your-endpoint.example.com/monokulo-webhook" required>
+<span class="field-help">A plain <code>http(s)://</code> URL your endpoint controls. Private/loopback addresses are
+checked at delivery time, not registration - registering one won't error here, but nothing will ever actually be
+delivered to it.</span>
+</label>
+<label>Custom headers (optional)
+<textarea name="extra_headers" rows="3" placeholder="X-Api-Key: your-value&#10;Another-Header: another-value"></textarea>
+<span class="field-help">One <code>Header-Name: value</code> pair per line - sent with every delivery to this
+webhook, alongside the signature headers Monokulo always includes.</span>
+</label>
+<button type="submit">Add webhook</button>
+</form>
+</div>
+
+</div>
+</body>
+</html>

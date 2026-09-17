@@ -399,34 +399,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "a6ef517f0926dd24a1582492c791b6a4818a4d94e789a334894aa15b0d12f55c"
 
 [[package]]
-name = "control-plane"
-version = "0.1.0"
-dependencies = [
- "aes-gcm",
- "axum",
- "axum-extra",
- "engine-test-support",
- "handlebars",
- "hex",
- "http-body-util",
- "monero",
- "moneropay-core",
- "qrcode",
- "reqwest",
- "reqwest-middleware",
- "rusqlite",
- "serde",
- "serde_json",
- "shared",
- "thiserror",
- "time",
- "tokio",
- "tower",
- "url",
- "uuid",
-]
-
-[[package]]
 name = "cookie"
 version = "0.18.2"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -802,22 +774,6 @@ dependencies = [
  "sec1",
  "subtle",
  "zeroize",
-]
-
-[[package]]
-name = "engine-test-support"
-version = "0.1.0"
-dependencies = [
- "async-trait",
- "axum",
- "hex",
- "key-custody-server",
- "key-custody-service",
- "monero",
- "moneropay-core",
- "reqwest",
- "serde_json",
- "tokio",
 ]
 
 [[package]]
@@ -1464,7 +1420,7 @@ dependencies = [
  "hex",
  "key-custody-service",
  "monero",
- "moneropay-core",
+ "scanner",
  "tokio",
 ]
 
@@ -1585,12 +1541,12 @@ name = "mock-woocommerce"
 version = "0.1.0"
 dependencies = [
  "axum",
- "control-plane",
- "engine-test-support",
  "hex",
  "monero",
- "moneropay-core",
+ "monokulo",
  "reqwest",
+ "scanner",
+ "scanner-test-support",
  "serde",
  "serde_json",
  "shared",
@@ -1846,38 +1802,31 @@ dependencies = [
 ]
 
 [[package]]
-name = "moneropay-core"
+name = "monokulo"
 version = "0.1.0"
 dependencies = [
- "async-trait",
+ "aes-gcm",
  "axum",
- "control-plane",
- "curve25519-dalek",
+ "axum-extra",
  "handlebars",
  "hex",
- "hmac",
  "http-body-util",
- "key-custody-service",
  "monero",
- "monero-daemon-rpc",
- "monero-wallet",
  "qrcode",
- "rand 0.10.2",
- "rand_core 0.6.4",
  "reqwest",
+ "reqwest-middleware",
  "rusqlite",
+ "scanner",
+ "scanner-test-support",
  "serde",
  "serde_json",
- "sha2",
  "shared",
  "thiserror",
+ "time",
  "tokio",
- "toml",
  "tower",
- "tower-http 0.7.1",
  "url",
  "uuid",
- "zeroize",
 ]
 
 [[package]]
@@ -2568,6 +2517,57 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "93fc1dc3aaa9bfed95e02e6eadabb4baf7e3078b0bd1b4d7b6b0b68378900502"
 dependencies = [
  "winapi-util",
+]
+
+[[package]]
+name = "scanner"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "curve25519-dalek",
+ "handlebars",
+ "hex",
+ "hmac",
+ "http-body-util",
+ "key-custody-service",
+ "monero",
+ "monero-daemon-rpc",
+ "monero-wallet",
+ "monokulo",
+ "qrcode",
+ "rand 0.10.2",
+ "rand_core 0.6.4",
+ "reqwest",
+ "rusqlite",
+ "serde",
+ "serde_json",
+ "sha2",
+ "shared",
+ "thiserror",
+ "tokio",
+ "toml",
+ "tower",
+ "tower-http 0.7.1",
+ "url",
+ "uuid",
+ "zeroize",
+]
+
+[[package]]
+name = "scanner-test-support"
+version = "0.1.0"
+dependencies = [
+ "async-trait",
+ "axum",
+ "hex",
+ "key-custody-server",
+ "key-custody-service",
+ "monero",
+ "reqwest",
+ "scanner",
+ "serde_json",
+ "tokio",
 ]
 
 [[package]]

@@ -9,7 +9,7 @@ was never matched.
 
 This file exists because the change touches the engine's scanner, its
 daemon-RPC layer, a genuinely new background-job shape, a new admin
-endpoint, and control-plane's dashboard/order-detail pages — read this
+endpoint, and monokulo's dashboard/order-detail pages — read this
 before starting any leaf below, and keep `work_notes.md` in sync as each
 phase lands, same convention `docs/fx_refactor.md` established.
 
@@ -61,7 +61,7 @@ this up later, same convention `docs/fx_refactor.md` already established.
    `GET /api/v1/admin/tenant/rescans`, using genuine `ETag`/`Cache-Control`/
    `If-None-Match` semantics (not a bespoke in-process TTL cache dressed up
    to look like one) — see 2.3/3.1 below. **Broadened while resolving
-   this**: the HTTP-cache-aware client becomes control-plane's *default*
+   this**: the HTTP-cache-aware client becomes monokulo's *default*
    transport for every outbound call (`EngineClient` and
    `CoingeckoRateProvider` both), not hand-wired for this one endpoint —
    see 3.1's own note on why that's safe by construction, and on keeping
@@ -321,7 +321,7 @@ this up later, same convention `docs/fx_refactor.md` already established.
   (decision 3, real HTTP caching)
   - outcome: every currently-`running` rescan for this tenant (in practice
     almost always zero or one, given 1.2's one-job-per-tenant guardrail) -
-    lets control-plane's dashboard-home page answer "is anything syncing
+    lets monokulo's dashboard-home page answer "is anything syncing
     right now" with one call instead of one per listed order
   - what (real HTTP caching, not a bespoke cache): the handler computes a
     cheap `ETag` from 1.2's own state - `"none"` when nothing is running,
@@ -329,7 +329,7 @@ this up later, same convention `docs/fx_refactor.md` already established.
     query, no scan) - and sets `Cache-Control: max-age=<a few seconds>`.
     Honors `If-None-Match`: a matching `ETag` gets a bodyless `304 Not
     Modified`, cheap on both ends. This is the same mechanism a browser or
-    CDN would use, applied here between control-plane and the engine.
+    CDN would use, applied here between monokulo and the engine.
   - test: real test asserting an empty list with nothing running, and the
     real in-progress job while one is active; a real conditional-request
     test (send `If-None-Match` with the current `ETag`, assert `304`; bump
@@ -338,11 +338,11 @@ this up later, same convention `docs/fx_refactor.md` already established.
 
 ## 3. Control-plane: trigger UI and progress display
 
-- 3.1 A shared HTTP-cache-aware client, adopted as control-plane's default
+- 3.1 A shared HTTP-cache-aware client, adopted as monokulo's default
   transport - plus `EngineClient`'s three new calls
   - outcome: a single `reqwest-middleware`-wrapped client (the
     `http-cache-reqwest` crate, layered on plain `reqwest`) becomes the
-    transport **every** outbound HTTP call in control-plane goes through -
+    transport **every** outbound HTTP call in monokulo goes through -
     `EngineClient` (every method, not just the new ones) and
     `CoingeckoRateProvider` (`shared`, so this crate gains the new
     dependency too) - rather than something hand-wired for one endpoint.
@@ -387,7 +387,7 @@ this up later, same convention `docs/fx_refactor.md` already established.
     `CONTROL_PLANE_HTTP_CACHE_MAX_MB` env var (a plain integer, megabytes -
     converted to bytes for the weigher-based `max_capacity` above), same
     parse-with-a-clear-error-and-a-default convention every other
-    control-plane numeric knob already uses
+    monokulo numeric knob already uses
     (`exchange_rate_config::parse`'s own `CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS`
     is the closest sibling to copy). Defaults to `16` (MB) - even a
     generous estimate of the real cacheable surface (on the order of a
@@ -665,7 +665,7 @@ coverage from *both*.
     the order is presently in the live scanner's in-scope set (5.1's same
     predicate, already widened by phase 4) *or* it has a currently-
     `running` rescan job (`order_rescans`, 1.2) - one engine-computed
-    boolean rather than control-plane re-deriving the same scope logic
+    boolean rather than monokulo re-deriving the same scope logic
     itself from raw fields, so there's exactly one place this is decided
   - test: real test asserting `currently_scanning` is `true` for a
     non-terminal order, `true` for an `Expired` order still inside its

@@ -29,6 +29,74 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Rename + restructure (user-requested, item 4 from the same review round
+  above): `engine` -> `scanner`, `control-plane` -> `monokulo`, every
+  crate moved under `crates/`, full brand rename, and a hand-drawn logo.**
+  - **Workspace restructure**: every crate (`shared`, `mock-woocommerce`,
+    `engine-test-support`, `key-custody-service`, `key-custody-server`,
+    `snp-attest`, and the former root package) moved under `crates/` via
+    `git mv` (history preserved). The root `Cargo.toml` went from a hybrid
+    workspace-and-package manifest (the root package *was* the engine) to a
+    pure virtual workspace (`[workspace]` only, `resolver = "2"` set
+    explicitly since a virtual manifest doesn't infer it the way an
+    edition-2021 package manifest does) listing all 8 `crates/*` members.
+    The former root package became `crates/scanner/`.
+  - **`moneropay-core` -> `scanner`, `control-plane` -> `monokulo`,
+    `engine-test-support` -> `scanner-test-support`**: package names, every
+    consuming crate's path dependency, every `use moneropay_core::`/
+    `use control_plane::`/`use engine_test_support::` across the whole
+    tree, every hyphenated string literal that named the crate (CLI help
+    text, user-agent strings, systemd unit `ExecStart=` binary paths,
+    `scripts/dev-run.sh`'s build/bin-path logic, `docs/*.md`), all
+    mechanically renamed - these are exact, unambiguous compound
+    identifiers, not the generic prose word "engine", so a global rename
+    was safe; the ordinary English word "engine" (e.g. "the Rust engine
+    process") was deliberately left alone throughout.
+  - **Full brand rename, "MoneroPay Cloud" -> "Monokulo"** (the user chose
+    the broadest of three offered scopes - website only, website + plugin
+    name, or everywhere - after being asked, since the WooCommerce plugin's
+    own name/slug/JS API/webhook header is a bigger, externally-visible
+    surface than the internal crate rename): every page title, the nav
+    brand, the landing page copy, the WooCommerce plugin itself
+    (`plugins/moneropay-cloud/` -> `plugins/monokulo/`, `Plugin Name`,
+    `Text Domain`, its gateway id `moneropay_cloud` -> `monokulo`, its
+    class `WC_Gateway_MoneroPay` -> `WC_Gateway_Monokulo`, both PHP files
+    renamed via `git mv`), the webhook signature/event headers
+    (`X-MoneroPay-Signature`/`X-MoneroPay-Event(-Id)` ->
+    `X-Monokulo-Signature`/`X-Monokulo-Event(-Id)`, updated on both the Rust
+    sender and PHP receiver sides so they still agree), the embeddable JS
+    widget (`static/moneropay-client.js` -> `static/monokulo-client.js`,
+    `window.MoneroPay` -> `window.Monokulo`), and the encryption-key/
+    rate-limit env vars (`CONTROL_PLANE_ENCRYPTION_KEY` ->
+    `MONOKULO_ENCRYPTION_KEY`, similarly for the rate-limit one). `php -l`
+    clean on every touched PHP file (no WordPress test harness available
+    here to run the plugin's own PHPUnit suite - flagging that gap rather
+    than claiming coverage that wasn't actually exercised).
+  - **The "okulo" concept and a hand-drawn logo**: the mark
+    (`crates/monokulo/static/logo.svg`, plus a `logo-inverted.svg` variant
+    recolored for the dark nav bar and a simplified `favicon.svg`) combines
+    all three requested elements into one glyph rather than three stitched
+    together - a looking-glass ring and handle, a monocle's small
+    chain-loop on the rim, and an eye looking back through the lens whose
+    pupil is a Monero-orange faceted "gem." Kept to the three colors
+    `_styles.html.hbs` already defines (ink/paper/accent) - no new palette.
+    Wired in as same-origin static routes (`GET /static/logo.svg`,
+    `/logo-inverted.svg`, `/favicon.svg`), same pattern as the existing
+    embeddable-JS route - no third-party CDN dependency. The landing page
+    got a hero section pairing the full mark with a one-line gloss on the
+    name itself ("mono" + "okulo" - Esperanto for "eye"). The bare,
+    iframed checkout page deliberately still carries no brand text (its own
+    existing test enforces this) - it does now pick up the small favicon
+    via the shared `styles` partial, which doesn't show inside an iframe
+    and isn't the kind of "site brand" that test is guarding against.
+    Rendered every SVG with `rsvg-convert` and the assembled nav/landing
+    HTML with headless Chromium to actually look at it before calling this
+    done, not just trusting the markup compiled.
+  - `cargo build`/`cargo test --workspace` clean (same 320/208/73/etc. pass
+    counts as before this round, 0 failed) both from the workspace root and
+    from `crates/mock-woocommerce`'s own view, with and without
+    `--features e2e`.
+
 - **Expired-order rescan: post-WBS review follow-ups (resilience + timezone),
   user-requested after the full 7-phase WBS landed.** The user asked three
   real questions during review - how in-progress/stalled/failed is actually

@@ -1,7 +1,7 @@
 [Unit]
 Description=MoneroPay Cloud key-custody-server (SEV-SNP host)
 # The engine dials this over a Unix socket at boot (a bounded retry - see
-# moneropay-core's own connect_socket_key_custody doc comment - handles the
+# scanner's own connect_socket_key_custody doc comment - handles the
 # ordinary race of both units starting around the same time), so this unit
 # only needs to exist and be startable before the engine, not necessarily
 # already accepting connections - no real ordering dependency to express

@@ -1,11 +1,11 @@
 # FX / Checkout Refactor — Work Breakdown Structure
 
 Moves fiat exchange-rate handling and the embeddable checkout/payment UI
-out of the engine (`moneropay-core`) entirely, into the control-plane. The
+out of the engine (`scanner`) entirely, into the monokulo. The
 engine becomes strictly Monero-watching: given a wallet to watch and a
 piconero amount to expect, it tells you when it's paid — no FX, no
 merchant-facing HTML. Decided in-session (see `work_notes.md`): a
-self-hoster who runs the engine *without* the control-plane is accepted as
+self-hoster who runs the engine *without* the monokulo is accepted as
 a power user who writes their own fiat/checkout integration — this is a
 deliberate scope narrowing, not an oversight.
 
@@ -24,7 +24,7 @@ order-creation API stops accepting fiat) — everything before it can ship,
 run, and be verified against the *current*, unmodified engine; everything
 after it depends on that cutover having landed. Do not skip ahead to
 Phase 3 to "save a step" — the whole point of Phases 1–2 is proving the
-control-plane side works before anything on the engine side becomes
+monokulo side works before anything on the engine side becomes
 irreversible for real deployments.
 
 ## Decisions (resolved)
@@ -35,7 +35,7 @@ up later, so the reasoning isn't lost even though the question isn't open
 anymore.
 
 1. **Per-tenant checkout template customization: dropped.** Every
-   control-plane checkout page looks the same, on-brand with the rest of
+   monokulo checkout page looks the same, on-brand with the rest of
    the site. `tenants.template_dir` and its whole read-from-disk
    customization path are removed, not replaced with a narrower
    DB-backed version — revisit only if a real merchant asks later.
@@ -43,13 +43,13 @@ anymore.
    as an opaque passthrough field — `fiat_amount`/`fiat_currency`/
    `exchange_rate` are removed from the engine's schema and API entirely
    (Phase 3/4). Control-plane owns this data fully.
-3. **`static/moneropay-client.js` moves to control-plane.** Served from
-   there, `createOrder()` calling control-plane's own order-creation
+3. **`static/moneropay-client.js` moves to monokulo.** Served from
+   there, `createOrder()` calling monokulo's own order-creation
    endpoint. The engine keeps no client library at all — a self-hoster
-   without control-plane writes their own integration.
+   without monokulo writes their own integration.
 4. **Control-plane owning the only copy of fiat order records is
    accepted.** The Monero amount (on the engine) is the source of truth;
-   the fiat price a customer was quoted is control-plane's own record to
+   the fiat price a customer was quoted is monokulo's own record to
    keep durable, not the engine's problem.
 5. **No API version bump — hard break in place, still under `/api/v1/`.**
    No production traffic on the current contract yet; document the break
@@ -64,23 +64,23 @@ anymore.
   - outcome: `shared::rate_limit::RateLimiter<K>` (generic bucket key,
     exactly the shape `src/http/rate_limit.rs` at the repo root already
     grew into this session for the public/admin split); both the engine
-    and control-plane depend on it
+    and monokulo depend on it
   - what: move `RateLimiter`/`LimiterState`/the pruning logic and its 9
     existing unit tests into `shared`; the engine's own
     `rate_limit_middleware`/`admin_rate_limit_middleware` become thin
     wrappers calling into it, same "cut and re-import" pattern
     `docs/WOOCOMMERCE_WBS.md` 0.2/0.3 already used for `shared::auth`/
     `shared::webhook_sign`
-  - why now, not in Phase 1: Phase 1 needs this for control-plane's new
+  - why now, not in Phase 1: Phase 1 needs this for monokulo's new
     public order-creation endpoint (see 1.4) — building it twice (once
-    ad hoc in control-plane, once properly later) is waste
+    ad hoc in monokulo, once properly later) is waste
   - test: existing `RateLimiter` unit tests move and pass unmodified from
     `shared`; engine's own `cargo test --workspace` unaffected in
     count/behavior
 
 ## 1. Control-plane gains FX (engine untouched, ships independently)
 
-- 1.1 Add an exchange-rate provider to control-plane
+- 1.1 Add an exchange-rate provider to monokulo
   - outcome: `control_plane::exchange_rate` with the same
     `ExchangeRateProvider` trait shape as the engine's own
     (`piconero_per_unit(&self, currency) -> Option<u64>`), `FixedRateProvider`
@@ -88,15 +88,15 @@ anymore.
   - what: this is real, working logic already proven in the engine
     (`src/exchange_rate.rs` at the repo root, 647 lines, live-verified
     against the real Coingecko API this session) — move it to `shared`
-    (not control-plane directly) so both crates *could* still use it
+    (not monokulo directly) so both crates *could* still use it
     during the transitional window, then have the engine stop depending
     on it once Phase 3 lands. `compute_xmr_amount`/`format_piconero_as_xmr`
     (exact-integer fiat-decimal-string → piconero conversion, §8.1's
     "money is never a float" rule) move the same way.
-  - what (config): control-plane needs its own `[exchange_rate]`
+  - what (config): monokulo needs its own `[exchange_rate]`
     configuration surface (provider choice, currencies, cache seconds,
     fixed rates) — likely per-instance for now (decision-4-adjacent: is
-    this ever per-tenant? Out of scope here; today's ask was "control-plane
+    this ever per-tenant? Out of scope here; today's ask was "monokulo
     owns FX lookups," not "each tenant picks a different rate source" —
     confirm this reading before building anything fancier)
   - test: move the engine's existing `exchange_rate.rs` tests verbatim
@@ -108,59 +108,59 @@ anymore.
     the `piconero_per_unit` rate used at creation time — the record the
     engine's own `orders` table currently holds, now owned here instead
   - what: `control_plane::db` gains the table + migration + insert/lookup
-    methods; this is genuinely new state control-plane didn't need before
+    methods; this is genuinely new state monokulo didn't need before
     (everything today is a live proxy over the engine's own stored data —
-    see `control-plane/src/engine_client.rs`'s own module doc comment on
+    see `monokulo/src/engine_client.rs`'s own module doc comment on
     that being the deliberate design up to now)
-  - test: real sqlite round-trip tests, same style `control-plane/src/db.rs`
+  - test: real sqlite round-trip tests, same style `monokulo/src/db.rs`
     already uses elsewhere in this crate
 - 1.3 Control-plane's own public rate-limiter, wired to the new endpoint
   below
-  - outcome: `control-plane`'s `AppState` gains a `rate_limiter` field
-    (there is none today — control-plane has never needed one, since it's
+  - outcome: `monokulo`'s `AppState` gains a `rate_limiter` field
+    (there is none today — monokulo has never needed one, since it's
     never served an unauthenticated, state-changing public endpoint before
     now)
   - what: reuse `shared::rate_limit` from 0.1; apply it as middleware only
-    to the new public order-creation route (1.4) — control-plane's
+    to the new public order-creation route (1.4) — monokulo's
     existing authenticated `/dashboard/*` and admin-proxy routes don't need
     it, same reasoning the engine's own public/admin split already
     established this session
   - test: same shape as the engine's own
     `rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info`
-- 1.4 New public, unauthenticated order-creation endpoint on control-plane
+- 1.4 New public, unauthenticated order-creation endpoint on monokulo
   - outcome: `POST /pay/{connection_id}/orders` (or similar — name it to
     not collide with `/dashboard/*`) accepts `fiat_amount`/`fiat_currency`,
     computes the XMR amount via 1.1, calls the engine's *existing*
     fiat-aware `create_order` (unchanged at this point — Phase 3 hasn't
-    landed), records the fiat metadata via 1.2, returns a control-plane-
+    landed), records the fiat metadata via 1.2, returns a monokulo-
     owned response
   - what: this deliberately reuses and generalizes the "create a test
     order" feature already shipped this session
-    (`control-plane/src/http/orders.rs::create_order`,
+    (`monokulo/src/http/orders.rs::create_order`,
     `EngineClient::create_order`) — that button becomes the real production
     path for every fiat-priced order once this is done, not a separate
     thing
-  - why this order (engine still fiat-aware here): proves control-plane's
+  - why this order (engine still fiat-aware here): proves monokulo's
     own FX computation, storage, and rate-limiting all work for real,
     before anything about the engine's own contract has to change
   - test: real end-to-end test against a real spawned engine (same
-    `engine_test_support` pattern every other control-plane test already
+    `engine_test_support` pattern every other monokulo test already
     uses) — a real order created through *this* new endpoint, with the
     right XMR amount and the right fiat metadata recorded locally
 
 ## 2. Control-plane's own checkout/payment page (iframe-able)
 
-- 2.1 Move QR code rendering to control-plane
-  - outcome: `qrcode` crate as a control-plane dependency; the same
+- 2.1 Move QR code rendering to monokulo
+  - outcome: `qrcode` crate as a monokulo dependency; the same
     `qr_svg_for_html` trimming/accessibility logic
     (`src/http/public.rs::qr_svg_for_html` at the repo root — strips the
     non-HTML-valid `<?xml?>` prolog, marks the SVG `aria-hidden`/
     `role="presentation"`/`focusable="false"`) moved over verbatim
   - test: the existing rendering/accessibility assertions move with it
-- 2.2 Build the control-plane checkout page
+- 2.2 Build the monokulo checkout page
   - outcome: `GET /pay/{connection_id}/orders/{payment_id}` (public,
     unauthenticated, iframe-able — no `X-Frame-Options`/`frame-ancestors`
-    restriction, unlike every other control-plane page) renders address,
+    restriction, unlike every other monokulo page) renders address,
     QR code, XMR amount, the fiat amount/currency from 1.2's local record,
     payment/confirmation status, live-polls for updates
   - what: `EngineClient::get_order_status`-equivalent call for live
@@ -168,13 +168,13 @@ anymore.
     already returns no fiat fields at all — confirmed by reading
     `OrderStatusResponse`, `src/http/public.rs` at the repo root — so this
     endpoint needs zero engine-side change to support the new checkout
-    page); styled with the control-plane's own `_styles.html.hbs` design
+    page); styled with the monokulo's own `_styles.html.hbs` design
     system, not a byte-for-byte copy of the engine's old
     `templates/default/checkout.html.hbs`
   - what (client-side polling): port the existing polling JS from the
     engine's checkout template rather than re-inventing it — it's already
     correct, tested behavior (`templates::tests::the_poll_loop_checks_response_ok_before_reading_a_status`
-    and friends, `control-plane/src/templates.rs`, already has an
+    and friends, `monokulo/src/templates.rs`, already has an
     equivalent pattern from the status page's own polling this session)
   - test: real HTTP-level test rendering the page against a real order on
     a real spawned engine, asserting address/QR/amounts/status all present
@@ -194,13 +194,13 @@ against the engine's current public API.
     `compute_xmr_amount`
   - what: `AppState.exchange_rate: Arc<dyn ExchangeRateProvider>` is
     removed entirely — every construction site (`main.rs`,
-    `engine-test-support`, `src/http/tests.rs`, both e2e tests) loses this
+    `scanner-test-support`, `src/http/tests.rs`, both e2e tests) loses this
     field, same mechanical-but-wide blast radius the rate-limiter field
     addition had this session, just in reverse
   - test: existing `create_order`-family tests in `src/http/tests.rs`
     rewritten to pass `xmr_amount_piconero` directly; delete tests that
     were purely about fiat-to-XMR conversion correctness (that logic now
-    lives, and is tested, in `shared`/control-plane per Phase 1)
+    lives, and is tested, in `shared`/monokulo per Phase 1)
 - 3.2 Engine: drop `fiat_currency`/`fiat_amount`/`exchange_rate` from the
   `orders` table
   - outcome: a real schema migration (next number after whatever
@@ -215,17 +215,17 @@ against the engine's current public API.
     budget real time for this, it's not a one-line diff multiplied by 14,
     each site needs its own literal edited
   - what (admin API): `OrderView` (`src/http/admin.rs` at the repo root,
-    what control-plane's own `EngineClient::OrderView` DTO mirrors) drops
-    the same three fields — `control-plane`'s orders-list/order-detail
+    what monokulo's own `EngineClient::OrderView` DTO mirrors) drops
+    the same three fields — `monokulo`'s orders-list/order-detail
     pages, which currently read `fiat_amount`/`fiat_currency` straight off
-    this DTO, switch to reading from control-plane's own local table
+    this DTO, switch to reading from monokulo's own local table
     (1.2) instead, joined by `payment_id`
   - test: every existing store/scanner test touching `NewOrder` updated;
     a fresh migration test (apply-then-verify-column-gone, matching this
     repo's own existing migration-test conventions in `src/store.rs`)
 - 3.3 Control-plane: point 1.4's endpoint at the now-XMR-only engine API
   - outcome: `EngineClient::create_order` sends `xmr_amount_piconero`
-    (computed by control-plane itself, per 1.1) instead of
+    (computed by monokulo itself, per 1.1) instead of
     `fiat_amount`/`fiat_currency`
   - test: re-run 1.4's own end-to-end test against the now-updated engine
     — same assertions, now exercising the real, final call shape
@@ -238,7 +238,7 @@ against the engine's current public API.
   per-tenant `template_dir` column/config (decision 1)
   - outcome: `GET /pay/v1/{pk}/{payment_id}` no longer exists on the
     engine at all — it's `GET /pay/{connection_id}/orders/{payment_id}` on
-    control-plane now (2.2)
+    monokulo now (2.2)
   - what: a real schema migration removing `tenants.template_dir`;
     `TenantConfigPatch`'s `template_dir_set`/`template_dir` fields go with
     it; every one of `templates.rs`'s ~15 `render_checkout`-based tests
@@ -266,12 +266,12 @@ against the engine's current public API.
   - outcome: `GET /static/moneropay-client.js` no longer exists on the
     engine
   - what: the file (and a rewritten, XMR-only-or-nonexistent successor,
-    per decision 3) moves to control-plane's own static assets, serving
-    its `createOrder()` against control-plane's new 1.4 endpoint instead
+    per decision 3) moves to monokulo's own static assets, serving
+    its `createOrder()` against monokulo's new 1.4 endpoint instead
     of the engine directly
-  - test: whatever control-plane's own equivalent route test looks like
+  - test: whatever monokulo's own equivalent route test looks like
     (real HTTP GET, correct `Content-Type`, script actually calls the
-    right endpoint - a real integration test if control-plane's own
+    right endpoint - a real integration test if monokulo's own
     dashboard or a mock storefront actually exercises it, not just "the
     bytes are served")
 
@@ -283,13 +283,13 @@ against the engine's current public API.
   fields it currently sends
 - 5.2 `tests/e2e_dashboard_stagenet.rs` and
   `mock-woocommerce/tests/e2e_stagenet_connect_flow.rs` — both currently
-  create fiat-denominated orders; rework to go through control-plane's
+  create fiat-denominated orders; rework to go through monokulo's
   new 1.4 endpoint instead of the engine directly, since that's now the
   *real* path a production merchant integration takes — more faithful
   coverage than hitting the engine's own (now XMR-only, developer-facing)
   API, not just a mechanical fiat→XMR find-and-replace
   - why this matters more than it looks: this is the first time either of
-    these e2e tests would exercise control-plane's *own* order-creation
+    these e2e tests would exercise monokulo's *own* order-creation
     surface rather than only the engine's — a real, new gap closed, not
     busywork
 
@@ -299,10 +299,10 @@ against the engine's current public API.
   off the engine's own diagram), §8 (Data Model — `orders` table schema
   change), §10 (HTTP API Surface — `/pay/v1/...` removed, `create_order`
   contract changed), §13 (Configuration Surface — `[exchange_rate]`
-  section removed), §14 (Client Library — moved to control-plane or
+  section removed), §14 (Client Library — moved to monokulo or
   rewritten per decision 3)
-- 6.2 `control-plane/templates/landing.html.hbs`'s own marketing copy
-  ("MoneroPay Cloud runs the same open, self-hostable engine either way")
+- 6.2 `monokulo/templates/landing.html.hbs`'s own marketing copy
+  ("Monokulo runs the same open, self-hostable engine either way")
   becomes less accurate once this ships — reword to something like "the
   same open-source, self-hostable payment-watching engine" rather than
   implying full feature parity between self-hosted-alone and hosted

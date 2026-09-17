@@ -1,0 +1,19 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<!-- Same mark as static/logo.svg, recolored for use over the dark nav bar
+     (ink background) instead of the paper page background: ink-colored
+     strokes swapped for paper ones, lens fill dropped to transparent so
+     the nav's own background shows through, and the facet mark swapped to
+     paper so it stays visible against the orange pupil. Geometry is
+     identical - keep the two files in sync if the mark itself changes. -->
+
+<line x1="19.7" y1="16.3" x2="15.5" y2="12.5" stroke="#f4f1ea" stroke-width="2.25"/>
+<circle cx="13.5" cy="10.5" r="2.25" fill="none" stroke="#f4f1ea" stroke-width="2.25"/>
+
+<line x1="39.3" y1="39.3" x2="56" y2="56" stroke="#f4f1ea" stroke-width="6" stroke-linecap="round"/>
+
+<circle cx="28" cy="28" r="16" fill="none" stroke="#f4f1ea" stroke-width="5"/>
+
+<path d="M19,28 Q28,20.5 37,28 Q28,35.5 19,28 Z" fill="none" stroke="#f4f1ea" stroke-width="1.75"/>
+<circle cx="28" cy="28" r="5" fill="#ff6600" stroke="#f4f1ea" stroke-width="1"/>
+<rect x="26.1" y="26.1" width="3.8" height="3.8" fill="#f4f1ea" transform="rotate(45 28 28)"/>
+</svg>

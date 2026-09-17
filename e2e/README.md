@@ -62,7 +62,7 @@ an observed full run took ~250s. See the timeout comment in
 
 ## One-time setup
 
-Just `moneropay-core` built:
+Just `scanner` built:
 
 ```bash
 cargo build --manifest-path ../Cargo.toml
@@ -75,7 +75,7 @@ cargo test --test e2e_stagenet -- --ignored --nocapture
 ```
 
 This builds the moneropay router in-process straight from `moneropay-stagenet.toml`
-(via `tower::ServiceExt::oneshot` - no bound port, no separate `moneropay-core`
+(via `tower::ServiceExt::oneshot` - no bound port, no separate `scanner`
 process needed), creates a real order against it, pays that order with a real
 transaction sent from the customer wallet, then drives the real scanner
 (`run_scan_tick`, the same function `main.rs`'s production loop calls on a timer)
@@ -88,7 +88,7 @@ embedded widget, start the server and demo shop separately:
 
 ```bash
 # from e2e/, in one terminal:
-../target/debug/moneropay-core moneropay-stagenet.toml
+../target/debug/scanner moneropay-stagenet.toml
 # prints a pk_... on first boot - note it
 
 # in another terminal:
@@ -115,7 +115,7 @@ database; delete it to start over with a fresh bootstrap.
   chosen to be a genuinely tiny real payment, per the project's own constraint
   of only moving trivial amounts on this shared faucet-funded wallet. The
   engine itself has no concept of fiat at all (`docs/fx_refactor.md`) - the
-  control-plane owns fiat pricing in production; this test talks to the
+  monokulo owns fiat pricing in production; this test talks to the
   engine's own XMR-only API directly.
 
 ## A note on running the test repeatedly

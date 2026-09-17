@@ -1,4 +1,4 @@
-# Deploying MoneroPay Cloud on a bare-metal AMD SEV-SNP host
+# Deploying Monokulo on a bare-metal AMD SEV-SNP host
 
 WBS 2.2: provisioning + attestation (2.2.1) and deploying 2.1's engine +
 `key-custody-server` split inside the confidential VM (2.2.2).
@@ -61,12 +61,12 @@ not by trusting the provider's own claim.
 
 ## 2. Install the binaries
 
-Build `moneropay-core` and `key-custody-server` (this workspace's existing
+Build `scanner` and `key-custody-server` (this workspace's existing
 release build - `cargo build --release --workspace` from the repo root) and
 copy the two binaries onto the guest:
 
 ```
-/opt/moneropay/bin/moneropay-core
+/opt/moneropay/bin/scanner
 /opt/moneropay/bin/key-custody-server
 ```
 

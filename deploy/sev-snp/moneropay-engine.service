@@ -13,7 +13,7 @@ Wants=network-online.target
 
 [Service]
 Type=simple
-ExecStart=/opt/moneropay/bin/moneropay-core --config /etc/moneropay/moneropay.toml
+ExecStart=/opt/moneropay/bin/scanner --config /etc/moneropay/moneropay.toml
 Restart=on-failure
 RestartSec=2
 RuntimeDirectory=moneropay

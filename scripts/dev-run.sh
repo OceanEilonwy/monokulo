@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
-# Start/stop the local MoneroPay Cloud dev stack: the engine
-# (moneropay-core) and the control-plane, running together the same way
-# they do in production - two separate processes, the control-plane
+# Start/stop the local Monokulo dev stack: the engine
+# (scanner) and monokulo, running together the same way
+# they do in production - two separate processes, monokulo
 # talking to the engine over its own admin API.
 #
 # USAGE:
@@ -9,7 +9,7 @@
 #   scripts/dev-run.sh stop
 #   scripts/dev-run.sh restart [--no-build]
 #   scripts/dev-run.sh status
-#   scripts/dev-run.sh logs [engine|control-plane]
+#   scripts/dev-run.sh logs [engine|monokulo]
 #
 # `start` builds both debug binaries first by default (skip with
 # --no-build for a faster restart when you know nothing changed) and is
@@ -17,8 +17,8 @@
 #
 # WHERE STATE LIVES: everything this script creates lives under
 # .dev-run/ at the repo root (gitignored) - PID files, logs, the
-# engine's own real SQLite database, the control-plane's own real SQLite
-# database, and a locally-generated CONTROL_PLANE_ENCRYPTION_KEY. Nothing
+# engine's own real SQLite database, the monokulo's own real SQLite
+# database, and a locally-generated MONOKULO_ENCRYPTION_KEY. Nothing
 # here is checked in, and nothing here is a real credential worth
 # protecting beyond your own machine - this is a local dev stack against
 # a real *stagenet* wallet (worthless XMR only), the same wallet
@@ -26,7 +26,7 @@
 # end-to-end test.
 #
 # ENGINE_URL/CONTROL_PLANE_URL below are fixed, not configurable via a
-# flag: the control-plane's own src/main.rs currently hardcodes
+# flag: the monokulo's own src/main.rs currently hardcodes
 # "http://127.0.0.1:8080" as the engine it talks to (a real, documented
 # placeholder - see that file's own TODO), so the engine's bind address
 # genuinely cannot be anything else for this pairing to work.
@@ -35,18 +35,18 @@ set -euo pipefail
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 RUN_DIR="$REPO_ROOT/.dev-run"
 ENGINE_DIR="$RUN_DIR/engine"
-CP_DIR="$RUN_DIR/control-plane"
+CP_DIR="$RUN_DIR/monokulo"
 
-ENGINE_BIN="$REPO_ROOT/target/debug/moneropay-core"
-CP_BIN="$REPO_ROOT/target/debug/control-plane"
+ENGINE_BIN="$REPO_ROOT/target/debug/scanner"
+CP_BIN="$REPO_ROOT/target/debug/monokulo"
 
 ENGINE_CONFIG="$ENGINE_DIR/moneropay.toml"
 CP_KEY_FILE="$CP_DIR/encryption_key.txt"
 
 ENGINE_PID_FILE="$RUN_DIR/engine.pid"
-CP_PID_FILE="$RUN_DIR/control-plane.pid"
+CP_PID_FILE="$RUN_DIR/monokulo.pid"
 ENGINE_LOG="$RUN_DIR/engine.log"
-CP_LOG="$RUN_DIR/control-plane.log"
+CP_LOG="$RUN_DIR/monokulo.log"
 
 ENGINE_URL="http://127.0.0.1:8080"
 CONTROL_PLANE_URL="http://127.0.0.1:8081"
@@ -60,7 +60,7 @@ commands:
   stop                  stop both processes
   restart [--no-build]  stop, then start
   status                show whether each process is running
-  logs [engine|control-plane]   tail logs (both by default)
+  logs [engine|monokulo]   tail logs (both by default)
 EOF
 }
 
@@ -76,7 +76,7 @@ ensure_dirs() {
 # Reuses the repo's own real e2e stagenet config (same worthless test
 # wallet the real end-to-end test already uses) rather than inventing a
 # second one to keep in sync - only the bind address is overridden, to
-# the fixed port control-plane's own hardcoded EngineClient URL expects
+# the fixed port monokulo's own hardcoded EngineClient URL expects
 # (see this script's own header comment).
 ensure_engine_config() {
     if [[ -f "$ENGINE_CONFIG" ]]; then
@@ -91,17 +91,17 @@ ensure_cp_key() {
         return
     fi
     if ! command -v openssl >/dev/null 2>&1; then
-        echo "error: openssl not found - needed once, to generate a dev CONTROL_PLANE_ENCRYPTION_KEY" >&2
+        echo "error: openssl not found - needed once, to generate a dev MONOKULO_ENCRYPTION_KEY" >&2
         exit 1
     fi
-    echo "==> generating a dev CONTROL_PLANE_ENCRYPTION_KEY (persisted at $CP_KEY_FILE, reused on every future start)"
+    echo "==> generating a dev MONOKULO_ENCRYPTION_KEY (persisted at $CP_KEY_FILE, reused on every future start)"
     openssl rand -hex 32 > "$CP_KEY_FILE"
     chmod 600 "$CP_KEY_FILE"
 }
 
 build() {
-    echo "==> building moneropay-core and control-plane (debug)"
-    (cd "$REPO_ROOT" && cargo build -p moneropay-core --bin moneropay-core -p control-plane --bin control-plane)
+    echo "==> building scanner and monokulo (debug)"
+    (cd "$REPO_ROOT" && cargo build -p scanner --bin scanner -p monokulo --bin monokulo)
 }
 
 start_engine() {
@@ -129,7 +129,7 @@ start_engine() {
 
 start_control_plane() {
     if is_running "$CP_PID_FILE"; then
-        echo "control-plane already running (pid $(cat "$CP_PID_FILE"))"
+        echo "monokulo already running (pid $(cat "$CP_PID_FILE"))"
         return
     fi
     ensure_cp_key
@@ -137,22 +137,22 @@ start_control_plane() {
         echo "error: $CP_BIN not found - run without --no-build at least once" >&2
         exit 1
     fi
-    echo "==> starting control-plane -> $CP_LOG"
-    # Run with $CP_DIR as its working directory - control-plane's own
+    echo "==> starting monokulo -> $CP_LOG"
+    # Run with $CP_DIR as its working directory - monokulo's own
     # main.rs opens its SQLite database at the relative path
-    # "control_plane.db", so this is what makes it land (and persist
-    # across restarts) under .dev-run/control-plane/ rather than
+    # "monokulo.db", so this is what makes it land (and persist
+    # across restarts) under .dev-run/monokulo/ rather than
     # wherever this script happened to be invoked from.
     (
         cd "$CP_DIR"
-        CONTROL_PLANE_ENCRYPTION_KEY="$(cat "$CP_KEY_FILE")" nohup "$CP_BIN" > "$CP_LOG" 2>&1 &
+        MONOKULO_ENCRYPTION_KEY="$(cat "$CP_KEY_FILE")" nohup "$CP_BIN" > "$CP_LOG" 2>&1 &
         echo $! > "$CP_PID_FILE"
     )
     sleep 1
     if is_running "$CP_PID_FILE"; then
-        echo "    control-plane up (pid $(cat "$CP_PID_FILE")) - $CONTROL_PLANE_URL"
+        echo "    monokulo up (pid $(cat "$CP_PID_FILE")) - $CONTROL_PLANE_URL"
     else
-        echo "    control-plane failed to start - see $CP_LOG" >&2
+        echo "    monokulo failed to start - see $CP_LOG" >&2
         rm -f "$CP_PID_FILE"
         exit 1
     fi
@@ -200,11 +200,11 @@ case "$cmd" in
         start_control_plane
         echo
         echo "engine:        $ENGINE_URL"
-        echo "control-plane: $CONTROL_PLANE_URL  (open this one in a browser)"
+        echo "monokulo:      $CONTROL_PLANE_URL  (open this one in a browser)"
         echo "logs:          scripts/dev-run.sh logs"
         ;;
     stop)
-        stop_one "control-plane" "$CP_PID_FILE"
+        stop_one "monokulo" "$CP_PID_FILE"
         stop_one "engine" "$ENGINE_PID_FILE"
         ;;
     restart)
@@ -213,16 +213,16 @@ case "$cmd" in
         ;;
     status)
         status_one "engine" "$ENGINE_PID_FILE" "$ENGINE_URL"
-        status_one "control-plane" "$CP_PID_FILE" "$CONTROL_PLANE_URL"
+        status_one "monokulo" "$CP_PID_FILE" "$CONTROL_PLANE_URL"
         ;;
     logs)
         target="${2:-both}"
         case "$target" in
             engine) tail -f "$ENGINE_LOG" ;;
-            control-plane) tail -f "$CP_LOG" ;;
+            monokulo) tail -f "$CP_LOG" ;;
             both) tail -f "$ENGINE_LOG" "$CP_LOG" ;;
             *)
-                echo "unknown log target: $target (expected: engine, control-plane, or nothing for both)" >&2
+                echo "unknown log target: $target (expected: engine, monokulo, or nothing for both)" >&2
                 exit 2
                 ;;
         esac

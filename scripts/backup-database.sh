@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# WBS 2.3.1: online backup of a *live* moneropay-core SQLite database.
+# WBS 2.3.1: online backup of a *live* scanner SQLite database.
 #
 # This script exists to answer one question honestly: is it safe to back this
 # database up while the engine is running against it? The engine's writer

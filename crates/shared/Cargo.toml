@@ -1,0 +1,51 @@
+[package]
+name = "shared"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+argon2 = "0.5"
+# WBS 2.1.3: `key_custody`'s `KeyCustody` trait and its domain types (`WalletHandle`,
+# `WalletMaterial`, `KeyCustodyError`, `MatchedOutput`) moved here from
+# `scanner` so that `key-custody-service` (the socket client `main.rs` needs
+# to talk to an out-of-process backend) can depend on them without depending on
+# `scanner` itself - see `key_custody.rs`'s own module doc comment for the
+# full reasoning (a real `cyclic package dependency` Cargo error, not a style
+# preference). `async-trait` is `KeyCustody`'s own trait-object-safety requirement;
+# `uuid`/`zeroize` are `WalletHandle`/`WalletMaterial`'s.
+async-trait = "0.1.92"
+bytes = "1.12.1"
+hex = "0.4.3"
+hmac = "0.13.0"
+http = "1.5.0"
+moka = { version = "0.12.16", features = ["future"] }
+monero = "0.22.0"
+rand = "0.10.2"
+# argon2's password-hash re-export needs rand_core's `OsRng`, which is behind
+# rand_core's own "getrandom" feature. Declared explicitly here (rather than
+# relying on another workspace member's dependency graph enabling it via
+# Cargo's feature unification during a workspace-wide build) so `cargo test
+# -p shared` builds correctly in isolation, not just as part of `--workspace`.
+rand_core = { version = "0.6", features = ["getrandom"] }
+# `exchange_rate::CoingeckoRateProvider`'s real HTTP client - same
+# rustls/json feature set the scanner and monokulo already pin, so
+# moving this module here doesn't change its TLS/JSON behavior at all.
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
+reqwest-middleware = { version = "0.5.2", features = ["rustls", "json"] }
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde_json = "1.0.151"
+sha2 = "0.11.0"
+thiserror = "2.0.20"
+# `supervise::supervise`'s own real use of `tokio::spawn`/`tokio::time::sleep`
+# (not test-only - both the scanner's and monokulo's real background
+# loops call this in production).
+tokio = { version = "1.53.1", features = ["full"] }
+url = "2.5.8"
+uuid = { version = "1.26.0", features = ["v4"] }
+zeroize = { version = "1.9.0", features = ["derive"] }
+
+[dev-dependencies]
+# `exchange_rate`'s own `coingecko` test module spins up a real local HTTP
+# server standing in for Coingecko (`spawn_price_server`) - needs a real
+# router, test-only (the runtime itself is now a real dependency above).
+axum = "0.8.9"

@@ -1,7 +1,7 @@
-# MoneroPay Cloud — WooCommerce MVP Roadmap
+# Monokulo — WooCommerce MVP Roadmap
 
 Status: planning document, no code yet. This lays out an ordered path from the
-current self-hosted `moneropay-core` CLI tool to a hosted service that a
+current self-hosted `scanner` CLI tool to a hosted service that a
 merchant can sign up for and get a working "Pay with Monero" option in their
 WooCommerce checkout in a handful of clicks.
 
@@ -39,9 +39,9 @@ below is built on top of them:
   full stop. §4 below is kept as the debate that led here, written up in
   full since you asked for the reasoning, not just the conclusion, plus the
   resolution and what it changes downstream.
-- **A control-plane-layer anonymous "pay by Monero" API is parked, not
+- **A monokulo-layer anonymous "pay by Monero" API is parked, not
   built now.** The idea — advanced users get an anonymous account *at the
-  control-plane layer itself* (not direct anonymous access to the engine's
+  monokulo layer itself* (not direct anonymous access to the engine's
   admin API) — is a real future feature, sketched briefly in §6, but out of
   scope for this MVP. Nothing in this plan should be built in a way that
   makes it hard to add later, but nothing here builds it either.
@@ -72,13 +72,13 @@ The single most important structural choice in this plan is built around
 that: **split the system into an engine and a control plane, and keep the
 control plane platform-agnostic.**
 
-- **The engine** is `moneropay-core` exactly as it exists today — tenants,
+- **The engine** is `scanner` exactly as it exists today — tenants,
   orders, payments, webhooks, the scanner, the checkout page. It already has
   no idea what WooCommerce or Shopify are, and it should stay that way. It
   already supports hosted multi-tenant deployment as a first-class case
   (`docs/DESIGN.md` §4) — a hosted instance is just an instance with tenants
   created at runtime instead of one bootstrapped from `[wallet]`.
-- **The control plane** is a new service ("MoneroPay Cloud" in this doc) that
+- **The control plane** is a new service ("Monokulo" in this doc) that
   owns *accounts* and *store connections*. It talks to the engine's existing
   admin API (`POST /api/v1/admin/tenants`, webhook registration, etc.) as a
   normal HTTP client — it does not reach into the engine's database or add
@@ -108,7 +108,7 @@ control plane platform-agnostic.**
   buyer to an app-hosted payment page), so building it once for WooCommerce
   is also a dry run for Shopify's certified extension model.
 
-If you disagree with "separate control-plane service" as the split point,
+If you disagree with "separate monokulo service" as the split point,
 that's the one architectural call in this doc I'd flag as worth a second look
 before any of §5's stages start — everything downstream assumes it.
 
@@ -167,7 +167,7 @@ members:
 ```
 /Cargo.toml            # existing [package] (the engine) + new [workspace]
 /src/...               # unchanged — the engine, exactly as it is today
-/control-plane/        # new crate: accounts, store_connections, connect flow, dashboard backend
+/monokulo/        # new crate: accounts, store_connections, connect flow, dashboard backend
 /shared/                # new crate: logic pulled out of the engine so the control
                         #   plane isn't duplicating it (secret-token generation/hashing
                         #   from src/auth.rs, HMAC helpers from src/webhook_sign.rs, the
@@ -328,7 +328,7 @@ need to be written; see the Stage 3/4/6 edits below.
 
 The part of the original goal this drops — a *fully* anonymous path to the
 raw engine — isn't abandoned, just relocated: §6 sketches an anonymous
-account *at the control-plane layer* as a parked future feature, which gets
+account *at the monokulo layer* as a parked future feature, which gets
 the "no email, no signup friction" property back without reopening the
 "anyone can create unlimited tenants on infrastructure we pay for, with no
 way to ever attach billing to it" problem Option B/C's *For* cases couldn't
@@ -339,10 +339,10 @@ two separable concerns rather than one axis with no good midpoint.
 
 ### Stage 1 — Stand up the hosted engine
 
-Deploy `moneropay-core` itself, unmodified, as a running service:
+Deploy `scanner` itself, unmodified, as a running service:
 
 - Provision the box (or VM), point `[monero_node]` at the chosen curated
-  node, run `moneropay-core --init` once to produce the config (no `[wallet]`
+  node, run `scanner --init` once to produce the config (no `[wallet]`
   section — hosted mode creates tenants at runtime), start it under a
   process supervisor (systemd unit is enough at this scale).
 - TLS termination and the public domain (`https://pay.<yourdomain>` or
@@ -365,9 +365,9 @@ engine already having been designed for multi-tenancy.
 
 ### Stage 2 — Workspace restructuring
 
-Mechanical, small, and worth doing before any control-plane code lands: add
+Mechanical, small, and worth doing before any monokulo code lands: add
 the `[workspace]` table to the root `Cargo.toml` and create the `shared/`,
-`control-plane/`, and `mock-woocommerce/` crate skeletons (empty `lib.rs`/
+`monokulo/`, and `mock-woocommerce/` crate skeletons (empty `lib.rs`/
 `main.rs`, just enough to `cargo build` the workspace) per §3.1. Pull the
 genuinely-reusable pieces of `src/auth.rs` (secret-token generation/hashing)
 and `src/webhook_sign.rs` (HMAC signing/verification) into `shared/` at this
@@ -391,12 +391,12 @@ engine instance for integration tests, add a small test-harness helper now
 background task, hand back the real address — rather than each later stage
 reinventing it, or worse, shelling out to the compiled binary as a
 subprocess. This also means `mock-woocommerce`'s `Cargo.toml` needs
-`moneropay-core` itself as a (dev-)dependency, which is worth setting up here
+`scanner` itself as a (dev-)dependency, which is worth setting up here
 rather than discovering it's missing three stages later.
 
 ### Stage 3 — Control-plane service: accounts + store connections
 
-New crate (`control-plane/`), new small database (schema in §1). This is the
+New crate (`monokulo/`), new small database (schema in §1). This is the
 first stage that's genuinely new code rather than restructuring:
 
 - **Signup/login**: email + password, hashed with `argon2` via a `shared`
@@ -471,7 +471,7 @@ Concretely this mock implements:
   `process_payment()` will, and follows the same redirect-to-checkout-page
   pattern (or just asserts the redirect target is well-formed, since there's
   no real browser here).
-- A fake webhook receiver implementing the same `X-MoneroPay-Signature`
+- A fake webhook receiver implementing the same `X-Monokulo-Signature`
   verification and `event_id` dedupe logic the real plugin needs (Stage 8),
   recording what it received so tests can assert on it.
 
@@ -491,7 +491,7 @@ This is the actual answer to "OAuth-style one-click install," and it's worth
 being precise about what it is *not*: it is **not** WooCommerce's own
 `wc-auth/v1/authorize` mechanism. That endpoint grants a *third party* access
 to a store's own WooCommerce REST API (orders/products) — the direction
-you'd need if MoneroPay wanted to read WooCommerce's data remotely. We don't:
+you'd need if Monokulo wanted to read WooCommerce's data remotely. We don't:
 the plugin runs *inside* WordPress and already has full native access to
 everything it needs (order objects, hooks) with no REST API keys involved.
 The actual mechanism, closer to how Stripe's or WooCommerce Payments' own
@@ -545,7 +545,7 @@ a second implementation of anything.
 
 The plugin itself:
 
-- `class WC_Gateway_MoneroPay extends WC_Payment_Gateway`, registered the
+- `class WC_Gateway_Monokulo extends WC_Payment_Gateway`, registered the
   normal WooCommerce way (`woocommerce_payment_gateways` filter).
 - **Integration style: redirect to the engine's existing hosted checkout
   page, not a custom in-checkout widget.** `process_payment( $order_id )`
@@ -572,7 +572,7 @@ The plugin itself:
 Port Stage 6's flow, already proven against the mock, into the plugin's
 settings screen: the "Connect your Monero wallet" button, the redirect, and
 the server-to-server "finish" call (PHP's `wp_remote_post`), landing on the
-same control-plane endpoints Stage 5's mock already validated.
+same monokulo endpoints Stage 5's mock already validated.
 
 End-to-end merchant-visible steps once this and Stage 7 are done: install
 plugin → click Connect → sign up/log in on our site → paste wallet keys once
@@ -588,7 +588,7 @@ Port Stage 5's mock webhook receiver into the plugin, for real this time:
   hook (e.g. `https://theirsite.com/wc-api/moneropay_webhook`) — no
   WooCommerce REST API keys needed, just a plain endpoint the plugin owns,
   registered as the webhook URL back in Stage 6 step 3.
-- Verify `X-MoneroPay-Signature` (HMAC-SHA256, per `docs/DESIGN.md` §11),
+- Verify `X-Monokulo-Signature` (HMAC-SHA256, per `docs/DESIGN.md` §11),
   map event → WooCommerce order status: `order.paid`/`order.overpaid` →
   `processing` (or `completed`, merchant's choice), `order.expired` →
   `cancelled`, `order.double_spend_detected` → an order note + hold for
@@ -668,7 +668,7 @@ your answer explicitly said can wait):
   framing, which had assumed Nitro Enclaves' split-VM model (a separate
   enclave image, vsock IPC, no direct network/disk from inside it) was the
   only shape this could take. SEV-SNP protects a *whole guest VM's* memory
-  from the host/hypervisor — so the existing `moneropay-core` binary can run
+  from the host/hypervisor — so the existing `scanner` binary can run
   largely as-is inside that VM, already covering "a compromised host can't
   read tenant keys." What a confidential VM alone does *not* cover is a
   remote exploit of the same big, internet-facing process (the HTTP layer,
@@ -738,7 +738,7 @@ this workstream produces, not treating as a separate step.
 Once Stages 1–10 are live, worth a short exercise confirming the split in §1
 held up in practice: does adding a `"shopify"` platform to
 `store_connections` and a Shopify-specific connect adapter actually require
-zero engine changes and zero control-plane schema changes? If yes, the
+zero engine changes and zero monokulo schema changes? If yes, the
 architecture did its job. The follow-on work at that point is applying for
 Shopify Partner + Payments App certification and building an Offsite Payment
 Extension around the same `/pay/v1/{pk}/{payment_id}` redirect target the
@@ -761,7 +761,7 @@ lightweight, anonymous identity of its own: something like a bearer API key
 handed out with no email required, scoped to one (or a few) tenants,
 functionally "an account with no login and no recovery story." The control
 plane still creates the underlying engine tenant exactly the way Stage 3
-does today (so Option A's "every tenant is control-plane-linked" guarantee
+does today (so Option A's "every tenant is monokulo-linked" guarantee
 never breaks) — the only thing that changes is what counts as "an account"
 one level up, at the control plane's own `users` table (or a sibling table
 for anonymous identities, so real accounts and anonymous ones aren't
