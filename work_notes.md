@@ -29,6 +29,63 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Expired-order rescan: post-WBS review follow-ups (resilience + timezone),
+  user-requested after the full 7-phase WBS landed.** The user asked three
+  real questions during review - how in-progress/stalled/failed is actually
+  determined, what resilience exists and whether it's self-healing, and
+  whether merchant timezone is handled for the advanced-mode date fields -
+  and, after discussing each, asked for three concrete changes.
+  - **Verified first, corrected an assumption before proposing anything**:
+    checked whether daemon RPC calls could hang indefinitely (they can't -
+    `RpcDaemonClient` already has a real 15s timeout, `src/daemon_rpc.rs:43`,
+    confirmed by reading the code rather than assumed) and whether node
+    failure was already handled (it is - `rescan_order` runs through the
+    same `FallbackDaemonClient` the live scanner uses). The live scanner
+    was already fully self-healing (`supervise()` restarts a panicked loop,
+    a failing tick just retries next tick forever). The real, remaining gaps
+    were narrower than initially guessed: no bounded retry *within* a
+    rescan for a transient error past whatever node-level failover already
+    absorbed, and no visible "this looks stuck" signal for an operator.
+  - **Bounded retries** (`scanner::retry_rescan_step`): every daemon call
+    inside `rescan_order` (`get_block_transactions`, the final
+    `get_mempool_transactions`, the closing `get_height`) now retries up to
+    `RESCAN_STEP_MAX_ATTEMPTS` (3) times, 500ms apart, before the job gives
+    up - a transient hiccup every configured fallback node briefly agrees on
+    (a shared upstream blip) no longer kills an otherwise-healthy job
+    outright. Two real tests: fewer failures than the budget survives and
+    the payment is still recorded; more failures than the budget still
+    fails cleanly (not silently swallowed or retried forever).
+  - **A `stalled` signal**, mirroring the live scanner's own `is_stale` on
+    `/status`: `RescanStatusView` (both engine and control-plane's mirror)
+    gains `stalled: bool` - `true` only for a `running` job whose
+    `updated_at` hasn't moved in `RESCAN_STALL_THRESHOLD_SECS` (5 minutes,
+    deliberately well past the ordinary progress-persist cadence so a
+    genuinely-still-working wide-range rescan is never flagged). Purely
+    informational, no behavior change - a `stalled` job is still `running`
+    and will resume exactly like any other on a restart. Surfaced as a
+    distinct `.tag-stalled` badge (amber, not the syncing accent or the
+    error red) on the order-detail page and a "(stalled)" note in the
+    dashboard-home banner's per-job link.
+  - **Timezone**: confirmed the actual constraint first - `<input
+    type="date">` has no timezone concept in the HTML spec at all, with or
+    without JS, so this was never a "we forgot to handle it" gap. Three
+    changes, all agreed: (1) the date fields and the simple-mode label now
+    say "(UTC)" explicitly, no more silent assumption; (2)
+    `RESCAN_START_HEIGHT_CUSHION_BLOCKS` widened from 240 (~8h) to 720
+    (~24h) blocks, now explicitly covering the date fields' own timezone
+    ambiguity as well as the timestamp binary search's original slop - see
+    its own updated doc comment; (3) a small progressive-enhancement
+    `<script>` on the order-detail page (merchant dashboard, not the no-JS
+    customer checkout page - see `feedback_no_js_reliance.md`, which is
+    about the latter, not this one) shows each date's real local-time
+    equivalent next to it for a JS-enabled viewer, computed from the
+    server-authoritative UTC value and never altering what actually gets
+    submitted. The existing share-button script on this same page is the
+    established precedent for this page allowing progressive enhancement.
+  - `cargo test --workspace` clean (320 engine/208 control-plane, up from
+    317/207) in both the root workspace and `mock-woocommerce`'s own view
+    with `--features e2e`.
+
 - **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 6 done -
   documentation. This is the seventh and final phase - the whole feature
   (`docs/order_rescan_wbs.md`) is now fully landed, phases 0 through 6, all
