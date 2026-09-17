@@ -533,17 +533,17 @@ immediately, with zero grace period.
     the two "what's in scope" queries is sufficient - the match-recording
     and status-flip machinery downstream already handles a recently-
     expired order correctly, today, with no gap to close there.
-  - what (config): a new `PaymentConfig` knob,
+  - what (config, confirmed): a new `PaymentConfig` knob,
     `expired_order_grace_period_minutes` (same naming convention as the
     existing `order_expiry_minutes`) - how long after `expires_at` an
     order's subaddress keeps getting checked by ordinary live scanning
     (distinct from the manual rescan below, which exists for after this
-    window has already elapsed). Suggested default: a few hours (e.g.
-    `360` / 6h) - generous enough to catch "sent it right as it expired,
-    arrived a bit late" and mempool-congestion cases automatically, with
-    no merchant action, without keeping every expired order's subaddress
-    in the hot scan path indefinitely. Treat this as a starting point to
-    adjust, not a tightly-reasoned number.
+    window has already elapsed). Default `360` (6h) - generous enough to
+    catch "sent it right as it expired, arrived a bit late" and mempool-
+    congestion cases automatically, with no merchant action, without
+    keeping every expired order's subaddress in the hot scan path
+    indefinitely. The knob itself, and this default, are confirmed - no
+    longer a mere suggestion.
   - how this relates to the manual rescan (phases 1-3): this grace period
     is the automatic first line of defense - no merchant action, catches
     most "paid a little late" cases on its own. The manual rescan exists
@@ -598,14 +598,37 @@ coverage from *both*.
     a new rescan's own `to` can never end earlier than the order's current
     `last_scanned_height`. That's not automatic on its own - see 5.2, a
     real guardrail this feature specifically needs, not a nice-to-have.
-  - test: real test - a fresh order gets `first_scanned_height` set on the
-    very first tick after creation, not backfilled to `created_at`'s own
-    height (proving ordinary live scanning genuinely never looked earlier
-    than that); `last_scanned_height` advances tick over tick while
-    in-scope, then stops advancing once the order falls out of scope; a
-    real rescan test - `first_scanned_height` moves earlier and
-    `last_scanned_height` moves later after a rescan that reaches further
-    in both directions than ordinary live scanning ever did
+  - test (each its own real, dedicated test - this is the class of bug
+    worth over-testing, not folding into one vague "real test" bullet):
+    - a fresh order gets `first_scanned_height` set on the very first tick
+      after creation, not backfilled to `created_at`'s own height (proving
+      ordinary live scanning genuinely never looked earlier than that)
+    - `last_scanned_height` advances tick over tick while in-scope, then
+      stops advancing (a frozen value, not `NULL`, not still incrementing)
+      once the order falls out of scope
+    - a single rescan extends both `first_scanned_height` earlier and
+      `last_scanned_height` later than ordinary live scanning alone ever
+      reached
+    - **two sequential rescans, run at different times, each further out
+      than the last** - the range keeps expanding across both (not
+      overwritten by the second, not stuck at the first's own bounds) -
+      this is "similar to" the gap trap in its own way: an implementation
+      that naively *replaces* rather than *min/max-accumulates* on a
+      second rescan would silently narrow the displayed range back down,
+      the same class of "looks like full coverage, isn't" bug 5.2 exists
+      to prevent on the trigger side
+    - **a rescan interrupted mid-job and resumed (1.2/1.3's own restart
+      path) still correctly continues extending `first_scanned_height`/
+      `last_scanned_height` from wherever it left off** - proves 5.1's own
+      bookkeeping survives the exact restart scenario decision 2 was
+      resolved around, not just the rescan's own `order_rescans.current_height`
+    - **an order simultaneously inside its phase-4 grace window *and*
+      covered by a live-running manual rescan at the same time** (a
+      merchant can trigger one even though the order hasn't fully left
+      automatic coverage yet - decision 5 only requires `Expired`, not
+      "past its grace window") - `last_scanned_height` still advances
+      correctly with two mechanisms writing to the same columns, and
+      nothing double-counts or regresses
 - 5.2 Guardrail: a new rescan can never leave a gap before what's already
   been scanned
   - outcome: 2.1's trigger endpoint gains one more validation - `advanced`
@@ -620,10 +643,21 @@ coverage from *both*.
     that claims full coverage across a span with an actual hole in it.
     Rejecting the request outright keeps 5.1's "one continuous range"
     property genuinely guaranteed, not merely usually true.
-  - test: real test - an order with a real `last_scanned_height` already
-    set; an advanced-mode trigger whose `to` is earlier than that is
-    rejected with a clear error; one whose `to` is `>=` it succeeds
-    normally
+  - test (the boundary itself is the whole point, so it gets its own
+    explicit cases rather than one "rejected vs. succeeds" bullet):
+    - `to` exactly one block earlier than `last_scanned_height` is
+      rejected (proves the check is real, not off-by-one-lenient)
+    - `to` exactly equal to `last_scanned_height` succeeds (proves the
+      bound is inclusive `>=`, not a stricter `>` that would reject a
+      legitimate edge value)
+    - `to` comfortably later than `last_scanned_height` but still well
+      short of "now" succeeds and correctly narrows the walk's own end,
+      proving the guardrail rejects only genuinely gap-creating requests,
+      not every narrow one
+    - a `simple`-mode trigger is never subject to this check at all (its
+      `to` is always "now" by construction, per 2.1 - confirm the
+      guardrail's own code path is reachable only from `advanced`, so it
+      can never spuriously reject the common case)
 - 5.3 Engine admin API: expose the range, and whether it's still growing
   - outcome: `OrderView` (`src/http/admin.rs`) gains
     `first_scanned_height`/`last_scanned_height` (both `Option<i64>`,
