@@ -2,14 +2,16 @@
 //! library (config -> store -> key custody -> scanner -> router - the same pieces
 //! `main.rs` wires together, just driven directly instead of over a bound TCP
 //! socket), pays it with a genuine tiny transaction constructed, signed, and
-//! broadcast entirely in Rust (see `tests/support/mod.rs`) from a real,
+//! broadcast entirely in Rust (see `crates/stagenet-test-wallet`) from a real,
 //! faucet-funded Monero **stagenet** wallet, and asserts the real chain scanner
 //! detects it.
 //!
 //! The only external dependency this test has is the public stagenet node itself
 //! (`support::e2e_fixture`) - no wallet-rpc or any other external process.
-//! Sending the payment is done by `support::StagenetSpendWallet`, built on the
-//! `monero-wallet` crate.
+//! Sending the payment is done by `stagenet_test_wallet::StagenetTestWallet` -
+//! see that crate's own doc comment for why it's a separate, narrower wallet
+//! from a general-purpose one, built specifically for this kind of real,
+//! repeated, e2e-test use.
 //!
 //! Follows the same pattern as `daemon_rpc::live_node_tests`: excluded from the
 //! default `cargo test` run via `#[ignore]` (it needs live network access, so it
@@ -47,9 +49,9 @@ use scanner::scanner::run_scan_tick;
 use scanner::store::{NewTenant, Store};
 use shared::xmr_amount::parse_xmr_to_piconero;
 
-use support::StagenetSpendWallet;
-
 const WALLETS_PATH: &str = "e2e/stagenet-wallets.json";
+const KNOWN_OUTPUTS_PATH: &str = "e2e/stagenet-known-outputs.json";
+const DECOY_DISTRIBUTION_PATH: &str = "e2e/stagenet-decoy-distribution.json";
 
 /// Confirms the configured stagenet node is actually reachable before doing
 /// anything else with it - a misconfigured host/port, or a node that's temporarily
@@ -82,33 +84,6 @@ async fn oneshot_json(router: &axum::Router, method: &str, uri: String, body: Op
     (status, json)
 }
 
-/// Appends `tx_hash` to `customer.known_txids` in `e2e/stagenet-wallets.json` and
-/// writes the file back, so a future run automatically finds this run's change
-/// output once it's confirmed and unlocked - see the comment on `known_txids` in
-/// that file, and `support::StagenetSpendWallet::spendable_now`.
-///
-/// Re-reads the file fresh (rather than reusing the copy read minutes earlier at
-/// the top of the test) and writes via a temp-file-plus-rename rather than a
-/// direct truncating write, so two overlapping runs can't clobber each other's
-/// appended txid, and a crash or Ctrl-C mid-write can't leave this
-/// credentials-bearing file half-written.
-fn record_known_txid(tx_hash: &str) {
-    let mut wallets_json: Value = serde_json::from_str(
-        &std::fs::read_to_string(WALLETS_PATH).unwrap_or_else(|e| panic!("failed to read {WALLETS_PATH}: {e}")),
-    )
-    .unwrap_or_else(|e| panic!("failed to parse {WALLETS_PATH}: {e}"));
-    let known =
-        wallets_json["customer"]["known_txids"].as_array_mut().expect("customer.known_txids must be an array");
-    if !known.iter().any(|v| v.as_str() == Some(tx_hash)) {
-        known.push(json!(tx_hash));
-    }
-    let tmp_path = format!("{WALLETS_PATH}.tmp");
-    std::fs::write(&tmp_path, serde_json::to_string_pretty(&wallets_json).unwrap() + "\n")
-        .unwrap_or_else(|e| panic!("failed to write {tmp_path}: {e}"));
-    std::fs::rename(&tmp_path, WALLETS_PATH)
-        .unwrap_or_else(|e| panic!("failed to move {tmp_path} into place over {WALLETS_PATH}: {e}"));
-}
-
 #[tokio::test]
 #[ignore]
 async fn real_stagenet_payment_is_detected_end_to_end() {
@@ -124,12 +99,6 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
         wallets_json["customer"]["private_spend_key"].as_str().expect("customer.private_spend_key missing").to_string();
     let customer_view_key_hex =
         wallets_json["customer"]["private_view_key"].as_str().expect("customer.private_view_key missing").to_string();
-    let known_txids: Vec<String> = wallets_json["customer"]["known_txids"]
-        .as_array()
-        .expect("customer.known_txids missing")
-        .iter()
-        .map(|v| v.as_str().expect("known_txids entries must be strings").to_string())
-        .collect();
 
     // Same boot sequence as main.rs's happy path, minus the webhook loop (not
     // exercised by this test) and the bound TCP listener (the router is driven
@@ -211,23 +180,27 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     println!("created order {payment_id}: {amount_piconero} piconero to {address}");
 
     // -- pay it for real: construct, sign, and broadcast the transaction ourselves
-    // (no wallet-rpc or any other external wallet process - see tests/support/mod.rs) --
-    let spend_wallet = StagenetSpendWallet::connect(
-        &node_url,
-        e2e_fixture::NODE_ACCEPT_SELF_SIGNED_CERTS,
-        &customer_spend_key_hex,
-        &customer_view_key_hex,
-        &customer_address,
+    // (no wallet-rpc or any other external wallet process - see
+    // crates/stagenet-test-wallet, whose own `send_payment` retries the whole
+    // connect-then-send sequence internally on real, observed node flakiness) --
+    let wallet_config = stagenet_test_wallet::WalletConfig {
+        node_url: &node_url,
+        accept_invalid_certs: e2e_fixture::NODE_ACCEPT_SELF_SIGNED_CERTS,
+        private_spend_key_hex: &customer_spend_key_hex,
+        private_view_key_hex: &customer_view_key_hex,
+        expected_address: &customer_address,
+        decoy_distribution_path: DECOY_DISTRIBUTION_PATH,
+    };
+    let tx_hash = stagenet_test_wallet::send_payment(
+        wallet_config,
+        KNOWN_OUTPUTS_PATH,
+        &address,
+        amount_piconero,
     )
     .await
     .unwrap_or_else(|e| panic!("\n\n{e}\n"));
-    let tx_hash = spend_wallet
-        .send(daemon.as_ref(), &known_txids, &address, amount_piconero)
-        .await
-        .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);
     println!("sent real stagenet payment, tx {tx_hash_hex}");
-    record_known_txid(&tx_hash_hex);
 
     // -- drive the real scanner ourselves (no background task/sleep loop needed -
     // this *is* the same `run_scan_tick` the production loop in main.rs calls on a

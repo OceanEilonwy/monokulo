@@ -5,10 +5,26 @@ edition = "2021"
 
 # A standalone, test-only crate by construction - it exists purely to make
 # the repo's real-stagenet e2e suites (crates/scanner/tests/e2e_stagenet.rs,
-# tests/e2e_dashboard_stagenet.rs, crates/scanner/src/bin/pos_e2e_*.rs) fast
-# and reliable. See src/lib.rs's own module doc comment for the full design
-# rationale (why no chain scanning, why decoy selection is served from a
-# committed cache) and the investigation that motivated it.
+# tests/e2e_dashboard_stagenet.rs, crates/scanner/src/bin/e2e_harness.rs, and
+# mock-woocommerce's own two real-stagenet tests) fast and reliable. See
+# src/lib.rs's own module doc comment for the full design rationale (why no
+# chain scanning, why decoy selection is served from a committed cache) and
+# the investigation that motivated it.
+#
+# Every dependency below is unconditional (no Cargo feature of its own gates
+# them) - deliberately, since this whole crate is meaningless without real
+# transaction-construction support. Its callers (`scanner`, `mock-woocommerce`)
+# keep it behind their own optional, `e2e`-feature-gated `stagenet-test-wallet
+# = { path = ..., optional = true }` dependency, same as they gated the
+# predecessor this replaced - but a plain `cargo build --workspace`/`cargo
+# test --workspace` still compiles this crate's own real deps regardless,
+# since Cargo includes every workspace member (or, as confirmed directly,
+# even a path dependency merely living inside the workspace's own directory
+# tree, member or not) when `--workspace` is passed, independent of any
+# downstream crate's feature flags. There's no clean way to avoid that while
+# keeping this crate physically inside `crates/` and shared by two callers -
+# moving it outside the workspace tree entirely would be the only real fix,
+# and isn't worth the disruption for what's already a fast-compiling crate.
 [dependencies]
 hex = "0.4.3"
 monero-wallet = "0.2.0"
@@ -22,8 +38,9 @@ thiserror = "2.0.20"
 zeroize = { version = "1.9.0", features = ["derive"] }
 # Needed by the `refresh-decoy-pool` [[bin]] below (a [[bin]] target only
 # ever sees a package's normal [dependencies], never [dev-dependencies] -
-# the same reason crates/scanner/Cargo.toml has its own comment on this).
-tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+# the same reason crates/scanner/Cargo.toml has its own comment on this) and,
+# with the "time" feature, by `send_payment`'s own built-in retry backoff.
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
 
 [[bin]]
 name = "refresh-decoy-pool"

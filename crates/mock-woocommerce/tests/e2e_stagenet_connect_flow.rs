@@ -5,10 +5,10 @@
 //! **merchant** wallet's view key/spend pubkey from `e2e/stagenet-wallets.json`
 //! against a real, stagenet-configured engine, creates a real order, pays it
 //! with a real, signed stagenet transaction sent from the **customer** wallet
-//! (`scanner::e2e_wallet::StagenetSpendWallet` - the exact same
-//! pure-Rust construct/sign/broadcast path `tests/e2e_stagenet.rs` at the repo
-//! root already proves, reused here as a library dependency, not
-//! reimplemented), drives a real chain scan against the real node
+//! (`stagenet_test_wallet::send_payment` - the exact same fast, no-scanning,
+//! cached-decoys wallet `tests/e2e_stagenet.rs` at the repo root already
+//! proves, reused here as a library dependency, not reimplemented), drives a
+//! real chain scan against the real node
 //! (`scanner_test_support::TestEngineHandle::run_scan_tick_now` - see its own
 //! doc comment for why this test drives scanning itself rather than through
 //! `with_background_loops`'s automatic interval), and asserts the mock's real
@@ -21,10 +21,10 @@
 //!
 //! ## Why this needs the `e2e` feature
 //!
-//! Sending the real payment needs `scanner::e2e_wallet::StagenetSpendWallet`,
+//! Sending the real payment needs `stagenet_test_wallet::send_payment`,
 //! which needs real transaction-construction dependencies
 //! (`monero-wallet`/`monero-daemon-rpc`/`rand_core`/`curve25519-dalek`) gated
-//! behind scanner's own `e2e` Cargo feature (see the root `Cargo.toml`).
+//! behind that crate's own `e2e`-flavored optionality (see `Cargo.toml`).
 //! This crate's own `e2e` feature (see `mock-woocommerce/Cargo.toml`) just turns
 //! that on transitively.
 //!
@@ -71,11 +71,13 @@ use serde_json::Value;
 
 use scanner::daemon::MoneroDaemonClient;
 use scanner::daemon_rpc::RpcDaemonClient;
-use scanner::e2e_wallet::{self, StagenetSpendWallet};
+use stagenet_test_wallet::{Ledger, StagenetTestWallet};
 
 use mock_woocommerce::{create_order, run_connect_flow_with_wallet, ConnectFlowWallet};
 
 const WALLETS_PATH: &str = "../e2e/stagenet-wallets.json";
+const KNOWN_OUTPUTS_PATH: &str = "../e2e/stagenet-known-outputs.json";
+const DECOY_DISTRIBUTION_PATH: &str = "../e2e/stagenet-decoy-distribution.json";
 
 /// The real end-to-end test's fixed stagenet node - the same values
 /// `crates/scanner/tests/support/mod.rs::e2e_fixture` uses (duplicated rather
@@ -156,9 +158,8 @@ where
 }
 
 /// The stagenet merchant fixture's watch-only key material - `private_view_key` and
-/// `spend_public_key` only, read directly (not via `e2e_wallet::load_wallet_fixture`,
-/// whose `WalletFixture` also expects a `private_spend_key` field this fixture's
-/// merchant entry deliberately doesn't have, since it's genuinely watch-only here -
+/// `spend_public_key` only, read directly (this fixture's merchant entry deliberately
+/// has no `private_spend_key` field at all, since it's genuinely watch-only here -
 /// see `e2e/stagenet-wallets.json`'s own `merchant.role` comment and
 /// `e2e/README.md`). This is exactly the same key material a real merchant would type
 /// into the real connect-flow wallet form.
@@ -279,8 +280,15 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     );
 
     let merchant = load_merchant_watch_only_wallet(WALLETS_PATH);
-    let customer = e2e_wallet::load_wallet_fixture(WALLETS_PATH, e2e_wallet::CUSTOMER)
-        .unwrap_or_else(|e| panic!("failed to load customer wallet fixture: {e}"));
+    let wallets_json: Value = serde_json::from_str(
+        &std::fs::read_to_string(WALLETS_PATH).unwrap_or_else(|e| panic!("failed to read {WALLETS_PATH}: {e}")),
+    )
+    .unwrap_or_else(|e| panic!("failed to parse {WALLETS_PATH}: {e}"));
+    let customer_address = wallets_json["customer"]["address"].as_str().expect("customer.address missing").to_string();
+    let customer_spend_key_hex =
+        wallets_json["customer"]["private_spend_key"].as_str().expect("customer.private_spend_key missing").to_string();
+    let customer_view_key_hex =
+        wallets_json["customer"]["private_view_key"].as_str().expect("customer.private_view_key missing").to_string();
 
     // A single `RpcDaemonClient`, used for everything real-network-related in this
     // test (reachability check, wallet connect/send, and the post-payment scan-tick
@@ -305,38 +313,32 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     );
     require_daemon_reachable(daemon.as_ref(), node_fixture::HOST, node_fixture::PORT).await;
 
-    // Connected once, up front, and reused for the real `.send()` below - and, just as
-    // importantly, used right here for a cheap pre-flight balance check before this
-    // test spends any time on the connect flow/order/engine setup that follows. A
-    // fund-starved customer wallet otherwise only reveals itself deep inside `send`'s
-    // own retry loop, where each attempt pays for a real, slow (~5-60s) decoy-fetch
-    // round trip against this node - exactly what made an earlier run of this test
-    // take multiple hours instead of minutes. Failing fast here, with a clear,
-    // actionable message, is worth the small amount of code even though this task's
-    // scope is otherwise just the one capstone test.
-    let spend_wallet = retry(5, Duration::from_secs(5), || {
-        StagenetSpendWallet::connect(
-            &node_url,
-            node_fixture::ACCEPT_SELF_SIGNED_CERTS,
-            &customer.private_spend_key_hex,
-            &customer.private_view_key_hex,
-            &customer.address,
-        )
+    // A cheap pre-flight balance check before this test spends any time on
+    // the connect flow/order/engine setup that follows. A fund-starved
+    // customer wallet otherwise only reveals itself deep inside
+    // `send_payment`'s own retry loop - failing fast here, with a clear,
+    // actionable message, is worth the small amount of code even though
+    // this task's scope is otherwise just the one capstone test. A fresh
+    // connect, not reused for the real send below - `StagenetTestWallet::
+    // connect` is cheap now (decoy selection is served from a committed
+    // cache, not a live fetch - see `stagenet-test-wallet`'s own doc
+    // comment), so there's no real cost to a second one, and `send_payment`
+    // does its own connect internally regardless.
+    let balance_wallet = retry(5, Duration::from_secs(5), || {
+        StagenetTestWallet::connect(&node_url, node_fixture::ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address, DECOY_DISTRIBUTION_PATH)
     })
     .await
     .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     const MIN_SPENDABLE_PICONERO: u64 = 10_000_000_000; // 0.01 XMR - comfortably above one test payment + fee.
-    let balance = spend_wallet
-        .balance(daemon.as_ref(), &customer.known_txids)
-        .await
-        .unwrap_or_else(|e| panic!("failed to check customer wallet balance: {e}"));
+    let mut ledger = Ledger::load(KNOWN_OUTPUTS_PATH).unwrap_or_else(|e| panic!("\n\n{e}\n"));
+    let balance = balance_wallet.balance(&mut ledger).await.unwrap_or_else(|e| panic!("failed to check customer wallet balance: {e}"));
     if balance.spendable_piconero < MIN_SPENDABLE_PICONERO {
         panic!(
             "\n\ncustomer wallet has only {} piconero spendable across {} output(s) (needs at least \
              {MIN_SPENDABLE_PICONERO}) - fund it from the stagenet faucet \
-             (https://stagenet-faucet.xmr-tw.org/, send to {}) and record the resulting txid in \
-             customer.known_txids in {WALLETS_PATH}, then wait ~20 minutes for it to mature.\n",
-            balance.spendable_piconero, balance.spendable_outputs, customer.address,
+             (https://stagenet-faucet.xmr-tw.org/, send to {}), add a new ledger entry for the \
+             resulting txid in {KNOWN_OUTPUTS_PATH}, then wait ~20 minutes for it to mature.\n",
+            balance.spendable_piconero, balance.spendable_outputs, customer_address,
         );
     }
     println!("customer wallet balance check passed: {balance:?}");
@@ -420,33 +422,30 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     );
 
     // Pay it for real: construct, sign, and broadcast the transaction ourselves (no
-    // wallet-rpc or any other external wallet process), from the customer wallet
-    // already connected above - the exact same
-    // `scanner::e2e_wallet::StagenetSpendWallet` machinery `tests/e2e_stagenet.rs`
-    // already proves, reused here as a library dependency. Wrapped in `retry` - see
-    // `require_daemon_reachable`'s doc comment on why this specific public node
-    // warrants it.
-    let tx_hash = retry(5, Duration::from_secs(5), || {
-        spend_wallet.send(
-            daemon.as_ref(),
-            &customer.known_txids,
-            &address,
-            amount_piconero,
-        )
-    })
+    // wallet-rpc or any other external wallet process) - the exact same
+    // `stagenet_test_wallet::send_payment` machinery `tests/e2e_stagenet.rs` already
+    // proves, reused here as a library dependency. Its own built-in retry (see that
+    // crate's own doc comment) replaces this file's local `retry` helper for this
+    // one call - the ledger write-back (this run's own new change output) happens
+    // internally too, no separate record-keeping call needed here any more.
+    let wallet_config = stagenet_test_wallet::WalletConfig {
+        node_url: &node_url,
+        accept_invalid_certs: node_fixture::ACCEPT_SELF_SIGNED_CERTS,
+        private_spend_key_hex: &customer_spend_key_hex,
+        private_view_key_hex: &customer_view_key_hex,
+        expected_address: &customer_address,
+        decoy_distribution_path: DECOY_DISTRIBUTION_PATH,
+    };
+    let tx_hash = stagenet_test_wallet::send_payment(
+        wallet_config,
+        KNOWN_OUTPUTS_PATH,
+        &address,
+        amount_piconero,
+    )
     .await
     .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);
     println!("sent real stagenet payment, tx {tx_hash_hex}");
-
-    // Persist the new txid so a future run automatically finds this run's change
-    // output once it's confirmed and unlocked - same reasoning as
-    // `tests/e2e_stagenet.rs`'s own `record_known_txid`, now a reusable library
-    // function (`e2e_wallet::record_known_txid`) rather than a test-local helper.
-    if let Err(e) = e2e_wallet::record_known_txid(WALLETS_PATH, e2e_wallet::CUSTOMER, &tx_hash_hex)
-    {
-        eprintln!("warning: failed to record new txid {tx_hash_hex} in {WALLETS_PATH}: {e}");
-    }
 
     // Now the real proof: drive a real scan tick against the real node ourselves
     // (`run_scan_tick_now` - the same `run_scan_tick` `main.rs`'s production loop

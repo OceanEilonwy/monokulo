@@ -508,6 +508,105 @@ impl StagenetTestWallet {
         ledger.record_pending(&hex::encode(hash), 0)?;
         Ok(hash)
     }
+
+    /// A cheap, real pre-flight check for callers that want to fail fast
+    /// with a clear, actionable message before doing anything else (an
+    /// expensive setup sequence, a whole connect-flow test) rather than
+    /// discovering an empty wallet deep inside `send`'s own error. Resolves
+    /// any pending entries first, so this reports the ledger's real,
+    /// current state, not a stale snapshot.
+    pub async fn balance(&self, ledger: &mut Ledger) -> Result<WalletBalance, WalletError> {
+        self.resolve_pending(ledger).await?;
+        let latest_height = self.rpc.latest_block_number().await.map_err(|e| WalletError::Rpc(e.to_string()))? as u64;
+        let mut balance = WalletBalance::default();
+        for entry in &ledger.entries {
+            if entry.spent {
+                continue;
+            }
+            let (Some(height), Some(hex_bytes)) = (entry.height, &entry.serialized_output_hex) else { continue };
+            let bytes = hex::decode(hex_bytes).map_err(|e| WalletError::Ledger(format!("entry {} has invalid serialized_output_hex: {e}", entry.txid)))?;
+            let output = WalletOutput::read(&mut &bytes[..]).map_err(|e| WalletError::Ledger(format!("entry {} failed to deserialize: {e}", entry.txid)))?;
+            let amount = output.commitment().amount;
+            if latest_height.saturating_sub(height) >= SPENDABLE_AGE {
+                balance.spendable_piconero += amount;
+                balance.spendable_outputs += 1;
+            } else {
+                balance.pending_piconero += amount;
+                balance.pending_outputs += 1;
+            }
+        }
+        Ok(balance)
+    }
+}
+
+/// See [`StagenetTestWallet::balance`].
+#[derive(Debug, Clone, Copy, Default, Serialize)]
+pub struct WalletBalance {
+    pub spendable_piconero: u64,
+    pub spendable_outputs: usize,
+    pub pending_piconero: u64,
+    pub pending_outputs: usize,
+}
+
+/// The wallet-identifying parameters every real caller needs to pass around
+/// together - grouped into one struct purely to keep [`send_payment`]'s own
+/// argument count reasonable (`StagenetTestWallet::connect` still takes
+/// these positionally; six is well under the threshold that makes grouping
+/// worth it, `send_payment`'s own nine wasn't).
+pub struct WalletConfig<'a> {
+    pub node_url: &'a str,
+    pub accept_invalid_certs: bool,
+    pub private_spend_key_hex: &'a str,
+    pub private_view_key_hex: &'a str,
+    pub expected_address: &'a str,
+    pub decoy_distribution_path: &'a str,
+}
+
+/// Connects, resolves any pending ledger entries, and sends `amount`
+/// piconero to `to`, retrying the *whole* connect-then-send sequence from
+/// scratch (up to `ATTEMPTS` times, `RETRY_DELAY` apart) on any error except
+/// [`WalletError::Broadcast`] - a broadcast was actually attempted and its
+/// outcome is genuinely unknown, so that one is never retried (a real
+/// double-send risk); every other variant fails strictly before anything is
+/// signed or broadcast, so retrying from scratch is safe.
+///
+/// This is the one canonical entry point real callers should reach for -
+/// every real e2e test in this repo talks to the same shared public
+/// stagenet node, and every one of them was, at one point or another,
+/// observed hitting the exact same real, intermittent RPC failures this
+/// retries past (see this crate's own module doc comment). Baking the retry
+/// in here once, rather than duplicating it at every call site, is what
+/// "a robust library is sufficient" actually means in practice.
+pub async fn send_payment(config: WalletConfig<'_>, ledger_path: &str, to: &str, amount: u64) -> Result<[u8; 32], WalletError> {
+    const ATTEMPTS: u32 = 5;
+    const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
+    let mut attempt = 1;
+    loop {
+        let result: Result<[u8; 32], WalletError> = async {
+            let wallet = StagenetTestWallet::connect(
+                config.node_url,
+                config.accept_invalid_certs,
+                config.private_spend_key_hex,
+                config.private_view_key_hex,
+                config.expected_address,
+                config.decoy_distribution_path,
+            )
+            .await?;
+            let mut ledger = Ledger::load(ledger_path)?;
+            wallet.send(&mut ledger, to, amount).await
+        }
+        .await;
+        match result {
+            Ok(hash) => return Ok(hash),
+            Err(e @ WalletError::Broadcast(_)) => return Err(e),
+            Err(e) if attempt < ATTEMPTS => {
+                eprintln!("stagenet-test-wallet: attempt {attempt}/{ATTEMPTS}: retrying after: {e}");
+                attempt += 1;
+                tokio::time::sleep(RETRY_DELAY).await;
+            }
+            Err(e) => return Err(e),
+        }
+    }
 }
 
 #[cfg(test)]

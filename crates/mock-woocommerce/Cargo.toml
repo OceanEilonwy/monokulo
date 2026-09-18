@@ -22,6 +22,13 @@ thiserror = "2.0.20"
 tokio = { version = "1.53.1", features = ["full"] }
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
+# WBS 1.4.5's real stagenet connect-flow test (and its sibling,
+# e2e_stagenet_confirmation_threshold.rs) only - the fast, no-scanning,
+# cached-decoys wallet that sends the real payment. Optional, same reasoning
+# `scanner`'s own Cargo.toml gives for the same dependency: keep the real
+# transaction-construction deps it pulls in out of the tree for a normal
+# `cargo build`/`cargo test --workspace`.
+stagenet-test-wallet = { path = "../stagenet-test-wallet", optional = true }
 
 # Test-only: lets mock-woocommerce's own integration tests start a real,
 # network-bound scanner instance (scanner-test-support) and a
@@ -40,14 +47,13 @@ monero = "0.22.0"
 hex = "0.4.3"
 
 [features]
-# Mirrors scanner's own `e2e` feature exactly (see the root Cargo.toml's
-# `[features]` for the full reasoning) - turning this on pulls in the real
-# transaction-construction dependencies transitively through scanner, so
-# WBS 1.4.5's real stagenet connect-flow test (tests/e2e_stagenet_connect_flow.rs)
-# can use `scanner::e2e_wallet::StagenetSpendWallet`. Never enabled by
-# default - a plain `cargo test --workspace`/`cargo test -p mock-woocommerce` must
-# not link this in.
-e2e = ["scanner/e2e"]
+# Turning this on pulls in `stagenet-test-wallet`'s own real
+# transaction-construction dependencies, so WBS 1.4.5's real stagenet
+# connect-flow test (tests/e2e_stagenet_connect_flow.rs) and its sibling can
+# use `stagenet_test_wallet::send_payment`. Never enabled by default - a
+# plain `cargo test --workspace`/`cargo test -p mock-woocommerce` must not
+# link this in.
+e2e = ["dep:stagenet-test-wallet"]
 
 [[test]]
 name = "e2e_stagenet_connect_flow"

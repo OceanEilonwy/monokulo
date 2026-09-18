@@ -4,7 +4,7 @@
 //! same reusable merchant watch-only wallet `tests/e2e_stagenet.rs` and
 //! `mock-woocommerce/tests/e2e_stagenet_connect_flow.rs` already use, pays a
 //! real order with a genuine, signed, broadcast stagenet transaction (via
-//! `support::StagenetSpendWallet`, same as those two), and asserts the
+//! `stagenet_test_wallet::StagenetTestWallet`, same as those two), and asserts the
 //! payment shows up on the real monokulo dashboard (`GET /dashboard`)
 //! with the real, correct total-received-XMR figure - not just that the
 //! engine detected it (that's already `e2e_stagenet.rs`'s own job).
@@ -64,9 +64,9 @@ use monokulo::engine_client::EngineClient;
 use monokulo::http::{build_router as build_monokulo_router, AppState as ControlPlaneAppState};
 use monokulo::templates::TemplateEngine;
 
-use support::StagenetSpendWallet;
-
 const WALLETS_PATH: &str = "e2e/stagenet-wallets.json";
+const KNOWN_OUTPUTS_PATH: &str = "e2e/stagenet-known-outputs.json";
+const DECOY_DISTRIBUTION_PATH: &str = "e2e/stagenet-decoy-distribution.json";
 
 /// Same check `e2e_stagenet.rs` opens with, and for the same reason: fail
 /// with a clear, actionable message before spending anything, rather than
@@ -80,28 +80,6 @@ async fn require_daemon_reachable(daemon: &dyn MoneroDaemonClient, host: &str, p
              node (search \"monero stagenet public node\" for alternatives).\n"
         );
     }
-}
-
-/// Deliberately duplicated from `e2e_stagenet.rs` rather than shared via
-/// `tests/support/mod.rs`, specifically so this test never touches that
-/// other, already-real-money-costing test's own file while being written -
-/// see this module's own doc comment. Same atomic temp-file-then-rename
-/// write-back, same reasoning (two overlapping runs, or a crash mid-write,
-/// must never corrupt or lose the shared customer wallet's own spendable-
-/// output bookkeeping).
-fn record_known_txid(tx_hash: &str) {
-    let mut wallets_json: Value = serde_json::from_str(
-        &std::fs::read_to_string(WALLETS_PATH).unwrap_or_else(|e| panic!("failed to read {WALLETS_PATH}: {e}")),
-    )
-    .unwrap_or_else(|e| panic!("failed to parse {WALLETS_PATH}: {e}"));
-    let known = wallets_json["customer"]["known_txids"].as_array_mut().expect("customer.known_txids must be an array");
-    if !known.iter().any(|v| v.as_str() == Some(tx_hash)) {
-        known.push(json!(tx_hash));
-    }
-    let tmp_path = format!("{WALLETS_PATH}.tmp");
-    std::fs::write(&tmp_path, serde_json::to_string_pretty(&wallets_json).unwrap() + "\n")
-        .unwrap_or_else(|e| panic!("failed to write {tmp_path}: {e}"));
-    std::fs::rename(&tmp_path, WALLETS_PATH).unwrap_or_else(|e| panic!("failed to move {tmp_path} into place over {WALLETS_PATH}: {e}"));
 }
 
 /// 1 XMR = 10^12 piconero. Mirrors `monokulo::http::home`'s own
@@ -167,12 +145,6 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         wallets_json["customer"]["private_spend_key"].as_str().expect("customer.private_spend_key missing").to_string();
     let customer_view_key_hex =
         wallets_json["customer"]["private_view_key"].as_str().expect("customer.private_view_key missing").to_string();
-    let known_txids: Vec<String> = wallets_json["customer"]["known_txids"]
-        .as_array()
-        .expect("customer.known_txids missing")
-        .iter()
-        .map(|v| v.as_str().expect("known_txids entries must be strings").to_string())
-        .collect();
 
     // ---- boot a REAL, network-bound engine (no tenant bootstrapped here - the
     // "advanced connect" flow below creates it, through monokulo, exactly
@@ -331,14 +303,24 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     println!("created order {payment_id}: {amount_piconero} piconero to {address}");
 
     // ---- 4. pay it for real - genuine signed + broadcast stagenet transaction ----
-    let spend_wallet =
-        StagenetSpendWallet::connect(&node_url, e2e_fixture::NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address)
-            .await
-            .unwrap_or_else(|e| panic!("\n\n{e}\n"));
-    let tx_hash = spend_wallet.send(daemon.as_ref(), &known_txids, &address, amount_piconero).await.unwrap_or_else(|e| panic!("\n\n{e}\n"));
+    let wallet_config = stagenet_test_wallet::WalletConfig {
+        node_url: &node_url,
+        accept_invalid_certs: e2e_fixture::NODE_ACCEPT_SELF_SIGNED_CERTS,
+        private_spend_key_hex: &customer_spend_key_hex,
+        private_view_key_hex: &customer_view_key_hex,
+        expected_address: &customer_address,
+        decoy_distribution_path: DECOY_DISTRIBUTION_PATH,
+    };
+    let tx_hash = stagenet_test_wallet::send_payment(
+        wallet_config,
+        KNOWN_OUTPUTS_PATH,
+        &address,
+        amount_piconero,
+    )
+    .await
+    .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);
     println!("sent real stagenet payment, tx {tx_hash_hex}");
-    record_known_txid(&tx_hash_hex);
 
     // ---- 5. tick the real scanner in the foreground and poll the real
     // monokulo dashboard - not the engine's own API - until it shows the

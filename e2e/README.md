@@ -1,40 +1,28 @@
 # Real stagenet end-to-end test
 
-**Two wallet implementations coexist in this repo's e2e tooling.** This
-document (`e2e_stagenet.rs`, `e2e_dashboard_stagenet.rs`) uses
-`scanner::e2e_wallet::StagenetSpendWallet` - a real, general-purpose
-Monero wallet (chain scanning for output discovery, full gamma-distribution
-decoy selection). The POS screen's own suite (`e2e/pos-playwright/`,
-`crates/scanner/src/bin/pos_e2e_*.rs`) uses `crates/stagenet-test-wallet`
-instead - a narrower, purpose-built, stagenet-only wallet (no chain
-scanning; informed of its own outputs directly via a committed ledger;
-decoy selection served from a committed cache) built after a real,
-reproduced reliability problem with the general-purpose wallet under
-concurrent/repeated use against a shared public node - see that crate's own
-`src/lib.rs` module doc comment for the full rationale. Migrating this
-document's own tests onto the new crate is a natural, low-risk follow-up
-(same interface shape) that just hasn't happened yet.
-
-The actual test lives in Rust: [`../tests/e2e_stagenet.rs`](../tests/e2e_stagenet.rs),
+The actual test lives in Rust: [`../crates/scanner/tests/e2e_stagenet.rs`](../crates/scanner/tests/e2e_stagenet.rs),
 run via `cargo test` like any other test in this crate. It drives the real
-`moneropay_core` library - config, store, key custody, scanner, router; the same
+`scanner` library - config, store, key custody, scanner, router; the same
 pieces `main.rs` wires together - against a real public Monero **stagenet** node,
 and pays the order it creates with a real (tiny) transaction constructed, signed,
-and broadcast entirely in Rust (see [`../tests/support/mod.rs`](../tests/support/mod.rs),
-built on the `monero-wallet` crate) from a wallet that was funded by a public
-stagenet faucet. Nothing here is mocked, and nothing here needs an external wallet
-process - the point is to prove the actual scanning, detection, and status-update
-logic works against a real chain, not just a simulated one. This directory holds
-the fixtures that test needs, plus a demo shop for manually eyeballing the same
+and broadcast entirely in Rust by [`crates/stagenet-test-wallet`](../crates/stagenet-test-wallet),
+from a wallet that was funded by a public stagenet faucet. Nothing here is mocked,
+and nothing here needs an external wallet process - the point is to prove the
+actual scanning, detection, and status-update logic works against a real chain,
+not just a simulated one. This directory holds the fixtures every real e2e
+suite in the repo needs (this test, `e2e_dashboard_stagenet.rs`, both
+`mock-woocommerce` real-stagenet tests, and the POS screen's own
+`e2e/pos-playwright/` suite), plus a demo shop for manually eyeballing the same
 flow through the actual embedded widget in a browser.
 
 **The only external dependency is the public stagenet node itself** - no
-wallet-rpc, no `monero-wallet-cli`, no other process. Sending the test payment
-happens by directly scanning known transactions with the customer wallet's own
-private keys, selecting real decoys, signing a real CLSAG + Bulletproofs+
-transaction, and broadcasting it over the node's plain RPC - see the module doc
-comment on `tests/support/mod.rs` for the full explanation and why it's safe to
-trust that path's randomness/cryptography.
+wallet-rpc, no `monero-wallet-cli`, no other process. Sending a test payment
+happens by directly signing a real CLSAG + Bulletproofs+ transaction from the
+customer wallet's own private keys against outputs already known to be ours,
+selecting decoys from a cached distribution snapshot, and broadcasting it over
+the node's plain RPC - see `crates/stagenet-test-wallet/src/lib.rs`'s own
+module doc comment for the full explanation (why no chain scanning, why decoys
+come from a cache, why it's safe to trust that path's randomness/cryptography).
 
 Following the same pattern as `daemon_rpc::live_node_tests` (`src/daemon_rpc.rs`),
 the test is `#[ignore]`d so the default `cargo test` run stays hermetic and fast -
@@ -44,36 +32,42 @@ run it explicitly, from the repository root:
 cargo test --test e2e_stagenet -- --ignored --nocapture
 ```
 
-**This can take a few minutes.** Real decoy selection against this specific node
-involves a large `get_output_distribution` fetch plus, on stagenet's comparatively
-sparse RingCT output set, extra resample rounds to find enough *unlocked* decoys -
-an observed full run took ~250s. See the timeout comment in
-`tests/support/mod.rs::connect` for detail.
+Decoy selection is served from the committed cache below rather than fetched live,
+so a full run is fast (seconds, not minutes) and doesn't depend on a large
+`get_output_distribution` fetch succeeding against a possibly-slow public node.
 
 ## Infrastructure used
 
 - **Node**: `node.monerodevs.org:38089` (public stagenet node) - configured in
-  `moneropay-stagenet.toml`'s `[monero_node.stagenet]`.
+  `moneropay-stagenet.toml`'s `[monero_node.stagenet]` and in
+  `crates/scanner/tests/support/mod.rs`'s `e2e_fixture` constants.
 - **Faucet**: https://stagenet-faucet.xmr-tw.org/ - funded the customer wallet
-  below. Funding txids are recorded in `stagenet-wallets.json`.
-- **Wallets**: `stagenet-wallets.json` persists the keys for two wallets so the
-  whole setup is reproducible without re-funding from the faucet every time:
+  below.
+- **`stagenet-wallets.json`**: persists the keys for two wallets so the whole
+  setup is reproducible without re-funding from the faucet every time:
   - `merchant` - the tenant's watch-only wallet, bootstrapped into
     `moneropay-stagenet.toml`. moneropay only ever needs its view key + spend
     public key (never the spend key), so that's all that's configured there.
   - `customer` - an ordinary wallet that received faucet funds and is used to
     *send* test payments to orders, via `private_spend_key`/`private_view_key`
-    read directly by `tests/e2e_stagenet.rs`. Never given to moneropay - it plays
-    the role of "the person paying an invoice." `known_txids` lists every
-    transaction that has ever paid this wallet (the original faucet payouts, plus
-    every test run's own tx, since its change output pays the wallet again) - the
-    test scans all of these each run (skipping any not yet confirmed) and appends
-    its own new tx here on success, so later runs automatically pick up earlier
-    change without needing a fresh faucet payout every time.
+    read directly by the e2e tests. Never given to moneropay - it plays the
+    role of "the person paying an invoice."
 
   This file contains real (if worthless - stagenet has no exchange value)
-  private keys. Treat it like any other credentials file. The test **writes back**
-  to it (appending to `known_txids`) after a successful run - that's expected.
+  private keys. Treat it like any other credentials file.
+- **`stagenet-known-outputs.json`**: the customer wallet's ledger - every
+  output it's ever known to control (original faucet payouts, plus every test
+  run's own change output), each with its spent/unspent status and, once
+  resolved, its height and raw serialized bytes. `crates/stagenet-test-wallet`
+  is deliberately *not* a chain-scanning wallet: it trusts this file as the
+  source of truth for what it owns, rather than re-deriving it from the chain
+  on every run, and writes back to it after each successful send (marking the
+  spent output spent, and adding a new pending entry for the change output).
+  That write-back is expected - commit it.
+- **`stagenet-decoy-distribution.json`**: a cached snapshot of the RingCT
+  output distribution, refreshed periodically via `stagenet-test-wallet`'s own
+  `refresh-decoy-pool` bin (see that crate's doc comment) rather than fetched
+  live on every send - the main reason these tests are fast.
 
 ## One-time setup
 
@@ -89,7 +83,7 @@ cargo build --manifest-path ../Cargo.toml
 cargo test --test e2e_stagenet -- --ignored --nocapture
 ```
 
-This builds the moneropay router in-process straight from `moneropay-stagenet.toml`
+This builds the scanner router in-process straight from `moneropay-stagenet.toml`
 (via `tower::ServiceExt::oneshot` - no bound port, no separate `scanner`
 process needed), creates a real order against it, pays that order with a real
 transaction sent from the customer wallet, then drives the real scanner
@@ -110,7 +104,7 @@ embedded widget, start the server and demo shop separately:
 cd demo-shop && python3 -m http.server 8190
 # then open http://127.0.0.1:8190/?endpoint=http://127.0.0.1:8180&pk=pk_...
 # and click "Buy with Monero" - paying that order needs a separate real transfer,
-# e.g. by adapting tests/support/mod.rs's StagenetSpendWallet
+# e.g. by calling crates/stagenet-test-wallet::send_payment directly
 ```
 
 `moneropay.db*` (created alongside the config) is that server's tenant/order
@@ -136,20 +130,22 @@ database; delete it to start over with a fresh bootstrap.
 ## A note on running the test repeatedly
 
 Monero requires 10 confirmations (~20 minutes on stagenet) before a received or
-change output becomes spendable. `tests/support/mod.rs`'s `send` already accounts
-for this (`spendable_now` filters by age, not just spent-status) and greedily
-picks only as many outputs as needed - so as long as *some* output across
-`known_txids` is old enough and unspent, a run succeeds without help. If every
-known output is either too young or already spent, the test fails fast with a
-clear message naming the customer address and the faucet URL, rather than hanging
-or false-passing.
+change output becomes spendable. `stagenet-test-wallet`'s own `send` already
+accounts for this (it filters the ledger by age, not just spent-status) and
+greedily picks only as many outputs as needed - so as long as *some* ledger
+entry is old enough and unspent, a run succeeds without help. If every known
+output is either too young or already spent, the send fails fast with a clear
+`InsufficientFunds` error, rather than hanging or false-passing.
 
 ## Reproducing from scratch (new faucet funds)
 
-If `stagenet-wallets.json`'s customer wallet ever runs dry (every `known_txids`
-entry spent, and change too small/young to help):
+If `stagenet-known-outputs.json`'s tracked outputs ever run dry (everything
+spent, and change too small/young to help):
 
 1. Open https://stagenet-faucet.xmr-tw.org/ and send funds to
    `stagenet-wallets.json`'s existing `customer.address` (no need to generate a
    new wallet - the same address can receive any number of faucet payouts).
-2. Add the faucet's txid to `customer.known_txids` in `stagenet-wallets.json`.
+2. Add a new entry for the faucet's txid to `stagenet-known-outputs.json`
+   (`txid`, `amount_piconero`, `spent: false`, `height`/`serialized_output_hex`
+   left `null` until the next run resolves them - see `Ledger`'s own doc
+   comment in `crates/stagenet-test-wallet/src/lib.rs`).
