@@ -1,34 +1,35 @@
-//! Boots the *real* backend half of the POS screen's browser-driven e2e
-//! suite (`e2e/pos-playwright/`) - a genuinely network-bound `scanner`
-//! engine talking to the real public stagenet node, a genuinely
-//! network-bound `monokulo` (so an external browser, driven by Playwright
-//! over Node, can actually reach it - unlike `tests/e2e_dashboard_stagenet.rs`,
-//! which only ever drives monokulo's router in-process via `oneshot` since
-//! that test *is* the client), and one real signed-up account with one real
-//! store connected to that engine, using the exact same reusable merchant
-//! watch-only wallet fixture `tests/e2e_dashboard_stagenet.rs`/`tests/e2e_stagenet.rs`
-//! already use.
+//! Boots the *real* backend for the POS screen's browser-driven e2e suite
+//! (`e2e/pos-playwright/`) - a genuinely network-bound `scanner` engine
+//! talking to the real public stagenet node, a genuinely network-bound
+//! `monokulo` (so an external browser, driven by Playwright over Node, can
+//! actually reach it - unlike `tests/e2e_dashboard_stagenet.rs`, which only
+//! ever drives monokulo's router in-process via `oneshot` since that test
+//! *is* the client), one real signed-up account with one real store
+//! connected to that engine, and this process's own internal
+//! `/send-payment` endpoint (see `send_payment_handler` below) - the one
+//! place `stagenet-test-wallet` ever gets called from in this whole suite.
 //!
 //! A real `[[bin]]`, not another `#[ignore]`d `#[tokio::test]` - see
-//! `Cargo.toml`'s own comment on the two `[[bin]]` entries for why: Playwright
+//! `Cargo.toml`'s own comment on the `[[bin]]` entry for why: Playwright
 //! (over Node's `child_process`) needs to spawn, read one line of stdout from,
 //! and later cleanly kill this exact process, which is far simpler against a
-//! predictable `target/debug/pos-e2e-server` binary than against `cargo
+//! predictable `target/debug/e2e-harness` binary than against `cargo
 //! test`'s own hash-suffixed test binary or its `cargo` parent process.
 //!
 //! Prints exactly one JSON line to stdout once both servers are up and the
-//! account/store exist, then blocks forever (both servers, and a background
-//! scan-tick loop, keep running on their own spawned tasks) until killed -
-//! see `e2e/pos-playwright/README.md` for the full protocol Node's own side
-//! follows against that line.
+//! account/store exist, then blocks forever (both servers, a background
+//! scan-tick loop, and the `/send-payment` endpoint keep running on their
+//! own spawned tasks) until killed - see `e2e/pos-playwright/README.md` for
+//! the full protocol Node's own side follows against that line.
 //!
 //! `#[cfg(feature = "e2e")]`-equivalent via `required-features` in
 //! `Cargo.toml` - this binary doesn't even exist in a normal build (needs the
-//! same real transaction-signing dependencies `scanner::e2e_wallet` does, via
-//! `monokulo`'s own `scanner-test-support` -> `scanner` dev-dependency chain
-//! being irrelevant here; what actually gates this is the `monero-wallet`/
-//! `monero-daemon-rpc`/`monokulo`/`http-body-util` optional deps, all behind
-//! the same `e2e` feature every other real-stagenet test in this crate uses).
+//! same real transaction-signing dependencies `stagenet-test-wallet` does,
+//! via `monokulo`'s own `scanner-test-support` -> `scanner` dev-dependency
+//! chain being irrelevant here; what actually gates this is the
+//! `monokulo`/`stagenet-test-wallet`/`http-body-util` optional deps, all
+//! behind the same `e2e` feature every other real-stagenet test in this
+//! crate uses).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -117,9 +118,9 @@ struct SendPaymentState {
     /// the full investigation. A single in-process `tokio::sync::Mutex` is a
     /// complete fix *within this one harness* (it can't defend against some
     /// unrelated third party also hitting the node, but nothing else here
-    /// does) - the actual reason `pos-e2e-send-payment` (the standalone
-    /// `[[bin]]`) is no longer what the Playwright suite calls; this HTTP
-    /// endpoint, sharing this process's own lock with the scan loop, is.
+    /// does) - the reason payment-sending lives here, as an in-process HTTP
+    /// endpoint sharing this same lock with the scan loop, rather than as a
+    /// separate child process racing it for the node.
     network_lock: Arc<AsyncMutex<()>>,
 }
 
@@ -322,7 +323,7 @@ async fn main() {
                         run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(Network::Stagenet), &tenants, PAYMENT_REORG_CHECK_DEPTH, 0)
                             .await
                     {
-                        eprintln!("pos-e2e-server: scan tick failed: {e}");
+                        eprintln!("e2e-harness: scan tick failed: {e}");
                     }
                 }
                 tokio::time::sleep(Duration::from_secs(3)).await;

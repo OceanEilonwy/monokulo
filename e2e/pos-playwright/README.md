@@ -6,9 +6,10 @@ the real public Monero **stagenet** node, a real, network-bound `monokulo`, one 
 account with one real store connected (the same reusable merchant watch-only wallet
 `../README.md`'s own Rust e2e tests use), driven through an actual Chromium browser
 via [Playwright](https://playwright.dev/), paying real orders with genuine signed and
-broadcast stagenet transactions (via `scanner::e2e_wallet::StagenetSpendWallet`, the
-same real-CLSAG-signing code `cargo test --test e2e_stagenet` already uses - no
-external wallet-rpc process).
+broadcast stagenet transactions (via `crates/stagenet-test-wallet::StagenetTestWallet`,
+real CLSAG + Bulletproofs+ signing, no external wallet-rpc process - see that crate's
+own doc comment for why it exists as a separate, narrower wallet from the one
+`cargo test --test e2e_stagenet` uses).
 
 **Nothing here is mocked or simulated.** The keypad taps are real clicks on the real
 page, the QR/`monero:` URI come from a real order the real engine created, the payment
@@ -55,9 +56,9 @@ npm install
 npx playwright install chromium
 ```
 
-The Rust binaries this suite drives are built automatically by `global-setup.js`
-(`cargo build -p scanner --features e2e --bin pos-e2e-server --bin pos-e2e-send-payment`)
-the first time you run it - that first build pulls in the real transaction-signing
+The Rust binary this suite drives is built automatically by `global-setup.js`
+(`cargo build -p scanner --features e2e --bin e2e-harness`) the first time you run
+it - that first build pulls in `stagenet-test-wallet`'s own real transaction-signing
 dependencies (`monero-wallet`, `monero-daemon-rpc`, `curve25519-dalek`) and can take a
 little while; every run after that is a fast no-op rebuild check.
 
@@ -76,8 +77,8 @@ screenshots on failure).
 
 ## How it's wired together
 
-- `global-setup.js` builds and spawns `crates/scanner/src/bin/pos_e2e_server.rs`
-  (`target/debug/pos-e2e-server`), a real `[[bin]]` (not a `cargo test`) so this script
+- `global-setup.js` builds and spawns `crates/scanner/src/bin/e2e_harness.rs`
+  (`target/debug/e2e-harness`), a real `[[bin]]` (not a `cargo test`) so this script
   can spawn/discover/kill it as a predictable, ordinary child process. That binary
   prints one `POS_E2E_READY {...}` JSON line to stdout once both real servers are up
   and the account/store exist, then blocks forever (both servers, a background
@@ -88,30 +89,33 @@ screenshots on failure).
   files to read.
 - `tests/pos.spec.js` drives the actual browser: real login through `/dashboard/login`,
   real clicks on the real keypad, reads the real order back off the real `POST
-  .../pos/orders` response, then calls `pos-e2e-server`'s own `POST /send-payment`
+  .../pos/orders` response, then calls `e2e-harness`'s own `POST /send-payment`
   endpoint (`helpers.js::sendStagenetPayment`, a plain `fetch`) to sign and broadcast
   the real payment - the one place any key material is touched, deliberately kept in
-  Rust, never reimplemented in JS. Not a separate child process any more: an earlier
-  version shelled out to `pos-e2e-send-payment` directly, but running that concurrently
-  with `pos-e2e-server`'s own scan loop hit a real, reproducible node-side reliability
-  limit - see `crates/stagenet-test-wallet`'s own module doc comment and the git
-  history around its introduction for the full story.
-- Uses `crates/stagenet-test-wallet` (not `scanner::e2e_wallet`) to sign and broadcast -
-  a fast, narrow, stagenet-only wallet with no chain scanning (informed of its own
-  outputs directly, via the committed `e2e/stagenet-known-outputs.json` ledger) and
-  decoy selection served from the committed `e2e/stagenet-decoy-distribution.json`
-  snapshot rather than a live fetch. Still reads the shared `e2e/stagenet-wallets.json`
-  customer wallet's own keys/address, the same fixture `../tests/e2e_stagenet.rs` uses.
+  Rust, never reimplemented in JS. Deliberately not a separate child process per send:
+  running one concurrently with `e2e-harness`'s own scan loop hit a real, reproducible
+  node-side reliability limit (only one concurrent connection per source IP) - see
+  `crates/stagenet-test-wallet`'s own module doc comment and the git history around its
+  introduction for the full story. `send_payment_handler` shares its `network_lock`
+  with the scan loop instead, so this one process never opens two connections to the
+  node at once.
+- Uses `crates/stagenet-test-wallet` to sign and broadcast - a fast, narrow,
+  stagenet-only wallet with no chain scanning (informed of its own outputs directly,
+  via the committed `e2e/stagenet-known-outputs.json` ledger) and decoy selection
+  served from the committed `e2e/stagenet-decoy-distribution.json` snapshot rather than
+  a live fetch. Still reads the shared `e2e/stagenet-wallets.json` customer wallet's own
+  keys/address, the same fixture `../tests/e2e_stagenet.rs` uses.
 
 ## If it fails
 
 - **"cannot reach the stagenet node"**: same node (`node.monerodevs.org:38089`)
   `../README.md`'s own tests use - check your network, or see that README for
   alternatives.
-- **A `pos-e2e-send-payment` failure naming the customer wallet/faucet**: the shared
-  customer wallet's spendable outputs ran dry - see `../README.md`'s own "Reproducing
-  from scratch" section (same wallet, same fix).
+- **An "insufficient funds" failure**: the shared customer wallet's spendable outputs
+  ran dry, or the most recent change hasn't aged past the required 10 confirmations yet
+  (~20 minutes on stagenet) - wait and re-run, or see `../README.md`'s own "Reproducing
+  from scratch" section to fund it fresh from the faucet.
 - **A Playwright assertion timeout on the tick/progress-ring/background-stack**: check
-  `playwright-report/` (screenshots + trace on failure) and `pos-e2e-server`'s own
-  stderr, which `global-setup.js` forwards straight through to this process's own
-  terminal output.
+  `playwright-report/` (screenshots + trace on failure) and `e2e-harness`'s own stderr,
+  which `global-setup.js` forwards straight through to this process's own terminal
+  output.

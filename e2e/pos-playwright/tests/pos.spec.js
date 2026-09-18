@@ -6,7 +6,7 @@
 // The backend (a real, network-bound engine against the real public
 // stagenet node, plus a real, network-bound monokulo with one account/store
 // already connected) is booted once by ../global-setup.js
-// (crates/scanner/src/bin/pos_e2e_server.rs) and shared by both tests below -
+// (crates/scanner/src/bin/e2e_harness.rs) and shared by both tests below -
 // they run sequentially (see playwright.config.js: fullyParallel: false,
 // workers: 1), never concurrently, since they share one real backend and one
 // real customer wallet.
@@ -15,7 +15,7 @@
 // (not injected cookies) - the one part of setup worth actually driving
 // through the UI, since it's cheap and it's real production code a merchant
 // depends on before they ever reach the POS screen. Account/store creation
-// itself is not (that's `pos_e2e_server.rs`'s job, over plain HTTP, not the
+// itself is not (that's `e2e_harness.rs`'s job, over plain HTTP, not the
 // thing under test here).
 //
 // What this suite deliberately does NOT attempt: triggering a real error
@@ -76,19 +76,22 @@ async function chargeAndGetOrder(page, digits) {
 
 test.describe.serial('POS terminal - real stagenet payments', () => {
   test('a 0-conf-trusted payment shows the tick then auto-returns to the keypad', async ({ page, context }) => {
-    // Real decoy selection alone can take up to ~600s in the worst case
-    // (see StagenetSpendWallet::connect's own comment on why its reqwest
-    // client's timeout is that generous) - budget well past that, not just
-    // past the "observed ~250s typical" figure.
-    test.setTimeout(12 * 60 * 1000);
+    // Each connect+send attempt is bounded by StagenetTestWallet's own 60s
+    // reqwest client timeout (decoy selection is served from a cached
+    // snapshot now, not a live fetch - see that crate's own doc comment for
+    // why that's both faster and safe), but send_payment_handler retries the
+    // whole sequence up to 5 times with a 5s backoff on real node flakiness -
+    // budget well past a single attempt's own worst case. Real observed runs
+    // finish in ~1-2 minutes.
+    test.setTimeout(8 * 60 * 1000);
 
     await loginAndOpenPos(page);
     // No confirmations_required=0 here - the engine hard-rejects that value
     // outright ("0 would treat an unconfirmed transaction as final"; see
-    // pos_e2e_server.rs's own connect-call comment). 0-conf trust is real,
+    // e2e_harness.rs's own connect-call comment). 0-conf trust is real,
     // engine-supported behavior, just through a different setting: this
     // store's own zero_conf_max_piconero ceiling (set once at connect time,
-    // in pos_e2e_server.rs - no dashboard UI to change it after the fact
+    // in e2e_harness.rs - no dashboard UI to change it after the fact
     // yet) already covers this test's own 335_000_000-piconero amount but
     // not the next test's 336_000_000, on purpose.
 
@@ -127,10 +130,11 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
   });
 
   test('a confirming payment shows the progress ring, can be backgrounded, and completes in the stack', async ({ page, context }) => {
-    // Real decoy selection (up to ~600s worst case) *plus* waiting for one
-    // real stagenet confirmation (up to ~5min budgeted below) - the two
-    // genuinely slow steps in this whole suite, back to back.
-    test.setTimeout(18 * 60 * 1000);
+    // The send itself is fast now (see the first test's own comment on why),
+    // but this one *also* waits for one real stagenet confirmation
+    // (~2min average, up to ~5min budgeted below) - the one genuinely slow
+    // step left in this whole suite.
+    test.setTimeout(8 * 60 * 1000);
 
     await loginAndOpenPos(page);
     await setConfirmationsRequired(context, 1);
