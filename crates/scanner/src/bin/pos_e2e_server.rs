@@ -50,7 +50,6 @@ use tower::ServiceExt;
 use scanner::daemon::MoneroDaemonClient;
 use scanner::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use scanner::daemon_rpc::RpcDaemonClient;
-use scanner::e2e_wallet::StagenetSpendWallet;
 use scanner::http::rate_limit::RateLimiter;
 use scanner::http::{build_router as build_engine_router, now_unix, AppState as EngineAppState};
 use scanner::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
@@ -63,6 +62,8 @@ use monokulo::db::Db;
 use monokulo::engine_client::EngineClient;
 use monokulo::http::{build_router as build_monokulo_router, AppState as ControlPlaneAppState};
 use monokulo::templates::TemplateEngine;
+
+use stagenet_test_wallet::{Ledger, StagenetTestWallet, WalletError};
 
 // Deliberately duplicated from `tests/support/mod.rs::e2e_fixture` rather
 // than imported - a `[[bin]]` target has no access to `tests/`-local modules
@@ -77,6 +78,8 @@ const WALLET_PRIVATE_VIEW_KEY: &str = "fcdc7998f003928b3f409b94d54f690d16ca6df36
 const WALLET_PUBLIC_SPEND_KEY: &str = "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335";
 const PAYMENT_REORG_CHECK_DEPTH: u64 = 20;
 const WALLETS_PATH: &str = "e2e/stagenet-wallets.json";
+const KNOWN_OUTPUTS_PATH: &str = "e2e/stagenet-known-outputs.json";
+const DECOY_DISTRIBUTION_PATH: &str = "e2e/stagenet-decoy-distribution.json";
 
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -97,23 +100,6 @@ fn form_body(fields: &[(&str, &str)]) -> String {
 async fn body_text(response: axum::response::Response) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()
-}
-
-/// Deliberately duplicated from `tests/e2e_dashboard_stagenet.rs::record_known_txid`
-/// / `pos_e2e_send_payment.rs::record_known_txid` rather than shared - same
-/// reasoning both of those give: never touch another real-money-costing
-/// caller's own copy while editing this one. Same atomic write-back.
-fn record_known_txid(tx_hash: &str) {
-    let mut wallets_json: Value =
-        serde_json::from_str(&std::fs::read_to_string(WALLETS_PATH).unwrap_or_else(|e| panic!("failed to read {WALLETS_PATH}: {e}")))
-            .unwrap_or_else(|e| panic!("failed to parse {WALLETS_PATH}: {e}"));
-    let known = wallets_json["customer"]["known_txids"].as_array_mut().expect("customer.known_txids must be an array");
-    if !known.iter().any(|v| v.as_str() == Some(tx_hash)) {
-        known.push(json!(tx_hash));
-    }
-    let tmp_path = format!("{WALLETS_PATH}.tmp");
-    std::fs::write(&tmp_path, serde_json::to_string_pretty(&wallets_json).unwrap() + "\n").unwrap_or_else(|e| panic!("failed to write {tmp_path}: {e}"));
-    std::fs::rename(&tmp_path, WALLETS_PATH).unwrap_or_else(|e| panic!("failed to move {tmp_path} into place over {WALLETS_PATH}: {e}"));
 }
 
 #[derive(Clone)]
@@ -155,10 +141,13 @@ struct SendPaymentResponse {
 /// `POST /send-payment` on this harness's own small internal-only router
 /// (bound to a separate ephemeral port, its URL handed to Playwright in the
 /// `POS_E2E_READY` line as `send_payment_url`) - signs and broadcasts one
-/// real stagenet transaction via the same `StagenetSpendWallet`
-/// `tests/e2e_stagenet.rs`/`tests/e2e_dashboard_stagenet.rs` already trust,
-/// serialized against this process's own scan loop via `network_lock` (see
-/// its own doc comment for why that's necessary at all).
+/// real stagenet transaction via `stagenet_test_wallet::StagenetTestWallet`
+/// (the fast, no-scanning, cached-decoys wallet this crate replaced
+/// `scanner::e2e_wallet::StagenetSpendWallet` with here - see that crate's
+/// own doc comment for the full "why"), serialized against this process's
+/// own scan loop via `network_lock` (see its own doc comment for why
+/// that's still worth keeping even though the new wallet's own live-call
+/// count is already far smaller).
 async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): Json<SendPaymentRequest>) -> Response {
     let piconero_amount: u64 = match req.piconero_amount.parse() {
         Ok(n) => n,
@@ -173,42 +162,28 @@ async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): 
     let customer_address = wallets_json["customer"]["address"].as_str().expect("customer.address missing").to_string();
     let customer_spend_key_hex = wallets_json["customer"]["private_spend_key"].as_str().expect("customer.private_spend_key missing").to_string();
     let customer_view_key_hex = wallets_json["customer"]["private_view_key"].as_str().expect("customer.private_view_key missing").to_string();
-    let known_txids: Vec<String> = wallets_json["customer"]["known_txids"]
-        .as_array()
-        .expect("customer.known_txids missing")
-        .iter()
-        .map(|v| v.as_str().expect("known_txids entries must be strings").to_string())
-        .collect();
 
-    // Retries the *whole* connect-then-send sequence, not just connect -
-    // real, observed evidence forced this wider than the first version of
-    // this handler had: even with `network_lock` ruling out this process
-    // ever literally holding two connections to the node open at once, this
-    // endpoint has failed, on different real runs, at both
-    // `StagenetSpendWallet::connect`'s own handshake *and*, separately,
-    // `.send()`'s own pre-broadcast `get_transactions` call - consistent
-    // with the node applying something closer to a rolling request-rate
-    // budget than a hard concurrency cap, which affects any call, not just
-    // the first one. Safe to retry the whole sequence from scratch on any
-    // error *except* `SpendWalletError::Broadcast` (a broadcast was actually
-    // attempted and its outcome is genuinely unknown - see that variant's
-    // own doc comment; retrying past it risks a real double-send) - every
-    // other variant (`DaemonUnreachable`, `Rpc`, `Send`, `InsufficientFunds`)
-    // fails strictly before any transaction is signed or broadcast.
+    // Retries the *whole* connect-then-send sequence, not just connect - a
+    // real, observed failure mode under the old `scanner::e2e_wallet`-based
+    // version of this handler (a rolling request-rate budget, not a hard
+    // concurrency cap, motivated `network_lock` above too - see git log).
+    // Safe to retry from scratch on any error *except* `WalletError::Broadcast`
+    // (a broadcast was actually attempted and its outcome is genuinely
+    // unknown - retrying past it risks a real double-send); every other
+    // variant fails strictly before anything is signed or broadcast.
     const SEND_ATTEMPTS: u32 = 5;
     let mut attempt = 1;
     let tx_hash = loop {
-        let daemon = match RpcDaemonClient::new(NODE_HOST, NODE_PORT, NODE_SSL, NODE_ACCEPT_SELF_SIGNED_CERTS) {
-            Ok(d) => d,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to build daemon RPC client: {e}")).into_response(),
-        };
-        let result = match StagenetSpendWallet::connect(&state.node_url, NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address).await {
-            Ok(spend_wallet) => spend_wallet.send(&daemon, &known_txids, &req.address, piconero_amount).await,
-            Err(e) => Err(e),
-        };
+        let result = async {
+            let wallet = StagenetTestWallet::connect(&state.node_url, NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address, DECOY_DISTRIBUTION_PATH)
+                .await?;
+            let mut ledger = Ledger::load(KNOWN_OUTPUTS_PATH)?;
+            wallet.send(&mut ledger, &req.address, piconero_amount).await
+        }
+        .await;
         match result {
             Ok(hash) => break hash,
-            Err(e @ scanner::e2e_wallet::SpendWalletError::Broadcast(_)) => {
+            Err(e @ WalletError::Broadcast(_)) => {
                 return (StatusCode::INTERNAL_SERVER_ERROR, format!("broadcast outcome unknown, not retrying: {e}")).into_response();
             }
             Err(e) if attempt < SEND_ATTEMPTS => {
@@ -219,9 +194,7 @@ async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): 
             Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
         }
     };
-    let tx_hash_hex = hex::encode(tx_hash);
-    record_known_txid(&tx_hash_hex);
-    Json(SendPaymentResponse { tx_hash: tx_hash_hex }).into_response()
+    Json(SendPaymentResponse { tx_hash: hex::encode(tx_hash) }).into_response()
 }
 
 #[tokio::main]
