@@ -44,7 +44,7 @@ use super::{ApiError, AppState};
 /// `templates::status_label` - presentation logic, duplicated once rather
 /// than shared, since it's a 10-line match statement used in exactly one
 /// place per crate, not obviously worth a `shared` module of its own.
-fn status_label(status: &str) -> (&'static str, &'static str, bool) {
+pub(super) fn status_label(status: &str) -> (&'static str, &'static str, bool) {
     match status {
         "pending" => ("Waiting for payment", "status-pending", false),
         "unconfirmed" => ("Payment seen, unconfirmed", "status-unconfirmed", false),
@@ -68,7 +68,7 @@ fn short_txid(txid: &str) -> String {
 /// removed) `qr_svg_for_html` - see that function's own doc comment
 /// (`src/http/public.rs` at the repo root) for the full reasoning, ported
 /// verbatim.
-fn qr_svg_for_html(data: &str) -> Result<String, ApiError> {
+pub(super) fn qr_svg_for_html(data: &str) -> Result<String, ApiError> {
     let full = QrCode::new(data.as_bytes())
         .map_err(|e| ApiError::BadRequest(format!("failed to encode QR code: {e}")))?
         .render::<svg::Color>()

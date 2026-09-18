@@ -42,7 +42,7 @@ use super::{AppState, AuthedUser};
 /// else" - callers must map that uniformly to `404` (see this module's own
 /// doc comment), never distinguishing the two. `Err(())` is a real database
 /// failure - the caller's problem, not the requester's.
-fn load_owned_connection(state: &AppState, user: &UserRow, id: &str) -> Result<Option<StoreConnectionRow>, ()> {
+pub(super) fn load_owned_connection(state: &AppState, user: &UserRow, id: &str) -> Result<Option<StoreConnectionRow>, ()> {
     let row = state.db.lock().unwrap().get_store_connection_by_id(id).map_err(|_| ())?;
     Ok(row.filter(|row| row.user_id == user.id))
 }
@@ -52,7 +52,7 @@ fn load_owned_connection(state: &AppState, user: &UserRow, id: &str) -> Result<O
 /// encrypted can't be decrypted with its own key - shouldn't happen, but
 /// handled as a plain internal error rather than unwrapped/panicked on (see
 /// the task's own note on this).
-fn decrypt_sk(state: &AppState, row: &StoreConnectionRow) -> Result<String, ()> {
+pub(super) fn decrypt_sk(state: &AppState, row: &StoreConnectionRow) -> Result<String, ()> {
     crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).map_err(|_| ())
 }
 
