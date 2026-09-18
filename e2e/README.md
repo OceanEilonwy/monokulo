@@ -1,5 +1,20 @@
 # Real stagenet end-to-end test
 
+**Two wallet implementations coexist in this repo's e2e tooling.** This
+document (`e2e_stagenet.rs`, `e2e_dashboard_stagenet.rs`) uses
+`scanner::e2e_wallet::StagenetSpendWallet` - a real, general-purpose
+Monero wallet (chain scanning for output discovery, full gamma-distribution
+decoy selection). The POS screen's own suite (`e2e/pos-playwright/`,
+`crates/scanner/src/bin/pos_e2e_*.rs`) uses `crates/stagenet-test-wallet`
+instead - a narrower, purpose-built, stagenet-only wallet (no chain
+scanning; informed of its own outputs directly via a committed ledger;
+decoy selection served from a committed cache) built after a real,
+reproduced reliability problem with the general-purpose wallet under
+concurrent/repeated use against a shared public node - see that crate's own
+`src/lib.rs` module doc comment for the full rationale. Migrating this
+document's own tests onto the new crate is a natural, low-risk follow-up
+(same interface shape) that just hasn't happened yet.
+
 The actual test lives in Rust: [`../tests/e2e_stagenet.rs`](../tests/e2e_stagenet.rs),
 run via `cargo test` like any other test in this crate. It drives the real
 `moneropay_core` library - config, store, key custody, scanner, router; the same

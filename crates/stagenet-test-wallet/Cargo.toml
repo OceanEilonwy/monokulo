@@ -1,0 +1,30 @@
+[package]
+name = "stagenet-test-wallet"
+version = "0.1.0"
+edition = "2021"
+
+# A standalone, test-only crate by construction - it exists purely to make
+# the repo's real-stagenet e2e suites (crates/scanner/tests/e2e_stagenet.rs,
+# tests/e2e_dashboard_stagenet.rs, crates/scanner/src/bin/pos_e2e_*.rs) fast
+# and reliable. See src/lib.rs's own module doc comment for the full design
+# rationale (why no chain scanning, why decoy selection is served from a
+# committed cache) and the investigation that motivated it.
+[dependencies]
+hex = "0.4.3"
+monero-wallet = "0.2.0"
+monero-daemon-rpc = "0.2.0"
+rand_core = { version = "0.6", features = ["getrandom"] }
+curve25519-dalek = { version = "4", default-features = false, features = ["precomputed-tables", "zeroize"] }
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
+serde = { version = "1.0.229", features = ["derive"] }
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+zeroize = { version = "1.9.0", features = ["derive"] }
+# Needed by the `refresh-decoy-pool` [[bin]] below (a [[bin]] target only
+# ever sees a package's normal [dependencies], never [dev-dependencies] -
+# the same reason crates/scanner/Cargo.toml has its own comment on this).
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+
+[[bin]]
+name = "refresh-decoy-pool"
+path = "src/bin/refresh_decoy_pool.rs"

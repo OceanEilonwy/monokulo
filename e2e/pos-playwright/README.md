@@ -80,21 +80,28 @@ screenshots on failure).
   (`target/debug/pos-e2e-server`), a real `[[bin]]` (not a `cargo test`) so this script
   can spawn/discover/kill it as a predictable, ordinary child process. That binary
   prints one `POS_E2E_READY {...}` JSON line to stdout once both real servers are up
-  and the account/store exist, then blocks forever (both servers, and a background
-  scan-tick loop, keep running on their own tasks) until this script sends it
-  `SIGTERM` at teardown. The JSON (base URLs, the store's `connection_id`, the test
-  account's email/password) is written to `.pos-e2e-fixture.json` (gitignored) for the
-  test files to read.
+  and the account/store exist, then blocks forever (both servers, a background
+  scan-tick loop, and its own internal `/send-payment` endpoint keep running on their
+  own tasks) until this script sends it `SIGTERM` at teardown. The JSON (base URLs,
+  including `send_payment_url`, the store's `connection_id`, the test account's
+  email/password) is written to `.pos-e2e-fixture.json` (gitignored) for the test
+  files to read.
 - `tests/pos.spec.js` drives the actual browser: real login through `/dashboard/login`,
   real clicks on the real keypad, reads the real order back off the real `POST
-  .../pos/orders` response, then shells out to `target/debug/pos-e2e-send-payment`
-  (`crates/scanner/src/bin/pos_e2e_send_payment.rs`) to sign and broadcast the real
-  payment - the one place any key material is touched, deliberately kept in Rust, never
-  reimplemented in JS.
-- Reuses the same `e2e/stagenet-wallets.json` customer wallet `../tests/e2e_stagenet.rs`/
-  `../tests/e2e_dashboard_stagenet.rs` already use - `pos-e2e-send-payment` appends its
-  own new tx to `known_txids` on success, same atomic write-back those tests already do,
-  so later runs keep picking up earlier change without needing a fresh faucet payout.
+  .../pos/orders` response, then calls `pos-e2e-server`'s own `POST /send-payment`
+  endpoint (`helpers.js::sendStagenetPayment`, a plain `fetch`) to sign and broadcast
+  the real payment - the one place any key material is touched, deliberately kept in
+  Rust, never reimplemented in JS. Not a separate child process any more: an earlier
+  version shelled out to `pos-e2e-send-payment` directly, but running that concurrently
+  with `pos-e2e-server`'s own scan loop hit a real, reproducible node-side reliability
+  limit - see `crates/stagenet-test-wallet`'s own module doc comment and the git
+  history around its introduction for the full story.
+- Uses `crates/stagenet-test-wallet` (not `scanner::e2e_wallet`) to sign and broadcast -
+  a fast, narrow, stagenet-only wallet with no chain scanning (informed of its own
+  outputs directly, via the committed `e2e/stagenet-known-outputs.json` ledger) and
+  decoy selection served from the committed `e2e/stagenet-decoy-distribution.json`
+  snapshot rather than a live fetch. Still reads the shared `e2e/stagenet-wallets.json`
+  customer wallet's own keys/address, the same fixture `../tests/e2e_stagenet.rs` uses.
 
 ## If it fails
 
