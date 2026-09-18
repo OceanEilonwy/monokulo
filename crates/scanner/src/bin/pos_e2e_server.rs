@@ -295,15 +295,18 @@ async fn main() {
     // over real HTTP polling) - not this process's own sequential test code -
     // is what's watching for payment status changes this time; mirrors
     // `scanner::main`'s own `run_scanner_loop`, simplified to the one network
-    // this harness ever configures. A slower 10s interval, not the real
-    // production scanner's typical fast poll - `network_lock` already rules
-    // out this loop ever *literally overlapping* a `/send-payment` call, but
-    // the node still appears to apply something closer to a rolling
-    // request-rate budget than a hard concurrency cap (see
-    // `send_payment_handler`'s own retry-loop comment) - ticking less often
-    // leaves more of that budget for `/send-payment`'s own calls, at the cost
-    // of a slightly less snappy tick/confirmation UI update (still well
-    // within every test's own generous timeouts). ----
+    // this harness ever configures. A 3s interval - between the real
+    // production scanner's typical fast poll and this harness's own earlier,
+    // more defensive 10s (back when `/send-payment` still went through
+    // `scanner::e2e_wallet`, whose per-send RPC-call count scaled with a
+    // known_txids list that only ever grew - see the git history around
+    // `stagenet-test-wallet`'s introduction). That's no longer the dominant
+    // concern: a steady-state send through the new wallet costs a handful
+    // of calls regardless of history, so there's little left to protect by
+    // ticking slowly, and a snappier loop matters again for the UI actually
+    // settling from "seen in the mempool" to "paid" within a test's own
+    // wait window. `network_lock` still rules out this loop ever *literally
+    // overlapping* a `/send-payment` call either way. ----
     {
         let store = store.clone();
         let key_custody = key_custody.clone();
@@ -322,7 +325,7 @@ async fn main() {
                         eprintln!("pos-e2e-server: scan tick failed: {e}");
                     }
                 }
-                tokio::time::sleep(Duration::from_secs(10)).await;
+                tokio::time::sleep(Duration::from_secs(3)).await;
             }
         });
     }

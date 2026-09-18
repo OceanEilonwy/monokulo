@@ -2,20 +2,27 @@
   "entries": [
     {
       "txid": "098e6e358b7d66a9e85a211d6917d1b8d720e74c6ae267d4d9b10ed422819bb2",
-      "height": null,
-      "serialized_output_hex": null,
+      "height": 2210331,
+      "serialized_output_hex": "098e6e358b7d66a9e85a211d6917d1b8d720e74c6ae267d4d9b10ed422819bb200000000000000009c3f9900000000005930241d11ee6a39bc710f8732812c32e5ca0e8ae573520ac14d3ac0be0a9d6f95376b0d889829af7664b3f48b97299440c981d8fff571d9156319223933ac0bae4ce7fd1b81b15de126ba5b5ed2a5eeedd36049b64985677df6cf3b4cf64c04c440ea3904000000000001014011a647c556cd4800",
       "amount_piconero": 0,
       "spent": false
     },
     {
       "txid": "ba4f011a328a9fdf3dea1a6ce82ad6f06848589834c3cc6e7400ead287eb5729",
-      "height": null,
-      "serialized_output_hex": null,
+      "height": 2210341,
+      "serialized_output_hex": "ba4f011a328a9fdf3dea1a6ce82ad6f06848589834c3cc6e7400ead287eb57290100000000000000b33f990000000000b9739f6f06fc8b51b2975b74a6dae73259ed1815791c9c48367ab93f2819d70cc6fb304aeebea0b3b7dd3415ea2681f47bd1be3d2a562abd2c33ad9b478cc00d15dc4f39a0072bbea33661f32879dc5f719dbc0962a073105f4335b2b7d5e300e3dce24d0400000000000101e2b80ada1fda046100",
+      "amount_piconero": 0,
+      "spent": true
+    },
+    {
+      "txid": "aa324ff4f445ba86700ae4036a0e39d2d4917fc3fb0a95cafe912a6b44a75dd4",
+      "height": 2210347,
+      "serialized_output_hex": "aa324ff4f445ba86700ae4036a0e39d2d4917fc3fb0a95cafe912a6b44a75dd40000000000000000c03f990000000000cfec73aeeea345d817dfaa9dff60b0c5b1a853ad414d99c29c4b1154d73ebada6f6337f7e19eee7fc53f3cf657e55b7744ee33f0634db7f82f319d866b321807ab6aafa06fc97e4e84e6c94e4f267c0bf387841422f3ead39f5f91d045b35e0583f2e14d0400000000000101af8af4607522c89300",
       "amount_piconero": 0,
       "spent": false
     },
     {
-      "txid": "aa324ff4f445ba86700ae4036a0e39d2d4917fc3fb0a95cafe912a6b44a75dd4",
+      "txid": "3568482b1ecb0f68e582a7e1cffa5104a7379dff9d7f01775c84e8e9abc6556f",
       "height": null,
       "serialized_output_hex": null,
       "amount_piconero": 0,
