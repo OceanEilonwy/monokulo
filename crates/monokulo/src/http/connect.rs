@@ -82,7 +82,7 @@ fn render_confirm_form(
     nonce: &str,
     error: Option<&str>,
     resubmit: Option<&ConfirmForm>,
-    user_id: &str,
+    user: &UserRow,
 ) -> Response {
     let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
         network_selected_flags(resubmit.and_then(|f| f.network.as_deref()).unwrap_or("mainnet"));
@@ -90,7 +90,7 @@ fn render_confirm_form(
         .db
         .lock()
         .unwrap()
-        .list_store_connections_for_user(user_id)
+        .list_store_connections_for_user(&user.id)
         .unwrap_or_default()
         .into_iter()
         .map(|row| ExistingStoreOption {
@@ -115,6 +115,7 @@ fn render_confirm_form(
             network_testnet_selected,
             existing_stores,
             logged_in: true,
+            is_admin: user.is_admin,
         })
         .expect("the built-in platform-connect template must always render");
     axum::response::Html(html).into_response()
@@ -153,7 +154,7 @@ pub async fn start(
         return redirect_302(&format!("/dashboard/login?next={}", encode_query_value(&this_url)));
     };
 
-    render_confirm_form(&state, &platform, &query.site_url, &query.return_url, &query.nonce, None, None, &user.id)
+    render_confirm_form(&state, &platform, &query.site_url, &query.return_url, &query.nonce, None, None, &user)
 }
 
 /// `POST /connect/{platform}`'s form fields (WBS 1.4.1, step 4) - the same
@@ -282,7 +283,7 @@ async fn confirm_new_store(state: &AppState, user: &UserRow, platform: &str, for
                 &form.nonce,
                 Some(&message),
                 Some(form),
-                &user.id,
+                user,
             );
         }
         Err(CreateConnectionError::Internal) => {
@@ -294,12 +295,12 @@ async fn confirm_new_store(state: &AppState, user: &UserRow, platform: &str, for
                 &form.nonce,
                 Some("Something went wrong. Please try again."),
                 Some(form),
-                &user.id,
+                user,
             );
         }
     };
 
-    mint_token_and_redirect(state, &outcome.connection_id, platform, form, &user.id)
+    mint_token_and_redirect(state, &outcome.connection_id, platform, form, user)
 }
 
 /// `mode == "existing"`: no new tenant is provisioned at all - the plugin is
@@ -324,7 +325,7 @@ async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str
                 &form.nonce,
                 Some("Choose a store to connect."),
                 Some(form),
-                &user.id,
+                user,
             );
         }
     };
@@ -338,7 +339,7 @@ async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str
             &form.nonce,
             Some("Something went wrong. Please try again."),
             Some(form),
-            &user.id,
+            user,
         )
     };
 
@@ -365,7 +366,7 @@ async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str
                 &form.nonce,
                 Some("That store could not be found."),
                 Some(form),
-                &user.id,
+                user,
             );
         }
         Err(_) => return internal_error(),
@@ -404,7 +405,7 @@ async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str
         return internal_error();
     }
 
-    mint_token_and_redirect(state, connection_id, platform, form, &user.id)
+    mint_token_and_redirect(state, connection_id, platform, form, user)
 }
 
 /// The step common to both modes once a connection id is settled on
@@ -413,7 +414,7 @@ async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str
 /// with `token`/`nonce` appended (parsed and re-serialized via the `url`
 /// crate, so a `return_url` that already carries its own query string is
 /// handled correctly - never a naive string-concatenated `?`).
-fn mint_token_and_redirect(state: &AppState, connection_id: &str, platform: &str, form: &ConfirmForm, user_id: &str) -> Response {
+fn mint_token_and_redirect(state: &AppState, connection_id: &str, platform: &str, form: &ConfirmForm, user: &UserRow) -> Response {
     let raw_token = shared::auth::generate_connect_token();
     let token_hash = shared::auth::hash_secret_token(&raw_token);
     let stored = state.db.lock().unwrap().create_connect_token(&token_hash, connection_id, &form.nonce, now_unix());
@@ -426,7 +427,7 @@ fn mint_token_and_redirect(state: &AppState, connection_id: &str, platform: &str
             &form.nonce,
             Some("Something went wrong. Please try again."),
             Some(form),
-            user_id,
+            user,
         );
     }
 
@@ -441,7 +442,7 @@ fn mint_token_and_redirect(state: &AppState, connection_id: &str, platform: &str
                 &form.nonce,
                 Some("Invalid return_url."),
                 Some(form),
-                user_id,
+                user,
             );
         }
     };
@@ -596,7 +597,7 @@ mod tests {
         let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            db: Db::open_in_memory().unwrap().into_shared(),
+            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
             engine_client,
             encryption_key: TEST_ENCRYPTION_KEY,
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),

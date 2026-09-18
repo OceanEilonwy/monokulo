@@ -11,6 +11,9 @@
 <a href="/dashboard/login">log in</a>
 <a href="/dashboard/signup">sign up</a>
 {{/if}}
+{{#if is_admin}}
+<a href="/dashboard/admin/settings">admin</a>
+{{/if}}
 <a href="/status" class="nav-status-link"><span class="nav-status-text">status</span><span id="nav-status-dot" class="status-dot status-dot-unknown" title="checking..."></span></a>
 </div>
 </div>

@@ -13,6 +13,7 @@ pub mod db;
 pub mod engine_client;
 pub mod exchange_rate_config;
 pub mod http;
+pub mod settings;
 pub mod templates;
 
 pub fn now_unix() -> i64 {

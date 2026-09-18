@@ -147,7 +147,7 @@ impl CoingeckoRateProvider {
     /// production) - a parameter rather than a hardcoded constant both so a
     /// test can point requests at a local server instead of the real
     /// internet, and so an advanced operator can override it (a paid tier,
-    /// a proxy) via `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_BASE_URL`.
+    /// a proxy) via `MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL`.
     ///
     /// Currency tickers passed to every method below are matched
     /// case-insensitively (normalized to uppercase internally for both the
@@ -235,7 +235,7 @@ impl CoingeckoRateProvider {
     /// one live Coingecko fetch first. `max_age` is a caller-supplied
     /// parameter, not a field on this type, so this type carries no opinion
     /// about how long a rate should be trusted for - monokulo's own
-    /// admin-configured `CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS`
+    /// admin-configured `MONOKULO_EXCHANGE_RATE_CACHE_SECONDS`
     /// (`exchange_rate_config`) is what actually decides that value; this
     /// just applies whatever it's given.
     ///

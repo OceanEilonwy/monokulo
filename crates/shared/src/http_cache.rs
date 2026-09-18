@@ -40,9 +40,9 @@ use http::Extensions;
 use reqwest::{Method, Request, Response, ResponseBuilderExt};
 use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 
-/// `CONTROL_PLANE_HTTP_CACHE_MAX_MB` - the same parse-with-a-clear-error-and-a-
+/// `MONOKULO_HTTP_CACHE_MAX_MB` - the same parse-with-a-clear-error-and-a-
 /// default convention every other monokulo numeric env knob already uses
-/// (`exchange_rate_config::parse`'s `CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS`
+/// (`exchange_rate_config::parse`'s `MONOKULO_EXCHANGE_RATE_CACHE_SECONDS`
 /// is the closest sibling). A plain integer, megabytes - converted to bytes for
 /// the weigher-based `max_capacity` below. Defaults to 16 MB: the entire
 /// cacheable surface today (one rescan-list endpoint keyed by tenant, plus
@@ -52,7 +52,7 @@ use reqwest_middleware::{ClientBuilder, ClientWithMiddleware, Middleware, Next};
 /// estimated - this exists as a hard backstop, not a limit anything here is
 /// expected to approach.
 pub fn max_cache_bytes_from_env() -> u64 {
-    const VAR: &str = "CONTROL_PLANE_HTTP_CACHE_MAX_MB";
+    const VAR: &str = "MONOKULO_HTTP_CACHE_MAX_MB";
     const DEFAULT_MB: u64 = 16;
     let mb = match std::env::var(VAR) {
         Err(_) => DEFAULT_MB,

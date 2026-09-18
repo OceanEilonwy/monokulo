@@ -9,11 +9,13 @@
 //! `Store::create_tenant`), only to mint a new one, which is exactly what
 //! `rotate_secret` does.
 
-use crate::store::{Store, Tenant};
+use crate::key_custody::{KeyCustody, WalletMaterial};
+use crate::store::{CreatedTenant, NewTenant, Store};
+use crate::store::Tenant;
 
 #[derive(Debug, thiserror::Error)]
 pub enum LocalAdminError {
-    #[error("no tenant is configured yet - run `scanner --init`, then start the server once with `scanner` to create it")]
+    #[error("no tenant is configured yet - run `scanner --bootstrap-wallet ...`, then start the server")]
     NoTenant,
     #[error("more than one tenant is configured ({0}) - name which one with --pk <pk_...>")]
     AmbiguousTenant(String),
@@ -21,6 +23,68 @@ pub enum LocalAdminError {
     UnknownTenant(String),
     #[error(transparent)]
     Store(#[from] crate::store::StoreError),
+    #[error("a tenant already exists - --bootstrap-wallet only ever creates the first one (see the module doc comment)")]
+    AlreadyBootstrapped,
+    #[error("invalid wallet key material: {0}")]
+    KeyMaterial(#[from] crate::key_custody::KeyCustodyError),
+}
+
+/// `--bootstrap-wallet`'s own arguments - the explicit-flags replacement for what
+/// used to be the `[wallet]` TOML section (`config.rs`, removed along with the
+/// rest of the file-based config model). One-time provisioning for a self-hosted,
+/// single-tenant deployment; a hosted instance creates tenants at
+/// runtime via the admin HTTP API instead and never calls this at all.
+#[derive(Debug)]
+pub struct BootstrapWalletArgs {
+    pub primary_address: String,
+    pub view_key_hex: String,
+    pub spend_pubkey_hex: String,
+    pub network: String,
+    pub allowed_origins: Vec<String>,
+}
+
+/// Creates the one tenant a self-hosted deployment needs - but only if none
+/// exists yet, the same idempotency-by-checking-first discipline the former
+/// `main.rs::bootstrap_self_hosted_tenant` used (this replaces that function
+/// entirely: provisioning is now an explicit one-time command an operator runs,
+/// not something every boot re-checks). Confirmations/zero-conf/expiry all come
+/// from whatever this instance's *current* settings resolve to
+/// (`crate::settings`), not a value baked into this command - a bootstrap tenant
+/// should start out consistent with the instance it's being created on.
+pub async fn bootstrap_wallet(
+    store: &Store,
+    key_custody: &std::sync::Arc<dyn KeyCustody>,
+    key_custody_backend: &str,
+    args: BootstrapWalletArgs,
+) -> Result<CreatedTenant, LocalAdminError> {
+    if store.count_tenants()? > 0 {
+        return Err(LocalAdminError::AlreadyBootstrapped);
+    }
+    let material = WalletMaterial::from_hex(&args.view_key_hex, &args.spend_pubkey_hex)?;
+    let sealed = key_custody.seal(&material).await.map_err(LocalAdminError::KeyMaterial)?;
+
+    let confirmations_required: u64 = crate::settings::get(store, &crate::settings::PAYMENT_CONFIRMATIONS_REQUIRED);
+    let zero_conf_max_xmr: String = crate::settings::get(store, &crate::settings::PAYMENT_ZERO_CONF_MAX_XMR);
+    let order_expiry_minutes: i64 = crate::settings::get(store, &crate::settings::PAYMENT_ORDER_EXPIRY_MINUTES);
+
+    let created = store.create_tenant(
+        NewTenant {
+            key_custody_backend: key_custody_backend.to_string(),
+            sealed_key_material: sealed,
+            primary_address: args.primary_address,
+            network: args.network,
+            allowed_origins: args.allowed_origins,
+            confirmations_required: Some(confirmations_required),
+            zero_conf_max_piconero: if zero_conf_max_xmr.is_empty() {
+                None
+            } else {
+                shared::xmr_amount::parse_xmr_to_piconero(&zero_conf_max_xmr).ok()
+            },
+            order_expiry_seconds: Some(order_expiry_minutes * 60),
+        },
+        crate::now_unix(),
+    )?;
+    Ok(created)
 }
 
 /// Resolves which tenant a local-admin command should act on: the one named by
@@ -226,7 +290,57 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         for err in [rotate_secret(&store, None).unwrap_err(), show_tenant(&store, None).unwrap_err()] {
             assert!(matches!(err, LocalAdminError::NoTenant), "got {err}");
-            assert!(err.to_string().contains("--init"), "should point at the fix: {err}");
+            assert!(err.to_string().contains("--bootstrap-wallet"), "should point at the fix: {err}");
         }
+    }
+
+    fn bootstrap_args() -> BootstrapWalletArgs {
+        BootstrapWalletArgs {
+            primary_address: "4abc".to_string(),
+            view_key_hex: "aa".repeat(32),
+            spend_pubkey_hex: "bb".repeat(32),
+            network: "stagenet".to_string(),
+            allowed_origins: vec!["https://merchant.example".to_string()],
+        }
+    }
+
+    #[tokio::test]
+    async fn bootstrap_wallet_creates_the_one_tenant_a_self_hosted_deployment_needs() {
+        let store = Store::open_in_memory().unwrap();
+        let key_custody: std::sync::Arc<dyn KeyCustody> = std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
+        let created = bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args()).await.unwrap();
+
+        assert_eq!(created.tenant.network, "stagenet");
+        assert_eq!(created.tenant.allowed_origins, vec!["https://merchant.example".to_string()]);
+        assert_eq!(created.tenant.confirmations_required, 10, "should reflect this instance's real current settings, not a hardcoded value");
+        assert!(store.find_tenant_by_secret_token(&created.secret_token).unwrap().is_some());
+    }
+
+    #[tokio::test]
+    async fn bootstrap_wallet_picks_up_a_saved_setting_rather_than_the_hardcoded_fallback() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_setting("payment.confirmations_required", "3").unwrap();
+        let key_custody: std::sync::Arc<dyn KeyCustody> = std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
+        let created = bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args()).await.unwrap();
+        assert_eq!(created.tenant.confirmations_required, 3);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_wallet_refuses_a_second_time_once_any_tenant_already_exists() {
+        let store = Store::open_in_memory().unwrap();
+        let key_custody: std::sync::Arc<dyn KeyCustody> = std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
+        bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args()).await.unwrap();
+        let err = bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args()).await.unwrap_err();
+        assert!(matches!(err, LocalAdminError::AlreadyBootstrapped), "got {err}");
+    }
+
+    #[tokio::test]
+    async fn bootstrap_wallet_rejects_malformed_key_material_with_a_clear_error_not_a_panic() {
+        let store = Store::open_in_memory().unwrap();
+        let key_custody: std::sync::Arc<dyn KeyCustody> = std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
+        let mut args = bootstrap_args();
+        args.view_key_hex = "not hex".to_string();
+        let err = bootstrap_wallet(&store, &key_custody, "plain", args).await.unwrap_err();
+        assert!(matches!(err, LocalAdminError::KeyMaterial(_)), "got {err}");
     }
 }

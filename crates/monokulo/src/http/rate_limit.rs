@@ -58,7 +58,7 @@ mod tests {
 
     fn test_state_with_limit(limit_per_minute: u32) -> AppState {
         AppState {
-            db: Db::open_in_memory().unwrap().into_shared(),
+            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
             engine_client: EngineClient::new("http://127.0.0.1:1"),
             encryption_key: TEST_ENCRYPTION_KEY,
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),

@@ -142,7 +142,7 @@ fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>) -> Re
 /// `ConnectViewModel`'s own doc comment for why that's the right call here
 /// (these are plain-text inputs already, not password fields - echoing
 /// doesn't change what was ever visible on the merchant's own screen).
-fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&ConnectForm>) -> Response {
+fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&ConnectForm>, is_admin: bool) -> Response {
     let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
         network_selected_flags(resubmit.map(|f| f.network.as_str()).unwrap_or("mainnet"));
     let html = state
@@ -159,12 +159,13 @@ fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&
             network_stagenet_selected,
             network_testnet_selected,
             logged_in: true,
+            is_admin,
         })
         .expect("the built-in connect template must always render");
     Html(html).into_response()
 }
 
-fn render_connect_success(state: &AppState, public_key: &str) -> Response {
+fn render_connect_success(state: &AppState, public_key: &str, is_admin: bool) -> Response {
     let html = state
         .templates
         .render_connect(&ConnectViewModel {
@@ -179,6 +180,7 @@ fn render_connect_success(state: &AppState, public_key: &str) -> Response {
             network_stagenet_selected: false,
             network_testnet_selected: false,
             logged_in: true,
+            is_admin,
         })
         .expect("the built-in connect template must always render");
     Html(html).into_response()
@@ -198,7 +200,7 @@ pub async fn signup_form(State(state): State<AppState>) -> Response {
 }
 
 pub async fn signup_submit(State(state): State<AppState>, Form(form): Form<SignupForm>) -> Response {
-    match signup::create_account(&state, &form.email, &form.password) {
+    match signup::create_account(&state, &form.email, &form.password, false) {
         // Simplest reasonable post-signup behavior: send the new user to the
         // login page rather than also logging them in here - it reuses
         // `login_submit`'s own cookie-setting path instead of duplicating it,
@@ -294,8 +296,8 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
 /// `/connections` included) - no redirect-on-401 behavior exists anywhere in
 /// the dashboard yet, so a bare `401` here is the consistent choice rather
 /// than inventing new behavior for just this one route.
-pub async fn connect_form(State(state): State<AppState>, AuthedUser(_user, _token_hash): AuthedUser) -> Response {
-    render_connect_form(&state, None, None)
+pub async fn connect_form(State(state): State<AppState>, AuthedUser(user, _token_hash): AuthedUser) -> Response {
+    render_connect_form(&state, None, None, user.is_admin)
 }
 
 /// `POST /dashboard/connect` (WBS 1.3.2) - the form equivalent of
@@ -340,10 +342,12 @@ pub async fn connect_submit(
     };
 
     match connections::create_connection_for_user(&state, &user, fields).await {
-        Ok(outcome) => render_connect_success(&state, &outcome.public_key),
-        Err(CreateConnectionError::BadRequest(message)) => render_connect_form(&state, Some(&message), Some(&form)),
+        Ok(outcome) => render_connect_success(&state, &outcome.public_key, user.is_admin),
+        Err(CreateConnectionError::BadRequest(message)) => {
+            render_connect_form(&state, Some(&message), Some(&form), user.is_admin)
+        }
         Err(CreateConnectionError::Internal) => {
-            render_connect_form(&state, Some("Something went wrong. Please try again."), Some(&form))
+            render_connect_form(&state, Some("Something went wrong. Please try again."), Some(&form), user.is_admin)
         }
     }
 }

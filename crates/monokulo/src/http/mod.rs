@@ -45,6 +45,8 @@
 //! [`AuthedUser`] — it's called server-to-server by the plugin, which has no
 //! monokulo session at all — and redeems that token exactly once.
 
+mod admin_settings;
+mod admin_setup;
 mod checkout;
 mod connect;
 mod connections;
@@ -120,6 +122,9 @@ pub struct AppState {
 pub fn build_router(state: AppState) -> Router {
     let router = Router::new()
         .route("/", axum::routing::get(home::landing))
+        .route("/admin/setup", axum::routing::get(admin_setup::setup_form).post(admin_setup::setup_submit))
+        .route("/dashboard/admin/settings", axum::routing::get(admin_settings::page).post(admin_settings::save_monokulo))
+        .route("/dashboard/admin/scanner-settings", axum::routing::post(admin_settings::save_scanner))
         .route("/status", axum::routing::get(status_page::status_page))
         .route("/status/summary", axum::routing::get(status_page::status_summary))
         .route("/signup", post(signup::signup))
@@ -220,6 +225,28 @@ impl FromRequestParts<AppState> for AuthedUser {
     }
 }
 
+/// Same credential resolution as [`AuthedUser`], plus a real
+/// `user.is_admin` check - the gate for the admin settings page
+/// (`http/admin_settings.rs`, WBS: "only display an 'admin' nav menu entry
+/// if the authenticated user is the admin account" extended to the route
+/// itself, not just the nav link). A missing/invalid session still rejects
+/// with the same `401` `AuthedUser` would; a *valid* session that just isn't
+/// the admin account gets `403`, not `401` - see [`ApiError::Forbidden`]'s
+/// own doc comment for why those are kept distinct.
+pub struct AuthedAdmin(pub UserRow, pub String);
+
+impl FromRequestParts<AppState> for AuthedAdmin {
+    type Rejection = ApiError;
+
+    async fn from_request_parts(parts: &mut Parts, state: &AppState) -> Result<Self, Self::Rejection> {
+        let AuthedUser(user, hash) = AuthedUser::from_request_parts(parts, state).await?;
+        if !user.is_admin {
+            return Err(ApiError::Forbidden);
+        }
+        Ok(AuthedAdmin(user, hash))
+    }
+}
+
 /// The actual "resolve a session to its user" logic [`AuthedUser`]'s
 /// extractor uses - factored out so a handler that needs to know *whether*
 /// the caller has a valid session, without failing the request outright when
@@ -284,6 +311,12 @@ pub enum ApiError {
     /// already applies, extended to "does this tenant even exist" for a
     /// route with no owner to check against in the first place.
     NotFound,
+    /// [`AuthedAdmin`]'s own rejection for a real, valid session that simply
+    /// isn't the instance's one admin account - deliberately distinct from
+    /// `Unauthorized` (no/invalid session at all): a merchant hitting an
+    /// admin-only route has a perfectly valid session, they just aren't
+    /// allowed here, which is exactly what `403` (not `401`) means.
+    Forbidden,
     Internal,
 }
 
@@ -294,6 +327,7 @@ impl IntoResponse for ApiError {
             ApiError::Unauthorized => (StatusCode::UNAUTHORIZED, "unauthorized".to_string()),
             ApiError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
+            ApiError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
             ApiError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string()),
         };
         (status, Json(json!({ "error": message }))).into_response()

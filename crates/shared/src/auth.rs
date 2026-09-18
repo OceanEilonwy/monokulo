@@ -49,6 +49,17 @@ pub fn generate_connect_token() -> String {
     format!("conn_{}", random_hex(32))
 }
 
+/// An instance-wide scanner admin token - authenticates the settings
+/// HTTP API (`scanner::http::instance_admin`), distinct from any tenant's own
+/// `sk_` (that authenticates one tenant's own admin API, never server-level
+/// settings) and from monokulo's own session tokens. Same generation
+/// primitive as every other credential here, with its own `admin_` prefix so
+/// the two credential types stay visibly distinct rather than sharing `sk_`
+/// for something that isn't a tenant secret.
+pub fn generate_admin_token() -> String {
+    format!("admin_{}", random_hex(32))
+}
+
 /// A webhook's HMAC signing secret. Unlike `sk_`, this is stored reversibly (see
 /// `webhooks.signing_secret` in the schema) since it's needed on every delivery, not
 /// just checked once - "shown once" for this value is an API convention, not a
@@ -89,6 +100,14 @@ mod tests {
         let t1 = generate_session_token();
         let t2 = generate_session_token();
         assert!(t1.starts_with("sess_"));
+        assert_ne!(t1, t2);
+    }
+
+    #[test]
+    fn generated_admin_tokens_have_the_expected_prefix_and_are_unique() {
+        let t1 = generate_admin_token();
+        let t2 = generate_admin_token();
+        assert!(t1.starts_with("admin_"));
         assert_ne!(t1, t2);
     }
 

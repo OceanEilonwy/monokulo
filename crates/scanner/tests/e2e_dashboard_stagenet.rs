@@ -48,7 +48,6 @@ use monero::Network;
 use serde_json::{json, Value};
 use tower::ServiceExt;
 
-use scanner::config::Config;
 use scanner::daemon::MoneroDaemonClient;
 use scanner::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use scanner::daemon_rpc::RpcDaemonClient;
@@ -67,7 +66,6 @@ use monokulo::templates::TemplateEngine;
 
 use support::StagenetSpendWallet;
 
-const ENGINE_CONFIG_PATH: &str = "e2e/moneropay-stagenet.toml";
 const WALLETS_PATH: &str = "e2e/stagenet-wallets.json";
 
 /// Same check `e2e_stagenet.rs` opens with, and for the same reason: fail
@@ -76,8 +74,8 @@ const WALLETS_PATH: &str = "e2e/stagenet-wallets.json";
 async fn require_daemon_reachable(daemon: &dyn MoneroDaemonClient, host: &str, port: u16) {
     if let Err(e) = daemon.get_height().await {
         panic!(
-            "\n\ncannot reach the stagenet node at {host}:{port} (configured in {ENGINE_CONFIG_PATH}'s \
-             [monero_node.stagenet]): {e}\n\
+            "\n\ncannot reach the stagenet node at {host}:{port} (configured in support::e2e_fixture): \
+             {e}\n\
              Check that host/port, your network connection, or try a different public stagenet \
              node (search \"monero stagenet public node\" for alternatives).\n"
         );
@@ -156,13 +154,9 @@ async fn body_json(response: axum::response::Response) -> Value {
 #[tokio::test]
 #[ignore]
 async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_received() {
-    // ---- load the same real config + reusable wallet fixtures e2e_stagenet.rs uses ----
-    let config =
-        Config::from_file(ENGINE_CONFIG_PATH).unwrap_or_else(|e| panic!("failed to load {ENGINE_CONFIG_PATH} (run from the repo root): {e}"));
-    config.validate().expect("e2e config should be valid");
-    let wallet_cfg = config.wallet.as_ref().expect("e2e config must have a [wallet] bootstrap section");
-    let node_cfg = config.monero_node.get(Network::Stagenet).expect("e2e config must have [monero_node.stagenet]");
-    let node_url = format!("http{}://{}:{}", if node_cfg.ssl { "s" } else { "" }, node_cfg.host, node_cfg.port);
+    // ---- load the same real fixture + reusable wallet fixtures e2e_stagenet.rs uses ----
+    use support::e2e_fixture;
+    let node_url = format!("http{}://{}:{}", if e2e_fixture::NODE_SSL { "s" } else { "" }, e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT);
 
     let wallets_json: Value = serde_json::from_str(
         &std::fs::read_to_string(WALLETS_PATH).unwrap_or_else(|e| panic!("failed to read {WALLETS_PATH}: {e}")),
@@ -186,13 +180,13 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     let store = Store::open_in_memory().unwrap().into_shared();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
-        RpcDaemonClient::new(&node_cfg.host, node_cfg.port, node_cfg.ssl, node_cfg.accept_self_signed_certs)
+        RpcDaemonClient::new(e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT, e2e_fixture::NODE_SSL, e2e_fixture::NODE_ACCEPT_SELF_SIGNED_CERTS)
             .expect("failed to build daemon RPC client"),
     );
-    require_daemon_reachable(daemon.as_ref(), &node_cfg.host, node_cfg.port).await;
+    require_daemon_reachable(daemon.as_ref(), e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT).await;
 
     let fallback_daemon = Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-        label: format!("{}:{}", node_cfg.host, node_cfg.port),
+        label: format!("{}:{}", e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT),
         client: daemon.clone(),
     }]));
     let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> = Arc::new(RwLock::new(HashMap::new()));
@@ -290,8 +284,8 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
                 .header("cookie", &session_cookie)
                 .body(Body::from(form_body(&[
                     ("site_url", site_url),
-                    ("view_key_hex", &wallet_cfg.private_view_key),
-                    ("spend_pubkey_hex", &wallet_cfg.public_spend_key),
+                    ("view_key_hex", e2e_fixture::WALLET_PRIVATE_VIEW_KEY),
+                    ("spend_pubkey_hex", e2e_fixture::WALLET_PUBLIC_SPEND_KEY),
                     ("network", "stagenet"),
                     ("allowed_origins", ""),
                 ])))
@@ -338,7 +332,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
 
     // ---- 4. pay it for real - genuine signed + broadcast stagenet transaction ----
     let spend_wallet =
-        StagenetSpendWallet::connect(&node_url, node_cfg.accept_self_signed_certs, &customer_spend_key_hex, &customer_view_key_hex, &customer_address)
+        StagenetSpendWallet::connect(&node_url, e2e_fixture::NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address)
             .await
             .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash = spend_wallet.send(daemon.as_ref(), &known_txids, &address, amount_piconero).await.unwrap_or_else(|e| panic!("\n\n{e}\n"));
@@ -353,7 +347,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     let mut last_dashboard_html = String::new();
     for attempt in 1..=30 {
         let tenants: Vec<(String, WalletHandle)> = wallet_handles.read().unwrap().iter().map(|(id, h)| (id.clone(), *h)).collect();
-        run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(Network::Stagenet), &tenants, config.payment.reorg_check_depth, 0)
+        run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(Network::Stagenet), &tenants, e2e_fixture::PAYMENT_REORG_CHECK_DEPTH, 0)
             .await
             .expect("scan tick failed");
 

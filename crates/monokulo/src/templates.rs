@@ -31,6 +31,8 @@ const STATUS_TEMPLATE: &str = include_str!("../templates/status.html.hbs");
 const CHECKOUT_TEMPLATE: &str = include_str!("../templates/checkout.html.hbs");
 const CHECKOUT_NOT_FOUND_TEMPLATE: &str = include_str!("../templates/checkout_not_found.html.hbs");
 const CHECKOUT_SHARE_TEMPLATE: &str = include_str!("../templates/checkout_share.html.hbs");
+const ADMIN_SETUP_TEMPLATE: &str = include_str!("../templates/admin_setup.html.hbs");
+const ADMIN_SETTINGS_TEMPLATE: &str = include_str!("../templates/admin_settings.html.hbs");
 
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateError {
@@ -53,6 +55,24 @@ pub struct FormViewModel {
     /// `http::dashboard::render_signup`'s own doc comment for why this page
     /// always renders `false` regardless of any existing session.
     pub logged_in: bool,
+}
+
+/// The view model the first-run admin setup wizard takes
+/// (`http/admin_setup.rs`): `error` means the same thing `FormViewModel::error`
+/// does; `email` is echoed back into the form on a rejected submission (a
+/// duplicate email, or mismatched passwords) so the merchant doesn't have to
+/// retype it - the two password fields are never echoed back, same
+/// no-echo-a-password convention every other credential field in this
+/// codebase already follows.
+#[derive(Debug, Default, Serialize)]
+pub struct SetupViewModel {
+    pub error: Option<String>,
+    pub email: String,
+    /// Always `false` - nobody has a session yet at this point in a fresh
+    /// install (this page only ever renders when `is_setup_complete` is
+    /// false, i.e. before any account, admin or otherwise, could exist).
+    pub logged_in: bool,
+    pub is_admin: bool,
 }
 
 /// The view model the login template takes (WBS 1.4.1 extends the plain
@@ -107,6 +127,7 @@ pub struct ConnectViewModel {
     /// Always `true` - every caller of `render_connect` is already behind
     /// `AuthedUser` (`http/dashboard.rs`'s `connect_form`/`connect_submit`).
     pub logged_in: bool,
+    pub is_admin: bool,
 }
 
 /// The view model the generic platform-connect confirm form (WBS 1.4.1,
@@ -144,6 +165,7 @@ pub struct PlatformConnectViewModel {
     /// `http/connect.rs::start`'s own doc comment: no session redirects to
     /// `/dashboard/login` instead of rendering this at all).
     pub logged_in: bool,
+    pub is_admin: bool,
 }
 
 /// One row of the "use an existing store" picker
@@ -186,6 +208,7 @@ pub struct OrdersViewModel {
     pub orders: Vec<OrderRowViewModel>,
     /// Always `true` - every caller is behind `AuthedUser`.
     pub logged_in: bool,
+    pub is_admin: bool,
 }
 
 /// A muted placeholder for a field with nothing to show - same
@@ -510,6 +533,7 @@ pub struct OrderDetailViewModel {
     pub meta_refresh_secs: u32,
     /// Always `true` - every caller is behind `AuthedUser`.
     pub logged_in: bool,
+    pub is_admin: bool,
 }
 
 /// One row of the webhooks list page (WBS 1.3.3) - mirrors the engine's own
@@ -542,6 +566,7 @@ pub struct WebhooksViewModel {
     pub created_webhook_signing_secret: Option<String>,
     /// Always `true` - every caller is behind `AuthedUser`.
     pub logged_in: bool,
+    pub is_admin: bool,
 }
 
 /// One connected store as shown on the dashboard home page - a much smaller
@@ -613,6 +638,7 @@ pub struct DashboardViewModel {
     pub active_rescans_count_label: String,
     /// Always `true` - every caller is behind `AuthedUser`.
     pub logged_in: bool,
+    pub is_admin: bool,
 }
 
 /// One entry in the dashboard-home "syncing" banner (Phase 3.4).
@@ -644,6 +670,7 @@ pub struct StoreDetailViewModel {
     pub store: Option<StoreDetailData>,
     /// Always `true` - every caller is behind `AuthedUser`.
     pub logged_in: bool,
+    pub is_admin: bool,
 }
 
 #[derive(Debug, Serialize)]
@@ -778,6 +805,7 @@ pub struct StatusPageViewModel {
     /// whatever session (if any) the visitor actually presented. See
     /// `status_page`'s own handler.
     pub logged_in: bool,
+    pub is_admin: bool,
 }
 
 /// The view model for a page whose only dynamic content is the nav bar's
@@ -787,6 +815,7 @@ pub struct StatusPageViewModel {
 #[derive(Debug, Serialize)]
 pub struct NavOnlyViewModel {
     pub logged_in: bool,
+    pub is_admin: bool,
 }
 
 /// One payment row on the checkout page's payments table
@@ -878,6 +907,79 @@ pub struct CheckoutShareViewModel {
     /// only content is a broken iframe.
     pub found: bool,
     pub logged_in: bool,
+    pub is_admin: bool,
+}
+
+/// One editable field on the admin settings page (`http/admin_settings.rs`) -
+/// either one of monokulo's own settings (`crate::settings::ALL_SCALAR`) or
+/// one of the *proxied* scanner settings, fetched live over HTTP from
+/// whichever scanner instance is configured. The same shape serves both:
+/// neither side needs anything the other doesn't also have.
+#[derive(Debug, Serialize)]
+pub struct AdminScalarFieldView {
+    /// The stable settings-table key (also the form field's `name` - what
+    /// comes back in the `POST` body identifies exactly which setting to
+    /// write, with no separate label-to-key mapping to keep in sync).
+    pub key: String,
+    /// A human-readable label derived from `key` (see
+    /// `http::admin_settings::humanize_key`) - e.g. `"rescan.max_lookback_days"`
+    /// becomes `"rescan max lookback days"`.
+    pub label: String,
+    /// The field's current *effective* value - what wins under
+    /// `env > database > default`. Rendered as the input's `value="..."` so
+    /// the page always shows what's actually in force, per the explicit
+    /// "settings should have a value='' that corresponds to the active
+    /// setting" requirement - never a blank field just because nothing was
+    /// ever explicitly saved.
+    pub value: String,
+    /// `"environment variable"`, `"saved value"`, or `"default"` - shown
+    /// next to the field so an operator can tell whether editing it here
+    /// would actually take effect (it wouldn't, while an environment
+    /// variable is set) before wondering why a save didn't change anything.
+    pub source_label: String,
+}
+
+/// One `monero_node.<network>` entry on the scanner-settings half of the
+/// admin page - the raw JSON blob scanner's own admin API already returns
+/// for this key (`scanner::settings::MoneroNodeSetting`, serialized),
+/// shown/edited as a single JSON text field rather than one input per
+/// sub-field. Deliberately not modeled as a matching Rust struct here:
+/// monokulo and scanner talk over HTTP as separate services (see
+/// `engine_client.rs`'s own module doc comment on why the two never share
+/// types), so this stays whatever JSON scanner itself considers valid,
+/// round-tripped opaquely.
+#[derive(Debug, Serialize)]
+pub struct AdminNetworkFieldView {
+    pub network: String,
+    /// Empty when this network has no node configured yet - never a
+    /// fabricated placeholder value.
+    pub value_json: String,
+}
+
+/// The view model the admin settings page (`GET`/`POST /dashboard/admin/settings`,
+/// `POST /dashboard/admin/scanner-settings`) takes. Always rendered by an
+/// [`AuthedAdmin`](crate::http::AuthedAdmin)-gated handler, so `logged_in` is
+/// always `true` and `is_admin` always `true` - kept as real fields anyway
+/// (rather than hardcoded in the template) purely so the shared `{{> nav}}`
+/// partial doesn't need a special case for this one page.
+#[derive(Debug, Default, Serialize)]
+pub struct AdminSettingsViewModel {
+    pub error: Option<String>,
+    pub success: Option<String>,
+    pub monokulo_fields: Vec<AdminScalarFieldView>,
+    /// `true` once `engine.url`/`engine.admin_token` are both non-empty -
+    /// gates whether the page even attempts to reach the scanner at all.
+    pub scanner_configured: bool,
+    /// `true` only after a real, successful `GET` of the scanner's own
+    /// `/api/v1/admin/settings` - `scanner_fields`/`scanner_networks` are
+    /// only ever populated (and the scanner-settings form only ever shown)
+    /// when this is `true`.
+    pub scanner_reachable: bool,
+    pub scanner_error: Option<String>,
+    pub scanner_fields: Vec<AdminScalarFieldView>,
+    pub scanner_networks: Vec<AdminNetworkFieldView>,
+    pub logged_in: bool,
+    pub is_admin: bool,
 }
 
 pub struct TemplateEngine {
@@ -914,7 +1016,17 @@ impl TemplateEngine {
         handlebars.register_template_string("checkout", CHECKOUT_TEMPLATE)?;
         handlebars.register_template_string("checkout_not_found", CHECKOUT_NOT_FOUND_TEMPLATE)?;
         handlebars.register_template_string("checkout_share", CHECKOUT_SHARE_TEMPLATE)?;
+        handlebars.register_template_string("admin_setup", ADMIN_SETUP_TEMPLATE)?;
+        handlebars.register_template_string("admin_settings", ADMIN_SETTINGS_TEMPLATE)?;
         Ok(TemplateEngine { handlebars })
+    }
+
+    pub fn render_admin_setup(&self, data: &SetupViewModel) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("admin_setup", data)?)
+    }
+
+    pub fn render_admin_settings(&self, data: &AdminSettingsViewModel) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("admin_settings", data)?)
     }
 
     pub fn render_signup(&self, data: &FormViewModel) -> Result<String, TemplateError> {
@@ -945,20 +1057,20 @@ impl TemplateEngine {
         Ok(self.handlebars.render("webhooks", data)?)
     }
 
-    pub fn render_landing(&self, logged_in: bool) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("landing", &NavOnlyViewModel { logged_in })?)
+    pub fn render_landing(&self, logged_in: bool, is_admin: bool) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("landing", &NavOnlyViewModel { logged_in, is_admin })?)
     }
 
     pub fn render_dashboard_home(&self, data: &DashboardViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("dashboard_home", data)?)
     }
 
-    pub fn render_new_store_picker(&self, logged_in: bool) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("new_store_picker", &NavOnlyViewModel { logged_in })?)
+    pub fn render_new_store_picker(&self, logged_in: bool, is_admin: bool) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("new_store_picker", &NavOnlyViewModel { logged_in, is_admin })?)
     }
 
-    pub fn render_woocommerce_instructions(&self, logged_in: bool) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("woocommerce_instructions", &NavOnlyViewModel { logged_in })?)
+    pub fn render_woocommerce_instructions(&self, logged_in: bool, is_admin: bool) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("woocommerce_instructions", &NavOnlyViewModel { logged_in, is_admin })?)
     }
 
     pub fn render_store_detail(&self, data: &StoreDetailViewModel) -> Result<String, TemplateError> {
@@ -1273,7 +1385,7 @@ mod tests {
     #[test]
     fn landing_page_renders_with_a_signup_cta() {
         let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_landing(false).unwrap();
+        let html = engine.render_landing(false, false).unwrap();
         assert!(html.contains(r#"href="/dashboard/signup""#));
         assert!(html.to_lowercase().contains("monero"));
     }
@@ -1290,6 +1402,7 @@ mod tests {
                 active_rescans: vec![],
                 active_rescans_count_label: String::new(),
                 logged_in: true,
+                is_admin: false,
             })
             .unwrap();
         assert!(html.contains(r#"href="/dashboard/connections/new""#));
@@ -1324,6 +1437,7 @@ mod tests {
                 active_rescans: vec![],
                 active_rescans_count_label: String::new(),
                 logged_in: true,
+                is_admin: false,
             })
             .unwrap();
         assert!(html.contains("pk_abc123"));
@@ -1337,7 +1451,7 @@ mod tests {
     #[test]
     fn new_store_picker_links_to_both_flows() {
         let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_new_store_picker(true).unwrap();
+        let html = engine.render_new_store_picker(true, false).unwrap();
         assert!(html.contains(r#"href="/dashboard/connections/new/woocommerce""#));
         assert!(html.contains(r#"href="/dashboard/connect""#));
     }
@@ -1345,7 +1459,7 @@ mod tests {
     #[test]
     fn woocommerce_instructions_page_renders() {
         let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_woocommerce_instructions(true).unwrap();
+        let html = engine.render_woocommerce_instructions(true, false).unwrap();
         assert!(html.to_lowercase().contains("woocommerce"));
         assert!(html.contains(r#"href="/dashboard/connect""#));
     }
@@ -1353,7 +1467,7 @@ mod tests {
     #[test]
     fn store_detail_renders_not_found_state_when_store_is_none() {
         let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_store_detail(&StoreDetailViewModel { store: None, logged_in: true }).unwrap();
+        let html = engine.render_store_detail(&StoreDetailViewModel { store: None, logged_in: true, is_admin: false }).unwrap();
         assert!(html.to_lowercase().contains("not found"));
     }
 
@@ -1383,6 +1497,7 @@ mod tests {
                     settings_error: None,
                 }),
                 logged_in: true,
+                is_admin: false,
             })
             .unwrap();
         // Proves the integration_help partial actually received this
@@ -1434,6 +1549,7 @@ mod tests {
                     settings_error: None,
                 }),
                 logged_in: true,
+                is_admin: false,
             })
             .unwrap();
         assert!(html.contains("Install the"), "expected the WooCommerce onboarding steps to still be offered, got: {html}");
@@ -1466,6 +1582,7 @@ mod tests {
                     settings_error: None,
                 }),
                 logged_in: true,
+                is_admin: false,
             })
             .unwrap();
         assert!(html.contains("unsupported currency: XYZ"), "expected the real error surfaced, got: {html}");
@@ -1558,6 +1675,7 @@ mod tests {
                 order: Some(test_order_detail_data(None)),
                 meta_refresh_secs: 15,
                 logged_in: true,
+                is_admin: false,
             })
             .unwrap();
         // The real point of this follow-up: no dash, no row at all - a
@@ -1575,6 +1693,7 @@ mod tests {
                 order: Some(test_order_detail_data(Some(1_700_000_000))),
                 meta_refresh_secs: 15,
                 logged_in: true,
+                is_admin: false,
             })
             .unwrap();
         assert!(html.contains("Double-spend detected at"), "expected the row present when a double-spend was detected, got: {html}");

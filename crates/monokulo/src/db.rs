@@ -31,11 +31,18 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (8, include_str!("../migrations/0008_remove_fixed_fx_provider.sql")),
     (9, include_str!("../migrations/0009_rename_fiat_to_currency.sql")),
     (10, include_str!("../migrations/0010_utc_suffix_date_columns.sql")),
+    (11, include_str!("../migrations/0011_settings_and_admin.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
     shared::migrations::apply(conn, MIGRATIONS)
 }
+
+/// Known credentials every test fixture seeds via [`Db::seed_test_admin`] -
+/// public (not `#[cfg(test)]`-gated on the constants themselves) so a test in
+/// any module can log in as this account without redefining the literal.
+pub const TEST_ADMIN_EMAIL: &str = "admin@monokulo.test";
+pub const TEST_ADMIN_PASSWORD: &str = "correct horse battery staple admin";
 
 pub struct Db {
     conn: Connection,
@@ -73,6 +80,11 @@ pub struct UserRow {
     pub email: String,
     pub password_hash: String,
     pub created_at: i64,
+    /// `true` only for the one instance-admin account the first-run setup
+    /// wizard creates (`http::setup`) - `false` for every ordinary merchant
+    /// user `POST /dashboard/signup` creates. Gates the nav's own "admin"
+    /// link and `/dashboard/admin/*` - see `AuthedUser`'s own doc comment.
+    pub is_admin: bool,
 }
 
 /// A row from `sessions`. `token_hash` is the SHA-256 hash of the raw
@@ -148,10 +160,12 @@ impl Db {
 
     /// Inserts a new user row. Fails with a unique-violation `DbError` (see
     /// [`DbError::is_unique_violation`]) if `email` is already taken.
-    pub fn create_user(&self, id: &str, email: &str, password_hash: &str, created_at: i64) -> Result<()> {
+    /// `is_admin` is `true` only from the first-run setup wizard's own single
+    /// call site (`http::setup`) - every ordinary signup passes `false`.
+    pub fn create_user(&self, id: &str, email: &str, password_hash: &str, is_admin: bool, created_at: i64) -> Result<()> {
         self.conn.execute(
-            "INSERT INTO users (id, email, password_hash, created_at_utc) VALUES (?1, ?2, ?3, ?4)",
-            params![id, email, password_hash, created_at],
+            "INSERT INTO users (id, email, password_hash, is_admin, created_at_utc) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, email, password_hash, is_admin, created_at],
         )?;
         Ok(())
     }
@@ -162,7 +176,7 @@ impl Db {
     pub fn get_user_by_email(&self, email: &str) -> Result<Option<UserRow>> {
         self.conn
             .query_row(
-                "SELECT id, email, password_hash, created_at_utc FROM users WHERE email = ?1",
+                "SELECT id, email, password_hash, created_at_utc, is_admin FROM users WHERE email = ?1",
                 params![email],
                 |row| {
                     Ok(UserRow {
@@ -170,6 +184,7 @@ impl Db {
                         email: row.get(1)?,
                         password_hash: row.get(2)?,
                         created_at: row.get(3)?,
+                        is_admin: row.get(4)?,
                     })
                 },
             )
@@ -182,7 +197,7 @@ impl Db {
     pub fn get_user_by_id(&self, id: &str) -> Result<Option<UserRow>> {
         self.conn
             .query_row(
-                "SELECT id, email, password_hash, created_at_utc FROM users WHERE id = ?1",
+                "SELECT id, email, password_hash, created_at_utc, is_admin FROM users WHERE id = ?1",
                 params![id],
                 |row| {
                     Ok(UserRow {
@@ -190,11 +205,75 @@ impl Db {
                         email: row.get(1)?,
                         password_hash: row.get(2)?,
                         created_at: row.get(3)?,
+                        is_admin: row.get(4)?,
                     })
                 },
             )
             .optional()
             .map_err(DbError::from)
+    }
+
+    /// One runtime-configurable setting's stored value, or `None` if nothing
+    /// has ever been saved for `key` - see `crates/scanner/src/store.rs`'s
+    /// own `get_setting` (identical shape, identical reasoning) and
+    /// `shared::settings`'s own doc comment for the env > database > default
+    /// precedence this feeds into.
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        self.conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get(0)).optional().map_err(DbError::from)
+    }
+
+    /// Persists one setting - an upsert, since the admin settings page's own
+    /// "Save" always writes every field it shows regardless of whether a row
+    /// already exists for it.
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    pub fn delete_setting(&self, key: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        Ok(())
+    }
+
+    /// Every stored setting at once - the admin settings page's `GET` reads
+    /// the whole table in one query rather than one `get_setting` call per
+    /// known key.
+    pub fn list_settings(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self.conn.prepare("SELECT key, value FROM settings")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>().map_err(DbError::from)
+    }
+
+    /// `true` once the first-run setup wizard has created the instance admin
+    /// account - a dedicated `settings` row (`"setup_complete" = "true"`),
+    /// per the user's own explicit "based upon a flag in database" request,
+    /// rather than derived from `SELECT COUNT(*) FROM users WHERE is_admin`.
+    /// Set exactly once, by `http::admin_setup`'s own successful submission.
+    pub fn is_setup_complete(&self) -> Result<bool> {
+        Ok(self.get_setting("setup_complete")?.as_deref() == Some("true"))
+    }
+
+    pub fn mark_setup_complete(&self) -> Result<()> {
+        self.set_setting("setup_complete", "true")
+    }
+
+    /// Test-only convenience seeding a known admin account and marking setup
+    /// complete in one call - the "tests should seed the admin account with
+    /// a known user/pass, which will mean the admin flow won't trigger"
+    /// requirement, applied as a single shared helper every test fixture
+    /// calls rather than each reimplementing the same two writes. Panics on
+    /// a database error - every caller is a test fixture already `.unwrap()`-
+    /// ing `Db::open_in_memory()` right next to this, so a failure here is
+    /// exactly as fatal to the test as that would be.
+    #[cfg(test)]
+    pub fn seed_test_admin(&self) {
+        let password_hash = shared::password::hash_password(TEST_ADMIN_PASSWORD).expect("hashing the fixed test admin password");
+        self.create_user("test-admin", TEST_ADMIN_EMAIL, &password_hash, true, 0).expect("seeding the test admin account");
+        self.mark_setup_complete().expect("marking setup complete for the seeded test admin");
     }
 
     /// Stores a new session. `token_hash` must already be hashed (see
@@ -536,21 +615,70 @@ mod tests {
     #[test]
     fn creating_a_user_then_reading_it_back_round_trips() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("id-1", "a@example.com", "hash", 1000).unwrap();
+        db.create_user("id-1", "a@example.com", "hash", false, 1000).unwrap();
 
         let row = db.get_user_by_email("a@example.com").unwrap().unwrap();
         assert_eq!(row.id, "id-1");
         assert_eq!(row.email, "a@example.com");
         assert_eq!(row.password_hash, "hash");
         assert_eq!(row.created_at, 1000);
+        assert!(!row.is_admin, "an ordinary signup must never be an admin by default");
+    }
+
+    #[test]
+    fn creating_a_user_with_is_admin_true_persists_and_round_trips_the_flag() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user("admin-1", "admin@example.com", "hash", true, 1000).unwrap();
+
+        let by_email = db.get_user_by_email("admin@example.com").unwrap().unwrap();
+        assert!(by_email.is_admin);
+        let by_id = db.get_user_by_id("admin-1").unwrap().unwrap();
+        assert!(by_id.is_admin);
+    }
+
+    #[test]
+    fn a_setting_that_was_never_saved_reads_as_none() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(db.get_setting("rate_limit_per_ip_per_min").unwrap(), None);
+        assert_eq!(db.list_settings().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn a_saved_setting_round_trips_and_a_second_save_overwrites_rather_than_erroring() {
+        let db = Db::open_in_memory().unwrap();
+        db.set_setting("rate_limit_per_ip_per_min", "10").unwrap();
+        assert_eq!(db.get_setting("rate_limit_per_ip_per_min").unwrap().as_deref(), Some("10"));
+
+        db.set_setting("rate_limit_per_ip_per_min", "25").unwrap();
+        assert_eq!(db.get_setting("rate_limit_per_ip_per_min").unwrap().as_deref(), Some("25"));
+
+        let all = db.list_settings().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all.get("rate_limit_per_ip_per_min").map(String::as_str), Some("25"));
+    }
+
+    #[test]
+    fn deleting_a_setting_removes_its_row_entirely() {
+        let db = Db::open_in_memory().unwrap();
+        db.set_setting("k", "v").unwrap();
+        db.delete_setting("k").unwrap();
+        assert_eq!(db.get_setting("k").unwrap(), None);
+    }
+
+    #[test]
+    fn setup_is_not_complete_until_explicitly_marked() {
+        let db = Db::open_in_memory().unwrap();
+        assert!(!db.is_setup_complete().unwrap(), "a fresh database must start unsetup");
+        db.mark_setup_complete().unwrap();
+        assert!(db.is_setup_complete().unwrap());
     }
 
     #[test]
     fn a_duplicate_email_is_rejected_as_a_unique_violation() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("id-1", "a@example.com", "hash1", 1000).unwrap();
+        db.create_user("id-1", "a@example.com", "hash1", false, 1000).unwrap();
 
-        let err = db.create_user("id-2", "a@example.com", "hash2", 2000).unwrap_err();
+        let err = db.create_user("id-2", "a@example.com", "hash2", false, 2000).unwrap_err();
         assert!(err.is_unique_violation(), "expected a unique-violation error, got: {err:?}");
     }
 
@@ -563,7 +691,7 @@ mod tests {
     #[test]
     fn a_created_session_can_be_found_by_its_token_hash_and_resolves_to_its_user() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-1", "a@example.com", "hash", 1000).unwrap();
+        db.create_user("user-1", "a@example.com", "hash", false, 1000).unwrap();
         db.create_session("hashed-token", "user-1", 2000).unwrap();
 
         let session = db.find_session("hashed-token").unwrap().unwrap();
@@ -584,7 +712,7 @@ mod tests {
     #[test]
     fn deleting_a_session_removes_it_and_reports_whether_a_row_was_actually_deleted() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-1", "a@example.com", "hash", 1000).unwrap();
+        db.create_user("user-1", "a@example.com", "hash", false, 1000).unwrap();
         db.create_session("hashed-token", "user-1", 2000).unwrap();
 
         assert!(db.delete_session("hashed-token").unwrap());
@@ -595,7 +723,7 @@ mod tests {
     #[test]
     fn creating_a_store_connection_then_reading_it_back_round_trips() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-1", "a@example.com", "hash", 1000).unwrap();
+        db.create_user("user-1", "a@example.com", "hash", false, 1000).unwrap();
         db.create_store_connection(
             "conn-1",
             "user-1",
@@ -622,7 +750,7 @@ mod tests {
     #[test]
     fn updating_a_store_connections_fx_provider_only_touches_that_field() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-1", "a@example.com", "hash", 1000).unwrap();
+        db.create_user("user-1", "a@example.com", "hash", false, 1000).unwrap();
         db.create_store_connection(
             "conn-1",
             "user-1",
@@ -683,7 +811,7 @@ mod tests {
     #[test]
     fn updating_a_store_connections_site_url_only_touches_that_field() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-1", "a@example.com", "hash", 1000).unwrap();
+        db.create_user("user-1", "a@example.com", "hash", false, 1000).unwrap();
         db.create_store_connection(
             "conn-1",
             "user-1",
@@ -709,7 +837,7 @@ mod tests {
     #[test]
     fn creating_a_store_connection_then_reading_it_back_by_public_key_round_trips() {
         let db = Db::open_in_memory().unwrap();
-        db.create_user("user-2", "b@example.com", "hash", 1000).unwrap();
+        db.create_user("user-2", "b@example.com", "hash", false, 1000).unwrap();
         db.create_store_connection(
             "conn-2",
             "user-2",
@@ -734,7 +862,7 @@ mod tests {
     }
 
     fn seed_connection_for_connect_token_tests(db: &Db) -> String {
-        db.create_user("user-ct", "connect-tokens@example.com", "hash", 1000).unwrap();
+        db.create_user("user-ct", "connect-tokens@example.com", "hash", false, 1000).unwrap();
         db.create_store_connection(
             "conn-ct",
             "user-ct",
@@ -803,7 +931,7 @@ mod tests {
         let path_str = path.to_str().unwrap();
 
         let db = Db::open_file(path_str).unwrap();
-        db.create_user("id-1", "a@example.com", "hash", 1000).unwrap();
+        db.create_user("id-1", "a@example.com", "hash", false, 1000).unwrap();
         drop(db);
 
         let reopened = Db::open_file(path_str).unwrap();
@@ -846,7 +974,7 @@ mod tests {
         // tenant) - the composite primary key must keep them apart.
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_user("user-2", "other@example.com", "hash", 1000).unwrap();
+        db.create_user("user-2", "other@example.com", "hash", false, 1000).unwrap();
         db.create_store_connection(
             "conn-2",
             "user-2",

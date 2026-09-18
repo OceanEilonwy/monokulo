@@ -38,6 +38,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (7, include_str!("../migrations/0007_order_rescans.sql")),
     (8, include_str!("../migrations/0008_order_scanned_range.sql")),
     (9, include_str!("../migrations/0009_utc_suffix_date_columns.sql")),
+    (10, include_str!("../migrations/0010_settings.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -143,6 +144,7 @@ pub struct TenantConfigPatch {
     pub order_expiry_seconds: Option<i64>,
 }
 
+#[derive(Debug)]
 pub struct CreatedTenant {
     pub tenant: Tenant,
     /// Shown here exactly once - callers must hand this to the operator and never
@@ -1470,6 +1472,49 @@ impl Store {
         Ok(())
     }
 
+    /// One runtime-configurable setting's stored value (§`migrations/0010_settings.sql`),
+    /// or `None` if nothing has ever been saved for `key` - the caller (`shared::
+    /// settings::resolve_parsed`) treats that the same as "fall through to the code
+    /// default", after first checking whether an environment variable overrides it.
+    pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
+        self.conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get(0)).optional().map_err(Into::into)
+    }
+
+    /// Persists one setting - an `INSERT ... ON CONFLICT DO UPDATE` upsert, since the
+    /// admin settings page's own "Save" always writes every field it shows regardless
+    /// of whether a row already exists for it (docs: the button is always clickable,
+    /// including to persist a value that's currently coming from an environment
+    /// variable into the database for the first time).
+    pub fn set_setting(&self, key: &str, value: &str) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO settings (key, value) VALUES (?1, ?2)
+             ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+            params![key, value],
+        )?;
+        Ok(())
+    }
+
+    /// Removes a setting's stored row entirely - not the same as saving an empty
+    /// string, which is still a real, present value (`get_setting` returns
+    /// `Some("")`, not `None`). Used for "unconfigure this" choices a setting
+    /// genuinely supports (e.g. a `monero_node.<network>` entry being cleared),
+    /// where falling through to a hardcoded default would be wrong - there is
+    /// no sensible default Monero node to fall back to.
+    pub fn delete_setting(&self, key: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM settings WHERE key = ?1", params![key])?;
+        Ok(())
+    }
+
+    /// Every stored setting at once, as `(key, value)` pairs - the admin settings
+    /// page's `GET` reads the whole table in one query rather than one `get_setting`
+    /// call per known key, then resolves each known setting's effective value/source
+    /// against this map plus the environment.
+    pub fn list_settings(&self) -> Result<std::collections::HashMap<String, String>> {
+        let mut stmt = self.conn.prepare("SELECT key, value FROM settings")?;
+        let rows = stmt.query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?)))?;
+        rows.collect::<rusqlite::Result<std::collections::HashMap<_, _>>>().map_err(Into::into)
+    }
+
     /// `true` if this order is presently examined by anything at all - either it's
     /// in the live scanner's own in-scope set (the same widened predicate
     /// `bump_scanned_heights_for_tenant` uses) or it has a currently-`running`
@@ -1686,6 +1731,30 @@ mod tests {
                 expires_at: 2000,
             })
             .unwrap()
+    }
+
+    #[test]
+    fn a_setting_that_was_never_saved_reads_as_none() {
+        let store = Store::open_in_memory().unwrap();
+        assert_eq!(store.get_setting("payment.confirmations_required").unwrap(), None);
+        assert_eq!(store.list_settings().unwrap().len(), 0);
+    }
+
+    #[test]
+    fn a_saved_setting_round_trips_and_a_second_save_overwrites_rather_than_erroring() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_setting("payment.confirmations_required", "5").unwrap();
+        assert_eq!(store.get_setting("payment.confirmations_required").unwrap().as_deref(), Some("5"));
+
+        // The admin settings page's "Save" always writes every field it shows,
+        // whether or not a row already exists for it - a second save of the same
+        // key must update in place, not fail a UNIQUE constraint.
+        store.set_setting("payment.confirmations_required", "8").unwrap();
+        assert_eq!(store.get_setting("payment.confirmations_required").unwrap().as_deref(), Some("8"));
+
+        let all = store.list_settings().unwrap();
+        assert_eq!(all.len(), 1);
+        assert_eq!(all.get("payment.confirmations_required").map(String::as_str), Some("8"));
     }
 
     #[test]

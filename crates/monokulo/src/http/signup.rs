@@ -33,10 +33,12 @@ pub(super) enum CreateAccountError {
 }
 
 /// The actual account-creation logic - `Db::create_user` plus
-/// `shared::password::hash_password` - shared by `POST /signup` (below) and
-/// `POST /dashboard/signup` (`http/dashboard.rs`), so the two surfaces can
-/// never drift apart on what "creating an account" means.
-pub(super) fn create_account(state: &AppState, email: &str, password: &str) -> Result<String, CreateAccountError> {
+/// `shared::password::hash_password` - shared by `POST /signup` (below),
+/// `POST /dashboard/signup` (`http/dashboard.rs`), and the first-run admin
+/// setup wizard (`http/admin_setup.rs`, which is the one caller that ever
+/// passes `is_admin: true`), so all three surfaces can never drift apart on
+/// what "creating an account" means.
+pub(super) fn create_account(state: &AppState, email: &str, password: &str, is_admin: bool) -> Result<String, CreateAccountError> {
     // Argon2id (`shared::password`, WBS 0.4) — deliberately not
     // `shared::auth`'s SHA-256, which is the wrong tool for a low-entropy,
     // human-chosen password (see that module's own doc comment).
@@ -44,7 +46,7 @@ pub(super) fn create_account(state: &AppState, email: &str, password: &str) -> R
     let id = Uuid::new_v4().to_string();
     let created_at = now_unix();
 
-    let result = state.db.lock().unwrap().create_user(&id, email, &password_hash, created_at);
+    let result = state.db.lock().unwrap().create_user(&id, email, &password_hash, is_admin, created_at);
     match result {
         Ok(()) => Ok(id),
         Err(e) if e.is_unique_violation() => Err(CreateAccountError::DuplicateEmail),
@@ -56,7 +58,7 @@ pub async fn signup(
     State(state): State<AppState>,
     Json(req): Json<SignupRequest>,
 ) -> Result<(StatusCode, Json<SignupResponse>), ApiError> {
-    match create_account(&state, &req.email, &req.password) {
+    match create_account(&state, &req.email, &req.password, false) {
         Ok(id) => Ok((StatusCode::CREATED, Json(SignupResponse { user_id: id }))),
         Err(CreateAccountError::DuplicateEmail) => Err(ApiError::Conflict),
         Err(CreateAccountError::Internal) => Err(ApiError::Internal),

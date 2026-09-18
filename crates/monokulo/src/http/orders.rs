@@ -95,12 +95,13 @@ pub async fn orders_list(
             })
             .collect(),
         logged_in: true,
+        is_admin: user.is_admin,
     };
     let html = state.templates.render_orders(&view_model).expect("the built-in orders template must always render");
     Html(html).into_response()
 }
 
-/// `CONTROL_PLANE_RESCAN_DEFAULT_LOOKBACK_DAYS`/`CONTROL_PLANE_RESCAN_MAX_LOOKBACK_DAYS`
+/// `MONOKULO_RESCAN_DEFAULT_LOOKBACK_DAYS`/`MONOKULO_RESCAN_MAX_LOOKBACK_DAYS`
 /// - monokulo's own copy of the engine's `payment.default_rescan_lookback_days`/
 /// `max_rescan_lookback_days` (`docs/order_rescan_wbs.md` Phase 2's config
 /// knobs), read fresh on every call rather than threaded through `AppState` -
@@ -111,15 +112,12 @@ pub async fn orders_list(
 /// engine's own `400` on an out-of-range submission (`docs/order_rescan_wbs.md`
 /// 2.1) is the real guardrail regardless of what this instance displays.
 /// Same defaults as the engine's own (7/90), so an operator who hasn't
-/// touched either config still sees a correct display.
-fn rescan_lookback_days_from_env() -> (u32, u32) {
-    fn read(var: &str, default: u32) -> u32 {
-        match std::env::var(var) {
-            Ok(raw) => raw.parse().unwrap_or_else(|_| panic!("{var} must be a positive integer, got {raw:?}")),
-            Err(_) => default,
-        }
-    }
-    (read("CONTROL_PLANE_RESCAN_DEFAULT_LOOKBACK_DAYS", 7), read("CONTROL_PLANE_RESCAN_MAX_LOOKBACK_DAYS", 90))
+/// touched either config still sees a correct display. Resolved with the
+/// usual `env > database > default` precedence (`crate::settings`) - a value
+/// saved from the admin settings page takes effect the same way an
+/// environment variable always did.
+fn rescan_lookback_days(db: &crate::db::Db) -> (u32, u32) {
+    (crate::settings::get(db, &crate::settings::RESCAN_DEFAULT_LOOKBACK_DAYS), crate::settings::get(db, &crate::settings::RESCAN_MAX_LOOKBACK_DAYS))
 }
 
 /// Builds the order-rescan section of the order detail page
@@ -132,6 +130,7 @@ fn rescan_lookback_days_from_env() -> (u32, u32) {
 /// `OrderDetailData` (`rescan_error`), not threaded through here - see its
 /// own doc comment for why.
 fn build_rescan_section(
+    db: &crate::db::Db,
     order_status: &str,
     order_created_at: i64,
     active_rescan: Option<&RescanStatusView>,
@@ -152,7 +151,7 @@ fn build_rescan_section(
         }
     }
     let now = crate::now_unix();
-    let (default_days, max_days) = rescan_lookback_days_from_env();
+    let (default_days, max_days) = rescan_lookback_days(db);
     let earliest_allowed = order_created_at.max(now - max_days as i64 * 86_400);
     let simple_from = order_created_at.max(now - default_days as i64 * 86_400);
     Some(OrderRescanSectionViewModel {
@@ -203,7 +202,7 @@ pub async fn order_detail(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_order_detail_page(&state, &row, &sk, &id, &payment_id, &headers, None).await
+    render_order_detail_page(&state, &row, &sk, &id, &payment_id, &headers, user.is_admin, None).await
 }
 
 /// The real body of `order_detail` - factored out so `trigger_rescan` can
@@ -218,6 +217,7 @@ async fn render_order_detail_page(
     id: &str,
     payment_id: &str,
     headers: &HeaderMap,
+    is_admin: bool,
     rescan_error: Option<String>,
 ) -> Response {
     // A real, absolute, copy-pasteable URL - not just the path - since the
@@ -262,7 +262,7 @@ async fn render_order_detail_page(
             };
             let meta_refresh_secs =
                 if active_rescan.as_ref().is_some_and(|j| j.status == "running") { 5 } else { 15 };
-            let rescan = build_rescan_section(&detail.order.status, detail.order.created_at, active_rescan.as_ref());
+            let rescan = build_rescan_section(&state.db.lock().unwrap(), &detail.order.status, detail.order.created_at, active_rescan.as_ref());
             let view_model = OrderDetailViewModel {
                 connection_id: id.to_string(),
                 order: Some(OrderDetailData {
@@ -306,6 +306,7 @@ async fn render_order_detail_page(
                 }),
                 meta_refresh_secs,
                 logged_in: true,
+                is_admin,
             };
             let html = state
                 .templates
@@ -314,8 +315,13 @@ async fn render_order_detail_page(
             Html(html).into_response()
         }
         Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
-            let view_model =
-                OrderDetailViewModel { connection_id: id.to_string(), order: None, meta_refresh_secs: 15, logged_in: true };
+            let view_model = OrderDetailViewModel {
+                connection_id: id.to_string(),
+                order: None,
+                meta_refresh_secs: 15,
+                logged_in: true,
+                is_admin,
+            };
             let html = state
                 .templates
                 .render_order_detail(&view_model)
@@ -377,6 +383,7 @@ pub async fn trigger_rescan(
                 &id,
                 &payment_id,
                 &headers,
+                user.is_admin,
                 Some("Enter a valid start date.".to_string()),
             )
             .await;
@@ -390,6 +397,7 @@ pub async fn trigger_rescan(
                 &id,
                 &payment_id,
                 &headers,
+                user.is_admin,
                 Some("Enter a valid end date.".to_string()),
             )
             .await;
@@ -406,7 +414,7 @@ pub async fn trigger_rescan(
         // mistake, surfaced verbatim, same convention `webhooks_create`
         // already applies to the engine's own webhook-url `400`.
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_order_detail_page(&state, &row, &sk, &id, &payment_id, &headers, Some(message)).await
+            render_order_detail_page(&state, &row, &sk, &id, &payment_id, &headers, user.is_admin, Some(message)).await
         }
         Err(_) => {
             render_order_detail_page(
@@ -416,6 +424,7 @@ pub async fn trigger_rescan(
                 &id,
                 &payment_id,
                 &headers,
+                user.is_admin,
                 Some("Something went wrong. Please try again.".to_string()),
             )
             .await
@@ -440,7 +449,7 @@ pub async fn webhooks_list(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_webhooks_page(&state, &id, &sk, None, None).await
+    render_webhooks_page(&state, &id, &sk, user.is_admin, None, None).await
 }
 
 /// Shared by `webhooks_list`/`webhooks_create`/`webhooks_delete` - every one
@@ -451,6 +460,7 @@ async fn render_webhooks_page(
     state: &AppState,
     connection_id: &str,
     sk: &str,
+    is_admin: bool,
     error: Option<String>,
     created_webhook_signing_secret: Option<String>,
 ) -> Response {
@@ -473,6 +483,7 @@ async fn render_webhooks_page(
         error,
         created_webhook_signing_secret,
         logged_in: true,
+        is_admin,
     };
     let html =
         state.templates.render_webhooks(&view_model).expect("the built-in webhooks template must always render");
@@ -547,24 +558,24 @@ pub async fn webhooks_create(
 
     let url = form.url.trim();
     if url.is_empty() {
-        return render_webhooks_page(&state, &id, &sk, Some("Enter a webhook URL.".to_string()), None).await;
+        return render_webhooks_page(&state, &id, &sk, user.is_admin, Some("Enter a webhook URL.".to_string()), None).await;
     }
     let extra_headers = match parse_extra_headers(&form.extra_headers) {
         Ok(headers) => headers,
-        Err(message) => return render_webhooks_page(&state, &id, &sk, Some(message), None).await,
+        Err(message) => return render_webhooks_page(&state, &id, &sk, user.is_admin, Some(message), None).await,
     };
 
     match state.engine_client.create_webhook(&sk, url, &extra_headers).await {
-        Ok((_webhook_id, signing_secret)) => render_webhooks_page(&state, &id, &sk, None, Some(signing_secret)).await,
+        Ok((_webhook_id, signing_secret)) => render_webhooks_page(&state, &id, &sk, user.is_admin, None, Some(signing_secret)).await,
         // The engine's own validation (a malformed URL, a non-http(s) scheme -
         // `src/http/admin.rs::create_webhook` at the repo root) - the
         // caller's mistake, surfaced verbatim, same convention
         // `connections::create_connection_for_user` already applies to the
         // engine's tenant-creation `400`s.
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_webhooks_page(&state, &id, &sk, Some(message), None).await
+            render_webhooks_page(&state, &id, &sk, user.is_admin, Some(message), None).await
         }
-        Err(_) => render_webhooks_page(&state, &id, &sk, Some("Something went wrong. Please try again.".to_string()), None).await,
+        Err(_) => render_webhooks_page(&state, &id, &sk, user.is_admin, Some("Something went wrong. Please try again.".to_string()), None).await,
     }
 }
 
@@ -595,7 +606,7 @@ pub async fn webhooks_delete(
         Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
             redirect_302(&format!("/dashboard/connections/{id}/webhooks"))
         }
-        Err(_) => render_webhooks_page(&state, &id, &sk, Some("Could not delete that webhook. Please try again.".to_string()), None).await,
+        Err(_) => render_webhooks_page(&state, &id, &sk, user.is_admin, Some("Could not delete that webhook. Please try again.".to_string()), None).await,
     }
 }
 
@@ -638,13 +649,13 @@ pub async fn store_detail(
         Ok(None) => {
             let html = state
                 .templates
-                .render_store_detail(&crate::templates::StoreDetailViewModel { store: None, logged_in: true })
+                .render_store_detail(&crate::templates::StoreDetailViewModel { store: None, logged_in: true, is_admin: user.is_admin })
                 .expect("the built-in store detail template must always render");
             return (StatusCode::NOT_FOUND, Html(html)).into_response();
         }
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_store_detail_page(&state, row, None, None).await
+    render_store_detail_page(&state, row, user.is_admin, None, None).await
 }
 
 /// Shared by `store_detail`, `create_order`, and `update_confirmations_required`
@@ -656,6 +667,7 @@ pub async fn store_detail(
 async fn render_store_detail_page(
     state: &AppState,
     row: StoreConnectionRow,
+    is_admin: bool,
     order_creation_error: Option<String>,
     settings_error: Option<String>,
 ) -> Response {
@@ -727,6 +739,7 @@ async fn render_store_detail_page(
             settings_error,
         }),
         logged_in: true,
+        is_admin,
     };
     let html =
         state.templates.render_store_detail(&view_model).expect("the built-in store detail template must always render");
@@ -769,7 +782,7 @@ pub async fn create_order(
     let amount = form.amount.trim();
     let currency = form.currency.trim();
     if amount.is_empty() || currency.is_empty() {
-        return render_store_detail_page(&state, row, Some("Enter an amount and a currency.".to_string()), None).await;
+        return render_store_detail_page(&state, row, user.is_admin, Some("Enter an amount and a currency.".to_string()), None).await;
     }
 
     // The engine has no concept of currency any more (`docs/fx_refactor.md`
@@ -780,23 +793,23 @@ pub async fn create_order(
     let (piconero_per_unit, provider) = match state.exchange_rate.piconero_per_unit_for(&row, currency).await {
         Ok(Some(result)) => result,
         Ok(None) => {
-            return render_store_detail_page(&state, row, Some(format!("unsupported currency: {currency}")), None).await
+            return render_store_detail_page(&state, row, user.is_admin, Some(format!("unsupported currency: {currency}")), None).await
         }
         Err(crate::exchange_rate_config::ExchangeRateLookupError::ProviderNotConfigured(_)) => {
             // Not a real failure - this store's provider (or no provider at
             // all) simply can't price this currency on this instance, same
             // user-facing meaning as `Ok(None)` above.
-            return render_store_detail_page(&state, row, Some(format!("unsupported currency: {currency}")), None).await
+            return render_store_detail_page(&state, row, user.is_admin, Some(format!("unsupported currency: {currency}")), None).await
         }
         Err(e) => {
             eprintln!("exchange rate lookup failed for connection {} (currency {currency:?}): {e}", row.id);
-            return render_store_detail_page(&state, row, Some("Something went wrong looking up the exchange rate. Please try again.".to_string()), None)
+            return render_store_detail_page(&state, row, user.is_admin, Some("Something went wrong looking up the exchange rate. Please try again.".to_string()), None)
                 .await;
         }
     };
     let xmr_amount_piconero = match shared::exchange_rate::compute_order_amount(currency, amount, piconero_per_unit) {
         Ok(amount) => amount,
-        Err(e) => return render_store_detail_page(&state, row, Some(e.to_string()), None).await,
+        Err(e) => return render_store_detail_page(&state, row, user.is_admin, Some(e.to_string()), None).await,
     };
     let merchant_order_id = {
         let trimmed = form.merchant_order_id.trim();
@@ -824,10 +837,10 @@ pub async fn create_order(
             redirect_302(&format!("/dashboard/connections/{id}/orders/{}", order.payment_id))
         }
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_store_detail_page(&state, row, Some(message), None).await
+            render_store_detail_page(&state, row, user.is_admin, Some(message), None).await
         }
         Err(_) => {
-            render_store_detail_page(&state, row, Some("Something went wrong. Please try again.".to_string()), None).await
+            render_store_detail_page(&state, row, user.is_admin, Some("Something went wrong. Please try again.".to_string()), None).await
         }
     }
 }
@@ -861,7 +874,7 @@ pub async fn update_confirmations_required(
     let confirmations_required: u64 = match form.confirmations_required.trim().parse() {
         Ok(n) => n,
         Err(_) => {
-            return render_store_detail_page(&state, row, None, Some("Enter a whole number of confirmations.".to_string()))
+            return render_store_detail_page(&state, row, user.is_admin, None, Some("Enter a whole number of confirmations.".to_string()))
                 .await;
         }
     };
@@ -874,10 +887,10 @@ pub async fn update_confirmations_required(
     match state.engine_client.set_confirmations_required(&sk, confirmations_required).await {
         Ok(_) => redirect_302(&format!("/dashboard/connections/{id}")),
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_store_detail_page(&state, row, None, Some(message)).await
+            render_store_detail_page(&state, row, user.is_admin, None, Some(message)).await
         }
         Err(_) => {
-            render_store_detail_page(&state, row, None, Some("Something went wrong. Please try again.".to_string())).await
+            render_store_detail_page(&state, row, user.is_admin, None, Some("Something went wrong. Please try again.".to_string())).await
         }
     }
 }
@@ -915,6 +928,7 @@ pub async fn update_fx_provider(
         return render_store_detail_page(
             &state,
             row,
+            user.is_admin,
             None,
             Some(format!("{:?} is not an available exchange rate provider on this instance.", form.fx_provider)),
         )
@@ -930,7 +944,7 @@ pub async fn update_fx_provider(
     match update_result {
         Ok(()) => redirect_302(&format!("/dashboard/connections/{id}")),
         Err(_) => {
-            render_store_detail_page(&state, row, None, Some("Something went wrong. Please try again.".to_string())).await
+            render_store_detail_page(&state, row, user.is_admin, None, Some("Something went wrong. Please try again.".to_string())).await
         }
     }
 }
@@ -979,7 +993,7 @@ mod tests {
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            db: Db::open_in_memory().unwrap().into_shared(),
+            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
             engine_client,
             encryption_key: TEST_ENCRYPTION_KEY,
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
@@ -1007,7 +1021,7 @@ mod tests {
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            db: Db::open_in_memory().unwrap().into_shared(),
+            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
             engine_client,
             encryption_key: TEST_ENCRYPTION_KEY,
             templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
@@ -2527,6 +2541,7 @@ mod tests {
                 order: Some(order),
                 meta_refresh_secs: 15,
                 logged_in: true,
+                is_admin: false,
             })
             .unwrap();
         assert!(html.contains("100 - 250"), "expected the closed range display, got: {html}");

@@ -16,7 +16,7 @@
 //! entirely as a product feature: real user feedback was that a hand-pegged
 //! rate doesn't make sense given dynamic crypto pricing.
 //!
-//! - `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED` (`"true"`/`"false"`,
+//! - `MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED` (`"true"`/`"false"`,
 //!   default `true`) - turns Coingecko on as a selectable provider for
 //!   this instance at all. On by default: the keyless public API needs no
 //!   key and works out of the box, so a fresh instance can already price
@@ -27,13 +27,13 @@
 //!   instance actually enabled (`available_providers`); with this `false`,
 //!   no store can price anything in a non-XMR currency (XMR-priced orders
 //!   are unaffected either way).
-//! - `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_BASE_URL` - overrides the
+//! - `MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL` - overrides the
 //!   Coingecko API base URL (default `https://api.coingecko.com`, the real
 //!   keyless public API - see
 //!   <https://docs.coingecko.com/docs/keyless-public-api>, no key
 //!   required). For advanced operators pointing at a paid tier or a proxy;
 //!   most instances never need to set this.
-//! - `CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS` - how long a Coingecko
+//! - `MONOKULO_EXCHANGE_RATE_CACHE_SECONDS` - how long a Coingecko
 //!   lookup result (a rate *or* the supported-currency list - both use this
 //!   same TTL) is trusted before the next request triggers a fresh live
 //!   fetch (`CoingeckoRateProvider::piconero_per_unit_cached`/
@@ -46,7 +46,7 @@
 //!   something a request can override.
 //!
 //! **No startup currency whitelist any more.** An earlier version of this
-//! module required `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_CURRENCIES`, a
+//! module required `MONOKULO_EXCHANGE_RATE_COINGECKO_CURRENCIES`, a
 //! comma-separated list of currencies to track. That's gone -
 //! `CoingeckoRateProvider` now discovers what it supports live from
 //! Coingecko itself (`supported_currencies_cached`), so any currency
@@ -68,9 +68,9 @@ use crate::db::StoreConnectionRow;
 
 #[derive(Debug, thiserror::Error, PartialEq, Eq)]
 pub enum ExchangeRateConfigError {
-    #[error("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED must be \"true\" or \"false\", got {0:?}")]
+    #[error("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED must be \"true\" or \"false\", got {0:?}")]
     InvalidCoingeckoEnabled(String),
-    #[error("CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS must be a positive integer, got {0:?}")]
+    #[error("MONOKULO_EXCHANGE_RATE_CACHE_SECONDS must be a positive integer, got {0:?}")]
     InvalidCacheSeconds(String),
 }
 
@@ -90,7 +90,7 @@ pub struct ExchangeRateConfig {
 /// `std::env::var` wrapper in production, an in-memory map in tests - see
 /// this module's own doc comment for why).
 pub fn parse<F: Fn(&str) -> Option<String>>(get_env: F) -> Result<ExchangeRateConfig, ExchangeRateConfigError> {
-    let coingecko_enabled = match get_env("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED") {
+    let coingecko_enabled = match get_env("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED") {
         // On by default - the keyless public API needs no key, so a fresh
         // instance can already price fiat orders with zero configuration.
         None => true,
@@ -102,9 +102,9 @@ pub fn parse<F: Fn(&str) -> Option<String>>(get_env: F) -> Result<ExchangeRateCo
     };
 
     let coingecko_base_url =
-        get_env("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_BASE_URL").unwrap_or_else(|| DEFAULT_COINGECKO_BASE_URL.to_string());
+        get_env("MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL").unwrap_or_else(|| DEFAULT_COINGECKO_BASE_URL.to_string());
 
-    let cache_seconds = match get_env("CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS") {
+    let cache_seconds = match get_env("MONOKULO_EXCHANGE_RATE_CACHE_SECONDS") {
         None => DEFAULT_CACHE_SECONDS,
         Some(raw) => raw.parse::<u64>().map_err(|_| ExchangeRateConfigError::InvalidCacheSeconds(raw))?,
     };
@@ -282,23 +282,23 @@ mod tests {
 
     #[test]
     fn coingecko_enabled_parses_true_and_false() {
-        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED", "true")]);
+        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED", "true")]);
         assert!(parse(|k| env.get(k).cloned()).unwrap().coingecko_enabled);
 
-        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED", "false")]);
+        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED", "false")]);
         assert!(!parse(|k| env.get(k).cloned()).unwrap().coingecko_enabled);
     }
 
     #[test]
     fn an_invalid_coingecko_enabled_value_is_a_clear_error() {
-        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED", "yes")]);
+        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED", "yes")]);
         let err = parse(|k| env.get(k).cloned()).unwrap_err();
         assert_eq!(err, ExchangeRateConfigError::InvalidCoingeckoEnabled("yes".to_string()));
     }
 
     #[test]
     fn coingecko_base_url_overrides_the_real_default() {
-        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_BASE_URL", "http://127.0.0.1:9999")]);
+        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL", "http://127.0.0.1:9999")]);
         let config = parse(|k| env.get(k).cloned()).unwrap();
         assert_eq!(config.coingecko_base_url, "http://127.0.0.1:9999");
     }
@@ -311,14 +311,14 @@ mod tests {
 
     #[test]
     fn cache_seconds_parses_a_real_override() {
-        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS", "45")]);
+        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_CACHE_SECONDS", "45")]);
         let config = parse(|k| env.get(k).cloned()).unwrap();
         assert_eq!(config.cache_seconds, 45);
     }
 
     #[test]
     fn an_invalid_cache_seconds_value_is_a_clear_error() {
-        let env = env_map(&[("CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS", "not_a_number")]);
+        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_CACHE_SECONDS", "not_a_number")]);
         let err = parse(|k| env.get(k).cloned()).unwrap_err();
         assert_eq!(err, ExchangeRateConfigError::InvalidCacheSeconds("not_a_number".to_string()));
     }

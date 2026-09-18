@@ -30,6 +30,7 @@
 //! proxy or terminate via `rustls` in `main`, not implemented here).
 
 mod admin;
+pub mod instance_admin;
 mod public;
 pub mod rate_limit;
 mod status_page;
@@ -184,8 +185,23 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route("/api/v1/admin/tenant/webhooks/{webhook_id}", delete(admin::delete_webhook))
         .layer(middleware::from_fn_with_state(state.clone(), admin_rate_limit_middleware));
 
+    // The instance-wide settings API - a different credential (the instance
+    // admin token, `AuthedInstanceAdmin`) from every route above, which all
+    // authenticate as one specific *tenant*. Shares the admin group's
+    // per-token rate limit rather than a third bucket of its own - this is
+    // exactly the kind of low-volume, human-driven traffic
+    // (`admin_rate_limit_middleware`'s own generous default) that budget
+    // already exists for.
+    let instance_admin_router = Router::new()
+        .route(
+            "/api/v1/admin/settings",
+            get(instance_admin::get_settings).post(instance_admin::update_settings),
+        )
+        .layer(middleware::from_fn_with_state(state.clone(), admin_rate_limit_middleware));
+
     public_router
         .merge(admin_router)
+        .merge(instance_admin_router)
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
         .layer(build_cors_layer(state.store.clone()))
         .with_state(state)

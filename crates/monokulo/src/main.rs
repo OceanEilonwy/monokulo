@@ -5,25 +5,38 @@
 
 use monokulo::db::Db;
 use monokulo::engine_client::EngineClient;
-use monokulo::exchange_rate_config::{self, ExchangeRateProviders};
+use monokulo::exchange_rate_config::{self, ExchangeRateConfig};
 use monokulo::http::status_page::new_status_cache;
 use monokulo::http::{AppState, build_router};
+use monokulo::settings::{self, ScalarSetting};
 use monokulo::templates::TemplateEngine;
 use shared::rate_limit::RateLimiter;
 use std::sync::Arc;
 
-/// `MONOKULO_RATE_LIMIT_PER_IP_PER_MIN` (`docs/fx_refactor.md` Phase
-/// 1.3) - the budget `http::rate_limit::rate_limit_middleware` enforces on
-/// monokulo's own new public, unauthenticated endpoints. Defaults to
-/// 20/min, the same default the engine's own equivalent
-/// (`server.rate_limit_per_ip_per_min`) uses.
-fn rate_limit_per_ip_per_min_from_env() -> u32 {
-    match std::env::var("MONOKULO_RATE_LIMIT_PER_IP_PER_MIN") {
-        Ok(raw) => raw.parse().unwrap_or_else(|_| {
-            panic!("MONOKULO_RATE_LIMIT_PER_IP_PER_MIN must be a positive integer, got {raw:?}")
-        }),
-        Err(_) => 20,
-    }
+/// Builds the real `ExchangeRateConfig` from `db`'s own settings
+/// (`env > database > default`, `monokulo::settings`) rather than calling
+/// `exchange_rate_config::from_real_env` directly - that function only ever
+/// sees the process environment, with no database fallback, which would
+/// leave this one config struct unable to honor a value the admin settings
+/// page saved. `exchange_rate_config::parse` itself is reused unchanged: its
+/// `get_env` closure here just resolves through `settings::get_raw` first, so
+/// the exact same validation (and error messages) as the env-only path still
+/// applies to whichever value - env, database, or default - actually wins.
+fn exchange_rate_config_from_settings(db: &Db) -> ExchangeRateConfig {
+    let get = |env_var: &str| -> Option<String> {
+        let setting: &ScalarSetting = match env_var {
+            "MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED" => &settings::EXCHANGE_RATE_COINGECKO_ENABLED,
+            "MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL" => &settings::EXCHANGE_RATE_COINGECKO_BASE_URL,
+            "MONOKULO_EXCHANGE_RATE_CACHE_SECONDS" => &settings::EXCHANGE_RATE_CACHE_SECONDS,
+            _ => unreachable!("exchange_rate_config::parse only ever asks for its own three known env vars"),
+        };
+        Some(settings::get_raw(db, setting).0)
+    };
+    exchange_rate_config::parse(get).expect(
+        "invalid exchange-rate configuration - check MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED/\
+         MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL/MONOKULO_EXCHANGE_RATE_CACHE_SECONDS \
+         (or their saved admin-settings equivalents)",
+    )
 }
 
 /// Reads the AES-256-GCM key (WBS 1.2.3) used to encrypt the engine's
@@ -50,28 +63,28 @@ fn encryption_key_from_env() -> [u8; 32] {
 
 #[tokio::main]
 async fn main() {
-    let db = Db::open_file("monokulo.db").expect("failed to open monokulo database").into_shared();
-    // TODO: real config. No config-file system exists yet in monokulo
-    // (a later WBS task adds one); until then, this is a placeholder engine
-    // URL, not a real deployment wiring.
-    let engine_client = EngineClient::new("http://127.0.0.1:8080");
+    let db = Db::open_file("monokulo.db").expect("failed to open monokulo database");
+    // The one setting an operator can save from the admin settings page
+    // that changes where monokulo itself points (`monokulo::settings::
+    // ENGINE_URL`) - defaults to the same placeholder address this always
+    // hardcoded before that page existed.
+    let http_cache_max_mb: u64 = settings::get(&db, &settings::HTTP_CACHE_MAX_MB);
+    let engine_client =
+        EngineClient::with_cache_limit(settings::get::<String>(&db, &settings::ENGINE_URL), http_cache_max_mb * 1024 * 1024);
     let encryption_key = encryption_key_from_env();
     let templates =
         std::sync::Arc::new(TemplateEngine::new().expect("built-in signup/login templates must parse"));
-    let exchange_rate_cfg = exchange_rate_config::from_real_env().expect(
-        "invalid exchange-rate configuration - check CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED/\
-         CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_BASE_URL/CONTROL_PLANE_EXCHANGE_RATE_CACHE_SECONDS",
-    );
+    let exchange_rate_cfg = exchange_rate_config_from_settings(&db);
     // No background refresh loop any more (`docs/fx_refactor.md` follow-up:
     // "looked up with an async call, rather than having it poll in the
     // background") - `ExchangeRateProviders::piconero_per_unit_for` does a live
     // Coingecko fetch inline the first time (or first time after its cache
     // goes stale) a request actually needs one; an XMR-denominated order
     // never needs one at all.
-    let exchange_rate = Arc::new(ExchangeRateProviders::build(&exchange_rate_cfg));
-    let rate_limiter = Arc::new(RateLimiter::new(rate_limit_per_ip_per_min_from_env()));
+    let exchange_rate = Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::build(&exchange_rate_cfg));
+    let rate_limiter = Arc::new(RateLimiter::new(settings::get(&db, &settings::RATE_LIMIT_PER_IP_PER_MIN)));
     let app_state = AppState {
-        db,
+        db: db.into_shared(),
         engine_client,
         encryption_key,
         templates,

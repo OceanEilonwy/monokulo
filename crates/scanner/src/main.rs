@@ -1,7 +1,16 @@
-//! Boot sequence: load config, open storage, bootstrap the self-hosted tenant if
-//! configured, register every tenant's wallet with `KeyCustody`, then run the
-//! chain scanner (once per configured network), the webhook delivery loop, and the
-//! HTTP server concurrently.
+//! Boot sequence: open storage, ensure an instance admin token exists, bootstrap
+//! nothing automatically (provisioning the self-hosted tenant is now an explicit
+//! one-time `--bootstrap-wallet` command, not something every boot re-checks -
+//! see `cli::Action::BootstrapWallet`), register every tenant's wallet with
+//! `KeyCustody`, then run the chain scanner (once per configured network), the
+//! webhook delivery loop, and the HTTP server concurrently.
+//!
+//! Every runtime-configurable setting (Monero node endpoints, confirmation/
+//! expiry thresholds, rate limits, webhook policy, ...) is now read from the
+//! `settings` table via `scanner::settings` - `env > database > default`, see
+//! that module's own doc comment - rather than a TOML config file read once at
+//! boot. There is no config file any more; the only thing this binary itself
+//! needs to be told is where its own database lives (`cli::database_path`).
 
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, RwLock};
@@ -10,51 +19,44 @@ use std::time::Duration;
 use key_custody_service::client::SocketKeyCustody;
 use monero::Network;
 use scanner::cli::{self, Action};
-use scanner::config::{Config, KeyCustodyConfig};
 use scanner::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use scanner::daemon_rpc::RpcDaemonClient;
+use scanner::http::instance_admin::ensure_admin_token_seeded;
 use scanner::http::rate_limit::RateLimiter;
 use scanner::http::{build_router, now_unix, AppState};
-use scanner::init_wizard;
-use scanner::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle, WalletMaterial};
+use scanner::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
 use scanner::local_admin;
 use scanner::network::network_str;
 use scanner::scanner::{revalidate_recent_double_spend_voids, run_scan_tick};
 use scanner::scanner_status::{self, ScannerStatusMap};
-use scanner::store::{NewTenant, SharedStore, Store};
+use scanner::settings;
+use scanner::store::{SharedStore, Store};
 use scanner::webhook_delivery::run_delivery_tick;
 use shared::supervise::supervise;
 
-/// All argv parsing lives in `scanner::cli` (a lib module, unit-testable
-/// the normal way) - this function is just the untestable-by-nature glue that
-/// turns its result into process exit codes and side effects (stdin/stdout,
-/// running the wizard, `std::process::exit`). `async` only because
-/// `init_wizard::run_interactive` now makes a real network call when its "test
-/// this node" prompt is accepted; already fine to await here since `main` is
-/// itself async.
-async fn dispatch_args() -> (std::path::PathBuf, bool) {
+fn open_store() -> Store {
+    let db_path = cli::database_path();
+    Store::open_file(&db_path.to_string_lossy()).unwrap_or_else(|e| {
+        eprintln!("failed to open database at {}: {e}", db_path.display());
+        std::process::exit(1);
+    })
+}
+
+#[tokio::main]
+async fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
-    match cli::parse_args(&raw) {
-        Ok(Action::Help) => {
+    let action = cli::parse_args(&raw).unwrap_or_else(|e| {
+        eprintln!("{e}\n\nRun with --help for usage.");
+        std::process::exit(1);
+    });
+
+    let strict_tls = match action {
+        Action::Help => {
             print!("{}", cli::HELP_TEXT);
             std::process::exit(0);
         }
-        Ok(Action::Init(init_args)) => {
-            let path = init_args.config_path_override.map(std::path::PathBuf::from).unwrap_or_else(init_wizard::default_config_path);
-            let stdin = std::io::stdin();
-            let mut input = stdin.lock();
-            let mut output = std::io::stdout();
-            match init_wizard::run_interactive(&mut input, &mut output, init_args.network, &path).await {
-                Ok(init_wizard::WizardOutcome::Written(_)) => std::process::exit(0),
-                Ok(init_wizard::WizardOutcome::Cancelled) => std::process::exit(1),
-                Err(e) => {
-                    eprintln!("setup wizard failed: {e}");
-                    std::process::exit(1);
-                }
-            }
-        }
-        Ok(Action::RotateSecret { config_path, pk }) => {
-            let store = open_local_store(&config_path);
+        Action::RotateSecret { pk } => {
+            let store = open_store();
             match local_admin::rotate_secret(&store, pk.as_deref()) {
                 Ok((pk, secret)) => {
                     println!("Tenant: {pk}");
@@ -68,8 +70,8 @@ async fn dispatch_args() -> (std::path::PathBuf, bool) {
                 }
             }
         }
-        Ok(Action::ShowTenant { config_path, pk }) => {
-            let store = open_local_store(&config_path);
+        Action::ShowTenant { pk } => {
+            let store = open_store();
             match local_admin::show_tenant(&store, pk.as_deref()) {
                 Ok(s) => {
                     println!("Public key:            {}", s.public_key);
@@ -93,138 +95,137 @@ async fn dispatch_args() -> (std::path::PathBuf, bool) {
                 }
             }
         }
-        Ok(Action::RunServer { config_path, strict_tls }) => (config_path, strict_tls),
-        Err(e) => {
-            eprintln!("{e}\n\nRun with --help for usage.");
-            std::process::exit(1);
+        Action::BootstrapWallet(args) => {
+            let store = open_store();
+            let backend: String = settings::get(&store, &settings::KEY_CUSTODY_BACKEND);
+            let key_custody = build_key_custody(&store).await;
+            match local_admin::bootstrap_wallet(&store, &key_custody, &backend, args).await {
+                Ok(created) => {
+                    println!(
+                        "bootstrapped self-hosted tenant: public_key={} (save this - it goes in your site's JS)",
+                        created.tenant.public_key
+                    );
+                    println!("bootstrap admin secret: {} (shown once - store it now, e.g. in a password manager)", created.secret_token);
+                    std::process::exit(0);
+                }
+                Err(e) => {
+                    eprintln!("{e}");
+                    std::process::exit(1);
+                }
+            }
         }
-    }
-}
+        Action::RunServer { strict_tls } => strict_tls,
+    };
 
-/// Opens the database co-located with `config_path` (see
-/// `init_wizard::database_path_for`) for the local-admin commands, which need
-/// direct DB access and nothing else from the config file itself.
-fn open_local_store(config_path: &std::path::Path) -> Store {
-    let db_path = init_wizard::database_path_for(config_path);
-    Store::open_file(&db_path.to_string_lossy()).unwrap_or_else(|e| {
-        eprintln!("failed to open database at {}: {e}", db_path.display());
-        std::process::exit(1);
-    })
-}
+    let store = open_store().into_shared();
 
-#[tokio::main]
-async fn main() {
-    let (config_path, strict_tls) = dispatch_args().await;
-    let config_path_display = config_path.display().to_string();
-    let config = Config::from_file(&config_path.to_string_lossy()).unwrap_or_else(|e| {
-        eprintln!("failed to load config from {config_path_display}: {e}");
-        std::process::exit(1);
-    });
-    if let Err(e) = config.validate() {
-        eprintln!("invalid config: {e}");
-        std::process::exit(1);
+    if let Some(token) = ensure_admin_token_seeded(&store.lock().unwrap()) {
+        println!(
+            "==> generated a new instance admin token (shown once - it is stored only as a hash from here on):\n    {token}\n\
+             Set the SCANNER_ADMIN_TOKEN environment variable to this value on future boots if you'd rather manage it \
+             that way than let it live in the database."
+        );
     }
 
-    let db_path = init_wizard::database_path_for(&config_path);
-    let store = Store::open_file(&db_path.to_string_lossy()).expect("failed to open database").into_shared();
-    // `Config::validate` has already confirmed `key_custody.backend` is one of
-    // these two known values (and, for "socket", that `socket_path` is present
-    // and non-empty) - `build_key_custody` below is a plain dispatch on an
-    // already-validated field, not a second round of validation.
-    let key_custody: Arc<dyn KeyCustody> = build_key_custody(&config.key_custody).await;
+    let key_custody: Arc<dyn KeyCustody> = build_key_custody(&store.lock().unwrap()).await;
+    let key_custody_backend: String = settings::get(&store.lock().unwrap(), &settings::KEY_CUSTODY_BACKEND);
 
     // One daemon client per configured network (§DESIGN.md §7) - a single instance
     // can hold mainnet tenants for real customers alongside stagenet/testnet
     // tenants for testing, each scanned against its own node. Each network's client
     // is a `FallbackDaemonClient` wrapping its primary node plus any configured
-    // `fallbacks`, so a single flaky/down public node doesn't stop scanning that
+    // fallbacks, so a single flaky/down public node doesn't stop scanning that
     // network - see `daemon_fallback`'s own doc comment for the failover policy.
-    // Concrete `Arc<FallbackDaemonClient>`, not `Arc<dyn MoneroDaemonClient>`:
-    // `AppState::daemons` (the status page, `http/status_page.rs`) needs
-    // `FallbackDaemonClient`'s own `nodes()`/`current_index()` accessors to
-    // report on each configured node individually, which the trait object
-    // alone can't expose. Every real construction path here always
-    // produces a `FallbackDaemonClient` anyway (see the loop body below),
-    // so this reflects what's actually built, not an artificial
-    // narrowing.
-    let daemons: HashMap<Network, Arc<FallbackDaemonClient>> = config
-        .monero_node
+    let daemons: HashMap<Network, Arc<FallbackDaemonClient>> = settings::NETWORKS
         .iter()
-        .map(|(network, node_config)| {
+        .filter_map(|&network_name| {
+            let network = scanner::network::parse_network(network_name).ok()?;
+            let node_setting = settings::monero_node_setting(&store.lock().unwrap(), network_name)?;
             let build = |host: &str, port: u16, ssl: bool, accept_self_signed_certs: bool| {
                 let accept_self_signed = accept_self_signed_certs && !strict_tls;
                 RpcDaemonClient::new(host, port, ssl, accept_self_signed)
                     .unwrap_or_else(|e| panic!("failed to build Monero daemon RPC client for {network:?}: {e}"))
             };
             let mut nodes = vec![FallbackNode {
-                label: format!("{}:{}", node_config.host, node_config.port),
-                client: Arc::new(build(
-                    &node_config.host,
-                    node_config.port,
-                    node_config.ssl,
-                    node_config.accept_self_signed_certs,
-                )),
+                label: format!("{}:{}", node_setting.host, node_setting.port),
+                client: Arc::new(build(&node_setting.host, node_setting.port, node_setting.ssl, node_setting.accept_self_signed_certs)),
             }];
-            for fallback in &node_config.fallbacks {
+            for fallback in &node_setting.fallbacks {
                 nodes.push(FallbackNode {
                     label: format!("{}:{}", fallback.host, fallback.port),
-                    client: Arc::new(build(
-                        &fallback.host,
-                        fallback.port,
-                        fallback.ssl,
-                        fallback.accept_self_signed_certs,
-                    )),
+                    client: Arc::new(build(&fallback.host, fallback.port, fallback.ssl, fallback.accept_self_signed_certs)),
                 });
             }
-            let client = Arc::new(FallbackDaemonClient::new(nodes));
-            (network, client)
+            Some((network, Arc::new(FallbackDaemonClient::new(nodes))))
         })
         .collect();
+    if daemons.is_empty() {
+        // A warning, not a hard exit: the server still has to come up far enough to
+        // serve the instance-admin settings API (`http::instance_admin`) itself,
+        // since `POST /api/v1/admin/settings` (unlike every scalar setting) is the
+        // *only* way to configure `monero_node.<network>` at all - there is no
+        // environment-variable override for it (it's a structured JSON value, not
+        // a single scalar). Refusing to boot here on a genuinely fresh install
+        // would make that endpoint permanently unreachable - the exact
+        // chicken-and-egg problem a settings-driven (rather than config-file-at-
+        // boot) model has to avoid. The scanner/webhook-delivery loops below run
+        // fine with zero configured networks (they simply do nothing each tick,
+        // real behavior already exercised by every test that spawns a harness
+        // with no daemon at all).
+        eprintln!(
+            "warning: no Monero node is configured for any network (mainnet/stagenet/testnet) yet - the server \
+             is starting anyway, but no chain scanning happens until you configure at least one via \
+             POST /api/v1/admin/settings (monero_node.<network>)"
+        );
+    }
     let configured_networks: Arc<HashSet<Network>> = Arc::new(daemons.keys().copied().collect());
     let daemons = Arc::new(daemons);
     let scanner_status = scanner_status::new_scanner_status_map();
+
+    let mempool_poll_interval_ms: u64 = settings::get(&store.lock().unwrap(), &settings::PAYMENT_MEMPOOL_POLL_INTERVAL_MS);
     // Rounds down to whole seconds purely for the status page's own
     // "expected every Ns" display - the scan loop itself still sleeps the
-    // real, precise `config.payment.mempool_poll_interval_ms` value
-    // (`poll_interval` below), this is never used to drive timing.
-    let scan_poll_interval_secs = config.payment.mempool_poll_interval_ms / 1000;
+    // real, precise millisecond value (`poll_interval` below), this is never
+    // used to drive timing.
+    let scan_poll_interval_secs = mempool_poll_interval_ms / 1000;
 
-    bootstrap_self_hosted_tenant(&store, &key_custody, &config).await;
     let wallet_handles = Arc::new(RwLock::new(register_all_tenants(&store, &key_custody).await));
     resume_running_rescans(&store, &key_custody, &daemons, &wallet_handles).await;
+
+    let rate_limit_per_ip_per_min: u32 = settings::get(&store.lock().unwrap(), &settings::SERVER_RATE_LIMIT_PER_IP_PER_MIN);
+    let rate_limit_per_token_per_min: u32 = settings::get(&store.lock().unwrap(), &settings::SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN);
+    let default_rescan_lookback_days: u32 = settings::get(&store.lock().unwrap(), &settings::PAYMENT_DEFAULT_RESCAN_LOOKBACK_DAYS);
+    let max_rescan_lookback_days: u32 = settings::get(&store.lock().unwrap(), &settings::PAYMENT_MAX_RESCAN_LOOKBACK_DAYS);
+    let expired_order_grace_period_minutes: i64 =
+        settings::get(&store.lock().unwrap(), &settings::PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES);
 
     let app_state = AppState {
         store: store.clone(),
         key_custody: key_custody.clone(),
-        key_custody_backend: config.key_custody.backend.clone(),
+        key_custody_backend,
         wallet_handles: wallet_handles.clone(),
-        rate_limiter: Arc::new(RateLimiter::new(config.server.rate_limit_per_ip_per_min)),
-        admin_rate_limiter: Arc::new(RateLimiter::new(config.server.rate_limit_per_token_per_min)),
+        rate_limiter: Arc::new(RateLimiter::new(rate_limit_per_ip_per_min)),
+        admin_rate_limiter: Arc::new(RateLimiter::new(rate_limit_per_token_per_min)),
         configured_networks,
         daemons: daemons.clone(),
         scanner_status: scanner_status.clone(),
         scan_poll_interval_secs,
-        default_rescan_lookback_days: config.payment.default_rescan_lookback_days,
-        max_rescan_lookback_days: config.payment.max_rescan_lookback_days,
-        expired_order_grace_period_seconds: config.payment.expired_order_grace_period_minutes * 60,
+        default_rescan_lookback_days,
+        max_rescan_lookback_days,
+        expired_order_grace_period_seconds: expired_order_grace_period_minutes * 60,
     };
 
-    let allow_private_urls = config.webhooks.allow_private_urls;
-    let delivery_timeout_ms = config.webhooks.delivery_timeout_ms;
-    let delivery_max_attempts = config.webhooks.max_attempts;
+    let allow_private_urls: bool = settings::get(&store.lock().unwrap(), &settings::WEBHOOKS_ALLOW_PRIVATE_URLS);
+    let delivery_timeout_ms: u64 = settings::get(&store.lock().unwrap(), &settings::WEBHOOKS_DELIVERY_TIMEOUT_MS);
+    let delivery_max_attempts: u32 = settings::get(&store.lock().unwrap(), &settings::WEBHOOKS_MAX_ATTEMPTS);
     let delivery_store = store.clone();
     supervise("webhook delivery", move || {
-        run_webhook_delivery_loop(
-            delivery_store.clone(),
-            allow_private_urls,
-            delivery_timeout_ms,
-            delivery_max_attempts,
-        )
+        run_webhook_delivery_loop(delivery_store.clone(), allow_private_urls, delivery_timeout_ms, delivery_max_attempts)
     });
 
-    let reorg_check_depth = config.payment.reorg_check_depth;
-    let expired_order_grace_period_seconds = config.payment.expired_order_grace_period_minutes * 60;
-    let poll_interval = Duration::from_millis(config.payment.mempool_poll_interval_ms);
+    let reorg_check_depth: u64 = settings::get(&store.lock().unwrap(), &settings::PAYMENT_REORG_CHECK_DEPTH);
+    let expired_order_grace_period_seconds = expired_order_grace_period_minutes * 60;
+    let poll_interval = Duration::from_millis(mempool_poll_interval_ms);
 
     // Cloned before the scanner loop's own `move` closure below consumes the
     // originals - its own, much slower loop (see `run_double_spend_revalidation_loop`'s
@@ -248,9 +249,11 @@ async fn main() {
         )
     });
 
-    let router = build_router(app_state, config.server.max_body_bytes);
-    let listener = tokio::net::TcpListener::bind(&config.server.bind).await.expect("failed to bind server address");
-    println!("moneropay listening on {}", config.server.bind);
+    let bind: String = settings::get(&app_state.store.lock().unwrap(), &settings::SERVER_BIND);
+    let max_body_bytes: usize = settings::get(&app_state.store.lock().unwrap(), &settings::SERVER_MAX_BODY_BYTES);
+    let router = build_router(app_state, max_body_bytes);
+    let listener = tokio::net::TcpListener::bind(&bind).await.expect("failed to bind server address");
+    println!("moneropay listening on {bind}");
     axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .await
         .expect("server error");
@@ -268,41 +271,36 @@ async fn main() {
 /// Builds the one `Arc<dyn KeyCustody>` this whole process shares - `"plain"`
 /// (the default, unchanged behavior: key material lives in this process) or
 /// `"socket"` (WBS 2.1.3: forwards every call to a separate `key-custody-server`
-/// process). `Config::validate` has already confirmed `cfg.backend` is one of
-/// these two values, so the `_` arm below covers only "plain" in practice -
-/// written as a catch-all rather than an explicit `"plain" =>` purely so a config
-/// that somehow reaches this function unvalidated (there is no such code path
-/// today, but nothing enforces that at the type level) degrades to the always-
-/// safe in-process default instead of panicking on an unmatched pattern.
+/// process). The instance-admin settings API's own save-time validation
+/// (`http::instance_admin::validate_scalar` plus its cross-field check) has
+/// already confirmed `key_custody.backend` is one of these two values, and that
+/// `socket_path` is present under `"socket"`, *for whatever was saved through
+/// it* - but a value reaching this function could still be a stale default or a
+/// hand-edited row that predates that check, so the `expect` below documents the
+/// invariant rather than silently producing a `SocketKeyCustody::connect` call
+/// against an empty path one layer down, with a worse error.
 ///
 /// There is exactly one `KeyCustody` for the whole running instance - not one per
 /// tenant. `tenants.key_custody_backend` (a column on each tenant row, unrelated
-/// to this config field despite the similar name) looks at first glance like it
-/// might support per-tenant backend choice instead, but it doesn't: it's read
-/// back into `Tenant`/`NewTenant` (`store.rs`) and round-tripped through every
-/// tenant-creation code path, but never *matched on* anywhere in this codebase to
-/// select a `KeyCustody` implementation - grepped for every read site, not just
-/// write sites, to confirm this before writing this comment. `migrations/
-/// 0001_init.sql`'s own comment on the column, and `docs/DESIGN.md` §8.1, agree:
-/// it exists so a *future* migration to a different backend can detect a
-/// mismatch between a stored row's sealing backend and the backend actually
-/// running (`unseal_and_register` given bytes sealed by a different backend
-/// should fail loudly, not misinterpret them - `docs/TESTING.md`'s own gap list
-/// already flags that check as not yet implemented, unrelated to this task). It
-/// was never wired as a dispatch key, and nothing here adds that: this config
-/// option makes the *whole process* pick one backend.
-async fn build_key_custody(cfg: &KeyCustodyConfig) -> Arc<dyn KeyCustody> {
-    match cfg.backend.as_str() {
+/// to this setting despite the similar name) looks at first glance like it might
+/// support per-tenant backend choice instead, but it doesn't - see the (still
+/// accurate) reasoning `docs/DESIGN.md` §8.1 records for why: it exists so a
+/// *future* migration to a different backend can detect a mismatch between a
+/// stored row's sealing backend and the backend actually running, not to select
+/// one. This setting makes the *whole process* pick one backend.
+async fn build_key_custody(store: &Store) -> Arc<dyn KeyCustody> {
+    let backend: String = settings::get(store, &settings::KEY_CUSTODY_BACKEND);
+    match backend.as_str() {
         "socket" => {
-            // `Config::validate` already rejected `backend = "socket"` with no
-            // `socket_path` - this `expect` documents that invariant rather than
-            // silently falling back to an empty path `SocketKeyCustody::connect`
-            // would just fail on anyway, one layer down, with a worse error.
-            let socket_path = cfg
-                .socket_path
-                .as_deref()
-                .expect("Config::validate should have required socket_path for backend = \"socket\"");
-            Arc::new(connect_socket_key_custody(socket_path).await)
+            let socket_path: String = settings::get(store, &settings::KEY_CUSTODY_SOCKET_PATH);
+            if socket_path.trim().is_empty() {
+                eprintln!(
+                    "key_custody.backend is \"socket\" but key_custody.socket_path is missing (or empty) - set it via \
+                     POST /api/v1/admin/settings or the SCANNER_KEY_CUSTODY_SOCKET_PATH environment variable"
+                );
+                std::process::exit(1);
+            }
+            Arc::new(connect_socket_key_custody(&socket_path).await)
         }
         _ => Arc::new(PlainKeyCustody::default()),
     }
@@ -317,40 +315,11 @@ const KEY_CUSTODY_CONNECT_ATTEMPTS: u32 = 10;
 const KEY_CUSTODY_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(500);
 
 /// Connects to a `key-custody-server` at `socket_path`, retrying briefly before
-/// giving up - never panicking, never hanging indefinitely.
-///
-/// **The choice this function embodies, and why it's the right one here.**
-/// `key-custody-server`'s own binary doc comment (`key-custody-server/src/bin/
-/// key-custody-server.rs`) deliberately pushes restart-policy ownership onto an
-/// external process supervisor rather than building any self-restart logic into
-/// that binary - "that supervisor is what should own restart policy... not this
-/// binary guessing at them." It would be easy to read that as an argument for
-/// this function failing on the very first failed connect too, on the theory
-/// that *this* process's own supervisor (systemd, a container orchestrator)
-/// should likewise own recovering from "the socket isn't there yet." That
-/// argument proves too much, though: it's about who restarts a process that has
-/// genuinely died, not about how a client should react to an utterly ordinary
-/// startup race between two *independently started* processes that both need to
-/// be up before either is fully useful - exactly the shape the task that added
-/// this config option calls out by name ("normal at boot if two systemd units...
-/// start close together"). A single failed connect attempt cannot tell the
-/// difference between "the server process hasn't been scheduled onto a thread
-/// yet" (typically resolved within milliseconds) and "the server is genuinely
-/// down" - failing fast on the former would mean this process's own supervisor
-/// has to restart *it* too, adding a second restart-and-backoff cycle on top of
-/// whatever the first one already costs, for a race that a few hundred
-/// milliseconds of patience resolves for free. This project's own prior art
-/// agrees: `key-custody-service`'s own integration test harness
-/// (`key-custody-server/tests/socket_key_custody.rs::connect_with_retry`) hit
-/// this exact race between spawning its in-process test server and dialing it,
-/// and solved it the same way - a short, bounded retry loop, not a single
-/// attempt. What this function does *not* do is retry forever, or silently swap
-/// in `PlainKeyCustody` as a fallback: a `key-custody-server` that is still
-/// unreachable after ~5 seconds is past "ordinary scheduling jitter" territory,
-/// and the operator needs a loud, specific, actionable failure - which socket
-/// path, how many attempts, the last real error - not a service that quietly
-/// runs with key material back in this process (defeating the entire point of
-/// choosing this backend) or one that hangs forever with no indication why.
+/// giving up - never panicking, never hanging indefinitely. See this repo's own
+/// prior art (`key-custody-server/tests/socket_key_custody.rs::connect_with_retry`)
+/// for why a short, bounded retry loop - not a single attempt, and not retrying
+/// forever - is the right shape for this specific startup race between two
+/// independently started processes.
 async fn connect_socket_key_custody(socket_path: &str) -> SocketKeyCustody {
     let mut last_err = None;
     for attempt in 1..=KEY_CUSTODY_CONNECT_ATTEMPTS {
@@ -369,11 +338,6 @@ async fn connect_socket_key_custody(socket_path: &str) -> SocketKeyCustody {
             }
         }
     }
-    // `last_err` is always `Some` here: the loop only exits without an early
-    // `return` after every one of `KEY_CUSTODY_CONNECT_ATTEMPTS` iterations has
-    // taken the `Err` arm at least once (the `Ok` arm always returns
-    // immediately), so this is a real invariant, not a defensive fallback for a
-    // case that can't happen.
     let last_err = last_err.expect("loop always records an error before exiting without returning");
     eprintln!(
         "failed to connect to key-custody-server at {socket_path} after \
@@ -382,60 +346,6 @@ async fn connect_socket_key_custody(socket_path: &str) -> SocketKeyCustody {
         KEY_CUSTODY_CONNECT_RETRY_DELAY * (KEY_CUSTODY_CONNECT_ATTEMPTS - 1)
     );
     std::process::exit(1);
-}
-
-/// Creates the one tenant a self-hosted deployment needs, from `[wallet]` in the
-/// config - but only once, on first boot. Idempotent across restarts by checking
-/// whether any tenant already exists first, rather than tracking a separate
-/// "already bootstrapped" flag.
-async fn bootstrap_self_hosted_tenant(store: &SharedStore, key_custody: &Arc<dyn KeyCustody>, config: &Config) {
-    let Some(wallet) = &config.wallet else { return };
-    let already_bootstrapped = store.lock().unwrap().count_tenants().unwrap_or(0) > 0;
-    if already_bootstrapped {
-        return;
-    }
-
-    let material = WalletMaterial::from_hex(&wallet.private_view_key, &wallet.public_spend_key)
-        .expect("invalid [wallet] key material in config");
-    let sealed = key_custody.seal(&material).await.expect("failed to seal bootstrap wallet material");
-
-    let created = store
-        .lock()
-        .unwrap()
-        .create_tenant(
-            NewTenant {
-                // Not hardcoded "plain": `tenants.key_custody_backend` records
-                // which `KeyCustody` implementation actually produced
-                // `sealed_key_material` (see `migrations/0001_init.sql`'s own
-                // comment on the column), and as of this config option that is
-                // no longer always "plain" - a bootstrap tenant created while
-                // `key_custody.backend = "socket"` is configured was genuinely
-                // sealed by the remote `key-custody-server`, not this process.
-                key_custody_backend: config.key_custody.backend.clone(),
-                sealed_key_material: sealed,
-                primary_address: wallet.primary_address.clone(),
-                network: wallet.network.clone(),
-                allowed_origins: wallet.allowed_origins.clone(),
-                confirmations_required: Some(config.payment.confirmations_required),
-                zero_conf_max_piconero: config
-                    .payment
-                    .zero_conf_max_xmr
-                    .as_deref()
-                    .and_then(|s| shared::xmr_amount::parse_xmr_to_piconero(s).ok()),
-                order_expiry_seconds: Some(config.payment.order_expiry_minutes * 60),
-            },
-            now_unix(),
-        )
-        .expect("failed to create bootstrap tenant");
-
-    println!(
-        "bootstrapped self-hosted tenant: public_key={} (save this - it goes in your site's JS)",
-        created.tenant.public_key
-    );
-    println!(
-        "bootstrap admin secret: {} (shown once - store it now, e.g. in a password manager)",
-        created.secret_token
-    );
 }
 
 /// Eagerly registers every non-disabled tenant's sealed key material with

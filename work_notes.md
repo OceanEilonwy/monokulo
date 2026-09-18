@@ -29,6 +29,90 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Admin settings page (monokulo + scanner) and monokulo's first-run admin
+  setup wizard.** The user's ask: an admin page exposing every monokulo and
+  scanner setting, a first-run wizard (gated on a database flag) that
+  bootstraps the one admin account, an "admin" nav link only that account
+  sees, `env > database > default` precedence everywhere, and tests proving
+  every exposed setting saves correctly. Scanner's own old `--init`
+  interactive wizard and TOML config file are gone entirely, replaced with
+  the same settings-table model. Full detail lives in this branch's own
+  commits; the shape:
+  - **`shared::settings`** (new): the generic `env > database > default`
+    resolver (`resolve_raw`/`resolve_parsed`/`source`) both scanner and
+    monokulo now share.
+  - **Scanner**: `config.rs` and `init_wizard.rs` deleted outright.
+    `scanner::settings` replaces the TOML schema 1:1 (18 scalar settings +
+    `monero_node.<network>` as a JSON blob). A new instance-wide admin
+    token (`shared::auth::generate_admin_token`, seeded once on first boot,
+    printed exactly once, hashed at rest) authenticates
+    `GET`/`POST /api/v1/admin/settings` (`http::instance_admin`). The old
+    `[wallet]` TOML bootstrap became an explicit `--bootstrap-wallet` CLI
+    command (`local_admin::bootstrap_wallet`) — refuses once any tenant
+    already exists. **Found and fixed a real chicken-and-egg boot bug** while
+    smoke-testing this by hand: the server used to hard-exit with zero
+    Monero nodes configured, which meant a fresh install could never reach
+    the settings API that's the only way to configure the first node — it's
+    now a non-fatal warning, and the server always starts.
+  - **Monokulo**: new `settings` table + `users.is_admin` column (migration
+    0011). `Db::is_setup_complete`/`mark_setup_complete` is a dedicated
+    `settings` row, not derived from "does an admin user exist" — the
+    user's own explicit "based upon a flag in database" wording.
+    `http::admin_setup` (`GET`/`POST /admin/setup`) is the wizard itself:
+    unauthenticated (nothing to authenticate against yet), creates the one
+    `is_admin` account, marks setup complete, logs the new admin straight
+    in, redirects to the settings page. `home::landing` (`GET /`) is the
+    *only* gate — redirects to the wizard pre-setup; every other route is
+    unaffected. `crate::settings` mirrors scanner's own module (9 scalars:
+    `engine.url`/`engine.admin_token` — the scanner connection this page
+    proxies through — plus exchange-rate, rescan-lookback, HTTP-cache, and
+    rate-limit knobs that used to be env-only). `MONOKULO_ENCRYPTION_KEY`
+    is deliberately *not* a setting — rotating it live would corrupt every
+    already-encrypted `tenant_secret_token_encrypted` row.
+  - **`http::admin_settings`** (new): the actual admin page, gated by a new
+    `AuthedAdmin` extractor (`AuthedUser` + `is_admin`, `403` not `401` for
+    a valid-but-non-admin session). Two independent forms: monokulo's own
+    settings save straight to its own table; the scanner half holds no
+    state of its own at all — it's a live HTTP proxy against whichever one
+    scanner instance `engine.url`/`engine.admin_token` name (the
+    single-configured-scanner shape a self-hosted one-box deployment
+    actually has), rendering/forwarding whatever that instance reports
+    rather than duplicating its own key list. Every field always shows its
+    *current effective* value (`value="..."`) plus a source label
+    (environment variable / saved value / default) — the save button can
+    always be clicked, which is what persists an active environment
+    variable into the database.
+  - **Nav gating**: `_nav.html.hbs` shows the "admin" link only when
+    `is_admin` is true — threaded through every authenticated view-model in
+    the crate (a real, per-request check derived from the session, never
+    hardcoded) after confirming via a throwaway probe that handlebars'
+    strict mode treats a missing `{{#if}}` field as falsy, which narrowed
+    how many otherwise-unrelated view models actually needed the field.
+  - **Also fixed while touching this code**: five leftover
+    `CONTROL_PLANE_*` env var names that should have been `MONOKULO_*` from
+    an earlier rebrand pass that only caught lowercase/hyphenated tokens,
+    not ALL-CAPS ones (`orders.rs`'s rescan-lookback env vars,
+    `exchange_rate_config.rs`'s three, `shared::http_cache`'s cache-size
+    knob).
+  - **Test coverage**: seeded-admin harness default (`Db::seed_test_admin`,
+    called by every `AppState` test constructor in the crate so the wizard
+    never spuriously triggers in an unrelated test) plus dedicated
+    wizard-flow tests proving it actually works on a genuinely fresh,
+    *unseeded* instance; and, per the explicit "write tests to ensure that
+    all settings exposed on the admin page are saved correctly" ask, two
+    tests that save every single monokulo setting and every single scanner
+    setting in one real form submission each and confirm every one
+    individually round-trips (`http::admin_settings::tests::
+    every_monokulo_setting_on_the_admin_page_saves_correctly`/
+    `every_scanner_setting_on_the_admin_page_saves_correctly`).
+  - **Not done**: no live, hand-run smoke test of the real `monokulo`
+    binary for this feature specifically — a monokulo instance from earlier
+    in this session (or another concurrent job) was already bound to its
+    hardcoded port (`127.0.0.1:8081`, not itself configurable) when I tried,
+    and killing an unfamiliar process on a hunch seemed like the wrong call.
+    The full automated suite (234 monokulo tests, all passing) exercises
+    every code path a manual smoke test would have.
+
 - **UI feedback round: connect-flow button placement, branding copy/layout
   fixes, and a real checkout-page redesign researched against other crypto
   payment UIs.** Four independent pieces of user feedback on the just-shipped

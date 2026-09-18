@@ -10,6 +10,7 @@ use axum::response::{Html, IntoResponse, Response};
 
 use crate::templates::{DashboardOrderRow, DashboardRescanRow, DashboardStoreRow, DashboardViewModel};
 
+use super::dashboard::redirect_302;
 use super::orders::{display_name_for, health_of_tenant_lookup};
 use super::{resolve_authed_user, AppState, AuthedUser};
 
@@ -18,9 +19,24 @@ use super::{resolve_authed_user, AppState, AuthedUser};
 /// real per-request check via [`resolve_authed_user`], not a fixed literal
 /// like every other page's `logged_in`, since this is the one truly public
 /// page most people actually revisit while already logged in).
+///
+/// The one gate for the first-run admin setup wizard (`http/admin_setup.rs`):
+/// a fresh instance (`Db::is_setup_complete` still false) redirects here to
+/// `/admin/setup` instead of ever rendering the landing page - "when you
+/// open monokulo it should open to an admin setup flow" is exactly the
+/// front door this page is. No other route is gated on this flag; a direct
+/// link to `/dashboard/login` or the plain `/signup` API still works even
+/// pre-setup; only the very first thing a fresh install's operator sees when
+/// they actually load the site.
 pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    let logged_in = resolve_authed_user(&state, &headers).is_some();
-    let html = state.templates.render_landing(logged_in).expect("the built-in landing template must always render");
+    if !state.db.lock().unwrap().is_setup_complete().unwrap_or(true) {
+        return redirect_302("/admin/setup");
+    }
+    let authed = resolve_authed_user(&state, &headers);
+    let logged_in = authed.is_some();
+    let is_admin = authed.is_some_and(|(user, _)| user.is_admin);
+    let html =
+        state.templates.render_landing(logged_in, is_admin).expect("the built-in landing template must always render");
     Html(html).into_response()
 }
 
@@ -28,10 +44,10 @@ pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Respo
 /// flows (WBS follow-up: "custom (advanced)" is the existing
 /// `/dashboard/connect` form; "simple -> woocommerce" is the guided page
 /// below). Behind [`AuthedUser`] like every other `/dashboard/*` route.
-pub async fn new_store_picker(State(state): State<AppState>, AuthedUser(_user, _): AuthedUser) -> Response {
+pub async fn new_store_picker(State(state): State<AppState>, AuthedUser(user, _): AuthedUser) -> Response {
     let html = state
         .templates
-        .render_new_store_picker(true)
+        .render_new_store_picker(true, user.is_admin)
         .expect("the built-in new-store-picker template must always render");
     Html(html).into_response()
 }
@@ -43,10 +59,10 @@ pub async fn new_store_picker(State(state): State<AppState>, AuthedUser(_user, _
 /// dashboard has no way to manufacture a legitimate `return_url` back into
 /// someone else's WordPress admin. So this is instructions, not a form; see
 /// this page's own template for the reasoning restated for the merchant.
-pub async fn woocommerce_instructions(State(state): State<AppState>, AuthedUser(_user, _): AuthedUser) -> Response {
+pub async fn woocommerce_instructions(State(state): State<AppState>, AuthedUser(user, _): AuthedUser) -> Response {
     let html = state
         .templates
-        .render_woocommerce_instructions(true)
+        .render_woocommerce_instructions(true, user.is_admin)
         .expect("the built-in woocommerce-instructions template must always render");
     Html(html).into_response()
 }
@@ -149,6 +165,7 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
         active_rescans,
         active_rescans_count_label,
         logged_in: true,
+        is_admin: user.is_admin,
     };
     let html = state
         .templates
@@ -225,7 +242,7 @@ mod tests {
                 .await;
             let engine_client = EngineClient::new(format!("http://{}", engine.addr));
             let state = AppState {
-                db: Db::open_in_memory().unwrap().into_shared(),
+                db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
                 engine_client,
                 encryption_key: TEST_ENCRYPTION_KEY,
                 templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),

@@ -1843,3 +1843,303 @@ async fn simple_mode_never_reaches_the_gap_prevention_guardrail() {
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::ACCEPTED, "simple mode must never be subject to this check at all");
 }
+
+// -- Instance admin settings API -------------------------------------------
+
+fn settings_request(method: &str, bearer: Option<&str>, body: Option<serde_json::Value>) -> Request<Body> {
+    let mut builder = Request::builder().method(method).uri("/api/v1/admin/settings").header("content-type", "application/json");
+    if let Some(token) = bearer {
+        builder = builder.header("authorization", format!("Bearer {token}"));
+    }
+    builder.body(body.map(|b| Body::from(b.to_string())).unwrap_or(Body::empty())).unwrap()
+}
+
+#[tokio::test]
+async fn instance_admin_settings_requires_a_bearer_token_at_all() {
+    let (state, _daemon) = rescan_test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+    let response = router.oneshot(settings_request("GET", None, None)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn a_tenants_own_secret_token_cannot_authenticate_as_the_instance_admin() {
+    let (state, _daemon) = rescan_test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let response = router.oneshot(settings_request("GET", Some(&tenant.secret_token), None)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "a tenant's own sk_ must never satisfy the instance-wide admin API");
+}
+
+#[tokio::test]
+async fn get_settings_reports_code_defaults_when_nothing_is_configured() {
+    let (state, _daemon) = rescan_test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+    let response = router.oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["scalars"]["payment.confirmations_required"]["value"], "10");
+    assert_eq!(body["scalars"]["payment.confirmations_required"]["source"], "default");
+    assert_eq!(body["monero_node"]["mainnet"], serde_json::Value::Null, "an unconfigured network reports null, not a fabricated node");
+}
+
+#[tokio::test]
+async fn updating_a_scalar_setting_persists_and_a_later_get_reflects_it() {
+    let (state, _daemon) = rescan_test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+
+    let post = router
+        .clone()
+        .oneshot(settings_request(
+            "POST",
+            Some("admin_test_token"),
+            Some(serde_json::json!({ "scalars": { "payment.confirmations_required": "3" } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(post.status(), StatusCode::OK, "expected the save to succeed, got: {:?}", body_json(post).await);
+
+    let get = router.oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
+    let body = body_json(get).await;
+    assert_eq!(body["scalars"]["payment.confirmations_required"]["value"], "3");
+    assert_eq!(body["scalars"]["payment.confirmations_required"]["source"], "database");
+}
+
+#[tokio::test]
+async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save() {
+    let (state, _daemon) = rescan_test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+
+    router
+        .clone()
+        .oneshot(settings_request(
+            "POST",
+            Some("admin_test_token"),
+            Some(serde_json::json!({ "scalars": { "payment.confirmations_required": "3" } })),
+        ))
+        .await
+        .unwrap();
+
+    std::env::set_var("SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED", "99");
+    let get = router.oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
+    std::env::remove_var("SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED");
+    let body = body_json(get).await;
+    assert_eq!(body["scalars"]["payment.confirmations_required"]["value"], "99");
+    assert_eq!(body["scalars"]["payment.confirmations_required"]["source"], "env");
+}
+
+#[tokio::test]
+async fn saving_an_out_of_range_scalar_is_rejected_and_nothing_changes() {
+    let (state, _daemon) = rescan_test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+
+    let post = router
+        .clone()
+        .oneshot(settings_request(
+            "POST",
+            Some("admin_test_token"),
+            Some(serde_json::json!({ "scalars": { "payment.confirmations_required": "0" } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(post.status(), StatusCode::BAD_REQUEST);
+
+    let get = router.oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
+    let body = body_json(get).await;
+    assert_eq!(body["scalars"]["payment.confirmations_required"]["value"], "10", "the rejected save must not have taken effect");
+}
+
+#[tokio::test]
+async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
+    let (state, _daemon) = rescan_test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+
+    let post = router
+        .clone()
+        .oneshot(settings_request(
+            "POST",
+            Some("admin_test_token"),
+            Some(serde_json::json!({
+                "scalars": {
+                    "payment.reorg_check_depth": "50",
+                    "payment.confirmations_required": "0"
+                }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(post.status(), StatusCode::BAD_REQUEST);
+
+    let get = router.oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
+    let body = body_json(get).await;
+    assert_eq!(body["scalars"]["payment.reorg_check_depth"]["value"], "20", "the valid field in the same request must not have been saved either");
+}
+
+#[tokio::test]
+async fn socket_key_custody_backend_without_a_socket_path_is_rejected() {
+    let (state, _daemon) = rescan_test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+
+    let post = router
+        .oneshot(settings_request(
+            "POST",
+            Some("admin_test_token"),
+            Some(serde_json::json!({ "scalars": { "key_custody.backend": "socket" } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(post.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn socket_key_custody_backend_with_a_socket_path_in_the_same_request_succeeds() {
+    let (state, _daemon) = rescan_test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+
+    let post = router
+        .clone()
+        .oneshot(settings_request(
+            "POST",
+            Some("admin_test_token"),
+            Some(serde_json::json!({
+                "scalars": { "key_custody.backend": "socket", "key_custody.socket_path": "/run/moneropay/key-custody.sock" }
+            })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(post.status(), StatusCode::OK, "expected success, got: {:?}", body_json(post).await);
+
+    let get = router.oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
+    let body = body_json(get).await;
+    assert_eq!(body["scalars"]["key_custody.backend"]["value"], "socket");
+}
+
+#[tokio::test]
+async fn socket_key_custody_backend_using_an_already_saved_socket_path_succeeds() {
+    // The cross-field check must consider the *merged* state, not just this one
+    // request's own body - a caller flipping `backend` to "socket" in a request
+    // that doesn't also repeat an already-saved `socket_path` must still succeed.
+    let (state, _daemon) = rescan_test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+
+    router
+        .clone()
+        .oneshot(settings_request(
+            "POST",
+            Some("admin_test_token"),
+            Some(serde_json::json!({ "scalars": { "key_custody.socket_path": "/run/moneropay/key-custody.sock" } })),
+        ))
+        .await
+        .unwrap();
+
+    let post = router
+        .oneshot(settings_request(
+            "POST",
+            Some("admin_test_token"),
+            Some(serde_json::json!({ "scalars": { "key_custody.backend": "socket" } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(post.status(), StatusCode::OK, "expected success, got: {:?}", body_json(post).await);
+}
+
+#[tokio::test]
+async fn setting_a_monero_node_round_trips_including_its_fallback_list() {
+    let (state, _daemon) = rescan_test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+
+    let node = serde_json::json!({
+        "host": "primary.example",
+        "port": 18081,
+        "ssl": false,
+        "accept_self_signed_certs": true,
+        "fallbacks": [
+            { "host": "backup.example", "port": 18081, "ssl": true, "accept_self_signed_certs": false, "fallbacks": [] }
+        ]
+    });
+    let post = router
+        .clone()
+        .oneshot(settings_request(
+            "POST",
+            Some("admin_test_token"),
+            Some(serde_json::json!({ "monero_node": { "mainnet": node.clone() } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(post.status(), StatusCode::OK, "expected success, got: {:?}", body_json(post).await);
+
+    let get = router.oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
+    let body = body_json(get).await;
+    assert_eq!(body["monero_node"]["mainnet"], node);
+}
+
+#[tokio::test]
+async fn clearing_a_monero_node_with_a_null_value_removes_its_configuration() {
+    let (state, _daemon) = rescan_test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+
+    let node = serde_json::json!({ "host": "primary.example", "port": 18081, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
+    router
+        .clone()
+        .oneshot(settings_request(
+            "POST",
+            Some("admin_test_token"),
+            Some(serde_json::json!({ "monero_node": { "mainnet": node } })),
+        ))
+        .await
+        .unwrap();
+
+    router
+        .clone()
+        .oneshot(settings_request(
+            "POST",
+            Some("admin_test_token"),
+            Some(serde_json::json!({ "monero_node": { "mainnet": null } })),
+        ))
+        .await
+        .unwrap();
+
+    let get = router.oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
+    let body = body_json(get).await;
+    assert_eq!(body["monero_node"]["mainnet"], serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_token_authenticates() {
+    let store = Store::open_in_memory().unwrap();
+    let generated = crate::http::instance_admin::ensure_admin_token_seeded(&store).expect("a fresh database has no token yet");
+
+    let state = AppState {
+        store: std::sync::Arc::new(std::sync::Mutex::new(store)),
+        key_custody: std::sync::Arc::new(PlainKeyCustody::default()),
+        key_custody_backend: "plain".to_string(),
+        wallet_handles: Arc::new(RwLock::new(HashMap::new())),
+        configured_networks: Arc::new(HashSet::new()),
+        rate_limiter: Arc::new(RateLimiter::new(10_000)),
+        admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
+        daemons: Arc::new(HashMap::new()),
+        scanner_status: new_scanner_status_map(),
+        scan_poll_interval_secs: 2,
+        default_rescan_lookback_days: 7,
+        max_rescan_lookback_days: 90,
+        expired_order_grace_period_seconds: 21_600,
+    };
+    let second_call = crate::http::instance_admin::ensure_admin_token_seeded(&state.store.lock().unwrap());
+    assert_eq!(second_call, None, "a token that already exists must never be silently regenerated (that would invalidate the first one)");
+
+    let router = build_router(state, 1_000_000);
+    let response = router.oneshot(settings_request("GET", Some(&generated), None)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "the freshly generated token must actually authenticate");
+}

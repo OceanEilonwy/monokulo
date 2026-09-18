@@ -53,12 +53,23 @@ pub struct EngineClient {
 
 impl EngineClient {
     pub fn new(base_url: impl Into<String>) -> Self {
+        Self::with_cache_limit(base_url, shared::http_cache::max_cache_bytes_from_env())
+    }
+
+    /// Same as [`Self::new`], but with an explicit byte cap rather than
+    /// reading `MONOKULO_HTTP_CACHE_MAX_MB` straight from the process
+    /// environment - what `main.rs` uses so this instance's admin-saved
+    /// `settings.http_cache.max_mb` value (`monokulo::settings::
+    /// HTTP_CACHE_MAX_MB`, resolved with the usual env-over-database
+    /// precedence) actually takes effect, not just a real environment
+    /// variable. Every test in this workspace still just calls `new` - a
+    /// dedicated named constructor here, rather than threading a new
+    /// parameter through `new` itself, is what keeps every one of those call
+    /// sites compiling unchanged.
+    pub fn with_cache_limit(base_url: impl Into<String>, max_cache_bytes: u64) -> Self {
         EngineClient {
             base_url: base_url.into(),
-            http: shared::http_cache::build_client(
-                concat!("monokulo/", env!("CARGO_PKG_VERSION")),
-                shared::http_cache::max_cache_bytes_from_env(),
-            ),
+            http: shared::http_cache::build_client(concat!("monokulo/", env!("CARGO_PKG_VERSION")), max_cache_bytes),
         }
     }
 

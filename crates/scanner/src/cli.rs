@@ -1,20 +1,28 @@
 //! Top-level argv parsing for the `scanner` binary - kept in the lib crate
 //! (not `main.rs`) so it's unit-testable the normal way, and so `main.rs` stays a
 //! thin wrapper around whatever this decides the process should do.
+//!
+//! No `--config`/config-file concept any more (`config.rs` and the interactive
+//! `--init` wizard it backed are both gone - every setting that used to live in
+//! a TOML file now lives in the `settings` table instead, editable at runtime
+//! over the instance-admin HTTP API rather than only at boot from a file). The
+//! one thing every mode below still needs to agree on is *where the database
+//! is* - see [`database_path`].
 
-use std::path::PathBuf;
-
-use crate::init_wizard::{self, InitArgs};
+use crate::local_admin::BootstrapWalletArgs;
 
 #[derive(Debug)]
 pub enum Action {
-    RunServer { config_path: PathBuf, strict_tls: bool },
-    Init(InitArgs),
+    RunServer { strict_tls: bool },
     /// Mints a fresh admin secret for a tenant, invalidating the old one - see
     /// `local_admin::rotate_secret`.
-    RotateSecret { config_path: PathBuf, pk: Option<String> },
+    RotateSecret { pk: Option<String> },
     /// Prints a tenant's non-secret settings - see `local_admin::show_tenant`.
-    ShowTenant { config_path: PathBuf, pk: Option<String> },
+    ShowTenant { pk: Option<String> },
+    /// Provisions the one tenant a self-hosted deployment needs, replacing what
+    /// used to be the `[wallet]` section of the (now-removed) TOML config file -
+    /// see `local_admin::bootstrap_wallet`.
+    BootstrapWallet(BootstrapWalletArgs),
     Help,
 }
 
@@ -22,128 +30,144 @@ pub const HELP_TEXT: &str = "\
 scanner - a self-hosted Monero payment gateway
 
 USAGE:
-    scanner [OPTIONS] [CONFIG_PATH]
-    scanner --init [--stagenet | --testnet] [--config <PATH>]
-    scanner --rotate-secret [--config <PATH>] [--pk <PK>]
-    scanner --show-tenant [--config <PATH>] [--pk <PK>]
+    scanner [--strict-tls]
+    scanner --bootstrap-wallet --primary-address <ADDR> --view-key <HEX> \
+--spend-pubkey <HEX> [--network mainnet|stagenet|testnet] [--allowed-origins <CSV>]
+    scanner --rotate-secret [--pk <PK>]
+    scanner --show-tenant [--pk <PK>]
 
-With no other mode, starts the HTTP server, reading its configuration from
-CONFIG_PATH (or --config PATH) if given, otherwise from the default location:
+With no other mode, starts the HTTP server. Every runtime-configurable setting
+(Monero node endpoints, confirmation/expiry thresholds, rate limits, webhook
+policy, ...) is read from the database (`env` var overrides win over a stored
+value, which wins over a built-in default) and editable at runtime over the
+instance-admin HTTP API (`GET`/`POST /api/v1/admin/settings`) - see that API's
+own doc comment (`http::instance_admin`) for the full list and how each one's
+environment-variable override is named. This binary itself only ever needs to
+know where its own database file lives - see DATABASE below.
 
-    $XDG_CONFIG_HOME/moneropay/moneropay.toml
-    (falling back to $HOME/.config/moneropay/moneropay.toml if
-    XDG_CONFIG_HOME is unset or empty)
-
-which is also where `--init` writes to by default, and where the database
-(`moneropay.db`, alongside the config) is read from by every mode below -
-running `scanner` with no arguments after `scanner --init` finds
-the file it just wrote, and every other command below finds the same database
-the running server uses, without needing to be told where it is.
+DATABASE:
+    Read from SCANNER_DB_PATH if set, otherwise ./scanner.db in the current
+    working directory - by every mode below, so a plain `scanner` server run
+    and every one of the commands here always agree on which file they mean.
 
 OPTIONS:
-    --config <PATH>   Path to the config file, for every mode. Equivalent to
-                      passing PATH positionally when starting the server;
-                      takes precedence if both are given.
-    --strict-tls      Require a real CA-signed certificate from every configured
-                      node, overriding accept_self_signed_certs in the config
-                      file. Only meaningful when starting the server.
-    --init            Run the interactive setup wizard instead of starting the
-                      server. Configures mainnet by default; combine with
-                      --stagenet or --testnet to add or update that network
-                      instead. Safe to re-run against an existing config file -
-                      it's merged into, not overwritten.
-    --rotate-secret   Mint a fresh admin secret (sk_...) for a tenant,
-                      invalidating the old one - the only way back in if you've
-                      lost it. Needs the server to have been started at least
-                      once (a tenant has to exist first).
-    --show-tenant     Print a tenant's current settings (public key, network,
-                      address, allowed origins, thresholds) - never its keys or
-                      secret.
-    --pk <PK>         Which tenant --rotate-secret/--show-tenant act on. Only
-                      needed if more than one tenant is configured - the
-                      common, self-hosted, single-tenant case is found
-                      automatically.
-    --help, -h        Print this help and exit.
+    --strict-tls          Require a real CA-signed certificate from every
+                          configured node, overriding that node's own
+                          accept_self_signed_certs setting. Only meaningful
+                          when starting the server.
+    --bootstrap-wallet     Create the one tenant a self-hosted deployment
+                          needs, from a watch-only view key and spend public
+                          key - refuses if a tenant already exists (this is a
+                          one-time action, not an ongoing setting; a hosted
+                          instance creates tenants at runtime via the admin
+                          HTTP API instead and never uses this at all).
+    --primary-address      The wallet's own primary address (bootstrap only).
+    --view-key             The wallet's private view key, hex-encoded
+                          (bootstrap only) - never a spend key.
+    --spend-pubkey         The wallet's public spend key, hex-encoded
+                          (bootstrap only) - the public half only, never the
+                          private spend key.
+    --network              Which network the bootstrap tenant watches -
+                          mainnet (default), stagenet, or testnet.
+    --allowed-origins      Comma-separated browser origins allowed to create
+                          orders directly against the bootstrap tenant's
+                          public API (bootstrap only). Defaults to none.
+    --rotate-secret        Mint a fresh admin secret (sk_...) for a tenant,
+                          invalidating the old one - the only way back in if
+                          you've lost it. Needs a tenant to already exist.
+    --show-tenant          Print a tenant's current settings (public key,
+                          network, address, allowed origins, thresholds) -
+                          never its keys or secret.
+    --pk <PK>              Which tenant --rotate-secret/--show-tenant act on.
+                          Only needed if more than one tenant is configured -
+                          the common, self-hosted, single-tenant case is found
+                          automatically.
+    --help, -h             Print this help and exit.
 
 EXAMPLES:
-    scanner                       Start the server using the default config location.
-    scanner --config my.toml      Start the server using a specific config file.
-    scanner my.toml               Same as above (positional form).
-    scanner --init                Walk through setting up mainnet.
-    scanner --init --stagenet     Add or update stagenet in the existing config.
+    scanner                        Start the server.
+    scanner --strict-tls           Start the server, rejecting self-signed node certs.
+    scanner --bootstrap-wallet --primary-address 4... --view-key <hex> --spend-pubkey <hex>
+                                   Provision the one self-hosted tenant.
+    scanner --rotate-secret        Mint a fresh admin secret for the sole tenant.
 ";
 
+/// The database file every mode below reads from - `SCANNER_DB_PATH` if set,
+/// otherwise `scanner.db` in the current working directory. A single,
+/// deliberately simple convention now that there's no config file for a path
+/// to be derived alongside any more (the former `init_wizard::database_path_for`
+/// always placed the database next to whatever config file was in use - this
+/// is that same idea with the "next to a config file" half removed, since
+/// there is no config file to be next to).
+pub fn database_path() -> std::path::PathBuf {
+    std::env::var("SCANNER_DB_PATH").map(std::path::PathBuf::from).unwrap_or_else(|_| std::path::PathBuf::from("scanner.db"))
+}
+
 /// Parses the full process argv (excluding argv[0]). `--help`/`-h` short-circuits
-/// everything else - present anywhere, it wins. `--init` (checked next) hands the
-/// rest of the args to `init_wizard::parse_init_args`, which owns the
-/// `--stagenet`/`--testnet`/`--config` grammar for that mode. Otherwise this is a
-/// normal server run: `--config <path>` or a bare positional argument names the
-/// config file (the former winning if both are somehow given), falling back to
-/// the same XDG-resolved default `--init` itself writes to when neither is given,
-/// which is the fix for a server started with no arguments not finding a file
-/// `--init` just wrote - the whole point of resolving it the same way in both
-/// places rather than defaulting to a bare relative "moneropay.toml".
+/// everything else - present anywhere, it wins.
 pub fn parse_args(args: &[String]) -> Result<Action, String> {
     if args.iter().any(|a| a == "--help" || a == "-h") {
         return Ok(Action::Help);
     }
-    if args.iter().any(|a| a == "--init") {
-        return init_wizard::parse_init_args(args).map(Action::Init);
+    if args.iter().any(|a| a == "--bootstrap-wallet") {
+        return parse_bootstrap_wallet_args(args).map(Action::BootstrapWallet);
     }
     if args.iter().any(|a| a == "--rotate-secret") {
-        let parsed = parse_local_admin_args(args)?;
-        return Ok(Action::RotateSecret { config_path: parsed.config_path, pk: parsed.pk });
+        return Ok(Action::RotateSecret { pk: parse_pk_arg(args)? });
     }
     if args.iter().any(|a| a == "--show-tenant") {
-        let parsed = parse_local_admin_args(args)?;
-        return Ok(Action::ShowTenant { config_path: parsed.config_path, pk: parsed.pk });
+        return Ok(Action::ShowTenant { pk: parse_pk_arg(args)? });
     }
-    let mut config_path_override: Option<String> = None;
-    let mut positional: Option<String> = None;
     let mut strict_tls = false;
-    let mut iter = args.iter();
-    while let Some(arg) = iter.next() {
+    for arg in args {
         match arg.as_str() {
             "--strict-tls" => strict_tls = true,
-            "--config" => {
-                let path = iter.next().ok_or_else(|| "--config needs a path argument".to_string())?;
-                config_path_override = Some(path.clone());
-            }
-            other => positional = Some(other.to_string()),
+            other => return Err(format!("unrecognized argument {other:?} - run with --help for usage")),
         }
     }
-    let config_path =
-        config_path_override.or(positional).map(PathBuf::from).unwrap_or_else(init_wizard::default_config_path);
-    Ok(Action::RunServer { config_path, strict_tls })
+    Ok(Action::RunServer { strict_tls })
 }
 
-struct LocalAdminArgs {
-    config_path: PathBuf,
-    pk: Option<String>,
-}
-
-/// Shared `--config`/`--pk` parsing for `--rotate-secret` and `--show-tenant` -
-/// the two modes that act on the local database rather than starting the server
-/// or the wizard.
-fn parse_local_admin_args(args: &[String]) -> Result<LocalAdminArgs, String> {
-    let mut config_path_override = None;
+/// Shared `--pk` parsing for `--rotate-secret` and `--show-tenant`.
+fn parse_pk_arg(args: &[String]) -> Result<Option<String>, String> {
     let mut pk = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
-        match arg.as_str() {
-            "--config" => {
-                let path = iter.next().ok_or_else(|| "--config needs a path argument".to_string())?;
-                config_path_override = Some(path.clone());
-            }
-            "--pk" => {
-                let value = iter.next().ok_or_else(|| "--pk needs a value".to_string())?;
-                pk = Some(value.clone());
-            }
-            _ => {}
+        if arg == "--pk" {
+            pk = Some(iter.next().ok_or_else(|| "--pk needs a value".to_string())?.clone());
         }
     }
-    let config_path = config_path_override.map(PathBuf::from).unwrap_or_else(init_wizard::default_config_path);
-    Ok(LocalAdminArgs { config_path, pk })
+    Ok(pk)
+}
+
+fn parse_bootstrap_wallet_args(args: &[String]) -> Result<BootstrapWalletArgs, String> {
+    let mut primary_address = None;
+    let mut view_key_hex = None;
+    let mut spend_pubkey_hex = None;
+    let mut network = "mainnet".to_string();
+    let mut allowed_origins = Vec::new();
+    let mut iter = args.iter();
+    while let Some(arg) = iter.next() {
+        match arg.as_str() {
+            "--primary-address" => primary_address = Some(iter.next().ok_or("--primary-address needs a value")?.clone()),
+            "--view-key" => view_key_hex = Some(iter.next().ok_or("--view-key needs a value")?.clone()),
+            "--spend-pubkey" => spend_pubkey_hex = Some(iter.next().ok_or("--spend-pubkey needs a value")?.clone()),
+            "--network" => network = iter.next().ok_or("--network needs a value")?.clone(),
+            "--allowed-origins" => {
+                let raw = iter.next().ok_or("--allowed-origins needs a value")?;
+                allowed_origins = raw.split(',').map(|s| s.trim().to_string()).filter(|s| !s.is_empty()).collect();
+            }
+            "--bootstrap-wallet" => {}
+            other => return Err(format!("unrecognized argument {other:?} for --bootstrap-wallet")),
+        }
+    }
+    Ok(BootstrapWalletArgs {
+        primary_address: primary_address.ok_or("--bootstrap-wallet requires --primary-address")?,
+        view_key_hex: view_key_hex.ok_or("--bootstrap-wallet requires --view-key")?,
+        spend_pubkey_hex: spend_pubkey_hex.ok_or("--bootstrap-wallet requires --spend-pubkey")?,
+        network,
+        allowed_origins,
+    })
 }
 
 #[cfg(test)]
@@ -155,123 +179,122 @@ mod tests {
     }
 
     #[test]
-    fn no_arguments_falls_back_to_the_xdg_resolved_default_path() {
-        // The bug this module exists to fix: a server started bare must look in
-        // the same place `--init` writes to by default, not a hardcoded relative
-        // "moneropay.toml" in whatever directory it happens to be launched from.
+    fn no_arguments_starts_the_server_with_default_options() {
         match parse_args(&args(&[])).unwrap() {
-            Action::RunServer { config_path, strict_tls } => {
-                assert_eq!(config_path, init_wizard::default_config_path());
-                assert!(!strict_tls);
-            }
+            Action::RunServer { strict_tls } => assert!(!strict_tls),
             _ => panic!("expected RunServer"),
         }
     }
 
     #[test]
-    fn a_bare_positional_argument_is_the_config_path() {
-        match parse_args(&args(&["my.toml"])).unwrap() {
-            Action::RunServer { config_path, .. } => assert_eq!(config_path, PathBuf::from("my.toml")),
+    fn strict_tls_flag_is_recognized() {
+        match parse_args(&args(&["--strict-tls"])).unwrap() {
+            Action::RunServer { strict_tls } => assert!(strict_tls),
             _ => panic!("expected RunServer"),
         }
     }
 
     #[test]
-    fn the_config_flag_names_the_config_path() {
-        match parse_args(&args(&["--config", "my.toml"])).unwrap() {
-            Action::RunServer { config_path, .. } => assert_eq!(config_path, PathBuf::from("my.toml")),
-            _ => panic!("expected RunServer"),
-        }
-    }
-
-    #[test]
-    fn the_config_flag_wins_over_a_positional_argument_when_both_are_given() {
-        match parse_args(&args(&["positional.toml", "--config", "flagged.toml"])).unwrap() {
-            Action::RunServer { config_path, .. } => assert_eq!(config_path, PathBuf::from("flagged.toml")),
-            _ => panic!("expected RunServer"),
-        }
-    }
-
-    #[test]
-    fn missing_config_path_value_is_a_clear_error_not_a_panic() {
-        assert!(parse_args(&args(&["--config"])).is_err());
-    }
-
-    #[test]
-    fn strict_tls_combines_with_a_config_path() {
-        match parse_args(&args(&["--strict-tls", "my.toml"])).unwrap() {
-            Action::RunServer { config_path, strict_tls } => {
-                assert!(strict_tls);
-                assert_eq!(config_path, PathBuf::from("my.toml"));
-            }
-            _ => panic!("expected RunServer"),
-        }
+    fn an_unrecognized_bare_argument_is_a_clear_error_not_silently_ignored() {
+        // A leftover config-file-path-shaped argument (from the removed
+        // `--config`/positional-path era) must not be silently accepted and
+        // ignored - that would look like it worked while doing nothing.
+        assert!(parse_args(&args(&["moneropay.toml"])).is_err());
     }
 
     #[test]
     fn help_flag_wins_over_everything_else_wherever_it_appears() {
         assert!(matches!(parse_args(&args(&["--help"])).unwrap(), Action::Help));
         assert!(matches!(parse_args(&args(&["-h"])).unwrap(), Action::Help));
-        assert!(matches!(parse_args(&args(&["--init", "--stagenet", "--help"])).unwrap(), Action::Help));
-        assert!(matches!(parse_args(&args(&["my.toml", "--help"])).unwrap(), Action::Help));
-    }
-
-    #[test]
-    fn init_flag_delegates_to_the_wizards_own_argument_parsing() {
-        match parse_args(&args(&["--init"])).unwrap() {
-            Action::Init(init_args) => assert_eq!(init_args.network, monero::Network::Mainnet),
-            _ => panic!("expected Init"),
-        }
-        match parse_args(&args(&["--init", "--stagenet"])).unwrap() {
-            Action::Init(init_args) => assert_eq!(init_args.network, monero::Network::Stagenet),
-            _ => panic!("expected Init"),
-        }
-    }
-
-    #[test]
-    fn init_flag_surfaces_the_wizards_own_argument_errors() {
-        // --stagenet + --testnet together is init_wizard::parse_init_args's own
-        // error - this just confirms it actually propagates through this layer
-        // rather than being swallowed or panicking.
-        let err = parse_args(&args(&["--init", "--stagenet", "--testnet"])).unwrap_err();
-        assert!(err.contains("one network per run"), "got {err}");
+        assert!(matches!(parse_args(&args(&["--bootstrap-wallet", "--help"])).unwrap(), Action::Help));
+        assert!(matches!(parse_args(&args(&["--rotate-secret", "--help"])).unwrap(), Action::Help));
+        assert!(matches!(parse_args(&args(&["--show-tenant", "--help"])).unwrap(), Action::Help));
     }
 
     #[test]
     fn help_text_documents_every_real_flag() {
         for flag in [
-            "--config", "--strict-tls", "--init", "--stagenet", "--testnet", "--rotate-secret", "--show-tenant",
-            "--pk", "--help",
+            "--strict-tls", "--bootstrap-wallet", "--primary-address", "--view-key", "--spend-pubkey", "--network",
+            "--allowed-origins", "--rotate-secret", "--show-tenant", "--pk", "--help",
         ] {
             assert!(HELP_TEXT.contains(flag), "help text should mention {flag}");
         }
     }
 
     #[test]
-    fn rotate_secret_flag_defaults_to_the_default_config_path_and_no_pk() {
+    fn rotate_secret_flag_defaults_to_no_pk() {
         match parse_args(&args(&["--rotate-secret"])).unwrap() {
-            Action::RotateSecret { config_path, pk } => {
-                assert_eq!(config_path, init_wizard::default_config_path());
-                assert!(pk.is_none());
-            }
+            Action::RotateSecret { pk } => assert!(pk.is_none()),
             _ => panic!("expected RotateSecret"),
         }
     }
 
     #[test]
-    fn show_tenant_flag_accepts_config_and_pk_overrides() {
-        match parse_args(&args(&["--show-tenant", "--config", "my.toml", "--pk", "pk_abc"])).unwrap() {
-            Action::ShowTenant { config_path, pk } => {
-                assert_eq!(config_path, PathBuf::from("my.toml"));
-                assert_eq!(pk.as_deref(), Some("pk_abc"));
-            }
+    fn show_tenant_flag_accepts_a_pk_override() {
+        match parse_args(&args(&["--show-tenant", "--pk", "pk_abc"])).unwrap() {
+            Action::ShowTenant { pk } => assert_eq!(pk.as_deref(), Some("pk_abc")),
             _ => panic!("expected ShowTenant"),
         }
     }
 
     #[test]
-    fn help_still_wins_over_the_new_local_admin_flags() {
-        assert!(matches!(parse_args(&args(&["--rotate-secret", "--help"])).unwrap(), Action::Help));
-        assert!(matches!(parse_args(&args(&["--show-tenant", "--help"])).unwrap(), Action::Help));
+    fn bootstrap_wallet_requires_the_three_key_material_flags() {
+        assert!(parse_args(&args(&["--bootstrap-wallet"])).is_err());
+        assert!(parse_args(&args(&["--bootstrap-wallet", "--primary-address", "4abc"])).is_err());
+        assert!(parse_args(&args(&[
+            "--bootstrap-wallet",
+            "--primary-address", "4abc",
+            "--view-key", "aa",
+            "--spend-pubkey", "bb",
+        ]))
+        .is_ok());
+    }
+
+    #[test]
+    fn bootstrap_wallet_defaults_network_to_mainnet_and_origins_to_empty() {
+        match parse_args(&args(&[
+            "--bootstrap-wallet",
+            "--primary-address", "4abc",
+            "--view-key", "aa",
+            "--spend-pubkey", "bb",
+        ]))
+        .unwrap()
+        {
+            Action::BootstrapWallet(a) => {
+                assert_eq!(a.network, "mainnet");
+                assert!(a.allowed_origins.is_empty());
+            }
+            _ => panic!("expected BootstrapWallet"),
+        }
+    }
+
+    #[test]
+    fn bootstrap_wallet_parses_network_and_comma_separated_origins() {
+        match parse_args(&args(&[
+            "--bootstrap-wallet",
+            "--primary-address", "4abc",
+            "--view-key", "aa",
+            "--spend-pubkey", "bb",
+            "--network", "stagenet",
+            "--allowed-origins", "https://a.example, https://b.example",
+        ]))
+        .unwrap()
+        {
+            Action::BootstrapWallet(a) => {
+                assert_eq!(a.network, "stagenet");
+                assert_eq!(a.allowed_origins, vec!["https://a.example".to_string(), "https://b.example".to_string()]);
+            }
+            _ => panic!("expected BootstrapWallet"),
+        }
+    }
+
+    #[test]
+    fn database_path_defaults_to_a_fixed_relative_path_and_the_env_var_overrides_it() {
+        std::env::remove_var("SCANNER_DB_PATH");
+        assert_eq!(database_path(), std::path::PathBuf::from("scanner.db"));
+
+        std::env::set_var("SCANNER_DB_PATH", "/tmp/somewhere/custom.db");
+        assert_eq!(database_path(), std::path::PathBuf::from("/tmp/somewhere/custom.db"));
+        std::env::remove_var("SCANNER_DB_PATH");
     }
 }

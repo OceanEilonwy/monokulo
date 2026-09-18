@@ -90,7 +90,9 @@ pub async fn status_page(State(state): State<AppState>, headers: axum::http::Hea
         Ok(status) => build_view_model(status),
         Err(message) => StatusPageViewModel { engine_error: Some(message), ..Default::default() },
     };
-    view_model.logged_in = super::resolve_authed_user(&state, &headers).is_some();
+    let authed = super::resolve_authed_user(&state, &headers);
+    view_model.logged_in = authed.is_some();
+    view_model.is_admin = authed.is_some_and(|(user, _)| user.is_admin);
     let html = state.templates.render_status(&view_model).expect("the built-in status template must always render");
     Html(html).into_response()
 }
@@ -138,6 +140,7 @@ fn build_view_model(status: EngineStatusResponse) -> StatusPageViewModel {
         // Overwritten by `status_page`'s own real per-request check right
         // after this returns - a placeholder here, never the value shown.
         logged_in: false,
+        is_admin: false,
     }
 }
 
@@ -269,7 +272,7 @@ mod tests {
 
         fn state_with_engine(engine_client: EngineClient) -> AppState {
             AppState {
-                db: Db::open_in_memory().unwrap().into_shared(),
+                db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
                 engine_client,
                 encryption_key: TEST_ENCRYPTION_KEY,
                 templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),

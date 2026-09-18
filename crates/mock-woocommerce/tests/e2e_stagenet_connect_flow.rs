@@ -69,15 +69,27 @@ use std::time::Duration;
 use monero::Network;
 use serde_json::Value;
 
-use scanner::config::Config;
 use scanner::daemon::MoneroDaemonClient;
 use scanner::daemon_rpc::RpcDaemonClient;
 use scanner::e2e_wallet::{self, StagenetSpendWallet};
 
 use mock_woocommerce::{create_order, run_connect_flow_with_wallet, ConnectFlowWallet};
 
-const CONFIG_PATH: &str = "../e2e/moneropay-stagenet.toml";
 const WALLETS_PATH: &str = "../e2e/stagenet-wallets.json";
+
+/// The real end-to-end test's fixed stagenet node - the same values
+/// `crates/scanner/tests/support/mod.rs::e2e_fixture` uses (duplicated rather
+/// than shared cross-crate for a handful of literals only ever read by two
+/// `#[ignore]`d, manually-run tests). Replaces what used to be
+/// `e2e/moneropay-stagenet.toml`, parsed via the now-removed
+/// `scanner::config::Config` - see that module's own doc comment for why a
+/// config file's not needed here any more.
+mod node_fixture {
+    pub const HOST: &str = "node.monerodevs.org";
+    pub const PORT: u16 = 38089;
+    pub const SSL: bool = false;
+    pub const ACCEPT_SELF_SIGNED_CERTS: bool = true;
+}
 
 /// A real, directly XMR-denominated order (`docs/fx_refactor.md` follow-up:
 /// XMR needs no exchange rate provider at all, not even a real one this
@@ -108,8 +120,8 @@ const ZERO_CONF_MAX_PICONERO: u64 = 10_000_000_000;
 async fn require_daemon_reachable(daemon: &dyn MoneroDaemonClient, host: &str, port: u16) {
     if let Err(e) = retry(5, Duration::from_secs(3), || daemon.get_height()).await {
         panic!(
-            "\n\ncannot reach the stagenet node at {host}:{port} (configured in {CONFIG_PATH}'s \
-             [monero_node.stagenet]) after several attempts: {e}\n\
+            "\n\ncannot reach the stagenet node at {host}:{port} (configured in node_fixture) after \
+             several attempts: {e}\n\
              Check that host/port, your network connection, or try a different public stagenet \
              node (search \"monero stagenet public node\" for alternatives).\n"
         );
@@ -257,17 +269,11 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
-    let config = Config::from_file(CONFIG_PATH)
-        .unwrap_or_else(|e| panic!("failed to load {CONFIG_PATH}: {e}"));
-    let node_cfg = config
-        .monero_node
-        .get(Network::Stagenet)
-        .expect("e2e config must have [monero_node.stagenet]");
     let node_url = format!(
         "http{}://{}:{}",
-        if node_cfg.ssl { "s" } else { "" },
-        node_cfg.host,
-        node_cfg.port
+        if node_fixture::SSL { "s" } else { "" },
+        node_fixture::HOST,
+        node_fixture::PORT
     );
 
     let merchant = load_merchant_watch_only_wallet(WALLETS_PATH);
@@ -288,14 +294,14 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // sequentially, avoided the problem entirely.
     let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
         RpcDaemonClient::new(
-            &node_cfg.host,
-            node_cfg.port,
-            node_cfg.ssl,
-            node_cfg.accept_self_signed_certs,
+            node_fixture::HOST,
+            node_fixture::PORT,
+            node_fixture::SSL,
+            node_fixture::ACCEPT_SELF_SIGNED_CERTS,
         )
         .expect("failed to build daemon RPC client"),
     );
-    require_daemon_reachable(daemon.as_ref(), &node_cfg.host, node_cfg.port).await;
+    require_daemon_reachable(daemon.as_ref(), node_fixture::HOST, node_fixture::PORT).await;
 
     // Connected once, up front, and reused for the real `.send()` below - and, just as
     // importantly, used right here for a cheap pre-flight balance check before this
@@ -309,7 +315,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     let spend_wallet = retry(5, Duration::from_secs(5), || {
         StagenetSpendWallet::connect(
             &node_url,
-            node_cfg.accept_self_signed_certs,
+            node_fixture::ACCEPT_SELF_SIGNED_CERTS,
             &customer.private_spend_key_hex,
             &customer.private_view_key_hex,
             &customer.address,

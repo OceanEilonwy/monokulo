@@ -1,0 +1,54 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin settings - Monokulo</title>
+{{> styles}}
+</head>
+<body>
+{{> nav}}
+<div class="wrap">
+
+<h1>Admin settings</h1>
+{{#if error}}
+<p class="error">{{error}}</p>
+{{/if}}
+{{#if success}}
+<p class="success">{{success}}</p>
+{{/if}}
+
+<h2>Monokulo</h2>
+<p>An environment variable, where set, always wins over the value saved here - saving still works, it just won't take effect until that variable is unset.</p>
+<form method="post" action="/dashboard/admin/settings">
+{{#each monokulo_fields}}
+<label>{{this.label}} <input type="text" name="{{this.key}}" value="{{this.value}}"></label>
+<span class="setting-source">({{this.source_label}})</span>
+{{/each}}
+<button type="submit">Save monokulo settings</button>
+</form>
+
+<h2>Scanner</h2>
+{{#if scanner_configured}}
+{{#if scanner_reachable}}
+<form method="post" action="/dashboard/admin/scanner-settings">
+{{#each scanner_fields}}
+<label>{{this.label}} <input type="text" name="{{this.key}}" value="{{this.value}}"></label>
+<span class="setting-source">({{this.source_label}})</span>
+{{/each}}
+{{#each scanner_networks}}
+<label>Monero node ({{this.network}}) <textarea name="monero_node_{{this.network}}" rows="4">{{this.value_json}}</textarea></label>
+<span class="setting-source">JSON, or leave empty to leave this network unconfigured</span>
+{{/each}}
+<button type="submit">Save scanner settings</button>
+</form>
+{{else}}
+<p class="error">Could not reach the configured scanner: {{scanner_error}}</p>
+{{/if}}
+{{else}}
+<p>Set <code>engine.url</code> and <code>engine.admin_token</code> above and save to manage this instance's scanner settings from here.</p>
+{{/if}}
+
+</div>
+</body>
+</html>
