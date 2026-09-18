@@ -76,7 +76,11 @@ async function chargeAndGetOrder(page, digits) {
 
 test.describe.serial('POS terminal - real stagenet payments', () => {
   test('a 0-conf-trusted payment shows the tick then auto-returns to the keypad', async ({ page, context }) => {
-    test.setTimeout(4 * 60 * 1000);
+    // Real decoy selection alone can take up to ~600s in the worst case
+    // (see StagenetSpendWallet::connect's own comment on why its reqwest
+    // client's timeout is that generous) - budget well past that, not just
+    // past the "observed ~250s typical" figure.
+    test.setTimeout(12 * 60 * 1000);
 
     await loginAndOpenPos(page);
     await setConfirmationsRequired(context, 0);
@@ -93,7 +97,7 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     expect(order.monero_uri).toBe(`monero:${order.address}?tx_amount=${order.xmr_amount}`);
 
     console.log(`sending real stagenet payment: ${piconero} piconero to ${order.address}`);
-    const txHash = sendStagenetPayment(order.address, piconero);
+    const txHash = await sendStagenetPayment(fixture.send_payment_url, order.address, piconero);
     console.log(`sent - tx ${txHash}`);
 
     // Spec point 7: the tick appears the moment a real tx is seen in the
@@ -114,7 +118,10 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
   });
 
   test('a confirming payment shows the progress ring, can be backgrounded, and completes in the stack', async ({ page, context }) => {
-    test.setTimeout(6 * 60 * 1000);
+    // Real decoy selection (up to ~600s worst case) *plus* waiting for one
+    // real stagenet confirmation (up to ~5min budgeted below) - the two
+    // genuinely slow steps in this whole suite, back to back.
+    test.setTimeout(18 * 60 * 1000);
 
     await loginAndOpenPos(page);
     await setConfirmationsRequired(context, 1);
@@ -123,7 +130,7 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     const piconero = piconeroFromXmrDisplay(order.xmr_amount);
 
     console.log(`sending real stagenet payment: ${piconero} piconero to ${order.address}`);
-    const txHash = sendStagenetPayment(order.address, piconero);
+    const txHash = await sendStagenetPayment(fixture.send_payment_url, order.address, piconero);
     console.log(`sent - tx ${txHash}`);
 
     // Spec point 7 again, then point 9: not yet fully confirmed (this
