@@ -1,0 +1,12 @@
+{
+  "name": "pos-e2e-playwright",
+  "private": true,
+  "version": "1.0.0",
+  "description": "Real stagenet + real-browser e2e suite for the POS terminal screen. See README.md - never run by default/CI, needs cargo build --features e2e and real (worthless) stagenet funds.",
+  "scripts": {
+    "test": "playwright test"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.48.0"
+  }
+}
