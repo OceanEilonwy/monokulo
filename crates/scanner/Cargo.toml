@@ -9,6 +9,11 @@ axum = { version = "0.8.9", features = ["macros"] }
 handlebars = "6.4.4"
 hex = "0.4.3"
 hmac = "0.13.0"
+# Reads response bodies (`.collect().await.to_bytes()`) - both this crate's own
+# `src/http/tests.rs` (a plain, always-run lib test, hence unconditional here
+# rather than dev-only/feature-gated) and, later in this file, the `e2e`-gated
+# `pos-e2e-server` binary's real signup/login/connect setup calls.
+http-body-util = "0.1.5"
 # WBS 2.1.3: `main.rs` needs `SocketKeyCustody` to wire the `[key_custody]
 # backend = "socket"]` config option to a real out-of-process `KeyCustody`. This
 # is the one direction of that split's dependency graph that's actually allowed -
@@ -69,11 +74,26 @@ rand_core = { version = "0.6", features = ["getrandom"], optional = true }
 # resolution failure if monero-wallet later requires a newer 4.x.
 curve25519-dalek = { version = "4", default-features = false, features = ["precomputed-tables", "zeroize"], optional = true }
 
+# e2e-feature-only, moved out of [dev-dependencies]: `[[bin]]` targets (unlike
+# `tests/*.rs`) only ever see a package's normal [dependencies], never its
+# [dev-dependencies] - see `src/bin/pos_e2e_server.rs`/`pos_e2e_send_payment.rs`'s
+# own doc comments for why these two bins exist. `monokulo` depends only on
+# `shared` (never on this crate), so this edge (`scanner` -> `monokulo`)
+# creates no cycle; `monokulo`'s own [dev-dependencies] (which do pull in
+# `scanner-test-support -> scanner`) are never built along it - Cargo only
+# ever builds a path dependency's [dependencies], never its own
+# [dev-dependencies], when it's depended on as a library by another crate.
+# Still reaches `tests/e2e_dashboard_stagenet.rs` too - an integration test
+# sees both its package's [dependencies] and [dev-dependencies].
+monokulo = { path = "../monokulo", optional = true }
+
 [features]
-# Real-spend-wallet support for the e2e test(s). Never enabled by default -
-# keeping the crypto/transaction-construction dependencies out of the tree for
-# a normal `cargo build`/`cargo test --workspace` is the point.
-e2e = ["dep:monero-wallet", "dep:monero-daemon-rpc", "dep:rand_core", "dep:curve25519-dalek"]
+# Real-spend-wallet support for the e2e test(s) and the two POS e2e helper
+# binaries below. Never enabled by default - keeping the crypto/transaction-
+# construction dependencies (and the extra `monokulo` needed to drive a whole
+# hosted stack) out of the tree for a normal `cargo build`/`cargo test
+# --workspace` is the point.
+e2e = ["dep:monero-wallet", "dep:monero-daemon-rpc", "dep:rand_core", "dep:curve25519-dalek", "dep:monokulo"]
 
 [[test]]
 name = "e2e_stagenet"
@@ -85,17 +105,23 @@ name = "e2e_dashboard_stagenet"
 path = "tests/e2e_dashboard_stagenet.rs"
 required-features = ["e2e"]
 
+# The two halves of the POS screen's own real stagenet+browser e2e suite
+# (`e2e/pos-playwright/`, driven by Playwright, not `cargo test`) - see that
+# directory's own README for how they're actually run together. Real `[[bin]]`
+# targets rather than more `#[ignore]`d `#[tokio::test]`s (like the two above)
+# specifically so an external process (Playwright, over Node's
+# `child_process`) can spawn/discover/kill each one directly by a predictable
+# `target/debug/<name>` path, rather than needing to locate `cargo test`'s own
+# hash-suffixed test binary or manage a `cargo test` process tree.
+[[bin]]
+name = "pos-e2e-server"
+path = "src/bin/pos_e2e_server.rs"
+required-features = ["e2e"]
+
+[[bin]]
+name = "pos-e2e-send-payment"
+path = "src/bin/pos_e2e_send_payment.rs"
+required-features = ["e2e"]
+
 [dev-dependencies]
-http-body-util = "0.1.5"
 tokio = { version = "1.53.1", features = ["rt", "macros"] }
-# Dev-only, and safe: monokulo depends only on `shared` as a real
-# dependency (never on this crate) - `monokulo -> shared`, not the
-# other way around - so this edge (`scanner`(dev) -> `monokulo`)
-# creates no cycle. monokulo's own [dev-dependencies] (which do pull in
-# `scanner-test-support -> scanner`) are never built along this edge -
-# Cargo only ever builds a path dependency's [dependencies], never its own
-# [dev-dependencies], when it's depended on as a library by another crate.
-# Needed by tests/e2e_dashboard_stagenet.rs to drive a real monokulo
-# instance's own router directly, in the same test process as a real,
-# network-bound scanner.
-monokulo = { path = "../monokulo" }
