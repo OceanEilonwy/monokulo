@@ -184,13 +184,35 @@ async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): 
         Ok(d) => d,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to build daemon RPC client: {e}")).into_response(),
     };
-    let spend_wallet =
-        match StagenetSpendWallet::connect(&state.node_url, NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address)
-            .await
-        {
-            Ok(w) => w,
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-        };
+
+    // Retried - unlike `.send()` below, `.connect()` never broadcasts
+    // anything, so this carries no double-spend risk. The `network_lock`
+    // guard above already rules out contention with this process's *own*
+    // scan loop, but a real, observed failure mode remains even with that
+    // held: this endpoint's very first call in a real Playwright run (after
+    // several seconds of real browser login/navigation/keypad clicks, during
+    // which the scan loop has ticked several more times than in a
+    // fired-within-a-few-seconds-of-boot manual test) has failed on its
+    // first attempt more than once, while back-to-back manual calls against
+    // the same running process succeeded every time - consistent with the
+    // node applying something closer to a rolling request-rate budget than a
+    // hard concurrency cap, which a mutual-exclusion lock alone can't smooth
+    // over. Same retry shape `pos-e2e-send-payment`'s own standalone binary
+    // already carries for the identical reason.
+    const CONNECT_ATTEMPTS: u32 = 4;
+    let mut spend_wallet_result =
+        StagenetSpendWallet::connect(&state.node_url, NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address).await;
+    for attempt in 2..=CONNECT_ATTEMPTS {
+        let Err(e) = &spend_wallet_result else { break };
+        eprintln!("send-payment: attempt {attempt}/{CONNECT_ATTEMPTS}: retrying StagenetSpendWallet::connect after: {e}");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        spend_wallet_result =
+            StagenetSpendWallet::connect(&state.node_url, NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address).await;
+    }
+    let spend_wallet = match spend_wallet_result {
+        Ok(w) => w,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
     let tx_hash = match spend_wallet.send(&daemon, &known_txids, &req.address, piconero_amount).await {
         Ok(h) => h,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
@@ -298,7 +320,15 @@ async fn main() {
     // over real HTTP polling) - not this process's own sequential test code -
     // is what's watching for payment status changes this time; mirrors
     // `scanner::main`'s own `run_scanner_loop`, simplified to the one network
-    // this harness ever configures. ----
+    // this harness ever configures. A slower 10s interval, not the real
+    // production scanner's typical fast poll - `network_lock` already rules
+    // out this loop ever *literally overlapping* a `/send-payment` call, but
+    // the node still appears to apply something closer to a rolling
+    // request-rate budget than a hard concurrency cap (see
+    // `send_payment_handler`'s own retry-loop comment) - ticking less often
+    // leaves more of that budget for `/send-payment`'s own calls, at the cost
+    // of a slightly less snappy tick/confirmation UI update (still well
+    // within every test's own generous timeouts). ----
     {
         let store = store.clone();
         let key_custody = key_custody.clone();
@@ -317,7 +347,7 @@ async fn main() {
                         eprintln!("pos-e2e-server: scan tick failed: {e}");
                     }
                 }
-                tokio::time::sleep(Duration::from_secs(2)).await;
+                tokio::time::sleep(Duration::from_secs(10)).await;
             }
         });
     }
