@@ -106,9 +106,14 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     await expect(page.locator('#tick-overlay')).not.toHaveClass(/is-error/);
 
     // Spec point 8: this store's confirmations_required is 0, so the order
-    // is already fully "paid" the instant it's seen - the overlay closes and
-    // the keypad returns on its own, no merchant action needed.
-    await expect(page.locator('#keypad-screen')).toBeVisible({ timeout: 30_000 });
+    // settles to "paid" with no further real confirmations needed - the
+    // overlay closes and the keypad returns on its own, no merchant action
+    // needed. Not necessarily on the very same scan tick that first saw it
+    // in the mempool (status can take one more tick to settle from
+    // "unconfirmed" to "paid" even at a 0 threshold), so this gets real
+    // margin, not just the ~3s scan interval plus the client's own 2.5s
+    // auto-dismiss delay.
+    await expect(page.locator('#keypad-screen')).toBeVisible({ timeout: 60_000 });
     await expect(page.locator('#tick-overlay')).toBeHidden();
 
     // Spec point 5: a POS-created order is a real order, visible on the
