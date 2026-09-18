@@ -17,23 +17,21 @@ function piconeroFromXmrDisplay(display) {
   return BigInt(whole) * 1_000_000_000_000n + BigInt(frac);
 }
 
-// Calls the real, in-process "send a payment" endpoint pos-e2e-server itself
+// Calls the real, in-process "send a payment" endpoint e2e-harness itself
 // exposes (`fixture.send_payment_url`, `send_payment_handler` in
-// crates/scanner/src/bin/pos_e2e_server.rs) - which connects, signs, and
-// broadcasts an actual stagenet transaction via `scanner::e2e_wallet::
-// StagenetSpendWallet`, deliberately never reimplemented in JS; this Node
+// crates/scanner/src/bin/e2e_harness.rs) - which connects, signs, and
+// broadcasts an actual stagenet transaction via `stagenet_test_wallet::
+// StagenetTestWallet`, deliberately never reimplemented in JS; this Node
 // process never touches key material itself.
 //
-// Not a separate `pos-e2e-send-payment` child process any more (that binary
-// still exists, for standalone manual debugging - see its own doc comment) -
-// a real, reproduced failure motivated the move: the public stagenet node
-// (or something in front of it) allows only one concurrent connection per
-// source IP, so a second process's own connection attempt, racing against
-// pos-e2e-server's own background scan loop, failed *consistently* (not
-// flakily) for the scan loop's entire lifetime. Routing the send through
-// pos-e2e-server's own process instead lets it serialize this against its
-// own scan loop with a single in-process lock - see `network_lock`'s own
-// doc comment on the Rust side for the full story.
+// Not a separate child process - a real, reproduced failure ruled that out:
+// the public stagenet node (or something in front of it) allows only one
+// concurrent connection per source IP, so a second process's own connection
+// attempt, racing against e2e-harness's own background scan loop, failed
+// *consistently* (not flakily) for the scan loop's entire lifetime. Routing
+// the send through e2e-harness's own process instead lets it serialize this
+// against its own scan loop with a single in-process lock - see
+// `network_lock`'s own doc comment on the Rust side for the full story.
 async function sendStagenetPayment(sendPaymentUrl, address, piconero) {
   const response = await fetch(sendPaymentUrl, {
     method: 'POST',
