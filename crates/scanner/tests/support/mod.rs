@@ -1,9 +1,9 @@
-//! Re-exports the real-Monero-transaction spend wallet from the main crate - see
-//! `scanner::e2e_wallet` for the actual implementation and its doc
-//! comment. Kept as a thin `tests/support` module (rather than importing
-//! `scanner::e2e_wallet` directly in `tests/e2e_stagenet.rs`) purely so
-//! that test file's `use support::StagenetSpendWallet;` doesn't need to change.
-pub use scanner::e2e_wallet::*;
+//! The real-money-costing wallet used to *implement* this test previously
+//! (`scanner::e2e_wallet::StagenetSpendWallet`, re-exported from here) has
+//! been replaced by `crates/stagenet-test-wallet::StagenetTestWallet` - see
+//! that crate's own doc comment for why. This module now holds only the
+//! shared stagenet fixture data every real e2e test in this crate still
+//! needs regardless of which wallet implementation sends the payment.
 
 /// The real end-to-end tests' fixed stagenet connection + bootstrap-wallet
 /// fixture - replaces what used to be `e2e/moneropay-stagenet.toml`, parsed at

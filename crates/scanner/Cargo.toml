@@ -45,35 +45,6 @@ url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
 zeroize = { version = "1.9.0", features = ["derive"] }
 
-# e2e-feature-only: constructs, signs, and broadcasts a real Monero transaction
-# directly against a daemon's plain RPC, so the e2e test (tests/e2e_stagenet.rs)
-# and mock-woocommerce's own real-stagenet connect-flow test need nothing beyond
-# the public stagenet node itself - no external wallet-rpc process. Optional +
-# feature-gated (see `[features]` below) so a normal build never links this in.
-# monero-wallet is the actively-maintained successor to the "monero-serai"
-# transaction-construction library (real CLSAG + Bulletproofs+ implementation
-# over curve25519-dalek, used by the Serai project); it pins rand_core 0.6 (the
-# RngCore/CryptoRng traits its signing functions require), one major version
-# behind this crate's own `rand = "0.10"` - hence the separate `rand_core`
-# dependency below rather than reusing `rand`'s.
-#
-# monero-daemon-rpc (not monero-simple-request-rpc) supplies the RPC client type:
-# its `HttpTransport` is a single-method trait `src/e2e_wallet.rs` implements
-# directly over this crate's own `reqwest::Client`, rather than pulling in a
-# second, unused TLS stack (`simple-request`/`hyper-rustls`/`ring`) purely to
-# reach a plain http:// node - `monero-simple-request-rpc` was tried first and
-# dropped for exactly this reason.
-monero-wallet = { version = "0.2.0", optional = true }
-monero-daemon-rpc = { version = "0.2.0", optional = true }
-rand_core = { version = "0.6", features = ["getrandom"], optional = true }
-# Required directly: monero_ed25519::Scalar/Point implement no arithmetic
-# operators of their own (only #[doc(hidden)] from/into bridges to this crate),
-# so the basepoint-multiplication and key-image glue in src/e2e_wallet.rs has
-# no way to avoid it. Not pinned to an exact patch - Cargo unifies semver-compatible
-# versions with monero-wallet's own copy regardless, so pinning only risks a
-# resolution failure if monero-wallet later requires a newer 4.x.
-curve25519-dalek = { version = "4", default-features = false, features = ["precomputed-tables", "zeroize"], optional = true }
-
 # e2e-feature-only, moved out of [dev-dependencies]: a `[[bin]]` target (unlike
 # `tests/*.rs`) only ever sees a package's normal [dependencies], never its
 # [dev-dependencies] - see `src/bin/e2e_harness.rs`'s own doc comment for why
@@ -86,20 +57,22 @@ curve25519-dalek = { version = "4", default-features = false, features = ["preco
 # too - an integration test sees both its package's [dependencies] and
 # [dev-dependencies].
 monokulo = { path = "../monokulo", optional = true }
-# The fast/reliable stagenet test wallet `src/bin/e2e_harness.rs` uses -
-# see `stagenet-test-wallet`'s own crate doc comment for why it exists at
-# all. `tests/e2e_stagenet.rs`/`tests/e2e_dashboard_stagenet.rs` are
-# untouched, still on `e2e_wallet` directly - migrating them is a natural,
-# low-risk follow-up (same interface shape) but out of scope for this change.
+# The fast/reliable stagenet test wallet every real e2e test/binary in this
+# crate uses to sign and broadcast real payments - see `stagenet-test-wallet`'s
+# own crate doc comment for why it's a separate, narrower wallet from a
+# general-purpose one. This crate no longer needs the real transaction-
+# construction dependencies (`monero-wallet`/`monero-daemon-rpc`/`rand_core`/
+# `curve25519-dalek`) directly at all - they moved to `stagenet-test-wallet`'s
+# own Cargo.toml along with the wallet code that used them.
 stagenet-test-wallet = { path = "../stagenet-test-wallet", optional = true }
 
 [features]
-# Real-spend-wallet support for the e2e test(s) and the POS e2e harness
-# binary below. Never enabled by default - keeping the crypto/transaction-
-# construction dependencies (and the extra `monokulo` needed to drive a whole
-# hosted stack) out of the tree for a normal `cargo build`/`cargo test
-# --workspace` is the point.
-e2e = ["dep:monero-wallet", "dep:monero-daemon-rpc", "dep:rand_core", "dep:curve25519-dalek", "dep:monokulo", "dep:stagenet-test-wallet"]
+# Real-spend-wallet support for the e2e tests and the POS e2e harness binary
+# below. Never enabled by default - keeping `stagenet-test-wallet`'s own real
+# transaction-construction dependencies (and the extra `monokulo` needed to
+# drive a whole hosted stack) out of the tree for a normal `cargo build`/
+# `cargo test --workspace` is the point.
+e2e = ["dep:monokulo", "dep:stagenet-test-wallet"]
 
 [[test]]
 name = "e2e_stagenet"

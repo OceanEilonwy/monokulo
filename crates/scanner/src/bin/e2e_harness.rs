@@ -64,7 +64,6 @@ use monokulo::engine_client::EngineClient;
 use monokulo::http::{build_router as build_monokulo_router, AppState as ControlPlaneAppState};
 use monokulo::templates::TemplateEngine;
 
-use stagenet_test_wallet::{Ledger, StagenetTestWallet, WalletError};
 
 // Deliberately duplicated from `tests/support/mod.rs::e2e_fixture` rather
 // than imported - a `[[bin]]` target has no access to `tests/`-local modules
@@ -142,13 +141,14 @@ struct SendPaymentResponse {
 /// `POST /send-payment` on this harness's own small internal-only router
 /// (bound to a separate ephemeral port, its URL handed to Playwright in the
 /// `POS_E2E_READY` line as `send_payment_url`) - signs and broadcasts one
-/// real stagenet transaction via `stagenet_test_wallet::StagenetTestWallet`
-/// (the fast, no-scanning, cached-decoys wallet this crate replaced
-/// `scanner::e2e_wallet::StagenetSpendWallet` with here - see that crate's
-/// own doc comment for the full "why"), serialized against this process's
-/// own scan loop via `network_lock` (see its own doc comment for why
-/// that's still worth keeping even though the new wallet's own live-call
-/// count is already far smaller).
+/// real stagenet transaction via `stagenet_test_wallet::send_payment` (the
+/// fast, no-scanning, cached-decoys wallet this crate replaced
+/// `scanner::e2e_wallet::StagenetSpendWallet` with here, with its own
+/// built-in connect-then-send retry - see that crate's own doc comments for
+/// the full "why"), serialized against this process's own scan loop via
+/// `network_lock` (see its own doc comment for why that's still worth
+/// keeping even though the new wallet's own live-call count is already far
+/// smaller).
 async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): Json<SendPaymentRequest>) -> Response {
     let piconero_amount: u64 = match req.piconero_amount.parse() {
         Ok(n) => n,
@@ -164,36 +164,17 @@ async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): 
     let customer_spend_key_hex = wallets_json["customer"]["private_spend_key"].as_str().expect("customer.private_spend_key missing").to_string();
     let customer_view_key_hex = wallets_json["customer"]["private_view_key"].as_str().expect("customer.private_view_key missing").to_string();
 
-    // Retries the *whole* connect-then-send sequence, not just connect - a
-    // real, observed failure mode under the old `scanner::e2e_wallet`-based
-    // version of this handler (a rolling request-rate budget, not a hard
-    // concurrency cap, motivated `network_lock` above too - see git log).
-    // Safe to retry from scratch on any error *except* `WalletError::Broadcast`
-    // (a broadcast was actually attempted and its outcome is genuinely
-    // unknown - retrying past it risks a real double-send); every other
-    // variant fails strictly before anything is signed or broadcast.
-    const SEND_ATTEMPTS: u32 = 5;
-    let mut attempt = 1;
-    let tx_hash = loop {
-        let result = async {
-            let wallet = StagenetTestWallet::connect(&state.node_url, NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address, DECOY_DISTRIBUTION_PATH)
-                .await?;
-            let mut ledger = Ledger::load(KNOWN_OUTPUTS_PATH)?;
-            wallet.send(&mut ledger, &req.address, piconero_amount).await
-        }
-        .await;
-        match result {
-            Ok(hash) => break hash,
-            Err(e @ WalletError::Broadcast(_)) => {
-                return (StatusCode::INTERNAL_SERVER_ERROR, format!("broadcast outcome unknown, not retrying: {e}")).into_response();
-            }
-            Err(e) if attempt < SEND_ATTEMPTS => {
-                eprintln!("send-payment: attempt {attempt}/{SEND_ATTEMPTS}: retrying after: {e}");
-                attempt += 1;
-                tokio::time::sleep(Duration::from_secs(5)).await;
-            }
-            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-        }
+    let wallet_config = stagenet_test_wallet::WalletConfig {
+        node_url: &state.node_url,
+        accept_invalid_certs: NODE_ACCEPT_SELF_SIGNED_CERTS,
+        private_spend_key_hex: &customer_spend_key_hex,
+        private_view_key_hex: &customer_view_key_hex,
+        expected_address: &customer_address,
+        decoy_distribution_path: DECOY_DISTRIBUTION_PATH,
+    };
+    let tx_hash = match stagenet_test_wallet::send_payment(wallet_config, KNOWN_OUTPUTS_PATH, &req.address, piconero_amount).await {
+        Ok(hash) => hash,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
     Json(SendPaymentResponse { tx_hash: hex::encode(tx_hash) }).into_response()
 }
