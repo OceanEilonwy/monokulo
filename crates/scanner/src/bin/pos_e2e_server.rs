@@ -392,6 +392,22 @@ async fn main() {
                     // (spec point 2: the POS screen always prices in the
                     // store's own base currency).
                     ("base_currency", "XMR"),
+                    // The engine hard-rejects `confirmations_required = 0`
+                    // outright (`http::public::create_order`/
+                    // `http::admin::validate_tenant_settings`: "0 would
+                    // treat an unconfirmed transaction as final") - the
+                    // real, engine-supported mechanism for 0-conf trust is
+                    // this ceiling instead (`derive_status`'s own
+                    // `zero_conf_trusted` branch: any order whose total is
+                    // `<=` this, in piconero, is trusted the instant it's
+                    // seen in the mempool, *regardless* of
+                    // `confirmations_required`). Set strictly between the
+                    // two Playwright tests' own amounts (335_000_000 /
+                    // 336_000_000 piconero) so exactly one of them is
+                    // 0-conf-trusted and the other still needs real
+                    // confirmations, on purpose - see `tests/pos.spec.js`'s
+                    // own comments on each.
+                    ("zero_conf_max_piconero", "335500000"),
                 ])))
                 .unwrap(),
         )

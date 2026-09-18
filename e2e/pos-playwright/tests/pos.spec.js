@@ -83,10 +83,14 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     test.setTimeout(12 * 60 * 1000);
 
     await loginAndOpenPos(page);
-    await setConfirmationsRequired(context, 0);
-    // The threshold change above doesn't affect an already-open POS screen's
-    // own in-memory state (there isn't any to affect - it only matters at
-    // order-creation time), so no reload is needed before charging.
+    // No confirmations_required=0 here - the engine hard-rejects that value
+    // outright ("0 would treat an unconfirmed transaction as final"; see
+    // pos_e2e_server.rs's own connect-call comment). 0-conf trust is real,
+    // engine-supported behavior, just through a different setting: this
+    // store's own zero_conf_max_piconero ceiling (set once at connect time,
+    // in pos_e2e_server.rs - no dashboard UI to change it after the fact
+    // yet) already covers this test's own 335_000_000-piconero amount but
+    // not the next test's 336_000_000, on purpose.
 
     const order = await chargeAndGetOrder(page, '335000000'); // 0.000335 XMR
     const piconero = piconeroFromXmrDisplay(order.xmr_amount);
@@ -105,14 +109,14 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     await expect(page.locator('#tick-overlay')).toBeVisible({ timeout: 90_000 });
     await expect(page.locator('#tick-overlay')).not.toHaveClass(/is-error/);
 
-    // Spec point 8: this store's confirmations_required is 0, so the order
-    // settles to "paid" with no further real confirmations needed - the
-    // overlay closes and the keypad returns on its own, no merchant action
-    // needed. Not necessarily on the very same scan tick that first saw it
-    // in the mempool (status can take one more tick to settle from
-    // "unconfirmed" to "paid" even at a 0 threshold), so this gets real
-    // margin, not just the ~3s scan interval plus the client's own 2.5s
-    // auto-dismiss delay.
+    // Spec point 8: this order's total is under the store's own
+    // zero_conf_max_piconero ceiling, so it settles to "paid" with no real
+    // confirmations needed at all - the overlay closes and the keypad
+    // returns on its own, no merchant action needed. Not necessarily on the
+    // very same scan tick that first saw it in the mempool (status can take
+    // one more tick to settle from "unconfirmed" to "paid"), so this gets
+    // real margin, not just the ~3s scan interval plus the client's own
+    // 2.5s auto-dismiss delay.
     await expect(page.locator('#keypad-screen')).toBeVisible({ timeout: 60_000 });
     await expect(page.locator('#tick-overlay')).toBeHidden();
 
