@@ -29,6 +29,78 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Public vs invite-only signup, admin invite management.** Follow-up to
+  the admin settings/wizard work below - the user's ask: a `signup.mode`
+  admin setting (`public`/`invite_only`, default `invite_only`) gating
+  whether anyone can sign up or an admin-issued single-use invite link is
+  required; a landing-page CTA that switches between "Sign up" and "Request
+  an invite to join" (a public email+message form saving to a new table);
+  and a new admin "invites" nav page that reviews those requests, generates
+  invite links, and deletes/bulk-deletes requests.
+  - **`invite_requests`/`invite_links`** (migration 0012). A request row is
+    soft-deleted (`actioned`), never hard-deleted - the admin invites page
+    only ever lists `actioned = 0` rows. An invite token is stored hashed
+    (the normal convention every other bearer credential in this crate
+    already uses) *and*, only when it's tied to a specific request
+    (`request_id` set), also encrypted at rest with the same instance
+    `encryption_key` `tenant_secret_token_encrypted` already uses - the one
+    deliberate exception to "never store a credential reversibly" in this
+    crate, needed because the admin invites page has to keep rendering a
+    real `mailto:` link with the raw token embedded across as many separate
+    page loads as it takes an admin to click it, and there's no click-time
+    hook to generate one from a plain anchor without JavaScript (this
+    repo's own no-JS convention). A standalone link (the page's own "create
+    invite link" button, not tied to any request) is shown exactly once on
+    creation and only ever stored hashed - no reversible copy needed at
+    all.
+  - **Redemption is a single atomic `UPDATE ... WHERE used_at_utc IS NULL`**
+    (`Db::redeem_invite_and_create_user`), checked via affected-row count,
+    run *before* the user row is created - an invalid or already-used token
+    can never result in an account. Real test coverage for the literal
+    "more than one account cannot be registered using the same link" ask,
+    including via the real JSON `/signup` API, the real `/dashboard/signup`
+    form, and the real create-invite-link-then-signup round trip. A
+    successful redemption auto-actions its originating request, if any - it
+    clears itself off the admin's pending list the moment the person
+    actually joins, no manual bookkeeping needed.
+  - **Deleting a request also revokes its own still-unused invite link**
+    (a real row delete, not a further soft-delete) - dismissing a request
+    an admin never emailed must not leave a silently-valid, unsent token
+    behind.
+  - **No-JS delete feedback, worked out with the user first**: real
+    single-row delete via plain `POST` + redirect (a genuine soft-delete,
+    not a client-side toggle - a CSS-only checkbox trick was considered and
+    rejected, since a full-page-navigating form submit gives it no moment
+    to render before the browser's already loading the next page). The
+    redirect carries `?deleted=<id>` so the reload renders that one row
+    struck-through once, as a real server-rendered addendum sitting outside
+    the page's own pagination count - never spliced into the real list, so
+    there's no off-by-one page-math case to get wrong. The page number is
+    carried through every delete form and clamped (`requested.clamp(1,
+    total_pages)`) on every load, not just after a delete, so deleting the
+    last row on the last page (or any other cause of a page going stale)
+    self-corrects instead of showing a blank page.
+  - **Bulk delete, per the user's own explicit choice between three
+    options**: single-row delete only, plus a "delete all" button clearing
+    every unactioned request across every page at once (not checkboxes,
+    not a per-page clear) - a real bulk `UPDATE`, one confirmation banner
+    with a count, no per-row struck-through treatment (doesn't make sense
+    once more than one row is involved).
+  - **`mailto:` links use their own percent-encoder**, not the
+    `url::form_urlencoded`-based one `http::connect::encode_query_value`
+    already has - that one encodes a space as `+`, correct for
+    `application/x-www-form-urlencoded` but wrong for a `mailto:` URI
+    (RFC 6068), where `+` has no special meaning and a mail client would
+    show a literal `+` instead of a space.
+  - **Test-harness default**: `Db::seed_test_admin` now also sets
+    `signup.mode = "public"`, the same "give every existing test a
+    permissive default, let the few tests that actually mean to exercise
+    invite-only mode set it back explicitly" pattern the admin-account
+    seeding itself already established - `signup.mode` defaults to
+    `"invite_only"` in real deployments, which would otherwise have broken
+    every existing test's ordinary signup calls the moment that default
+    shipped.
+
 - **Admin settings page (monokulo + scanner) and monokulo's first-run admin
   setup wizard.** The user's ask: an admin page exposing every monokulo and
   scanner setting, a first-run wizard (gated on a database flag) that

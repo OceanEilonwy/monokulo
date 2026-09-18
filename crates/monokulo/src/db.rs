@@ -32,6 +32,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (9, include_str!("../migrations/0009_rename_fiat_to_currency.sql")),
     (10, include_str!("../migrations/0010_utc_suffix_date_columns.sql")),
     (11, include_str!("../migrations/0011_settings_and_admin.sql")),
+    (12, include_str!("../migrations/0012_invites.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -139,6 +140,42 @@ pub struct OrderCurrencyMetadataRow {
     /// recorded before that provider's removal.
     pub provider: String,
     pub created_at: i64,
+}
+
+/// A pending "let me in" request from the public `/request-invite` form -
+/// see `invite_requests`'s own migration comment. Only ever fetched for an
+/// `actioned = 0` row (the admin invites page's own listing) or a specific
+/// id (the just-deleted-row addendum, `http::invites`).
+pub struct InviteRequestRow {
+    pub id: String,
+    pub email: String,
+    pub message: String,
+    pub created_at: i64,
+    /// This request's own still-unused invite link, encrypted at rest -
+    /// `None` for the rare/pathological case of a request whose link was
+    /// somehow already consumed without the request itself being
+    /// auto-actioned, or one that never got a link at all. The admin
+    /// invites page decrypts this (and only this - see the `invite_links`
+    /// migration's own doc comment on why this is the one reversibly
+    /// stored credential in this crate) to build its "email invite"
+    /// `mailto:` link.
+    pub invite_token_encrypted: Option<String>,
+}
+
+/// What redeeming a presented invite token during signup can result in -
+/// see [`Db::redeem_invite_and_create_user`]'s own doc comment for the
+/// ordering (and the one accepted edge case) this maps to.
+#[derive(Debug, PartialEq, Eq)]
+pub enum RedeemInviteResult {
+    /// No `invite_links` row has this token's hash with `used_at_utc IS
+    /// NULL` - either the token is entirely unknown, or (the common real
+    /// case) it already redeemed once before.
+    InvalidOrAlreadyUsed,
+    /// The token was valid and has now been claimed, but `email` was
+    /// already registered - see this method's own doc comment on why the
+    /// token stays burned regardless.
+    DuplicateEmail,
+    Created,
 }
 
 impl Db {
@@ -261,12 +298,20 @@ impl Db {
         self.set_setting("setup_complete", "true")
     }
 
-    /// Test-only convenience seeding a known admin account and marking setup
-    /// complete in one call - the "tests should seed the admin account with
-    /// a known user/pass, which will mean the admin flow won't trigger"
-    /// requirement, applied as a single shared helper every test fixture
-    /// calls rather than each reimplementing the same two writes. Panics on
-    /// a database error - every caller is a test fixture already `.unwrap()`-
+    /// Test-only convenience seeding a known admin account, marking setup
+    /// complete, and setting `signup.mode` to `"public"` - the "tests
+    /// should seed the admin account with a known user/pass, which will
+    /// mean the admin flow won't trigger" requirement, extended the same
+    /// way for the invite system: `signup.mode` defaults to `"invite_only"`
+    /// in production, which would otherwise block every existing test's
+    /// ordinary `create_account`/signup calls the moment that default
+    /// shipped. Dedicated invite-flow tests (`http::signup`/
+    /// `http::dashboard`/`http::invites`) explicitly set `signup.mode` back
+    /// to `"invite_only"` themselves when that's what they mean to exercise
+    /// - this is a permissive *default*, not something every test is stuck
+    /// with. Applied as a single shared helper every test fixture calls
+    /// rather than each reimplementing the same writes. Panics on a
+    /// database error - every caller is a test fixture already `.unwrap()`-
     /// ing `Db::open_in_memory()` right next to this, so a failure here is
     /// exactly as fatal to the test as that would be.
     #[cfg(test)]
@@ -274,6 +319,7 @@ impl Db {
         let password_hash = shared::password::hash_password(TEST_ADMIN_PASSWORD).expect("hashing the fixed test admin password");
         self.create_user("test-admin", TEST_ADMIN_EMAIL, &password_hash, true, 0).expect("seeding the test admin account");
         self.mark_setup_complete().expect("marking setup complete for the seeded test admin");
+        self.set_setting("signup.mode", "public").expect("defaulting the test admin's signup.mode to public");
     }
 
     /// Stores a new session. `token_hash` must already be hashed (see
@@ -605,6 +651,190 @@ impl Db {
     pub fn update_store_connection_site_url(&self, id: &str, site_url: &str) -> Result<()> {
         self.conn.execute("UPDATE store_connections SET site_url = ?2 WHERE id = ?1", params![id, site_url])?;
         Ok(())
+    }
+
+    /// `POST /request-invite` (`http::invites::request_invite_submit`) -
+    /// records the request itself. Does *not* create its matching
+    /// `invite_links` row (see [`Db::create_invite_link`]) - the caller
+    /// creates both in immediate succession so the admin invites page can
+    /// build a real `mailto:` link for this row on its very first render,
+    /// with no separate "generate" step - but they're two separate calls,
+    /// not one, since a standalone invite link (the admin invites page's
+    /// own "create invite link" button) has no request to attach to at all.
+    pub fn create_invite_request(&self, id: &str, email: &str, message: &str, created_at: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO invite_requests (id, email, message, created_at_utc) VALUES (?1, ?2, ?3, ?4)",
+            params![id, email, message, created_at],
+        )?;
+        Ok(())
+    }
+
+    /// One page of unactioned invite requests, newest first, each carrying
+    /// its own still-unused invite link's encrypted token (a `LEFT JOIN`,
+    /// not a separate query per row - see [`InviteRequestRow::invite_token_encrypted`]'s
+    /// own doc comment).
+    pub fn list_unactioned_invite_requests(&self, limit: i64, offset: i64) -> Result<Vec<InviteRequestRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT r.id, r.email, r.message, r.created_at_utc, l.token_encrypted
+             FROM invite_requests r
+             LEFT JOIN invite_links l ON l.request_id = r.id AND l.used_at_utc IS NULL
+             WHERE r.actioned = 0
+             ORDER BY r.created_at_utc DESC, r.id DESC
+             LIMIT ?1 OFFSET ?2",
+        )?;
+        let rows = stmt.query_map(params![limit, offset], |row| {
+            Ok(InviteRequestRow {
+                id: row.get(0)?,
+                email: row.get(1)?,
+                message: row.get(2)?,
+                created_at: row.get(3)?,
+                invite_token_encrypted: row.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(DbError::from)
+    }
+
+    /// How many unactioned requests exist in total - the admin invites
+    /// page's own pagination math (`http::invites::clamp_page`) needs this
+    /// independent of whatever one page's `LIMIT`/`OFFSET` returns.
+    pub fn count_unactioned_invite_requests(&self) -> Result<i64> {
+        self.conn.query_row("SELECT COUNT(*) FROM invite_requests WHERE actioned = 0", [], |row| row.get(0)).map_err(DbError::from)
+    }
+
+    /// A specific request by id, regardless of its `actioned` state - used
+    /// to render the just-deleted row's own one-time struck-through
+    /// addendum (`?deleted=<id>`, `http::invites::invites_page`), which must
+    /// still be found *after* [`Db::delete_invite_request`] already marked
+    /// it actioned.
+    pub fn get_invite_request(&self, id: &str) -> Result<Option<InviteRequestRow>> {
+        self.conn
+            .query_row(
+                "SELECT r.id, r.email, r.message, r.created_at_utc, l.token_encrypted
+                 FROM invite_requests r
+                 LEFT JOIN invite_links l ON l.request_id = r.id
+                 WHERE r.id = ?1",
+                params![id],
+                |row| {
+                    Ok(InviteRequestRow {
+                        id: row.get(0)?,
+                        email: row.get(1)?,
+                        message: row.get(2)?,
+                        created_at: row.get(3)?,
+                        invite_token_encrypted: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(DbError::from)
+    }
+
+    /// Soft-deletes (`actioned = 1`) one request and revokes its own
+    /// still-unused invite link, if it has one - a real row delete, not a
+    /// further soft-delete, since an orphaned, never-sent, never-used token
+    /// serves no purpose once its one request has been dismissed. A token
+    /// that's already been used is left untouched (a real account exists
+    /// behind it; nothing to revoke, and the request itself would already
+    /// have been auto-actioned by [`Db::redeem_invite_and_create_user`], so
+    /// this path shouldn't normally even be reached for one).
+    pub fn delete_invite_request(&self, id: &str, now: i64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE invite_requests SET actioned = 1, actioned_at_utc = ?2 WHERE id = ?1",
+            params![id, now],
+        )?;
+        self.conn.execute("DELETE FROM invite_links WHERE request_id = ?1 AND used_at_utc IS NULL", params![id])?;
+        Ok(())
+    }
+
+    /// The admin invites page's "delete all" button - every currently
+    /// unactioned request, soft-deleted and its unused link revoked in the
+    /// same two-statement shape [`Db::delete_invite_request`] uses, just
+    /// applied to the whole set at once rather than row by row. Returns how
+    /// many requests were actually cleared, for the page's own confirmation
+    /// banner.
+    pub fn delete_all_unactioned_invite_requests(&self, now: i64) -> Result<usize> {
+        let cleared = self.conn.execute("UPDATE invite_requests SET actioned = 1, actioned_at_utc = ?1 WHERE actioned = 0", params![now])?;
+        self.conn.execute(
+            "DELETE FROM invite_links WHERE used_at_utc IS NULL AND request_id IN (SELECT id FROM invite_requests WHERE actioned = 1)",
+            [],
+        )?;
+        Ok(cleared)
+    }
+
+    /// Creates one invite link. `token_encrypted` is `Some` only when
+    /// `request_id` is also `Some` - see `invite_links`'s own migration
+    /// comment on why a standalone link (shown once, on this same response,
+    /// and never redisplayed) has no need to be stored reversibly at all.
+    pub fn create_invite_link(
+        &self,
+        id: &str,
+        token_hash: &str,
+        token_encrypted: Option<&str>,
+        request_id: Option<&str>,
+        created_at: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO invite_links (id, token_hash, token_encrypted, request_id, created_at_utc) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, token_hash, token_encrypted, request_id, created_at],
+        )?;
+        Ok(())
+    }
+
+    /// Redeems a presented invite token and creates the account it grants in
+    /// one call - claims the token *before* creating the user (a single,
+    /// atomic `UPDATE ... WHERE used_at_utc IS NULL`, checked via its own
+    /// affected-row count), never the other way around, so an invalid or
+    /// already-used token can never result in a free account. This crate has
+    /// no cross-statement transaction API today (same accepted trade-off
+    /// `http::admin_setup`'s own doc comment already documents for its
+    /// account-creation-then-mark-setup-complete sequence) - the one edge
+    /// case that trade-off leaves here is a token claimed by a request whose
+    /// account creation then fails (a duplicate email): the token stays
+    /// burned with no account behind it, rather than being un-claimed. Given
+    /// every call in this crate already runs behind one process-wide
+    /// `Mutex<Db>` (see this module's own doc comment - there is no
+    /// concurrent writer to race against within a single call), this only
+    /// matters for a genuine mid-sequence crash, not for two simultaneous
+    /// signup attempts against the same token - see this module's own tests
+    /// for that exact scenario.
+    pub fn redeem_invite_and_create_user(
+        &self,
+        token_hash: &str,
+        user_id: &str,
+        email: &str,
+        password_hash: &str,
+        now: i64,
+    ) -> Result<RedeemInviteResult> {
+        // The atomic single-use claim itself: `used_at_utc` (not yet
+        // `used_by_user_id`, which has a real `REFERENCES users (id)` this
+        // crate's SQLite connection enforces - that column is only filled
+        // in below, once `user_id` actually exists as a row).
+        let claimed = self.conn.execute(
+            "UPDATE invite_links SET used_at_utc = ?2 WHERE token_hash = ?1 AND used_at_utc IS NULL",
+            params![token_hash, now],
+        )?;
+        if claimed == 0 {
+            return Ok(RedeemInviteResult::InvalidOrAlreadyUsed);
+        }
+
+        match self.create_user(user_id, email, password_hash, false, now) {
+            Ok(()) => {
+                self.conn.execute(
+                    "UPDATE invite_links SET used_by_user_id = ?2 WHERE token_hash = ?1",
+                    params![token_hash, user_id],
+                )?;
+                // Auto-clears the originating request (if any) from the
+                // admin's pending list - the person it was about just
+                // joined, there's nothing left to action.
+                self.conn.execute(
+                    "UPDATE invite_requests SET actioned = 1, actioned_at_utc = ?2
+                     WHERE actioned = 0 AND id = (SELECT request_id FROM invite_links WHERE token_hash = ?1)",
+                    params![token_hash, now],
+                )?;
+                Ok(RedeemInviteResult::Created)
+            }
+            Err(e) if e.is_unique_violation() => Ok(RedeemInviteResult::DuplicateEmail),
+            Err(e) => Err(e),
+        }
     }
 }
 
@@ -1016,5 +1246,162 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         assert!(db.list_order_currency_metadata_for_connection(&connection_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_request_invite_submission_creates_a_row_only_the_admin_can_see_and_it_carries_no_link_until_one_is_made() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_invite_request("req-1", "hopeful@example.com", "please let me in", 1000).unwrap();
+        assert_eq!(db.count_unactioned_invite_requests().unwrap(), 1);
+        let rows = db.list_unactioned_invite_requests(10, 0).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].email, "hopeful@example.com");
+        assert_eq!(rows[0].message, "please let me in");
+        assert_eq!(rows[0].invite_token_encrypted, None, "no link has been created for this request yet");
+    }
+
+    #[test]
+    fn a_request_linked_invite_link_is_visible_on_the_request_row_once_created() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_invite_request("req-1", "hopeful@example.com", "please", 1000).unwrap();
+        db.create_invite_link("link-1", "hash-of-token", Some("encrypted-blob"), Some("req-1"), 1000).unwrap();
+
+        let rows = db.list_unactioned_invite_requests(10, 0).unwrap();
+        assert_eq!(rows[0].invite_token_encrypted.as_deref(), Some("encrypted-blob"));
+    }
+
+    #[test]
+    fn deleting_a_request_hides_it_and_revokes_its_own_unused_link() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_invite_request("req-1", "a@example.com", "m", 1000).unwrap();
+        db.create_invite_link("link-1", "hash-1", Some("enc-1"), Some("req-1"), 1000).unwrap();
+
+        db.delete_invite_request("req-1", 2000).unwrap();
+
+        assert_eq!(db.count_unactioned_invite_requests().unwrap(), 0, "a deleted request must not still be listed as pending");
+        assert_eq!(
+            db.redeem_invite_and_create_user("hash-1", "u1", "a@example.com", "hash", 3000).unwrap(),
+            RedeemInviteResult::InvalidOrAlreadyUsed,
+            "its own never-used link must have been revoked, not left silently valid"
+        );
+    }
+
+    #[test]
+    fn deleting_a_request_does_not_touch_a_link_that_was_already_used() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_invite_request("req-1", "a@example.com", "m", 1000).unwrap();
+        db.create_invite_link("link-1", "hash-1", Some("enc-1"), Some("req-1"), 1000).unwrap();
+        // Someone already redeemed it before the admin got around to
+        // deleting the (by then auto-actioned) request - a no-op path this
+        // handler should still tolerate cleanly.
+        db.redeem_invite_and_create_user("hash-1", "u1", "a@example.com", "hash", 1500).unwrap();
+
+        db.delete_invite_request("req-1", 2000).unwrap();
+        // The already-created account's own session/lookup path is
+        // untouched - deleting the request never un-creates a real user.
+        assert!(db.get_user_by_email("a@example.com").unwrap().is_some());
+    }
+
+    #[test]
+    fn delete_all_clears_every_unactioned_request_and_revokes_every_unused_link_but_leaves_actioned_ones_alone() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_invite_request("req-1", "a@example.com", "m", 1000).unwrap();
+        db.create_invite_link("link-1", "hash-1", Some("enc-1"), Some("req-1"), 1000).unwrap();
+        db.create_invite_request("req-2", "b@example.com", "m", 1000).unwrap();
+        db.create_invite_link("link-2", "hash-2", Some("enc-2"), Some("req-2"), 1000).unwrap();
+        db.create_invite_request("req-3", "c@example.com", "m", 1000).unwrap();
+        db.delete_invite_request("req-3", 1500).unwrap(); // already actioned before delete-all runs
+
+        let cleared = db.delete_all_unactioned_invite_requests(2000).unwrap();
+        assert_eq!(cleared, 2, "req-3 was already actioned and must not be double-counted");
+        assert_eq!(db.count_unactioned_invite_requests().unwrap(), 0);
+        assert_eq!(db.redeem_invite_and_create_user("hash-1", "u1", "a@example.com", "h", 3000).unwrap(), RedeemInviteResult::InvalidOrAlreadyUsed);
+        assert_eq!(db.redeem_invite_and_create_user("hash-2", "u2", "b@example.com", "h", 3000).unwrap(), RedeemInviteResult::InvalidOrAlreadyUsed);
+    }
+
+    #[test]
+    fn a_valid_invite_token_redeems_exactly_once() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_invite_link("link-1", "hash-1", None, None, 1000).unwrap();
+
+        let first = db.redeem_invite_and_create_user("hash-1", "user-1", "first@example.com", "hashed-pw", 2000).unwrap();
+        assert_eq!(first, RedeemInviteResult::Created);
+        assert!(db.get_user_by_email("first@example.com").unwrap().is_some());
+
+        // The real point of this whole feature: a second attempt against
+        // the exact same token, even with a different email, must fail -
+        // "more than one account cannot be registered using the same link".
+        let second = db.redeem_invite_and_create_user("hash-1", "user-2", "second@example.com", "hashed-pw", 3000).unwrap();
+        assert_eq!(second, RedeemInviteResult::InvalidOrAlreadyUsed);
+        assert!(db.get_user_by_email("second@example.com").unwrap().is_none(), "a rejected redemption must not create an account");
+    }
+
+    #[test]
+    fn an_unknown_token_is_rejected_without_creating_an_account() {
+        let db = Db::open_in_memory().unwrap();
+        let result = db.redeem_invite_and_create_user("no-such-hash", "user-1", "a@example.com", "hashed-pw", 1000).unwrap();
+        assert_eq!(result, RedeemInviteResult::InvalidOrAlreadyUsed);
+        assert!(db.get_user_by_email("a@example.com").unwrap().is_none());
+    }
+
+    #[test]
+    fn a_duplicate_email_still_burns_the_token_a_documented_accepted_trade_off() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user("existing", "taken@example.com", "hash", false, 500).unwrap();
+        db.create_invite_link("link-1", "hash-1", None, None, 1000).unwrap();
+
+        let result = db.redeem_invite_and_create_user("hash-1", "user-2", "taken@example.com", "hashed-pw", 2000).unwrap();
+        assert_eq!(result, RedeemInviteResult::DuplicateEmail);
+
+        // The token is now burned even though no new account exists - the
+        // documented trade-off in `redeem_invite_and_create_user`'s own doc
+        // comment, not a bug: a second attempt must still be rejected.
+        let retry = db.redeem_invite_and_create_user("hash-1", "user-3", "retry@example.com", "hashed-pw", 3000).unwrap();
+        assert_eq!(retry, RedeemInviteResult::InvalidOrAlreadyUsed);
+    }
+
+    #[test]
+    fn redeeming_a_request_linked_token_auto_actions_its_request() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_invite_request("req-1", "a@example.com", "let me in", 1000).unwrap();
+        db.create_invite_link("link-1", "hash-1", Some("enc-1"), Some("req-1"), 1000).unwrap();
+        assert_eq!(db.count_unactioned_invite_requests().unwrap(), 1);
+
+        db.redeem_invite_and_create_user("hash-1", "user-1", "a@example.com", "hashed-pw", 2000).unwrap();
+
+        assert_eq!(db.count_unactioned_invite_requests().unwrap(), 0, "a fulfilled request should clear itself off the pending list");
+    }
+
+    #[test]
+    fn pagination_helpers_respect_limit_offset_and_ordering() {
+        let db = Db::open_in_memory().unwrap();
+        for i in 0..5 {
+            db.create_invite_request(&format!("req-{i}"), &format!("user{i}@example.com"), "m", 1000 + i).unwrap();
+        }
+        assert_eq!(db.count_unactioned_invite_requests().unwrap(), 5);
+
+        let page1 = db.list_unactioned_invite_requests(2, 0).unwrap();
+        assert_eq!(page1.len(), 2);
+        // Newest first.
+        assert_eq!(page1[0].email, "user4@example.com");
+        assert_eq!(page1[1].email, "user3@example.com");
+
+        let page2 = db.list_unactioned_invite_requests(2, 2).unwrap();
+        assert_eq!(page2[0].email, "user2@example.com");
+        assert_eq!(page2[1].email, "user1@example.com");
+
+        let page3 = db.list_unactioned_invite_requests(2, 4).unwrap();
+        assert_eq!(page3.len(), 1);
+        assert_eq!(page3[0].email, "user0@example.com");
+    }
+
+    #[test]
+    fn get_invite_request_finds_a_row_even_after_it_has_been_actioned() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_invite_request("req-1", "a@example.com", "m", 1000).unwrap();
+        db.delete_invite_request("req-1", 2000).unwrap();
+
+        let row = db.get_invite_request("req-1").unwrap().expect("a soft-deleted request must still be individually fetchable");
+        assert_eq!(row.email, "a@example.com");
     }
 }

@@ -33,6 +33,8 @@ const CHECKOUT_NOT_FOUND_TEMPLATE: &str = include_str!("../templates/checkout_no
 const CHECKOUT_SHARE_TEMPLATE: &str = include_str!("../templates/checkout_share.html.hbs");
 const ADMIN_SETUP_TEMPLATE: &str = include_str!("../templates/admin_setup.html.hbs");
 const ADMIN_SETTINGS_TEMPLATE: &str = include_str!("../templates/admin_settings.html.hbs");
+const REQUEST_INVITE_TEMPLATE: &str = include_str!("../templates/request_invite.html.hbs");
+const ADMIN_INVITES_TEMPLATE: &str = include_str!("../templates/admin_invites.html.hbs");
 
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateError {
@@ -42,10 +44,9 @@ pub enum TemplateError {
     Render(#[from] handlebars::RenderError),
 }
 
-/// The view model both the signup and login templates take: just an
-/// optional, human-readable error message to display on re-render (a
-/// duplicate email, or a wrong password/unknown email) - `None` on the
-/// plain `GET` form.
+/// The view model the signup template takes: an optional, human-readable
+/// error message to display on re-render (a duplicate email, an invalid
+/// invite) - `None` on the plain `GET` form.
 #[derive(Debug, Default, Serialize)]
 pub struct FormViewModel {
     pub error: Option<String>,
@@ -55,6 +56,20 @@ pub struct FormViewModel {
     /// `http::dashboard::render_signup`'s own doc comment for why this page
     /// always renders `false` regardless of any existing session.
     pub logged_in: bool,
+    /// `true` when this instance's `signup.mode` is `"invite_only"` and no
+    /// valid-looking invite token is in play - the template shows a "you
+    /// need an invite" message and a link to `/request-invite` *instead of*
+    /// the email/password form entirely (there's nothing a visitor could
+    /// usefully submit without one). Always `false` in `"public"` mode.
+    pub invite_required: bool,
+    /// Carried through as a hidden form field (`GET
+    /// /dashboard/signup?invite=...`'s query param, echoed back on a
+    /// rejected `POST` the same way every other field on this form already
+    /// is) - the raw, not-yet-validated token; real validation happens at
+    /// submit time (`Db::redeem_invite_and_create_user`), never here. Empty
+    /// in `"public"` mode, where it's rendered but simply ignored by the
+    /// handler.
+    pub invite_token: String,
 }
 
 /// The view model the first-run admin setup wizard takes
@@ -818,6 +833,22 @@ pub struct NavOnlyViewModel {
     pub is_admin: bool,
 }
 
+/// The view model the landing page takes - [`NavOnlyViewModel`]'s two
+/// fields plus `signup_public`, which decides which of the two calls to
+/// action it shows: a plain "Sign up" (`signup.mode == "public"`) or
+/// "Request an invite to join" linking to `/request-invite`
+/// (`"invite_only"`, the default) - see `http::home::landing`'s own doc
+/// comment. Kept as its own struct rather than added onto `NavOnlyViewModel`
+/// itself, since that one's shared by two other pages
+/// (`new_store_picker`/`woocommerce_instructions`) that have nothing to do
+/// with signup mode at all.
+#[derive(Debug, Serialize)]
+pub struct LandingViewModel {
+    pub logged_in: bool,
+    pub is_admin: bool,
+    pub signup_public: bool,
+}
+
 /// One payment row on the checkout page's payments table
 /// (`docs/fx_refactor.md` Phase 2.2) - mirrors the engine's own (soon-
 /// removed) `PaymentViewModel` field-for-field.
@@ -982,6 +1013,64 @@ pub struct AdminSettingsViewModel {
     pub is_admin: bool,
 }
 
+/// The view model `GET`/`POST /request-invite` takes (`http::invites`) -
+/// the public "let me in" form shown on an invite-only instance's landing
+/// page in place of a plain sign-up button.
+#[derive(Debug, Default, Serialize)]
+pub struct RequestInviteViewModel {
+    pub error: Option<String>,
+    /// `true` after a successful `POST` - the template shows a plain
+    /// thank-you message instead of the form again, so a visitor can't
+    /// accidentally double-submit by refreshing.
+    pub submitted: bool,
+    pub logged_in: bool,
+    pub is_admin: bool,
+}
+
+/// One row on the admin invites page's pending-requests table
+/// (`http::invites::invites_page`) - the `mailto:` link is built server-side
+/// (real HTML `<a href>`, no JS - see `invite_links`'s own migration
+/// comment on why the raw token has to already be in the rendered page) and
+/// is `None` only for the pathological case `InviteRequestRow::invite_token_encrypted`'s
+/// own doc comment describes.
+#[derive(Debug, Serialize)]
+pub struct AdminInviteRequestRow {
+    pub id: String,
+    pub email: String,
+    pub message: String,
+    pub created_at_display: String,
+    pub mailto_href: Option<String>,
+    /// Set only for the one row this page just deleted (`?deleted=<id>`) -
+    /// rendered struck-through, as a one-time confirmation, outside the
+    /// page's own real pagination count. Always `false` for every row
+    /// coming from the real paginated query below it.
+    pub just_deleted: bool,
+}
+
+/// The view model `GET /dashboard/admin/invites` takes.
+#[derive(Debug, Default, Serialize)]
+pub struct AdminInvitesViewModel {
+    pub error: Option<String>,
+    pub success: Option<String>,
+    /// The just-deleted row's own one-time addendum (see
+    /// [`AdminInviteRequestRow::just_deleted`]) - `None` on a plain load.
+    pub just_deleted_row: Option<AdminInviteRequestRow>,
+    pub rows: Vec<AdminInviteRequestRow>,
+    pub page: u32,
+    pub total_pages: u32,
+    pub has_previous: bool,
+    pub has_next: bool,
+    pub previous_page: u32,
+    pub next_page: u32,
+    /// The freshly generated standalone link from "create invite link" -
+    /// shown exactly once, on this one response, never stored reversibly
+    /// (see `invite_links`'s own migration comment) and never redisplayed
+    /// on any later load.
+    pub created_link: Option<String>,
+    pub logged_in: bool,
+    pub is_admin: bool,
+}
+
 pub struct TemplateEngine {
     handlebars: Handlebars<'static>,
 }
@@ -1018,6 +1107,8 @@ impl TemplateEngine {
         handlebars.register_template_string("checkout_share", CHECKOUT_SHARE_TEMPLATE)?;
         handlebars.register_template_string("admin_setup", ADMIN_SETUP_TEMPLATE)?;
         handlebars.register_template_string("admin_settings", ADMIN_SETTINGS_TEMPLATE)?;
+        handlebars.register_template_string("request_invite", REQUEST_INVITE_TEMPLATE)?;
+        handlebars.register_template_string("admin_invites", ADMIN_INVITES_TEMPLATE)?;
         Ok(TemplateEngine { handlebars })
     }
 
@@ -1027,6 +1118,14 @@ impl TemplateEngine {
 
     pub fn render_admin_settings(&self, data: &AdminSettingsViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("admin_settings", data)?)
+    }
+
+    pub fn render_request_invite(&self, data: &RequestInviteViewModel) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("request_invite", data)?)
+    }
+
+    pub fn render_admin_invites(&self, data: &AdminInvitesViewModel) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("admin_invites", data)?)
     }
 
     pub fn render_signup(&self, data: &FormViewModel) -> Result<String, TemplateError> {
@@ -1057,8 +1156,8 @@ impl TemplateEngine {
         Ok(self.handlebars.render("webhooks", data)?)
     }
 
-    pub fn render_landing(&self, logged_in: bool, is_admin: bool) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("landing", &NavOnlyViewModel { logged_in, is_admin })?)
+    pub fn render_landing(&self, logged_in: bool, is_admin: bool, signup_public: bool) -> Result<String, TemplateError> {
+        Ok(self.handlebars.render("landing", &LandingViewModel { logged_in, is_admin, signup_public })?)
     }
 
     pub fn render_dashboard_home(&self, data: &DashboardViewModel) -> Result<String, TemplateError> {
@@ -1187,7 +1286,12 @@ mod tests {
     fn signup_template_shows_the_error_when_present() {
         let engine = TemplateEngine::new().unwrap();
         let html = engine
-            .render_signup(&FormViewModel { error: Some("that email is already registered".to_string()), logged_in: false })
+            .render_signup(&FormViewModel {
+                error: Some("that email is already registered".to_string()),
+                logged_in: false,
+                invite_required: false,
+                invite_token: String::new(),
+            })
             .unwrap();
         assert!(html.contains("that email is already registered"));
     }
@@ -1383,11 +1487,20 @@ mod tests {
     }
 
     #[test]
-    fn landing_page_renders_with_a_signup_cta() {
+    fn landing_page_renders_with_a_signup_cta_in_public_mode() {
         let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_landing(false, false).unwrap();
-        assert!(html.contains(r#"href="/dashboard/signup""#));
+        let html = engine.render_landing(false, false, true).unwrap();
+        assert!(html.contains(r#"class="btn" href="/dashboard/signup""#), "expected the main sign-up CTA, got: {html}");
+        assert!(!html.contains("Request an invite"));
         assert!(html.to_lowercase().contains("monero"));
+    }
+
+    #[test]
+    fn landing_page_renders_with_a_request_invite_cta_in_invite_only_mode() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine.render_landing(false, false, false).unwrap();
+        assert!(html.contains(r#"href="/request-invite""#), "expected the request-invite CTA, got: {html}");
+        assert!(!html.contains(r#"class="btn" href="/dashboard/signup""#), "the main sign-up CTA must not appear in invite-only mode");
     }
 
     #[test]
@@ -1462,6 +1575,75 @@ mod tests {
         let html = engine.render_woocommerce_instructions(true, false).unwrap();
         assert!(html.to_lowercase().contains("woocommerce"));
         assert!(html.contains(r#"href="/dashboard/connect""#));
+    }
+
+    #[test]
+    fn request_invite_form_renders_plain_and_submitted_states() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine.render_request_invite(&RequestInviteViewModel::default()).unwrap();
+        assert!(html.contains(r#"<form method="post" action="/request-invite">"#));
+
+        let html = engine.render_request_invite(&RequestInviteViewModel { submitted: true, ..Default::default() }).unwrap();
+        assert!(!html.contains("<form"), "a submitted request must not re-show the form");
+        assert!(html.to_lowercase().contains("thanks"));
+    }
+
+    #[test]
+    fn admin_invites_page_renders_with_no_pending_requests() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine
+            .render_admin_invites(&AdminInvitesViewModel {
+                page: 1,
+                total_pages: 1,
+                logged_in: true,
+                is_admin: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(html.to_lowercase().contains("no pending invite requests"));
+    }
+
+    #[test]
+    fn admin_invites_page_renders_rows_pagination_and_the_just_deleted_addendum() {
+        let engine = TemplateEngine::new().unwrap();
+        let html = engine
+            .render_admin_invites(&AdminInvitesViewModel {
+                just_deleted_row: Some(AdminInviteRequestRow {
+                    id: "req-old".to_string(),
+                    email: "gone@example.com".to_string(),
+                    message: "bye".to_string(),
+                    created_at_display: "2024-01-01".to_string(),
+                    mailto_href: None,
+                    just_deleted: true,
+                }),
+                rows: vec![AdminInviteRequestRow {
+                    id: "req-1".to_string(),
+                    email: "hopeful@example.com".to_string(),
+                    message: "let me in".to_string(),
+                    created_at_display: "2024-01-02".to_string(),
+                    mailto_href: Some("mailto:hopeful@example.com?subject=hi&body=there".to_string()),
+                    just_deleted: false,
+                }],
+                page: 2,
+                total_pages: 3,
+                has_previous: true,
+                has_next: true,
+                previous_page: 1,
+                next_page: 3,
+                logged_in: true,
+                is_admin: true,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(html.contains("gone@example.com"), "expected the just-deleted addendum row, got: {html}");
+        assert!(html.contains("hopeful@example.com"), "expected the real pending row, got: {html}");
+        assert!(
+            html.contains("mailto:hopeful@example.com?subject") && html.contains("hi") && html.contains("body") && html.contains("there"),
+            "expected the mailto link, got: {html}"
+        );
+        assert!(html.contains("Page 2 of 3"));
+        assert!(html.contains(r#"href="/dashboard/admin/invites?page=1""#));
+        assert!(html.contains(r#"href="/dashboard/admin/invites?page=3""#));
     }
 
     #[test]

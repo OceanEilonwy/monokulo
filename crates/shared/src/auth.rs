@@ -60,6 +60,14 @@ pub fn generate_admin_token() -> String {
     format!("admin_{}", random_hex(32))
 }
 
+/// A single-use account-signup invite token (monokulo's `signup.mode ==
+/// "invite_only"`, `http::invites`) - redeemable exactly once
+/// (`Db::redeem_invite_and_create_user`). Same generation primitive as
+/// every other credential here, with its own `invite_` prefix.
+pub fn generate_invite_token() -> String {
+    format!("invite_{}", random_hex(32))
+}
+
 /// A webhook's HMAC signing secret. Unlike `sk_`, this is stored reversibly (see
 /// `webhooks.signing_secret` in the schema) since it's needed on every delivery, not
 /// just checked once - "shown once" for this value is an API convention, not a
@@ -116,6 +124,14 @@ mod tests {
         let t1 = generate_connect_token();
         let t2 = generate_connect_token();
         assert!(t1.starts_with("conn_"));
+        assert_ne!(t1, t2);
+    }
+
+    #[test]
+    fn generated_invite_tokens_have_the_expected_prefix_and_are_unique() {
+        let t1 = generate_invite_token();
+        let t2 = generate_invite_token();
+        assert!(t1.starts_with("invite_"));
         assert_ne!(t1, t2);
     }
 

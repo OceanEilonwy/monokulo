@@ -88,7 +88,7 @@ pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupF
         );
     }
 
-    match signup::create_account(&state, &form.email, &form.password, true) {
+    match signup::create_account(&state, &form.email, &form.password, true, None) {
         Ok(_user_id) => {
             // The account row and the `setup_complete` flag are two separate
             // writes (`Db` has no cross-statement transaction API today) -
@@ -121,7 +121,15 @@ pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupF
         Err(CreateAccountError::DuplicateEmail) => {
             render_setup_form(&state, Some("That email is already registered."), &form.email)
         }
-        Err(CreateAccountError::Internal) => {
+        // `is_admin: true` above skips the invite check outright
+        // (`signup::create_account`'s own doc comment) - these two variants
+        // are genuinely unreachable from this call site, kept as a plain
+        // fallback rather than `unreachable!()` since "something went wrong,
+        // try again" is still a perfectly safe response if that ever
+        // somehow changed.
+        Err(CreateAccountError::Internal)
+        | Err(CreateAccountError::InviteRequired)
+        | Err(CreateAccountError::InvalidOrUsedInvite) => {
             render_setup_form(&state, Some("Something went wrong. Please try again."), &form.email)
         }
     }

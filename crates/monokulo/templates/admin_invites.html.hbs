@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Invites - Monokulo</title>
+{{> styles}}
+</head>
+<body>
+{{> nav}}
+<div class="wrap">
+
+<h1>Invites</h1>
+{{#if error}}
+<p class="error">{{error}}</p>
+{{/if}}
+{{#if success}}
+<p class="success">{{success}}</p>
+{{/if}}
+
+<form method="post" action="/dashboard/admin/invites/create-link">
+<button type="submit">Create invite link</button>
+</form>
+{{#if created_link}}
+<p>Share this link - it works once:</p>
+<pre>{{created_link}}</pre>
+{{/if}}
+
+<h2>Pending requests</h2>
+{{#if rows.[0]}}
+<table>
+<thead><tr><th>Email</th><th>Message</th><th>Requested</th><th>Actions</th></tr></thead>
+<tbody>
+{{#if just_deleted_row}}
+<tr class="row-deleted">
+<td>{{just_deleted_row.email}}</td>
+<td>{{just_deleted_row.message}}</td>
+<td>{{just_deleted_row.created_at_display}}</td>
+<td>deleted</td>
+</tr>
+{{/if}}
+{{#each rows}}
+<tr>
+<td>{{this.email}}</td>
+<td>{{this.message}}</td>
+<td>{{this.created_at_display}}</td>
+<td>
+{{#if this.mailto_href}}
+<a href="{{this.mailto_href}}">email invite</a>
+{{/if}}
+<form method="post" action="/dashboard/admin/invites/{{this.id}}/delete?page={{../page}}" class="inline-form">
+<button type="submit">delete</button>
+</form>
+</td>
+</tr>
+{{/each}}
+</tbody>
+</table>
+<nav class="pagination">
+{{#if has_previous}}<a href="/dashboard/admin/invites?page={{previous_page}}">Previous</a>{{/if}}
+<span>Page {{page}} of {{total_pages}}</span>
+{{#if has_next}}<a href="/dashboard/admin/invites?page={{next_page}}">Next</a>{{/if}}
+</nav>
+<form method="post" action="/dashboard/admin/invites/delete-all">
+<button type="submit">Delete all</button>
+</form>
+{{else}}
+{{#if just_deleted_row}}
+<table>
+<thead><tr><th>Email</th><th>Message</th><th>Requested</th><th>Actions</th></tr></thead>
+<tbody>
+<tr class="row-deleted">
+<td>{{just_deleted_row.email}}</td>
+<td>{{just_deleted_row.message}}</td>
+<td>{{just_deleted_row.created_at_display}}</td>
+<td>deleted</td>
+</tr>
+</tbody>
+</table>
+{{else}}
+<p class="hint">No pending invite requests.</p>
+{{/if}}
+{{/if}}
+
+</div>
+</body>
+</html>

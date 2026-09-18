@@ -40,6 +40,7 @@ macro_rules! scalar_settings {
 }
 
 scalar_settings! {
+    SIGNUP_MODE => { key: "signup.mode", env: "MONOKULO_SIGNUP_MODE", default: "invite_only" },
     ENGINE_URL => { key: "engine.url", env: "MONOKULO_ENGINE_URL", default: "http://127.0.0.1:8080" },
     SCANNER_ADMIN_TOKEN => { key: "engine.admin_token", env: "MONOKULO_SCANNER_ADMIN_TOKEN", default: "" },
     EXCHANGE_RATE_COINGECKO_ENABLED => { key: "exchange_rate.coingecko_enabled", env: "MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED", default: "true" },
@@ -63,6 +64,27 @@ pub fn get_raw(db: &Db, setting: &ScalarSetting) -> (String, SettingSource) {
     resolve_raw(setting.env_var, db_value.as_deref(), setting.default)
 }
 
+/// `SIGNUP_MODE`'s two valid values - a real enum rather than every caller
+/// matching on the raw string, so a typo'd or otherwise malformed stored
+/// value has exactly one place (here) that decides what it means.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SignupMode {
+    Public,
+    InviteOnly,
+}
+
+/// This instance's currently effective signup mode - anything other than
+/// the literal `"public"` is treated as `InviteOnly`, the same
+/// fail-closed-by-default posture `SIGNUP_MODE`'s own `"invite_only"`
+/// default already has (a malformed or unrecognized stored value should
+/// never accidentally open public signup).
+pub fn signup_mode(db: &Db) -> SignupMode {
+    match get::<String>(db, &SIGNUP_MODE).as_str() {
+        "public" => SignupMode::Public,
+        _ => SignupMode::InviteOnly,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -70,6 +92,7 @@ mod tests {
     #[test]
     fn every_scalar_settings_own_default_parses_as_the_type_boot_code_actually_requests_it_as() {
         let db = Db::open_in_memory().unwrap();
+        let _: String = get(&db, &SIGNUP_MODE);
         let _: String = get(&db, &ENGINE_URL);
         let _: String = get(&db, &SCANNER_ADMIN_TOKEN);
         let _: bool = get(&db, &EXCHANGE_RATE_COINGECKO_ENABLED);

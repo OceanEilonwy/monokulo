@@ -52,6 +52,7 @@ mod connect;
 mod connections;
 mod dashboard;
 mod home;
+mod invites;
 mod login;
 mod logout;
 mod orders;
@@ -125,6 +126,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/admin/setup", axum::routing::get(admin_setup::setup_form).post(admin_setup::setup_submit))
         .route("/dashboard/admin/settings", axum::routing::get(admin_settings::page).post(admin_settings::save_monokulo))
         .route("/dashboard/admin/scanner-settings", axum::routing::post(admin_settings::save_scanner))
+        .route("/request-invite", axum::routing::get(invites::request_invite_form).post(invites::request_invite_submit))
+        .route("/dashboard/admin/invites", axum::routing::get(invites::invites_page))
+        .route("/dashboard/admin/invites/create-link", axum::routing::post(invites::create_invite_link))
+        .route("/dashboard/admin/invites/delete-all", axum::routing::post(invites::delete_all_invite_requests))
+        .route("/dashboard/admin/invites/{id}/delete", axum::routing::post(invites::delete_invite_request))
         .route("/status", axum::routing::get(status_page::status_page))
         .route("/status/summary", axum::routing::get(status_page::status_summary))
         .route("/signup", post(signup::signup))

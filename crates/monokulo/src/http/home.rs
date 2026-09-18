@@ -35,8 +35,11 @@ pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Respo
     let authed = resolve_authed_user(&state, &headers);
     let logged_in = authed.is_some();
     let is_admin = authed.is_some_and(|(user, _)| user.is_admin);
-    let html =
-        state.templates.render_landing(logged_in, is_admin).expect("the built-in landing template must always render");
+    let signup_public = { crate::settings::signup_mode(&state.db.lock().unwrap()) == crate::settings::SignupMode::Public };
+    let html = state
+        .templates
+        .render_landing(logged_in, is_admin, signup_public)
+        .expect("the built-in landing template must always render");
     Html(html).into_response()
 }
 

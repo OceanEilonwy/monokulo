@@ -204,6 +204,13 @@ pub async fn page(State(state): State<AppState>, _admin: AuthedAdmin) -> Respons
 /// a bound enforced here).
 fn validate_monokulo_scalar(setting: &ScalarSetting, value: &str) -> Result<(), String> {
     match setting.key {
+        "signup.mode" => {
+            if value == "public" || value == "invite_only" {
+                Ok(())
+            } else {
+                Err(format!("{} must be \"public\" or \"invite_only\", got {value:?}", setting.key))
+            }
+        }
         "exchange_rate.coingecko_enabled" => value
             .parse::<bool>()
             .map(|_| ())
@@ -528,6 +535,7 @@ mod tests {
         let cookie = admin_session_cookie(&router).await;
 
         let new_values: &[(&str, &str)] = &[
+            ("signup.mode", "public"),
             ("engine.url", "http://scanner.internal:8443"),
             ("engine.admin_token", "admin_a_new_token_value"),
             ("exchange_rate.coingecko_enabled", "false"),

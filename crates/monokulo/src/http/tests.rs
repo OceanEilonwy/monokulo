@@ -871,3 +871,68 @@ async fn a_successful_login_with_a_malicious_next_falls_back_to_the_default_conf
         );
     }
 }
+
+fn invite_token_signup_request(email: &str, password: &str, invite_token: Option<&str>) -> Request<Body> {
+    let mut body = serde_json::json!({ "email": email, "password": password });
+    if let Some(token) = invite_token {
+        body["invite_token"] = serde_json::Value::String(token.to_string());
+    }
+    Request::builder().method("POST").uri("/signup").header("content-type", "application/json").body(Body::from(body.to_string())).unwrap()
+}
+
+/// `signup.mode` gating for the JSON `POST /signup` API - the browser-facing
+/// `/dashboard/signup` form's own equivalent behavior (including the real
+/// single-use guarantee) is covered end to end in `http::invites::tests`,
+/// which drives it through a real `/request-invite` + admin "create invite
+/// link" flow; these tests exercise the JSON surface specifically, since
+/// `signup::create_account` is shared by both and must not drift between
+/// them.
+#[tokio::test]
+async fn public_mode_signup_needs_no_invite_token_at_all() {
+    // `test_app_state`'s own `seed_test_admin` already defaults to
+    // `"public"` - this is the harness default every other test in this
+    // file already relies on, asserted explicitly here as documentation.
+    let router = test_router();
+    let response = router.oneshot(invite_token_signup_request("nobody-needs-an-invite@example.com", "correct horse battery staple", None)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+}
+
+#[tokio::test]
+async fn invite_only_mode_rejects_a_signup_with_no_token() {
+    let state = test_app_state();
+    let db = state.db.clone();
+    let router = build_router(state);
+    db.lock().unwrap().set_setting("signup.mode", "invite_only").unwrap();
+
+    let response = router.oneshot(invite_token_signup_request("hopeful@example.com", "correct horse battery staple", None)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    assert!(body["error"].as_str().unwrap().contains("invite"), "expected a clear invite-required error, got: {body}");
+}
+
+#[tokio::test]
+async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
+    let state = test_app_state();
+    let db = state.db.clone();
+    let router = build_router(state);
+    db.lock().unwrap().set_setting("signup.mode", "invite_only").unwrap();
+    let raw_token = shared::auth::generate_invite_token();
+    db.lock().unwrap().create_invite_link("link-1", &shared::auth::hash_secret_token(&raw_token), None, None, crate::now_unix()).unwrap();
+
+    let first = router
+        .clone()
+        .oneshot(invite_token_signup_request("first@example.com", "correct horse battery staple", Some(&raw_token)))
+        .await
+        .unwrap();
+    assert_eq!(first.status(), StatusCode::CREATED);
+
+    // The literal ask: "more than one account cannot be registered using
+    // the same link".
+    let second = router
+        .oneshot(invite_token_signup_request("second@example.com", "correct horse battery staple", Some(&raw_token)))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(second).await;
+    assert!(body["error"].as_str().unwrap().contains("already been used"), "expected a clear already-used error, got: {body}");
+}

@@ -35,6 +35,21 @@ use super::signup::{self, CreateAccountError};
 pub struct SignupForm {
     pub email: String,
     pub password: String,
+    /// The hidden field `signup.html.hbs` always renders (see
+    /// `FormViewModel::invite_token`'s own doc comment) - empty in
+    /// `"public"` mode, where it's submitted but simply ignored.
+    #[serde(default)]
+    pub invite: String,
+}
+
+#[derive(Deserialize)]
+pub struct SignupQuery {
+    /// `GET /dashboard/signup?invite=<token>` - carried straight into the
+    /// rendered form's hidden field, unvalidated (see
+    /// `FormViewModel::invite_token`'s own doc comment on why validation
+    /// only ever happens at submit time).
+    #[serde(default)]
+    pub invite: Option<String>,
 }
 
 #[derive(Deserialize)]
@@ -118,10 +133,17 @@ pub struct ConnectForm {
 /// showing the sign-up/log-in links regardless of any existing one is the
 /// reasonable default (see `templates::FormViewModel::logged_in`'s own doc
 /// comment).
-fn render_signup(state: &AppState, error: Option<&str>) -> Response {
+fn render_signup(state: &AppState, error: Option<&str>, invite_token: &str) -> Response {
+    let invite_required =
+        crate::settings::signup_mode(&state.db.lock().unwrap()) == crate::settings::SignupMode::InviteOnly && invite_token.trim().is_empty();
     let html = state
         .templates
-        .render_signup(&FormViewModel { error: error.map(str::to_string), logged_in: false })
+        .render_signup(&FormViewModel {
+            error: error.map(str::to_string),
+            logged_in: false,
+            invite_required,
+            invite_token: invite_token.to_string(),
+        })
         .expect("the built-in signup template must always render");
     Html(html).into_response()
 }
@@ -195,21 +217,29 @@ pub(super) fn redirect_302(location: &str) -> Response {
     (StatusCode::FOUND, [(header::LOCATION, location)]).into_response()
 }
 
-pub async fn signup_form(State(state): State<AppState>) -> Response {
-    render_signup(&state, None)
+pub async fn signup_form(State(state): State<AppState>, Query(query): Query<SignupQuery>) -> Response {
+    render_signup(&state, None, query.invite.as_deref().unwrap_or(""))
 }
 
 pub async fn signup_submit(State(state): State<AppState>, Form(form): Form<SignupForm>) -> Response {
-    match signup::create_account(&state, &form.email, &form.password, false) {
+    match signup::create_account(&state, &form.email, &form.password, false, Some(&form.invite)) {
         // Simplest reasonable post-signup behavior: send the new user to the
         // login page rather than also logging them in here - it reuses
         // `login_submit`'s own cookie-setting path instead of duplicating it,
         // at the cost of one extra form submission for the user.
         Ok(_user_id) => redirect_302("/dashboard/login"),
         Err(CreateAccountError::DuplicateEmail) => {
-            render_signup(&state, Some("That email is already registered. Try logging in instead."))
+            render_signup(&state, Some("That email is already registered. Try logging in instead."), &form.invite)
         }
-        Err(CreateAccountError::Internal) => render_signup(&state, Some("Something went wrong. Please try again.")),
+        Err(CreateAccountError::Internal) => {
+            render_signup(&state, Some("Something went wrong. Please try again."), &form.invite)
+        }
+        Err(CreateAccountError::InviteRequired) => render_signup(&state, None, ""),
+        Err(CreateAccountError::InvalidOrUsedInvite) => render_signup(
+            &state,
+            Some("That invite link is invalid or has already been used. Please request a new one."),
+            "",
+        ),
     }
 }
 
