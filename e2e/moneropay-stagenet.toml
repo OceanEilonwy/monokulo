@@ -3,7 +3,20 @@
 # real public stagenet node. See e2e/README.md for how this is used.
 
 [monero_node.stagenet]
+# Switched back to monerodevs.org (the community-curated stagenet node - see
+# init_wizard.rs::curated_nodes) after stagenet.xmr-tw.org itself proved
+# unreliable during this session's own e2e work: real, reproducible
+# mid-request hangs/dropped connections against it (confirmed independently
+# against both this file's own e2e_stagenet.rs and the newer
+# e2e_dashboard_stagenet.rs, so not a fluke of one test). node2.monerodevs.org
+# is configured as an explicit fallback so a single node being briefly down
+# doesn't stall the whole e2e run.
 host = "node.monerodevs.org"
+port = 38089
+ssl = false
+
+[[monero_node.stagenet.fallbacks]]
+host = "node2.monerodevs.org"
 port = 38089
 ssl = false
 
@@ -13,17 +26,6 @@ private_view_key = "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792
 public_spend_key = "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335"
 network = "stagenet"
 allowed_origins = ["http://127.0.0.1:8190"]
-
-[exchange_rate]
-provider = "fixed"
-[exchange_rate.rates]
-# `[exchange_rate.rates]` values are XMR-per-unit-of-fiat decimal strings, not
-# piconero (see Config::build_fixed_rate_provider / parse_xmr_to_piconero) -
-# "0.0067" here means 1 USD = 0.0067 XMR (~$149/XMR, roughly realistic). Not a
-# live market rate, just a fixed test value: it makes a human-readable
-# fiat_amount like "0.05" map to a genuinely tiny real stagenet payment
-# (335_000 micro-XMR = 0.000335 XMR = 335_000_000 piconero).
-USD = "0.0067"
 
 [payment]
 # Real stagenet blocks land roughly every ~2 minutes; requiring several

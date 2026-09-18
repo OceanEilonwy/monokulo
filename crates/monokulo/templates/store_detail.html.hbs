@@ -1,0 +1,180 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Store - Monokulo</title>
+{{> styles}}
+</head>
+<body>
+{{> nav}}
+<div class="wrap">
+
+{{#if store}}
+<h1>{{store.display_name}}</h1>
+
+<details class="help-disclosure">
+<summary>
+<span><span class="tag tag-{{store.health}}">{{store.health_label}}</span>&nbsp;<span class="muted">{{store.platform}}</span>&nbsp;&middot;&nbsp;<a href="{{store.site_url}}">{{store.site_url}}</a></span>
+<span class="hint">help</span>
+</summary>
+{{> integration_help public_key=store.public_key endpoint=store.endpoint is_woocommerce=store.is_woocommerce}}
+</details>
+
+<table>
+<tr><th>Public key</th><td><code>{{store.public_key}}</code></td></tr>
+<tr><th>Engine endpoint</th><td><code>{{store.endpoint}}</code></td></tr>
+<tr><th>Connected</th><td>{{store.created_at}}</td></tr>
+</table>
+
+<h2>Recent orders</h2>
+{{#if store.recent_orders}}
+<table>
+<thead>
+<tr><th>Payment ID</th><th>Status</th><th>Amount</th><th>Created</th></tr>
+</thead>
+<tbody>
+{{#each store.recent_orders}}
+<tr>
+<td><a href="/dashboard/connections/{{../store.connection_id}}/orders/{{this.payment_id}}">{{this.payment_id}}</a></td>
+<td>{{this.status}}</td>
+<td>{{this.amount}} {{this.currency}}</td>
+<td>{{this.created_at}}</td>
+</tr>
+{{/each}}
+</tbody>
+</table>
+{{else}}
+<p class="muted">No orders yet.</p>
+{{/if}}
+<p><a href="/dashboard/connections/{{store.connection_id}}/orders">all orders &rarr;</a>
+&nbsp;&middot;&nbsp;<a href="/dashboard/connections/{{store.connection_id}}/webhooks">webhooks &rarr;</a></p>
+
+<h2>Create an order</h2>
+<p class="hint">Creates a real order on the engine and takes you straight to its payment page.</p>
+{{#if store.order_creation_error}}
+<div class="error">{{store.order_creation_error}}</div>
+{{/if}}
+<form method="post" action="/dashboard/connections/{{store.connection_id}}/orders/new">
+<label for="amount">Amount</label>
+<input type="text" id="amount" name="amount" value="10.00" required>
+<label for="currency">Currency</label>
+{{#if store.order_currency_is_locked_to_xmr}}
+<input type="text" id="currency" name="currency" value="XMR" readonly>
+<span class="field-help">"XMR" - the only currency this instance can price an order in right now. Enable an
+exchange rate provider (below) to offer others.</span>
+{{else}}
+<select id="currency" name="currency">
+{{#each store.order_currency_options}}
+<option value="{{this}}">{{this}}</option>
+{{/each}}
+</select>
+<span class="field-help">"XMR" always works, with no provider needed. Any other currency here comes from this
+store's own exchange rate provider (below).</span>
+{{/if}}
+<label for="merchant_order_id">Merchant order ID <span class="field-help" style="display:inline">(optional)</span></label>
+<input type="text" id="merchant_order_id" name="merchant_order_id">
+<span class="field-help">Your own order/cart id, if you have one - shown on this order's detail page so you can
+match it back to your own records.</span>
+<button type="submit">Create order</button>
+</form>
+
+<h2>Settings</h2>
+{{#if store.settings_error}}
+<div class="error">{{store.settings_error}}</div>
+{{/if}}
+
+<h2>Confirmation Thresholds</h2>
+<p class="hint">How many blocks a payment needs before this store's orders read as paid. The default
+below is the fallback used whenever no custom threshold applies; custom thresholds let a higher-value
+order require more confirmations (or a lower-value one fewer) based on its amount in this store's base
+currency.</p>
+
+<h3>Default (fallback)</h3>
+<form method="post" action="/dashboard/connections/{{store.connection_id}}/settings/confirmations">
+<label>Confirmations required
+<input type="text" name="confirmations_required" value="{{store.confirmations_required}}" required>
+<span class="field-help">Used whenever an order's amount doesn't fall under any custom threshold below (or
+there are none) - the one threshold that always exists and can't be deleted.</span>
+</label>
+<button type="submit">Update</button>
+</form>
+
+<h3>Base currency</h3>
+<form method="post" action="/dashboard/connections/{{store.connection_id}}/settings/base-currency">
+<label>Base currency
+<select name="base_currency">
+{{#each store.base_currency_options}}
+<option value="{{this.code}}" {{#if this.selected}}selected{{/if}}>{{this.description}} ({{this.code}})</option>
+{{/each}}
+</select>
+<span class="field-help">What custom threshold amounts below are denominated in. Changing this deletes every
+custom threshold this store currently has - an amount in a currency you're no longer using means nothing.</span>
+</label>
+<button type="submit">Update</button>
+</form>
+
+<h3>Custom thresholds</h3>
+{{#if store.confirmation_thresholds}}
+<table>
+<thead><tr><th>Amount ({{store.base_currency}})</th><th>Confirmations required</th><th>Actions</th></tr></thead>
+<tbody>
+{{#each store.confirmation_thresholds}}
+<tr>
+<td>{{this.unit_amount}}</td>
+<td>{{this.confirmations_required}}</td>
+<td>
+<form method="post" action="/dashboard/connections/{{../store.connection_id}}/settings/confirmation-thresholds/{{this.id}}/delete" class="inline-form">
+<button type="submit">delete</button>
+</form>
+</td>
+</tr>
+{{/each}}
+</tbody>
+</table>
+{{else}}
+<p class="muted">No custom thresholds yet.</p>
+{{/if}}
+
+{{#unless store.confirmation_thresholds_at_max}}
+<form method="post" action="/dashboard/connections/{{store.connection_id}}/settings/confirmation-thresholds">
+<label>Amount ({{store.base_currency}})
+<input type="text" name="unit_amount" placeholder="50.00" required>
+</label>
+<label>Confirmations required
+<input type="text" name="confirmations_required" placeholder="20" required>
+</label>
+<button type="submit">Add threshold</button>
+</form>
+{{else}}
+<p class="hint">Maximum of 5 custom thresholds reached - delete one to add another.</p>
+{{/unless}}
+
+{{#if store.fx_provider_options}}
+<form method="post" action="/dashboard/connections/{{store.connection_id}}/settings/fx-provider">
+<label>Exchange rate provider
+<select name="fx_provider">
+{{#each store.fx_provider_options}}
+<option value="{{this.name}}" {{#if this.selected}}selected{{/if}}>{{this.name}}</option>
+{{/each}}
+</select>
+<span class="field-help">Where this store's orders get their live market rate from, for any currency other than
+XMR (which always works, needing no provider at all - see "create an order" above). "coingecko" looks up a
+live market rate (cached briefly before the next lookup refreshes it).</span>
+</label>
+<button type="submit">Update</button>
+</form>
+{{else}}
+<p><strong>Exchange rate provider:</strong> <span class="muted">none enabled on this instance</span></p>
+<p class="hint">Only XMR-denominated orders can be created until an admin of this Monokulo instance
+enables a provider (e.g. Coingecko).</p>
+{{/if}}
+
+{{else}}
+<h1>Store not found</h1>
+<p>This store doesn't exist, or isn't connected to your account.</p>
+{{/if}}
+
+</div>
+</body>
+</html>

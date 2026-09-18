@@ -1,0 +1,31 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sign up - Monokulo</title>
+{{> styles}}
+</head>
+<body>
+{{> nav}}
+<div class="wrap">
+
+<h1>Sign up</h1>
+{{#if error}}
+<p class="error">{{error}}</p>
+{{/if}}
+{{#if invite_required}}
+<p>This instance is invite-only. <a href="/request-invite">Request an invite</a> to join.</p>
+{{else}}
+<form method="post" action="/dashboard/signup">
+<input type="hidden" name="invite" value="{{invite_token}}">
+<label>Email <input type="email" name="email" required></label>
+<label>Password <input type="password" name="password" required></label>
+<button type="submit">Sign up</button>
+</form>
+{{/if}}
+<p>Already have an account? <a href="/dashboard/login">Log in</a></p>
+
+</div>
+</body>
+</html>

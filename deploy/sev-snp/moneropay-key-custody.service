@@ -1,0 +1,48 @@
+[Unit]
+Description=MoneroPay Cloud key-custody-server (SEV-SNP host)
+# The engine dials this over a Unix socket at boot (a bounded retry - see
+# scanner's own connect_socket_key_custody doc comment - handles the
+# ordinary race of both units starting around the same time), so this unit
+# only needs to exist and be startable before the engine, not necessarily
+# already accepting connections - no real ordering dependency to express
+# beyond "on the same box."
+Before=moneropay-engine.service
+
+[Service]
+Type=simple
+# No config file, no flags beyond the socket path - see
+# key-custody-server/src/bin/key-custody-server.rs's own doc comment for why
+# that's deliberate. The socket path here must match [key_custody].socket_path
+# in moneropay.toml exactly.
+ExecStartPre=/usr/bin/rm -f /run/moneropay/key-custody.sock
+ExecStart=/opt/moneropay/bin/key-custody-server /run/moneropay/key-custody.sock
+Restart=on-failure
+RestartSec=2
+RuntimeDirectory=moneropay
+RuntimeDirectoryMode=0750
+User=moneropay
+Group=moneropay
+
+# This process holds every connected tenant's view key material in cleartext,
+# in-process memory, for as long as it runs (PlainKeyCustody - see
+# docs/DESIGN.md §6.1 and docs/INCIDENT_RUNBOOK.md). The whole reason this
+# unit exists on SEV-SNP hardware rather than sharing the engine's own
+# process is memory isolation from anything else that might run on this
+# host - undermining that with a permissive sandbox defeats the point, so
+# this unit is hardened deliberately, not just as boilerplate:
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+PrivateTmp=true
+PrivateDevices=true
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_UNIX
+RestrictNamespaces=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+ReadWritePaths=/run/moneropay
+
+[Install]
+WantedBy=multi-user.target

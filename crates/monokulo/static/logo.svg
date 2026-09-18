@@ -1,0 +1,25 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
+<!-- The Monokulo mark: a looking-glass (the ring + handle) doubling as a
+     monocle (the small chain-loop on the rim), watching an eye - "okulo" -
+     whose pupil is faceted like a cut stone in Monero's own orange, tying
+     the three requested elements (looking glass, monocle, Monero) into one
+     glyph rather than three separate ones stitched together. Same
+     ink-on-paper, hard-edged, no-gradient style _styles.html.hbs already
+     uses everywhere else. Kept to the three colors already in that file's
+     root palette (ink, paper, accent) - no new palette to keep in sync. -->
+
+<!-- monocle chain-loop, attached to the rim's upper left -->
+<line x1="19.7" y1="16.3" x2="15.5" y2="12.5" stroke="#111111" stroke-width="2.25"/>
+<circle cx="13.5" cy="10.5" r="2.25" fill="none" stroke="#111111" stroke-width="2.25"/>
+
+<!-- looking-glass handle -->
+<line x1="39.3" y1="39.3" x2="56" y2="56" stroke="#111111" stroke-width="6" stroke-linecap="round"/>
+
+<!-- the lens itself -->
+<circle cx="28" cy="28" r="16" fill="#f4f1ea" stroke="#111111" stroke-width="5"/>
+
+<!-- the eye looking back through it -->
+<path d="M19,28 Q28,20.5 37,28 Q28,35.5 19,28 Z" fill="none" stroke="#111111" stroke-width="1.75"/>
+<circle cx="28" cy="28" r="5" fill="#ff6600" stroke="#111111" stroke-width="1"/>
+<rect x="26.1" y="26.1" width="3.8" height="3.8" fill="#111111" transform="rotate(45 28 28)"/>
+</svg>

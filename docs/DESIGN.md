@@ -1,4 +1,4 @@
-# MoneroPay — Design Document
+# Monokulo — Design Document
 
 Status: pre-implementation design. Everything here except the `key_custody` module
 (`src/key_custody/`) and the schema (`migrations/0001_init.sql`) is specification, not
@@ -88,7 +88,7 @@ difference is how many rows exist in `tenants`:
 
 ### 4.1 Onboarding tooling
 
-`moneropay-core --init` (optionally `--stagenet`/`--testnet`, `--config <path>`) is
+`scanner --init` (optionally `--stagenet`/`--testnet`, `--config <path>`) is
 an interactive wizard that produces or merges `moneropay.toml` — curated node
 choice with a live "test this connection now" check, the `[wallet]` bootstrap
 walked through field by field (or, on a re-run against an existing bootstrap,
@@ -113,7 +113,7 @@ front of it).
 The database always lives next to whichever config file was actually used
 (`moneropay.db` in the config's own directory, not the process's CWD) so these
 commands, and the server itself, reliably agree on which file they mean
-regardless of the directory `moneropay-core` happens to be launched from.
+regardless of the directory `scanner` happens to be launched from.
 
 ## 5. High-Level Architecture
 
@@ -161,6 +161,17 @@ Components, each with one clear owner of state:
 | Writer Actor | The single SQLite write connection; all mutations | Outbound HTTP (webhooks go through the delivery worker) |
 | Read pool | Pooled read-only SQLite connections (WAL) | Any write |
 | Webhook Delivery Worker | Outbound HTTP to merchant endpoints | Order/tenant state mutation beyond its own delivery-log rows |
+
+The diagram's "Static site (GH Pages) + client lib" box describes a self-hoster's own
+direct integration against this engine's plain JSON API (§10.3) - real, still
+supported, but no longer how the hosted SaaS product (monokulo) works.
+`docs/fx_refactor.md` moved fiat pricing, the checkout page, and the embed client
+library off this engine entirely: a merchant using monokulo has *that* service
+sitting where this diagram shows the static site talking to the engine directly, and
+monokulo is the one that talks to this engine's API on the merchant's behalf
+(§10.4, §14). This engine's own diagram and JSON API are otherwise unchanged - it
+still just watches the chain and manages orders/tenants/webhooks; fiat/checkout is
+simply no longer any part of what it does.
 
 ## 6. The `KeyCustody` Boundary
 
@@ -264,6 +275,20 @@ pub trait MoneroDaemonClient: Send + Sync {
 The real implementation talks to `monerod`'s JSON-RPC and plain-HTTP RPC endpoints over
 `reqwest` + `rustls` (never OpenSSL, to keep the static-binary goal intact). `ssl`,
 `host`, `port` from `[monero_node]` config select the connection.
+
+**Fallback nodes** (`daemon_fallback::FallbackDaemonClient`): each configured
+network's real client is this wrapper around an ordered list of plain
+`RpcDaemonClient`s - the primary node from `[monero_node.<network>]` plus any
+`[[monero_node.<network>.fallbacks]]` entries - rather than a single `RpcDaemonClient`
+directly. It implements `MoneroDaemonClient` itself, so nothing downstream (the
+scanner, `run_scan_tick`) knows or cares that more than one node might be involved.
+Every call starts at whichever node last succeeded and walks forward through the rest
+on failure, wrapping around; there is no background health-check, since the next real
+call *is* the health check. A self-hoster relying on a single community-run public
+node - the common case this project targets - stays exposed to that node's own
+downtime unless they add at least one fallback. This trades reliability for a wider
+trust surface - see §7.7's "Fallback nodes widen this trust boundary" for what
+adding a fallback actually costs.
 
 ### 7.2 0-conf and confirmed detection
 
@@ -456,7 +481,12 @@ an assumption.
   voided; a false "unspent" delays (never prevents) detection of a real double-spend,
   since the check is re-run on every subsequent reorg and mempool sweep. Nothing else
   the scanner holds can corroborate a key-image status — key images are exactly the
-  data a light client cannot derive for itself.
+  data a light client cannot derive for itself. **Partially closed when a fallback
+  node is configured** - see "Fallback nodes widen this trust boundary" below for
+  both the prevention (`is_key_image_spent_corroborated`) and recovery
+  (`revalidate_recent_double_spend_voids`) halves of the fix. A self-hoster running a
+  single node still has no corroboration source and is fully exposed to this trust
+  boundary as originally described.
 - **Block contents.** A node that omits a transaction from a block hides a payment;
   one that invents transactions cannot manufacture a payment, because a payment row
   exists only where `KeyCustody` matched an output against the tenant's own view key,
@@ -479,19 +509,155 @@ an assumption.
   (§7.5), so a node that "forgets" a transaction cannot make a merchant's money
   disappear from the record.
 
+**Fallback nodes widen this trust boundary, not just its reliability.**
+`daemon_fallback::FallbackDaemonClient` (added for production reliability, not for
+this section's threat model) fails over between a network's configured primary node
+and its `fallbacks` on any single call failure. Everything above about "the node" is
+trusted per network was written for exactly one node; with fallbacks configured it
+now means trusting *whichever* of them answers a given call, with no quorum and no
+cross-check between them - a compromised or eclipsed fallback is exactly as trusted
+as the primary the moment it starts answering. Two consequences worth naming
+explicitly, both pinned by tests rather than left as unverified worry:
+
+- **A fallback presenting a different chain reconciles exactly like a reorg** -
+  the property proven above for a hand-swapped daemon holds identically for a real
+  failover decision
+  (`failing_over_through_a_real_fallback_client_to_a_node_serving_a_different_chain_reconciles_like_a_reorg`),
+  and a fallback that is simply behind rather than diverging neither rewinds the
+  scanned window nor falsely voids anything
+  (`failing_over_to_a_lagging_but_honest_fallback_neither_rewinds_nor_corrupts_the_window`).
+  Total loss of every configured node for a network fails that tick cleanly - an
+  ordinary retryable error, no partial writes -
+  (`every_fallback_node_being_down_fails_the_tick_cleanly_without_corrupting_stored_state`).
+- **A narrower, genuinely new gap**: `run_scan_tick` fetches a block's transactions
+  and its hash as two separate daemon calls (see the comment above
+  `daemon.get_block_hash(height)` in `run_scan_tick`). Failover is per-call, so those
+  two calls for the same height are not guaranteed to land on the same node - if the
+  first succeeds against the primary and the primary dies before the second, the
+  height gets recorded with one node's transactions paired with a *different* node's
+  hash, a pairing that does not correspond to any single node's real block. This is a
+  sharper version of a risk already accepted for one node (the "replication lag
+  across a pool of backend nodes behind a public endpoint" case in `run_scan_tick`'s
+  bootstrap branch), now bounded only by how different two independently operated
+  nodes are allowed to be rather than how out-of-sync one endpoint's own backends
+  are. Confirmed to actually happen, not just theorized, by
+  `a_node_that_dies_between_fetching_a_blocks_transactions_and_its_hash_can_pair_them_with_a_different_nodes_hash`.
+  Not fixed here: the per-call failover granularity that causes it is also what lets
+  a tick survive a node dying *partway through*, which is a real resilience win
+  worth keeping; pinning it to one node per tick would trade this narrow, low-
+  probability inconsistency for aborting the whole tick's remaining work on any
+  mid-tick blip.
+- **`is_key_image_spent` is fixed, not just documented, once a fallback is
+  configured** - the one item on this list where "widens the trust boundary" turned
+  out to have a real answer rather than only a tradeoff to accept. Two parts,
+  addressing prevention and recovery separately since a single-node deployment can
+  only ever benefit from the second:
+  - **Prevention**: `MoneroDaemonClient::is_key_image_spent_corroborated` (default:
+    delegates to the plain call, unchanged for every single-node client) is what
+    `void_if_double_spend_proven` calls instead of the bare method.
+    `FallbackDaemonClient`'s override polls *every* configured node - not just the
+    "sticky" one everything else uses - and affirms `SpentInBlockchain` only when
+    all of them agree; a genuine disagreement is logged and treated as *not* spent,
+    since a missed double-spend is merely re-checked again later while a false one
+    permanently voids real money. Proven to actually prevent the exact attack a
+    single lying node used to cause
+    (`a_fallback_daemon_that_disagrees_with_the_primary_prevents_the_wrongful_void_a_single_lying_node_would_cause`),
+    without weakening genuine detection when every node honestly agrees - the
+    overwhelmingly common case even with a fallback configured
+    (`a_fallback_daemon_still_voids_a_real_double_spend_every_node_agrees_on`).
+  - **Recovery**: `scanner::revalidate_recent_double_spend_voids`, a separate,
+    slow (every few minutes, see `main.rs`) background sweep bounded to voids from
+    the last `DOUBLE_SPEND_RECHECK_WINDOW_SECS` (48h) - the *only* other path,
+    alongside `check_for_reorg_and_reconcile`'s reverse check, that can ever reverse
+    a void, and the only one that does not require a reorg to also be independently
+    detected first. Reversing via this path clears the order's sticky
+    `double_spend_detected_at` flag (once every voided payment on the order has
+    been cleared, not as a side effect of clearing just one of several -
+    `revalidate_recent_double_spend_voids_keeps_the_flag_set_while_another_voided_payment_still_justifies_it`)
+    and fires a distinct `order.double_spend_reversed` webhook, unlike the
+    reorg-driven reversal path, which deliberately leaves both alone (a real
+    conflicting transaction genuinely existed there for a time in that story, even
+    though it was later reorged away - this path exists specifically because the
+    original accusation may never have been true at all). Exists specifically for
+    the single-node deployment, which has nothing to corroborate against and so
+    cannot benefit from prevention alone.
+
 **The deployment consequence**: the node is a trusted component. Point this service at
 your own `monerod`, not at a public endpoint you do not control, whenever the payments
 matter — and note that a *single* node is also the unit an eclipse attack targets
 (there is published work on practical eclipse attacks against Monero's P2P layer), so
 "my own node" means one whose peers you are willing to trust too.
 
+### 7.8 Merchant-triggered order rescan
+
+Full design record: [`docs/order_rescan_wbs.md`](order_rescan_wbs.md). Summary for
+future readers of this file:
+
+**The problem.** §7.3's active watchlist drops a tenant the moment every one of its
+orders is terminal, and an `expired` order is terminal — so a customer who pays *after*
+their order's own deadline (a late payment, mempool congestion, simple confusion) is
+invisible to ordinary live scanning the instant `expires_at` passes, with no automatic
+recovery.
+
+**Two layers of defense, not one:**
+
+1. **A default grace period** — `active_tenant_ids`/`non_terminal_order_ids`
+   (`store.rs`) both widen their in-scope predicate with `OR (status = 'expired' AND
+   expires_at >= now - expired_order_grace_period_minutes)`. Automatic, no merchant
+   action, default 6h — catches the common case (paid moments late) for free. No other
+   scanner-core change was needed to make a late match against an already-`expired`
+   order settle correctly: `record_scan_match`'s `touched` set already gets unioned
+   into every tick's recompute sweep regardless of status.
+2. **A manual, merchant-triggered rescan**, for after the grace window has genuinely
+   elapsed — a customer reports a payment days later. `scanner::rescan_order` walks a
+   bounded `[from_height, to_height]` block range for one order's one subaddress,
+   reusing the exact same `scan_transaction`/`record_scan_match` primitives live
+   scanning uses (a narrower caller, not a second implementation), then does one final
+   pass over the current mempool. The historical walk deliberately gets a fixed
+   safety cushion on its *start* height only (`RESCAN_START_HEIGHT_CUSHION_BLOCKS`,
+   guarding against `find_height_at_or_before`'s timestamp→height binary search
+   landing slightly late on Monero's non-strictly-monotonic block timestamps); the
+   *end* side gets no equivalent buffer, because §7.5's reorg/double-spend
+   reconciliation already re-examines every recorded payment within
+   `reorg_check_depth` of the tip regardless of the owning order's status — a payment
+   the rescan records, even one that immediately settles the order, inherits that
+   protection automatically.
+
+**Durability.** A triggered rescan is a real row in `order_rescans` (§8), not an
+in-memory task: `status = 'running'` survives a server restart as-is (no separate
+"interrupted" state), and the engine re-spawns `scanner::run_rescan_job` for every such
+row at boot (`Store::list_running_rescans`), resuming from the row's own
+`current_height` — never the original `from_height` again, and never a
+`to_height` recomputed against a newer tip. A partial unique index enforces one
+running rescan per tenant at a time.
+
+**Scanned-range bookkeeping and its own guardrail.** Every order accumulates
+`first_scanned_height`/`last_scanned_height` (§8), bumped by ordinary live scanning
+(§7.3's watchlist) and by a manual rescan alike, via `MIN`/`MAX` — never replaced, so
+the range only ever grows. This makes the range's display trustworthy (a merchant can
+tell "was the block range around when my customer says they paid actually checked") only
+because of one guardrail: the trigger endpoint rejects an advanced-mode `to` that
+resolves earlier than the order's existing `last_scanned_height`. Without it, a narrow
+advanced-mode request could leave a real, silent gap between the old high-water mark
+and the new rescan's own end that the min/max range would then hide entirely, showing a
+continuous span with an actual hole in it.
+
 ## 8. Data Model
 
 Canonical DDL: [`migrations/0001_init.sql`](../migrations/0001_init.sql) — validated
 against a real `sqlite3` (constraints exercised live: `CHECK` on `status`,
 `UNIQUE(tenant_id, minor_index)`, `UNIQUE(txid, output_index)`, and the foreign keys).
-Reproduced here for reference; the migration file is the source of truth if these ever
-diverge.
+Reproduced here for reference; the migration files are the source of truth if these ever
+diverge — in particular this snapshot predates migrations 0002-0006 (a scanned-blocks
+`network` column, the order-payments uniqueness constraint becoming order-scoped, and
+the two `docs/fx_refactor.md` migrations below), so treat the column lists as
+illustrative of the model's shape, not a byte-for-byte current schema dump.
+
+`docs/fx_refactor.md` (Phase 3/4) dropped `orders.fiat_currency`/`fiat_amount`/
+`exchange_rate` and `tenants.template_dir` from the columns below — the engine has no
+concept of fiat/FX or per-tenant checkout customization left in it at all; `xmr_amount_piconero`
+is the sole source of truth for what an order is worth, and any fiat display is a
+monokulo concern (its own local `order_fiat_metadata` table, not part of this schema).
 
 ```sql
 PRAGMA journal_mode = WAL;
@@ -511,7 +677,6 @@ CREATE TABLE tenants (
     zero_conf_max_piconero  INTEGER,
     order_expiry_seconds    INTEGER NOT NULL DEFAULT 1800,
     allowed_origins         TEXT NOT NULL,
-    template_dir            TEXT,
     created_at              INTEGER NOT NULL,
     disabled_at             INTEGER
 );
@@ -522,9 +687,6 @@ CREATE TABLE orders (
     merchant_order_id        TEXT,
     minor_index              INTEGER NOT NULL,
     address                  TEXT NOT NULL,
-    fiat_currency            TEXT NOT NULL,
-    fiat_amount              TEXT NOT NULL,
-    exchange_rate            TEXT NOT NULL,
     xmr_amount_piconero      INTEGER NOT NULL,
     amount_received_piconero INTEGER NOT NULL DEFAULT 0,
     status                   TEXT NOT NULL DEFAULT 'pending'
@@ -610,6 +772,51 @@ scan range only grows over a tenant's lifetime — acceptable at realistic v1 vo
 given the `KeyCustody` cache (§6.2 point 4), and explicitly deferred rather than solved
 speculatively (§3).
 
+### 8.3 Order rescan additions (§7.8)
+
+Two columns added to `orders` (migration 0008):
+
+```sql
+ALTER TABLE orders ADD COLUMN first_scanned_height INTEGER;
+ALTER TABLE orders ADD COLUMN last_scanned_height INTEGER;
+```
+
+Both `NULL` until an order is first examined by anything — never backfilled to
+`created_at`'s own height. Accumulated by `MIN`/`MAX`, never replaced, by two
+independent writers (ordinary live scanning and a manual rescan) sharing the same
+discipline — see §7.8 for why that, plus the gap-prevention guardrail, is what keeps
+the displayed range genuinely continuous rather than merely usually so.
+
+A new table, `order_rescans` (migration 0007), one row per triggered job:
+
+```sql
+CREATE TABLE order_rescans (
+    id             TEXT PRIMARY KEY,
+    order_id       TEXT NOT NULL REFERENCES orders(id),
+    tenant_id      TEXT NOT NULL REFERENCES tenants(id),
+    minor_index    INTEGER NOT NULL,
+    mode           TEXT NOT NULL CHECK (mode IN ('simple', 'advanced')),
+    status         TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
+    from_height    INTEGER NOT NULL,
+    to_height      INTEGER NOT NULL,
+    current_height INTEGER NOT NULL,
+    error          TEXT,
+    started_at     INTEGER NOT NULL,
+    finished_at    INTEGER,
+    updated_at     INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX order_rescans_one_running_per_tenant
+    ON order_rescans (tenant_id) WHERE status = 'running';
+CREATE INDEX order_rescans_order_id ON order_rescans (order_id);
+```
+
+`mode` is purely informational — what actually governs the walk is `from_height`/
+`to_height`, already resolved to concrete block heights at trigger time. `status` has
+no `interrupted` value: a row left `running` when the process stopped simply *is*
+still running as far as this table is concerned (§7.8's restart-resume). The partial
+unique index is the one-running-rescan-per-tenant guardrail, enforced atomically at
+the database level rather than by a separate check-then-insert.
+
 ## 9. Concurrency Model
 
 - **Runtime**: `tokio`, with an explicitly configurable `worker_threads` (default
@@ -637,9 +844,13 @@ speculatively (§3).
 All JSON endpoints share one version prefix, `/api/v1`, including admin routes — there
 is no principled reason to exempt admin from the same breaking-change discipline the
 public surface gets, and a reverse-proxy rule restricting admin traffic (e.g. to a LAN)
-matches on `/api/v1/admin/*` exactly as easily as on a bare `/admin/*`. The
-checkout/payment-link page is a *different kind of surface* (rendered HTML, not a
-JSON data contract) and gets its own independent version namespace, `/pay/v1/...`.
+matches on `/api/v1/admin/*` exactly as easily as on a bare `/admin/*`.
+
+The engine no longer has a checkout/payment-link page of its own at all
+(`docs/fx_refactor.md` Phase 2-4): that HTML surface, and everything fiat/FX-shaped,
+moved to monokulo, which is now the only thing that renders a page a customer's
+browser ever sees. What follows in this section is strictly the engine's own remaining
+JSON API — `xmr_amount_piconero` only, no fiat concept anywhere in it.
 
 ### 10.1 Auth model
 
@@ -679,11 +890,14 @@ every handler an already-scoped tenant context, not re-implemented per handler.
 |---|---|---|---|
 | `POST` | `/api/v1/admin/tenants` | none (DDoS layer only, §12) | `{view_key_hex, spend_pubkey_hex, network, allowed_origins[], confirmations_required?, zero_conf_max_xmr?, order_expiry_seconds?}` → `{tenant_id, public_key, secret_token}` (secret shown once) |
 | `GET` | `/api/v1/admin/tenant` | `sk_` | Own config; never returns `sealed_key_material` or the token hash |
-| `PATCH` | `/api/v1/admin/tenant` | `sk_` | Mutable fields only: `allowed_origins`, `confirmations_required`, `zero_conf_max_xmr`, `order_expiry_seconds`, `template_dir`. Key material and `public_key` are immutable — rotate by creating a new tenant |
+| `PATCH` | `/api/v1/admin/tenant` | `sk_` | Mutable fields only: `allowed_origins`, `confirmations_required`, `zero_conf_max_xmr`, `order_expiry_seconds`. Key material and `public_key` are immutable — rotate by creating a new tenant |
 | `POST` | `/api/v1/admin/tenant/rotate-secret` | `sk_` | Invalidates the old secret, returns a new one once |
 | `DELETE` | `/api/v1/admin/tenant` | `sk_` | Soft-delete: `key_custody.remove_wallet()`, set `disabled_at`; orders keep a valid FK |
-| `GET` | `/api/v1/admin/tenant/orders?status=&cursor=` | `sk_` | Paginated |
-| `GET` | `/api/v1/admin/tenant/orders/{payment_id}` | `sk_` | Includes `order_payments` audit trail |
+| `GET` | `/api/v1/admin/tenant/orders?status=&cursor=` | `sk_` | Paginated; each row also carries `first_scanned_height`/`last_scanned_height`/`currently_scanning` (§7.8) |
+| `GET` | `/api/v1/admin/tenant/orders/{payment_id}` | `sk_` | Includes `order_payments` audit trail and the same three scanned-range fields |
+| `POST` | `/api/v1/admin/tenant/orders/{payment_id}/rescan` | `sk_` | `{mode: "simple"\|"advanced", from?, to?}` → the triggered job's state (§7.8) - `Expired` orders only |
+| `GET` | `/api/v1/admin/tenant/orders/{payment_id}/rescan` | `sk_` | The most recently triggered rescan for this order, `404` if none ever was (§7.8) |
+| `GET` | `/api/v1/admin/tenant/rescans` | `sk_` | Every currently-`running` rescan for this tenant; real HTTP caching (`ETag`/`Cache-Control`/`If-None-Match`, §7.8) |
 | `POST` | `/api/v1/admin/tenant/webhooks` | `sk_` | `{url, extra_headers?}` → `{webhook_id, signing_secret}` (shown once — an API convention here, not a hashing guarantee, since HMAC signing needs the real bytes on every delivery) |
 | `GET` | `/api/v1/admin/tenant/webhooks` | `sk_` | List (never re-shows `signing_secret`) |
 | `DELETE` | `/api/v1/admin/tenant/webhooks/{id}` | `sk_` | Rotation is delete+recreate in v1 |
@@ -695,21 +909,31 @@ No bearer auth — scoped by `pk_` in the path plus an `allowed_origins` check o
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/api/v1/t/{pk}/orders` | `{merchant_order_id?, fiat_amount, fiat_currency, description?}` → `{payment_id, address, xmr_amount, exchange_rate, expires_at}` |
+| `POST` | `/api/v1/t/{pk}/orders` | `{merchant_order_id?, xmr_amount_piconero, description?}` → `{payment_id, address, xmr_amount_piconero, expires_at}` — the caller (in practice, monokulo's own order-creation endpoint) supplies the exact piconero amount an order is worth; the engine does no fiat lookup of any kind (`docs/fx_refactor.md` Phase 3) |
 | `GET` | `/api/v1/t/{pk}/orders/{payment_id}` | Status poll |
-| `GET` | `/api/v1/t/{pk}/orders/{payment_id}/events` | SSE, pushed by the writer actor |
 | `POST` | `/api/v1/t/{pk}/orders/{payment_id}/refund-address` | Records only; nothing ever sends it |
 
-### 10.4 Payment link / widget (`/pay/v1/{pk}/{payment_id}`)
+### 10.4 Checkout page and client library — moved off the engine
 
-One route serves both the iframe embed target *and* a standalone link a merchant hands
-a customer directly (email, chat) that "continues to work" independent of the
-merchant's own site. Both uses share the same rendering logic — `postMessage` calls to
-a parent window are harmless no-ops when there is no parent listening — so this
-deliberately avoids maintaining two near-identical template sets. Rendered from the
-tenant's `template_dir` (or the server default), showing the recomputed `status` plus,
-independently, a double-spend explanation banner whenever `double_spend_detected_at`
-is set (§7.6) — the banner's presence is not tied to which `status` is currently shown.
+Both now live on monokulo, not here (`docs/fx_refactor.md` Phases 2-4):
+
+- The checkout/payment-link page (iframe embed target and standalone customer-facing
+  link) is `GET /pay/{pk}/orders/{payment_id}` on monokulo
+  (`monokulo/src/http/checkout.rs`), not a route on this engine at all. It shows
+  the recomputed `status`, a double-spend explanation banner whenever
+  `double_spend_detected_at` is set (§7.6, unrelated to which `status` is currently
+  shown), and a fiat amount sourced entirely from monokulo's own local
+  `order_fiat_metadata` — this engine has nothing to contribute to that display since
+  it stores no fiat data. There is no per-tenant template customization any more:
+  every tenant gets the same monokulo-rendered page.
+- The embeddable widget script (`Monokulo.createOrder()`/`.mount()`) is served from
+  monokulo at `GET /static/moneropay-client.js` and calls monokulo's own
+  `POST /pay/{pk}/orders`, not this engine's API directly.
+
+A self-hoster running the engine alone, with no monokulo in front of it, has
+neither of these — they get the plain JSON API in §10.3 and are expected to build
+their own checkout experience against it, per this project's own "power users write a
+custom integration" stance on that deployment shape.
 
 ## 11. Webhook Delivery
 
@@ -727,12 +951,12 @@ is set (§7.6) — the banner's presence is not tied to which `status` is curren
   never the writer itself, so a slow or unresponsive merchant endpoint cannot stall
   order-state commits.
 - Each delivery is signed: HMAC-SHA256 of the body using the webhook's
-  `signing_secret`, sent as a header (`X-MoneroPay-Signature`).
+  `signing_secret`, sent as a header (`X-Monokulo-Signature`).
 - Every payload carries a common envelope alongside its event-specific fields:
   `event_id` (`evt_…`, minted once per *event* — every retry of that delivery re-sends
   the same id under the same signature), `event` (the event type, mirroring
-  `X-MoneroPay-Event`), and `created_at` (unix seconds). `event_id` is also sent as
-  `X-MoneroPay-Event-Id`, read back out of the signed body so header and body can
+  `X-Monokulo-Event`), and `created_at` (unix seconds). `event_id` is also sent as
+  `X-Monokulo-Event-Id`, read back out of the signed body so header and body can
   never disagree. Both fields are *inside* the signed body deliberately: without an
   id, a retry of a lost-ack delivery is byte-identical to a genuine second transition
   to the same status, and without a timestamp a captured delivery can be replayed
@@ -789,9 +1013,12 @@ ssl = false
 primary_address = "4..."
 private_view_key = "..."
 
-[exchange_rate]
-provider = "haveno"           # pluggable trait: haveno | kraken | coingecko | fixed
-cache_seconds = 60
+# No [exchange_rate] section: the engine has no concept of fiat/FX at all
+# (`docs/fx_refactor.md` Phase 3/4) - `xmr_amount_piconero` is the only unit an order
+# is ever priced in here. A hosted-SaaS front end (monokulo) that wants to quote
+# fiat prices owns that lookup entirely on its own side, via its own
+# `CONTROL_PLANE_EXCHANGE_RATE_*` environment variables - see
+# `monokulo/src/exchange_rate_config.rs`, not this file.
 
 [payment]
 confirmations_required = 10
@@ -799,6 +1026,10 @@ zero_conf_max_xmr = "0.25"    # XMR, not fiat: compared against the piconero tot
 order_expiry_minutes = 30
 reorg_check_depth = 20        # blocks; should exceed confirmations_required with margin
 mempool_poll_interval_ms = 1000
+# `docs/order_rescan_wbs.md` - merchant-triggered order rescan (§7.8 below).
+default_rescan_lookback_days = 7    # "simple" mode's own fixed window, measured back from now
+max_rescan_lookback_days = 90       # hard ceiling both simple and advanced modes share
+expired_order_grace_period_minutes = 360  # 6h - how long past expires_at ordinary live scanning keeps watching an order; 0 disables it
 
 [server]
 bind = "0.0.0.0:8443"
@@ -821,31 +1052,55 @@ delivery_timeout_ms = 5000
 max_attempts = 8
 ```
 
+Two rescan-related knobs live outside this file entirely:
+
+- **`RESCAN_START_HEIGHT_CUSHION_BLOCKS`** (`src/scanner.rs`) - the fixed safety margin
+  (720 blocks, ~24h) subtracted from a rescan's timestamp-derived start height (§7.8) -
+  covers both the timestamp binary search's own slop and the advanced-mode date
+  fields' inherent timezone ambiguity (monokulo labels them UTC; a plain
+  `<input type="date">` carries no timezone at all). A compile-time constant, not
+  configuration, for now - there has been no operational need yet to tune it per
+  deployment.
+- **`CONTROL_PLANE_HTTP_CACHE_MAX_MB`** - monokulo's own environment variable
+  (default 16), not part of this engine's TOML at all. Sizes the byte-bounded HTTP
+  response cache (`shared::http_cache`) monokulo uses for every outbound call to
+  this engine's admin API and to Coingecko - see `shared/src/http_cache.rs`'s own
+  module doc comment.
+
 ## 14. Client Library
 
+**Moved off this engine entirely** (`docs/fx_refactor.md` decision 3): fiat pricing
+and the checkout page both live on monokulo now, so the embed library talks to
+monokulo, not this engine directly. Served from
+`monokulo/static/moneropay-client.js` at `GET /static/moneropay-client.js` on
+whichever monokulo instance a merchant is using:
+
 ```html
-<script src="https://pay.example.com/static/moneropay-client.js"></script>
+<script src="https://cloud.example.com/static/moneropay-client.js"></script>
 <div id="checkout"></div>
 <script>
-  const order = await MoneroPay.createOrder({
-    endpoint: "https://pay.example.com",
+  const order = await Monokulo.createOrder({
     publicKey: "pk_...",
-    merchantOrderId: "shop-order-1234",
     fiatAmount: 25.00,
     fiatCurrency: "USD",
   });
-  MoneroPay.mount("#checkout", order.paymentId, {
+  Monokulo.mount("#checkout", order, {
     onPaid: (o) => window.location = "/thank-you.html",
     onExpired: () => alert("Payment window expired"),
   });
 </script>
 ```
 
-`mount()` injects an `<iframe src="https://pay.example.com/pay/v1/{pk}/{paymentId}">`
-and listens for `postMessage` events the page posts on status changes. All payment
-logic and UI lives server-side in the templates; the client library stays thin
+`createOrder()` posts to monokulo's own `POST /pay/{pk}/orders` (§10.3's
+XMR-only engine endpoint is never called from the browser); `mount()` injects an
+`<iframe src="https://cloud.example.com/pay/{pk}/orders/{paymentId}">` and listens for
+`postMessage` events that page posts on status changes. All payment logic and UI lives
+server-side in monokulo's own templates; the client library stays thin
 deliberately, since it is the one surface running as plain JS on an arbitrary
 third-party site with no build step assumed.
+
+A self-hoster running the engine alone, with no monokulo, has no equivalent of
+this file at all — see §10.4's closing note.
 
 ## 15. Build & Packaging
 

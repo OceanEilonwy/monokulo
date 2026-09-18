@@ -1,0 +1,83 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Pay with Monero</title>
+{{> styles}}
+<style>
+/* `checkout.html.hbs` itself goes two-column above 700px wide (see that
+   file's own style block) - matching that here, rather than the narrow
+   single-column width this page used before, is what actually lets a
+   desktop visitor's payment page use the screen instead of sitting in a
+   letterboxed column with the rest of a wide monitor empty either side of
+   it. */
+.share-wrap { max-width: 840px; margin: 2.4rem auto; }
+/* Deliberately no border/background of its own - `checkout.html.hbs`
+   already paints its own white background and is the whole point of this
+   page; framing it in a second border on top of that (and its own inner
+   card, before that) is exactly the "boxes nested inside boxes, looks like
+   a recursive video call" look this was built to get away from. Letting
+   the iframe's edge be the *only* edge, with the same white it fades into,
+   reads as one continuous surface instead of a window inside a window. */
+.share-frame {
+  width: 100%;
+  display: block;
+  border: none;
+  /* A real, working default even with the progressive-enhancement script
+     below disabled or unavailable: tall enough for the two-column desktop
+     layout's own common case (amount, QR, address, progress, one refund
+     form) with no inner scrollbar. The script then overrides this exact
+     value dynamically once the frame's real content height is known - a
+     fixed guess can't be right for every combination of viewport width
+     (single- vs two-column) and content (a double-spend banner, several
+     payment rows) at once, which is exactly what previously left content
+     cut off, needing its own inner scroll, on some real pages this guess
+     didn't match. */
+  height: 620px;
+}
+</style>
+</head>
+<body>
+{{> nav}}
+<div class="wrap share-wrap">
+{{#if found}}
+<h1>Pay with Monero</h1>
+<p class="hint">Complete the payment below - this page stays up to date on its own, so it's safe to bookmark or
+come back to later.</p>
+<iframe class="share-frame" id="checkout-frame" src="/pay/{{pk}}/orders/{{payment_id}}" title="Monero payment"></iframe>
+<script>
+(function () {
+  // Progressive enhancement only - the CSS `height` above is a real,
+  // working fixed value either way. Same-origin (this page and the framed
+  // checkout page are both served by monokulo), so reading the frame's own
+  // content height directly is safe and reliable, unlike the cross-origin
+  // postMessage dance a merchant's own embed (a different origin) would
+  // need - see static/monokulo-client.js for that case.
+  var frame = document.getElementById("checkout-frame");
+  if (!frame) return;
+  function resize() {
+    try {
+      var doc = frame.contentDocument;
+      var height = doc && doc.documentElement && doc.documentElement.scrollHeight;
+      if (height) frame.style.height = height + "px";
+    } catch (e) { /* not ready yet, or something unexpected - keep the CSS fallback */ }
+  }
+  frame.addEventListener("load", function () {
+    resize();
+    try {
+      var doc = frame.contentDocument;
+      if (doc && typeof ResizeObserver === "function") {
+        new ResizeObserver(resize).observe(doc.documentElement);
+      }
+    } catch (e) {}
+  });
+})();
+</script>
+{{else}}
+<h1>Order not found</h1>
+<p>This payment link is invalid, or the order it refers to no longer exists.</p>
+{{/if}}
+</div>
+</body>
+</html>

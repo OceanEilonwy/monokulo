@@ -1,0 +1,84 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect Monero payments - Monokulo</title>
+{{> styles}}
+</head>
+<body>
+{{> nav}}
+<div class="wrap">
+
+<h1>Connect Monero payments for {{site_url}}</h1>
+<p class="hint">Your platform sent you here to finish connecting - only a watch-only view key and
+public spend key are collected below, never a spend key. Once confirmed you'll be sent straight
+back to {{site_url}}.</p>
+{{#if error}}
+<p class="error">{{error}}</p>
+{{/if}}
+
+{{#if existing_stores}}
+<div class="box">
+<h2>Use an existing store</h2>
+<p class="hint">Already have a store connected (maybe set up through the advanced form, or a different
+site)? Connect this one to it directly - no keys to paste in.</p>
+<form method="post" action="/connect/{{platform}}">
+<input type="hidden" name="site_url" value="{{site_url}}">
+<input type="hidden" name="return_url" value="{{return_url}}">
+<input type="hidden" name="nonce" value="{{nonce}}">
+<input type="hidden" name="mode" value="existing">
+<label>Store
+<select name="connection_id" required>
+<option value="" disabled selected>Choose a store&hellip;</option>
+{{#each existing_stores}}
+<option value="{{this.connection_id}}">{{this.display_name}} ({{this.platform}})</option>
+{{/each}}
+</select>
+</label>
+<button type="submit">Connect this store</button>
+</form>
+</div>
+
+<hr class="rule">
+<h2>Or create a new store</h2>
+{{/if}}
+
+<form method="post" action="/connect/{{platform}}">
+<input type="hidden" name="site_url" value="{{site_url}}">
+<input type="hidden" name="return_url" value="{{return_url}}">
+<input type="hidden" name="nonce" value="{{nonce}}">
+<input type="hidden" name="mode" value="new">
+<label>View key (hex)
+<input type="text" name="view_key_hex" value="{{view_key_hex}}" required pattern="[0-9a-fA-F]{64}" placeholder="64 hex characters">
+<span class="field-help">The private view key of a watch-only wallet.</span>
+</label>
+<label>Spend public key (hex)
+<input type="text" name="spend_pubkey_hex" value="{{spend_pubkey_hex}}" required pattern="[0-9a-fA-F]{64}" placeholder="64 hex characters">
+<span class="field-help">The public half of your spend key pair - never your private spend key.</span>
+</label>
+<label>Network
+<select name="network">
+<option value="mainnet" {{#if network_mainnet_selected}}selected{{/if}}>mainnet</option>
+<option value="stagenet" {{#if network_stagenet_selected}}selected{{/if}}>stagenet</option>
+<option value="testnet" {{#if network_testnet_selected}}selected{{/if}}>testnet</option>
+</select>
+</label>
+<label>Allowed origins (comma-separated)
+<input type="text" name="allowed_origins" value="{{allowed_origins}}">
+<span class="field-help">Leave blank to default to your site's own origin.</span>
+</label>
+<label>Base currency
+<select name="base_currency">
+{{#each currency_options}}
+<option value="{{this.code}}" {{#if this.selected}}selected{{/if}}>{{this.description}} ({{this.code}})</option>
+{{/each}}
+</select>
+<span class="field-help">What custom confirmation thresholds are denominated in.</span>
+</label>
+<button type="submit">Create a new store</button>
+</form>
+
+</div>
+</body>
+</html>

@@ -1,0 +1,107 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Connect your store - Monokulo</title>
+{{> styles}}
+</head>
+<body>
+{{> nav}}
+<div class="wrap">
+
+{{#if public_key}}
+<a class="btn" href="/dashboard">&larr; back to dashboard</a>
+<h1>Store connected</h1>
+<p>Your public key: <code>{{public_key}}</code></p>
+<p class="hint">Keep this value handy. Your secret token is stored securely and is never shown
+here - the control plane keeps it on your behalf for the calls it makes on your store's behalf.</p>
+
+{{> integration_help public_key=public_key endpoint=endpoint is_woocommerce=false}}
+{{else}}
+<h1>Connect your store (advanced)</h1>
+<p class="hint">This form provisions your store directly from a watch-only key pair - no plugin
+needed. Only a <strong>view key</strong> and a <strong>public spend key</strong> are ever
+collected: this system can watch for incoming payments, but can never move funds, because it
+never sees a spend <em>key</em>, only the public spend address material. If you'd rather use a
+guided flow, see the <a href="/dashboard/connections/new">add-a-store picker</a>.</p>
+
+{{#if error}}
+<p class="error">{{error}}</p>
+{{/if}}
+
+<form method="post" action="/dashboard/connect" id="connect-form">
+<label>Site URL
+<input type="url" name="site_url" id="site_url" value="{{site_url}}" placeholder="https://shop.example.com" required>
+<span class="field-help">Your storefront's own URL - shown on your dashboard, and used below to
+suggest a default allowed origin.</span>
+</label>
+
+<label>View key (hex)
+<input type="text" name="view_key_hex" value="{{view_key_hex}}" required pattern="[0-9a-fA-F]{64}" placeholder="64 hex characters">
+<span class="field-help">The <em>private view key</em> of a watch-only wallet - lets this
+service detect incoming payments. This is not your spend key and cannot move funds by itself.</span>
+</label>
+
+<label>Spend public key (hex)
+<input type="text" name="spend_pubkey_hex" value="{{spend_pubkey_hex}}" required pattern="[0-9a-fA-F]{64}" placeholder="64 hex characters">
+<span class="field-help">The <em>public</em> half of your spend key pair (not the private spend
+key - never enter that anywhere). Together with the view key above, this is everything needed to
+watch a wallet without ever being able to spend from it.</span>
+</label>
+
+<label>Network
+<select name="network">
+<option value="mainnet" {{#if network_mainnet_selected}}selected{{/if}}>mainnet</option>
+<option value="stagenet" {{#if network_stagenet_selected}}selected{{/if}}>stagenet</option>
+<option value="testnet" {{#if network_testnet_selected}}selected{{/if}}>testnet</option>
+</select>
+<span class="field-help">Leave on <code>mainnet</code> unless this is a test wallet.</span>
+</label>
+
+<label>Base currency
+<select name="base_currency">
+{{#each currency_options}}
+<option value="{{this.code}}" {{#if this.selected}}selected{{/if}}>{{this.description}} ({{this.code}})</option>
+{{/each}}
+</select>
+<span class="field-help">What custom confirmation thresholds are denominated in, and what an
+order's own currency is converted into to pick one. Choosing a currency here doesn't require any
+exchange-rate provider to actually support it yet - that only matters once it's actually used to
+price something.</span>
+</label>
+
+<label>Allowed origins (comma-separated)
+<input type="text" name="allowed_origins" id="allowed_origins" value="{{allowed_origins}}" placeholder="https://shop.example.com">
+<span class="field-help">Which browser origins may create orders directly against your store's
+public API. Defaults to your site URL above if left blank - only change this if orders will be
+created from a different origin (e.g. a headless frontend).</span>
+</label>
+
+<button type="submit">Connect</button>
+</form>
+
+<script>
+// Sensible default: mirror site_url's own origin into allowed_origins,
+// but only while the user hasn't typed anything there themselves - a
+// small, optional convenience, not a requirement (the field stays a
+// plain text input either way).
+(function () {
+  var siteUrl = document.getElementById("site_url");
+  var allowedOrigins = document.getElementById("allowed_origins");
+  var touched = false;
+  allowedOrigins.addEventListener("input", function () { touched = true; });
+  siteUrl.addEventListener("blur", function () {
+    if (touched || allowedOrigins.value) return;
+    try {
+      var origin = new URL(siteUrl.value).origin;
+      allowedOrigins.value = origin;
+    } catch (e) { /* not a valid URL yet - leave it alone */ }
+  });
+})();
+</script>
+{{/if}}
+
+</div>
+</body>
+</html>

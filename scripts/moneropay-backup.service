@@ -1,0 +1,38 @@
+# WBS 2.3.1: systemd service unit driving scripts/backup-database.sh.
+#
+# `Type=oneshot`, triggered by moneropay-backup.timer (not `Restart=`,
+# `WantedBy=multi-user.target`, or anything that makes this a long-running
+# unit) - this runs to completion once per invocation and exits, exactly like
+# a cron job would, but with `systemctl status moneropay-backup.service` and
+# `journalctl -u moneropay-backup.service` for free instead of a hand-rolled
+# log file. `Type=oneshot` also means systemd itself refuses to start a
+# second run while one is still active (a unit already in the "activating"
+# state ignores a redundant start request) - the same overlap protection
+# scripts/backup-database.sh's own header describes needing `flock` for
+# under plain cron.
+#
+# Install: copy this file and moneropay-backup.timer to /etc/systemd/system/,
+# edit the paths below to match your actual deployment, then:
+#   systemctl daemon-reload
+#   systemctl enable --now moneropay-backup.timer
+#
+# Adjust User=/the two paths on the ExecStart= line to match your real
+# deployment layout (docs/DESIGN.md §4.1: the database lives next to
+# whichever config file is actually in use - point BackupDirectory at
+# wherever you actually want backups to land, e.g. a directory a separate
+# off-box sync job then picks up from).
+[Unit]
+Description=MoneroPay database backup
+# Only meaningful if moneropay-core itself also runs as a systemd unit named
+# moneropay.service on this box - remove this line if it doesn't. Backing up
+# while the engine is running is the whole point of the online-backup
+# mechanism this script uses (see backup-database.sh's own header comment),
+# so this is *not* an ordering dependency that requires the engine to be
+# stopped - it only documents that this backup is meaningful in the context
+# of that service existing, for anyone reading `systemctl list-dependencies`.
+Wants=moneropay.service
+
+[Service]
+Type=oneshot
+User=moneropay
+ExecStart=/opt/moneropay/scripts/backup-database.sh /var/lib/moneropay/moneropay.db /var/backups/moneropay --retain-days 14

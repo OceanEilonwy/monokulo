@@ -1,0 +1,5644 @@
+# Work Notes — MoneroPay Cloud / WooCommerce MVP
+
+Running hand-off brief for agents implementing `docs/WOOCOMMERCE_WBS.md`.
+Read this file first, then the specific WBS item(s) you've been assigned —
+this file gives you the state and context; the WBS gives you the spec.
+
+## What this project is
+
+`moneropay-core` (repo root) is an existing, working, self-hosted Monero
+payment gateway (Rust/axum/SQLite). We're extending it into a hosted SaaS
+("MoneroPay Cloud") with a WooCommerce integration as the first platform.
+Full rationale: `docs/WOOCOMMERCE_ROADMAP.md`. Full task breakdown:
+`docs/WOOCOMMERCE_WBS.md`. Read both before assuming anything not stated
+here — this file is a summary, not the source of truth.
+
+Key architectural facts an agent should not have to rediscover:
+- The existing engine crate (root `Cargo.toml`, `src/`) is becoming one
+  member of a Cargo workspace, alongside new `shared/`, `control-plane/`,
+  and `mock-woocommerce/` crates. No existing engine file moves.
+- `shared/` holds logic pulled out of the engine (secret-token hashing,
+  HMAC webhook signing, the migration runner) plus genuinely new helpers
+  the engine doesn't have (argon2 password hashing).
+- The engine's `src/lib.rs` already exports everything (`http`, `store`,
+  `key_custody`, etc.) as `pub mod` — it's a real, usable library
+  dependency for other workspace crates, not just a binary.
+- `tests/e2e_stagenet.rs` already demonstrates the pattern for driving the
+  engine directly (build the router, use it against real or in-memory
+  storage) — reuse that pattern, don't reinvent it.
+
+## Current repo state
+
+- **Confirmation Thresholds** (monokulo, engine): the landing page used to
+  claim confirmation limits could be configured "by amount" - a feature that
+  didn't actually exist. The user's ask: a store picks a base currency at
+  creation (changeable later, via a dropdown sourced from a real currencies
+  table); a single non-deletable "default" threshold (10 confirmations, no
+  amount - it's the fallback); up to 5 custom thresholds, each pairing a
+  unit amount (in the store's own base currency) with its own confirmation
+  count; custom thresholds shown ascending by amount, no duplicate amounts,
+  no negative amounts; changing the base currency deletes every custom
+  threshold (amounts in the old currency are meaningless in the new one);
+  and at order-creation time the effective threshold is resolved from the
+  real exchange rate, snapshotted (store base currency + rate used) and
+  shown on the order detail page so it's clear how the number was decided.
+  - **Currency selection vs. currency usage, deliberately decoupled** - the
+    user's own mid-review refinement, applied to both store base-currency
+    selection *and* order-currency selection: a new static `currencies`
+    reference table (`crate::currencies`, canonical code + description +
+    JSON ticker list, migration `0013_currencies.sql`, 18 seeded rows)
+    answers "does this currency exist at all" - completely independent of
+    whether any exchange-rate provider can actually price it right now. A
+    currency can be selected (as a base currency, or as an order's own
+    currency) the moment it's merely *known* - it only becomes a genuine,
+    distinct error the moment something needs an actual rate for it (order
+    creation's XMR computation, or threshold resolution's base-currency
+    conversion) and no enabled provider covers it. Every one of the four
+    currency-accepting surfaces (dashboard connect form, generic connect
+    flow, JSON `POST /connections`, both order-creation endpoints) proves
+    this with its own test: a known-but-unpriceable currency is accepted at
+    selection time and only rejected later, with a distinguishable message
+    from "unknown currency" entirely.
+  - **Engine**: a new, purely additive per-order `confirmations_required`
+    override (`orders.confirmations_required_override`, migration
+    `0011_order_confirmations_override.sql`) - `recompute_order_status` uses
+    `order.confirmations_required_override.unwrap_or(tenant.confirmations_required)`.
+    `shared::status::derive_status` itself needed no changes at all; only
+    the store-layer caller changed which value it feeds in. Zero behavior
+    change for any caller that doesn't set it.
+  - **`store_connections.base_currency`** (migration `0014`, default
+    `'XMR'` for backward compat) plus a new `confirmation_thresholds` table
+    (migration `0015`: `unit_amount` as a decimal-string `TEXT`,
+    `UNIQUE(connection_id, unit_amount)` as a DB-level backstop, listed via
+    `ORDER BY CAST(unit_amount AS REAL) ASC` for real numeric, not
+    lexicographic, ordering). Changing the base currency cascades a real
+    delete of every custom threshold for that connection in the same call.
+  - **Resolution is deliberately split**: pure, trivially-unit-testable
+    math (`confirmation_thresholds::piconero_to_currency_amount`/
+    `resolve_confirmations_required` - "largest custom threshold whose
+    amount is `<=` the order's own amount in base-currency terms, falling
+    back to the tenant's plain default", the same "bigger ceiling wins"
+    shape `zero_conf_max_piconero` already uses) versus a separate async
+    I/O wrapper (`resolve_for_order`, the real rate lookup + tenant fetch)
+    that calls it. Wired into both order-creation surfaces
+    (`http::pay::create_order`, `http::orders::create_order`) ahead of the
+    real `EngineClient::create_order` call, so a base-currency rate-lookup
+    failure rejects order creation outright - no order is ever created on
+    the engine with an unresolvable threshold.
+  - **Snapshotted, not recomputed later**: `order_currency_metadata` gains
+    3 nullable columns (migration `0016`: `store_base_currency`,
+    `base_currency_piconero_per_unit`, `confirmations_required_applied`) -
+    an admin changing the default or a threshold afterward must never
+    retroactively change what an already-created order's page claims was
+    used. The order detail page shows all three, with a plain "same as
+    order currency" when no second conversion was ever needed.
+  - **Real, previously-latent bugs found and fixed while writing the
+    stagenet e2e test for this feature** (both pre-dated this feature -
+    confirmed by reproducing them against the pre-Confirmation-Thresholds
+    commit in a disposable scratch worktree before touching anything):
+    1. `mock-woocommerce`'s own real-engine/real-control-plane test harness
+       never accounted for `signup.mode` defaulting to `invite_only`
+       (WBS: public vs. invite-only signup) - `POST /dashboard/signup`
+       silently re-rendered the form instead of creating an account (a
+       plain `200`, not an error status), so every downstream step (login,
+       connect confirm) failed with a confusing `401` that had nothing to
+       do with auth itself. Fixed by explicitly setting `signup.mode =
+       public` on the test harness's own in-memory db
+       (`spawn_test_monokulo`, both in `mock-woocommerce/src/lib.rs` and
+       its duplicate in `tests/e2e_stagenet_connect_flow.rs`) - this alone
+       took `cargo test -p mock-woocommerce`'s default (non-`#[ignore]`d)
+       suite from 4 failing to 8/8 passing.
+    2. A raw inline confirm-form submission in `mock-woocommerce`'s own
+       test module never sent `base_currency` (newly required by this very
+       feature) - fixed alongside it.
+  - **New real stagenet e2e test**
+    (`mock-woocommerce/tests/e2e_stagenet_confirmation_threshold.rs`,
+    `#[ignore]`d like every other real-network test in this workspace, run
+    via `cargo test -p mock-woocommerce --features e2e -- --ignored
+    --nocapture`): signs up and drives monokulo directly with a `Bearer`
+    session token (no cookie jar - a custom threshold is a dashboard action
+    with no equivalent in the plugin-facing connect-flow helper), sets the
+    tenant's own default to 99 confirmations and a real custom threshold to
+    1, creates a real order priced above it, and asserts *twice*: (a)
+    immediately, that the real engine's stored order carries
+    `confirmations_required_override = Some(1)`, not the tenant's default;
+    (b) after paying it with a genuine signed stagenet transaction with
+    zero-conf left disabled, that the order only reaches
+    `paid`/`confirming`/`overpaid` once it has a real confirmation -
+    proving the resolved threshold isn't just recorded but actually
+    enforced by the engine's own status computation. Also asserts the order
+    detail dashboard page shows the resolved snapshot. Not run against the
+    live network in this session (needs a real funded stagenet wallet and
+    live public-node access) - compiles clean
+    (`cargo test -p mock-woocommerce --features e2e --no-run`) and is
+    ready to run whenever those are available.
+  - **Verified**: `cargo test -p monokulo` 307/307, `cargo test -p
+    scanner` 306/306 (both single-threaded - `--test-threads=1` avoids one
+    known-unrelated, pre-existing env-var test-isolation race in scanner's
+    own settings tests under parallel execution), `cargo test -p
+    mock-woocommerce` 8/8, `cargo build --workspace` clean.
+
+- **Public vs invite-only signup, admin invite management.** Follow-up to
+  the admin settings/wizard work below - the user's ask: a `signup.mode`
+  admin setting (`public`/`invite_only`, default `invite_only`) gating
+  whether anyone can sign up or an admin-issued single-use invite link is
+  required; a landing-page CTA that switches between "Sign up" and "Request
+  an invite to join" (a public email+message form saving to a new table);
+  and a new admin "invites" nav page that reviews those requests, generates
+  invite links, and deletes/bulk-deletes requests.
+  - **`invite_requests`/`invite_links`** (migration 0012). A request row is
+    soft-deleted (`actioned`), never hard-deleted - the admin invites page
+    only ever lists `actioned = 0` rows. An invite token is stored hashed
+    (the normal convention every other bearer credential in this crate
+    already uses) *and*, only when it's tied to a specific request
+    (`request_id` set), also encrypted at rest with the same instance
+    `encryption_key` `tenant_secret_token_encrypted` already uses - the one
+    deliberate exception to "never store a credential reversibly" in this
+    crate, needed because the admin invites page has to keep rendering a
+    real `mailto:` link with the raw token embedded across as many separate
+    page loads as it takes an admin to click it, and there's no click-time
+    hook to generate one from a plain anchor without JavaScript (this
+    repo's own no-JS convention). A standalone link (the page's own "create
+    invite link" button, not tied to any request) is shown exactly once on
+    creation and only ever stored hashed - no reversible copy needed at
+    all.
+  - **Redemption is a single atomic `UPDATE ... WHERE used_at_utc IS NULL`**
+    (`Db::redeem_invite_and_create_user`), checked via affected-row count,
+    run *before* the user row is created - an invalid or already-used token
+    can never result in an account. Real test coverage for the literal
+    "more than one account cannot be registered using the same link" ask,
+    including via the real JSON `/signup` API, the real `/dashboard/signup`
+    form, and the real create-invite-link-then-signup round trip. A
+    successful redemption auto-actions its originating request, if any - it
+    clears itself off the admin's pending list the moment the person
+    actually joins, no manual bookkeeping needed.
+  - **Deleting a request also revokes its own still-unused invite link**
+    (a real row delete, not a further soft-delete) - dismissing a request
+    an admin never emailed must not leave a silently-valid, unsent token
+    behind.
+  - **No-JS delete feedback, worked out with the user first**: real
+    single-row delete via plain `POST` + redirect (a genuine soft-delete,
+    not a client-side toggle - a CSS-only checkbox trick was considered and
+    rejected, since a full-page-navigating form submit gives it no moment
+    to render before the browser's already loading the next page). The
+    redirect carries `?deleted=<id>` so the reload renders that one row
+    struck-through once, as a real server-rendered addendum sitting outside
+    the page's own pagination count - never spliced into the real list, so
+    there's no off-by-one page-math case to get wrong. The page number is
+    carried through every delete form and clamped (`requested.clamp(1,
+    total_pages)`) on every load, not just after a delete, so deleting the
+    last row on the last page (or any other cause of a page going stale)
+    self-corrects instead of showing a blank page.
+  - **Bulk delete, per the user's own explicit choice between three
+    options**: single-row delete only, plus a "delete all" button clearing
+    every unactioned request across every page at once (not checkboxes,
+    not a per-page clear) - a real bulk `UPDATE`, one confirmation banner
+    with a count, no per-row struck-through treatment (doesn't make sense
+    once more than one row is involved).
+  - **`mailto:` links use their own percent-encoder**, not the
+    `url::form_urlencoded`-based one `http::connect::encode_query_value`
+    already has - that one encodes a space as `+`, correct for
+    `application/x-www-form-urlencoded` but wrong for a `mailto:` URI
+    (RFC 6068), where `+` has no special meaning and a mail client would
+    show a literal `+` instead of a space.
+  - **Test-harness default**: `Db::seed_test_admin` now also sets
+    `signup.mode = "public"`, the same "give every existing test a
+    permissive default, let the few tests that actually mean to exercise
+    invite-only mode set it back explicitly" pattern the admin-account
+    seeding itself already established - `signup.mode` defaults to
+    `"invite_only"` in real deployments, which would otherwise have broken
+    every existing test's ordinary signup calls the moment that default
+    shipped.
+
+- **Admin settings page (monokulo + scanner) and monokulo's first-run admin
+  setup wizard.** The user's ask: an admin page exposing every monokulo and
+  scanner setting, a first-run wizard (gated on a database flag) that
+  bootstraps the one admin account, an "admin" nav link only that account
+  sees, `env > database > default` precedence everywhere, and tests proving
+  every exposed setting saves correctly. Scanner's own old `--init`
+  interactive wizard and TOML config file are gone entirely, replaced with
+  the same settings-table model. Full detail lives in this branch's own
+  commits; the shape:
+  - **`shared::settings`** (new): the generic `env > database > default`
+    resolver (`resolve_raw`/`resolve_parsed`/`source`) both scanner and
+    monokulo now share.
+  - **Scanner**: `config.rs` and `init_wizard.rs` deleted outright.
+    `scanner::settings` replaces the TOML schema 1:1 (18 scalar settings +
+    `monero_node.<network>` as a JSON blob). A new instance-wide admin
+    token (`shared::auth::generate_admin_token`, seeded once on first boot,
+    printed exactly once, hashed at rest) authenticates
+    `GET`/`POST /api/v1/admin/settings` (`http::instance_admin`). The old
+    `[wallet]` TOML bootstrap became an explicit `--bootstrap-wallet` CLI
+    command (`local_admin::bootstrap_wallet`) — refuses once any tenant
+    already exists. **Found and fixed a real chicken-and-egg boot bug** while
+    smoke-testing this by hand: the server used to hard-exit with zero
+    Monero nodes configured, which meant a fresh install could never reach
+    the settings API that's the only way to configure the first node — it's
+    now a non-fatal warning, and the server always starts.
+  - **Monokulo**: new `settings` table + `users.is_admin` column (migration
+    0011). `Db::is_setup_complete`/`mark_setup_complete` is a dedicated
+    `settings` row, not derived from "does an admin user exist" — the
+    user's own explicit "based upon a flag in database" wording.
+    `http::admin_setup` (`GET`/`POST /admin/setup`) is the wizard itself:
+    unauthenticated (nothing to authenticate against yet), creates the one
+    `is_admin` account, marks setup complete, logs the new admin straight
+    in, redirects to the settings page. `home::landing` (`GET /`) is the
+    *only* gate — redirects to the wizard pre-setup; every other route is
+    unaffected. `crate::settings` mirrors scanner's own module (9 scalars:
+    `engine.url`/`engine.admin_token` — the scanner connection this page
+    proxies through — plus exchange-rate, rescan-lookback, HTTP-cache, and
+    rate-limit knobs that used to be env-only). `MONOKULO_ENCRYPTION_KEY`
+    is deliberately *not* a setting — rotating it live would corrupt every
+    already-encrypted `tenant_secret_token_encrypted` row.
+  - **`http::admin_settings`** (new): the actual admin page, gated by a new
+    `AuthedAdmin` extractor (`AuthedUser` + `is_admin`, `403` not `401` for
+    a valid-but-non-admin session). Two independent forms: monokulo's own
+    settings save straight to its own table; the scanner half holds no
+    state of its own at all — it's a live HTTP proxy against whichever one
+    scanner instance `engine.url`/`engine.admin_token` name (the
+    single-configured-scanner shape a self-hosted one-box deployment
+    actually has), rendering/forwarding whatever that instance reports
+    rather than duplicating its own key list. Every field always shows its
+    *current effective* value (`value="..."`) plus a source label
+    (environment variable / saved value / default) — the save button can
+    always be clicked, which is what persists an active environment
+    variable into the database.
+  - **Nav gating**: `_nav.html.hbs` shows the "admin" link only when
+    `is_admin` is true — threaded through every authenticated view-model in
+    the crate (a real, per-request check derived from the session, never
+    hardcoded) after confirming via a throwaway probe that handlebars'
+    strict mode treats a missing `{{#if}}` field as falsy, which narrowed
+    how many otherwise-unrelated view models actually needed the field.
+  - **Also fixed while touching this code**: five leftover
+    `CONTROL_PLANE_*` env var names that should have been `MONOKULO_*` from
+    an earlier rebrand pass that only caught lowercase/hyphenated tokens,
+    not ALL-CAPS ones (`orders.rs`'s rescan-lookback env vars,
+    `exchange_rate_config.rs`'s three, `shared::http_cache`'s cache-size
+    knob).
+  - **Test coverage**: seeded-admin harness default (`Db::seed_test_admin`,
+    called by every `AppState` test constructor in the crate so the wizard
+    never spuriously triggers in an unrelated test) plus dedicated
+    wizard-flow tests proving it actually works on a genuinely fresh,
+    *unseeded* instance; and, per the explicit "write tests to ensure that
+    all settings exposed on the admin page are saved correctly" ask, two
+    tests that save every single monokulo setting and every single scanner
+    setting in one real form submission each and confirm every one
+    individually round-trips (`http::admin_settings::tests::
+    every_monokulo_setting_on_the_admin_page_saves_correctly`/
+    `every_scanner_setting_on_the_admin_page_saves_correctly`).
+  - **Not done**: no live, hand-run smoke test of the real `monokulo`
+    binary for this feature specifically — a monokulo instance from earlier
+    in this session (or another concurrent job) was already bound to its
+    hardcoded port (`127.0.0.1:8081`, not itself configurable) when I tried,
+    and killing an unfamiliar process on a hunch seemed like the wrong call.
+    The full automated suite (234 monokulo tests, all passing) exercises
+    every code path a manual smoke test would have.
+
+- **UI feedback round: connect-flow button placement, branding copy/layout
+  fixes, and a real checkout-page redesign researched against other crypto
+  payment UIs.** Four independent pieces of user feedback on the just-shipped
+  rebrand/logo work and the (pre-existing) checkout page.
+  - **"Back to dashboard" moved to the top** of the advanced-connect success
+    state (`connect.html.hbs`) - was at the very bottom, after the full
+    integration guide; now the first thing on the page, before the guide.
+  - **Branding correction**: the landing page's own naming footnote said
+    "mono (one) + okulo (eye)" - wrong etymology, caught by the user. It's
+    actually "mon(ero) + okulo (eye)" - a Monero eye, not "one eye". Fixed
+    the copy; also reworked the hero layout (`_styles.html.hbs`'s `.hero`) -
+    the logo was `align-items: center`'d against the *whole* text block
+    (heading + paragraph), leaving it floating oddly high relative to the
+    heading it's meant to pair with; switched to top-aligned with a small
+    nudge and shrank it (88px -> 64px) to read as a normal "icon beside a
+    headline" pairing instead of an oversized, disconnected mark.
+  - **Checkout page redesign**, after researching real crypto-checkout UIs
+    (BTCPay Server, OpenNode, Coinbase Commerce, and general crypto-checkout
+    UX writeups) for what they actually do differently: QR codes at >=200px
+    (not smaller - scan failures below that), an explicit copy affordance
+    right next to the address rather than relying on the customer already
+    knowing to select-all a readonly field, a low-key expiry timer (a quiet
+    color shift near zero, not a big red countdown the whole time), and
+    genuinely responsive layouts rather than one narrow column stretched by
+    the viewport meta tag alone.
+    - **Wider on desktop, real single-column on mobile**: `checkout.html.hbs`
+      now goes two-column (QR+amount+address on the left, progress/refund/
+      history on the right) above 700px, single column below it - was a
+      flat 380px-max-width column regardless of how wide the surrounding
+      iframe actually was, which is what made a desktop visitor's payment
+      page look letterboxed and, combined with a too-short fixed iframe
+      height on both the share page and the JS widget's own default, cut
+      real content off into an inner scrollbar.
+    - **The actual "cut off, requires scrolling" cause**: found by rendering
+      the real page at the JS widget's own default size (420x640) - actual
+      content height there is closer to 900-1000px even for a fresh order
+      with no payments yet, so the 640px default was silently clipping
+      *every* real order, not just edge cases. Bumped
+      `static/monokulo-client.js`'s default height to 900px (true
+      content-matched auto-sizing isn't available there - that iframe is
+      cross-origin from the merchant's own page, and the framed checkout
+      page itself deliberately carries zero script to report its own height
+      out with - a real-money payment page staying usable and trustworthy
+      with JavaScript off is a hard rule here, not an oversight). Where it
+      *is* same-origin (`checkout_share.html.hbs`, monokulo hosting both
+      sides), added a real same-origin auto-resize script instead - a
+      genuine progressive enhancement (a working static fallback height
+      either way), not a workaround for the no-script rule on the framed
+      page itself.
+    - **Copy-address UI**: wrapped the existing readonly `<textarea>` in a
+      real `<label>` (clicking/tapping anywhere in a `<label>` focuses its
+      associated control - genuine HTML behavior, no JS needed) styled as an
+      obvious card with a copy-glyph icon and a `:focus-within` highlight,
+      instead of a bare unstyled text box with only a small caption hinting
+      at what to do with it.
+    - **Refund-address field**: was genuinely cut off - a 54-character
+      placeholder ("Your own Monero address, in case a refund is ever
+      needed") inside a narrow input, silently truncated by the box itself
+      with no other explanation of the field's purpose visible. Shortened
+      the placeholder and moved the actual explanation into a real,
+      always-visible `.field-help` line below the field (the established
+      convention every other form in this app already uses) - a vanishing
+      placeholder was never the right place for that anyway.
+    - A new `expiry_urgency_class` field (`""` / `"expiry-soon"` /
+      `"expiry-urgent"`) computed server-side in
+      `http::checkout::render_checkout_page` from real seconds-until-expiry
+      drives the timer pill's color - same "already correct in the HTML this
+      handler returns, no client-side timer" discipline this page's meta-
+      refresh already relies on.
+  - Caught and fixed twice while iterating: writing "`<script>`"/"postMessage"
+    literally inside a CSS/JS *comment* still lands in the rendered response
+    body, which the existing no-script/no-postMessage regression tests check
+    for as a raw substring - broke, then fixed, two of the checkout page's
+    own tests this way before landing on wording that says the same thing
+    without the literal token.
+  - Verified every new layout with real headless-Chromium screenshots at
+    both desktop and mobile widths before calling it done, not just by
+    reading the markup - caught the "logo floating oddly high" issue and
+    confirmed the two-column checkout layout actually fits without scrolling
+    this way, rather than assuming from the HTML alone.
+  - `cargo test --workspace` clean (322 scanner/209 monokulo, 0 failed,
+    unchanged pass counts - this was a template/CSS/JS round, no new tests
+    needed beyond the ones already covering this page's structure).
+
+- **Follow-up to the same-day rescan bug below: a real `UtcDate` type, not
+  just the arithmetic fix.** The user asked directly - would a typed date
+  value have caught this, and should the code be made stronger that way?
+  Agreed: `from` and `earliest_allowed` were both bare `i64`, so a
+  day-granular value and a precise instant could be compared with a plain
+  `<` that compiled regardless of which side actually meant what - exactly
+  why the mismatch shipped silently. Added `UtcDate` (`crates/scanner/src/
+  http/admin.rs`) as a small newtype wrapping a UTC-midnight unix timestamp,
+  with no `PartialOrd<i64>` impl - pulling it back into instant-space for a
+  comparison now requires an explicit `.unix()` call, so a future edit
+  comparing a day against an instant has to consciously say so instead of it
+  just quietly compiling.
+  - **Scoped down from the first pass**: initially also made `from`/`to`
+    require an *exact* UTC-midnight value (rejecting any precise instant
+    outright). That broke 5 existing tests, 3 of which (the engine's own
+    gap-prevention-guardrail tests) deliberately use precise, sub-day block
+    timestamps as `from`/`to` to pin exact height boundaries - a legitimate
+    technique the original bug never had anything to do with. Reverted that
+    part: `from`/`to` stay plain, flexible instants exactly as documented
+    ("same convention `created_at`/`expires_at` already use") - only the
+    *ceiling* (`earliest_allowed`) is a `UtcDate`, converted back via `.unix()`
+    at the one comparison site that needs it. Gets the real type-safety
+    property (this specific mismatch can't silently reappear) without
+    tightening accepted input beyond what fixing the actual bug required.
+  - No behavior change beyond the previous commit's fix - same comparison,
+    same result, just impossible to accidentally get wrong at this callsite
+    again. `cargo test --workspace` clean (322 scanner/209 monokulo, 0
+    failed, unchanged pass counts) - the 5 tests that broke during the
+    scoped-too-wide first pass passed again once reverted, no fixture
+    changes needed.
+
+- **Database date/datetime columns renamed with a `_utc` suffix, plus a real
+  same-day rescan bug found and fixed along the way.** The user asked for two
+  things after the rename/rebrand round: (1) make sure the advanced-mode
+  rescan guardrail (upper date can't be behind the order's already-scanned
+  height) didn't regress from the UTC-labeling work, and (2) give every
+  date/datetime column in both databases an explicit `_utc` suffix, with
+  comparisons done in UTC.
+  - **The rename** (`crates/scanner/migrations/0009_utc_suffix_date_columns.sql`,
+    `crates/monokulo/migrations/0010_utc_suffix_date_columns.sql`, plus every
+    SQL string/`row.get` call in `store.rs`/`db.rs` that referenced the old
+    names): storage-layer only. Every value was already a unix-second
+    integer (inherently UTC, never a local wall-clock string) - confirmed no
+    `chrono::Local`/`time::OffsetDateTime::now_local` anywhere in the tree
+    before touching anything. Rust struct field names and the public JSON
+    API/webhook payload field names (`created_at`, `expires_at`, etc.) were
+    deliberately left unchanged - renaming those would have been a breaking
+    API change nobody asked for, and unix timestamps in JSON are already
+    unambiguous. `block_height`/`current_height`/`from_height`/`to_height`
+    and friends were left alone too - heights, not dates.
+  - **The regression check turned up a real, pre-existing bug**, not a
+    regression: for an order rescanned in advanced mode on the *same UTC
+    calendar day* it was created, the form's own `min` date attribute (e.g.
+    "2026-09-17") was rejected if actually submitted, because
+    `resolve_rescan_window`'s `from` bound compared a day-granular date
+    (all `<input type="date">` can ever send) against `order.created_at`'s
+    exact second - today's own midnight is *always* earlier than a creation
+    time later that same day. Confirmed against a live request before
+    touching any code (`min="2026-09-17" max="2026-09-17"`, then a real 400
+    on submitting exactly that date) rather than assumed from reading the
+    code alone. Flagged to the user before fixing it, since it changes a
+    previously-decided validation boundary ("WBS 2.1 decision 4") - approved,
+    with a request for real test coverage.
+  - **The fix** (`crates/scanner/src/http/admin.rs::resolve_rescan_window`):
+    floors the earliest-allowed ceiling to its own UTC day start
+    (`utc_day_start`, plain `ts.div_euclid(86_400) * 86_400` - no
+    civil-calendar math needed for a day *boundary*, unlike rendering a
+    `YYYY-MM-DD` string) before comparing. Widens acceptance by at most
+    <24h, never narrows it - safe for the same reason
+    `RESCAN_START_HEIGHT_CUSHION_BLOCKS` already treats "scans a little more
+    chain than strictly asked" as harmless: this order's subaddress is
+    never reused, so the extra hours can only ever cover blocks that
+    provably can't contain a real payment to it.
+  - **Real coverage added**, not just the fix: two new engine-level tests
+    pin the fix directly (`advanced_mode_with_from_on_the_orders_own_
+    creation_day_is_accepted`, and the flip side,
+    `..._on_the_day_before_..._is_still_rejected`, proving the widening
+    doesn't go further than one day). A third, at monokulo's own HTTP
+    layer (`advanced_mode_rescan_via_a_typed_date_still_hits_the_gap_
+    guardrail`), drives the *entire* real path end to end - a typed
+    `YYYY-MM-DD` string, through monokulo's own `date_string_to_unix_
+    midnight`, over a real HTTP round trip to a real engine, into the
+    engine's own gap-prevention guardrail (Phase 5.2) - not a synthetic
+    `i64` built directly against the engine's test layer the way the
+    existing 4 guardrail tests do. Writing that third test surfaced a
+    second, smaller gap: `scanner_test_support::TestEngineConfig` never
+    wired a real daemon into the spawned engine's `AppState::daemons` (an
+    explicit, previously-correct design decision - nothing needed it before
+    now), so `admin::trigger_rescan` always failed with an unconditional
+    500 through this harness regardless of what was being tested. Fixed
+    with a new opt-in builder, `with_admin_rescan_daemon()` (wires the same
+    inert `NoopDaemonClient` the background-loop opt-in already uses),
+    rather than turning it on unconditionally - two existing tests
+    (`status_page_is_reachable_with_no_authentication_and_shows_no_
+    configured_networks`, `get_status_round_trips_against_a_real_engine`)
+    specifically pin the *previous*, no-daemon behavior for their own
+    reasons, and broke the first time this was tried as a blanket default.
+  - `cargo test --workspace` clean (322 scanner/209 monokulo, up from
+    320/208, 0 failed) from both the root workspace and
+    `crates/mock-woocommerce`'s own view, with and without `--features e2e`.
+
+- **Follow-up correction to the rename below**: the user pointed out
+  `plugins/monokulo/` was redundant - everything under `plugins/` is
+  implicitly Monokulo's own, so the directory itself doesn't need to repeat
+  the product name. Moved to `plugins/woocommerce/` (`git mv`, history
+  preserved) - the plugin's own identity (`Plugin Name`, `Text Domain`,
+  gateway id, class name) is unaffected, since none of that is derived from
+  the directory name. `composer.json`'s package name followed the same
+  logic: `monokulo/monokulo` -> `monokulo/woocommerce`.
+
+- **Rename + restructure (user-requested, item 4 from the same review round
+  above): `engine` -> `scanner`, `control-plane` -> `monokulo`, every
+  crate moved under `crates/`, full brand rename, and a hand-drawn logo.**
+  - **Workspace restructure**: every crate (`shared`, `mock-woocommerce`,
+    `engine-test-support`, `key-custody-service`, `key-custody-server`,
+    `snp-attest`, and the former root package) moved under `crates/` via
+    `git mv` (history preserved). The root `Cargo.toml` went from a hybrid
+    workspace-and-package manifest (the root package *was* the engine) to a
+    pure virtual workspace (`[workspace]` only, `resolver = "2"` set
+    explicitly since a virtual manifest doesn't infer it the way an
+    edition-2021 package manifest does) listing all 8 `crates/*` members.
+    The former root package became `crates/scanner/`.
+  - **`moneropay-core` -> `scanner`, `control-plane` -> `monokulo`,
+    `engine-test-support` -> `scanner-test-support`**: package names, every
+    consuming crate's path dependency, every `use moneropay_core::`/
+    `use control_plane::`/`use engine_test_support::` across the whole
+    tree, every hyphenated string literal that named the crate (CLI help
+    text, user-agent strings, systemd unit `ExecStart=` binary paths,
+    `scripts/dev-run.sh`'s build/bin-path logic, `docs/*.md`), all
+    mechanically renamed - these are exact, unambiguous compound
+    identifiers, not the generic prose word "engine", so a global rename
+    was safe; the ordinary English word "engine" (e.g. "the Rust engine
+    process") was deliberately left alone throughout.
+  - **Full brand rename, "MoneroPay Cloud" -> "Monokulo"** (the user chose
+    the broadest of three offered scopes - website only, website + plugin
+    name, or everywhere - after being asked, since the WooCommerce plugin's
+    own name/slug/JS API/webhook header is a bigger, externally-visible
+    surface than the internal crate rename): every page title, the nav
+    brand, the landing page copy, the WooCommerce plugin itself
+    (`plugins/moneropay-cloud/` -> `plugins/monokulo/`, `Plugin Name`,
+    `Text Domain`, its gateway id `moneropay_cloud` -> `monokulo`, its
+    class `WC_Gateway_MoneroPay` -> `WC_Gateway_Monokulo`, both PHP files
+    renamed via `git mv`), the webhook signature/event headers
+    (`X-MoneroPay-Signature`/`X-MoneroPay-Event(-Id)` ->
+    `X-Monokulo-Signature`/`X-Monokulo-Event(-Id)`, updated on both the Rust
+    sender and PHP receiver sides so they still agree), the embeddable JS
+    widget (`static/moneropay-client.js` -> `static/monokulo-client.js`,
+    `window.MoneroPay` -> `window.Monokulo`), and the encryption-key/
+    rate-limit env vars (`CONTROL_PLANE_ENCRYPTION_KEY` ->
+    `MONOKULO_ENCRYPTION_KEY`, similarly for the rate-limit one). `php -l`
+    clean on every touched PHP file (no WordPress test harness available
+    here to run the plugin's own PHPUnit suite - flagging that gap rather
+    than claiming coverage that wasn't actually exercised).
+  - **The "okulo" concept and a hand-drawn logo**: the mark
+    (`crates/monokulo/static/logo.svg`, plus a `logo-inverted.svg` variant
+    recolored for the dark nav bar and a simplified `favicon.svg`) combines
+    all three requested elements into one glyph rather than three stitched
+    together - a looking-glass ring and handle, a monocle's small
+    chain-loop on the rim, and an eye looking back through the lens whose
+    pupil is a Monero-orange faceted "gem." Kept to the three colors
+    `_styles.html.hbs` already defines (ink/paper/accent) - no new palette.
+    Wired in as same-origin static routes (`GET /static/logo.svg`,
+    `/logo-inverted.svg`, `/favicon.svg`), same pattern as the existing
+    embeddable-JS route - no third-party CDN dependency. The landing page
+    got a hero section pairing the full mark with a one-line gloss on the
+    name itself ("mono" + "okulo" - Esperanto for "eye"). The bare,
+    iframed checkout page deliberately still carries no brand text (its own
+    existing test enforces this) - it does now pick up the small favicon
+    via the shared `styles` partial, which doesn't show inside an iframe
+    and isn't the kind of "site brand" that test is guarding against.
+    Rendered every SVG with `rsvg-convert` and the assembled nav/landing
+    HTML with headless Chromium to actually look at it before calling this
+    done, not just trusting the markup compiled.
+  - `cargo build`/`cargo test --workspace` clean (same 320/208/73/etc. pass
+    counts as before this round, 0 failed) both from the workspace root and
+    from `crates/mock-woocommerce`'s own view, with and without
+    `--features e2e`.
+
+- **Expired-order rescan: post-WBS review follow-ups (resilience + timezone),
+  user-requested after the full 7-phase WBS landed.** The user asked three
+  real questions during review - how in-progress/stalled/failed is actually
+  determined, what resilience exists and whether it's self-healing, and
+  whether merchant timezone is handled for the advanced-mode date fields -
+  and, after discussing each, asked for three concrete changes.
+  - **Verified first, corrected an assumption before proposing anything**:
+    checked whether daemon RPC calls could hang indefinitely (they can't -
+    `RpcDaemonClient` already has a real 15s timeout, `src/daemon_rpc.rs:43`,
+    confirmed by reading the code rather than assumed) and whether node
+    failure was already handled (it is - `rescan_order` runs through the
+    same `FallbackDaemonClient` the live scanner uses). The live scanner
+    was already fully self-healing (`supervise()` restarts a panicked loop,
+    a failing tick just retries next tick forever). The real, remaining gaps
+    were narrower than initially guessed: no bounded retry *within* a
+    rescan for a transient error past whatever node-level failover already
+    absorbed, and no visible "this looks stuck" signal for an operator.
+  - **Bounded retries** (`scanner::retry_rescan_step`): every daemon call
+    inside `rescan_order` (`get_block_transactions`, the final
+    `get_mempool_transactions`, the closing `get_height`) now retries up to
+    `RESCAN_STEP_MAX_ATTEMPTS` (3) times, 500ms apart, before the job gives
+    up - a transient hiccup every configured fallback node briefly agrees on
+    (a shared upstream blip) no longer kills an otherwise-healthy job
+    outright. Two real tests: fewer failures than the budget survives and
+    the payment is still recorded; more failures than the budget still
+    fails cleanly (not silently swallowed or retried forever).
+  - **A `stalled` signal**, mirroring the live scanner's own `is_stale` on
+    `/status`: `RescanStatusView` (both engine and control-plane's mirror)
+    gains `stalled: bool` - `true` only for a `running` job whose
+    `updated_at` hasn't moved in `RESCAN_STALL_THRESHOLD_SECS` (5 minutes,
+    deliberately well past the ordinary progress-persist cadence so a
+    genuinely-still-working wide-range rescan is never flagged). Purely
+    informational, no behavior change - a `stalled` job is still `running`
+    and will resume exactly like any other on a restart. Surfaced as a
+    distinct `.tag-stalled` badge (amber, not the syncing accent or the
+    error red) on the order-detail page and a "(stalled)" note in the
+    dashboard-home banner's per-job link.
+  - **Timezone**: confirmed the actual constraint first - `<input
+    type="date">` has no timezone concept in the HTML spec at all, with or
+    without JS, so this was never a "we forgot to handle it" gap. Three
+    changes, all agreed: (1) the date fields and the simple-mode label now
+    say "(UTC)" explicitly, no more silent assumption; (2)
+    `RESCAN_START_HEIGHT_CUSHION_BLOCKS` widened from 240 (~8h) to 720
+    (~24h) blocks, now explicitly covering the date fields' own timezone
+    ambiguity as well as the timestamp binary search's original slop - see
+    its own updated doc comment; (3) a small progressive-enhancement
+    `<script>` on the order-detail page (merchant dashboard, not the no-JS
+    customer checkout page - see `feedback_no_js_reliance.md`, which is
+    about the latter, not this one) shows each date's real local-time
+    equivalent next to it for a JS-enabled viewer, computed from the
+    server-authoritative UTC value and never altering what actually gets
+    submitted. The existing share-button script on this same page is the
+    established precedent for this page allowing progressive enhancement.
+  - `cargo test --workspace` clean (320 engine/208 control-plane, up from
+    317/207) in both the root workspace and `mock-woocommerce`'s own view
+    with `--features e2e`.
+
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 6 done -
+  documentation. This is the seventh and final phase - the whole feature
+  (`docs/order_rescan_wbs.md`) is now fully landed, phases 0 through 6, all
+  merged sequentially in this session per the user's own explicit
+  "begin the sequenced implementation of the WBS yourself" instruction.**
+  - `docs/DESIGN.md` gains: a new §7.8 ("Merchant-triggered order rescan")
+    narratively summarizing the whole feature - the problem (§7.3's active
+    watchlist drops a tenant the instant every order is terminal, with zero
+    grace), the two-layer defense (the automatic grace period, and the
+    manual rescan for after it elapses), the durability/restart-resume
+    guarantee, and the scanned-range guardrail - each point cross-linked to
+    `docs/order_rescan_wbs.md` for the full reasoning rather than
+    duplicating it; a new §8.3 documenting `order_rescans`' real DDL and
+    `orders`' two new columns; three new rows in §10.2's admin API table
+    for the rescan trigger/status/list routes, plus a note on `OrderView`'s
+    three new fields; and the new `[payment]` knobs
+    (`default_rescan_lookback_days`/`max_rescan_lookback_days`/
+    `expired_order_grace_period_minutes`) plus a note on the two
+    knobs that live *outside* this file's TOML entirely
+    (`RESCAN_START_HEIGHT_CUSHION_BLOCKS`, a fixed constant not yet
+    configurable; `CONTROL_PLANE_HTTP_CACHE_MAX_MB`, control-plane's own
+    env var) added to §13's configuration sketch.
+  - `work_notes.md` already had a real entry per phase as it landed
+    (Phase 0 through 5, each its own commit) - this entry is the closing
+    one, not a first one; §6.2's own ask ("a real entry once each phase
+    lands, same practice every other multi-session piece of work in this
+    repo already gets") was satisfied incrementally throughout, not
+    retrofitted here.
+  - **The whole feature, landed across this session, phase by phase**:
+    Phase 0 (daemon timestamp→height lookup), Phase 1 (the bounded
+    one-order historical rescan primitive, durable job table, restart-
+    resume, background runner), Phase 2 (the engine's admin HTTP surface -
+    trigger/status/cached-list), Phase 3 (control-plane's trigger UI,
+    progress display, and the shared byte-bounded HTTP-cache-aware
+    transport adopted everywhere), Phase 4 (the default grace period for
+    recently-expired orders), Phase 5 (tracking and displaying each
+    order's actually-scanned block range, plus the gap-prevention
+    guardrail the user's own review caught), Phase 6 (this entry). Every
+    phase landed as a real code commit plus a separate `work_notes.md`
+    commit, `cargo test --workspace` and `cargo build --workspace --tests
+    --features e2e` (both this repo and `mock-woocommerce`'s own
+    workspace view) verified clean after every one - no phase merged on
+    faith. Two real bugs were caught and fixed along the way, not shipped:
+    a self-caught assertion bug in a Phase 0 test (fixed the test, not the
+    implementation - the implementation was already correct), and a real
+    `std::sync::Mutex` deadlock in Phase 5 (an `if let` scrutinee holding
+    a `MutexGuard` for the whole statement, not just its condition, while
+    a nested call tried to take the same non-reentrant lock again) -
+    caught by every scanner test hanging, not by inspection.
+
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 5 done -
+  tracking and displaying each order's actually-scanned block range.**
+  Sixth of seven phases, and the last with real engine+UI work - only
+  documentation (Phase 6) is left.
+  - `orders` gains `first_scanned_height`/`last_scanned_height`
+    (migration 0008), accumulated (never replaced) by two independent
+    writers: `Store::bump_scanned_heights_for_tenant` (ordinary live
+    scanning - one bulk `UPDATE` per active tenant per tick, using the
+    exact widened in-scope predicate Phase 4 already established) and
+    `Store::bump_scanned_range_for_order` (a manual rescan, called from
+    `run_rescan_job`'s own progress-persist closure at the same throttled
+    cadence). Both use `COALESCE(MIN/MAX(...), ...)` rather than a bare
+    `MIN`/`MAX` - SQLite's scalar form returns `NULL` if *either* side is
+    `NULL`, which would wipe out a still-unset column instead of seeding
+    it. **A resumed rescan deliberately uses the job's own immutable
+    `from_height` (not the resume point `rescan_order` actually starts
+    walking from)** for the "first" bound - using the resume point would
+    silently narrow `first_scanned_height` back down on every restart,
+    the same class of bug the gap-prevention guardrail below exists to
+    prevent on the trigger side. Six real, individually-named tests cover
+    this (fresh order's first tick, freeze-on-terminal, a single rescan
+    extending both bounds, two sequential rescans accumulating rather than
+    overwriting, a resumed rescan using the original `from_height`, and
+    grace-window-plus-simultaneous-rescan not double-counting).
+  - **A real deadlock, caught immediately by the test suite hanging, not
+    shipped**: the first version of the per-tick bump loop wrote
+    `if let Ok(Some(h)) = store.lock().unwrap().max_scanned_height(...) {
+    for tenant in &ranges { store.lock().unwrap()... } }` - a real Rust
+    footgun, not a logic bug: an `if let` scrutinee's temporaries
+    (including a `MutexGuard`) live for the whole `if let` statement,
+    not just the condition, so the outer lock was still held when the
+    loop tried to take it again on the same (non-reentrant)
+    `std::sync::Mutex`. Every test calling `run_scan_tick` hung
+    indefinitely; `cargo test` had to be backgrounded and killed after
+    its 60s per-test warning fired repeatedly. Fixed by binding the
+    guard's result to an owned `let` first (whose temporary drops at the
+    statement's own end) before the `if let`/loop. Worth naming for
+    whoever next writes `store.lock().unwrap().foo()` inside an `if let`
+    or `match` scrutinee in this codebase - the pattern is easy to reach
+    for and silently deadlocks rather than erroring.
+  - Guardrail (5.2): the trigger endpoint rejects (`400`, real inclusive
+    `>=` boundary, advanced mode only) an advanced-mode `to` that resolves
+    earlier than the order's existing `last_scanned_height` - the "gap
+    correctness trap" the user themselves spotted during the original
+    WBS review. Four dedicated tests pin the boundary exactly (one block
+    early rejected, exactly equal accepted, comfortably later accepted
+    and genuinely narrows the walk, simple mode structurally never reaches
+    the check at all). These needed a `FakeDaemonClient` chain with
+    *real, recent* timestamps (`Store::set_block_timestamp`, not the
+    fake chain's own default 2023 anchor) - real wall-clock time has now
+    drifted more than the 90-day lookback ceiling past that anchor, which
+    would otherwise reject every advanced-mode request in the test
+    regardless of what it's actually trying to prove.
+  - `OrderView` (engine's admin API) gains the two range fields plus a
+    computed `currently_scanning: bool` (`Store::is_order_currently_scanning`
+    - in the live scanner's own widened in-scope set, *or* a currently-
+    `running` rescan) - one engine-decided boolean, not scope logic
+    re-derived downstream. `AppState` gained
+    `expired_order_grace_period_seconds` to support this (mirrors the
+    lookback-day fields Phase 2 already added the same way).
+  - Control-plane: a new "Scan range" row on the order-detail page -
+    `"{first} - {last}"` once settled, `"{first}+"` while still growing,
+    a muted dash before an order's first tick. Real tests for the dash
+    and both growing cases against a real engine; the closed-range case
+    is tested directly against the template (the same convention this
+    page's other conditional rows already use) rather than end to end,
+    since reaching a genuinely past-grace order in this test harness
+    (no background scan loop, a real ~30-minute default expiry) would
+    mean an actual wait - noted explicitly in that test's own comment
+    rather than silently narrowing coverage.
+  - `cargo test --workspace` clean (317 engine/207 control-plane passing,
+    up from 312/203) in both the root workspace and `mock-woocommerce`'s
+    own view with `--features e2e`; `cargo build --workspace --tests
+    --features e2e` clean in both locations too.
+  - Proceeding into Phase 6 next (documentation - `docs/DESIGN.md` and a
+    final work_notes entry) - the last phase, closing out this WBS.
+
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 4 done - a
+  default grace period for recently-expired orders.** Fifth of seven
+  phases, and (per the WBS's own note) fully independent of every phase
+  before it - this closes the "does the scanner keep watching an order for
+  a while after it expires" gap the user asked about directly mid-review.
+  It didn't, confirmed by reading the code before this phase started:
+  `Store::active_tenant_ids` and `Store::non_terminal_order_ids` were a
+  plain `status IN (Pending, Unconfirmed, Confirming, Partial)`, no time
+  clause at all - the instant every one of a tenant's orders went terminal,
+  that tenant (and any newly-`Expired` order) dropped out of live scanning
+  with zero grace.
+  - Both queries gain an `OR (status = 'expired' AND expires_at >= now -
+    grace_period_seconds)`, taking `now`/`grace_period_seconds` as real
+    parameters now (previously neither took any time input at all).
+    `Store::trigger_rescan`'s own store methods aside, no other scanner-core
+    change was needed - confirmed directly (not assumed) in the WBS's own
+    research: `record_scan_match` already adds every matched order to a
+    tick's `touched` set unconditionally, unioned (not filtered) into the
+    recompute sweep regardless of whether the order was in the base
+    non-terminal set, so a late payment against an already-`Expired` order
+    already gets its status correctly recomputed the same tick once it's
+    merely *found* - widening only "what's in scope to scan" was the whole
+    fix.
+  - New config knob `payment.expired_order_grace_period_minutes`, default
+    `360` (6h). Unlike every other numeric knob in `config.rs`, `0` is a
+    real, valid choice here (disables the grace period outright, reverting
+    to the exact pre-Phase-4 behavior) rather than a silent-failure trap -
+    called out explicitly in both the validation bound (`0..=525600`, not
+    `1..=...`) and its own dedicated test, kept separate from the "every
+    knob that's unsafe at zero" table test so it doesn't get swept into
+    that list by accident.
+  - **Real mechanical blast radius, handled directly**: `run_scan_tick`
+    gained a new required parameter (`expired_order_grace_period_seconds`),
+    which - being called from ~85 sites across this session's own extensive
+    scanner test suite plus `main.rs`/`engine-test-support`/both e2e test
+    binaries - was scripted (a small Python pass balancing parens to find
+    every real call site, inserting `, 0` to preserve exact prior behavior
+    for every test that isn't about the grace period itself) rather than
+    hand-edited one at a time. The script's first pass produced three
+    `,, 0` double-comma syntax errors (multi-line calls whose last
+    argument already ended in a trailing comma before the closing paren) -
+    caught immediately by `cargo build`, fixed by hand at those three
+    sites. `main.rs`'s own real call is the one site that does *not* get
+    `0` - it's wired to the real
+    `config.payment.expired_order_grace_period_minutes * 60`.
+  - Two real scanner-level tests prove the boundary is genuine, not just
+    documented: an order forced `Expired` moments ago, a payment landing in
+    the mempool with a generous grace period - still matched, order comes
+    alive again (`Unconfirmed`, no zero-conf ceiling configured in this
+    fixture - the point isn't reaching `Paid`, it's not staying silently
+    stuck at `Expired`). Same setup with the order's deadline 10,000 seconds
+    in the past and a 60-second grace period - genuinely not matched at
+    all, proving the cutoff really excludes what it's supposed to. Plus a
+    focused `Store`-level test pinning the exact inclusive boundary
+    (`expires_at >= now - grace`, tested one second on each side of it, at
+    both `grace=0` and a real window) for both widened queries directly.
+  - `cargo test --workspace` clean (306 passing/10 ignored, up from
+    302/10) in both the root workspace and `mock-woocommerce`'s own view
+    with `--features e2e`; `cargo build --workspace --tests --features
+    e2e` clean in both locations too.
+  - Proceeding into Phase 5 next (tracking and displaying each order's
+    actually-scanned block range - `first_scanned_height`/
+    `last_scanned_height` columns, the gap-prevention guardrail on
+    advanced-mode `to` the user specifically praised catching during
+    review, and the "Scan range" UI row) - the last phase with real
+    engine+UI work; Phase 6 (documentation) closes out the WBS after it.
+
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 3 done -
+  control-plane's trigger UI and progress display. Fourth of seven phases,
+  and the first with anything a merchant can actually click.**
+  - **3.1**: `shared::http_cache` (new module) is now the default transport
+    for every outbound call in the workspace - `EngineClient` (every
+    method) and `CoingeckoRateProvider`. Hand-rolled rather than the
+    off-the-shelf `http-cache-reqwest` crate - discovered live while
+    building this that its published release pins `reqwest-middleware
+    ^0.4`/`reqwest ^0.12`, a different major version from what this
+    workspace already runs (`0.5`/`0.13`), which Cargo resolves as two
+    separate, mutually-incompatible copies of both crates - its `Cache`
+    middleware type structurally cannot attach to our `ClientBuilder`. Full
+    reasoning and the real `cargo tree -i reqwest` evidence are in that
+    module's own doc comment. Only a `GET` response carrying
+    `Cache-Control: max-age=N` is ever cached (real, byte-weighted
+    `moka::future::Cache`, sized by `CONTROL_PLANE_HTTP_CACHE_MAX_MB`,
+    default 16MB) - real tests prove both directions: a cache-control-
+    bearing response is served from cache within its window (a real
+    call-count assertion, not just equal output), and an ordinary response
+    with none is never cached, plus a real eviction test (fill a 3KB-capped
+    cache with ~1KB entries, confirm at least one real refetch afterward -
+    `moka`'s async housekeeping needed a `~500ms` wait past its own
+    `LOG_SYNC_INTERVAL_MILLIS`, not the `50ms` first tried, to actually
+    observe the eviction). `EngineClient` gains `trigger_rescan`/
+    `get_rescan_status`/`list_active_rescans`.
+  - **A real design bug caught by the compiler before it shipped**:
+    `Store::trigger_rescan` (Phase 1) originally returned a bare
+    `OrderRescan` with no way to tell "I just started this" from "this was
+    already running." An admin handler that spawns a runner unconditionally
+    on that return would spawn a *second* runner against an already-running
+    job's row on a retried or double-clicked trigger request - exactly the
+    UI this phase builds. Fixed in Phase 2's own landing by changing the
+    return type to `TriggerRescanOutcome::{Started, AlreadyRunning}`; worth
+    restating here because Phase 3's UI is the reason that fix mattered, not
+    an abstract concern.
+  - **3.2/3.3**: the order-detail page's rescan section - for an `Expired`
+    order (decision 5), either a two-mode trigger form (simple: "Rescan from
+    &lt;date&gt;" stating the real, already-computed date outright; advanced:
+    two native `<input type="date" min="..." max="...">` fields, the bound
+    also restated in plain words) or, while a job is genuinely `running`, a
+    small `.tag-syncing` "Syncing NN%" badge next to the order's own status
+    plus a server-computed progress bar (`checkout.html.hbs`'s own existing
+    component, reused verbatim) - the two are mutually exclusive, computed
+    server-side in `http/orders.rs::build_rescan_section`, no client JS.
+    The page's meta-refresh tightens from 15s to 5s while genuinely
+    `running`. A rejected trigger (the engine's own real `400`, or a
+    locally-unparseable date) re-renders the page with the error shown - a
+    **separate top-level field** (`OrderDetailData::rescan_error`), not
+    threaded through the rescan section itself, specifically because a real
+    race exists (the order stops being `Expired` between page load and
+    submit) where the rescan section wouldn't render at all but the
+    rejection still must be shown - caught by a real test, not reasoned
+    about after the fact.
+  - **Hand-rolled calendar math, not a new dependency**: `<input
+    type="date">`'s `min`/`max`/submitted value all need real `YYYY-MM-DD`
+    strings; rather than pull calendar formatting/parsing into the `time`
+    crate this codebase already depends on (currently used for exactly one
+    thing, a cookie's `Duration::ZERO`) with unconfirmed feature flags,
+    `templates::{unix_to_date_string, date_string_to_unix_midnight}` use
+    Howard Hinnant's well-known constant-time civil-calendar algorithm
+    directly - a handful of real tests (known dates including a leap day,
+    round-tripping, malformed-input rejection) rather than trusting
+    hand-rolled arithmetic by inspection.
+  - **3.4**: the dashboard-home page gains a "Syncing N order(s) for
+    possible late payments" banner (one link per active job) whenever
+    `list_active_rescans` reports anything running for any of the user's
+    connected stores - one call per store connection per page load, riding
+    the same cache-aware transport 3.1 just adopted. The page's meta-refresh
+    (previously nonexistent - the dashboard never auto-refreshed at all)
+    only appears while something is genuinely syncing, same "presence, not
+    interval" pattern `checkout.html.hbs` already established.
+  - **`engine-test-support` gained one new accessor**: `TestEngineHandle::
+    store()`, returning the real live `SharedStore` a spawned test engine
+    runs against - needed because this harness configures no real daemon
+    (documented, deliberate), so a rescan that genuinely runs to completion
+    via HTTP isn't reachable in these tests; what they're actually about is
+    control-plane's own rendering of a job's state (badge, progress bar,
+    date bounds, banner), not the engine's rescan mechanics (already proven
+    end to end by the engine's own Phase 1/2 tests) - so these tests seed a
+    `running`/`Expired` state directly against the real store, same
+    shortcut the engine's own scanner tests already use for reaching a
+    terminal status without a real wait.
+  - `cargo test --workspace` clean (root workspace and `mock-woocommerce`'s
+    own view, `--features e2e` both places) throughout landing this phase.
+  - Proceeding into Phase 4 next (a default grace period for recently-
+    expired orders, widening `active_tenant_ids`/`non_terminal_order_ids`
+    with a configurable `expired_order_grace_period_minutes`) - fully
+    independent of every phase so far, closes the "does the current code
+    keep scanning after expiry" gap the user asked about early in this
+    WBS's own review.
+
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 2 done - the
+  engine's admin HTTP surface for triggering and watching a rescan.** Third
+  of seven phases. This is the first phase with anything reachable from
+  outside a test - a merchant-facing control-plane UI (Phase 3) can now be
+  built entirely against real endpoints rather than mocks.
+  - `POST /api/v1/admin/tenant/orders/{payment_id}/rescan` - `{"mode":
+    "simple"}` or `{"mode": "advanced", "from": <unix ts>, "to": <unix ts
+    (optional, defaults to now)>}`. Rejects (`400`) an order that isn't
+    `Expired` (decision 5), an advanced `from` earlier than
+    `max(order.created_at, now - max_rescan_lookback_days)`, a `to` in the
+    future, or `to < from` - all real rejections, never silently clamped,
+    per the WBS's own explicit requirement. Resolves the window to real
+    block heights via Phase 0's `find_height_at_or_before`, applies Phase
+    1's start-side cushion (`scanner::rescan_start_height`) to the start
+    only, inserts the durable job row, and spawns the runner. Returns `202`
+    with the job's initial state - triggering again while it's still
+    running for *this* order returns the same job (not an error); while
+    a *different* order on the same tenant is running, a real `400`.
+  - **A real bug caught before it shipped, not after**: `Store::
+    trigger_rescan`'s original Phase 1 signature returned a bare
+    `OrderRescan` with no way to tell "I just started this" from "this was
+    already running" apart. The admin handler's job is to decide whether to
+    spawn a runner - spawning unconditionally on that ambiguous return would
+    have spawned a *second* runner against an already-running job's row
+    every time a merchant's browser retried a trigger request (or double-
+    clicked the button, the exact UI Phase 3 is about to build), racing two
+    `run_rescan_job` calls against the same `current_height` writes. Fixed
+    by changing `trigger_rescan` to return `TriggerRescanOutcome::{Started,
+    AlreadyRunning}` instead - the handler only spawns on `Started`. Cost:
+    updating every Phase 1 test call site (`.into_job()` where the
+    distinction doesn't matter, an explicit `matches!` where it does) -
+    a legitimate API tightening mid-WBS, not scope creep.
+  - `GET /api/v1/admin/tenant/orders/{payment_id}/rescan` - the most
+    recently triggered rescan for this order (`Store::
+    get_latest_rescan_for_order`, added this phase), `404` if none ever
+    was. Reports `percent_complete` (derived, not stored -
+    `(current_height - from_height) / (to_height - from_height)`, clamped).
+  - `GET /api/v1/admin/tenant/rescans` - decision 3's dashboard-wide check,
+    with **real HTTP caching**, not a bespoke in-process cache: an `ETag`
+    built from the one running job's own `(id, updated_at)` (or the fixed
+    string `"none"`), `Cache-Control: max-age=3`, and genuine
+    `If-None-Match` handling - a matching etag gets a bodyless `304`, same
+    mechanism a browser or CDN would use between control-plane and the
+    engine. Real conditional-request test proves it: same etag gets `304`,
+    a progress update on the underlying job (as the real runner would make)
+    changes the etag and the same `If-None-Match` now gets a fresh `200`.
+  - Two new config knobs, `payment.default_rescan_lookback_days` (7) and
+    `payment.max_rescan_lookback_days` (90), validated (`1..=3650` each,
+    and default must not exceed max - a config where simple mode's own
+    fixed window would itself violate advanced mode's ceiling is refused
+    at startup, not left to surprise a merchant at trigger time). Carried
+    into `AppState` the same way `scan_poll_interval_secs` already is -
+    `AppState` still never holds a whole `Config`.
+  - **Test-timing correctness worth naming for whoever writes the next
+    HTTP-layer test here**: several new tests initially triggered a rescan
+    through the real HTTP endpoint and then made follow-up assertions
+    expecting the job to still be `running`. Against `FakeDaemonClient`
+    with no real I/O latency, the spawned background runner can finish a
+    300-block walk before the test's own next `.await` yields back to
+    it - a genuine race, not a hypothetical one. Fixed by seeding the
+    "already running" state directly via `Store::trigger_rescan` in tests
+    that are actually about the *endpoint's* behavior (the guardrail
+    rejection, the list endpoint's caching), reserving a real end-to-end
+    HTTP trigger for the one test that only checks the job id stays
+    consistent across the trigger and status calls, which holds regardless
+    of how fast the runner finishes. Confirmed hermetic by rerunning the
+    whole rescan test set five times in a row with 8 threads - no flakes.
+  - `cargo test --workspace` clean (302 passing/10 ignored, up from
+    292/10) in both the root workspace and `mock-woocommerce`'s own view
+    with `--features e2e`; `cargo build --workspace --tests --features
+    e2e` clean in both locations too.
+  - Proceeding into Phase 3 next (control-plane: the shared HTTP-cache-
+    aware client adopted as the default transport, the trigger UI with its
+    simple/advanced form, and the in-progress indicator on both the order
+    and dashboard pages) - the phase that finally makes this feature
+    something a merchant can actually click.
+
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 1 done - the
+  bounded, one-order historical rescan primitive, its durable job table
+  with real restart-resume, and the background runner that drives it.**
+  Second of seven phases. Still entirely engine-internal - no HTTP surface
+  yet (that's Phase 2), so nothing merchant-visible lands until then, but
+  every piece a trigger endpoint will call is now real and tested.
+  - `scanner::rescan_order(store, key_custody, daemon, tenant_id, handle,
+    minor_index, from_height, to_height, now, on_progress)` - walks
+    `from_height..=to_height` block by block, narrowed to one
+    `minor_index` via the same `Range<u32>` `scan_transaction`/
+    `record_scan_match` (`scanner.rs:85`) already take for the live
+    scanner. Not a rewrite: this is the exact primitive the WBS's own
+    research identified as reusable, called from a new site rather than a
+    new implementation. Errors propagate with `?` (unlike the live
+    scanner's log-and-retry-next-tick) - a one-shot job has no "next tick,"
+    so its caller (`run_rescan_job`) is what decides a failure means
+    "mark this row `failed`," not "silently stall forever at an unscanned
+    height."
+  - Ends with WBS 1.4's final mempool pass (catches a payment broadcast
+    but not yet mined by the time the historical walk reaches `to_height`)
+    and, deliberately, **no held-back buffer on the tip side** - scans all
+    the way to the literal current height. This is safe specifically
+    because `check_for_reorg_and_reconcile` (`scanner.rs:208`) has no
+    order-status filter at all, already proven for a terminal order by the
+    existing `a_settled_order_is_walked_back_when_a_reorg_deeper_than_...`
+    test - a payment the rescan records, even one that immediately settles
+    the order, inherits that same ongoing reorg protection automatically.
+    New test `a_rescan_found_payment_is_still_walked_back_by_a_later_reorg`
+    proves this end to end (trigger a rescan, let it settle the order,
+    reorg the chain that carried the payment, confirm the order is walked
+    back to `pending` with `double_spend_detected_at` set) rather than
+    leaving it as reasoning in a doc comment.
+  - The start side, unlike the end side, does get a fixed cushion:
+    `rescan_start_height()` subtracts `RESCAN_START_HEIGHT_CUSHION_BLOCKS`
+    (240, ~8h of block time) from a timestamp-derived start height, a
+    safety margin against Phase 0's binary search landing slightly late on
+    a non-strictly-monotonic block timestamp. Lives as its own small pure
+    function, separate from `rescan_order` itself, so `rescan_order`'s own
+    contract stays simple ("walk exactly what I'm given") - Phase 2's
+    trigger endpoint is what will call this before invoking `rescan_order`.
+  - New table `order_rescans` (`migrations/0007_order_rescans.sql`): one
+    row per triggered job - `status` is only ever `running`/`completed`/
+    `failed`, deliberately **no `interrupted` state** (decision 2) - a row
+    still `running` when the process stopped simply *is* still running, as
+    far as this table is concerned. `current_height` is the resumable
+    progress cursor; `to_height` is fixed once at trigger time and never
+    recomputed against a later tip, so a job converges even across several
+    restarts. A partial unique index (`order_rescans_one_running_per_tenant`
+    on `tenant_id WHERE status = 'running'`) enforces the one-job-per-tenant
+    guardrail (decision 4) atomically at the DB level - `Store::
+    trigger_rescan` catches the constraint violation and hands back the
+    existing running row instead of erroring, so a race between two
+    concurrent trigger requests can't create two jobs for one tenant.
+  - `scanner::run_rescan_job` runs one job to completion (or failure),
+    resuming from the row's own `current_height` - **not** `from_height` -
+    which is the one genuinely new piece of behavior this feature adds.
+    Re-scanning `current_height` itself on resume (not `current_height + 1`)
+    is intentional, not an off-by-one: it guarantees at-least-once coverage
+    of whatever block was mid-flight when the process stopped, leaning on
+    `record_scan_match`'s existing idempotency
+    (`UNIQUE(order_id, txid, output_index)`) rather than inventing new
+    idempotency logic. Progress is persisted every
+    `RESCAN_PROGRESS_PERSIST_INTERVAL_BLOCKS` (50) blocks, not every
+    single one - a rescan can cover tens of thousands of blocks, and a
+    real write per block would be wasteful. New test
+    `a_resumed_rescan_continues_from_its_persisted_current_height_not_from_height`
+    proves this directly: manually advances a job's `current_height` to
+    50 (simulating a process that died after persisting that much
+    progress), re-runs `run_rescan_job` against a fresh daemon wrapped to
+    record which heights it's asked for, and asserts the minimum height
+    seen is 50, not the job's `from_height` of 1.
+  - `scanner::spawn_rescan_job` is the real fire-and-forget production
+    shape - a genuinely new spawn pattern for this codebase (flagged as
+    such in the WBS itself): `shared::supervise::supervise` is loop-only
+    and wraps a closure that never returns, but a rescan job is bounded
+    and must run once to completion. Implemented as a double `tokio::spawn`
+    (an outer task supervising an inner one) rather than pulling in a
+    `catch_unwind` dependency - a panic in the inner task surfaces as an
+    `Err` on its `JoinHandle` that the outer task reacts to by marking the
+    row `failed`. `run_rescan_job` itself already handles an ordinary
+    `Err` from `rescan_order` the same way, so the outer layer only has to
+    cover the panic case.
+  - **Restart-resume wired for real, not just unit-tested**: `main.rs`
+    gained `resume_running_rescans`, called once at boot right after
+    `wallet_handles` is populated - reads `Store::list_running_rescans`
+    once and calls `spawn_rescan_job` for each row found, resolving each
+    job's `WalletHandle` and `Network`/daemon from already-boot-time state
+    the same way `register_all_tenants` does. A row whose tenant or wallet
+    handle no longer exists at boot (tenant disabled/deleted between
+    trigger and restart) is marked `failed` rather than left `running`
+    forever, which would otherwise permanently occupy that tenant's
+    one-job slot.
+  - Store-level round-trip tests for the whole `order_rescans` state
+    machine (trigger/progress/complete/fail, the one-running-per-tenant
+    guardrail holding within a tenant and not leaking across tenants,
+    `list_running_rescans` reflecting exactly the still-running set,
+    `get_latest_rescan_for_order` picking the most recent by
+    `started_at`) - "real sqlite round-trip tests, same style every other
+    table in this codebase already gets," per the WBS's own test bullet.
+  - `cargo test --workspace` clean across both the root workspace (292
+    passing/10 ignored, up from 279/10) and `mock-woocommerce`'s own
+    workspace view with `--features e2e` (190 passing there); `cargo build
+    --workspace --tests --features e2e` clean in both locations too.
+  - Proceeding into Phase 2 next (the engine's admin HTTP surface: trigger
+    with simple/advanced modes, a status endpoint, and a genuinely
+    HTTP-cached list-active-rescans endpoint) - this is what finally makes
+    Phase 1's primitives reachable by anything outside a test.
+
+- **Expired-order rescan (`docs/order_rescan_wbs.md`): Phase 0 done -
+  the engine's daemon layer gains a real timestamp→block-height lookup.**
+  A planned, multi-phase feature (user-requested WBS, reviewed and
+  resolved before any code started) letting a merchant re-scan the chain
+  for one specific order from around its creation time, for a customer who
+  paid after the order expired. Phase 0 is the first of seven phases, and
+  the only one landed so far - a genuine prerequisite everything else
+  depends on, not a standalone feature merchants see yet.
+  - `MoneroDaemonClient` (`src/daemon.rs`) gains a new required primitive,
+    `get_block_timestamp(height) -> u64`, and a new **default** method,
+    `find_height_at_or_before(target_timestamp) -> u64` - binary search
+    over `[0, tip]` built purely from `get_height`/`get_block_timestamp`,
+    the same "one real method, every implementor gets this for free" shape
+    `is_key_image_spent_corroborated` already established. Deliberately a
+    *default* method, not something each implementor writes itself - the
+    whole point is writing the search once and having `RpcDaemonClient`,
+    `FakeDaemonClient`, and every scanner test double inherit it for free.
+  - `daemon_rpc.rs`'s `BlockHeader` struct gains the real `timestamp` field
+    monerod's `get_block` response already sends (confirmed - it was
+    always there, simply never deserialized until now); `RpcDaemonClient`'s
+    own `get_block_timestamp` is one more `get_block` call, same shape as
+    the existing `get_block_hash`.
+  - **Real blast radius, budgeted for rather than discovered mid-way**:
+    `MoneroDaemonClient` has *eleven* real implementors across this
+    codebase (`RpcDaemonClient`, `FallbackDaemonClient`, `FakeDaemonClient`,
+    plus eight narrow test-only wrappers in `daemon_fallback.rs`/
+    `scanner.rs`/`engine-test-support`) - every one needed a real
+    `get_block_timestamp` arm (a genuine RPC/failover call for the two real
+    clients, a scripted lookup for `FakeDaemonClient`, `unimplemented!`/a
+    plain stub for the narrow test doubles that never exercise it). Found
+    via `grep -rn "MoneroDaemonClient for"` (not the narrower `"impl
+    MoneroDaemonClient for"`, which silently misses a generic `impl<D:
+    MoneroDaemonClient> MoneroDaemonClient for DaemonFailingFrom<D>` -
+    the compiler caught the one grep missed, confirming eleven, not ten).
+  - `FakeDaemonClient` (this codebase's own established "test scanner
+    logic against a deterministic scripted fake, not a live node"
+    infrastructure, `daemon.rs`'s own module doc comment) gained a
+    `timestamp` field on `FakeBlock`, a deterministic default formula
+    (`push_block`/`seed_block_at` need no signature change - zero risk to
+    the existing, large scanner test suite) and a new `set_block_timestamp`
+    setter for a test that wants to script something else - including a
+    deliberately non-monotonic timestamp, since real Monero block
+    timestamps aren't strictly monotonic and `find_height_at_or_before`'s
+    own tolerance for that needed real test coverage, not just a doc
+    comment claiming it.
+  - Real tests, hermetic first: 6 new tests in `daemon.rs` against
+    `FakeDaemonClient` (exact match, between-two-blocks, at/after tip,
+    before genesis, single-block chain, non-monotonic timestamps not
+    panicking) - one of these caught a real bug in my own *test*, not the
+    implementation: an early draft asserted `find_height_at_or_before(0)`
+    on a single-block chain should return that one block, when the
+    correct "at or before" answer for a target genuinely before the only
+    real block's own timestamp is honestly "nothing" (genesis, `0`) - the
+    same answer the multi-block genesis test already established, and
+    what the actual (correct) implementation returned. Fixed the test, not
+    the code. Two new `#[ignore]`d live-node tests added to `daemon_rpc.rs`
+    (`get_block_timestamp` and `find_height_at_or_before` both verified
+    against the real project test node, same "captured live, not assumed"
+    convention every other RPC field in that file already follows) - run
+    for real this session (`cargo test ... -- --ignored`), both passing
+    against real, current mainnet data.
+  - `cargo test --workspace` (all crates, 0 failures, moneropay-core's own
+    suite 279 passing/10 ignored, up from 272/8) and `cargo build
+    --workspace --tests --features e2e` (both root and `mock-woocommerce`)
+    both clean.
+  - Proceeding sequentially into Phase 1 (the one-order historical rescan
+    primitive, reusing `scan_transaction`/`record_scan_match`) next, per
+    the WBS's own dependency ordering and the user's explicit "begin the
+    sequenced implementation... yourself" instruction. This is genuinely
+    large (7 phases, `docs/order_rescan_wbs.md`) - expect several more
+    entries here as it lands, not one entry when it's all done.
+
+- **User-requested follow-up to the previous round: removed the "fixed" FX
+  provider entirely, added a trivial XMR identity provider, and dropped the
+  Coingecko currency whitelist in favor of live discovery.** The user's own
+  framing: "it simply doesn't make sense from a user perspective to have
+  rates fixed like that considering dynamic crypto pricing" plus "when the
+  currency of the order is XMR ... there should be no FX provider needed."
+  A proposal was written and approved before implementing (see this
+  session's own conversation) - three explicit decision points were
+  confirmed, a fourth (how Coingecko gets enabled without a whitelist) was
+  a judgment call flagged and then implemented.
+  - **`FixedRateProvider` deleted from `shared::exchange_rate`.** No
+    replacement "admin-pegged rate" concept exists any more, anywhere -
+    not even for tests (see below). New `XmrIdentityProvider`: a
+    zero-I/O, no-cache type whose `piconero_per_unit()` is always
+    `PICONERO_PER_XMR` (new `pub const` in `shared::xmr_amount`, `1e12`) -
+    a real, named counterpart to `CoingeckoRateProvider`, not a bare
+    `"XMR"` string check buried in the dispatcher.
+  - **Currency renamed to `currency`/`amount` everywhere - DB, HTTP API,
+    UI - since it's no longer necessarily fiat.** `order_fiat_metadata`
+    (table) -> `order_currency_metadata`; its `fiat_currency`/`fiat_amount`
+    columns -> `currency`/`amount` (migration `0009_rename_fiat_to_currency.sql`,
+    real `ALTER TABLE ... RENAME COLUMN`/`RENAME TO`, not a rebuild).
+    Every Rust struct/field of the same shape renamed to match
+    (`OrderFiatMetadataRow` -> `OrderCurrencyMetadataRow`,
+    `CreateOrderForm`/`CreateOrderRequest` fields, `OrderDetailData`/
+    `CheckoutViewModel`/`OrderRowViewModel`/`DashboardOrderRow` fields,
+    `fiat_rate_display`/`fiat_rate_provider` -> `rate_display`/
+    `rate_provider`). **Breaking change to the real public JSON API**
+    (`POST /pay/{pk}/orders`'s `fiat_amount`/`fiat_currency` request
+    fields, and the response's echo of them) and to the embed client
+    library's own JS-facing API (`moneropay-client.js`'s `createOrder({
+    fiatAmount, fiatCurrency })` -> `createOrder({ amount, currency })`) -
+    judged acceptable under this project's established "no customers yet"
+    precedent (already invoked for a prior env-var rename), confirmed with
+    the user before implementing rather than assumed. `_integration_help.html.hbs`'s
+    own example code/JSON updated to match, so the docs a merchant actually
+    reads never drifted out of sync with the real API during this change.
+  - **Dispatch by currency first, store second.**
+    `ExchangeRateProviders::piconero_per_unit_for(store, currency)`
+    replaces the old `piconero_per_unit(provider_name, currency)`:
+    `currency.eq_ignore_ascii_case("XMR")` short-circuits straight to the
+    identity provider *before even reading* `store.fx_provider` - an XMR
+    order's price is settled fact regardless of what FX provider a store
+    happens to have configured. Every other currency dispatches through
+    the store's own `fx_provider` column, which - now that "fixed" is
+    gone - can only ever really mean `"coingecko"` today. Returns
+    `(rate, provider_name)` together in one call (`Result<Option<(u64,
+    &'static str)>, _>`), not two separate calls a caller could let
+    drift out of sync with each other.
+  - **A real precision bug caught and fixed while building this**: the
+    first pass reused `compute_xmr_amount` (fiat-shaped, ≤2 decimal
+    places, cents-based) for *every* currency including XMR - which would
+    have silently capped every XMR-denominated order to 0.01 XMR
+    granularity, a real loss of precision for what is, for an XMR order,
+    not a fiat amount at all. Fixed with a new
+    `shared::exchange_rate::compute_order_amount(currency, amount,
+    piconero_per_unit)`: XMR is parsed at its own native 12-decimal
+    precision via `parse_xmr_to_piconero` (ignoring `piconero_per_unit`
+    entirely - the rate is trivially exact, not something to multiply
+    through), every other currency still goes through
+    `compute_xmr_amount` unchanged. Caught by the real e2e-stagenet test
+    fixtures (see below), which need exactly this precision (0.000335
+    XMR) - not a hypothetical.
+  - **No more startup currency whitelist for Coingecko.**
+    `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_CURRENCIES` is gone.
+    `CoingeckoRateProvider` gained `supported_currencies_cached(max_age)`,
+    hitting Coingecko's own keyless `/api/v3/simple/supported_vs_currencies`
+    endpoint (uppercased, cached with the same TTL machinery as a rate
+    lookup - its own independent cache entry, not tied to any one
+    currency's rate cache), confirmed live in this session against the
+    real API with no API key. The per-currency rate cache itself also
+    changed shape: no more pre-configured `currencies: Vec<String>`
+    field + one shared `fetched_at` for a batch fetch - each currency now
+    gets its own independent `(rate, fetched_at)` cache entry, fetched
+    lazily the first time (or first time after going stale) anyone
+    actually asks for it. A currency Coingecko doesn't support is simply
+    never cached, discovered live rather than rejected against a
+    config-time list.
+  - **Turning Coingecko on is now an explicit boolean, not implied by a
+    non-empty currency list.** New `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED`
+    (`"true"`/`"false"`, default `false`) - a real judgment call, since
+    removing the whitelist also removed the thing that used to double as
+    "is Coingecko configured at all" (a non-empty currency list). New
+    `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_BASE_URL` (default
+    `https://api.coingecko.com`, the real keyless public API - confirmed
+    live, no key needed) lets an advanced operator point at a paid tier or
+    a proxy, per the user's own explicit ask.
+  - **`store_connections.fx_provider`**: new stores get `'coingecko'`
+    explicitly from `Db::create_store_connection` now (SQLite can't
+    cheaply change a column's own `DEFAULT` in place after "fixed"'s
+    removal, and there's no functional need to - an XMR order never reads
+    this column at all). Existing `'fixed'` rows are backfilled to
+    `'coingecko'` by migration `0008_remove_fixed_fx_provider.sql` - inert
+    until an admin actually enables Coingecko, same as an unconfigured
+    `'fixed'` store was before. `available_providers()`/the settings
+    dropdown can now legitimately be *empty* (no fiat provider enabled at
+    all) - `store_detail.html.hbs` handles that case explicitly (a muted
+    "none enabled on this instance" message, no broken empty `<select>`),
+    and the "create a test order" form's currency field now defaults to
+    `"XMR"` rather than `"USD"`, since that's what's guaranteed to work
+    with zero configuration.
+  - **Test infrastructure**: the old `ExchangeRateProviders::fixed_only(...)`
+    (used by ~9 test-only `AppState` construction sites purely to avoid a
+    real network call, not to test FX logic itself) is gone. Two real
+    replacements: `xmr_only()` (no provider at all - what most call sites
+    now use, since their tests just create `"XMR"`-denominated orders and
+    genuinely need no provider) and `coingecko_only(base_url)` (a real
+    `CoingeckoRateProvider` pointed at a caller-given base URL - used only
+    by `pay.rs`'s own tests, which specifically exercise the fiat-quote
+    path end to end against a small local mock HTTP server, same
+    no-mocking-library pattern this codebase already uses elsewhere). The
+    two real-network stagenet e2e suites (`mock-woocommerce/tests/
+    e2e_stagenet_connect_flow.rs`, `tests/e2e_dashboard_stagenet.rs`,
+    both explicitly "nothing here is mocked except the plugin itself")
+    were **not** given a mock Coingecko server - instead switched to a
+    directly XMR-denominated order (`"0.000335"` XMR, the same tiny
+    335,000,000-piconero target both already used, now reached via the
+    new 12-decimal-precision path rather than a fiat-rate multiplication)
+    so the real stagenet run stays genuinely unmocked end to end, and
+    incidentally exercises the exact new capability this whole round
+    added.
+  - `cargo test --workspace` (every crate - control-plane 178, moneropay-core
+    273, shared, engine-test-support, key-custody-server, snp_attest, etc. -
+    all passing, 0 failing) and `cargo build --workspace --tests --features
+    e2e` (both root and `mock-woocommerce`) both clean.
+  - Live-verified against the real dev stack, twice: once with no FX
+    provider configured (a real XMR order created and displayed - "1.000000000000
+    XMR per 1 XMR" / "xmr" - with zero rate-related env vars set, and the
+    settings page correctly showing "none enabled on this instance"), once
+    with `CONTROL_PLANE_EXCHANGE_RATE_COINGECKO_ENABLED=true` (the
+    dropdown offered `coingecko`, and a real $10.00 USD order was priced
+    against Coingecko's real live API - `0.001965833808 XMR per 1 USD`,
+    the real market rate at the time, not a fixture).
+
+- **User-requested round of 4 feedback items, actioned fully autonomously
+  ("proceed with this autonomously making judgement calls" - full report of
+  judgment calls delivered to the user in-conversation, summarized here):
+  per-store FX provider selection, dropped the Coingecko background-polling
+  loop for an async pull-with-TTL-cache design, dashboard pk-column
+  ellipsis with a pure-CSS native-find highlight, restyled the iframe
+  checkout page to the site's own motif, and a shareable "payment link"
+  page for orders.**
+  - **Per-store FX provider.** The `ExchangeRateProvider` trait (shared by
+    `FixedRateProvider`/`CoingeckoRateProvider`) is gone entirely - the two
+    real implementations have genuinely different call shapes (an instant
+    sync lookup vs. an async TTL-cached fetch), and forcing them behind one
+    trait would've meant a pointless async wrapper on the fixed provider.
+    New `control_plane::exchange_rate_config::ExchangeRateProviders`
+    dispatcher holds both concrete providers plus the admin's
+    `cache_seconds`, with `piconero_per_unit(provider_name, fiat_currency)`
+    as the one async entry point every caller now goes through. New column
+    `store_connections.fx_provider` (migration `0007_store_fx_provider.sql`,
+    `DEFAULT 'fixed'`) is the per-store selection, set via a new dropdown on
+    the store settings page; both order-creation call sites
+    (`http::pay::create_order`, `http::orders::create_order`) now pass
+    `row.fx_provider` through instead of a global. The dropdown only offers
+    `ExchangeRateProviders::available_providers()` - what this instance
+    actually has configured, not a hardcoded list - and picking an
+    unconfigured one is rejected with a clear error, not silently accepted
+    or silently falling back to `fixed`. The underlying `fixed` rate table
+    itself stays a single global admin-configured value (`CONTROL_PLANE_
+    EXCHANGE_RATE_FIXED_RATES`) - only the *choice* of provider is
+    per-store, not per-store custom rates, since the feedback only asked
+    for the former.
+  - **Async pull instead of background polling.** `CoingeckoRateProvider`
+    replaced its `Arc<RwLock<HashMap>>` + externally-supervised polling loop
+    (removed from `main.rs` entirely - no more `run_coingecko_refresh_loop`/
+    `supervise` for it) with `Arc<tokio::sync::Mutex<CoingeckoCache>>` and a
+    new `piconero_per_unit_cached(currency, max_age)`: locks the mutex
+    across the potential await (deliberately - serializes concurrent
+    stale-cache callers onto one real HTTP fetch instead of a thundering
+    herd), refreshes only if `fetched_at.elapsed() >= max_age`, and never
+    marks a failed fetch as fresh. The TTL is `CONTROL_PLANE_EXCHANGE_RATE_
+    CACHE_SECONDS`, admin-only (not store/user-configurable, per the
+    feedback), defaulted to the requested 30s. `CONTROL_PLANE_EXCHANGE_
+    RATE_PROVIDER` (the old global-provider-choice env var) and `CONTROL_
+    PLANE_EXCHANGE_RATE_CURRENCIES` (renamed to `..._COINGECKO_CURRENCIES`)
+    are breaking env var changes - judged acceptable under this project's
+    established "no customers yet" precedent for breaking changes.
+  - **Store list pk column: ellipsis + CSS-only find highlight.** `.ellipsis`
+    utility class (`text-overflow: ellipsis` + friends) applied only to the
+    "Your stores" table's public-key `<code>` cell, not other pk displays
+    site-wide - CSS ellipsis is purely visual and never removes the text
+    from the DOM, so a browser's native Ctrl+F/find-in-page still matches
+    the full underlying key even when visually clipped. The "searchable
+    text browser API" the feedback asked for is `::target-text` - the
+    pseudo-element a browser paints over a native find match - combined
+    with `:has()`: `tr:has(::target-text) { background: ... }`, wrapped in
+    `@supports selector(:has(::target-text))` for progressive enhancement.
+    No JS, per the feedback's explicit constraint.
+  - **Checkout iframe restyle.** Reused the site's existing shared
+    components (`.tag`/`.tag-ok`/`.tag-error`/`.box`) instead of inventing
+    parallel ad-hoc CSS - the status badge dropped a whole duplicated base-
+    shape ruleset in favor of layering 3 color rules on `.tag`, and the
+    amount/address boxes now sit inside `.box` cards matching the rest of
+    the control-plane site's semi-brutalist/monospace motif.
+  - **Payment link.** New route `/pay/{pk}/orders/{payment_id}/share`
+    renders a real nav-bearing page (`checkout_share.html.hbs`) iframing the
+    existing bare checkout page, styled to feel like part of the site
+    rather than a bare iframe - its not-found state also keeps the site nav
+    (the bare checkout page's own not-found state doesn't, since that page
+    is meant to be iframed and never visited directly). The order detail
+    page gained a "Payment link" row built from the *request's own*
+    `Host`/`X-Forwarded-Proto` headers, since control-plane has no
+    configured external base URL concept yet - a real, working judgment
+    call rather than new required configuration, but one worth revisiting
+    if the app ever sits behind a proxy that doesn't set those headers
+    faithfully.
+  - Real tests added throughout (TTL-cache freshness/staleness/failure
+    behavior, dropdown option availability and rejection of an unconfigured
+    provider, the share page's real HTML and its not-found state, a real
+    payment-link URL asserted on a real rendered order-detail page) - not
+    just "it compiles". `cargo test --workspace` and `cargo build
+    --workspace --tests --features e2e` (both root and `mock-woocommerce`)
+    both clean.
+  - Live-verified all 4 points against the real dev stack via a genuine
+    signup -> login -> connect -> create-order -> dashboard flow (not
+    fixtures): the pk column truncates with `class="ellipsis"` and the
+    `::target-text`/`:has()` rule is present on the page; the fx-provider
+    dropdown renders with `fixed` pre-selected and only configured
+    providers listed; a real order's detail page showed a real absolute
+    payment link; following it to `/pay/{pk}/orders/{payment_id}/share`
+    rendered a real nav-bearing page with a working `<iframe>` pointing at
+    the real checkout page, which itself rendered with the restyled
+    `.tag`/`.box` classes.
+
+- **User-requested follow-up (not part of `fx_refactor.md`'s own WBS,
+  post-completion): the FX rate provider and the exact rate used are now
+  recorded per order and shown on the order detail page.** Control-plane
+  already recorded `piconero_per_unit` (Phase 1.2) but not which provider
+  quoted it - a merchant looking at an order later had the number but no
+  way to tell whether it came from a `fixed` config value or a live
+  `coingecko` fetch (materially different trust/drift properties).
+  - New migration `control-plane/migrations/0006_order_fiat_metadata_provider.sql`
+    - `ALTER TABLE order_fiat_metadata ADD COLUMN provider TEXT NOT NULL
+    DEFAULT 'unknown'`. `'unknown'`, not a guessed `'fixed'`, for rows that
+    predate this column - this database genuinely cannot recover which
+    provider quoted an already-recorded rate, so claiming one would be
+    asserting something unproven.
+  - `ExchangeRateConfig::provider_name(&self) -> &'static str` (new method,
+    `"fixed"`/`"coingecko"`) - the missing piece: the trait object
+    `AppState.exchange_rate` holds can't answer "which concrete impl is
+    this" (same limitation the engine's own `key_custody_backend` field
+    works around), so a sibling `AppState.exchange_rate_provider: &'static
+    str` field now carries it alongside, computed once at boot in
+    `main.rs` from the same `ExchangeRateConfig` that builds the provider
+    itself - not re-derived, so the two can never disagree. Every one of
+    this workspace's ~15 test-only `AppState` construction sites (control-
+    plane's own test modules, `mock-woocommerce`, `tests/e2e_dashboard_
+    stagenet.rs`) updated to supply it.
+  - `Db::create_order_fiat_metadata` takes one more `provider: &str`
+    parameter now; both real call sites (`http::pay::create_order`, the
+    production storefront-facing endpoint, and `orders::create_order`, the
+    dashboard's own "create a test order" button) pass
+    `state.exchange_rate_provider` straight through - no new computation,
+    just recording what was already known at that point.
+  - `OrderDetailData` gained `fiat_rate_display` (e.g. `"0.006700000000 XMR
+    per 1 USD"`, formatted via `shared::exchange_rate::format_piconero_as_xmr`
+    - deliberately not `"1 USD = ... XMR"`: handlebars' default escaped
+    helper HTML-entity-encodes `=`, which is correct but made an early
+    draft's test assertion ugly for no real benefit) and `fiat_rate_provider`,
+    both falling back to the same `"—"` dash `checkout.rs` already
+    established for an order with no local fiat metadata at all (predates
+    the feature, or created directly against the engine). Two new rows on
+    `order_detail.html.hbs`: "Exchange rate" and "Rate provider".
+  - Real test added/extended, not just "it compiles": extended the
+    existing `creating_an_order_from_the_dashboard_redirects_to_its_real_
+    detail_page` test (which already creates a real order end-to-end and
+    loads its real detail page) with assertions for the exact rate string
+    and provider name, rather than adding a parallel near-duplicate test.
+  - Live-verified against the real dev stack (same manual
+    `CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES` override pattern used
+    throughout this session): migration 0006 applied cleanly to the
+    existing on-disk db; a real `$25.00` order at a real `0.0067` fixed
+    rate showed `0.006700000000 XMR per 1 USD` / `fixed` on its real
+    detail page, reached via a genuine signup -> login -> connect ->
+    order-creation -> dashboard flow, not a fabricated fixture.
+
+- **`fx_refactor.md` execution: Phases 4 (remainder), 5, and 6 done - the
+  document's entire WBS is now complete.** Continued fully autonomously per
+  the user's original "start work autonomously" instruction; no further
+  check-in requested or received at any point across this whole document's
+  execution.
+  - **Phase 4 remainder**: dropped `tenants.template_dir` for real - new
+    migration `migrations/0006_drop_tenant_template_dir.sql` (plain `ALTER
+    TABLE ... DROP COLUMN`, not part of any index/constraint), plus
+    `Tenant.template_dir`/`TenantConfigPatch.template_dir_set`/
+    `template_dir` removed from `src/store.rs` and the two now-pointless
+    `None`/`false` literals removed from `src/http/admin.rs::patch_own_tenant`.
+    Confirmed dead first, not assumed: `PatchTenantRequest` never exposed
+    `template_dir` to callers at all, so this was unreachable through the
+    HTTP API before this change too - the column just hadn't been formally
+    retired yet.
+  - **A real embeddable client library now exists on control-plane**,
+    closing the part of decision 3 this document's own Phase 4.3 flagged as
+    still open after Phase 3 landed (`mock-woocommerce`'s own `create_order`
+    proved the `/pay/{pk}/orders` endpoint via a raw `reqwest` call, but
+    that was never the actual embed widget a real merchant site would use).
+    Ported the engine's original `moneropay-client.js` to
+    `control-plane/static/moneropay-client.js` verbatim except for its two
+    endpoint paths (`/api/v1/t/{pk}/orders` -> `/pay/{pk}/orders`,
+    `/pay/v1/{pk}/{paymentId}` -> `/pay/{pk}/orders/{paymentId}`) - same
+    dependency-free, no-build-step, `postMessage`-relaying design, same
+    `MoneroPay.createOrder()`/`.mount()` public interface, so an existing
+    self-hosted integration only needs a URL change, not a rewrite. New
+    `GET /static/moneropay-client.js` route (`http::pay::client_library`,
+    no rate limiter - a plain static file, not state-changing) plus a real
+    test asserting it actually calls control-plane's own endpoints, not the
+    engine's old ones (`!js.contains("/api/v1/t/")`,
+    `!js.contains("/pay/v1/")`) - the kind of assertion that would have
+    caught a copy-paste-without-updating mistake, not just "the bytes are
+    served". Also added a real "Widget embed" section to
+    `_integration_help.html.hbs` (previously only showed the raw-API
+    `curl`-shaped example) with a working, real script-tag snippet -
+    live-verified on a real connect-success page, real `pk_...` correctly
+    interpolated in.
+  - **Phase 5 (e2e test rework)**: confirmed 5.1 (`tests/e2e_stagenet.rs`)
+    was already fully done as part of Phase 3's own minimal fix - it already
+    posts `xmr_amount_piconero` directly. Did the actual work for 5.2:
+    `tests/e2e_dashboard_stagenet.rs`'s order creation now goes through the
+    real `cp_router` (in-process `oneshot`, matching every other step of
+    that same test) hitting control-plane's own `/pay/{pk}/orders` with a
+    real fiat body, not a direct call to the engine - closing the real gap
+    the doc's own 5.2 bullet named ("the first time this e2e test would
+    exercise control-plane's own order-creation surface"). Retuned that
+    test's fixed exchange rate (`33_500_000_000` piconero/USD) so `"0.01"`
+    - a normal 2-decimal-place fiat amount, since `compute_xmr_amount`
+    rejects more than 2 - lands on the same genuinely-tiny
+    335_000_000-piconero real-stagenet-payment target every other real
+    e2e test in this repo already uses, rather than picking an arbitrary
+    new magnitude. `mock-woocommerce/tests/e2e_stagenet_connect_flow.rs`
+    was already reworked this same way during Phase 3's own propagation
+    pass - confirmed, not re-done.
+  - **Phase 6 (documentation)**: `docs/DESIGN.md` §5 (added a paragraph
+    clarifying the diagram's direct-engine-integration box describes the
+    self-hosted-only path, not how control-plane itself talks to the
+    engine), §8 (dropped the four fiat/template-customization columns from
+    the reproduced DDL, with a note that this snapshot already lagged
+    migrations 0002-0006 before this edit and isn't meant as a byte-for-byte
+    current dump), §10 (removed the stale `/pay/v1/...` version-namespace
+    claim, rewrote the `create_order` contract row to XMR-only, replaced
+    the old §10.4 "payment link" section - which described a page that no
+    longer exists on this engine at all - with a pointer to where checkout
+    and the client library actually live now), §13 (dropped the
+    `[exchange_rate]` sketch, pointed at control-plane's own env-var
+    config instead), §14 (full rewrite: the client library section now
+    shows control-plane's real routes, not the engine's deleted ones).
+    Left the diagram's other pre-existing staleness alone (a "Writer Actor"
+    that isn't how `src/http/mod.rs` actually works, an `/events` SSE
+    route that was never built) - genuinely out of scope for this document,
+    which is about the FX refactor specifically, not a full DESIGN.md audit.
+    Reworded `landing.html.hbs`'s "runs the same open, self-hostable engine
+    either way" claim per 6.2's own suggested phrasing, to stop implying
+    full feature parity between self-hosted-alone and hosted.
+  - Verified the same way every phase in this document has been: real code
+    read first, `cargo test --workspace` and `cargo build --tests --features
+    e2e` (root and `mock-woocommerce`) clean after every change, then a real
+    `./scripts/dev-run.sh restart` against the live dev stack - confirmed
+    migration 0006 applies cleanly to the existing on-disk db, `GET
+    /static/moneropay-client.js` serves real JS referencing only
+    control-plane's own routes, and the widget-embed snippet renders
+    correctly (real interpolated `pk_...`) on a real connect-success page
+    reached via a genuine signup -> login -> connect flow.
+  - **`docs/fx_refactor.md`'s entire WBS is now complete** - every phase
+    (0 through 6) has landed, been tested, and been live-verified. Nothing
+    from that document remains outstanding.
+
+- **`fx_refactor.md` execution: Phase 3 done, combined with the parts of
+  Phase 4 that turned out to be inseparable from it, plus the propagation
+  through control-plane (Phase 3.3) - the engine now has genuinely zero
+  concept of fiat/FX, not even a passthrough field.** Continued
+  autonomously per the user's original "start work autonomously" - no
+  further check-ins requested or received since.
+  - **Real scope discovery before writing code**: the doc's own "14
+    NewOrder literals" estimate (from its first-draft investigation) was
+    incomplete. A fresh `grep -rc "fiat_currency:" src/*.rs src/http/*.rs`
+    found 26 real occurrences across six files - `store.rs` (8),
+    `scanner.rs` (6), `http/public.rs` (5), `templates.rs` (2),
+    `http/admin.rs` (2), and `webhook_delivery.rs` (3, not mentioned in the
+    original estimate at all). Recorded here so the "14" figure in the doc
+    itself isn't mistaken for still-accurate by whoever reads it next - the
+    doc's own stated convention is that it doesn't get edited as work
+    completes, so the correction lives here instead.
+  - **Real, discovered-during-implementation coupling between Phase 3 and
+    Phase 4, acted on rather than silently deviated from**: the engine's
+    own checkout page (`src/http/public.rs::payment_page`, via
+    `templates::CheckoutViewModel`) read `Order.fiat_amount`/`fiat_currency`
+    directly, so dropping those columns in Phase 3 would have broken it
+    outright unless Phase 4's removal of that same page landed in the same
+    pass. Rather than do the schema change and then ship a broken page for
+    one commit, did the *whole* Phase 4 checkout-page/client-library
+    removal in this same pass: deleted `src/http/public.rs::payment_page`/
+    `qr_svg_for_html`/`client_library`, `src/templates.rs` entirely (its
+    only caller), `templates/default/checkout.html.hbs`,
+    `static/moneropay-client.js`, `src/exchange_rate.rs`'s thin re-export,
+    the `[exchange_rate]` config section and its whole `ExchangeRateConfig`
+    struct/validation/tests from `src/config.rs`, the Coingecko
+    boot-time dispatch + refresh loop from `main.rs`, and
+    `AppState.exchange_rate` from the engine's own `http::AppState`. The
+    engine's public routes are now just `POST/GET .../orders`, `POST
+    .../refund-address`, and `GET /status` - no HTML surface of its own at
+    all.
+  - **A second real discovery, also acted on**: the engine's `--snippet`
+    local-admin CLI command (`src/local_admin.rs::snippet`, wired through
+    `src/cli.rs`/`src/main.rs`) generated a widget-embed snippet pointing at
+    the now-deleted `/static/moneropay-client.js` and `[exchange_rate.rates]`
+    - exactly the self-hosted-engine-plus-browser-widget story decision 3
+    killed. Removed the whole command (`Action::Snippet`, its argv parsing,
+    its help text, the `local_admin::snippet` fn and its tests) rather than
+    patch it to reference something that no longer makes sense for it to
+    reference - a self-hosted engine operator without control-plane is
+    exactly the "power user, writes a custom integration" case the user
+    described when approving this whole direction.
+  - **Pure-XMR utility functions split out of `shared::exchange_rate` into
+    a new `shared::xmr_amount` module** (`AmountError`, `parse_xmr_to_piconero`,
+    `format_piconero_as_xmr`, and the private `split_decimal` helper) -
+    these are decimal-XMR-string <-> piconero conversions with no fiat
+    concept at all (unlike `compute_xmr_amount`, which stays in
+    `exchange_rate` since it genuinely is fiat-amount-plus-rate ->
+    piconero). Existed so the engine's own `payment.zero_conf_max_xmr`
+    config parsing - a real, still-needed feature, just not a fiat one -
+    could depend on a module that itself carries zero fiat/FX concept,
+    rather than reaching into `shared::exchange_rate` (which decision 2
+    says the engine should have nothing to do with). `shared::exchange_rate`
+    re-exports these three names unchanged so every existing caller
+    (control-plane's `checkout.rs`/`exchange_rate_config.rs`) kept
+    compiling with no changes needed there.
+  - **Schema**: new engine migration
+    `migrations/0005_drop_order_fiat_columns.sql` - three plain `ALTER
+    TABLE orders DROP COLUMN` statements (no table rebuild needed, unlike
+    migration 0004's constraint change - none of the three dropped columns
+    were part of an index or constraint). Confirmed live: restarted the
+    real dev-stack engine against its own existing `moneropay.db` and the
+    migration applied cleanly with no constraint errors.
+  - **API contract**: `POST /api/v1/t/{pk}/orders` now takes
+    `{"xmr_amount_piconero": u64}` and returns no fiat fields; a caller
+    sending the old `fiat_amount`/`fiat_currency` shape gets a `422` from
+    axum's own `Json<T>` extractor (the field is simply absent, and there's
+    no `#[serde(default)]` on a required amount) before the handler ever
+    runs - confirmed live, not assumed. `xmr_amount_piconero: 0` is
+    rejected with a real `400` from the handler itself.
+  - **Propagated through control-plane (Phase 3.3, same pass)**:
+    `EngineClient::create_order` takes `xmr_amount_piconero: u64` now, not
+    a fiat pair; `OrderView` lost its `fiat_currency`/`fiat_amount` fields
+    entirely. `http::pay::create_order` (control-plane's own public
+    endpoint) now does the fiat->XMR computation itself and passes the
+    result straight through - it's the only rate computation left in the
+    whole system, closing the "two independently-configured rate sources"
+    inconsistency Phase 1.4's own doc comment flagged as expected-but-
+    transitional. Every other reader of engine-supplied fiat data -
+    `orders.rs`'s three call sites (list, detail, the dashboard's own
+    "create a test order" form-based `create_order`, which now also
+    computes XMR via control-plane's rate and records local metadata,
+    matching `http::pay`), `home.rs`'s dashboard-wide order feed,
+    `checkout.rs`'s payment page - now reads control-plane's own local
+    `order_fiat_metadata` exclusively, falling back to a plain `"—"` dash
+    (empty currency) for any order with no local record (created directly
+    against the engine, or predating this feature) rather than a fabricated
+    amount - checkout.rs's own module doc comment already anticipated this
+    exact fallback shape from Phase 2.
+  - **A real, live-verified end-to-end proof of the new architecture, not
+    just passing tests**: restarted the real dev-stack engine (confirmed
+    migration 0005 applies cleanly against its existing on-disk db, `POST
+    .../orders` with `xmr_amount_piconero` succeeds, the same call with the
+    old fiat shape 422s, `/pay/v1/...` and `/static/moneropay-client.js`
+    both now genuinely 404 rather than merely "not routed here anymore" in
+    theory), then hand-started control-plane with
+    `CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES='{"USD":"0.0067"}'` and ran
+    the real signup -> connect -> `POST /pay/{pk}/orders` with
+    `{"fiat_amount":"0.05","fiat_currency":"USD"}` flow end to end: got back
+    `xmr_amount_piconero: 335000000` (the known hand-computed value for
+    $0.05 at that rate), the real checkout page at
+    `/pay/{pk}/orders/{payment_id}` showed "0.05 USD" and genuinely no
+    `<nav class="site-nav">` element, the status-polling endpoint returned
+    real JSON, and the dashboard's own order list showed the same order
+    with the same fiat amount. Killed the manual processes and ran
+    `./scripts/dev-run.sh restart` afterward to restore the normal
+    script-managed stack, per this session's established housekeeping
+    practice - also deleted a stray `control_plane.db` the manual run left
+    in the worktree root (control-plane's `main.rs` opens a fixed relative
+    path when not run via the dev script).
+  - Also fixed, while working through the fallout: an engine `store.rs`
+    test (`migration_0004_rebuilds_order_payments_without_losing_existing_rows`)
+    that brought a database up to *before* migration 0004 and then called
+    the new (XMR-only) `create_order` against it - which now fails a `NOT
+    NULL` constraint on a fiat column that schema version still has, since
+    migration 0005 hasn't run yet at that point in the test. Fixed by
+    inserting that one pre-upgrade order via raw SQL (matching what a real
+    pre-upgrade database row actually looks like) instead of through the
+    new store API, which can only ever produce XMR-only rows now.
+  - Not yet done, deliberately deferred as genuinely separate scope (per
+    the doc's own phase list): full Phase 4 remainder (dropping
+    `tenants.template_dir` per decision 1 - the column still exists,
+    unused, since nothing built for this pass touches tenant schema;
+    rewriting/moving a real client-library replacement onto control-plane
+    per decision 3 - `mock-woocommerce`'s own `create_order` now calls
+    control-plane's `/pay/{pk}/orders` directly via `reqwest`, which proves
+    the endpoint but isn't itself the JS embed library a real merchant site
+    would use); Phase 5 (e2e test rework beyond the minimal fixes needed to
+    keep `tests/e2e_stagenet.rs`/`tests/e2e_dashboard_stagenet.rs` compiling
+    and passing against the new contract - `e2e_dashboard_stagenet.rs`'s
+    own order creation still goes straight to the engine, not through
+    control-plane's `/pay/{pk}/orders`, exactly as its own updated comment
+    now says); Phase 6 (docs - `docs/DESIGN.md` still describes the
+    pre-refactor architecture in places).
+
+- **`fx_refactor.md` execution: Phase 0 and Phase 1 (all of 0.1, 1.1-1.4)
+  done, committed, verified live.** User confirmed all 5 open decisions
+  from that doc directly (drop per-tenant checkout customization; engine
+  keeps zero fiat/FX concept, not even a passthrough field; `moneropay-
+  client.js` moves to control-plane; control-plane owning the only fiat
+  record is accepted, XMR is the source of truth; hard-break the v1 API in
+  place, no version bump) and asked to start work autonomously. Commits, in
+  order: `f59720d` (0.1: `RateLimiter<K>` -> `shared`), `79f4e93` (1.1:
+  `exchange_rate` module -> `shared`, plus `supervise` -> `shared` since
+  control-plane's own Coingecko refresh loop needed it), `d049102` (1.1
+  cont'd: control-plane's own env-var-driven `exchange_rate_config` +
+  `AppState.exchange_rate`), `b28e290` (1.2: `order_fiat_metadata` table,
+  migration 0005), `ca03769` (1.3: control-plane's own per-IP
+  `rate_limiter` + `main.rs` switched to `into_make_service_with_connect_info`
+  - it never captured real peer IPs before this, a real gap fixed as part
+    of wiring the limiter in, not a pre-existing bug anyone had reported),
+  `5263345` (1.4: real `POST /pay/{pk}/orders` - control-plane's first
+  genuinely public, unauthenticated, state-changing endpoint).
+  - Every phase built the same way established earlier this session:
+    real code investigated first (not guessed), real tests against a real
+    spawned engine where relevant, full `cargo test --workspace` +
+    `cargo build --tests --features e2e` (both root and `mock-woocommerce`)
+    clean after every commit, then a live check against the real running
+    dev stack before moving on.
+  - **A real, live-verified end-to-end proof, not just passing tests**:
+    restarted control-plane by hand with `CONTROL_PLANE_EXCHANGE_RATE_FIXED_RATES=
+    '{"USD":"0.0067"}'` set, signed up, connected a real store, and posted
+    directly to the new `/pay/{pk}/orders` endpoint - got back a real
+    order (`xmr_amount_piconero: 167500000000`), which matches this
+    project's own known hand-computed reference value for $25 at that
+    rate exactly. Confirmed the honest failure path too: with no rate
+    configured (the dev stack's actual default), the same call returns a
+    clean `400 unsupported currency: USD`, not a silent wrong amount or a
+    crash.
+  - Real judgment calls made along the way, recorded here since they
+    weren't explicitly asked about: (a) the new endpoint is addressed by
+    the tenant's own `pk_...`, not control-plane's internal
+    `connection_id` - the WBS doc's own first draft said `connection_id`,
+    corrected during implementation since `pk_` is the identifier already
+    public and already used by the embed/checkout pattern, and leaking an
+    internal id would be a real, avoidable regression; (b) in this
+    transitional phase the new endpoint still calls the engine's existing
+    fiat-aware `create_order` (computing its own, independent XMR amount)
+    rather than trying to force agreement between two separately
+    configured rate providers - documented explicitly in `http/pay.rs`'s
+    own module doc comment as expected, not a bug, and something Phase 3's
+    real cutover resolves by construction, not by patching around it now.
+  - **Phase 2 (control-plane's own checkout/payment page) also done**,
+    commit `8ac3ead`: new `GET /pay/{pk}/orders/{payment_id}` +
+    `.../status`. Real, good judgment call made while building it: rather
+    than adding anything new to the engine's public API (which has no
+    `payments` list, confirmed by reading `OrderStatusResponse`), this
+    reuses `EngineClient::get_order_detail` - the *admin* API, called
+    server-side with the connection's own decrypted `sk_...` - the same
+    method the dashboard's own order-detail page already uses. Zero engine
+    changes needed for this whole phase. Deliberately no per-tenant
+    checkout customization (decision 1) and no site nav at all (a
+    merchant iframes this into their own checkout flow). **A real bug
+    caught by its own test before shipping**: a doc-comment inside
+    `checkout.html.hbs` literally wrote `{{> nav}}` as descriptive text
+    inside what was meant to be a plain HTML comment - handlebars doesn't
+    respect HTML comment syntax at all, so it actually rendered the real
+    nav partial into the page. The first version of the "no nav" test
+    assertion itself was also wrong (checking for the substring "nav",
+    which false-positived on `_styles.html.hbs`'s own CSS comments) -
+    fixed to check for the nav's real opening tag specifically, which
+    caught the real bug on the next run. Verified live: a real order
+    created through the Phase 1.4 endpoint, then fetched via the new
+    checkout page - correct XMR/fiat amounts, a real rendered QR code, a
+    real working status endpoint.
+  - **Not yet started**: Phase 3 (the actual breaking change - engine
+    order-creation API becomes XMR-only, plus the schema migration
+    touching 14 `NewOrder` literals across `store.rs`/`scanner.rs` -
+    the doc's own "point of no return," not to be rushed), Phase
+    4 (removing the engine's checkout UI/`exchange_rate` module/client
+    library entirely), Phase 5 (e2e test rework), Phase 6 (docs).
+
+- **`docs/fx_refactor.md` added** (user-directed): a real WBS for the
+  FX/checkout-off-the-engine migration flagged as a separate follow-up in
+  the dashboard-feedback-batch entry below. The user confirmed the design
+  direction (self-hosted-engine-without-control-plane loses fiat orders
+  and a built-in checkout page — accepted as a power-user trade-off, not
+  an oversight) and asked for the WBS specifically so nothing gets missed,
+  same reasoning `docs/WOOCOMMERCE_WBS.md` exists for the WooCommerce/
+  SEV-SNP work. Investigated the real current code before writing it
+  (not guessed): `src/exchange_rate.rs`, `src/http/public.rs`
+  (`create_order`/`payment_page`/`qr_svg_for_html`/`client_library`),
+  `src/templates.rs`'s `CheckoutViewModel`/per-tenant `template_dir`
+  customization, `src/store.rs`'s `NewOrder`/`OrderRow` fiat fields,
+  `static/moneropay-client.js`'s own fiat-aware `createOrder()`, and
+  confirmed the engine's *existing* `get_order_status` (the live-polling
+  endpoint) already returns no fiat fields at all - real, useful groundwork
+  already in place for the new control-plane checkout page.
+  - Structured as 7 phases (0 foundations through 6 docs), explicitly
+    sequenced so Phases 1-2 (control-plane gains FX + its own checkout
+    page, calling the engine's *existing*, still-fiat-aware API) ship and
+    get verified live *before* Phase 3 (the actual breaking change - the
+    engine's public order-creation API becomes XMR-only) - never skip
+    ahead to the breaking change to "save a step."
+  - Five **open decisions** deliberately left unresolved in the doc rather
+    than silently decided while writing it, each with a stated
+    recommendation: fate of per-tenant checkout template customization
+    (no hosted-DB equivalent exists today); whether the engine keeps
+    fiat fields as opaque passthrough or drops them from its schema
+    entirely (recommended: drop, with the resulting local-data-durability
+    trade-off named explicitly); where `moneropay-client.js` ends up
+    served from; the durability trade-off of control-plane owning the
+    only copy of fiat order records; and whether the breaking API change
+    needs a version bump (recommended: no, pre-private-beta, no real
+    consumers on the current contract yet).
+  - One concrete number worth remembering for later effort estimation:
+    the schema migration removing `fiat_currency`/`fiat_amount`/
+    `exchange_rate` from the engine's `orders` table touches 14 separate
+    `NewOrder { ... }` literals across `src/store.rs` (8) and
+    `src/scanner.rs` (6) test fixtures alone, confirmed via
+    `grep -c "fiat_currency:"` rather than eyeballed - likely the single
+    largest mechanical-effort leaf in the whole migration.
+  - Not started - planning only. Next real step is Phase 0.1 (extracting
+    the engine's own `RateLimiter<K>` to `shared`, since control-plane's
+    new public order-creation endpoint in Phase 1 will need the same
+    per-IP protection the engine's public endpoints already have).
+
+- **Large user-directed feedback batch on the control-plane dashboard**:
+  five design fixes, a real bug fix, and three new features, all in one
+  message. Worked through it as a tracked task list; every item verified
+  live against the real running dev stack (`scripts/dev-run.sh restart`),
+  not just unit-tested.
+  - **Dates reverted to compact (raw Unix seconds), not human-readable** -
+    a direct reversal of the earlier order-detail-page work in this same
+    session: the user explicitly asked for compact format back "across all
+    screens." Removed `chrono_like_utc_string` entirely from
+    `control-plane/src/templates.rs` (dead code once nothing formats a real
+    date) - `display_timestamp`/`display_timestamp_or_dash` now just
+    `.to_string()` the raw number, keeping only the muted-dash-for-missing
+    behavior from that earlier work, which is still worth having.
+  - **No border/background on `<code>`/`<pre>` inside table cells** - one
+    CSS rule in `_styles.html.hbs` (`td code, td pre, th code, th pre {
+    background: none; border: none; padding: 0; }`), global, since several
+    pages put addresses/txids in table cells.
+  - **Store identity table (pub key/endpoint/connected) no longer wrapped
+    in `.box`** on `store_detail.html.hbs` - just the bare table now, per
+    direct feedback that the box "looked better" without it.
+  - **Nav bar: CSS-only hamburger menu on small screens** - genuinely no
+    JS involved in showing/hiding the menu (the classic checkbox-hack:
+    a hidden `<input type="checkbox">` + a `<label>` styled as the
+    hamburger icon + a `:checked ~ .site-nav-links` sibling selector),
+    not a JS-with-a-wrapping-fallback compromise - the user's own "consider
+    what non-JS options exist" question had a real, complete answer.
+    Required restructuring `_nav.html.hbs` off pure inline styles onto real
+    classes (`.site-nav`/`.site-nav-row`/`.site-nav-links`) so the sibling
+    selector had something to target; above the 640px breakpoint this is
+    all just a normal flex row, checkbox/label irrelevant and hidden.
+  - **Integration help moved behind a `<details>`/`<summary>` "help"
+    disclosure** on the store page - the whole status/platform/site-url
+    line became the summary (native, no-JS disclosure widget), with "help"
+    right-aligned via `display:flex;justify-content:space-between` inside
+    the `<summary>` itself, opening the same integration-help content that
+    used to always render inline.
+  - **Real bug fixed: the status nav dot flickered red/gray/green** - the
+    user's own diagnosis (refresh/cache/tick timing out of alignment) was
+    exactly right, but the actual root cause was one specific formula:
+    `is_stale` (`src/http/status_page.rs` at the repo root, the *engine*
+    side) only budgeted 3x the *configured* poll interval with no floor -
+    against this repo's own dev config (`mempool_poll_interval_ms` giving
+    a 2s interval, so a 6s threshold) a perfectly healthy scanner ticking
+    every ~7-8s in practice (real network latency against real, live
+    public stagenet nodes - confirmed directly, not assumed) read as
+    "stale" on every other tick. Fixed to `max(5x poll_interval, 15s)`.
+    **Verified live, not just unit-tested**: restarted the dev stack,
+    polled `/status/summary` every 10s for two full minutes in the
+    background - one `false` at the very first poll (before the scanner's
+    first real tick had even landed - genuinely correct, not a bug), then
+    `true` continuously for the remaining 110 seconds. Before the fix this
+    same window would have flickered.
+  - **Auth-aware nav: "log in"/"sign up" replaced by "log out" once
+    logged in** - every one of the 13 templates now carries a real
+    `logged_in: bool` (inherited automatically by `{{> nav}}`, since
+    handlebars partials share their parent's context by default - no
+    explicit hash params needed at any of the 13 `{{> nav}}` call sites,
+    only the Rust view models needed the new field). Most pages set it to
+    a fixed literal (`true` behind `AuthedUser`, `false` on
+    signup/login - deliberately not a real session check there, since
+    those pages' whole purpose is starting a *new* session); `/` and
+    `/status` (both unauthenticated routes) do a real per-request
+    `resolve_authed_user` check instead, since those are the pages a
+    logged-in person actually revisits. New `POST /dashboard/logout`
+    (`http/dashboard.rs::logout_submit`) - reuses `AuthedUser`'s cookie
+    path and the same delete-session logic `POST /logout` (the JSON API)
+    already had, but redirects to `/` instead of returning a bare `204`,
+    since a human clicking a nav link expects a real page back. Needed a
+    new direct `time = "0.3.55"` dependency (`Cookie::max_age` wants
+    `time::Duration`, and `axum-extra` only re-exports `cookie::{Cookie,
+    Expiration, SameSite}`, not `time` itself, despite pulling it in
+    transitively). **A real test bug caught and fixed before it shipped**:
+    the first landing-page test asserted the nav's `href="/dashboard/login"`
+    was entirely gone once logged in - failed immediately, because the
+    landing page's own separate marketing CTAs ("Sign up - it's free...",
+    "Log in", both capitalized with a `btn` class) legitimately still
+    link there regardless of login state, and were never meant to change -
+    only the nav's own lowercase, unstyled links should disappear. Fixed by
+    asserting the exact nav markup (`href="/dashboard/login">log in<`)
+    rather than a generic `href` substring that also matched the body CTA.
+  - **New feature: adjustable payment confirmation threshold** - the
+    engine already supported this via `PATCH /api/v1/admin/tenant`
+    (`confirmations_required`), control-plane just never exposed it.
+    `EngineClient::set_confirmations_required` (extends the previously
+    single-field-only `PatchTenantRequest` mirror to carry this too) +
+    a "Settings" section on the store page + `POST /dashboard/connections/
+    {id}/settings/confirmations`. The engine's own real validation (`0`
+    rejected - "would treat an unconfirmed transaction as final") surfaces
+    verbatim, confirmed via a real test against the real engine, not
+    mocked.
+  - **New feature: custom webhook headers** - the engine already supported
+    this too (`CreateWebhookRequest.extra_headers`, a flat JSON object of
+    string values the delivery worker attaches to every request -
+    `src/webhook_delivery.rs` at the repo root), control-plane's
+    `create_webhook` client method never sent it. Collected via a plain
+    textarea, one `Header-Name: value` pair per line (deliberately no
+    JS-driven "add another row" UI) - `parse_extra_headers` rejects the
+    whole submission with the exact offending line named if any line lacks
+    a colon or has an empty name, rather than silently dropping a
+    malformed one. 8 new tests (4 pure-function unit tests for the parser,
+    2 real-engine round trips - one accepted with real custom headers, one
+    rejected with a real, actionable error and confirmed to register
+    nothing).
+  - **Fourth ask ("choose a rate provider") deliberately not built as
+    originally scoped** - asked the user to clarify per-tenant vs.
+    whole-engine scope first (the engine's exchange-rate provider is
+    currently a single, boot-time, whole-process choice with no runtime
+    API at all - building either interpretation properly meant real
+    engine-side architecture work, not just a form field, so guessing
+    wrong here would have burned significant effort in the wrong
+    direction). They chose per-tenant - but then, mid-implementation of
+    everything else in this batch, reconsidered the scope entirely: the
+    engine should carry no FX/rate-provider concept at all, and the
+    embeddable checkout/payment UI should move to the control-plane too,
+    keeping the engine strictly Monero-watching-only. Recommended treating
+    that as its own separate follow-up (same shape as the SEV-SNP/
+    WooCommerce work getting their own WBS breakdowns earlier this
+    session) rather than folding it into this already-large batch - real
+    scope: the engine's public order-creation API shape changes (XMR-only,
+    no more `fiat_amount`/`fiat_currency`), `public::payment_page`/QR
+    code/checkout polling and the whole `exchange_rate` module move off
+    the engine, and a self-hoster running the engine *without*
+    control-plane would lose fiat orders and a built-in checkout page
+    entirely (worth deciding on purpose, not as a side effect - the
+    landing page currently promises "the same open, self-hostable engine
+    either way"). Not started; flagged for a dedicated planning pass.
+
+- Order detail page polish (user-directed follow-up to the dashboard
+  order-creation form above): after creating a real test order, "Merchant
+  order ID" rendered as a genuinely blank cell (correct - it's never set by
+  the new create-order form - but looked broken), `created_at`/
+  `expires_at`/`updated_at`/`double_spend_detected_at`/payments'
+  `first_seen_at`/`voided_at` were raw Unix seconds, the page never
+  auto-refreshed despite orders being exactly the kind of thing a merchant
+  watches live, and the key/value table's narrow header column plus an
+  unwrapped 95-character Monero address made the page look cramped.
+  - Reused `chrono_like_utc_string` (the hand-rolled, no-new-dependency
+    `"YYYY-MM-DD HH:MM:SS UTC"` formatter + its exact 5 cross-checked
+    reference points, including the 2024-02-29 leap-day boundary) from the
+    engine-side status page work earlier this session - moved to
+    `control-plane/src/templates.rs` since that's where it's needed now,
+    not re-derived from scratch.
+  - `OrderDetailData`/`PaymentRowViewModel` now carry pre-formatted
+    `*_display: String` fields for every timestamp (always-present ones
+    via `display_timestamp`, optional ones via `display_timestamp_or_dash`
+    - a muted `<span class="muted">-</span>` placeholder, same convention
+    the status page already uses for "no value") - rendered in the
+    template with `{{{ }}}` (triple-stash, trusted HTML) since these are
+    entirely our own internally-generated strings, never caller input.
+  - **Deliberately did *not* apply the same trusted-HTML treatment to
+    `merchant_order_id`/`refund_address`** - caught this mid-implementation
+    before it shipped: unlike a timestamp, both are genuinely
+    caller-supplied free text (the engine's public order-creation API
+    accepts `merchant_order_id` as-is; `refund_address` comes from
+    `set_refund_address`), so triple-stashing them would have been a real
+    stored-XSS hole (a malicious caller sets `merchant_order_id` to
+    `<script>...</script>`, it renders unescaped in the merchant's own
+    dashboard). Both stayed plain `Option<String>` fields, handled in the
+    template with an ordinary escaped `{{#if}}...{{else}}<span
+    class="muted">-</span>{{/if}}` instead - same muted-dash look, safe
+    escaping preserved.
+  - `<meta http-equiv="refresh" content="15">` plus a visible "This page
+    refreshes automatically every 15s" line - shorter than the status
+    page's own 30s (a merchant actively watching for a payment wants
+    tighter feedback than an infra dashboard does).
+  - Two new CSS classes scoped to this page only (`.kv-table`/
+    `.payments-table` in a `<style>` block in the template itself, not the
+    shared `_styles.html.hbs` - these constraints are specific to this
+    page's two very different table shapes, not a site-wide convention):
+    `.kv-table th { width: 14em }` for the wider label column, `word-break:
+    break-all; overflow-wrap: anywhere` on both tables' `td`s so the long
+    unbroken Monero address (and txids) wrap instead of overflowing.
+  - New test assertions folded into the existing
+    `order_detail_shows_the_seeded_orders_full_detail` test (real "UTC"
+    string present, a muted placeholder for the never-set merchant order
+    id, the meta-refresh tag and its visible note both present) plus two
+    new `templates.rs` unit tests for the date formatter and the
+    dash-placeholder helper. Verified live: real signup -> connect ->
+    dashboard-created order -> its real detail page, showing genuine
+    human-readable `2026-09-15 13:03:44 UTC`-style dates, a muted dash for
+    the unset merchant order id, and the wrapped address.
+
+- **Real production incident, fixed same-day: the engine's per-IP rate
+  limiter tripped for one genuine user just browsing the dashboard**
+  (`"the engine could not be reached: the engine responded with an error
+  (429 Too Many Requests)"`, reported directly by the user). Root cause:
+  `rate_limit_middleware` (`src/http/rate_limit.rs`) wrapped *every* engine
+  route - admin API included - in one per-source-IP counter defaulting to
+  20 req/min (`src/config.rs`). Since the control-plane proxies every
+  browser's traffic to the engine from its own single IP, that "per-IP"
+  limit was really "per entire hosted product, combined" - and the new
+  nav-bar status dot (previous entry below) firing `GET /status/summary`
+  on *every* page load made it trivial for one person to exceed it.
+  Confirmed directly: 30 rapid real `curl` requests straight at the
+  engine's own `/status` all came back `429`.
+  - User asked to think through the real fix rather than just patch the
+    symptom; presented three options (raise the limit / split the limiter
+    properly / both) and they picked the full split - implemented as such,
+    not just a config bump.
+  - **Two independent limiters now**, not one shared one - see
+    `http::rate_limit`'s own rewritten module doc comment for the full
+    reasoning:
+    - `rate_limiter` (unchanged type, `RateLimiter<IpAddr>`): the public,
+      necessarily-unauthenticated surface - order creation, payment page,
+      client JS, and `/status` - plus `POST /api/v1/admin/tenants` (tenant
+      creation), which despite its `/api/v1/admin/...` path takes no auth
+      header at all and is exactly the kind of state-changing anonymous
+      request this limiter exists for.
+    - `admin_rate_limiter` (new, `RateLimiter<String>` - `RateLimiter`
+      genericized over its bucket key type, `IpAddr` the default so every
+      existing call site kept compiling unchanged): every real
+      `sk_`-authenticated `/api/v1/admin/tenant/*` route, keyed on the
+      *presented token itself*, not the source IP - so a hosted control
+      plane calling on behalf of many real tenants from one IP gives each
+      tenant its own independent budget instead of capping all of them
+      together. Falls back to IP-keying only when no/malformed
+      `Authorization` header is present (nothing to key on otherwise, but
+      still capped by *something*).
+    - New config: `server.rate_limit_per_token_per_min` (default 120,
+      validated the same `>= 1` way as the existing IP limit) alongside the
+      renamed-in-spirit (unchanged name) `rate_limit_per_ip_per_min`. Wired
+      through `init_wizard.rs` (prompt, `render_toml`, `from_existing`,
+      every scripted wizard test's transcript updated for the extra
+      field).
+    - `build_router` split into two sub-`Router`s (public/admin), each with
+      its own rate-limit middleware layer, then `.merge()`d - not one
+      router with conditional logic, so the two limiters can never
+      accidentally apply to the wrong route.
+    - New tests: `admin_rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info`
+      (mirrors the existing public-route test, now on the admin side) and,
+      the one that actually proves the fix,
+      `admin_rate_limit_middleware_keys_on_the_presented_token_not_the_source_ip`
+      - two different `sk_` tokens from the *same* source IP each get
+      their own independent budget of 1.
+  - **Second half of the fix - request volume, not just attribution**:
+    control-plane's own `GET /status`/`GET /status/summary`
+    (`control-plane/src/http/status_page.rs`) now share a short (10s TTL),
+    in-memory, per-`AppState` cache (`StatusCache`/`new_status_cache`) of
+    the engine's `GET /status` response - every viewer within the TTL
+    window costs the engine one real request, not one each. This is the
+    part that actually caps *volume* regardless of whichever engine-side
+    limit is configured; the token-split above only fixes *attribution*
+    (whose budget a request counts against), and both were needed together
+    per the chosen fix. `EngineClientError`'s `Result` isn't `Clone`
+    (`reqwest::Error` inside it isn't), so the cache stores
+    `Result<EngineStatusResponse, String>` instead - the engine DTOs
+    (`NodeStatus`/`ScannerStatusView`/`NetworkStatus`/`EngineStatusResponse`)
+    gained `#[derive(Clone)]` for this. New test
+    `get_status_cached_reuses_a_fresh_fetch_instead_of_refetching` proves
+    reuse by reading the cache's own `fetched_at` back after two calls
+    (equal `Instant`s), not just "both responses look the same" (which a
+    same-second coincidental real refetch could also produce and would
+    have been a weaker, potentially-flaky proof).
+  - **A real, mechanical gap surfaced again by this change**: adding the
+    `status_cache` field to `AppState` broke `mock-woocommerce/tests/
+    e2e_stagenet_connect_flow.rs`'s own `AppState` literal - invisible to
+    `cargo test --workspace` for the same `required-features = ["e2e"]`
+    reason recorded in the e2e-test entry below. Caught this time by
+    actually running `cargo build --tests --features e2e` in
+    `mock-woocommerce` as part of routine verification (the lesson from
+    that earlier entry, now actually followed rather than just written
+    down) - fixed with the same one-line addition as every other
+    construction site.
+  - Verified live: restarted the dev stack, ran 40 rapid real
+    `curl`s straight at the control-plane's `/status/summary`, then
+    confirmed the engine's own `/status` was **still answering 200**
+    afterward (not exhausted) - direct proof the volume fix works, not
+    just an inference from reading the code.
+  - **Separate, pre-existing issue noticed while verifying this (not part
+    of this fix's scope, flagged for later)**: the status page's
+    "stale" scanner label can read as stale even when the scanner is
+    genuinely healthy, because real scan ticks against the live public
+    stagenet nodes can legitimately take longer than the `is_stale`
+    threshold (3x the *configured* poll interval, e.g. 6s for a 2s
+    interval) assumes - confirmed directly against the raw, uncached
+    engine JSON (`tick_count: 3` after ~20s of uptime with a 2s configured
+    interval, i.e. ~7s real cadence > 6s threshold). Not a caching
+    artifact of the fix above (checked by bypassing the control-plane
+    cache entirely and hitting the engine directly) - a real gap in how
+    `is_stale` is computed, worth a follow-up (e.g. basing the threshold on
+    real observed tick duration, not just the configured interval).
+
+- Also user-directed this turn, small and unrelated to the above:
+  - Added a UI to create a real test order directly from a store's
+    dashboard page (`control-plane/templates/store_detail.html.hbs`), so a
+    merchant can try the payment flow without wiring up a real storefront
+    first. `EngineClient::create_order` calls the engine's own *public*
+    `POST /api/v1/t/{pk}/orders` (the same endpoint a real checkout would
+    call, no `sk_` needed) server-to-server; success redirects straight to
+    the new order's real detail page, a validation error (bad currency,
+    unparseable amount) re-renders the store page with the engine's real
+    message via a new `render_store_detail_page` helper shared between
+    `GET`/`POST`, same pattern `render_webhooks_page` already established.
+    4 new tests (success redirect + real detail page, engine validation
+    error surfaced, cross-user 404, plus the existing store-detail template
+    tests updated for the new `order_creation_error` field). Verified live:
+    signed up, logged in, connected a real store, submitted the dashboard
+    form, and confirmed the real resulting order's detail page - the exact
+    flow a user would take.
+  - Nav bar: moved the "status" link to the end of the link list (visually
+    the far right, since the nav is a `flex; justify-content:space-between`
+    row with the logo on the left and this link group on the right) and
+    fixed a real rendering bug: the literal space between "status" and its
+    glow dot was picking up the link's own `text-decoration: underline`,
+    drawing a visible underline segment under the gap. Fixed by giving the
+    `<a>` itself `text-decoration:none` and wrapping just the word "status"
+    in its own `<span style="text-decoration:underline">` - the dot stays
+    unstyled by any underline, and there's no literal whitespace between
+    the two inline elements in the template source.
+
+- Working in git worktree `/home/henry/Downloads/mokulo/.claude/worktrees/woocommerce-roadmap-doc`,
+  branch `worktree-woocommerce-roadmap-doc`. **This branch is not pushed to
+  origin** (push access denied under current credentials) — it only exists
+  locally. Do not assume it's recoverable from GitHub.
+- All work so far is documentation: `docs/WOOCOMMERCE_ROADMAP.md` and
+  `docs/WOOCOMMERCE_WBS.md`, both current and cross-checked against the
+  real code as of this session (see the WBS's "gaps found" commit for what
+  was corrected).
+- No implementation code has been written yet. WBS item 0.1 (workspace
+  setup) has not started as of this note.
+
+- **`GET /status` relocated from the engine to the control-plane
+  (user correction).** The entry below this one shipped the status page
+  directly on the engine - the user immediately corrected this: "You
+  placed the status page on the engine, it is meant to be on the
+  control-plane, accessible by a 'status' link (with a small glowing
+  status indicator) in the nav bar." A genuine misjudgment on layering,
+  not a misunderstanding of the feature itself - the engine has no
+  product-facing visual identity of its own (see the CSS-duplication
+  note in the original entry, which was itself a symptom of the wrong
+  layer), while the control-plane is the one place a merchant-facing page
+  actually belongs.
+  - Engine side (`src/http/status_page.rs`) rewritten from an
+    HTML/Handlebars page to a plain JSON API (`EngineStatusResponse` /
+    `NetworkStatus` / `NodeStatus` / `ScannerStatusView`) - data only, no
+    presentation. `is_stale`/`last_tick_ok` still computed on the engine
+    (it's the only place that knows its own `scan_poll_interval_secs`),
+    but relative-time formatting and the healthy/stale/failing label move
+    to whichever caller renders it for a person. The 7 old HTML-assertion
+    tests were rewritten (not deleted) to assert on the real JSON shape
+    instead - same coverage, new contract.
+  - Control-plane gained `EngineClient::get_status()` (DTOs mirroring the
+    engine's response field-for-field) and a real `GET /status` page
+    (`control-plane/src/http/status_page.rs` + `templates/status.html.hbs`,
+    using the shared `_styles`/`_nav` partials like every other page - no
+    more hand-copied CSS). Unauthenticated, same as the engine's own
+    `/status` - it's infrastructure health, not merchant data.
+  - `GET /status/summary`: a small JSON endpoint (`{"healthy": bool}`)
+    the nav bar's status dot fetches on every page load. **A real bug
+    caught by its own test**: the first `healthy` computation used
+    `networks.iter().all(...)`, which is vacuously `true` on an empty
+    list - an engine reporting zero configured networks read as
+    "healthy" instead of "nothing to be healthy about." Fixed with an
+    explicit `!networks.is_empty() && ...` guard once
+    `status_summary_reports_unhealthy_when_there_are_no_configured_networks`
+    failed on its first real run.
+  - Nav bar (`_nav.html.hbs`) gained a "status" link with a small
+    `<span class="status-dot">` next to it, plus a tiny inline script that
+    fetches `/status/summary` on load and sets the dot's class -
+    `status-dot-ok` (green, pulsing glow via `box-shadow` + a
+    `@keyframes` animation), `status-dot-error` (red, faster pulse), or
+    `status-dot-unknown` (grey, no glow - engine unreachable or the fetch
+    itself failed). CSS lives in `_styles.html.hbs` alongside everything
+    else, not duplicated per-page.
+  - Engine unreachable is a distinct, honestly-rendered case, not a 500:
+    `status_page` shows a plain `.error` banner
+    ("the engine could not be reached: ..."), `status_summary` reports
+    `{"healthy": false}` - both covered by real tests that point
+    `EngineClient` at a real closed port (`http://127.0.0.1:1`) rather
+    than mocking the failure.
+  - `cargo test --workspace`: clean throughout (7 rewritten JSON-shape
+    tests on the engine side, 2 new `relative_time` unit tests plus 4 new
+    real HTTP-level tests - reachable/no-configured-networks,
+    engine-unreachable degradation for both `/status` and
+    `/status/summary` - on the control-plane side). `cargo build --tests
+    --features e2e` (root + `mock-woocommerce`) also clean - the lesson
+    from the `tests/e2e_stagenet.rs` regression below was applied
+    proactively this time, not caught after the fact.
+  - Verified live via `scripts/dev-run.sh restart`: `/status` on
+    `127.0.0.1:8081` (control-plane) rendered the real box-per-network
+    layout with real node heights and a real scanner tick history that
+    visibly transitioned from "has not been scanned yet" ->
+    "stale" (cold-start window, correctly labeled) -> "healthy" as the
+    actual background scan loop caught up; `/status/summary` flipped
+    `false` -> `true` in lockstep; the nav bar's dot and its `fetch` call
+    were present on the rendered `/` page.
+  - Also this turn (user follow-up mid-work): added `<meta
+    http-equiv="refresh" content="30">` to the status page, and switched
+    the repo's one real "default" stagenet node config
+    (`e2e/moneropay-stagenet.toml`, used by `dev-run.sh` and both e2e
+    tests) from `stagenet.xmr-tw.org:38081` to `node.monerodevs.org:38089`
+    with `node2.monerodevs.org:38089` as an explicit `[[fallbacks]]` entry
+    - directly motivated by the real node flakiness documented in the
+    e2e-test entry below (the *same* xmr-tw.org node that hung mid-poll
+    during this session's background e2e run). The user's message listed
+    three URLs where the second and third were identical
+    (`node2.monerodevs.org:38089` twice) - treated as a likely typo rather
+    than guessed at (e.g. assuming a `node3` that was never confirmed to
+    exist): used the two genuinely distinct hosts given
+    (`node`/`node2`) rather than fabricating a third. Both nodes confirmed
+    live and reachable against the real running dev engine post-switch.
+    `.dev-run/engine/moneropay.toml` (a generated, gitignored copy of this
+    file `dev-run.sh` only (re)writes when absent) had to be deleted and
+    regenerated by hand to actually pick up the change on this session's
+    already-running dev stack - a real footgun of that script's own
+    "write once" design, worth keeping in mind for future config edits to
+    the source file it copies from.
+
+- New `tests/e2e_dashboard_stagenet.rs` (user-directed - the original ask
+  this turn, resumed after the `/status` page interjection above): a full
+  e2e test spanning the *whole* hosted stack, not just the engine -
+  real account creation, the real "advanced connect" form flow, a real
+  stagenet payment, and a real assertion against the real control-plane
+  dashboard's rendered HTML that the order and its total-received-XMR
+  figure are both correct. Complements (does not replace)
+  `tests/e2e_stagenet.rs`, which only ever proves the *engine* detects a
+  payment - this proves a merchant using the real hosted product would
+  actually see it.
+  - Real engine, network-bound (an ephemeral `TcpListener` +
+    `axum::serve`) - has to be, since control-plane's own `EngineClient`
+    makes genuine `reqwest` calls to it, unlike every other test in this
+    repo that drives the engine in-process via `oneshot`. control-plane's
+    own side stays in-process (`tower::ServiceExt::oneshot`), matching its
+    own test suite - added as a `[dev-dependencies]` entry on the *root*
+    crate (`control-plane = { path = "control-plane" }`), confirmed safe
+    (no cycle: control-plane depends only on `shared`, never back on
+    `moneropay-core`; a path dependency's own `[dev-dependencies]` -
+    control-plane's `engine-test-support -> moneropay-core` - are never
+    pulled in when it's used as a library dependency, only when its *own*
+    tests run).
+  - Real HTTP flow against the real control-plane router: `POST
+    /dashboard/signup`, `POST /dashboard/login` (session cookie extracted
+    from the real `Set-Cookie` header), `POST /dashboard/connect` with the
+    *same* reusable merchant watch-only wallet
+    (`e2e/stagenet-wallets.json`'s `merchant` entry) `tests/e2e_stagenet.rs`
+    and `mock-woocommerce/tests/e2e_stagenet_connect_flow.rs` already use -
+    the real "advanced connect" form the user asked for, not a shortcut
+    around it. The real `pk_...` is scraped from the real rendered success
+    page, the same way a browser would show it to a merchant.
+  - A real order is created directly against the real engine's public API
+    (what a real storefront calls), paid with a genuine signed+broadcast
+    stagenet transaction via the same `support::StagenetSpendWallet`
+    `tests/e2e_stagenet.rs` uses, then the scanner is ticked in the
+    foreground (same deliberate choice that test makes, for the same
+    reason) while polling the real control-plane `GET /dashboard` - not
+    the engine's own API - until the order appears with the correct total.
+    The expected total is computed by a second, independent implementation
+    of `control_plane::http::home`'s own (private) formatting logic, not
+    by importing that exact function - so this doesn't just prove "the
+    code agrees with itself."
+  - `record_known_txid` (the shared customer wallet's atomic-write-back
+    spendable-output bookkeeping) is deliberately duplicated from
+    `tests/e2e_stagenet.rs` rather than factored into `tests/support/mod.rs`
+    - a real, stated judgment call: touching that other, real-money-costing
+    test's own file (even just to extract a helper) felt like more risk
+    than ~15 duplicated lines justified, for a change made while that
+    exact test was mid-investigation.
+  - **A real regression caught and fixed**: the `/status` page work above
+    added three new required `AppState` fields
+    (`daemons`/`scanner_status`/`scan_poll_interval_secs`) - and because
+    those live behind the `e2e` feature flag, `cargo test --workspace`
+    never actually compiles `tests/e2e_stagenet.rs` or
+    `mock-woocommerce/tests/e2e_stagenet_connect_flow.rs`, so that
+    earlier "full workspace clean" verification never actually caught that
+    it broke `tests/e2e_stagenet.rs`'s own `AppState` literal. Caught only
+    by directly attempting `cargo build --test e2e_stagenet --features e2e`
+    while working on *this* new test (which needed the same fix) - fixed
+    with the same honest, minimal addition (wire the same real daemon this
+    test already builds into the three new fields, since this test drives
+    scanning directly and never reads them, but `AppState` should still be
+    internally consistent). Re-verified `mock-woocommerce`'s own e2e test
+    binary separately - already fine, since it goes through
+    `engine-test-support`, which had already been fixed for the same
+    reason during the `/status` work itself. **Lesson for next time,
+    recorded here plainly**: `cargo build --tests --features e2e` (both at
+    the workspace root and for `mock-woocommerce`) needs to be part of the
+    real verification loop for any future `AppState`-shaped change, not
+    just the default `cargo test --workspace`.
+  - `cargo build --workspace`, `cargo test -p moneropay-core --lib` (327
+    passed, unaffected), and `cargo build --tests --features e2e` (both
+    the root crate and `mock-woocommerce`) all clean.
+  - **Live verification status**: the new parts this test actually adds -
+    real signup, real login, real advanced-connect HTTP flow creating a
+    real tenant on the real engine, real order creation against the real
+    engine's public API - were directly confirmed working via real runs
+    (visible `connected real store, public_key=...`/`created order
+    ...: 335000000 piconero to ...` output, matching the real, tuned
+    amount `e2e_stagenet.rs` also uses). The final leg (send the real
+    payment, confirm it lands on the real dashboard with the right total)
+    could not be completed this session: `StagenetSpendWallet::connect`'s
+    own initial handshake (a `monero-daemon-rpc`-crate-internal call,
+    separate from the plain RPC calls `moneropay_core::daemon_rpc::
+    RpcDaemonClient` makes, which keep working fine throughout) started
+    hanging/failing against `stagenet.xmr-tw.org` partway through this
+    work. **Directly confirmed this is a live external-infrastructure
+    condition, not a flaw in this new test**: re-ran the pre-existing,
+    previously-verified-working `tests/e2e_stagenet.rs` against the exact
+    same node and hit the identical failure at the identical call. Left
+    running in the background for up to ~9 minutes in case the node
+    recovers within this session; if it does, this entry gets a follow-up
+    with the real pass/fail result. If not: the test is real, complete,
+    and ready to run - `cargo test --test e2e_dashboard_stagenet --features e2e -- --ignored --nocapture` -
+    whenever the public stagenet node this repo already depends on for
+    every one of its real e2e tests is behaving normally again; this isn't
+    something further code changes here can fix.
+  - **Follow-up: the background run finished (248.23s).** It got further
+    than the earlier attempt - real connect, real login, real
+    advanced-connect flow, real order creation, and this time a real
+    signed+broadcast stagenet payment (tx
+    `c5207fbfb42162b4317e168c89576e9a9dd50ad6333d62f4a93f8b5f991cf159`)
+    all completed successfully. It failed only on the very next mempool
+    poll: `error sending request for url .../get_transaction_pool`, then
+    `.../get_height` - the same external node dropping connectivity
+    mid-poll, not a code defect. Strong direct evidence the new test's
+    own logic is correct end-to-end through the real send step; only
+    "does the dashboard eventually show it" couldn't be proven this
+    session, purely because of that node's live behavior. The real txid
+    was appended to `e2e/stagenet-wallets.json`'s `customer.known_txids`
+    by the test's own bookkeeping (a real, legitimate change from an
+    actual broadcast tx, not something to discard) and is included in
+    this session's commit. Node reliability is addressed below (the
+    default stagenet node switched to `node.monerodevs.org` + a real
+    fallback) - a re-run against the new config is the natural next
+    verification step, not more code changes here.
+
+- **Superseded by the relocation entry above** - kept as-is below for the
+  historical record of what was actually built and why, but the engine no
+  longer serves HTML at `/status`, and the CSS-duplication concern this
+  entry raises is exactly what the relocation fixed.
+- `GET /status` on the **engine** (user-directed, sent mid-turn as an
+  interjection ahead of the e2e-test work below, which was paused and
+  resumed after this was done): a real, unauthenticated, live operator
+  status page - every configured network, every node in that network's
+  real `FallbackDaemonClient` fallback list (not just the aggregate
+  "current" one), each one's genuinely live-queried block height and
+  reachability, plus the chain-scanner loop's own real tick history per
+  network (last tick, tick count, tenants scanned, last error if any, and
+  a derived healthy/stale/failing label).
+  - Lives on the *engine*, not control-plane: node/daemon/scanner internals
+    only exist in the engine's own process (`main.rs`'s local `daemons`
+    map and scan loop were never in `AppState` at all before this - had to
+    add them). "Matching the style of the site" is done as a deliberate,
+    explicitly-commented byte-for-byte copy of
+    `control-plane/templates/_styles.html.hbs`'s CSS into this page's own
+    embedded template - the two crates have no shared template
+    infrastructure to pull from, so this is a real, acknowledged
+    duplication to keep in sync by hand if that file's look ever changes,
+    not an accident.
+  - `AppState` gained `daemons` (concrete `Arc<FallbackDaemonClient>` per
+    network, not the trait object every other caller uses - only the
+    concrete type exposes `nodes()`/`current_index()`, which is what this
+    page needs; every real construction path already produces exactly
+    that type, so this reflects reality rather than narrowing anything),
+    `scanner_status` (new `scanner_status` module - a live, in-memory
+    per-network tick-history map, purely observational, updated by
+    `main.rs::run_scanner_loop` after every real tick, success or
+    failure), and `scan_poll_interval_secs` (so "how stale is stale"
+    is judged against what's actually configured, not a guess).
+    `daemon_fallback::FallbackDaemonClient` gained public `nodes()`/
+    `current_index()` accessors it never needed before.
+  - Every node's height is queried live, on every page load, with a 5s
+    per-node timeout - matches `daemon_fallback`'s own stated philosophy
+    ("the next real call is the health check") rather than introducing a
+    second, cached view of node health that could disagree with reality.
+  - **A real bug caught by my own test, not just eyeballing the page**: the
+    height column used `{{#if this.height}}` to distinguish a known height
+    from an unknown one - handlebars treats `0` as falsy exactly like
+    JS's `if(0)`, so a real, live height of *genuinely zero* rendered
+    identically to "unknown" (a `-`). Caught immediately by
+    `status_page_shows_the_real_configured_network_and_node_with_its_live_height`
+    (which uses the crate's own `#[cfg(test)] daemon::fake::FakeDaemonClient`,
+    whose real starting height is 0) failing on its very first run. Fixed
+    by pre-formatting the height as a plain string in Rust
+    (`height_display`) instead of branching on the raw number in the
+    template - the same class of fix (compute the display value in Rust,
+    never lean on handlebars' own truthiness for a value that can
+    legitimately be zero) `network_selected_flags` already established
+    earlier this session for an unrelated reason.
+  - A genuinely hand-rolled Gregorian date formatter
+    (`chrono_like_utc_string`, no new dependency for one "as of" timestamp
+    line) got its own dedicated unit test with five real reference
+    points - including a leap-day boundary (2024-02-29 exists,
+    2023-02-29 doesn't) - each independently cross-checked against a real
+    `date -u -d @<seconds>` call before being trusted, not just assumed
+    from memory. Caught two arithmetic mistakes in my *own test's*
+    expected values while writing it (a wrong hour-vs-day bucket
+    boundary, twice) via the same real-command cross-check, before they
+    ever became a false "this is correct" signal.
+  - 13 new tests total (`scanner_status`'s own 3, `status_page`'s 3 pure
+    unit tests, and 7 real HTTP-level tests covering: no-auth
+    reachability, a real node's live height and reachable status, an
+    offline node showing a real visible error (not a silent gap), a
+    healthy recent tick, a failing tick with its real error surfaced, a
+    genuinely stale/stopped scanner, and the honest empty state when no
+    networks are configured at all). `cargo test -p moneropay-core`: 327
+    passed (was 314). `cargo build --workspace`/`cargo test --workspace`
+    clean throughout.
+  - Verified live against the real running engine (via
+    `scripts/dev-run.sh restart`, the script written just before this):
+    the real configured `stagenet.xmr-tw.org:38081` node showing as
+    active/reachable with its genuine current stagenet block height
+    (2208078 at verification time), and the scanner section showing a
+    real recent tick (tick count, tenants scanned) against the actual
+    running scan loop - not a screenshot of intent, the real page.
+
+- `scripts/dev-run.sh` (user-directed): a real start/stop/restart/status/logs
+  script for the local dev stack (engine + control-plane together), rather
+  than the ad hoc `nohup ... &`/`pkill`/manually-tracked-PID approach this
+  session had been using by hand up to this point.
+  - Reuses `e2e/moneropay-stagenet.toml` (the repo's own real e2e test
+    config, same worthless stagenet wallet) as the engine's dev config
+    rather than inventing a second wallet/config to keep in sync - only
+    `[server].bind` is overridden, to the fixed `127.0.0.1:8080`
+    `control-plane`'s own hardcoded `EngineClient` URL requires (a real,
+    documented placeholder in `control-plane/src/main.rs`, not something
+    this script can route around).
+  - A `CONTROL_PLANE_ENCRYPTION_KEY` is generated once (`openssl rand -hex
+    32`) and persisted under `.dev-run/`, so restarting doesn't invalidate
+    every stored `sk_...`/session on the control-plane's own database -
+    both real SQLite databases (engine + control-plane) also persist there
+    across restarts, `control-plane`'s by running it with `.dev-run/
+    control-plane` as its working directory (its own `main.rs` opens
+    `"control_plane.db"` as a path relative to CWD, not configurable
+    otherwise).
+  - `start` builds both binaries by default (`--no-build` skips it for a
+    faster restart) and is idempotent - safe to run again while already
+    up, just reports what's running rather than double-starting.
+    `stop`/`restart` track real PIDs in `.dev-run/*.pid`, `kill` then
+    `SIGKILL` after a bounded wait if still alive. `.dev-run/` itself is
+    gitignored (added a real entry, not just assumed).
+  - Every command (`start`, idempotent re-`start`, `status`, `logs` both
+    plain and per-target, `restart`, `stop`, idempotent re-`stop`, an
+    unknown `logs` target's error path) was actually run against this
+    session's own real running processes while writing it, not just
+    written and assumed correct - including confirming a real `restart`
+    genuinely gets new PIDs and that the control-plane's database survives
+    it. Left running at the end via this script (not the old manual
+    `nohup` invocations) for whoever picks this up next -
+    `scripts/dev-run.sh stop` to bring it down.
+
+- Two more user-directed pieces, done together: (A) the "use an existing
+  store" flow now also merges the new site's origin into the tenant's
+  real `allowed_origins` and updates the row's `site_url`; (B) a real
+  webhook management UI (add/list/delete) - the engine's own admin API
+  already fully supported create/list/delete, nothing in this crate ever
+  exposed create or delete.
+  - **(A)**: `connect::confirm_existing_store` now, after the ownership
+    check: decrypts the store's `sk_...`, fetches its current
+    `allowed_origins` from the engine (`EngineClient::get_tenant`),
+    derives the new site's origin via `url::Url::origin().ascii_serialization()`
+    (matches exactly how `http/public.rs::resolve_public_tenant` compares
+    a request's real `Origin` header - read directly before assuming the
+    format, not guessed), and - **merges it in, never replaces the
+    existing list** (the user's own explicit instruction) - via a new
+    `EngineClient::set_allowed_origins` (`PATCH /api/v1/admin/tenant`,
+    already existed engine-side, no client method had ever called it).
+    `Db::update_store_connection_site_url` (new) then updates the row's
+    `site_url` to the newly-attached site. Any failure anywhere in this
+    sequence is a real error (not silently swallowed) - a half-applied
+    CORS update would be a worse, quieter failure than telling the
+    merchant to retry.
+  - **A second real self-deadlock, this time in shipped handler code, not
+    just a test** - caught by the exact same symptom (a hung test) before
+    it ever reached a commit: `let row = match state.db.lock().unwrap()
+    .get_store_connection_by_id(...) { Ok(_) => { ... return
+    render_confirm_form(...) /* which itself locks state.db */ ... } }`.
+    The `MutexGuard` temporary produced in a `match` scrutinee lives for
+    the *entire* match expression, including its arms - not just until the
+    scrutinee value is computed, a genuinely easy-to-miss Rust rule. Fixed
+    by pulling the lookup into its own `let` statement first, so the guard
+    drops at that statement's semicolon, before any arm runs. Audited the
+    rest of the crate afterward (`grep -rn "match.*\.lock().unwrap()"`) -
+    one other occurrence (`home::dashboard_home`) confirmed safe (its
+    error arm never touches the lock again) and left alone rather than
+    churned for consistency's sake.
+  - **(B)**: `orders.rs` (its own module doc comment updated - it used to
+    say "deliberately read-only... no webhook create/delete" and now
+    explains why that's no longer true for webhooks specifically, orders
+    are still untouched) gained `webhooks_create` (`POST
+    /dashboard/connections/{id}/webhooks`) and `webhooks_delete` (`POST
+    .../webhooks/{webhook_id}/delete` - a `POST`-to-a-`/delete`-path route,
+    not a real `DELETE` verb, since a plain HTML `<form>` can only submit
+    `GET`/`POST`). `EngineClient` gained `delete_webhook` (the engine's own
+    `DELETE .../webhooks/{id}` already existed, just never had a client
+    method) - `parse_response` isn't reused for it since it assumes a JSON
+    body and the engine's delete returns a bare `204`.
+  - **Deliberately does not redirect after a successful create, unlike
+    delete's own POST-redirect-GET pattern**: the engine hands back a
+    webhook's real signing secret exactly once, at creation - confirmed by
+    reading the engine's own `WebhookView` struct directly (no
+    `signing_secret` field at all, so a later `GET .../webhooks` call
+    genuinely cannot recover it) - and a redirect would mean carrying that
+    secret in a URL (browser history, `Referer` headers) rather than a
+    response body. `WebhooksViewModel` gained
+    `created_webhook_signing_secret` (rendered once, in a dedicated "shown
+    once" box) and `error` (for a bad/empty URL, surfacing the engine's
+    own real validation message the same way `connections::
+    create_connection_for_user`'s `400` handling already does elsewhere).
+  - `webhooks.html.hbs` got a real "Add a webhook" form and a delete button
+    per row (with a plain `confirm()` browser dialog before submitting -
+    deleting a webhook stops real event delivery immediately, worth a
+    speed bump). One real correction caught before it shipped: my first
+    draft of the field-help text claimed the engine "refuses to register"
+    a private/loopback webhook URL - re-checked against
+    `admin::create_webhook`'s own code (already read earlier this session)
+    before writing that, and it was wrong: only the URL scheme is checked
+    at registration; private-IP/SSRF rejection happens at *delivery* time
+    in the not-yet-built delivery worker, per that function's own comment.
+    Corrected the copy to say so honestly instead of shipping a false
+    claim about what the engine actually does.
+  - 15 new tests total: 1 `db.rs` unit test (site_url update), 2 `connect.rs`
+    end-to-end tests for the origin-merge behavior (one proving a
+    previously-empty `allowed_origins` gets the new origin added, one
+    proving an *existing* real origin survives alongside it - the "merged,
+    not replaced" half made explicit), and 5 webhook-management end-to-end
+    HTTP tests (secret shown once then never again, empty-URL validation,
+    the engine's real invalid-URL error surfaced, delete actually removes
+    it from a subsequent list, and cross-user ownership rejection on both
+    create and delete). `cargo test -p control-plane`: 115 passed (was
+    108). `cargo build --workspace`/`cargo test --workspace` clean
+    throughout.
+  - Independently verified live end to end against the real running
+    control-plane + engine, for both pieces: attached a second WordPress
+    site to an existing store via the real picker and confirmed both the
+    dashboard's `site_url` and (checked directly against the engine, not
+    just the UI) the tenant's real `allowed_origins` updated correctly
+    (including a separate run proving an existing origin survives the
+    merge); created a real webhook, saw its signing secret exactly once,
+    confirmed it never reappears on reload, deleted it via a real `POST`
+    (caught my own first attempt using `GET` failing with a real `405`,
+    corrected it), and confirmed it was actually gone from a fresh list.
+
+- Real bug fix + real feature (both user-reported, in one message): (1) a
+  store connected via the advanced/custom form showed "woocommerce" as
+  its platform on the dashboard and got shown WooCommerce plugin-install
+  instructions on its store page, despite never touching WooCommerce at
+  all; (2) the real `/connect/{platform}` flow (what an actual WooCommerce
+  plugin drives) always minted a brand-new tenant, with no way to instead
+  attach the plugin to a store the merchant already has.
+  - **Bug (1) root cause**: `dashboard::connect_submit` (the advanced-form
+    handler) hardcoded `platform: "woocommerce".to_string()` - a leftover
+    from before the "custom (advanced)" vs. "simple -> woocommerce" picker
+    existed. Fixed to `"custom"`.
+  - `_integration_help.html.hbs` (the shared partial both the post-connect
+    success page and the store detail page use) is now platform-aware via
+    a new `is_woocommerce` bool (computed server-side - handlebars-rust
+    has no string-equality helper, same reason `network_selected_flags`
+    exists): a store actually connected through the plugin sees "already
+    connected, nothing to configure"; every other store sees the real
+    WooCommerce-onboarding + direct-API instructions, never a false claim
+    that it's plugin-connected.
+  - **Feature (2)**: `/connect/{platform}`'s confirm screen now lists the
+    merchant's existing stores (any platform) and offers to attach this
+    plugin visit to one of them instead of always creating a new tenant -
+    two separate `<form>`s on one page (`mode=existing` +
+    `connection_id=...`, or `mode=new` + the original key-paste fields),
+    the picker only shown when the user actually has at least one store
+    (`{{#if existing_stores}}`, same empty-vec-is-falsy convention
+    `DashboardViewModel::has_stores` already relies on).
+  - `connect::confirm_submit` now branches on `ConfirmForm::mode`
+    (`#[serde(default)]` to `"new"`, so every existing caller/test that
+    never sent this field keeps working unchanged) into `confirm_new_store`
+    (the original logic, unchanged in substance) and the new
+    `confirm_existing_store`. Both converge on a new shared
+    `mint_token_and_redirect` helper (factored out of the tail every path
+    already shared).
+  - **Security-critical, called out explicitly**: `confirm_existing_store`
+    verifies the submitted `connection_id` actually belongs to the
+    authenticated user before ever mining a token for it - without this, a
+    signed-in attacker could submit any other user's connection id and
+    have that store's genuine `sk_...` secret token delivered to their own
+    `return_url`. Same enumeration-defense convention `orders.rs`'s own
+    ownership check already documents (a nonexistent id and someone
+    else's id render identically - "That store could not be found.").
+    Directly tested (`connecting_with_a_connection_id_owned_by_a_different_user_is_rejected`).
+  - Judgment call, stated plainly: selecting an existing store does *not*
+    update that row's `site_url`/`platform` metadata to reflect the new
+    plugin visit - the dashboard keeps showing wherever/however the store
+    was first connected. Revisit if a real user actually wants "this
+    plugin visit is now the canonical site for this store" to mean
+    something more than "hand this plugin the same credentials."
+  - **A real bug caught in my own test code before it shipped**: an early
+    version of the "reuses the existing store, doesn't create a second
+    one" test called `state.db.lock().unwrap()` twice in one statement (once
+    as the method receiver, once inside an argument expression) - a
+    genuine self-deadlock on `std::sync::Mutex` (not reentrant), which
+    hung the test process past its own timeout. Caught immediately (the
+    test run never returned), fixed by splitting into two statements so
+    the first guard drops before the second lock is taken - grepped the
+    rest of the codebase afterward (`\.lock\(\).*\.lock\(\)`) and confirmed
+    no other occurrence of this pattern exists anywhere else.
+  - 9 new tests (2 template-level `is_woocommerce` branching tests, 7 real
+    end-to-end HTTP tests covering: no picker with zero existing stores,
+    picker shown and correctly listing a real store once one exists,
+    reusing an existing store mints a token for the *same* store (verified
+    by checking `/finish` returns the same `public_key`, and that no
+    second `store_connections` row was created), the ownership-check
+    rejection above, and a clear error when "existing" mode is submitted
+    with nothing chosen) plus the 1 existing test whose assertion on the
+    old wrong `"woocommerce"` platform value was corrected to `"custom"`.
+    `cargo test -p control-plane`: 108 passed (was 102).
+  - `cargo build --workspace`/`cargo test --workspace` clean throughout.
+  - Independently verified live, end to end, against the real running
+    control-plane + engine: created a real advanced/custom store, confirmed
+    the dashboard genuinely shows `custom` (not `woocommerce`) and the
+    store page shows generic (not plugin-connected) integration help; then
+    simulated a real WooCommerce plugin visit (`GET /connect/woocommerce`
+    with real `site_url`/`return_url`/`nonce` query params) and confirmed
+    the picker actually lists that real store; then submitted
+    `mode=existing` with its real connection id and got back a genuine
+    `302` redirect carrying a real, freshly-minted connect token - the
+    full loop, not just the unit tests.
+
+- Real UX bug fix (user-directed, immediate follow-up to the validation
+  fix above): both connect forms (`/dashboard/connect` and
+  `/connect/{platform}`) lost every field the merchant had typed the
+  moment a submission was rejected - re-rendering an entirely blank form
+  alongside the error message, forcing a full retype of two long hex keys
+  even when only one character was wrong.
+  - Root cause: `ConnectViewModel`/`PlatformConnectViewModel`
+    (`templates.rs`) only ever carried `error` (plus `public_key`/
+    `endpoint` on success) - nothing about what was actually submitted.
+    Neither template had `value="..."` on any input, and the network
+    `<select>` always hardcoded `mainnet` as `selected` regardless of what
+    was actually chosen.
+  - Fix: both view models gained `site_url`/`view_key_hex`/
+    `spend_pubkey_hex`/`allowed_origins` plus three `network_*_selected`
+    bools (handlebars-rust has no built-in string-equality helper, so
+    these are computed server-side once via a new shared
+    `templates::network_selected_flags` rather than adding one). Both
+    `dashboard::render_connect_form` and `connect::render_confirm_form`
+    now take an `Option<&Form>` (`None` on a fresh `GET` - empty fields,
+    mainnet selected; `Some(&form)` re-rendering after a rejected `POST`)
+    and thread every submitted value straight back. Both templates got
+    `value="{{...}}"` on every input and `{{#if network_*_selected}}` on
+    each `<option>`.
+  - **Deliberately includes the two key hex fields, not just site_url/
+    network/allowed_origins** - a real judgment call, stated plainly: these
+    are plain `type="text"` inputs already fully visible on the merchant's
+    own screen the moment they typed them (not `type="password"`), and the
+    value already left the browser once in the rejected POST body - so
+    echoing it back into the same page, for the same browser session,
+    creates no new exposure. Losing a 64-character hex string the merchant
+    just pasted from their own wallet software, over a false-cautious
+    "don't echo sensitive-looking fields" instinct, was judged the clearly
+    worse outcome here.
+  - Both handlers needed their submitted-form values kept around through
+    every error-return path where they previously moved straight into
+    `CreateConnectionFields` - `connect_submit`/`confirm_submit` now
+    `.clone()` the three fields `CreateConnectionFields` also needs,
+    keeping `form` itself intact through every `render_*_form(..., Some(&form))`
+    call.
+  - 6 new tests: 2 template-render tests proving the echo (including that
+    switching to stagenet doesn't leave mainnet marked `selected` too -
+    the actual failure mode a naive "just always mark mainnet selected"
+    fix would have left in place), and 2 real end-to-end HTTP tests (one
+    per form) driving an actual rejected submission - a syntactically
+    valid but off-curve spend key, the same real bug from the fix directly
+    above this entry - through the real router and asserting every field
+    reappears in the re-rendered HTML, plus that the rejected value itself
+    (not silently dropped) is what's shown back, so the merchant can see
+    and fix exactly the field that was wrong.
+  - `cargo test -p control-plane`: 102 passed (was 98). Full
+    `cargo test --workspace` clean.
+  - Re-verified live end to end against the real running control-plane +
+    engine: real signup/login, a real rejected submission (the same
+    off-curve spend key from the validation fix above), confirmed via the
+    raw response HTML that site_url/view_key_hex/spend_pubkey_hex/
+    allowed_origins all reappear with their exact submitted values and
+    that `stagenet` (not `mainnet`) is the option actually marked
+    `selected`.
+
+- Real bug fix (user-directed: asked whether the connect forms had proper
+  server-side validation + error display, specifically for the view/spend
+  key hex fields). Investigated rather than assumed, and found a genuine,
+  previously-undetected bug: `WalletMaterial::from_hex` only checks that
+  the hex decodes to 32 bytes - it does *not* check the bytes are actually
+  a valid curve point/scalar. That real check only happens later, inside
+  `PlainKeyCustody::register_wallet`'s `to_view_pair()` call
+  (`PublicKey::from_slice`/`PrivateKey::from_slice` from the `monero`
+  crate) - and `http/mod.rs`'s blanket `From<KeyCustodyError> for ApiError`
+  maps `KeyCustodyError::InvalidKeyMaterial` to `ApiError::Internal`
+  (500), not `BadRequest` (400), by design, because at most of that
+  mapping's other call sites (e.g. `resolve_wallet_handle` unsealing a
+  tenant's own already-stored material) that error genuinely would mean
+  server-side corruption. But `admin::create_tenant` never had its own
+  override, so a well-formed-hex-but-off-curve spend key, or a
+  well-formed-hex-but-non-canonical view key scalar, silently fell through
+  as a bare 500 - confirmed live against the real running engine before
+  touching any code (`curl` with 64 `f`s as a spend key -> real 500,
+  "Invalid point on the curve"). Through control-plane, that 500 was worse
+  than useless: `connections::create_connection_for_user` only treats a
+  literal 400 as `CreateConnectionError::BadRequest` (shown inline on the
+  form); anything else, including this 500 with a perfectly good message
+  attached, fell into `CreateConnectionError::Internal` -> the generic
+  "Something went wrong. Please try again." - discarding a message the
+  engine had already computed correctly.
+  - Fix: `src/http/admin.rs` now has its own
+    `key_custody_error_for_new_tenant`, mapping `InvalidKeyMaterial`
+    specifically to `BadRequest` for the three `key_custody` calls inside
+    `create_tenant` only - deliberately not changing the blanket
+    `From<KeyCustodyError> for ApiError` mapping everywhere else, since
+    that default is correct for other callers.
+  - 2 new real regression tests in `src/http/tests.rs`, both against the
+    real `monero` crate's own curve validation (not mocked): an off-curve
+    spend pubkey and a non-canonical view-key scalar each now correctly
+    return `400` with the real validation message, not `500`. Engine test
+    count: 314 (was 312).
+  - Re-verified live end-to-end after rebuilding and restarting the real
+    engine: `curl` directly against `/api/v1/admin/tenants` now returns
+    `400` (was `500`) for the same off-curve key; then drove the real
+    `/dashboard/connect` form through the real running control-plane with
+    the same bad key and confirmed the exact message ("invalid key
+    material: spend public key: Invalid point on the curve") now renders
+    inline in the form's visible `.error` box, not lost.
+  - On the "matching the network selected" half of the question: Monero
+    view/spend keys are not themselves network-tagged (network only
+    affects *address encoding*, not key validity) - so there's no
+    "key belongs to the wrong network" check to add; what *is* already
+    validated (and was already correct, confirmed by reading
+    `admin::create_tenant` before assuming otherwise) is that the
+    requested `network` is one this instance has a configured node for
+    (`state.configured_networks.contains(&network)`), already a real
+    `400` with a clear message.
+  - Client-side: both connect forms already had `pattern="[0-9a-fA-F]{64}"`
+    on the hex fields (added during the earlier styling pass) - immediate
+    browser-level feedback for non-hex/wrong-length input; the curve/scalar
+    validity check this fix addresses can only happen server-side (no
+    reason to duplicate elliptic-curve math in page JS for this).
+  - `cargo build --workspace`/`cargo test --workspace` both clean; every
+    crate's count unchanged except the engine's own (+2, above).
+  - Not yet committed as of this entry - see the commit this same
+    conversation turn makes right after writing it.
+
+- Control-plane UI/UX pass (not a numbered WBS item - user-directed work
+  after checking out the running control plane + engine locally): a real
+  visual identity plus the pages the WBS's own dashboard tasks (1.3.1/1.3.2/
+  1.3.3/1.4.1) had never actually gotten around to building. User's brief:
+  "minimalistic, tech, monero, crypto, semi-brutalist, web1.0," a landing
+  page, a real dashboard home (connected stores, recent orders, total
+  received XMR, health), an obvious empty-state CTA, two connect flows
+  ("custom (advanced)" vs. "simple -> woocommerce"), much more explanatory
+  copy + sensible defaults on the advanced form, and integration-help
+  content reachable from each store's own page, not just shown once.
+  - **Shared look**: `control-plane/templates/_styles.html.hbs` (one
+    hand-written CSS block - monospace, hard black borders, no rounded
+    corners/shadows/gradients, Monero-orange accent) and `_nav.html.hbs`,
+    both registered as handlebars partials (`{{> styles}}`/`{{> nav}}`) and
+    included on every page, old and new alike - so the whole surface reads
+    as one product, not a patchwork of before/after styles.
+  - **New pages**: `landing.html.hbs` (`GET /`, unauthenticated, explains
+    the non-custodial model, CTA to signup), `dashboard_home.html.hbs`
+    (`GET /dashboard` - real aggregation, not mock data: iterates the
+    user's `store_connections`, calls the real engine's
+    `get_tenant`/`list_orders` per connection, sums `amount_received_piconero`
+    across every order for "total received XMR that has been detected"),
+    `new_store_picker.html.hbs` (`GET /dashboard/connections/new` - the
+    custom-vs-simple choice), `woocommerce_instructions.html.hbs`
+    (`GET /dashboard/connections/new/woocommerce`), and
+    `store_detail.html.hbs` (`GET /dashboard/connections/{id}` - a real
+    per-store overview page that didn't exist before; only `/orders` and
+    `/webhooks` sub-pages did).
+  - **A genuine, deliberate scope call on the "simple" flow**: the real
+    `/connect/{platform}` protocol needs a `site_url`/`return_url`/`nonce`
+    only a plugin can supply (`http/connect.rs`'s own module doc comment) -
+    the dashboard has no way to manufacture a legitimate return path into
+    someone else's WordPress admin. So `woocommerce_instructions.html.hbs`
+    is real instructions (install plugin -> WooCommerce settings -> click
+    Connect), not a live form pretending to be one. Flagged to the user
+    before starting, not decided silently.
+  - **Another real, deliberate scope call**: `store_connections` has no
+    user-facing display-name column - `http/orders.rs::display_name_for`
+    derives one from `site_url`'s own host rather than a new migration for
+    a field nothing else needs. Also flagged before starting.
+  - **Shared integration-help partial**
+    (`_integration_help.html.hbs` + `templates::IntegrationHelpViewModel`,
+    though the actual call sites pass hash params directly rather than
+    that struct - see `store_detail.html.hbs`'s
+    `{{> integration_help public_key=... endpoint=...}}`): the exact same
+    content renders right after a successful advanced-connect *and* on the
+    store detail page, so the two can never drift. Proven by a real test
+    checking the partial actually receives per-store data via its hash
+    params, not a stale/shared context.
+  - **A real bug caught and fixed via live testing, not just unit tests**:
+    the post-connect success page initially rendered a hardcoded placeholder
+    string for the engine endpoint in the integration snippet instead of the
+    real one, even though `state.engine_client.base_url()` was sitting right
+    there in the handler - only surfaced by actually driving the flow
+    end-to-end against the two locally-running processes (signup -> login ->
+    connect -> dashboard -> store detail, via real `curl` + a cookie jar,
+    not mocked) and eyeballing the rendered HTML. Fixed by threading a real
+    `endpoint` field through `ConnectViewModel`.
+  - `dashboard::login_submit`'s old placeholder behavior (a hardcoded inline
+    "you're logged in" HTML page, with a doc comment explicitly noting "no
+    real dashboard content page exists yet") now redirects to the real
+    `/dashboard` - the doc comment's own stated condition for making that
+    change. Updated 9 existing tests whose assertions depended on the old
+    placeholder status/body (all in `http/tests.rs`/`http/connect.rs`, via a
+    shared `signed_up_and_logged_in_session_*` test helper each file had its
+    own copy of) - including strengthening the open-redirect regression test
+    (`a_successful_login_with_a_malicious_next_...`) to assert the exact
+    `Location: /dashboard` value now that the safe-fallback path is itself a
+    redirect, not just "not a redirect at all."
+  - **A real rustfmt hazard hit again this session, caught before
+    committing**: running `rustfmt` even scoped to only the files actually
+    touched still reflowed hundreds of pre-existing, untouched lines in
+    those files to stock rustfmt defaults (confirmed no `rustfmt.toml`
+    exists anywhere in this repo - the codebase's long-line style is
+    maintained by hand convention only, not enforced by config), and
+    separately, passing `http/mod.rs` to rustfmt cascaded into reformatting
+    every sibling module it `mod`-declares (connections.rs/login.rs/
+    logout.rs/signup.rs), none of which this task touched at all. Caught via
+    `git diff --stat` showing far more churn than the real edits justified;
+    fixed by reverting every affected file to HEAD and manually re-applying
+    only the real, intended edits by hand (confirmed via a second, clean
+    `git diff --stat` afterward - net diff is now proportional to the actual
+    change, no formatting noise). Restated plainly for whoever reads this
+    next: **do not run `rustfmt`/`cargo fmt` in this repo at all, on any
+    file, scoped or not** - hand-format new code to match the surrounding
+    file's existing style instead. The earlier "scope fmt to touched files"
+    lesson in this log was already an under-correction; this replaces it.
+  - New tests: 7 template-render tests (`templates.rs`, including the
+    partial-hash-param proof above), 3 pure-function tests for the
+    piconero-to-XMR formatter, and 8 real HTTP-handler tests across
+    `http/home.rs` and `http/orders.rs` (landing/dashboard/picker/
+    instructions reachability and auth, a full real-engine-backed dashboard
+    aggregation test, store-detail ownership enumeration-defense) - all
+    using the same real-engine test harness (`engine_test_support`) every
+    other control-plane test in this codebase already uses, not mocks.
+    `cargo test -p control-plane`: 98 passed (was 80 at the start of this
+    piece of work; +18 net, after the 9 pre-existing tests above were
+    updated in place rather than counted as new).
+  - Independently verified live, twice (once before the rustfmt cleanup,
+    once after, both against the actually-rebuilt binary): real signup ->
+    login -> dashboard (empty state) -> picker -> advanced connect form ->
+    submit against the real locally-running engine (stagenet) -> dashboard
+    now showing the real store and its real public key -> store detail page
+    showing the same, plus working integration-help with the real endpoint.
+  - Full workspace re-verified after the rustfmt cleanup:
+    `cargo build --workspace` and `cargo test --workspace` both clean, every
+    other crate's count unchanged from the last known-good baseline.
+  - Committed separately from WBS 2.2 (already committed earlier this
+    session, before this UI work started): 2.2 is a numbered WBS
+    deliverable, this styling/dashboard work is user-directed follow-up, not
+    itself a WBS line item, even though it fills a real gap the WBS's own
+    1.3.x/1.4.1 tasks left open.
+
+- WBS 2.2 done (2.2.1 attestation-verification tooling + 2.2.2 deployment
+  scripting for AMD SEV-SNP bare metal) - closes out Track B's cloud/
+  attestation steps. Real decisions made this item (the user answered these
+  explicitly, not judgment calls of mine): **bare-metal** hosting rather
+  than a hyperscaler's confidential-VM product (more hosting flexibility
+  given the crypto-adjacent nature of the business); **no billing/account
+  set up yet** - the user will provision the actual box later, so nothing
+  here was run against real hardware; **direct-to-AMD** attestation
+  verification (never routed through a cloud provider's own attestation
+  service - see `snp-attest/src/kds.rs`'s module doc comment for why that
+  matters); **base OS image assumed SNP-guest-aware** already.
+  - **2.2.1**: new `snp-attest` workspace crate + `verify-snp-attestation`
+    binary - a real AMD SEV-SNP attestation-report verifier, not a stub.
+    Before writing any of it, used live web research (WebFetch/WebSearch,
+    plus direct `curl`/`openssl` against `kdsintf.amd.com` from this
+    session's own network access) to ground every non-obvious fact rather
+    than trust memory of AMD's spec:
+    - Report byte layout and the two different `TCB_VERSION` encodings
+      (legacy Milan/Genoa vs. Turin+) confirmed against `virtee/sev`'s
+      actual source, not reconstructed from the PDF spec.
+    - **A real, easy-to-get-wrong finding, caught by directly inspecting a
+      live-fetched cert with `openssl x509 -text` rather than assuming**:
+      the AMD ARK/ASK/VCEK *issuance* chain (the X.509 certificates) is
+      **RSASSA-PSS-SHA384 over 4096-bit RSA keys**, not ECDSA - only the
+      attestation report's own signature (made with the VCEK's separate
+      P-384 EC key) is ECDSA P-384. Getting this backwards would have meant
+      writing an RSA verifier disguised as an EC one, or vice versa - either
+      silently wrong. Verified via `x509_parser`'s `verify_signature`
+      (ring-backed), not a hand-rolled PSS implementation.
+    - AMD's KDS URL formats (VCEK fetch with `blSPL`/`teeSPL`/`snpSPL`/
+      `ucodeSPL` query params, `cert_chain` for ASK+ARK) confirmed against
+      `virtee/snpguest`'s real source.
+    - VCEK certificate TCB extension OIDs (`1.3.6.1.4.1.3704.1.3.{1,2,3,8}`)
+      cross-checked against `google/go-sev-guest` independently, since a
+      wrong OID here would make the tamper-check silently pass on anything.
+    - **The ARK root is pinned in-binary** (`snp-attest/src/pinned_ark.rs`),
+      fetched live from `kdsintf.amd.com` this session and checked into
+      `snp-attest/src/pinned_certs/` with fingerprints recorded in the doc
+      comment - this is what "direct-to-AMD, not the cloud provider" means
+      concretely: only the pinned root is unconditionally trusted; the live
+      ASK and VCEK are re-verified against it on every run.
+    - **What "AMD's July 2025 microcode patch" (this WBS item's own literal
+      wording) actually is**, tracked down via `WebSearch`: AMD-SB-3019, the
+      "StackWarp" SEV-SNP vulnerability (CVE-2025-29943), fixed by AMD's
+      2025-07-29 microcode release. The tool does *not* hardcode the numeric
+      SPL threshold that release corresponds to per-platform - per the
+      user's own instruction ("if programmatically possible to detect let's
+      do that, otherwise don't worry I will confirm when setting up the
+      server"), it cryptographically extracts and prints the real, signed
+      SPL values unconditionally, and enforces a minimum only if the
+      operator supplies `--min-*-spl` flags at deploy time with the real
+      number from AMD's advisory or their hardware vendor. See the binary's
+      own module doc comment (`snp-attest/src/bin/verify-snp-attestation.rs`)
+      for the full reasoning - this was a judgment call, flagged here rather
+      than silently baked in.
+    - Tests (15, all passing) include **real crypto tests run against
+      genuine AMD-issued material**, not just synthetic fixtures: the ASK-
+      signed-by-ARK and ARK-self-signed checks run against the actual
+      certificates fetched live from `kdsintf.amd.com`
+      (`snp-attest/tests/fixtures/*.pem`), for all three products
+      (Milan/Genoa/Turin). The report's own ECDSA signature path is tested
+      with a freshly generated non-AMD P-384 key (proving the little-endian
+      byte-order handling is correct) since a real end-to-end test needs an
+      actual report captured from real SEV-SNP hardware, which doesn't exist
+      yet - documented as a genuinely open gap in `deploy/sev-snp/README.md`,
+      not silently assumed covered.
+    - Manually exercised the compiled CLI against a synthetic report: it
+      builds the correct KDS URL, makes a real HTTPS request to AMD's live
+      KDS, gets a real 404 (no such chip exists), and fails closed with a
+      clear error - confirmed the whole pipeline is wired correctly
+      end-to-end, short of an actual chip to succeed against.
+  - **2.2.2**: `deploy/sev-snp/` - two hardened systemd units
+    (`moneropay-key-custody.service`, `moneropay-engine.service`, the latter
+    deliberately *not* `Requires=`-bound to the former - see the unit's own
+    comment for why a hard dependency would be more disruptive than the
+    engine's existing bounded-reconnect startup behavior already handles)
+    plus a real, step-by-step `README.md` covering: running
+    `verify-snp-attestation` before deploying anything and refusing to
+    proceed if it fails; installing the two binaries; the one config
+    difference from a plain self-hosted install (`[key_custody] backend =
+    "socket"`); and what "re-run 2.1.3's regression suite against the
+    deployed instance over the network" concretely means (`systemctl
+    status`/`journalctl` liveness checks, a real order driven through the
+    deployed instance, and why `cargo test --workspace` on a dev box proves
+    the code path but not this specific deployment). Also states plainly,
+    cross-referenced against `docs/INCIDENT_RUNBOOK.md`, what SEV-SNP does
+    *not* protect against (a compromise with a foothold already inside the
+    guest still exposes `PlainKeyCustody`'s cleartext memory, unchanged).
+  - Real, not yet done by anyone: actually provisioning a bare-metal SEV-SNP
+    box and running any of this against genuine hardware - that's the
+    user's own next real-world step, not something further automation can
+    close from here. Hosting-provider suggestions given directly to the
+    user (see this session's chat, not repeated here since they're
+    time-sensitive market info, not stable project state): bare-metal AMD
+    EPYC (Milan/Genoa/Turin) providers advertising SEV-SNP support at time
+    of writing include OVHcloud, Hetzner (AX/EPYC line, confirm SEV-SNP
+    availability per-model), and IBM Cloud Bare Metal - re-verify SEV-SNP
+    support and current AMD-SB-3019 microcode status directly with whichever
+    provider is chosen before trusting a listing, since offerings change.
+  - Full workspace re-verified: `cargo build --workspace` and
+    `cargo test --workspace` both clean; every prior crate's count unchanged
+    (engine 312/9 ignored, `shared` 29, `engine-test-support` 3,
+    `key-custody-service` 22, `key-custody-server` 17, `control-plane` 80,
+    `mock-woocommerce` 8+1, `tests/backup_restore.rs` 2 ignored) plus the new
+    `snp-attest` crate's 15 passing.
+
+- WBS 2.3 done (2.3.1 backup/restore drill + 2.3.2 incident runbook) -
+  closes out the "Hardening" track. Note for whoever picks up next: the
+  subagent that started this item hit its own session rate limit partway
+  through (finished the two shell scripts + two systemd unit files, hadn't
+  started the Rust test or the runbook) - I resumed and finished it myself
+  directly rather than re-delegating, after independently reading all its
+  work first.
+  - **2.3.1**: `scripts/backup-database.sh` and `scripts/restore-database.sh`
+    (produced by the interrupted subagent, read in full, high quality - real
+    investigation of `.backup` vs `VACUUM INTO` vs plain `cp`, correct
+    atomicity/locking/verification patterns) plus `scripts/moneropay-backup.{service,timer}`
+    for a systemd-timer install. The actual missing piece - the WBS's own
+    literal acceptance test ("actually perform the restore once against a
+    copy; diff tenant/order counts before and after as the pass condition")
+    - is now `tests/backup_restore.rs` (new, at the engine crate root,
+      matching the `tests/e2e_stagenet.rs` convention: `#[ignore]`d like that
+      test is, run explicitly with
+      `cargo test --test backup_restore -- --ignored --nocapture`, since it
+      shells out to the real scripts and needs `sqlite3` on PATH). Two
+      tests: the real drill (seeds a tenant + 20 orders via a real `Store`,
+      keeps a second thread inserting orders concurrently while the real
+      `backup-database.sh` runs against the live file, restores via the real
+      `restore-database.sh` to a fresh path, and asserts tenant/order/
+      order_payments counts match exactly between the backup file and the
+      restored copy - not just "restore exited 0"), and a second test
+      specifically drilling the `--force` overwrite-refusal path (restore
+      against an existing destination must fail and leave it untouched;
+      with `--force` it must succeed). Both pass, independently re-run by me
+      after a scoped `rustfmt` pass on just this new file (never the whole
+      crate - see the standing fmt lesson below in this log).
+  - **2.3.2**: `docs/INCIDENT_RUNBOOK.md` (new). Grounded in the *current*,
+    not aspirational, architecture - cross-checked directly against
+    `docs/DESIGN.md` §6.1 before writing anything: this system is watch-only
+    end to end (no spend key ever exists anywhere in this codebase), so a
+    box compromise is framed throughout as a privacy incident (view-key /
+    transaction-linkability exposure), never a funds-loss one - that's a
+    factual claim about the architecture, not a hedge. One point worth a
+    future reader's attention: the runbook is explicit that the `socket`
+    `KeyCustody` backend (WBS 2.1.2/2.1.3, already shipped) buys process
+    *separation* only, not confidentiality against a host-level/root
+    attacker - it is not a substitute for the not-yet-built WBS 2.2
+    (SEV-SNP). Don't let a future incident get under-scoped by someone
+    assuming the socket split alone contains a host compromise; it doesn't.
+    Section 6 is the required tabletop-walkthrough note per the WBS's own
+    "not code-testable" acceptance bar for this item - I did not run an
+    actual tabletop with a human, since that requires the user's
+    participation; that's the one genuinely open item this step leaves for
+    a real person to do, not something further automation can close.
+  - Full workspace re-verified after this change: `cargo build --workspace`
+    clean, `cargo test --workspace` - counts unchanged from the last known-
+    good baseline (engine 312 passed/9 ignored, `shared` 29, `engine-test-support`
+    3, `key-custody-service` 22, `key-custody-server` 17, `control-plane`
+    80, `mock-woocommerce` 8+1) plus the new `tests/backup_restore.rs`
+    (2 ignored by default, both pass when run explicitly, confirmed above).
+  - This closes the last WBS item I judged safe to pick up autonomously.
+    Everything remaining in the WBS (1.6 distribution, 2.2 SEV-SNP, the
+    final "3. Convergence" stage) needs a real-world decision only the user
+    can make (a wordpress.org account and a decided production domain for
+    1.6; real cloud/hardware choices for 2.2) - already flagged to the user
+    before they said "Yes continue with 2.3," and still true now that 2.3 is
+    done. Do not start any further WBS item without asking first.
+
+- WBS 1.5.4 done: the real webhook receiver + order status mapping - this
+  closes out Track 1.5 (the WooCommerce plugin) entirely. A real payment
+  through a real WooCommerce checkout now ends with the WC order in the
+  right WooCommerce status once the engine's webhook for it arrives, per
+  this step's own outcome text.
+  - **The real WooCommerce mechanism, confirmed directly against installed
+    source before relying on it - and a genuinely nontrivial finding along
+    the way**: `add_action( 'woocommerce_api_' . $this->id, ... )` is what
+    this step's brief named, and it *does* still work on a real, current
+    WooCommerce install - but not for the reason an older mental model of
+    WooCommerce would suggest. Reading `includes/class-woocommerce.php`'s
+    own `__get()` directly first surfaced a real, current fact: "The Legacy
+    REST API was removed from WooCommerce core as of version 9.0 (moved to
+    a dedicated plugin)." That could easily have been read as "so
+    `woocommerce_api_{id}` no longer fires without that separate plugin
+    installed" - checked further rather than assumed, and that reading is
+    wrong: `src/Internal/Utilities/LegacyRestApiStub.php` (read in full) is
+    a stub *kept in core specifically* so gateway-callback URLs keep
+    working without the separate extension - its own class doc comment
+    states this explicitly ("Provide the not-endpoint related utility
+    methods...", plus `maybe_process_wc_api_query_var()`'s own real
+    `do_action( 'woocommerce_api_' . $api_request )` call, hooked on
+    `parse_request` priority 0, confirmed to run regardless of whether
+    `WC_Legacy_REST_API_Plugin` exists). This is real, current, WC 11.1.0
+    behavior on this environment's own installed copy
+    (`~/.wp-env/wp-env-moneropay-cloud-9652ae59/woocommerce/`), not
+    carried over from memory of an older WooCommerce version - and it's
+    also what PayPal's own still-shipped legacy IPN handler relies on
+    (`includes/wc-deprecated-functions.php::woocommerce_legacy_paypal_ipn()`,
+    read directly), so this isn't a rarely-exercised code path either.
+    Documented at length on the `add_action()` call site itself
+    (`class-wc-gateway-moneropay.php`'s constructor), not just here.
+  - **The full status-mapping table** (every engine event this receiver
+    handles - the complete nine-event catalog, checked directly against
+    every `enqueue_webhook_event()`/`void_and_notify()`/
+    `unvoid_as_false_positive()` call site in `src/scanner.rs`, grepped for
+    `"order\.`, not assumed exhaustive from this step's own brief alone):
+
+    | engine event | WC status | why |
+    |---|---|---|
+    | `order.pending` | `pending` | Normally a no-op (a fresh order is already `pending`) - kept as a real, mapped transition (not skipped) because it's genuinely *reachable* as a regression: a double-spend void that removes an order's only payment makes `derive_status()` in `src/status.rs` return to `Pending` (`total == 0`). Covered by its own regression test. |
+    | `order.unconfirmed` | `on-hold` | Full amount seen, only in the mempool, not yet trusted per the tenant's zero-conf policy. WooCommerce's own "Awaiting payment confirmation" label is a near-verbatim match; `on-hold` also doesn't reduce stock, correctly, since nothing here is confirmed yet. |
+    | `order.confirming` | `on-hold` | Full amount mined but below the tenant's required confirmation depth - same "seen, not yet trusted" situation as `unconfirmed` from a merchant's point of view; collapsed into the same bucket deliberately, since WooCommerce has no built-in status more specific than `on-hold` to distinguish them with, and a merchant acts on both identically ("wait"). |
+    | `order.partial` | `on-hold` | Real funds arrived, but not the full amount - deliberately *not* `pending` (a fresh order with nothing at all), since an underpaid order may need a human decision (there is no automated refund path anywhere in this system - `docs/DESIGN.md` §3 and `status.rs`'s own module doc comment both say so). The order note added alongside the status change says this explicitly, so a merchant scanning their on-hold queue isn't left guessing which of several causes put a given order there. |
+    | `order.paid` | `WC_Order::payment_complete()` (→ `processing` or `completed`) | WooCommerce's own real, canonical "a payment was received" mechanism, not a raw status setter - confirmed directly (`includes/class-wc-order.php::payment_complete()`) that it decides `processing` vs. `completed` itself via `needs_processing()` (an order of only virtual/downloadable items goes straight to `completed`), sets `date_paid`, reduces stock, fires `woocommerce_payment_complete`, and is idempotent by construction (gated on the order's current status being in `PAYMENT_COMPLETE_STATUSES`). Hardcoding `processing` unconditionally, as a literal reading of this step's own outcome text might suggest, would be wrong for exactly the downloadable-goods case that same outcome text's own "/completed" already anticipates. |
+    | `order.overpaid` | `WC_Order::payment_complete()`, plus an explicit order note | Same mechanism as `paid` - the customer paid at least what was due. An extra order note is added first (since `payment_complete()` has no note parameter of its own) explicitly flagging that the excess is not automatically refunded by this plugin or the engine. |
+    | `order.expired` | `cancelled` | WooCommerce's own "this did not complete and isn't going to." Per `status.rs`'s own comment (read directly): even a partial payment past the deadline surfaces as `expired`, since the funds still exist at the address and need manual merchant handling - restated in the transition's own order note, not left implicit in the status label alone. |
+    | `order.double_spend_detected` | **no status change by itself** | Prominent ("FRAUD ALERT") order note only. Reasoning below. |
+    | `order.double_spend_reversed` | **no status change by itself** | Order note (with the `txid`) only. Reasoning below. |
+
+  - **The two double-spend events - the ones with no obvious "correct"
+    answer, and the actual reasoning for the choice made**: the brief's own
+    suggested starting framework was "`double_spend_detected` → likely
+    `failed` or `on-hold`... `double_spend_reversed` → recomputed, not
+    hardcoded back to `processing`". Read `void_and_notify()` and
+    `unvoid_as_false_positive()` directly in `src/scanner.rs` before
+    deciding, rather than picking one of the two suggested options by
+    intuition - and found a fact that changes the shape of the right
+    answer entirely: **both** functions call `recompute_and_notify_in_tx()`
+    - which enqueues its own `order.<status>` event under its own fresh
+    `event_id` whenever the status genuinely changed - **before** enqueuing
+    their own double-spend event, in the same database transaction. That
+    means any real status consequence of a void or an un-void is *already*
+    announced correctly, by its own independent, already-mapped
+    `order.<status>` event - the exact recomputation the brief asked for,
+    done engine-side, against the engine's own authoritative ledger, for
+    free. Having `apply_webhook_event()` *also* force a status change off
+    the double-spend event itself would either duplicate that (if both
+    events are delivered and processed) or actively fight it, since
+    delivery order between two independently-retried webhook rows is not
+    guaranteed (this receiver could see `double_spend_reversed` before or
+    after its paired `order.<status>` event). It would also be a real
+    regression for the case the brief's own suggested "failed or on-hold"
+    framing doesn't fit: `multi_payment_voiding_one_still_leaves_enough_
+    stays_paid` in `status.rs`'s own test suite - a double-spent payment
+    voided while *other*, still-legitimate payments already cover the
+    order in full, so `recompute_and_notify_in_tx()` finds no transition at
+    all and only the double-spend event fires alone. Forcing that order to
+    `on-hold`/`failed` regardless would be a real, false regression on an
+    order that is genuinely, fully paid. So: **neither double-spend event
+    sets a WC status by itself** - each only adds a note a merchant can't
+    miss (`double_spend_detected`: "FRAUD ALERT" plus a reminder to review
+    the order; `double_spend_reversed`: the `txid` the reversal concerned,
+    plus a note that any real status change was announced separately).
+    This is not a weaker response to the fraud case than "failed/on-hold" -
+    it's a more accurate one: the merchant is told about *every* double-spend
+    event unconditionally (an order note is never suppressed or
+    deduped-away except by the same `event_id` mechanism every event
+    uses), and the order's actual WooCommerce status always reflects the
+    engine's own honest, independently-computed truth rather than a second,
+    possibly-conflicting guess made on the WooCommerce side.
+  - **`event_id` dedupe**: `_moneropay_cloud_applied_webhook_event_ids`
+    order meta, a JSON-encoded array (not comma-joined, so a future
+    `event_id` format can never be mis-split), checked before applying an
+    event and appended to afterward. A redelivery of an already-applied
+    `event_id` still returns 200 (the delivery already succeeded from the
+    engine's point of view per `run_delivery_tick`'s own retry contract in
+    `src/webhook_delivery.rs`) but touches nothing - no duplicate order
+    note, no second `payment_complete()` call. Verified two ways: a
+    PHPUnit test asserting the order note count is identical before/after a
+    redelivery, and (see below) a real repeated HTTP POST against a real
+    running WordPress instance, independently confirmed via `wp eval`
+    that the note count and the applied-event-ids meta were both
+    unchanged by the second delivery.
+  - **The three response codes, and why each one** (mirroring this
+    *engine's own* real `ApiError` convention in `src/http/mod.rs`, read
+    directly, rather than inventing a separate one on the PHP side for
+    semantically identical facts):
+    - **401** - missing or invalid `X-MoneroPay-Signature`. Mirrors
+      `ApiError::Unauthorized => StatusCode::UNAUTHORIZED`. No order lookup
+      or mutation ever happens before this check passes.
+    - **400** - a correctly-signed body that isn't the envelope shape
+      `enqueue_webhook_event()` in `src/scanner.rs` always produces
+      (`event`/`event_id`/`payment_id`). A signed-but-malformed body is a
+      client error on the sender's side, distinct from both the auth
+      failure above and the not-found case below.
+    - **404** - a well-formed, correctly-signed event for a `payment_id`
+      with no matching order on this site. Mirrors `ApiError::NotFound =>
+      StatusCode::NOT_FOUND`. Deliberately not a 2xx "swallow it silently"
+      response: since `process_payment()` always creates the engine-side
+      order and records its `payment_id` *before* that order can generate
+      any webhook event at all, an unknown `payment_id` reaching an
+      already-authenticated request means "never will match," not "not yet
+      - keep retrying" - so there's no race this code has to be gentle
+      about, and a real 404 gives an operator something to notice in logs
+      (a stale webhook registration surviving a DB reset, or, in
+      principle, a leaked signing secret).
+    - **200** - everything else, including an already-applied `event_id`
+      (see dedupe above) - the only status `run_delivery_tick` in
+      `src/webhook_delivery.rs` treats as `delivered: true`; anything else
+      means the engine's own delivery worker retries with exponential
+      backoff up to `max_attempts`.
+  - **The HMAC verification itself**: `hash_hmac( 'sha256', $raw_body,
+    $secret )` compared with `hash_equals()`, never `===` - per this step's
+    own explicit brief, with the reasoning restated in this codebase's own
+    words on `verify_webhook_signature()`'s doc comment (a `===`/early-exit
+    string comparison leaks how many leading bytes of a forged signature
+    guess were already correct - the byte-at-a-time forgery oracle
+    `shared/src/webhook_sign.rs::verify_signature`'s own doc comment
+    describes for the identical reason on the Rust side). Compared as hex
+    *strings*, not decoded to raw bytes first, unlike the Rust side - a
+    deliberate difference, not an inconsistency: PHP's `hash_equals()` is
+    itself a constant-time byte comparison and works identically on hex
+    text or raw bytes, and comparing `hash_hmac()`'s own lowercase-hex
+    output directly is the standard, officially-documented PHP idiom for
+    this - there's no decode-first step to add that would buy anything
+    Rust's own decode-then-`ct_eq` doesn't already get for free out of
+    `hash_equals()`. The raw body is read via `file_get_contents(
+    'php://input' )` in `handle_webhook()`, never `$_POST` (which the
+    engine's raw-JSON POST never even populates) and never a
+    decode-then-re-encode round trip - the exact requirement this step's
+    own brief called out by name ("even whitespace-identical-looking JSON
+    can byte-differ").
+  - **Order lookup**: `wc_get_orders()` with plain top-level `meta_key`/
+    `meta_value` args (`META_PAYMENT_ID` = `_moneropay_cloud_payment_id`,
+    the exact key `process_payment()` already writes - now a shared class
+    constant so the two call sites can't silently drift), **not** a
+    `meta_query` array and **not** raw SQL - confirmed by reading both real
+    order-storage backends directly, not assumed: `WC_Data_Store_WP::
+    get_wp_query_args()` (`includes/data-stores/class-wc-data-store-wp.php`)
+    passes an unrecognized top-level arg like `meta_key`/`meta_value`
+    straight through to `WP_Query` verbatim, while the legacy CPT store's
+    own `query()` (`includes/data-stores/class-wc-order-data-store-cpt.php`)
+    explicitly flags the *array* `meta_query` form as unsupported on that
+    backend and fires a `doing_it_wrong()` notice for it; on HPOS,
+    `OrdersTableQuery` (`src/Internal/DataStores/Orders/OrdersTableQuery.php`,
+    read directly) builds its own internal meta-query from exactly the same
+    top-level `meta_key`/`meta_value`/`meta_compare` "shortcut" convention.
+    The plain key/value pair is therefore the one shape genuinely portable
+    across both backends - not a guess, and specifically not the shape
+    WooCommerce's own CPT store warns is unsupported there.
+  - **Testing**:
+    - `tests/WebhookSignatureTest.php` - the mandatory known-vector test
+      (secret `known_vector_secret_for_php_crosscheck`, payload
+      `{"event":"order.paid","order_id":"12345","amount_piconero":
+      "1000000000000"}`, expected `436a60c6f66d20b611c7e4a3f78ab13167fb
+      26680a65d8b2e5a114c182de80f1`) copied verbatim from `shared/src/
+      webhook_sign.rs`'s own `KNOWN_VECTOR_*` test constants, plus four
+      more signature-verification tests (tampered payload, wrong secret,
+      missing signature, no secret configured). Independently
+      cross-checked *outside* this test file entirely before writing it -
+      a standalone `python3 -c "import hmac,hashlib; ..."` and a standalone
+      `php -r 'echo hash_hmac(...);'` invocation both produced the
+      identical expected hex, a three-way agreement (Rust, Python stdlib,
+      PHP stdlib) rather than PHP only checking its own work.
+    - `tests/WebhookStatusMappingTest.php` - table-driven (`@dataProvider`)
+      over all seven `order.<status>` events, plus dedicated tests for the
+      `pending`-regression case, the overpaid/expired order-note content,
+      and both double-spend events' note-only behavior.
+    - `tests/WebhookReceiverTest.php` - the request-handling logic, driven
+      directly through `process_webhook_request()` (public, side-effect-
+      testable) rather than through a real HTTP request - the same pattern
+      `ConnectFlowTest.php`/`ProcessPaymentTest.php` already established for
+      `process_connect_return()`/`process_payment()`: correctly-signed ->
+      200 and processed; missing/invalid/wrong-secret signature -> 401,
+      order completely untouched; malformed/incomplete body -> 400; unknown
+      `payment_id` -> 404, no fatal; a repeated `event_id` -> 200, not
+      double-applied (order status *and* note count both asserted
+      unchanged); two distinct events for the same order both genuinely
+      applied (dedupe keyed by `event_id`, not "has this order ever been
+      touched before").
+  - **Beyond the mocked suite - a real, observed HTTP smoke test against a
+    real running WordPress/WooCommerce dev instance**, specifically because
+    the `woocommerce_api_{id}` dispatch mechanism was the one genuinely
+    novel/risky piece of this step (see the `LegacyRestApiStub` finding
+    above) and deserved more than source-reading alone: seeded a real order
+    (`wp eval-file`, a scratch `tmp-smoke-setup.php`, deleted afterward -
+    same one-off, never-committed pattern WBS 1.5.3's own `tmp-smoke-
+    check.php` used) with `_moneropay_cloud_payment_id` meta and a real
+    `webhook_signing_secret` option, then sent a genuine `curl POST` from
+    the host to the real, published dev URL
+    (`http://localhost:8890/wc-api/moneropay_cloud/` - pretty permalinks
+    were active on this dev instance, so this is the `/wc-api/{id}/` path
+    form, not the `?wc-api={id}` query form; both are handled by the same
+    receiver code, this just happened to be the one this instance
+    exercised for real) with a real HMAC computed by a standalone `php -r`
+    invocation. First attempt genuinely failed with a real `401` - not a
+    bug in the plugin, but a real, self-inflicted repro of exactly the
+    byte-exactness hazard this step's own brief warns about: `echo "$BODY"
+    > file` appends a trailing newline `bash`'s `echo` adds, so the bytes
+    `curl --data-binary @file` sent didn't match the bytes the signature
+    was computed over, even though the *content* looked identical. Fixed
+    with `printf '%s'` (no trailing newline) and re-sent - a real, observed
+    `200 OK`, and `wp eval` afterward showed the real order (id 10)
+    genuinely transitioned to `wc-completed` (this smoke order had no
+    shippable items, so `payment_complete()`'s own `needs_processing()`
+    branch correctly chose `completed` over `processing` - real,
+    observed confirmation of the exact `payment_complete()` reasoning
+    documented on `apply_order_status_event()`) with a real "Payment
+    complete." order note. Re-sent the *identical* signed request a second
+    time: a real second `200 OK`, and `wp eval` confirmed the order note
+    count and the `_moneropay_cloud_applied_webhook_event_ids` meta were
+    both unchanged by the redelivery - real, HTTP-level confirmation of the
+    dedupe, not just the PHPUnit mock of it. Sent once more with no
+    signature header at all: a real `401`. `tmp-smoke-setup.php` deleted
+    afterward, never committed (confirmed via `git status`).
+  - **A real, load-bearing side effect of standing up wp-env for this
+    step, worth flagging explicitly**: `wp-env`'s own instance hash is
+    derived from the plugin directory's *basename* (`moneropay-cloud`),
+    not its full absolute path - confirmed by observation, not just
+    inferred: running `wp-env start` from this worktree's own
+    `plugins/moneropay-cloud/` reused the *exact same* Docker container
+    names (`wp-env-moneropay-cloud-9652ae59-*`) that were already running
+    before this session touched anything, and `docker inspect` afterward
+    showed those containers' plugin bind-mount had been *repointed* from
+    wherever they were mounted before to this worktree's own
+    `plugins/moneropay-cloud` path. No file in `/home/henry/Downloads/
+    mokulo` (the separate, uncommitted main checkout this session was told
+    never to write to) was touched by this - only ephemeral local Docker
+    state, which `wp-env start` already recreates idempotently on every
+    invocation regardless - but if that main checkout also has a
+    `plugins/moneropay-cloud/` directory (it does, per this project's own
+    fixed layout) and anyone was mid-session there relying on `wp-env run`
+    resolving to *that* checkout's own files, this session's `wp-env
+    start` silently repointed the shared instance away from it. Fully
+    recoverable with no data loss (re-running `wp-env start` from that
+    other checkout's own `plugins/moneropay-cloud/` repoints the same
+    named containers right back - the underlying WordPress/MySQL Docker
+    volumes are the same shared instance throughout, only which host
+    directory is bind-mounted as the plugin source changes), but flagged
+    here explicitly rather than silently, since it's exactly the kind of
+    cross-worktree interaction this session's own brief was careful to
+    warn against in the other direction (never *writing* to that checkout)
+    without anticipating this specific `wp-env` naming collision. Also
+    worth noting for a future step: the ports this session's own instance
+    ended up on (`8890`/`8891`, via `wp-env start --auto-port`) differ from
+    the `8888`/`8889` prior sessions' own notes describe, purely because
+    this session's first (misconfigured, run from the wrong directory)
+    `wp-env start` attempt collided with the already-running instance on
+    the default ports before the directory mistake was caught and fixed.
+  - **The full live stagenet e2e test named in this step's own brief
+    ("one full `wp-env` + stagenet e2e test mirroring 1.4.5") - not
+    attempted, per this step's own explicit permission to stop short of it
+    given the infrastructure lift**: this step's real-HTTP smoke test above
+    already goes further than a purely mocked suite in validating the one
+    genuinely novel mechanism this step relies on (the `woocommerce_api_{id}`
+    dispatch), but a true stagenet e2e - a real, funded stagenet wallet, a
+    real running stagenet Monero node, a real engine instance actually
+    *scanning* that chain (not the `[monero_node.stagenet]`
+    deliberately-unreachable placeholder WBS 1.5.2's own live test used,
+    since order *creation* never dials the node but a real scan tick
+    absolutely does), a real transaction broadcast and confirmed on-chain,
+    and minutes of real wall-clock wait for confirmations to accumulate -
+    is a substantially larger lift than this step alone should stand up
+    from scratch, exactly the same judgment call WBS 1.5.2/1.5.3 already
+    made about their own largest live-integration asks. **What a future
+    attempt would need, concretely**: (1) a funded stagenet wallet - stagenet
+    XMR from a public faucet, and enough of it, and enough real confirmation
+    wait time, to actually observe `pending -> confirming -> paid`
+    transitions for real; (2) a real stagenet daemon reachable from the
+    engine (a public stagenet node, or a locally-run one - `e2e/
+    moneropay-stagenet.toml`'s own existing config is the starting point,
+    not something this step read in depth); (3) the engine run for real
+    (not the host-`curl`-then-container trick WBS 1.5.2's own live test
+    used to dodge starting a real scanner loop - this test specifically
+    needs the scanner loop actually running and actually finding the real
+    transaction); (4) a real webhook registered pointing at this plugin's
+    real receiver, reachable from wherever the engine runs (the same
+    `host.docker.internal`/`ufw` container-networking question WBS 1.5.2's
+    own entry already solved once, likely needing the identical
+    container-on-wp-env-network workaround again); (5) a PHPUnit test
+    (mirroring `LiveEngineIntegrationTest.php`'s own `@group live-engine`/
+    gitignored-local-config pattern) that places a real order through this
+    gateway, waits for the real chain to confirm it, and asserts the real
+    WC order status ends up `processing`/`completed` - not a webhook this
+    test fabricates itself, since the entire point is proving the real
+    engine's real delivery worker and this plugin's real receiver agree.
+  - **The real, observed test run**: `NODE_OPTIONS='--no-network-family-
+    autoselection' npx @wordpress/env run tests-cli --env-cwd=wp-content/
+    plugins/moneropay-cloud vendor/bin/phpunit --testdox` (via `newgrp
+    docker -c "..."`, per this environment's own docker-group quirk; run
+    from inside `plugins/moneropay-cloud/` itself this time, matching a
+    real gotcha hit and fixed this session - see the `wp-env` hash note
+    above for why running it from the repo root instead produces a
+    *different*, wrongly-configured instance with nothing mounted where
+    the tests expect) ->
+    ```
+    PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
+
+    Connect Flow
+     ✔ Connect button links to the real connect start url with a stored nonce
+     ✔ Process connect return saves settings and enables the gateway on success
+     ✔ Process connect return does not save or enable on a failed finish call
+     ✔ Process connect return rejects a mismatched nonce without calling finish
+     ✔ Process connect return rejects reusing the same nonce twice
+     ✔ Process connect return rejects missing token or nonce
+
+    Gateway Registration
+     ✔ Gateway is registered with woocommerce
+     ✔ Gateway is disabled by default
+
+    Process Payment
+     ✔ Process payment sends expected request and returns engine redirect
+     ✔ Process payment throws when gateway is not configured
+     ✔ Process payment throws when engine returns non 200
+     ✔ Process payment throws when the engine is unreachable
+
+    Webhook Receiver
+     ✔ Correctly signed known event returns 200 and processes it
+     ✔ Missing signature is rejected and the order is left untouched
+     ✔ Invalid signature is rejected and the order is left untouched
+     ✔ Signature valid under a different secret is rejected
+     ✔ Correctly signed but malformed body is rejected as bad request
+     ✔ Correctly signed body missing required envelope fields is rejected as bad request
+     ✔ Unknown payment id is rejected cleanly as not found with no fatal
+     ✔ A repeated event id is skipped and not double processed
+     ✔ Two different events for the same order are both applied
+
+    Webhook Signature
+     ✔ Php hmac matches the known vector from shared webhook sign rs
+     ✔ Verification rejects a tampered payload
+     ✔ Verification rejects the wrong secret
+     ✔ Verification rejects a missing signature
+     ✔ Verification rejects when no secret is configured
+
+    Webhook Status Mapping
+     ✔ Status mapping with data set "order.pending -> pending"
+     ✔ Status mapping with data set "order.unconfirmed -> on-hold"
+     ✔ Status mapping with data set "order.confirming -> on-hold"
+     ✔ Status mapping with data set "order.partial -> on-hold"
+     ✔ Status mapping with data set "order.paid -> processing/completed"
+     ✔ Status mapping with data set "order.overpaid -> processing/completed"
+     ✔ Status mapping with data set "order.expired -> cancelled"
+     ✔ Order pending after a double spend void wipes out the only payment is a real reachable regression
+     ✔ Overpaid adds an explicit manual refund note beyond the payment complete note
+     ✔ Expired note explains manual handling is required for any partial funds
+     ✔ Double spend detected adds a prominent note without changing status by itself
+     ✔ Double spend reversed adds a note with the txid without changing status by itself
+
+    Time: 00:00.978, Memory: 93.00 MB
+
+    OK (38 tests, 112 assertions)
+    ```
+    Re-run without `--testdox` for a second, independent confirmation:
+    `OK (38 tests, 112 assertions)`, identical count both times.
+    `Live Engine Integration` (WBS 1.5.2's `@group live-engine` test)
+    correctly excluded from both runs by `phpunit.xml.dist`'s existing
+    group exclusion - not run this session (no live engine was started).
+  - **Files touched**: `plugins/moneropay-cloud/includes/
+    class-wc-gateway-moneropay.php` (five new class constants -
+    `META_PAYMENT_ID`, `META_APPLIED_EVENT_IDS`,
+    `WEBHOOK_SIGNATURE_SERVER_KEY`, `STATUS_MAP` - the
+    `$webhook_signing_secret` property, the `add_action( 'woocommerce_api_'
+    . $this->id, ... )` registration, and `handle_webhook()`/
+    `process_webhook_request()`/`verify_webhook_signature()`/
+    `find_order_by_payment_id()`/`event_already_applied()`/
+    `mark_event_applied()`/`apply_webhook_event()`/
+    `apply_order_status_event()`; `process_payment()`'s existing
+    `update_meta_data()` call switched to the new `META_PAYMENT_ID`
+    constant instead of its original inline literal, so the two now-real
+    call sites - the writer and this step's new reader - can't silently
+    drift), new `plugins/moneropay-cloud/tests/
+    {WebhookSignatureTest.php,WebhookStatusMappingTest.php,
+    WebhookReceiverTest.php}`. No engine-side or control-plane-side (Rust)
+    file touched - this step only ever *verifies against* `shared/src/
+    webhook_sign.rs`'s existing, already-shipped signing scheme and *reads*
+    `src/scanner.rs`/`src/status.rs`'s existing, already-shipped event
+    catalog, exactly like every prior Track A step's relationship to the
+    engine.
+  - **Worth the orchestrator's own second look**: (1) the `on-hold`-for-
+    both-double-spend-events design decision above - it's a real,
+    deliberate departure from the brief's own suggested "failed or
+    on-hold" framing for `double_spend_detected` specifically (no status
+    change *at all*, not even `on-hold`), reasoned from `scanner.rs`'s real
+    transactional ordering rather than picked from the brief's two
+    suggested options; worth a second read given it's the one place this
+    step's own judgment most visibly diverged from its brief's own
+    starting suggestion. (2) The `wp-env` container-bind-mount-collision
+    finding above, in case the main checkout at `/home/henry/Downloads/
+    mokulo` needs its own `wp-env start` re-run to point back at its own
+    files. (3) The live stagenet e2e test remains genuinely unbuilt, per
+    the explicit scope call above - if beta-readiness needs it before this
+    session's own real-HTTP smoke test is considered sufficient, that's a
+    separate, larger piece of work.
+
+- WBS 1.5.3 done: the real one-click "Connect your Monero wallet" flow,
+  ported from `control-plane/src/http/connect.rs`'s own protocol (read
+  directly, including its module doc comment, before writing any of this)
+  into `WC_Gateway_MoneroPay`'s settings screen - replacing WBS 1.5.2's
+  manual `endpoint`/`public_key` paste-in with a real browser redirect out
+  to the control plane and a real server-to-server `/finish` call back,
+  writing into those exact same two option keys (never a second, parallel
+  pair - 1.5.2's own entry already flagged this as the intent).
+  - **Four real decisions, made deliberately, each documented on the actual
+    code, not just here**:
+    1. **Control-plane base URL: a class constant with a placeholder value,
+       filterable.** `WC_Gateway_MoneroPay::CONTROL_PLANE_BASE_URL =
+       'https://cloud.moneropay.example'` - checked `docs/WOOCOMMERCE_
+       ROADMAP.md` and this file directly first and confirmed neither names
+       a real production domain yet, so the value is lifted verbatim from
+       the roadmap doc's own Stage 6 illustrative URL, specifically because
+       `.example` is the IANA-reserved (RFC 2606), can-never-resolve TLD -
+       an obvious placeholder, not something that could later be mistaken
+       for a real address. A constant, not a settings field, because the
+       roadmap doc's own framing throughout ("we, not each individual
+       merchant, run the infrastructure") means there is exactly one control
+       plane for the hosted product this plugin is for - asking a merchant
+       to type in *which control plane* would be asking them to configure
+       something that, unlike the engine's own `endpoint`, never varies per
+       merchant. Wrapped in an `apply_filters( 'moneropay_cloud_control_
+       plane_base_url', ... )` getter anyway, for two concrete reasons, not
+       just "filters are good practice": it's what let this step's own test
+       suite (`tests/ConnectFlowTest.php`) point the whole flow at a fake
+       control plane without needing to also fake `wp_remote_post()`'s
+       target-URL matching, and it's a real, sanctioned escape hatch for
+       anyone self-hosting their own control-plane instance later.
+    2. **`secret_token`: stored now, as a new settings field, even though
+       nothing in this plugin reads it back yet.** `docs/WOOCOMMERCE_
+       ROADMAP.md`'s own Stage 7 text settles this explicitly, not just this
+       session's own judgment: "Store `pk_`/`sk_`/`endpoint` in WooCommerce's
+       own gateway settings" - all three, by name. Beyond that: discarding it
+       would be a real, not theoretical, loss - `consume_connect_token`
+       redeems the connect token exactly once (confirmed directly,
+       `connect.rs`'s own atomicity doc comment), so a `secret_token` not
+       saved the one time it's ever handed over is gone until the merchant
+       reconnects from scratch. A future step needing authenticated
+       admin-API access (webhook management, refunds - anything behind
+       `AuthedTenant`) would otherwise force every already-connected
+       merchant back through the whole browser-redirect flow just to get
+       back a value this plugin already had in hand once. Exposed as a real,
+       masked (`type => 'password'`) settings field, same as `endpoint`/
+       `public_key`, so a self-hoster can also paste one in by hand - not
+       because any code path here reads it.
+    3. **`webhook_url`: sent on every `/finish` call, deliberately, even
+       though this plugin has no webhook-receiving route yet** (that's WBS
+       1.5.4 entirely). Resolved by actually checking what "1.4.2's
+       already-proven logic" (the WBS's own words for what 1.5.3 should
+       mirror) really does: `mock-woocommerce/src/lib.rs::
+       run_connect_flow_with`, read directly, *always* spawns a webhook
+       receiver and registers it as part of the very same connect flow -
+       there is no "connect without a webhook" variant of the already-proven
+       protocol to mirror instead, so omitting it here would be porting a
+       flow this codebase's own mock never actually exercises. Confirmed
+       safe to do before 1.5.4 exists by reading `src/http/admin.rs::
+       create_webhook` directly: registration only validates the URL's
+       scheme (http/https), never reachability (SSRF checking is explicitly
+       deferred to delivery time) - so a webhook pointed at a route nothing
+       yet answers registers fine; deliveries against it just fail (and
+       retry, per the engine's own delivery-worker policy) until 1.5.4 lands.
+       The URL itself is `WC()->api_request_url( $this->id )` - WooCommerce's
+       own real, documented mechanism for a plugin's `woocommerce_api_{id}`
+       endpoint (confirmed directly, `class-woocommerce.php::
+       api_request_url()`), so it's already the exact URL 1.5.4's receiver
+       will need to answer on, not a placeholder that step will have to
+       change. The returned `webhook_signing_secret` is saved the same way
+       `secret_token` is (see decision 2) - via a plain `update_option()`
+       call outside `$this->form_fields` entirely (confirmed `WC_Settings_
+       API::update_option()`/`get_option()` both work by plain string key
+       regardless of whether it's declared in `form_fields` - read directly,
+       not assumed), never rendered as an editable field, since a merchant
+       has no legitimate way to independently know that value by hand.
+    4. **Callback mechanism: a dedicated `admin-post.php?action=...`
+       handler**, reasoned from WordPress core's own documented `admin_post_
+       {action}` mechanism directly (no live fetch access to Stripe's/
+       PayPal's own plugin source in this environment, per this step's own
+       brief) rather than invented fresh. Two real alternatives were
+       considered and rejected, both documented on `get_connect_return_url()`
+       's own doc comment: a query-var check on the settings-page render
+       itself (rejected - it would make a single-use-token-redeeming side
+       effect an incidental part of *rendering a page*, which can happen
+       more than once in ways a dedicated action handler isn't); a REST API
+       route (rejected only as more machinery than this step needs - a new
+       namespace/permission callback for a URL only this site's own
+       logged-in browser session ever has to recognize).
+  - **What actually got built**: `WC_Gateway_MoneroPay::generate_
+    moneropay_connect_html()` - a genuinely custom `WC_Settings_API` field
+    type (`'moneropay_connect'`, confirmed the `generate_{type}_html`
+    dispatch mechanism by reading `abstract-wc-settings-api.php::
+    generate_settings_html()` directly rather than assumed), not a reuse of
+    the built-in `'title'` type (whose own `generate_title_html()` renders
+    fixed static markup - this field has to build a real `<a href>` fresh on
+    every render: a new nonce, a new stored transient, text that changes
+    based on whether a wallet is already connected). Mints the nonce **only
+    when this specific settings screen is actually rendered**, deliberately
+    not in the constructor (which runs on nearly every front-end/admin
+    request via `WC_Payment_Gateways::init()` on `woocommerce_init` -
+    generating a nonce there would routinely invalidate an in-flight connect
+    attempt via an unrelated page load). `handle_connect_return()` (the real
+    `admin_post_moneropay_cloud_connect_return` handler, guarded by
+    `current_user_can( 'manage_woocommerce' )` since `admin_post_{action}`
+    fires for any logged-in user regardless of role) is kept to two lines -
+    `wp_die()`-guard, then call `process_connect_return()` and `wp_safe_
+    redirect()` + `exit` - specifically so the real logic (nonce check via
+    `hash_equals()` against a `set_transient()`/`get_transient()`-stored
+    value with a 10-minute TTL matching `connect.rs`'s own `CONNECT_TOKEN_
+    TTL_SECONDS` exactly, the `/finish` call, saving settings, enabling the
+    gateway) lives in `process_connect_return()`, callable directly from a
+    test with no `exit` in the way - the same reason `process_payment()`
+    delegates to `create_engine_order()` rather than doing the HTTP call
+    inline. On any failure (nonce mismatch, missing token/nonce, a failed
+    `/finish` call) no setting is touched at all - an already-connected
+    merchant's failed *re*-connect attempt keeps whatever credentials it had
+    before. On success, `enabled` is explicitly set to `'yes'` -
+    `process_connect_return()`'s own doc comment quotes the WBS's exact
+    words for why this isn't left for the merchant to separately toggle.
+    `maybe_render_connect_notice()` flashes a one-line success/error notice
+    on the settings screen after the redirect back, via a plain query-string
+    flag (`build_settings_url()`) read on the next page load - the same
+    "flag in the redirect target" pattern real WordPress admin screens use
+    for a state-changing action followed by a redirect, since `WC_Admin_
+    Settings::add_error()` only works within the single request that renders
+    the settings form and has no mechanism to carry a message across the
+    separate `admin-post.php` request this callback is.
+  - **A real bug caught before it ever ran in production, by actually
+    rendering the field rather than only unit-testing it directly**:
+    `generate_moneropay_connect_html()`'s own `get_description_html( $data )`
+    call (inherited from `WC_Settings_API`) unconditionally indexes
+    `$data['desc_tip']` - but this field's own `init_form_fields()` entry
+    only ever sets `type`/`description`, so a real render (`generate_
+    settings_html()` calling this method with that literal array) would hit
+    a PHP 8.1+ undefined-array-key warning on every single load of this
+    settings screen. Missed entirely by the mocked PHPUnit tests, which (like
+    `generate_text_html()` itself does, confirmed by reading it directly)
+    call this method with whatever array a test happens to construct - only
+    caught by a real smoke check that fetched `$gateway->get_form_fields()
+    ['connect']` and rendered `admin_options()` for real against a running
+    dev WordPress instance (see below). Fixed with a `wp_parse_args()` call
+    at the top of the method, mirroring `generate_text_html()`'s own
+    defaults-filling pattern exactly.
+  - **Testing - the mocked suite, the WBS's own stated bar**:
+    `tests/ConnectFlowTest.php` (6 tests, same `pre_http_request` mocking
+    technique `tests/ProcessPaymentTest.php` already established - read that
+    file's own class doc comment first). Deliberately drives the button and
+    the callback *together*, not independently: `render_connect_button_and_
+    capture_nonce()` actually calls `generate_moneropay_connect_html()` with
+    the gateway's own real field data and regex-extracts the nonce from the
+    rendered `href`, so every test proves the button's own emitted nonce and
+    `process_connect_return()`'s own stored-nonce check genuinely agree,
+    rather than the test independently fabricating a nonce value on both
+    sides and only ever proving the comparison logic in isolation. Covers,
+    per this step's own acceptance bar: the success path (settings saved
+    with the mocked response's real values including `secret_token`/
+    `webhook_signing_secret`, `enabled` becomes `'yes'`, `is_available()`
+    becomes `true`, and the actual outbound `/finish` request body - `token`
+    and `webhook_url` - asserted against `WC()->api_request_url(
+    'moneropay_cloud')` directly); a failed `/finish` call (401) leaving a
+    pre-seeded "already connected" baseline completely untouched, not just
+    an empty install staying empty; a mismatched nonce rejected *before*
+    `/finish` is ever called (asserted by `$this->captured_request` staying
+    `null`, not just by the redirect URL's own error flag); reusing an
+    already-consumed nonce a second time failing identically to one that
+    never existed (proving the transient is genuinely single-use, not just
+    single-check); and a missing `token`/`nonce` entirely.
+  - **Beyond the mocked suite - a real smoke check against a real running
+    dev WordPress/WooCommerce instance, not a live-control-plane e2e test**:
+    used `wp eval-file` against the same dev `wp-env` instance (`http://
+    localhost:8888`, separate from the PHPUnit-only `tests-cli` instance) to
+    `wp_set_current_user()` as the real admin, fetch the real registered
+    gateway from `WC()->payment_gateways()->payment_gateways()`, and call its
+    real `admin_options()` - genuinely exercising WooCommerce's real
+    field-type dispatch path end to end (this is what caught the
+    `desc_tip` bug above), then fed the real extracted nonce through
+    `process_connect_return()` with the same `pre_http_request` short-circuit
+    technique (no real control plane running, so this is still not a full
+    live round trip - see below). Real, observed output included the actual
+    rendered connect URL (`https://cloud.moneropay.example/connect/
+    woocommerce?...`), the actual outbound `/finish` request WooCommerce's
+    real HTTP layer built (`{"token":"conn_smoke_test","webhook_url":
+    "http:\/\/localhost:8888\/wc-api\/moneropay_cloud\/"}`), and the real
+    redirect (`http://localhost:8888/wp-admin/admin.php?page=wc-settings&
+    tab=checkout&section=moneropay_cloud&moneropay_cloud_connected=1`) with
+    settings genuinely persisted and re-readable from a fresh gateway
+    instance afterward. Deleted (`tmp-smoke-check.php`, never committed) once
+    it had served its purpose - not a permanent test file, since `tests/
+    ConnectFlowTest.php` already covers the same ground hermetically and
+    repeatably.
+  - **The full live/e2e round trip (control plane + engine + this plugin) -
+    attempted only as far as reasoning about scope, not built, per this
+    step's own brief treating it as a stretch goal, not the acceptance bar**:
+    WBS 1.5.2's own live test already needed one real extra service (the
+    engine) and a real, machine-specific networking workaround (`ufw`
+    blocking `host.docker.internal`, worked around by running the engine as
+    a container on wp-env's own Docker network - see that entry above). A
+    full 1.5.3 live test needs *two* extra real services - the engine
+    *and* a real running `control-plane` binary in front of it, both
+    reachable from inside wp-env's containers - plus a real user
+    signup/login round trip through the control plane's own dashboard HTML
+    forms (`control-plane/src/http/connect.rs`'s own `#[cfg(test)]` module
+    already proves this whole thing works via `tower::ServiceExt::oneshot`
+    against an in-process router, but a real `wp-env`-reachable instance
+    needs a real bound TCP listener, a real SQLite file, and a real
+    `AppState` wired the way `control-plane/src/main.rs` builds one for real
+    - not inspected in depth this session, so the exact config surface
+    needed to boot the same way `moneropay-core`'s own `main.rs` does isn't
+    yet confirmed). Given 1.5.2's own single-engine live test already
+    consumed real, non-trivial effort (a firewall root-cause investigation,
+    a glibc-compatibility problem, a from-scratch minimal config) and this
+    step's mocked suite plus the real-dev-instance smoke check above already
+    cover every behavior this step's own PHP code owns (the nonce check, the
+    settings save, the enable-on-success), the judgment call here was to
+    stop short of standing up a second real service rather than let this one
+    step's scope balloon into re-deriving 1.5.2's entire live-infrastructure
+    investigation a second time, on top of a new one. **What a future
+    attempt would need**: (1) confirm how `control-plane/src/main.rs` wants
+    to be configured/started for real (DB path, `encryption_key`, bind
+    address - by analogy with `moneropay-core`'s own `main.rs`, not yet
+    read directly this session); (2) a real running engine, exactly as
+    WBS 1.5.2's own entry already solved (same container-on-wp-env-network
+    approach); (3) the control plane pointed at that real engine's real
+    address; (4) a PHPUnit test (mirroring `LiveEngineIntegrationTest.php`'s
+    own `@group live-engine`/gitignored-local-config pattern) that drives
+    the *real* `GET /connect/woocommerce` URL via `wp_remote_get` with
+    manual cookie-jar handling to simulate the signup/login/confirm-form
+    steps `connect.rs`'s own `#[cfg(test)]` module already does with
+    `tower::ServiceExt`, then feeds the real `token`/`nonce` it gets back
+    into this gateway's real `process_connect_return()`.
+  - **Files touched**: `plugins/moneropay-cloud/includes/
+    class-wc-gateway-moneropay.php` (three new class constants, the
+    `$secret_token` property, three new settings fields - `connect`/
+    `secret_token`, plus updated descriptions on `connection`/`endpoint`/
+    `public_key` - the `has_credentials()` refactor of `is_available()`, and
+    everything described above: `get_control_plane_base_url()`,
+    `get_connect_return_url()`, `connect_nonce_transient_key()`,
+    `build_connect_start_url()`, `generate_moneropay_connect_html()`,
+    `validate_moneropay_connect_field()`, `handle_connect_return()`,
+    `process_connect_return()`, `call_connect_finish()`,
+    `get_webhook_receiver_url()`, `build_settings_url()`,
+    `maybe_render_connect_notice()`), new `plugins/moneropay-cloud/tests/
+    ConnectFlowTest.php`. No engine-side or control-plane-side (Rust) file
+    touched - this step only ever *calls* `connect.rs`'s existing,
+    already-shipped protocol.
+  - **The real, observed test run**: `NODE_OPTIONS='--no-network-family-
+    autoselection' npx @wordpress/env run tests-cli --env-cwd=wp-content/
+    plugins/moneropay-cloud vendor/bin/phpunit --testdox` (via `newgrp docker
+    -c "..."`, per this environment's own docker-group quirk) ->
+    ```
+    PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
+
+    Connect Flow
+     ✔ Connect button links to the real connect start url with a stored nonce
+     ✔ Process connect return saves settings and enables the gateway on success
+     ✔ Process connect return does not save or enable on a failed finish call
+     ✔ Process connect return rejects a mismatched nonce without calling finish
+     ✔ Process connect return rejects reusing the same nonce twice
+     ✔ Process connect return rejects missing token or nonce
+
+    Gateway Registration
+     ✔ Gateway is registered with woocommerce
+     ✔ Gateway is disabled by default
+
+    Process Payment
+     ✔ Process payment sends expected request and returns engine redirect
+     ✔ Process payment throws when gateway is not configured
+     ✔ Process payment throws when engine returns non 200
+     ✔ Process payment throws when the engine is unreachable
+
+    Time: 00:00.119, Memory: 89.00 MB
+
+    OK (12 tests, 61 assertions)
+    ```
+    Re-run without `--testdox` for a second, independent confirmation:
+    `OK (12 tests, 61 assertions)`, identical count both times. `Live
+    Engine Integration` (WBS 1.5.2's `@group live-engine` test) correctly
+    excluded from both runs by `phpunit.xml.dist`'s existing group
+    exclusion - not run this session (no live engine was started), and not
+    expected to be affected by anything touched here regardless.
+  - **Not done / explicitly out of scope, matching this step's own stated
+    boundary**: the webhook receiver itself and any HMAC verification
+    (WBS 1.5.4 - `webhook_signing_secret` is stored, unread, exactly like
+    `secret_token`); the full live control-plane+engine e2e round trip (see
+    above); a "Disconnect"/credential-clearing UI (not asked for, and the
+    manual `endpoint`/`public_key`/`secret_token` fields already let a
+    merchant overwrite or blank them by hand); any change to
+    `process_payment()`/`create_engine_order()` themselves (unchanged from
+    1.5.2 - this step only ever changes *how* the settings they read get
+    populated, never how they're read).
+
+- WBS 1.5.2 done: `WC_Gateway_MoneroPay::process_payment( $order_id )` - placing
+  a real WooCommerce order with this gateway selected now calls the real
+  engine's `POST /api/v1/t/{pk}/orders` and returns the `redirect` WooCommerce
+  needs to send the customer to the engine's own real
+  `/pay/v1/{pk}/{payment_id}` checkout page. Read WooCommerce's real installed
+  source directly before writing anything, not just its doc comments: `WC_
+  Payment_Gateway::process_payment()`'s own doc comment
+  (`includes/abstracts/abstract-wc-payment-gateway.php`), `WC_Gateway_BACS`/
+  `WC_Gateway_COD`'s own implementations (`includes/gateways/{bacs,cod}/
+  class-wc-gateway-{bacs,cod}.php`), and `WC_Checkout::process_order_payment()`
+  / `process_checkout()` (`includes/class-wc-checkout.php`) for exactly what
+  happens to the returned array and to a thrown `Exception` - all three
+  findings are documented in `process_payment()`'s own doc comment, not just
+  here, since a future reader of that method shouldn't have to come back to
+  this log to find them again.
+  - **The settings-field gap, and the naming decision**: `process_payment()`
+    needs an engine base URL and a tenant public key, and 1.5.1 left nothing
+    but `enabled`/`title`/`description`. Added exactly two new plain text
+    settings fields - `endpoint` and `public_key` - named to match
+    `mock-woocommerce/src/lib.rs`'s own `ConnectedCredentials` struct field
+    names verbatim (checked directly, not from memory), since that struct is
+    what a real WBS 1.5.3 connect-flow callback will eventually have in hand
+    and write back into these same two option keys - so 1.5.3 never has to
+    rename anything here, just start writing to it programmatically instead of
+    a merchant pasting it in by hand. No third field for a secret key: `POST
+    /api/v1/t/{pk}/orders` is a public endpoint (confirmed directly against
+    `src/http/public.rs::create_order` and its route registration in
+    `src/http/mod.rs` before writing this, exactly as the brief said) - order
+    creation only ever needs the public key in the URL path. Both the "why
+    these two fields, why now" and "why these exact names" reasoning live on
+    `WC_Gateway_MoneroPay::$api_base_url`'s own doc comment, not just here.
+    Also added `is_available()` override (enabled *and* both fields
+    non-empty) - the same "don't offer what you can't honor" principle 1.5.1's
+    own disabled-by-default default already established, applied to the one
+    new failure mode this step introduces (an enabled-but-unconfigured
+    gateway would otherwise throw on a real customer's first attempt).
+  - **Failure signaling, resolved against WooCommerce's real source, not
+    guessed**: neither bundled gateway (`BACS`/`COD`) ever fails, so neither
+    demonstrates the failure path directly - but `WC_Checkout::
+    process_checkout()`, read directly, calls `process_order_payment()` (and
+    therefore this gateway's `process_payment()`) from inside its own
+    top-level `try { ... } catch ( Exception $e ) { wc_add_notice(
+    $e->getMessage(), 'error' ); }`. So every failure branch in
+    `create_engine_order()` (unconfigured gateway, `wp_remote_post()`
+    returning a `WP_Error`, a non-200 engine response, a response missing
+    `payment_id`) throws a plain `Exception` with a customer-safe message,
+    never the raw engine/HTTP error text (that's logged instead, via a small
+    `wc_get_logger()` wrapper, for the merchant to actually diagnose) - `wc_
+    add_notice()`/checkout re-render is WooCommerce's own real mechanism for
+    this, not a bespoke `'result' => 'fail'` shape this gateway invented.
+  - **Deliberately does not mark the order paid or change its status** -
+    `$order->payment_complete()` is never called here. The order WooCommerce
+    just created is already `pending`/awaiting payment, and it stays exactly
+    that until a real payment is actually observed on-chain (WBS 1.5.4's job,
+    not built here). `process_payment()` does record the engine's own
+    `payment_id` as order meta (`_moneropay_cloud_payment_id`) plus an order
+    note, though - the one point in this whole flow that ever sees the
+    WC-order/engine-order mapping, and 1.5.4's webhook receiver will need
+    exactly that lookup later. Nothing here *consumes* that meta key - no
+    webhook receiver exists yet - just not thrown away.
+  - **`fiat_amount` as a plain two-decimal-place decimal string**
+    (`number_format( (float) $order->get_total(), 2, '.', '' )`, never a
+    locale-formatted `(string) $order->get_total()`), matched against the real
+    parser it has to satisfy: read `src/exchange_rate.rs::compute_xmr_amount`
+    directly and confirmed it rejects more than two decimal places, thousands
+    separators, and scientific notation.
+  - **The mocked-HTTP unit test** (`tests/ProcessPaymentTest.php`, 5 tests):
+    uses WordPress's own real short-circuit mechanism, the `pre_http_request`
+    filter (`wp-includes/class-http.php::WP_Http::request()`, read directly -
+    confirmed it returns whatever the filter returns, verbatim, before ever
+    touching the network), not a hand-rolled mock object - WordPress's HTTP
+    API is procedural, there's no client to inject. Builds a real, saved
+    `WC_Order` via WooCommerce's own `wc_create_order()`, asserts the *exact*
+    request `process_payment()` sent (URL, method, `Content-Type`, and the
+    full decoded JSON body - `fiat_amount`, `fiat_currency`,
+    `merchant_order_id`), and the exact `/pay/v1/{pk}/{payment_id}` redirect
+    shape using the canned response's own `payment_id`. Plus three negative
+    tests (unconfigured gateway, non-200 engine response, `WP_Error`
+    transport failure) proving `create_engine_order()`'s failure branches are
+    real, exercised behavior, not just comments describing intent.
+  - **The live integration test - the genuinely hard part, and a real,
+    machine-specific networking obstacle actually hit, not assumed away**:
+    `tests/LiveEngineIntegrationTest.php`, tagged `@group live-engine` and
+    excluded from the default run in `phpunit.xml.dist` (identical reasoning
+    to `tests/e2e_stagenet.rs`'s own `#[ignore]` convention on the Rust side -
+    a real network/process dependency the default hermetic run must never
+    silently acquire), run explicitly with `--group live-engine`.
+    - Built the real engine: `cargo build --release` from the repo root,
+      clean build, `target/release/moneropay-core`.
+    - A minimal config (`/tmp/moneropay-engine-test/config.toml`, not
+      committed - scratch state for this session) bootstraps one real
+      self-hosted tenant via the existing `[wallet]` path in `main.rs`
+      (reusing the exact same test view/spend key pair
+      `e2e/moneropay-stagenet.toml` already uses - not secret, not funded,
+      just real key material so `WalletMaterial::from_hex`/`KeyCustody::seal`
+      succeed), `[exchange_rate] provider = "fixed"` with a `USD` rate (no
+      live network needed), and a placeholder, deliberately-unreachable
+      `[monero_node.stagenet]` entry - `Config::validate()` requires at least
+      one `monero_node` entry and the wallet's network to match one, but
+      order creation itself never dials it (confirmed for real: the engine
+      boots and serves orders fine with the scanner loop failing/retrying
+      forever in the background against a closed local port, exactly the
+      failover behavior `daemon_fallback.rs` already documents). Boot log
+      really did print `bootstrapped self-hosted tenant:
+      public_key=pk_f7c59419dc4c50fcfe98ed28ebcb5d43ca3adecf54757d84` -
+      confirmed order creation worked from the host with a plain `curl`
+      before ever touching wp-env.
+    - **The container-to-host networking question, actually investigated, not
+      assumed**: read wp-env's own generated `docker-compose.yml` directly
+      (`~/.wp-env/<instance>/docker-compose.yml`, the same file 1.5.1's own
+      entry already learned to check) and found it already sets `extra_hosts:
+      ['host.docker.internal:host-gateway']` on every one of its containers -
+      so `host.docker.internal` genuinely does resolve inside `tests-cli` on
+      this plain-Linux-Docker host (`getent hosts` confirmed it - Docker
+      bridge gateway IP, not Docker Desktop magic), unlike the brief's own
+      caution that this isn't a given. It just didn't help here: a `curl`
+      from *inside* `tests-cli` to the engine (bound to `0.0.0.0:8180`) at
+      that same IP genuinely timed out (`exit 7`), even though the identical
+      `curl` from the *host itself* to that same bridge-gateway IP:port
+      worked fine (`HTTP 415`, meaning the engine really received it) -
+      root-caused to `ufw` being `active` on this host
+      (`systemctl is-active ufw`) and Docker's well-documented interaction
+      with it: a container reaching *out* to a host-bound port crosses the
+      host's own `INPUT` chain, which `ufw`'s default-deny policy blocks,
+      while a host-local process never crosses that boundary at all. No
+      passwordless `sudo` was available to add a `ufw`/`DOCKER-USER` allow
+      rule, and a system-wide firewall change felt out of scope for what one
+      WBS step should be doing to someone's machine, so this wasn't forced
+      through - flagged explicitly in case a future reader has root and wants
+      the simpler path.
+    - **What actually worked, verified end-to-end, not just reasoned about**:
+      running the engine as a *container* on wp-env's own Docker network
+      instead, reached by container name - container-to-container traffic on
+      the same user-defined bridge network never crosses the host's `ufw`
+      `INPUT` chain at all. `docker inspect` on the running `tests-cli`
+      container gave the real network name
+      (`wp-env-moneropay-cloud-9652ae59_default`, this specific wp-env
+      instance's own project-scoped network - it changes if the instance hash
+      changes). The compiled binary needed a container base with a
+      compatible-or-newer glibc, since it was built against this build host's
+      own (very new - 2.44, a rolling-release distro) glibc and a container
+      with an older one fails to even exec it - checked, not assumed
+      (`ld-linux-x86-64.so.2 --version` inside `archlinux:latest` matched
+      2.44 exactly, so that's the base image used; a statically-linked musl
+      build would sidestep this entirely but wasn't needed here). Launched
+      with `docker run -d --name moneropay-engine-test --network
+      wp-env-moneropay-cloud-9652ae59_default -v .../target/release/
+      moneropay-core:/moneropay-core:ro -v /tmp/moneropay-engine-test:/cfg -w
+      /cfg archlinux:latest /moneropay-core /cfg/config.toml`, reusing the
+      same bind-mounted config/db directory the host-run instance had already
+      bootstrapped a tenant into (so the container instance skipped
+      bootstrap, idempotently, and reused the same `pk_...` - confirmed by
+      its boot log *not* printing a second "bootstrapped" line). `curl
+      http://moneropay-engine-test:8180/...` from inside `tests-cli`
+      (real command, via `wp-env run tests-cli curl ...`) returned a real
+      `200 OK` with the order-status JSON for the order created earlier via
+      the host `curl` - proof the path works before ever running PHPUnit
+      against it. Full exact commands for both the working path and the
+      `host.docker.internal` path that didn't work here are in
+      `tests/LiveEngineIntegrationTest.php`'s own class doc comment, not just
+      this log.
+    - `tests/live-engine.local.json` (gitignored - see `.gitignore`'s own
+      comment on it: the container name and freshly-bootstrapped `pk_...` are
+      both specific to whichever local Docker setup started the engine, and a
+      fresh DB mints a new `pk_...` every time, so there's nothing stable
+      here for two developers to share) is how the test learns the
+      endpoint/public_key to use, rather than environment variables - checked
+      first and confirmed `wp-env run` shells out to plain `docker compose
+      exec` with no host-env-var passthrough and no `.wp-env.json` mechanism
+      for injecting per-run values, so a file under `tests/` (already
+      bind-mounted into the container) was the direct option, not env
+      plumbing that doesn't exist yet.
+    - **The real, observed test runs** (both via `newgrp docker -c "..."` per
+      this environment's own docker-group quirk, and
+      `NODE_OPTIONS='--no-network-family-autoselection'` before every
+      `wp-env` invocation per 1.5.1's own toolchain note):
+      - Mocked-HTTP suite (now includes `ProcessPaymentTest.php` alongside
+        1.5.1's `GatewayRegistrationTest.php`, `LiveEngineIntegrationTest.php`
+        correctly excluded by its group):
+        `NODE_OPTIONS='--no-network-family-autoselection' npx @wordpress/env
+        run tests-cli --env-cwd=wp-content/plugins/moneropay-cloud
+        vendor/bin/phpunit --testdox` ->
+        ```
+        PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
+
+        Gateway Registration
+         ✔ Gateway is registered with woocommerce
+         ✔ Gateway is disabled by default
+
+        Process Payment
+         ✔ Process payment sends expected request and returns engine redirect
+         ✔ Process payment throws when gateway is not configured
+         ✔ Process payment throws when engine returns non 200
+         ✔ Process payment throws when the engine is unreachable
+
+        Time: 00:00.102, Memory: 89.00 MB
+
+        OK (6 tests, 23 assertions)
+        ```
+      - Live-engine test, against the real container-based engine described
+        above: same command plus `--group live-engine` ->
+        ```
+        PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
+
+        Live Engine Integration
+         ✔ Process payment creates a real engine order and redirects to it
+
+        Time: 00:00.052, Memory: 89.00 MB
+
+        OK (1 test, 12 assertions)
+        ```
+      - Not just trusted: independently queried the engine's own SQLite
+        database directly afterward (`sqlite3 /tmp/moneropay-engine-test/
+        moneropay.db "select id, merchant_order_id, fiat_amount,
+        fiat_currency, status, created_at from orders order by created_at
+        desc limit 5;"`), a *third*, fully independent check beyond the
+        test's own assertions and its own HTTP-status-endpoint cross-check -
+        real output:
+        ```
+        pay_6f4d376b8c7148cb93d9e720d2a0a75a|10|5.00|USD|pending|1789377475
+        pay_0e1e4b4c41514db5840d850fff0ff3ce|host-smoke-test|42.50|USD|pending|1789377076
+        ```
+        (`10` is the real WooCommerce order id `wc_create_order()` assigned
+        during the PHPUnit run; the second row is the earlier host-`curl`
+        smoke test that first proved the engine itself worked, before wp-env
+        was involved at all.)
+      - Torn down afterward (`docker rm -f moneropay-engine-test`, host
+        `moneropay-core` process killed) - nothing was left running. Publishes
+        no port to the host, so it never conflicted with anything; the
+        `tests/live-engine.local.json` left in the tree points at now-stopped
+        infrastructure and needs regenerating (per its own referenced doc
+        comment) before the live-engine group can pass again.
+  - **Files touched**: `plugins/moneropay-cloud/includes/
+    class-wc-gateway-moneropay.php` (the two new settings-field properties,
+    `init_form_fields()` additions, `is_available()` override,
+    `process_payment()`, `create_engine_order()`, and three small private URL/
+    logging helpers), `plugins/moneropay-cloud/phpunit.xml.dist` (the
+    `live-engine` group exclusion), `plugins/moneropay-cloud/.gitignore`
+    (`tests/live-engine.local.json`), new `plugins/moneropay-cloud/tests/
+    {ProcessPaymentTest.php,LiveEngineIntegrationTest.php}`. No engine-side
+    (Rust) file touched - this step only ever *calls* the engine's existing,
+    already-shipped public API.
+  - **Not done / explicitly out of scope, matching this step's own stated
+    boundary**: the real one-click connect flow (WBS 1.5.3 - these two
+    settings fields are explicitly a manual stand-in, documented as such in
+    three places: the field descriptions themselves, `$api_base_url`'s doc
+    comment, and here), the webhook receiver and any consumption of the
+    `_moneropay_cloud_payment_id` meta this step writes (WBS 1.5.4), and any
+    change to the order's WooCommerce status beyond what order creation itself
+    already sets.
+
+- WBS 1.5.1 done: `WC_Gateway_MoneroPay` + a plugin bootstrap file, registering
+  "Monero (via MoneroPay Cloud)" as a (disabled) WooCommerce checkout option -
+  the first PHP/WordPress code in this repo, and the first step of Track A's
+  1.5 (real WooCommerce plugin). This entry is unusually long because getting
+  a working `wp-env`/PHPUnit toolchain running for the first time surfaced
+  several real, hit-not-guessed environment problems worth a future reader
+  not having to rediscover - the plugin code itself, once the toolchain
+  actually worked, was comparatively simple.
+  - **Where it lives, and why not the roadmap's own literal sketch**:
+    `plugins/moneropay-cloud/` - not `plugins/woocommerce/`, the path
+    `docs/WOOCOMMERCE_ROADMAP.md` §3.1's directory sketch used. Checked, not
+    assumed: `.wp-env.json`'s own plugin-source basename derivation (its
+    `parse-source-string.js`, read directly) means whatever a plugin's own
+    directory is named becomes literally what gets mounted under
+    `wp-content/plugins/` - if this plugin's own directory were named
+    `woocommerce`, it would collide with the real WooCommerce plugin's own
+    directory the moment both are listed in the same `.wp-env.json` (which
+    they have to be, since this plugin's tests need real WooCommerce running
+    too). `plugins/moneropay-cloud/` keeps the roadmap's own `plugins/`
+    top-level convention (room for a future `plugins/shopify/` per Stage 15)
+    while giving this plugin its own real, collision-free slug - also the
+    correct convention regardless, since WordPress' own norm is folder name =
+    plugin slug = text domain, all three of which are `moneropay-cloud` here.
+  - **Gateway identity**: `id = 'moneropay_cloud'` (permanent per its own
+    doc comment - it's the WooCommerce settings option-array key, the
+    `$order->get_payment_method()` value on every order, and the future
+    `woocommerce_api_{id}` webhook suffix WBS 1.5.4 will register), plugin
+    slug/text-domain `moneropay-cloud`, checkout title "Monero (via MoneroPay
+    Cloud)" (the WBS's own outcome text, verbatim, as the field's default).
+  - **The `payment_gateways()` vs. `get_available_payment_gateways()`
+    ambiguity, resolved against WooCommerce's real installed source, not
+    guessed at or left for later**: once `wp-env` had a real WooCommerce
+    11.1.0 checkout, read
+    `wp-content/plugins/woocommerce/includes/class-wc-payment-gateways.php`
+    directly. `payment_gateways()` returns every gateway WooCommerce's own
+    `init()` built from the `woocommerce_payment_gateways` filter, with *no*
+    enabled/applicable filtering at all. `get_available_payment_gateways()`
+    additionally requires `$gateway->is_available()` per gateway - and
+    `WC_Payment_Gateway::is_available()`
+    (`includes/abstracts/abstract-wc-payment-gateway.php`, also read
+    directly) short-circuits `false` the instant `$this->enabled !== 'yes'`,
+    before any currency/cart check. Since this gateway genuinely ships
+    disabled by default (WBS 1.5.1's own stated outcome), asserting its
+    presence in `get_available_payment_gateways()`'s result would assert
+    something this step's own correct behavior makes false by construction.
+    `tests/GatewayRegistrationTest.php` therefore asserts against
+    `payment_gateways()` - "real, registered checkout option, independent of
+    enabled state" is what the WBS's own outcome language actually describes
+    - and additionally asserts the *negative* against
+    `get_available_payment_gateways()` (a disabled gateway is correctly
+    excluded), so both of WooCommerce's real, distinct gateway-listing
+    methods are exercised for the behavior actually true of each, not just
+    the one this step happens to need. Full reasoning is in the test file's
+    own class doc comment, not just here.
+  - **Toolchain trouble #1 - Node's Happy Eyeballs vs. this sandbox's missing
+    IPv6 route, a real problem, not a flaky network**: `npx @wordpress/env
+    start` failed immediately and deterministically with a generic
+    `AggregateError [ETIMEDOUT]` at its very first "Reading configuration"
+    step, every time, even though plain `curl` to the exact same URLs
+    (`downloads.wordpress.org`, `raw.githubusercontent.com`) succeeded
+    instantly. Root-caused by not trusting "the network must be flaky" and
+    instead reproducing it minimally: `curl -6` to any external host fails
+    immediately in this sandbox (no IPv6 route at all), and Node 24 enables
+    `net.getDefaultAutoSelectFamily()` (Happy Eyeballs dual-stack racing,
+    RFC 8305) *on by default* - confirmed by a standalone Node script hitting
+    the same URL directly with `node:https`, which reproduced the identical
+    failure with zero `wp-env`/Docker involvement, then fixed by calling
+    `net.setDefaultAutoSelectFamily(false)` in-process. `--dns-result-order=
+    ipv4first` (the first fix tried) does **not** help - it only reorders
+    which address `dns.lookup()` returns first, not whether Happy Eyeballs
+    still races the unreachable IPv6 address at all. The real fix, applied
+    before every single `npx @wordpress/env ...` invocation in this
+    environment (not just `start` - `run` hit the identical failure until
+    this was set too):
+    `NODE_OPTIONS='--no-network-family-autoselection'`. Worth flagging
+    prominently for 1.5.2-1.5.4: this is an environment quirk of this
+    sandbox specifically (no IPv6 route), not of `wp-env` itself, and will
+    need re-discovering (or this note re-reading) on a differently-networked
+    machine if it's not already muscle memory by then.
+  - **Toolchain trouble #2 - a real `wp-env` plugin-source basename gotcha**:
+    the natural URL to try for "latest stable WooCommerce" is
+    `https://downloads.wordpress.org/plugin/woocommerce.latest-stable.zip`
+    (a real, working URL) - but `.wp-env.json` mounts it as
+    `wp-content/plugins/woocommerce.latest-stable/`, not `.../woocommerce/`.
+    Confirmed by reading `@wordpress/env`'s own
+    `lib/config/parse-source-string.js` directly: its basename derivation
+    only strips a trailing *purely numeric* version suffix (e.g. `.1.2.3`)
+    from a zip URL's filename, and `latest-stable` doesn't match that
+    pattern, so it survives into the mounted directory name verbatim - not
+    obvious from the URL alone, and it silently produced a working WordPress
+    install that nonetheless didn't match the directory name every real
+    production install (and this plugin's own `tests/bootstrap.php`, which
+    hardcodes `wp-content/plugins/woocommerce/woocommerce.php`) assumes.
+    Fixed by switching to the version-suffix-free
+    `https://downloads.wordpress.org/plugin/woocommerce.zip` (confirmed via
+    `curl -I` to genuinely serve the current stable release, same as the
+    `.latest-stable.zip` alias), which derives the correct `woocommerce`
+    basename. Caught by actually inspecting the mounted container's
+    `wp-content/plugins/` listing (`docker exec ... ls`), not assumed correct
+    because `wp plugin list` initially showed it "active" under the wrong
+    slug (`woocommerce.latest-stable`) - active-but-wrong-slug would have
+    broken every future step that hardcodes the real WooCommerce plugin
+    directory name (webhook paths, `wp_remote_post` target discovery, etc.).
+  - **Toolchain trouble #3 - a real WordPress-core/PHPUnit-10 incompatibility,
+    not a bug in this plugin**: `wp-env run tests-cli ... phpunit` (the
+    container's global PHPUnit, 10.5.64) got past test discovery but every
+    test errored with `Call to undefined method
+    PHPUnit\Util\Test::parseTestMethodAnnotations()`, thrown from *WordPress
+    core's own* bundled `/wordpress-phpunit/includes/abstract-testcase.php`
+    (`WP_UnitTestCase`'s `expectDeprecated()`, called from every test's
+    `set_up()`), not from this plugin's test file at all. That method is a
+    real, confirmed-by-reading-the-vendored-source casualty of PHPUnit 10's
+    annotation-system removal - WP core's bundled test library (matching the
+    WordPress version `wp-env` downloaded) only branches on PHPUnit `<9.5` vs
+    `>=9.5`, predating PHPUnit 10 entirely. Fixed by pinning this plugin's
+    own `composer.json` to `"phpunit/phpunit": "^9.6"` (still within
+    `yoast/phpunit-polyfills`' supported range, and 9.6.36 - the version
+    Composer resolved - supports PHP 8.3, the container's runtime) and
+    running the plugin's own `vendor/bin/phpunit` rather than the container's
+    global one. Not a workaround for a mistake in this plugin - a real,
+    documented compatibility ceiling of the WordPress version this specific
+    environment's `wp-env` pulled, worth 1.5.2-1.5.4 knowing about upfront
+    rather than rediscovering.
+  - **Toolchain trouble #4 - a real PHPUnit 10.x `TestSuiteLoader` naming
+    rule, read from its source, not guessed at**: with #3 not yet fixed,
+    test discovery itself failed first, with a misleading-sounding "Class
+    test-gateway-registration cannot be found" warning despite the class
+    genuinely existing (confirmed by manually `require`ing the bootstrap and
+    test file by hand and checking `class_exists()` - `true` - before
+    concluding this wasn't a real load failure). Root cause, read directly
+    from `vendor/phpunit/phpunit/src/Runner/TestSuiteLoader.php`: PHPUnit's
+    loader derives an expected class-name suffix from each discovered file's
+    own basename and requires the declared class's short name to
+    case-insensitively *end with* it, character-for-character - and a
+    WordPress-core-style filename (`test-gateway-registration.php`, hyphens)
+    paired with an underscored class name (`Test_Gateway_Registration`) never
+    satisfies that literal check, regardless of the class being real and
+    loadable. Fixed by renaming to the plain PHPUnit-native convention
+    (filename equals class name exactly: `tests/GatewayRegistrationTest.php`
+    / `class GatewayRegistrationTest`) and updating `phpunit.xml.dist`'s
+    `<directory suffix="Test.php">` pattern to match - documented in the test
+    file's own doc comment for whoever adds the next test file in 1.5.2+.
+  - **License header, caught and fixed before finishing, not shipped
+    wrong**: initially wrote `AGPL-3.0-or-later` into the plugin header and
+    `composer.json` with no real basis - checked and this repo has **no**
+    `LICENSE` file and no `license` field anywhere in the root `Cargo.toml`,
+    so there was nothing to actually inherit. Switched to
+    `GPL-2.0-or-later` instead: not arbitrary either, but tied to a real,
+    already-planned downstream requirement - `docs/WOOCOMMERCE_WBS.md`'s own
+    1.6.1 explicitly targets wordpress.org distribution, which requires
+    GPLv2-or-later-compatible licensing, and GPL-2.0-or-later is what
+    WordPress' own plugin boilerplate and the vast majority of the plugin
+    ecosystem default to. Flagged here explicitly for the user: this repo's
+    real, project-wide license is still an open question this plugin's
+    header shouldn't be read as having silently settled - revise this header
+    if/when that's decided differently.
+  - **The real, observed test run** (after all four toolchain fixes above),
+    run twice for confidence, identical result both times:
+    `NODE_OPTIONS='--no-network-family-autoselection' npx @wordpress/env run
+    tests-cli --env-cwd=wp-content/plugins/moneropay-cloud vendor/bin/phpunit
+    --testdox` (via `newgrp docker -c "..."` in this shell, per this
+    environment's own docker-group-membership quirk) ->
+    ```
+    PHPUnit 9.6.36 by Sebastian Bergmann and contributors.
+
+    Gateway Registration
+     ✔ Gateway is registered with woocommerce
+     ✔ Gateway is disabled by default
+
+    Time: 00:00.013, Memory: 89.00 MB
+
+    OK (2 tests, 4 assertions)
+    ```
+    Additionally verified directly against the *dev* `wp-env` WordPress
+    instance (separate from the PHPUnit-only tests instance, same plugin
+    code, real browser-reachable site at `http://localhost:8888`), via `wp
+    eval-file` iterating `WC_Payment_Gateways::instance()->payment_gateways()`:
+    real output `moneropay_cloud => MoneroPay Cloud (title: Monero (via
+    MoneroPay Cloud), enabled: no)` alongside WooCommerce's own bundled BACS/
+    Cheque/COD gateways - the literal, human-readable form of the WBS's own
+    stated outcome, not just a PHPUnit assertion proving the same thing
+    indirectly.
+  - **Files added** (all new, nothing existing touched):
+    `plugins/moneropay-cloud/moneropay-cloud.php` (bootstrap: plugin header,
+    `plugins_loaded`-deferred class load, `woocommerce_payment_gateways`
+    filter registration), `plugins/moneropay-cloud/includes/
+    class-wc-gateway-moneropay.php` (`WC_Gateway_MoneroPay`),
+    `plugins/moneropay-cloud/composer.json` + `composer.lock` (dev-only:
+    `yoast/phpunit-polyfills`, `phpunit/phpunit` ^9.6 - the plugin itself has
+    zero runtime PHP dependencies beyond WordPress/WooCommerce),
+    `plugins/moneropay-cloud/.wp-env.json` (WordPress core `null` = latest,
+    WooCommerce + this plugin as `"plugins"`), `plugins/moneropay-cloud/
+    phpunit.xml.dist`, `plugins/moneropay-cloud/tests/bootstrap.php`,
+    `plugins/moneropay-cloud/tests/GatewayRegistrationTest.php`,
+    `plugins/moneropay-cloud/.gitignore` (`/vendor/`,
+    `/.phpunit.result.cache`).
+  - **Not done / explicitly out of scope, matching WBS 1.5.1's own stated
+    boundary**: `process_payment()` (WBS 1.5.2), the connect-flow settings
+    button (WBS 1.5.3), the webhook receiver (WBS 1.5.4), a checkout icon, a
+    `.pot` translation file, and `readme.txt`/wordpress.org directory
+    compliance (WBS 1.6.1) - none of these were needed to satisfy this step's
+    own outcome ("shows as a checkout option, disabled is fine") and adding
+    them now would be exactly the unrequested-scope pattern this project's
+    practice has repeatedly avoided elsewhere. Also not done: silencing
+    `wp-env`'s own "starts both development and tests environments by
+    default... deprecated" warning by setting `"testsEnvironment": false` -
+    checked its own source first, and that flag doesn't just silence the
+    warning, it actually removes the `tests-cli`/`tests-wordpress` containers
+    this plugin's whole PHPUnit setup depends on, so left as harmless noise
+    rather than "fixed" into a broken state.
+
+- WBS 2.1.3 done: the engine wired to the socket-based `KeyCustody`
+  implementation behind a config flag - `main.rs` no longer unconditionally
+  constructs `PlainKeyCustody::default()`.
+  - **The real obstacle, found by trying it rather than assuming it would work**:
+    the naive plan ("`main.rs` depends on `key-custody-service` for
+    `SocketKeyCustody`") is impossible as the crate graph stood after 2.1.1/2.1.2.
+    `key-custody-service` depended on `moneropay-core` (for the real
+    `KeyCustody`/`WalletHandle`/etc. types its DTOs convert to/from, and for
+    `server.rs`'s real `PlainKeyCustody`); `main.rs` depending on
+    `key-custody-service` back would be `moneropay-core -> key-custody-service ->
+    moneropay-core`, a real Cargo dependency cycle. Not reasoned about in the
+    abstract - actually attempted (`cargo check` after adding the dependency
+    edge) and confirmed with Cargo's own `error: cyclic package dependency`
+    before doing anything else. Also empirically ruled out the tempting shortcut
+    of making the back-edge `optional`/feature-gated (moneropay-core depending on
+    key-custody-service with `default-features = false`, minus a "server"
+    feature) - Cargo still reports the identical cycle, since the cyclic-package
+    check operates on the manifest's declared edges before any feature
+    activation is resolved, not on which symbols a build actually uses.
+  - **The fix, not a workaround**: moved the `KeyCustody` trait and every type
+    that crosses it (`WalletHandle`, `WalletMaterial`, `KeyCustodyError`,
+    `MatchedOutput`) from `moneropay-core`'s `src/key_custody/mod.rs` to a new
+    `shared/src/key_custody.rs` (`shared` depends on nothing that could cycle
+    back), with `moneropay-core::key_custody` now just `pub use`-re-exporting
+    them - a re-export is the same type, not a wrapper, so every one of the
+    ~30 existing call sites across the engine crate kept compiling completely
+    unchanged, confirmed by `cargo check -p moneropay-core --lib` passing with
+    zero other files touched at that point. `network_str`/`parse_network` moved
+    the same way (`shared/src/network.rs`) for the same reason -
+    `key-custody-service`'s `NetworkWire` needed them too. The one real code
+    change this forced (not just a re-export): `WalletHandle::new()` had to go
+    from private to `pub` (it's still only ever meant to be called from inside a
+    `KeyCustody` implementation, per its own doc comment) - `plain.rs`, now in a
+    different crate from the type's definition, could no longer reach a
+    module-tree-private method across the crate boundary. Confirmed no similar
+    problem existed for `WalletMaterial`'s private fields: grepped `plain.rs` and
+    found it only ever uses the already-`pub` `to_view_pair`/`to_raw_bytes`
+    accessors, never direct field access.
+  - Splitting the trait out wasn't sufficient by itself, though -
+    `key-custody-service`'s `server.rs` (wrapping a real `PlainKeyCustody`) still
+    needed `moneropay-core`, and it lived in the *same* crate as `client.rs`
+    (what `main.rs` actually needs), so the cycle would have just come back
+    through that edge instead. Split `key-custody-service` into two crates:
+    `key-custody-service` keeps `client.rs`/`protocol.rs`/`lib.rs` (DTOs) and now
+    depends only on `shared`, never `moneropay-core`; a new sibling crate
+    `key-custody-server` (`git mv`d `server.rs`, `bin/key-custody-server.rs`, and
+    `tests/socket_key_custody.rs` there, since that test needs a real server)
+    depends on *both* `moneropay-core` (for `PlainKeyCustody`) and
+    `key-custody-service` (for the protocol/DTO types). `moneropay-core` now
+    depends on `key-custody-service` only - never on `key-custody-server` - so
+    the graph is a clean DAG:
+    `key-custody-server -> {moneropay-core, key-custody-service} -> shared`.
+    Verified with `cargo check --workspace --all-targets` clean at every
+    intermediate step, not just at the end. All 39 of 2.1.2's key-custody tests
+    (22 unit + 17 integration) still exist and still pass, just split across the
+    two crates the same way the code that exercises them now is (`key-custody-service`
+    22, `key-custody-server` 17) - nothing was dropped or rewritten, confirmed by
+    diffing the ported test file's content against its pre-move version.
+  - **Config**: new `[key_custody]` section (`src/config.rs::KeyCustodyConfig`),
+    mirroring `ExchangeRateConfig`'s existing "string field selects the backend,
+    `Config::validate_bounds` checks conditionally-required fields" shape rather
+    than a `#[serde(tag = ...)]` enum - the same shape every other conditionally-
+    required section in this file already uses, and an unrecognized value gets
+    the identical "rejected at boot with a clear error" treatment either way.
+    `backend`: `"plain"` (default, unchanged) or `"socket"`; `socket_path:
+    Option<String>`, required and validated non-empty-after-trim only under
+    `"socket"` (`ConfigError::SocketBackendMissingSocketPath`); an unrecognized
+    `backend` is `ConfigError::UnknownKeyCustodyBackend`, exactly mirroring
+    `exchange_rate.provider`'s own unknown-value handling. 4 new `config.rs`
+    tests: default-with-no-section-present, socket-with-path parses/validates,
+    socket-with-no-path (both omitted and empty/whitespace) rejected, unknown
+    backend rejected.
+  - **The `key_custody_backend` question, investigated as asked, not guessed
+    at**: grepped every read site of `tenants.key_custody_backend` (the stored
+    column), not just write sites. Found it is read back from SQLite into
+    `Tenant`/`NewTenant` (`store.rs`'s `row.get("key_custody_backend")` and the
+    `INSERT` binding) but **never matched on or dispatched on anywhere** in this
+    codebase - every prior write site hardcoded the literal `"plain"` regardless
+    of anything. `migrations/0001_init.sql`'s own comment on the column and
+    `docs/DESIGN.md` §8.1 agree on what it's actually *for*: letting a **future**
+    migration to a different backend detect a mismatch and fail loudly on
+    `unseal_and_register` rather than silently misinterpreting bytes sealed by a
+    different backend - `docs/TESTING.md`'s own gap list already flags that
+    specific check ("seal() output is versioned by key_custody_backend...") as
+    not yet implemented, unrelated to this task and not built here either, since
+    it wasn't asked for. It is **not** a per-tenant dispatch key: `main.rs` holds
+    exactly one `Arc<dyn KeyCustody>` for the whole process
+    (`AppState.key_custody`, `register_all_tenants`, `run_scanner_loop` all take
+    a single shared instance), and nothing in the schema or the code anticipates
+    otherwise - a single running instance can only ever use one backend for
+    every tenant it holds, which is exactly what this task's `[key_custody]`
+    config section (one value, process-wide) matches. What *was* a real,
+    previously-latent bug this task's own change would have made concretely
+    wrong: two production write sites (`main.rs::bootstrap_self_hosted_tenant`
+    and `http/admin.rs::create_tenant`) hardcoded `key_custody_backend: "plain"`
+    regardless of which backend actually sealed the material - harmless before
+    this task (only "plain" existed), actively misleading the moment a second
+    backend exists for real (a tenant created under `backend = "socket"` would
+    have its row claim "plain" while `key-custody-server` genuinely sealed it).
+    Fixed both to record the real configured backend: `bootstrap_self_hosted_tenant`
+    now takes it from `config.key_custody.backend` directly; `create_tenant`
+    needed a new `AppState.key_custody_backend: String` field (nothing about
+    `Arc<dyn KeyCustody>` lets a caller ask "which implementation is this," by
+    design, so `main.rs` hands the string down alongside the trait object rather
+    than inventing a downcast/introspection surface this boundary was
+    deliberately never given).
+  - **Startup-failure-handling decision, made deliberately, not left
+    unconsidered**: a bounded retry loop (`main.rs::connect_socket_key_custody`,
+    10 attempts, 500ms apart, ~4.5s total), not a single fail-fast attempt.
+    `key-custody-server`'s own binary doc comment explicitly pushes *its own*
+    restart-policy ownership onto an external process supervisor
+    ("supervisor is what should own restart policy... not this binary guessing
+    at them") - read closely, that's a claim about who restarts a process that
+    has genuinely died, not about how a *client* dialing it should react to an
+    ordinary two-independently-started-processes race at boot, which is exactly
+    the scenario this task named by name. A single failed connect attempt cannot
+    tell "server not scheduled onto a thread yet" (resolves in milliseconds)
+    apart from "server genuinely down," and failing fast on the former just
+    pushes a second restart-and-backoff cycle onto whatever supervises this
+    process, for a race a few hundred milliseconds of patience resolves for
+    free. This project's own prior art agrees, not just reasoning from
+    principle: `key-custody-server/tests/socket_key_custody.rs`'s own
+    `connect_with_retry` helper (2.1.2, written before this task) hit and solved
+    the identical race between spawning an in-process test server and dialing
+    it, the same way. What it deliberately does *not* do: retry forever, or
+    silently fall back to `PlainKeyCustody` - past ~5 seconds this stops being
+    ordinary scheduling jitter, and the operator needs a loud, specific,
+    actionable failure (exact socket path, attempt count, the real last error,
+    a pointed question about whether the server is even running) with a clean
+    `std::process::exit(1)`, never a panic, never an indefinite hang. Verified
+    for real, not just by reading the code: ran the compiled binary against a
+    `socket_path` nothing is listening on (clean exit 1 after ~4.5s with the
+    expected message) and against a real `key-custody-server` process (boots to
+    "moneropay listening on ..." with no key-custody errors, only the expected,
+    unrelated failures from a Monero node this smoke test never started).
+  - **Testing harness**: `engine-test-support` (not a new harness - confirmed
+    this was the right home by reading how `mock-woocommerce`/`control-plane`
+    already depend on it for a real, network-bound engine before adding
+    anything). `TestEngineConfig` gained `with_socket_key_custody(socket_path)`
+    - unlike `main.rs`'s retrying connect, this does *not* retry (a test
+    controls both sides of the race and starts the server first), documented as
+    a deliberate difference in its own doc comment. `key-custody-service` became
+    a real (not dev) dependency of this crate, since `spawn()` itself (not just
+    tests) needs to construct a `SocketKeyCustody`; `key-custody-server` is a
+    dev-dependency, needed only by this crate's own regression test.
+  - **The regression test itself, and an honest account of what "unmodified"
+    could and couldn't mean here**: the WBS's acceptance bar
+    ("the engine's existing integration tests... pass unmodified against this
+    configuration") can't be taken *completely* literally - the existing test
+    that proves this exact scenario against `PlainKeyCustody`
+    (`src/scanner.rs::run_scan_tick_matches_mempool_tx_recomputes_status_and_
+    enqueues_a_webhook`) lives inside `moneropay-core`'s own `#[cfg(test)]`
+    build and constructs `PlainKeyCustody`/`Store` directly in-process - it
+    structurally cannot be "pointed at" a different backend without becoming a
+    different test, and `moneropay-core` itself can never depend on
+    `SocketKeyCustody` at all (see the cycle above). So `engine-test-support`
+    reproduces that exact scenario end to end through the real HTTP API instead
+    (same fixture transaction and view/spend keys `plain.rs`'s and `scanner.rs`'s
+    own tests use - not a new one invented here), run twice - once per backend -
+    and asserts the two runs are pixel-for-pixel identical
+    (`order_creation_and_chain_scanning_behave_identically_through_the_socket_
+    backed_key_custody_path`), not just each individually plausible. First
+    version of this test picked too large a target order amount and got
+    `partial` instead of `unconfirmed` from both backends identically - caught
+    immediately since the assertion checks the *specific* expected outcome too,
+    not just equality between the two runs; fixed by using a trivially-small
+    rate, same reasoning `scanner.rs`'s own `xmr_amount_piconero: 1` comment
+    already documents.
+  - **Files touched**: `Cargo.toml` (workspace members +
+    `key-custody-service` dependency), `shared/Cargo.toml` +
+    new `shared/src/{key_custody,network}.rs` + `shared/src/lib.rs`,
+    `src/key_custody/mod.rs` + `src/network.rs` (trimmed to re-exports),
+    `src/config.rs`, `src/main.rs`, `src/http/mod.rs` + `src/http/admin.rs`
+    (`AppState.key_custody_backend`), `src/http/tests.rs` +
+    `tests/e2e_stagenet.rs` (new `AppState` field), `key-custody-service/
+    Cargo.toml` + `src/lib.rs` + `src/client.rs` (now depends on `shared`, not
+    `moneropay-core`), new `key-custody-server/` crate (`Cargo.toml`,
+    `src/lib.rs`, `git mv`d `server.rs`/`bin/key-custody-server.rs`/
+    `tests/socket_key_custody.rs`), `engine-test-support/Cargo.toml` +
+    `src/lib.rs`. `Cargo.lock` diff is 20 lines, all of it the new
+    `key-custody-server` package entry - no new external crate entered the
+    workspace's dependency graph (monero/uuid/zeroize/async-trait were already
+    resolved elsewhere; only `hex`, already used pervasively, is new to
+    `engine-test-support`, as a dev-dependency).
+  - Full `cargo test --workspace`, before this task (confirmed by actually
+    running it, not trusting this log's prior "Counts" line): engine 311
+    passed/9 ignored, shared 26, control-plane 80, engine-test-support 2,
+    key-custody-service 39 (22 unit + 17 integration, one crate). After: engine
+    312/9 ignored (+4 new `config.rs` tests, -1 `WalletHandle` round-trip test
+    and -2 `network` round-trip tests moved out to `shared`, net +1), shared 29
+    (+3: the 3 tests that moved in), control-plane 80 (unchanged),
+    engine-test-support 3 (+1, the new socket-vs-plain regression test),
+    key-custody-service 22 (unchanged - just the unit tests, integration tests
+    moved out), key-custody-server 17 (the integration tests that moved, now in
+    their own crate - combined with key-custody-service's 22, still 39 total,
+    confirming nothing was lost in the split), mock-woocommerce 8+1
+    (unchanged). `cargo build --workspace --all-targets` clean, zero warnings,
+    confirmed by grepping the full build log for "warning" and finding nothing.
+    No `cargo fmt` run anywhere; every new/moved file hand-formatted to match
+    its crate's existing style, and every edit to an existing file matched the
+    surrounding style by hand.
+  - **Not done / explicitly out of scope**: the `unseal_and_register`
+    backend-mismatch check `docs/TESTING.md` already flags as a gap (versioning
+    `seal()` output by `key_custody_backend` and failing loudly on a mismatch) -
+    genuinely related to this column, but a different, not-yet-asked-for piece
+    of work; noted here so a future reader doesn't assume this task silently
+    fixed it. `init_wizard.rs`'s interactive setup flow was not extended to
+    offer `backend = "socket"` as a choice, matching the same judgment call
+    1.7.1's entry above made for `provider = "coingecko"` - a self-hoster (or a
+    future control-plane-generated config) can still hand-write it into the
+    TOML directly.
+
+- WBS 2.1.2 done: socket-based `KeyCustody` implementation, extending the
+  existing `key-custody-service` crate (not a third crate) with the socket
+  half 2.1.1 deliberately left unbuilt - `protocol.rs` (envelope + framing),
+  `server.rs` (`KeyCustodyServer`, wrapping a real `PlainKeyCustody`) plus its
+  `bin/key-custody-server.rs` standalone binary, and `client.rs`
+  (`SocketKeyCustody`, a real `KeyCustody` impl that forwards every call over
+  a Unix socket). Read `src/key_custody/mod.rs` (trait), `src/key_custody/
+  plain.rs` (`PlainKeyCustody` + its 12-test suite), and 2.1.1's own
+  `key-custody-service/src/lib.rs` DTOs directly before writing anything, per
+  this project's standing practice.
+  - **Framing**: a 4-byte big-endian `u32` length prefix + that many bytes of
+    `serde_json`-encoded payload, same in both directions
+    (`protocol.rs::{read_frame,write_frame}`). `serde_json` because this whole
+    workspace already depends on it pervasively and nothing here is
+    performance-sensitive (a `KeyCustody` call is bounded by scalar-
+    multiplication cost, not serialization); a length prefix rather than a
+    delimiter because a `TransactionWire`'s hex string has no character
+    `serde_json` promises never to emit. `MAX_FRAME_BYTES` (16 MiB) bounds a
+    corrupted/hostile length prefix from claiming up to 4 GiB - same shape of
+    guard as `plain.rs`'s own `MAX_SCAN_TABLE_ENTRIES`, applied to the framing
+    layer instead of the scan-table layer. `read_frame` distinguishes a clean
+    EOF *before* any byte of a new frame's length prefix (`Ok(None)` - the
+    ordinary way a connection ends between requests) from every other failure
+    (a partial prefix, an oversized length, a short payload read, invalid
+    JSON - all `Err`), so a genuinely broken peer never gets mistaken for an
+    ordinary disconnect.
+  - **Envelope**: `KeyCustodyRequest`/`KeyCustodyResponse`, one variant per
+    trait method, each wrapping 2.1.1's existing `{Name}Request`/
+    `{Name}Response` DTOs verbatim - no new per-method wire shape invented.
+  - **Concurrency, chosen deliberately, not left racy**: `SocketKeyCustody`
+    opens one persistent connection at `connect` time (not a fresh connection
+    per call - a real engine will make many calls/second) and serializes
+    every call onto it with a `tokio::sync::Mutex`, rather than a request-ID/
+    correlation scheme letting several calls be in flight over the wire at
+    once. Chose the simpler option: a correlation scheme is real, permanent
+    wire-format complexity to buy back concurrency this workload doesn't
+    obviously need (every call is already bounded by the same scalar-
+    multiplication costs `plain.rs` documents; a future TEE-backed backend is
+    unlikely to parallelize arbitrarily within one enclave either). Documented
+    in `client.rs`'s module doc comment as a decision to revisit at 2.1.3 if
+    it becomes a real bottleneck, not a permanent commitment.
+  - **A bounded per-call timeout (30s default) plus poison-on-failure**: without
+    a timeout, a wedged or malicious server that withholds a response would
+    hang a call forever - and because the connection is shared, mutex-
+    serialized state, that one hung call would silently stall *every* other
+    concurrent caller too. Beyond the timeout itself, any transport-level
+    failure (timeout, I/O error, decode error, clean close) marks the
+    connection `None` (poisoned) rather than trying to keep using it: after a
+    timeout specifically, the peer might still write a late response for the
+    call that just gave up on it, and a later call reusing the same stream
+    would misread those stale bytes as its own reply - silent framing
+    corruption, not a clean error. Poisoning trades that risk for a simple,
+    loud "this `SocketKeyCustody` is dead, make a new one" - no auto-reconnect
+    in this step, called out explicitly as a documented limitation for 2.1.3
+    to address with real requirements instead of this step guessing at them.
+  - **Server-side decode-failure policy**: a request whose own fields don't
+    convert back into real types (bad handle hex, an unparseable address, a
+    non-consensus-encoded transaction) closes the connection rather than
+    trying to shoehorn it into one of `KeyCustodyErrorWire`'s four variants -
+    none of which mean "your bytes were corrupted in transit," and forcing it
+    into e.g. `UnknownWallet` would mislead a caller matching on that variant
+    for a real reason. This is exactly the decision 2.1.1's own
+    `WireConversionError` doc comment left open for this step; resolved in
+    `server.rs::handle_connection`'s doc comment, treating a decode failure
+    the same way a raw framing error is already treated.
+  - **The two whitebox tests, handled honestly, not silently dropped**:
+    `src/key_custody/plain.rs`'s test suite has 12 tests; 10 port verbatim
+    (same scenario, same assertions, only the concrete `KeyCustody` value
+    changes) in `key-custody-service/tests/socket_key_custody.rs`. The other
+    two each assert on `PlainKeyCustody`'s own private internals in the
+    original:
+    - `repeated_scans_over_same_range_reuse_the_cached_table` asserts
+      `rebuild_count(&custody, handle) == 1` then `== 2` via a private,
+      `#[cfg(test)]`-gated `AtomicU64` field on the private `WalletEntry`
+      struct. Not portable for *two* independent reasons, not just one:
+      (1) it's genuinely unobservable through the `KeyCustody` trait -
+      `scan_tx_outputs` returns the same correct result whether or not the
+      table rebuilt, exactly as `plain.rs`'s own module doc comment says; and
+      (2) even a same-process test harness holding a live
+      `Arc<PlainKeyCustody>` could never reach it, because `wallets` (and
+      therefore anything inside a `WalletEntry`) is private to
+      `src/key_custody/plain.rs`'s own module under Rust's privacy rules -
+      not visible even from `src/key_custody/mod.rs`, its own parent module,
+      let alone from a separate crate - and `rebuild_count` is additionally
+      `#[cfg(test)]`-gated, so it isn't even *compiled into* `WalletEntry`
+      when `moneropay-core` is built as an ordinary path dependency the way
+      this crate builds it. Considered and rejected: adding an accessor to
+      `PlainKeyCustody`/`WalletEntry` purely to satisfy this one assertion -
+      that would mean lifting the `cfg(test)` gate on a permanent-looking
+      struct field (a bigger, unrequested change to `plain.rs`'s production
+      layout) to test something a real socket deployment structurally cannot
+      observe either, which is precisely the kind of "faking a port" the WBS
+      2.1.2 brief warned against. **Kept**: three same-range scans plus a
+      genuinely wider fourth all still return the *correct* result (a broken
+      cache would surface as wrong matches, so this isn't a no-op).
+      **Dropped, with this exact reasoning left as a comment on the test
+      itself**: the caching-efficiency assertion.
+    - `removing_a_wallet_scrubs_its_view_key_rather_than_leaving_it_in_freed_
+      memory` asserts `custody.wallets.read().unwrap().is_empty()` directly,
+      plus two assertions that are pure black-box `KeyCustody` behaviour
+      (`remove_wallet` again returns `UnknownWallet`; a post-removal
+      `scan_tx_outputs` returns `UnknownWallet`). **Kept**: both black-box
+      assertions, verbatim. **Dropped, with the same reasoning as above
+      documented on the test**: `wallets.is_empty()` - same private-field
+      problem, no `cfg(test)` gate this time but a plain private field is
+      exactly as unreachable from another crate regardless of that.
+    - A `KeyCustodyServer::backend()` accessor was tried and removed during
+      this session once it became clear it doesn't actually solve either
+      problem: it only ever exposes `PlainKeyCustody`'s own `pub` surface
+      (i.e. the `KeyCustody` trait impl itself, already reachable through the
+      client), never a private field, no matter which process or module holds
+      the `Arc` - "same process" is necessary but nowhere near sufficient for
+      "same-module field access" in Rust. Worth flagging in case a future
+      reader wonders why that accessor isn't here: it was genuinely
+      considered, built, and then correctly discarded as not fit for purpose,
+      not overlooked.
+  - **Beyond the ported suite, 7 new tests proving the socket mechanism
+    itself** (`tests/socket_key_custody.rs`): one launches the *compiled*
+    `key-custody-server` binary as a real, separate OS process via
+    `env!("CARGO_BIN_EXE_key-custody-server")` and drives a full
+    register→derive→scan→remove round trip against it over a real socket
+    path, killing the child afterward - the one test in the whole file that
+    actually proves the "compromising the main engine process alone never
+    yields the keys" claim has a mechanism behind it, since every other test
+    (ported or new) legitimately runs the server as an in-process background
+    task for speed. The rest: connecting to a socket nothing is listening on
+    is a clean `BackendUnavailable`, not a panic or hang; a server that
+    answers once correctly then closes the connection (simulating a mid-
+    session crash/restart) makes the *next* call on the same client fail
+    cleanly rather than hang or corrupt the next read; a peer that sends a
+    well-framed but non-JSON payload back to `SocketKeyCustody` produces a
+    clean client-side error, not a panic; and two raw-socket cases against a
+    real running server - a length prefix claiming a frame far past
+    `MAX_FRAME_BYTES`, and a valid length prefix followed by non-JSON bytes -
+    both close cleanly without taking the server down, proven by a
+    subsequent well-behaved client still being served normally afterward.
+  - **Dependencies**: `key-custody-service/Cargo.toml` promotes `serde_json`
+    from dev- to a real dependency (2.1.1 had explicitly flagged this as the
+    trigger for doing so) and adds `async-trait` + `tokio` (`features =
+    ["full"]`, matching the engine crate's own choice rather than hand-picking
+    a narrower feature set to keep in sync separately). `Cargo.lock`'s diff is
+    two lines (`async-trait`, `tokio` added to this crate's dependency list) -
+    both were already resolved elsewhere in the workspace, so no new external
+    crate entered the graph.
+  - **Not touched**: `src/key_custody/mod.rs` and `src/key_custody/plain.rs`
+    (the engine crate) - the brief's "ideally you won't need to expose
+    anything new from it" held; nothing new was needed beyond what 2.1.1
+    already added (`WalletHandle::as_bytes`/`from_bytes`). No engine wiring to
+    actually *use* `SocketKeyCustody` in `main.rs` - that's WBS 2.1.3.
+  - Full `cargo test --workspace`: engine 311 passed/9 ignored (unchanged),
+    key-custody-service 22 (unit, unchanged) + 17 (new
+    `tests/socket_key_custody.rs` integration tests) = 39, control-plane 80
+    (unchanged), shared 26 (unchanged), engine-test-support 2 (unchanged),
+    mock-woocommerce 8+1 (unchanged). `cargo build --workspace` clean, no
+    warnings, confirmed by touching every new/changed file in
+    `key-custody-service` and rebuilding before relying on a "no warnings"
+    claim. Files touched: `key-custody-service/Cargo.toml`,
+    `key-custody-service/src/lib.rs` (module declarations + doc comment
+    update only - no DTO changed), new `key-custody-service/src/{protocol,
+    server,client}.rs`, new `key-custody-service/src/bin/key-custody-server.rs`,
+    new `key-custody-service/tests/socket_key_custody.rs`. `Cargo.lock`. No
+    `cargo fmt` run anywhere - every new file hand-formatted to match this
+    crate's existing (2.1.1) style throughout.
+
+- WBS 2.1.1 done: `key-custody-service`, a new workspace crate holding *only*
+  wire-level DTOs (and their conversions) for every `KeyCustody` trait method's
+  arguments and `Result` - the first step of Track B (SEV-SNP key custody).
+  Deliberately no socket/server/client code - that's 2.1.2, a separate future
+  step, and the WBS is explicit that this step stands alone.
+  - **Read the real trait, not the WBS's paraphrase, and found the paraphrase is
+    stale in a way worth flagging**: the trait's own module-level doc comment
+    (`src/key_custody/mod.rs`, right above the `trait KeyCustody` block) still
+    says "the `major_range`/`minor_range` parameters shared by `derive_subaddress`
+    and `scan_tx_outputs`" - but the real `derive_subaddress` signature today is
+    `(handle, index: SubaddressIndex, network: Network) -> Result<Address, ...>`,
+    with **no** range parameters at all; only `scan_tx_outputs` takes
+    `major_range`/`minor_range`. So the doc comment itself is out of date, not
+    just the WBS document quoting it - the six DTOs here were built against the
+    actual `fn` signatures (confirmed by reading them directly), which is why
+    `DeriveSubaddressRequest` carries `network` but no ranges, and
+    `ScanTxOutputsRequest` carries both ranges but no `network`. Left the stale
+    doc comment in place (out of scope to fix here) but called it out explicitly
+    in `ScanTxOutputsRequest`'s own doc comment so a future reader isn't misled by
+    it a second time.
+  - **`WalletHandle` had no accessor at all** (private `Uuid` field, only
+    `Debug`/`Clone`/`Copy`/`PartialEq`/`Eq`/`Hash`) - exactly the gap the WBS
+    flagged as a possible finding. Added `pub fn as_bytes(&self) -> [u8; 16]` and
+    `pub fn from_bytes([u8; 16]) -> Self` directly on `WalletHandle` in
+    `src/key_custody/mod.rs` (with a doc comment explaining why this doesn't
+    weaken the "opaque handle" framing - a `WalletHandle` was never a secret or
+    unguessable-by-design, just an index into a process-local map), plus one
+    direct test in a new `#[cfg(test)] mod tests` in that same file (mod.rs had
+    none before - `PlainKeyCustody`'s own tests live in `plain.rs`). `from_bytes`
+    is needed both by this step's own round-trip tests and by the future 2.1.2
+    socket *client*, which will need to reconstruct the exact handle value a
+    remote implementation issued so it can hand it back on later calls.
+  - **DTO design, one struct/type-alias pair per trait method** (`RegisterWallet`,
+    `RemoveWallet`, `Seal`, `UnsealAndRegister`, `DeriveSubaddress`,
+    `ScanTxOutputs` - `{Name}Request` struct + `type {Name}Response =
+    Result<TWire, KeyCustodyErrorWire>`). Chose to reuse `std::result::Result`
+    directly for every response rather than a hand-rolled `Ok`/`Err` enum -
+    confirmed first that `serde` does provide a real `Serialize`/`Deserialize`
+    impl for `Result<T, E>` (grepped the vendored `serde` crate source rather than
+    assuming), so a hand-rolled version would just be more code for an identical
+    wire shape. The WBS explicitly allows this ("reuse `Result` directly ... if it
+    serializes the way you want").
+  - **Byte-blob fields are all hex-encoded `String`s**, not raw byte arrays or
+    base64: `[u8; 64]` (`WalletMaterialWire`) doesn't implement `Serialize`
+    directly - checked the vendored `serde` source and confirmed its array impls
+    are macro-generated only up to length 32, nothing further - and hex, not
+    base64, matches this codebase's existing convention (`hex` is already a
+    pervasive dependency here; nothing in this workspace uses base64 anywhere).
+    `WalletHandleWire`'s 16 bytes would fit serde's direct array support but were
+    hex-encoded anyway for consistency with every other byte-blob DTO in this
+    crate.
+  - **`SubaddressIndexWire` carries `major`/`minor` as plain `u32`s, not via
+    `monero`-rs's own `serde` feature** - checked and `cryptonote::subaddress::
+    Index` *does* derive `Serialize`/`Deserialize` upstream, but only behind that
+    crate's own `serde` cargo feature, which this workspace's `monero` dependency
+    doesn't enable (default features are `full`). Deliberately did not turn that
+    feature on in this new crate's `Cargo.toml`: Cargo's feature unification means
+    doing so would silently enable `monero/serde` (and therefore
+    `curve25519-dalek/serde`, `serde-big-array`) for every other workspace member
+    too whenever built together (e.g. plain `cargo build --workspace`) - a
+    non-obvious, action-at-a-distance change to the rest of the tree from what
+    should be a one-crate addition. Two plain `u32` fields cost nothing and avoid
+    it entirely.
+  - **`Address`/`Transaction`/`Network` all reuse an existing encoding rather than
+    inventing one**, per the WBS's own steer: `AddressWire` wraps `Address`'s own
+    base58 `Display`/`FromStr`; `TransactionWire` wraps `monero::consensus::
+    encode::serialize`/`deserialize` (the same functions `src/scanner.rs`'s and
+    `src/key_custody/plain.rs`'s own tests already use to load
+    `tests/fixtures/subaddress_tx.hex`) as hex; `NetworkWire` reuses
+    `moneropay_core::network::network_str`/`parse_network` directly rather than a
+    second string mapping that could drift from the one the config file and admin
+    API already use.
+  - **`WalletMaterialWire` and `SealedMaterialWire` are `ZeroizeOnDrop`**
+    (matching `WalletMaterial`'s own convention exactly) and have a hand-written
+    `Debug` impl that redacts the hex string, rather than deriving `Debug`. Not
+    explicitly asked for by the WBS, but the obvious extension of this codebase's
+    existing rule that raw key material never survives in a plain-`Debug`-able or
+    un-scrubbed form - these two DTOs are the wire copies of exactly the same
+    bytes `WalletMaterial` already treats this way, so there was no real argument
+    for treating the wire form more casually than the in-memory one. Confirmed
+    (didn't just assume) that `String: Zeroize` exists in the pinned `zeroize`
+    version by actually building against it, rather than trusting memory of the
+    crate's API.
+  - **`SealedMaterialWire` is deliberately not assumed to be 64 bytes** even
+    though `PlainKeyCustody::seal` happens to produce exactly `WalletMaterial::
+    to_raw_bytes()`'s 64 bytes today - a future TEE-backed `seal` will produce
+    something sealed *to that enclave*, almost certainly a different length. One
+    test round-trips a 96-byte blob specifically to prove this isn't silently
+    assumed.
+  - **`serde_json` is a dev-dependency only, not a main one** - nothing in
+    `src/lib.rs` actually calls it (no socket/server code exists yet to serialize
+    anything for real), only this crate's own tests do. `key-custody-service`'s
+    main dependencies are `hex`, `moneropay-core` (path), `monero`, `serde`
+    (derive only), `thiserror`, `zeroize` (derive only) - noted in the crate's own
+    `Cargo.toml` comment so 2.1.2 knows to promote `serde_json` (or whatever
+    encoding is chosen then) to a real dependency once something actually sends
+    bytes over a socket.
+  - **`WireConversionError`** (new, local to this crate): covers hex-decode
+    failures, wrong byte lengths, unrecognized network names, unparseable
+    addresses, malformed transaction bytes, and platform `usize`/`u64` overflow -
+    deliberately kept separate from `KeyCustodyErrorWire` (which mirrors
+    `KeyCustodyError` variant-for-variant and carries a real `KeyCustody` method's
+    *application* result across the wire). `WireConversionError` only ever
+    originates locally, turning a possibly-corrupted wire value back into a real
+    type; what a future socket server does with one (close the connection? map it
+    into `KeyCustodyErrorWire::BackendUnavailable`?) is explicitly left as a 2.1.2
+    decision, not resolved here.
+  - **Tests**: 22 in `key-custody-service/src/lib.rs`, plus 1 new in
+    `src/key_custody/mod.rs` for the `WalletHandle` accessor pair (engine crate).
+    Covers, per the WBS's explicit acceptance list: `WalletMaterial`'s real raw
+    key bytes (constructed with every byte value 0..64 present at least once, not
+    a degenerate all-same-byte fixture) extracted and compared byte-for-byte after
+    the round trip - not `assert_eq!` on the wire value, not a `Debug` string,
+    which is exactly the shortcut the WBS warned would let a redaction bug hide as
+    "empty view key" silently; a separate assertion that the `Debug` string really
+    is redacted and really doesn't leak the hex; all four `KeyCustodyError`
+    variants round-tripped (compared by rendered message, since neither
+    `KeyCustodyError` nor `KeyCustodyErrorWire`'s restored form derive
+    `PartialEq` across the crate boundary in a way `assert_eq!` could use
+    directly - `KeyCustodyErrorWire` itself does derive `PartialEq`, used directly
+    for the request/response DTO tests); `MatchedOutput` with both `Some(_)` and
+    `None` amounts; a real, non-trivial `Transaction` deserialized from
+    `tests/fixtures/subaddress_tx.hex` (not an empty/default one) round-tripped
+    through its consensus encoding; a real standard address *and* a real derived
+    subaddress (both built from the same fixture view/spend keys `plain.rs`'s own
+    tests use); every `Network` variant; `Range<u32>`; both directions of every
+    per-method request/response DTO, including a `Vec<MatchedOutputWire>` with
+    more than one element. Several negative tests too (truncated handle hex,
+    wrong-length key material, garbage address text, truncated transaction bytes,
+    unrecognized network name) - not strictly asked for, but cheap given the
+    conversions already return `Result` rather than panicking, and directly
+    useful for whoever builds the 2.1.2 socket server against these.
+  - Full `cargo test --workspace`: engine 311 passed/9 ignored (was 310/9, +1 -
+    the new `WalletHandle` accessor test), key-custody-service 22 passed (new
+    crate), control-plane 80 (unchanged), shared 26 (unchanged), engine-test-support
+    2 (unchanged), mock-woocommerce 8+1 (unchanged). `cargo build --workspace`
+    clean, no warnings. Files touched: `Cargo.toml` (workspace members list),
+    `src/key_custody/mod.rs` (the accessor pair + its test), new
+    `key-custody-service/Cargo.toml` + `key-custody-service/src/lib.rs`. No
+    `cargo fmt` run anywhere, including on the new crate - hand-formatted to match
+    the rest of this codebase's style throughout.
+  - **Not done / explicitly out of scope**: no socket, no server binary, no
+    client adapter implementing `KeyCustody` - that's 2.1.2. No change to
+    `PlainKeyCustody` or the `KeyCustody` trait itself beyond the two new
+    `WalletHandle` methods. No fix to the stale doc-comment prose on the trait
+    itself (documented the discrepancy instead of silently correcting scope this
+    task wasn't asked to touch).
+
+- WBS 1.7.1 done: `CoingeckoRateProvider`, a second `ExchangeRateProvider`
+  implementation backed by live rates from Coingecko's public API, plus config
+  wiring and a `main.rs` background-refresh loop.
+  - **Design followed as specced, not re-derived**: the trait stays synchronous.
+    `CoingeckoRateProvider` holds an `Arc<std::sync::RwLock<HashMap<String, u64>>>`
+    cache that `piconero_per_unit` just reads; a separate `pub async fn
+    refresh(&self) -> Result<(), ExchangeRateError>` does the real HTTP round trip
+    and updates the cache. A currency the cache doesn't (yet) have is `None`,
+    same as `FixedRateProvider`'s existing behavior for an unconfigured currency -
+    nothing downstream needed to change.
+  - **Verified the real API before writing the parser, and found a real gotcha
+    doing it**: `GET https://api.coingecko.com/api/v3/simple/price?ids=monero&vs_currencies=usd,eur`
+    really does return `{"monero":{"usd":530.68,"eur":457.01}}` (live numbers at
+    the time, XMR was ~$530-531) - confirmed via `curl` first. An unknown currency
+    is simply absent from the inner object (`{"monero":{}}`), not an error or
+    `null`; an unknown coin id under `ids=` (not reachable in practice here, since
+    `monero` is hardcoded) comes back as a bare `{}`, handled by treating "no
+    `\"monero\"` object in the body" as `ExchangeRateError::UnexpectedResponse`.
+    **The real gotcha**: a bare `reqwest::Client::new()` gets a flat `403` from
+    the live endpoint - Coingecko's edge rejects any request without a
+    "descriptive User-Agent" (its own error message's exact wording). Not
+    theorized, hit for real: the first run of the live smoke test (below) failed
+    with `Status(403, None)` before this was fixed by setting `.user_agent(...)`
+    on the client `CoingeckoRateProvider::new` builds. Worth flagging because it
+    would have been invisible in every unit test here (the local axum test server
+    doesn't care about `User-Agent`) and would only have surfaced once someone
+    finally ran this against the real internet - which is exactly why the task
+    asked for a live smoke test rather than trusting the fixture tests alone.
+  - **The inversion arithmetic and its guardrails**: `piconero_per_unit =
+    round(1e12 / price_of_1_xmr_in_that_currency)`, `f64` throughout, matching the
+    task's explicit carve-out from `docs/DESIGN.md` §8.1 (documented in the
+    module's own doc comment as an exception, not a violation - §8.1 governs
+    computing a customer's charge from an already-fixed rate via
+    `compute_xmr_amount`, untouched here; Coingecko's own market price has no
+    "exact" form to preserve in the first place). Per-currency, not
+    all-or-nothing: an absent, non-numeric, non-finite, zero, negative, or
+    u64-overflowing price for one currency is logged and that currency alone is
+    skipped for the round (a Coingecko bug/outage returning `0`/`null` for one
+    currency must not silently price every order in it at zero), while every
+    other currency in the same response still updates normally. A failed
+    request/non-2xx/malformed-body fails the *whole* `refresh()` call before the
+    cache is touched at all, so a transient outage never wipes previously-cached
+    rates - mirrors the "a lagging/failing fallback node doesn't corrupt stored
+    state" resilience shape this codebase's fallback-node tests already
+    established, applied here to the rate cache instead of chain-scan state.
+  - **Config** (`src/config.rs`): `ExchangeRateConfig` gained `currencies:
+    Vec<String>` (`#[serde(default)]`, empty by default - the exact casing
+    written here is what `piconero_per_unit` gets looked up by later, matching
+    `FixedRateProvider`'s already-existing case-sensitive-verbatim behavior) and
+    `cache_seconds: u64` (`#[serde(default)]` = 60, validated 10-3600 in
+    `validate_bounds` - the lower bound exists so a typo can't turn the
+    background loop into a hot loop against a free public API this deployment
+    depends on for every order's price). `Config::validate` now accepts
+    `provider = "coingecko"` alongside the existing `"fixed"`, and rejects
+    coingecko mode with an empty `currencies` list as a new
+    `ConfigError::CoingeckoNoCurrenciesConfigured` (nothing would ever be
+    fetched - a real misconfiguration, not a valid "no currencies yet" state).
+    New `ExchangeRateConfig::build_coingecko_rate_provider()` mirrors the
+    existing `build_fixed_rate_provider()`, always pointed at the real
+    `https://api.coingecko.com` (the base-url override exists on the provider
+    type for tests, not as an operator-facing config knob - not asked for, and
+    a config surface for pointing production at an arbitrary URL felt like
+    unrequested scope).
+  - **`main.rs` wiring**: the exchange-rate provider construction now matches on
+    `config.exchange_rate.provider` (already validated to be one of the two known
+    values by this point). `"coingecko"` builds the provider, calls `.refresh()`
+    once synchronously (logs and continues rather than panicking on failure - a
+    transient outage at boot shouldn't stop the whole service starting, and every
+    order in every configured currency will 400 as unsupported until a refresh
+    succeeds, which is loud in the logs, not silent), then `supervise`s a new
+    `run_coingecko_refresh_loop` that sleeps `cache_seconds` and calls
+    `.refresh()` again, forever - same `supervise` pattern as the existing
+    webhook-delivery/scanner/double-spend-revalidation loops, so a panic inside
+    it gets logged and restarted rather than silently killing rate updates
+    forever. `"fixed"` (and anything else, though `validate` already excludes
+    other values) takes the existing unchanged path.
+  - **Tests**: 8 new in `exchange_rate.rs` (successful refresh's inversion
+    arithmetic checked against a hand-computed value for a known price of 149.23
+    USD/XMR -> 6,701,065,469 piconero/USD; an untracked/absent currency stays
+    `None`, no panic; a non-object and a non-JSON response body are each a clean
+    `Err`, not a panic; a zero price and a negative price in the same response
+    each individually skip only their own currency, leaving a third good value in
+    that same response intact; an unreachable base URL (`http://127.0.0.1:0` -
+    deterministic, no bind/drop race) is a clean `Err`; a later failed refresh
+    (simulated outage via a scripted second response) leaves an already-cached
+    rate untouched; lookup casing matches configured casing exactly, mirroring
+    `FixedRateProvider`) plus a `#[ignore]`d live smoke test, run manually (see
+    below). 3 new in `config.rs` (coingecko mode with a real currency list
+    parses/validates and `build_coingecko_rate_provider` hands back a working,
+    empty-cache provider; empty `currencies` under coingecko mode is rejected,
+    both omitted and explicit `[]`; `cache_seconds` bounds - 0, 5, and 3601
+    rejected, 10 and 3600 accepted). All pre-existing `provider = "fixed"` tests
+    pass unmodified.
+  - **Live smoke test, run for real** (not simulated): `cargo test -p
+    moneropay-core --lib
+    exchange_rate::tests::coingecko::manual_smoke_test_against_the_real_coingecko_api
+    -- --ignored --nocapture`, against the real `https://api.coingecko.com`,
+    requesting USD and EUR. Actual output: `piconero_per_unit("USD") =
+    1883629377, piconero_per_unit("EUR") = 2187274437` - i.e. roughly $530.90 and
+    €457.20 per XMR at the time, consistent with the earlier `curl` check (also
+    run live: `{"monero":{"usd":530.68,"eur":457.01}}` moments earlier - price
+    moved slightly between the two calls, as expected for a live market feed).
+  - **Not done / explicitly out of scope**: `init_wizard.rs`'s interactive setup
+    flow was not extended to offer `provider = "coingecko"` as a choice - it still
+    only ever writes `provider = "fixed"` configs. The task's spec named
+    `config.rs` and `main.rs` for wiring, not the wizard; adding a third
+    provider-choice branch to an already-scripted interactive prompt sequence
+    felt like a separate, non-trivial UI task rather than an oversight worth
+    silently folding in here. A self-hoster (or the control-plane's own generated
+    config, once that exists) can still hand-write `provider = "coingecko"` into
+    the TOML directly - `Config::validate`/`build_coingecko_rate_provider` don't
+    care how the file was produced. Also not built: any operator-facing override
+    of the Coingecko base URL (see above) or a config knob for which specific
+    coin id to query (hardcoded to `monero`, the only one this service could ever
+    need).
+  - Full `cargo test --workspace`: engine 310 passed/9 ignored (was 299/8, +11
+    tests, +1 new `#[ignore]`d live test), control-plane 80 (unchanged), shared
+    26 (unchanged), engine-test-support 2 (unchanged), mock-woocommerce 8+1
+    (unchanged). `cargo build --workspace` clean, no warnings. Files touched:
+    `src/exchange_rate.rs`, `src/config.rs`, `src/main.rs` - no engine schema/
+    migration changes, no other crate touched.
+
+- Corroborated key-image voiding + bounded false-positive recovery sweep (not a
+  WBS item - the user asked directly whether reconnecting to an honest node would
+  ever undo a wrongful void caused by a single lying node's `is_key_image_spent`
+  answer; traced the code and found the answer was no - the only un-void path
+  (`check_for_reorg_and_reconcile`'s reverse check) only runs when a reorg is
+  *also* independently detected, which a key-image lie alone never triggers - then
+  asked for a sustainable, low-overhead fix, which this implements in full).
+  - **Prevention**: `MoneroDaemonClient` gained a new trait method,
+    `is_key_image_spent_corroborated` (default: delegates to the plain method,
+    so every existing single-node client - `RpcDaemonClient`, every test double -
+    is unaffected). `FallbackDaemonClient` overrides it: polls *every* configured
+    node (not just the sticky `current` one), affirms `SpentInBlockchain` only on
+    unanimous agreement among however many actually answered, and refuses to
+    affirm on disagreement (logged, since it means a configured node is wrong or
+    lying) rather than majority-voting - a missed double-spend just gets re-checked
+    later, a false one permanently voids real money, so the safe direction to be
+    wrong in is clear. `scanner::void_if_double_spend_proven` now calls this
+    instead of the bare method. No hot-path cost: `is_key_image_spent` was already
+    only ever called from this same rare "a payment vanished" path, never from the
+    per-second scan loop.
+  - **Recovery**: new `scanner::revalidate_recent_double_spend_voids`, a bounded
+    sweep (only payments voided within `DOUBLE_SPEND_RECHECK_WINDOW_SECS` = 48h)
+    that re-runs the corroborated check on already-voided payments and reverses
+    (`unvoid_as_false_positive`, new) any that no longer hold up. Deliberately its
+    own, much slower background loop (`main.rs`, every 5 minutes) rather than
+    folded into `run_scan_tick`'s per-second loop - double-spend voids are
+    healthily rare, so cost is proportional to how many voids happened recently,
+    not to how often the sweep runs. Reversing this way (unlike the pre-existing
+    reorg-driven reversal, which deliberately leaves `double_spend_detected_at`
+    set - a real conflicting transaction genuinely existed there for a time even
+    if later reorged away) clears that sticky order-level flag too, but only once
+    *every* voided payment on the order has been cleared - an order with two
+    independently-voided payments where only one turns out to be a false
+    accusation keeps the flag, since the other still genuinely justifies it. Fires
+    a new `order.double_spend_reversed` webhook rather than silently folding into
+    whatever status the recompute lands on.
+  - New `Store` methods: `find_payments_voided_since` (network- and
+    recency-scoped, the sweep's candidate query) and `clear_double_spend_flag`
+    (the only way that flag is ever cleared, deliberately separate from
+    `mark_double_spend_detected`'s own "first occurrence only" stickiness).
+  - **17 new tests**: 7 in `daemon_fallback.rs` (unanimous agreement affirms;
+    disagreement refuses and is per-key-image independent of other key images in
+    the same call; a single node or only-one-reachable node is trusted as-is;
+    every-node-unreachable is an error, not a silent false negative), 2 in
+    `scanner.rs` proving the prevention end-to-end through `run_scan_tick`
+    (a disagreeing fallback actually prevents the wrongful void a lying single
+    node would cause; a genuine, unanimously-corroborated double-spend is still
+    voided - no regression), 6 more in `scanner.rs` for the recovery sweep
+    (reverses a no-longer-supported void; leaves a still-supported one alone;
+    ignores voids outside the recheck window; keeps the flag set when another
+    voided payment on the order still justifies it; aborts cleanly - no partial
+    writes - if the chain height is unreachable; skips one failed per-payment
+    recheck but still processes the rest of the batch), 2 in `store.rs`
+    (`find_payments_voided_since`'s recency bounding; `clear_double_spend_flag`'s
+    idempotency). `docs/DESIGN.md` §7.7 updated in both the original
+    `is_key_image_spent` bullet and the "Fallback nodes widen this trust
+    boundary" section, naming every test above by name. Full
+    `cargo test --workspace` clean at 299 engine tests (was 282), 0 failed.
+  - Explicitly out of scope, matching what was actually asked for: no new config
+    knob for the recheck window (a documented constant instead, to avoid
+    unrequested config-surface growth); single-node deployments get no benefit
+    from the prevention half (nothing to corroborate against) - only the recovery
+    sweep helps them, and only within its bounded window.
+
+- Fallback nodes: composed reorg/lagging/all-down tests, plus a real found
+  gap (not a WBS item - the user asked directly, after the fallback-node
+  feature above, whether the test suite covered a fallback presenting
+  different/lagging/split chain state - it didn't, so this closes that).
+  `daemon::fake::FakeDaemonClient` gained `set_online(bool)` (defaults
+  online via `new()`; every `MoneroDaemonClient` method returns `Err`
+  while offline, scripted chain state untouched) so a test can drive a
+  real `FallbackDaemonClient` failover rather than hand-swapping daemons.
+  4 new tests in `src/scanner.rs`, composing `FallbackDaemonClient` with
+  real `FakeDaemonClient`/`DaemonFailingBlockHashAt` doubles through
+  `run_scan_tick` (not just unit-testing the fallback client in isolation
+  the way `daemon_fallback.rs`'s own 6 tests do):
+  - `failing_over_through_a_real_fallback_client_to_a_node_serving_a_different_chain_reconciles_like_a_reorg`
+    - the explicit ask: a real failover (primary goes offline, not
+    swapped by the test) landing on a genuinely diverging fallback
+    reconciles exactly like an ordinary reorg.
+  - `failing_over_to_a_lagging_but_honest_fallback_neither_rewinds_nor_corrupts_the_window`
+    - the more realistic case (a resyncing backup node, not a malicious
+    fork) doesn't rewind or corrupt anything.
+  - `every_fallback_node_being_down_fails_the_tick_cleanly_without_corrupting_stored_state`.
+  - `a_node_that_dies_between_fetching_a_blocks_transactions_and_its_hash_can_pair_them_with_a_different_nodes_hash`
+    - **a genuine, previously-undocumented correctness gap, confirmed
+    real by this test, not just theorized**: `run_scan_tick` fetches a
+    block's transactions and its hash as two separate daemon calls; since
+    `FallbackDaemonClient` fails over per-call, those two calls for the
+    same height aren't guaranteed to land on the same node. If the
+    primary answers the first and dies before the second, the stored
+    (height, hash) pair ends up describing a block that never existed as
+    such on any single chain - transactions from one node, hash from
+    another. Deliberately **not fixed** - the per-call granularity that
+    causes it is also what lets a tick survive a node dying mid-tick,
+    which is a real resilience win; pinning failover to one node per tick
+    would trade this narrow, low-probability inconsistency for aborting
+    the whole tick's remaining work on any transient blip. Documented as
+    an accepted, sharper version of the pre-existing "replication lag
+    across a pool of backend nodes" tradeoff, not silently left unknown.
+  `docs/DESIGN.md` §7.1 and §7.7 updated: §7.7 gained a full "Fallback
+  nodes widen this trust boundary" subsection naming both what's covered
+  and this one open gap, cross-referenced from §7.1's fallback paragraph.
+  Scanner's own test-module coverage-index doc comment (§5 "Dishonest or
+  swapped daemons") extended to list all 4 new tests. Full
+  `cargo test --workspace` clean at 282 engine tests (was 278), 0 failed.
+
+- Fallback Monero nodes (not a WBS item - requested directly by the user
+  after diagnosing 1.4.5's stall, as a real production-reliability feature,
+  separate from the test-only node swap): `MoneroNodeConfig` gained an
+  optional `fallbacks: Vec<MoneroFallbackNodeConfig>` field
+  (`#[serde(default)]`, fully backward compatible - every existing
+  single-node config parses unchanged), configured via one or more
+  `[[monero_node.<network>.fallbacks]]` array-of-tables entries alongside
+  the existing `[monero_node.<network>]` primary table. New
+  `src/daemon_fallback.rs::FallbackDaemonClient` implements
+  `MoneroDaemonClient` by wrapping an ordered list of real
+  `RpcDaemonClient`s (primary + fallbacks) and failing over between them:
+  every call starts at whichever node last succeeded (not always the
+  primary - a dead primary shouldn't be retried on every single scan
+  tick forever) and walks forward through the rest on failure, wrapping
+  around; no background health-check polling, since the next real call is
+  the health check. Wired into `main.rs`'s daemon construction - each
+  configured network's `Arc<dyn MoneroDaemonClient>` is now this wrapper
+  instead of a bare `RpcDaemonClient`, transparent to everything
+  downstream (the scanner has no idea more than one node might be
+  involved). 6 new unit tests in `daemon_fallback.rs` (healthy-primary
+  never touches fallback; failover within one call; stickiness - a proven
+  fallback isn't abandoned to retry a still-down primary; recovery once
+  the current node itself fails; every-node-failure returns a clear error
+  rather than panicking; single-node-no-fallbacks behaves like a bare
+  client), plus 3 new `config.rs` tests (parses with no fallbacks; parses
+  multiple in order with correct defaults; empty-host/out-of-range-port
+  fallback entries rejected exactly like a primary node's would be, both
+  cases in one test). `config.rs::validate_bounds` extended to validate
+  each fallback's host/port alongside the primary's. Documented in
+  `docs/DESIGN.md` §7.1. Full `cargo test --workspace` clean at 278
+  engine tests (was 269 after the 1.4.5 commit above; +6 daemon_fallback,
+  +3 config) / 0 failed / 8 ignored before commit.
+
+- 1.4.5 done: the real stagenet end-to-end test
+  (`mock-woocommerce/tests/e2e_stagenet_connect_flow.rs`, `#[ignore]`d, run
+  via `cargo test -p mock-woocommerce --features e2e --test
+  e2e_stagenet_connect_flow -- --ignored --nocapture`) now passes cleanly
+  and repeatably (two consecutive clean runs, ~150-200s each). It signs up
+  a real control-plane account, runs the real connect flow with the real
+  stagenet **merchant** watch-only wallet (`e2e/stagenet-wallets.json`),
+  creates a real order, pays it with a real signed transaction from the
+  **customer** wallet (`moneropay_core::e2e_wallet::StagenetSpendWallet`,
+  reused as a library dependency - not reimplemented), drives a real chain
+  scan against a real stagenet node
+  (`TestEngineHandle::run_scan_tick_now`), and asserts the mock's webhook
+  receiver got a real, correctly-signed `order.paid` delivery.
+  - **The real bug, after two wrong hypotheses**: every run reliably hung
+    for minutes-plus on the very first post-payment scan tick, regardless
+    of which public stagenet node was configured (ruled out via direct
+    curl reproduction against three different nodes - all fast) and
+    regardless of `#[tokio::test]`'s runtime flavor (switching to
+    `flavor = "multi_thread"` on the theory of a `std::sync::Mutex`
+    deadlock between the manual scan tick and the background
+    webhook-delivery loop did not fix it, though it's still the right
+    runtime choice here and was kept). The actual cause:
+    `TestEngineConfig::with_background_loops`'s own scanner-tick loop
+    (`engine-test-support/src/lib.rs`) runs on an inert `NoopDaemonClient`
+    whose `get_height()` always returns `0`, and it shares the *same*
+    per-network scanned-height watermark in `Store`
+    (`max_scanned_height`/`set_scanned_block`, keyed by network string
+    alone) with the real daemon this test drives directly via
+    `run_scan_tick_now`. That loop's very first tick seeded
+    `last_scanned = Some(0)` for stagenet; the real scan then computed
+    `scan_range = (1, current_real_height)` and tried to fetch every
+    stagenet block one at a time from block 1 up to the real chain tip
+    (~2.2 million blocks) - which looks exactly like an indefinite,
+    node-independent, low-CPU hang. Confirmed directly (not just inferred)
+    by reading `src/scanner.rs::run_scan_tick` and
+    `engine-test-support/src/lib.rs`'s loop, and by independently
+    verifying via a stagenet block explorer / direct node RPC that a
+    "stuck" payment's transaction was in fact already confirmed on-chain
+    the whole time - the chain scan was fine, it just had an impossible
+    amount of ground to cover.
+  - **The fix**: `TestEngineConfig` gained `.without_background_scan_loop()`
+    - keeps the real (and necessary) webhook-delivery-tick loop but skips
+    spawning the `NoopDaemonClient` scan-tick loop entirely, so nothing
+    else touches this test's network's watermark. The test now calls
+    `.with_background_loops().without_background_scan_loop()`. Each real
+    scan tick now takes ~3-5s (normal RPC latency), not minutes.
+  - **Also fixed along the way (still real, kept)**: `e2e/moneropay-
+    stagenet.toml`'s configured node changed from `node.monerodevs.org` to
+    `stagenet.xmr-tw.org:38081` after observing genuine (if ultimately
+    unrelated to this bug) multi-minute stalls against the former during
+    diagnosis - not reproducible via plain curl, so likely specific to
+    long-lived/pooled-connection behavior; the new node has been reliably
+    fast throughout.
+  - **Caution for future review**: a `cargo fmt -p mock-woocommerce -p
+    engine-test-support -p moneropay-core` run mid-session reflowed the
+    *entire* `moneropay-core` crate (this codebase is deliberately not
+    rustfmt-compliant - wider, hand-formatted style). That inflated the
+    diff to 5817+/1793- across 31 files before a dedicated review caught
+    it; the pure-reflow noise (21 files, zero real content changes -
+    verified by reformatting each file's pre-change HEAD version and
+    diffing against working copy) was reverted with `git checkout --`
+    before committing. Don't run `cargo fmt -p moneropay-core` (whole
+    engine crate) again without a real reason to touch every file in it.
+  - Deleted `examples/fund_and_split_customer_wallet.rs`, a throwaway
+    one-time script (used once to split faucet funds across the customer
+    wallet's UTXOs for the e2e test) that didn't compile without the `e2e`
+    feature and broke plain `cargo build --workspace`.
+  - Not done, explicitly out of scope for 1.4.5 and requested separately
+    by the user afterward: a genuine multi-node/fallback-node-list feature
+    in the engine's own daemon-client configuration (for production
+    reliability, not just this test) - next up.
+  - Full `cargo test --workspace` (269 engine + 26 shared + 80 control-plane
+    + 8 mock-woocommerce + 2 engine-test-support, all passing, 0 failed)
+    re-run clean after the fmt-noise revert, before this commit.
+
+- 1.4.4 done: webhook registration folded into `/finish`, plus a real
+  receiver in `mock-woocommerce` and a genuinely forced end-to-end delivery
+  test, completing Track 1.4 short of 1.4.5 (deliberately not built here).
+  - **Part A (control-plane)**: `POST /connect/{platform}/finish` now
+    accepts `{"token", "webhook_url"?}` (`webhook_url` optional, for
+    backward compatibility with every pre-existing caller/test). When
+    present, `finish` calls a new `EngineClient::create_webhook(sk, url) ->
+    Result<(webhook_id, signing_secret), EngineClientError>` (mirrors the
+    engine's real `CreateWebhookRequest`/`CreateWebhookResponse`
+    field-for-field, same convention as every other `EngineClient` method)
+    and returns `webhook_signing_secret` in the response
+    (`#[serde(skip_serializing_if)]`, so a caller with no webhook sees the
+    exact same wire shape as before this task). A failed registration
+    collapses the *whole* `/finish` call to `401`, per this task's own spec
+    - documented in `finish`'s own doc comment as a deliberate policy
+      choice, not just pattern reuse, along with the accepted tradeoff (the
+      connect token is already consumed by that point, so the plugin must
+      restart the whole flow rather than retry).
+    - Also threaded `ConfirmForm::order_expiry_seconds` (new, optional,
+      `#[serde(default)]`) through to `CreateConnectionFields` - previously
+      hardcoded to `None` at the confirm step. Needed as a real way to give
+      a tenant a short expiry through this flow (see Part C), and is a
+      genuine, narrow gap this task's own scope justified filling rather
+      than a JSON-endpoint-only capability (`POST /connections` already had
+      it).
+  - **Part B (mock-woocommerce)**: new `shared` dependency (plain library
+    dep, no circularity). Added a real, long-lived `WebhookReceiver`
+    (`POST /moneropay/webhook`) - deliberately *not* tied to the short-lived
+    callback server's lifetime, since a delivery can arrive well after the
+    connect flow itself has returned. Verifies `X-MoneroPay-Signature` via
+    `shared::webhook_sign::verify_signature` against the raw `axum::body::
+    Bytes` *before* any JSON parsing, rejects (without recording) a missing/
+    invalid signature or one arriving before the receiver's `signing_secret`
+    is even known yet, and dedupes recorded events on `event_id` (real
+    at-least-once delivery per `docs/DESIGN.md` §11).
+    `run_connect_flow` now always spawns this receiver and passes its URL
+    as `webhook_url` to `/finish`, storing the real `webhook_signing_secret`
+    and the still-running receiver in an extended `ConnectedCredentials` -
+    all 3 pre-existing tests needed zero changes to their assertions (only
+    gained new fields). A new `run_connect_flow_with_order_expiry_seconds`
+    sibling (generalizing rather than duplicating, same judgment call
+    `TestEngineConfig` already modeled) exists for Part C's test.
+  - **Part C (engine background loops)**: investigated thoroughly before
+    touching anything - **zero engine-crate changes were needed**.
+    `moneropay_core::webhook_delivery::run_delivery_tick` was already public
+    (already used by `main.rs`); the one genuine gap was a
+    `MoneroDaemonClient` for `run_scan_tick` to drive, since the engine's own
+    `daemon::fake::FakeDaemonClient` is `#[cfg(test)]`-gated and therefore
+    invisible to any downstream crate, dev-dependency or not. Fixed
+    entirely inside `engine-test-support` by implementing the (ungated,
+    public) `MoneroDaemonClient` trait fresh with a trivial `NoopDaemonClient`
+    (height stuck at 0, empty blocks/mempool) - confirmed by directly reading
+    `src/scanner.rs` that `run_scan_tick`'s non-terminal-order recompute sweep
+    (`docs/DESIGN.md` §7.6, the one that reaches `expired`) is keyed off
+    `network` alone via `non_terminal_order_ids`, entirely independent of the
+    `tenants`/watchlist parameter that gates real chain-scanning, so an inert
+    daemon and an empty `tenants` list are sufficient to force a real expiry
+    purely from wall-clock time. `TestEngineConfig::with_background_loops()`
+    (opt-in, off by default - every existing caller/test unaffected) spawns
+    both the scanner-tick and delivery-tick loops on a 150ms interval.
+    Verified directly in `engine-test-support`'s own new test
+    (`background_loops_genuinely_deliver_a_real_expired_webhook`) purely
+    through the engine's public/admin HTTP API, with no `mock-woocommerce`/
+    `control-plane` involved, before relying on it anywhere else.
+  - **The forced-delivery test**
+    (`mock-woocommerce`'s `a_genuinely_forced_order_expired_webhook_is_delivered_and_verified`):
+    real engine (`with_background_loops`) + real control-plane +
+    `run_connect_flow_with_order_expiry_seconds(url, 1)` + a real order via
+    `create_order` with no payment ever made, then polls (not a fixed sleep)
+    the receiver until the real `order.expired` delivery lands. Genuine, not
+    a shortcut: nothing in the test touches either database directly, mints
+    an event/delivery row itself, or calls any scanner/delivery function by
+    hand - every step is a real HTTP call or an already-independently-proven
+    background loop. The final assertion re-verifies the *exact* raw bytes +
+    signature the receiver actually recorded (not a re-serialized
+    reconstruction) against `credentials.webhook_signing_secret` - a value
+    obtained from a completely different channel (`/finish`'s own JSON
+    response) than the receiver's internal state, plus a negative check that
+    a wrong secret does not verify the same bytes.
+  - Also added: 3 new control-plane tests (`engine_client.rs`'s
+    `create_webhook_then_list_webhooks_round_trips_against_a_real_engine`;
+    `connect.rs`'s `finish_with_a_webhook_url_registers_a_real_webhook_and_
+    carries_the_signing_secret` and `finish_with_a_rejected_webhook_url_
+    fails_the_whole_call`); 4 more mock-woocommerce tests beyond the forced-
+    delivery one (a direct signature-verification unit test reusing
+    `shared::webhook_sign`'s own documented cross-language known vector
+    rather than inventing a new one; dedupe-on-retry; reject-invalid-
+    signature; reject-before-secret-is-known).
+  - Counts: control-plane 80 passed (+3 from this task; the pre-task
+    baseline was already 77, not the 57 last recorded in this log under
+    1.3.3 - 1.4.1/1.4.2/1.4.3 added tests without updating a "Counts:" line
+    here, not this task's doing), engine-test-support 2 passed (was 1, +1),
+    mock-woocommerce 8 passed (was 3, +5), engine 269/8 ignored (unchanged,
+    confirmed no engine-crate file was touched), shared 26 (unchanged,
+    untouched). `cargo build --workspace` and `cargo test --workspace` both
+    clean, no warnings.
+  - Files touched: `control-plane/src/engine_client.rs`,
+    `control-plane/src/http/connect.rs`, `engine-test-support/Cargo.toml`,
+    `engine-test-support/src/lib.rs`, `mock-woocommerce/Cargo.toml`,
+    `mock-woocommerce/src/lib.rs`. No `docs/`, no migrations, no engine
+    (`src/`) file.
+
+- 1.4.2 done: `mock-woocommerce` is now a real driver — `run_connect_flow`
+  is the synthetic browser (cookie-persisting `reqwest::Client`, auto-
+  following redirects) walking the whole WBS 1.4.1 flow: connect-start →
+  signup → login-with-`next` → confirm → auto-followed straight into the
+  driver's own locally-bound callback server. The callback handler is
+  where the real "plugin-side" logic lives (nonce check, then a separate
+  server-to-server `/finish` call) — deliberately placed there rather than
+  in the outer driver, since that's exactly where the real WordPress
+  plugin's callback will live at WBS 1.5.3. `main.rs` is a thin CLI
+  wrapper (control-plane URL from arg/env/default), exiting 0 with
+  credentials printed or non-zero on failure, matching the WBS's own
+  acceptance criterion. No shared `control-plane-test-support` crate yet
+  (only `engine-test-support` exists) — a small private harness lives in
+  this crate's own tests for now, correctly judged not worth generalizing
+  until a second consumer needs it. Nonce-mismatch handling is proven
+  load-bearing with a strong test: a substituted-nonce callback is
+  rejected before `/finish` is ever called, then the *same* token is
+  proven still-unconsumed by successfully finishing it directly
+  afterward. mock-woocommerce grew from 1 → 3 tests (2 real + 1
+  placeholder). Independently re-verified (full `lib.rs` review, `cargo
+  test --workspace` re-run twice) before commit.
+- 1.4.1 done: (see the WBS 1.4.1 commit for the full writeup — generic
+  connect start/finish endpoints, the open-redirect-safe `next` handling,
+  and atomic single-use token consumption.)
+- 1.3.3 done: order list/detail + webhook list pages — read-only, per the
+  WBS's own "what" bullet (only the engine's `GET` admin routes). Three new
+  `EngineClient` methods (`list_orders`, `get_order_detail`,
+  `list_webhooks`), mirroring the engine's real `OrderView`/
+  `OrderDetailResponse`/`PaymentView`/`WebhookView` field-for-field, same
+  convention as `create_tenant`/`get_tenant`. New `control-plane/src/
+  http/orders.rs` adds three routes behind `AuthedUser`:
+  `GET /dashboard/connections/{id}/orders`,
+  `GET /dashboard/connections/{id}/orders/{payment_id}`,
+  `GET /dashboard/connections/{id}/webhooks`.
+  - **Ownership design**: a user can have more than one `store_connections`
+    row, so every route is scoped by `{id}` in the path.
+    `load_owned_connection` looks the row up by `id` and filters it through
+    `row.user_id == user.id` in one step — a mismatch and a nonexistent id
+    both collapse to the same `Ok(None)`, mapped to a bare `404` by every
+    caller, exactly like the account-enumeration defense `login`/
+    `AuthedUser` already apply to accounts, just applied to object-level
+    access here. Verified this is a real, load-bearing check, not
+    decoration: temporarily changed `load_owned_connection` to skip the
+    `user_id` filter and re-ran the cross-user test — it failed (`200` where
+    it expected `404`), then reverted and reconfirmed green.
+  - **First real `crypto::decrypt` consumer outside a test**: each handler
+    decrypts the connection's stored `sk_...` via `crypto::decrypt` +
+    `state.encryption_key` before calling `EngineClient`. A decryption
+    failure (shouldn't happen for a row this service itself wrote) maps to
+    a plain `500`, never unwrapped/panicked.
+  - **Engine-404 vs. internal-error split**: `order_detail` distinguishes
+    the engine's own `404` (unknown `payment_id`, or one belonging to a
+    different tenant) — rendered as a real `404` with a clear "Order not
+    found" page — from every other `EngineClientError`, which stays a
+    generic `500`. Same "caller-caused vs. our problem" split
+    `connections.rs`'s `CreateConnectionError::BadRequest`/`Internal`
+    already established, just keyed off `404` instead of `400` here.
+  - **`engine-test-support` extended again**, generalizing rather than
+    adding a third near-duplicate spawn function: a new
+    `TestEngineConfig` (builder: `with_networks`/`with_rate`, `.spawn()`
+    does the actual construction) now backs both `spawn_test_engine`
+    (`TestEngineConfig::new().spawn()`) and
+    `spawn_test_engine_with_networks` (`TestEngineConfig::new()
+    .with_networks(networks).spawn()`) — neither's signature or behavior
+    changed; both crates' own smoke tests (`engine-test-support`'s
+    `client_library_route_is_reachable_over_a_real_socket`,
+    `engine_client.rs`'s and `connections.rs`'s real-engine tests) still
+    pass unchanged. This task's own tests use
+    `TestEngineConfig::new().with_networks(&[Mainnet]).with_rate("USD",
+    ...).spawn()` — needed because seeding a real order means calling the
+    engine's *public* `POST /api/v1/t/{pk}/orders`, which 400s without a
+    configured exchange rate for the requested `fiat_currency` (the same
+    kind of gap `spawn_test_engine_with_networks` closed for
+    `configured_networks` at 1.2.1).
+  - Three new templates (`orders.html.hbs`, `order_detail.html.hbs`,
+    `webhooks.html.hbs`), following the existing minimal, no-CSS style,
+    registered in `templates.rs` alongside new view-model structs
+    (`OrdersViewModel`, `OrderDetailViewModel`/`OrderDetailData`,
+    `WebhooksViewModel`, plus their row types).
+  - **Tests** (`control-plane/src/http/orders.rs`'s own `#[cfg(test)] mod
+    tests`, 6 new): a real order seeded via a raw `reqwest` call against the
+    spawned engine's public API (using the connection's `pk_`, no `Origin`
+    header so the tenant's empty `allowed_origins` never comes into play)
+    then shown by `GET .../orders` (its `payment_id` appears in the
+    response) and `GET .../orders/{payment_id}` (full detail, including the
+    fiat currency); an unknown `payment_id` renders a real `404` "not
+    found" page; `GET .../webhooks` on a connection with none registered
+    renders a valid, empty table (`200`, not an error); a second signed-up
+    user hitting the first user's connection id gets `404` (verified
+    load-bearing, see above — not their orders, and not a `403` that would
+    confirm the id exists); all three routes reject an unauthenticated
+    request with `401` before any ownership check runs (checked with a
+    connection id that doesn't even exist, since `AuthedUser` must reject
+    before the handler ever looks anything up).
+  - Counts: control-plane 57 passed (was 51, +6), engine-test-support 1
+    passed (unchanged), engine 269/8 ignored (unchanged), shared 25
+    (unchanged), mock-woocommerce 1 (unchanged). `/signup`, `/login`,
+    `/logout`, `/connections`, `/dashboard/connect` and their existing
+    tests untouched. No webhook create/delete or order mutation built —
+    out of scope per the WBS's own "what" bullet for this task.
+- 1.3.2 done: `GET`/`POST /dashboard/connect` — the browser form for wallet
+  provisioning, behind `AuthedUser` (works via either bearer or cookie,
+  same as everything else). Core logic factored out of the JSON
+  `/connections` handler into `connections::create_connection_for_user`
+  (async, since — unlike the sync `create_account`/`authenticate`
+  factorings from 1.3.1 — this genuinely awaits a real network call to the
+  engine), called by both surfaces. `platform` hardcoded to `"woocommerce"`
+  for now (no platform-choice UI yet); the three optional wallet-limit
+  fields left `None`. `allowed_origins` arrives as one comma-separated
+  text field, split/trimmed/empty-filtered into a `Vec<String>`. No
+  session → plain `401`, same as everywhere else (no redirect-on-401
+  invented). New `connect.html.hbs` (one template, form/error/confirmation
+  via `{{#if}}`, correctly auto-escaped, no triple-stash). Test reused the
+  strong "decrypt then authenticate against the real engine" proof from
+  1.2.3 rather than a weaker string check. control-plane 51 passed
+  (was 43, +8). Independently re-verified (full diff review of
+  connections.rs's refactor, dashboard.rs's new handlers, the template)
+  and `cargo test --workspace` re-run before commit.
+- (1.3.1 done, see git log for details — dashboard signup/login pages
+  with cookie sessions.)
+- 1.2.3 done: `sk_` at-rest encryption, completing WBS 1.2. AES-256-GCM
+  (`aes-gcm` crate) in a new `control_plane::crypto` module — pure
+  key-as-parameter functions (`Db` and the crypto module itself stay
+  ignorant of *where* the key comes from), encoded as
+  `hex(nonce || ciphertext+tag)` in the same `TEXT` column, no schema
+  change. `main.rs` sources the key from `CONTROL_PLANE_ENCRYPTION_KEY`
+  (64 hex chars) with three distinct, precise panic messages rather than
+  a checked-in placeholder — correctly treated as a materially different
+  case from the earlier placeholder engine URL (a stub secret is a real
+  future credential leak; a stub URL isn't). `http/connections.rs` now
+  encrypts before calling `Db::create_store_connection`. Genuinely good
+  engineering under a real obstacle: `aes-gcm` 0.11's API had changed
+  significantly from older docs/examples (moved to the `hybrid-array`-based
+  `aead` 0.6 crate) — resolved by reading the actual vendored source rather
+  than guessing. Tamper-detection is proven, not just asserted possible: a
+  test flips a real ciphertext byte and confirms `AuthenticationFailed`
+  (plus separate tests for truncated input, non-hex input, and a wrong
+  key). The updated `/connections` test proves genuine encryption via a
+  stronger check than a literal-string comparison: it decrypts the stored
+  value with the known test key, then authenticates *as that tenant*
+  against the real spawned engine (`EngineClient::get_tenant`) — only the
+  real `sk_...` could pass that. control-plane 31 passed (was 25, +6).
+  Independently re-verified (full crypto.rs/main.rs/mod.rs diff review,
+  `cargo test --workspace` re-run) before commit.
+- 1.2.2 done: `store_connections` table + `POST /connections`, the first
+  endpoint wiring together 1.1.x session auth and 1.2.1's `EngineClient`.
+  Migration 3 (`control-plane/migrations/0003_store_connections.sql`) adds
+  the table exactly as specced, with an explicit doc comment (mirrored on
+  `Db::create_store_connection`) that `tenant_secret_token_encrypted`
+  currently holds the engine's raw `sk_...` value, UNENCRYPTED — named for
+  its WBS-1.2.3 final form so that task doesn't need a rename migration.
+  Added `Db::create_store_connection` and `Db::get_store_connection_by_id`
+  (`StoreConnectionRow`), following the existing `UserRow`/`SessionRow`
+  pattern.
+  - `EngineClient` gained `#[derive(Clone)]` (free — `reqwest::Client` is
+    `Arc`-backed internally, `base_url` is a plain `String`) and a
+    `base_url(&self) -> &str` accessor, so a handler can record which
+    engine endpoint a tenant lives on without threading the URL through
+    separately. `AppState` gained `pub engine_client: EngineClient`;
+    `build_router`'s only real call sites (`main.rs`, `http/tests.rs`'s
+    `test_app_state`, `connections.rs`'s own test helper) all updated.
+    `main.rs` hardcodes `EngineClient::new("http://127.0.0.1:8080")` with a
+    `// TODO: real config` comment — there's no config-file system in
+    `control-plane` yet (a later task), so this is type-level wiring only,
+    not a claim that `main.rs` actually reaches a real engine today.
+  - `POST /connections` (new `control-plane/src/http/connections.rs`) sits
+    behind `AuthedUser`. Request:
+    `{platform, site_url, view_key_hex, spend_pubkey_hex, network?,
+    allowed_origins, confirmations_required?, zero_conf_max_piconero?,
+    order_expiry_seconds?}` — the wallet fields map straight through into
+    `engine_client::CreateTenantRequest`. On success: inserts a
+    `store_connections` row (new UUID id, the authed user's id,
+    `platform`/`site_url` from the request, `tenant_public_key`/
+    `tenant_secret_token_encrypted` from the engine's response,
+    `moneropay_endpoint` = `state.engine_client.base_url()`) and returns
+    `201 {"connection_id": "...", "public_key": "pk_..."}` —
+    **`secret_token` is deliberately never returned**, per the roadmap: the
+    control plane keeps it for its own future server-to-server use
+    (webhook registration, dashboard proxying), never re-shown to the
+    merchant after this one-time creation.
+  - **Error-shape judgment call**: added a new `ApiError::BadRequest(String)`
+    variant (the only variant that carries a real, caller-visible message —
+    every other variant stays fixed/generic on purpose, per the existing
+    doc comment) rather than collapsing an engine-rejected request into
+    the generic `Internal`/500. `EngineClientError::EngineError { status,
+    .. }` maps to `ApiError::BadRequest(message)` specifically when
+    `status == 400` (the engine's own `ApiError::BadRequest` — confirmed by
+    reading `src/http/admin.rs::create_tenant` at the repo root, which
+    returns exactly that for bad hex or an unconfigured network); any other
+    engine status, or a transport-level failure reaching the engine at all,
+    stays `Internal` — that's this service's problem, not something the
+    caller caused or should see details about.
+  - **Tests** (`control-plane/src/http/connections.rs`'s own
+    `#[cfg(test)] mod tests`, using
+    `engine_test_support::spawn_test_engine_with_networks(&[Mainnet])`,
+    same fixed-scalar view-key/spend-pubkey construction as
+    `engine_client.rs`'s own test): a full round trip (signup → login →
+    `POST /connections` with valid wallet fields) asserts `201`, a
+    non-empty `connection_id`, a `public_key` starting `pk_`, and that
+    neither `secret_token` nor `tenant_secret_token_encrypted` appears
+    anywhere in the response body; then reads the `store_connections` row
+    back directly via `Db::get_store_connection_by_id` and asserts
+    `user_id`/`platform`/`site_url` match and
+    `tenant_secret_token_encrypted` is a real value starting `sk_`. A
+    second test asserts `POST /connections` with no `Authorization` header
+    is rejected `401` by `AuthedUser` before ever touching the engine
+    client. Verified the round trip is genuine (not a false-positive pass)
+    by temporarily corrupting the stored-row `public_key` assertion and
+    re-running — it failed showing the actual `pk_...` the live engine
+    returned, then reverted.
+  - Also added 2 `Db`-level tests for `create_store_connection`/
+    `get_store_connection_by_id` (round-trip; unknown-id lookup returns
+    `None`).
+  - Counts: control-plane 25 passed (was 21, +4), engine 269/8 ignored
+    (unchanged), shared 25 (unchanged), engine-test-support 1 (unchanged),
+    mock-woocommerce 1 (unchanged). `/signup`, `/login`, `/logout` and
+    their tests untouched. No encryption of the stored `sk_` implemented —
+    that's WBS 1.2.3, left for a separate task.
+- 1.2.1 done: `control-plane/src/engine_client.rs` — a `reqwest`-based
+  `EngineClient` the control plane uses to call a *separately-running*
+  engine's admin API (a different role from `control_plane::http`, which is
+  the control plane's own router). `EngineClient::new(base_url)` takes the
+  engine's externally-reachable URL explicitly, no default/guessing.
+  `create_tenant(CreateTenantRequest) -> Result<CreateTenantResponse,
+  EngineClientError>` does `POST {base_url}/api/v1/admin/tenants` with no
+  auth header (confirmed the engine leaves that endpoint open by design);
+  `get_tenant(sk) -> Result<TenantView, EngineClientError>` does
+  `GET {base_url}/api/v1/admin/tenant` with `Authorization: Bearer sk_...`,
+  matching `AuthedTenant`'s real parsing at the repo root. Request/response
+  structs are control-plane's own, matched field-for-field against the
+  engine's real `src/http/admin.rs` types (`CreateTenantRequest`/
+  `CreateTenantResponse`/`TenantView`) rather than imported — the two
+  crates only ever talk over HTTP. `EngineClientError` (`thiserror`)
+  covers a failed request (`#[from] reqwest::Error`) and a non-success
+  status (`EngineError { status, message }`, `message` pulled from the
+  engine's own `{"error": "..."}` body shape, falling back to the raw body
+  if that ever doesn't parse). Added `reqwest = { version = "0.13.4",
+  default-features = false, features = ["rustls", "json"] }` to
+  `control-plane/Cargo.toml`, matching the engine's own pin exactly.
+  - **`configured_networks` problem**: `engine-test-support::spawn_test_engine`
+    (0.6) configures no Monero networks, but `create_tenant`'s handler
+    rejects any request for a network not in `state.configured_networks` —
+    so a test that needs a *real* tenant created (not just the route
+    reachable) can't use `spawn_test_engine` as-is. Extended
+    `engine-test-support` with a new `spawn_test_engine_with_networks(&[Network])`
+    that `spawn_test_engine()` now delegates to (passing `&[]`) — same
+    engine construction, just a configurable `configured_networks` set
+    instead of a hardcoded empty one. No behavior change to
+    `spawn_test_engine` itself or its signature; its existing WBS 0.6 smoke
+    test (`client_library_route_is_reachable_over_a_real_socket`) passes
+    unchanged, still 1 passed for the crate. This felt like the cleanest
+    fix in scope — 0.6 just hadn't anticipated a caller needing a
+    successful `create_tenant`, and the gap is narrow and additive.
+  - **Test**: `control-plane/src/engine_client.rs`'s own `#[cfg(test)] mod
+    tests`, one integration test
+    (`create_tenant_then_get_tenant_round_trips_against_a_real_engine`):
+    spawns a real engine via `spawn_test_engine_with_networks(&[Network::Mainnet])`,
+    points an `EngineClient` at `http://{engine.addr}`, calls `create_tenant`
+    with a valid-format (fixed-scalar, same construction as the engine's own
+    `src/http/tests.rs::valid_view_key_hex`/`valid_spend_pubkey_hex`, values
+    pre-computed via a throwaway example rather than pulling `monero` into
+    `control-plane`'s main dependencies) view key + spend pubkey, asserts a
+    real `tenant_id`/`pk_.../sk_...` come back, then calls `get_tenant` with
+    the returned `sk_` and asserts its `public_key` matches. Verified this is
+    a genuine round trip (not a false-positive pass) by temporarily
+    corrupting the final assertion and re-running — it failed showing the
+    *actual* `pk_...` value the live engine returned, then reverted.
+    `monero = "0.22.0"` and `engine-test-support = { path =
+    "../engine-test-support" }` added to `control-plane`'s
+    `[dev-dependencies]` only (not main dependencies).
+  - Counts: control-plane 21 passed (was 20, +1), engine-test-support 1
+    passed (unchanged), engine 269/8 ignored (unchanged), shared 25
+    (unchanged), mock-woocommerce 1 (unchanged). `/connections` and
+    `store_connections` (1.2.2) deliberately not built here — separate
+    task. `/signup`, `/login`, `/logout` untouched.
+- 1.1.3 done: `POST /logout` — reuses the existing `AuthedUser` extractor
+  rather than duplicating its `Bearer`-header parsing; extended `AuthedUser`
+  from a one-field tuple struct (`AuthedUser(UserRow)`) to two fields
+  (`AuthedUser(UserRow, String)`), the second being the session's
+  `token_hash` already computed inside the extractor — exactly what
+  `Db::delete_session` needs, and the only thing missing before. Updated
+  the one existing call site (`test_whoami`'s destructuring) to match; no
+  behavior change there. Handler calls `Db::delete_session` and returns
+  `204` unconditionally, including the (currently unreachable without
+  concurrency) case where the row was already gone — no session-expiry
+  concept exists yet to make that reachable in practice, and a client
+  logging out an already-logged-out session isn't an error worth
+  surfacing. 4 new HTTP tests: logout returns 204; logout then reusing the
+  *same* token against `/_test/whoami` now gets 401 (proves the session
+  row is actually gone, not just that `/logout` responded); missing/
+  unknown bearer both still 401 via the same extractor. control-plane 20
+  passed (was 16); engine 269/8 ignored and shared 25 both unchanged.
+  Touched: `control-plane/src/http/mod.rs` (extractor shape + route table),
+  new `control-plane/src/http/logout.rs`, `control-plane/src/http/tests.rs`.
+  `/signup` and `/login` untouched.
+- 1.1.2 done: `POST /login` + session auth. Good independent judgment call
+  worth recording: session tokens are hashed at rest exactly like tenant
+  `sk_` tokens (same reasoning — high-entropy, machine-generated, a fast
+  hash is enough), reusing `shared::auth::hash_secret_token` rather than
+  writing a near-duplicate, with a new `generate_session_token()`
+  (`sess_` prefix, same `random_hex` primitive as `sk_`/`pk_`) added
+  alongside it. `sessions` table added via migration 2. Login handles the
+  "unknown email" case by running a real `verify_password` against a fixed
+  dummy Argon2 hash rather than short-circuiting, specifically so it can't
+  be distinguished from "wrong password" by status, body, *or* an obviously
+  cheaper code path — both return an identical 401. New `AuthedUser`
+  extractor mirrors the engine's own `AuthedTenant` exactly (`Authorization:
+  Bearer <token>`, hash it, look up, 401 on anything missing/invalid,
+  never distinguishable). A `#[cfg(test)]`-gated `/_test/whoami` route
+  (confirmed genuinely compiled out of the real binary, not just
+  undocumented) gives the test suite something to exercise the extractor
+  against ahead of any real protected endpoint existing. `delete_session`
+  added to `Db` now (unused) for 1.1.3 to call next. 9 new tests (3 `Db`,
+  6 HTTP) — reviewed the full diff directly, including the enumeration
+  defense and the cfg-gating, before independently re-running
+  `cargo test --workspace` (control-plane 16, shared 25, rest unchanged)
+  and `cargo test -p shared` in isolation (still fine after the earlier fix).
+- 1.1.1 done: `control-plane` has its first real code — restructured into
+  `lib.rs`/`main.rs` (mirroring the engine's own split) plus `db.rs` (its own
+  SQLite database, entirely separate from the engine's, same `Store`-style
+  pattern: `Db` wrapping one `rusqlite::Connection`, `Arc<Mutex<..>>`-shared,
+  migrated via `shared::migrations::apply`) and `http/` (`AppState`,
+  `build_router`, tested via `tower::ServiceExt::oneshot` — no bound socket
+  needed for control-plane testing its own router, that's a different need
+  from `engine-test-support`). `POST /signup` hashes with
+  `shared::password::hash_password`, returns `201 {user_id}` or
+  `409 {"error":"email already in use"}` on a duplicate email (detected via
+  `rusqlite`'s `ConstraintViolation` error code, same shape the engine's own
+  code checks elsewhere) — any other failure is a fixed, generic `500`, no
+  message ever varies with the underlying cause. 7 new tests, all reviewed
+  directly and independently re-run: valid signup, duplicate-email conflict,
+  and a direct DB-row check confirming the stored value is a real
+  `$argon2...` PHC hash (verified via `shared::password::verify_password`),
+  never the plaintext.
+  - **Fixed while reviewing** (not the delegated agent's fault, a real
+    latent gap it correctly flagged rather than silently working around):
+    `shared/Cargo.toml` was missing an explicit `rand_core` dependency with
+    the `getrandom` feature — `argon2`'s `password_hash::rand_core::OsRng`
+    needs it, and it was only compiling as part of `cargo test --workspace`
+    by accident, via feature unification with some other member's
+    dependency graph. `cargo test -p shared` in isolation failed outright.
+    Added `rand_core = { version = "0.6", features = ["getrandom"] }`
+    directly to `shared/Cargo.toml`; confirmed both `-p shared` alone and
+    `--workspace` build cleanly now.
+- **Foundations (0.1-0.6) complete.** Track A starts next (control-plane
+  accounts, WBS 1.1).
+- 0.6 done: real-engine test harness landed as its **own new crate**,
+  `engine-test-support/`, not inside `shared` — correctly identified a real
+  circular-dependency problem (`moneropay-core` depends on `shared`, so a
+  harness needing `moneropay-core` can't live in `shared` without a cycle)
+  and resolved it exactly as the WBS's own hedge anticipated ("in `shared`,
+  or a dev-only sibling crate"). Layering:
+  `engine-test-support -> moneropay-core -> shared`. Public API:
+  `spawn_test_engine() -> TestEngineHandle` (in-memory `Store`,
+  `PlainKeyCustody`, empty `FixedRateProvider`, no configured networks,
+  bound to a real `127.0.0.1:<ephemeral-port>` via `axum::serve` in a
+  background task; `Drop` aborts the task). No `#[cfg(test)]`/feature gate
+  needed on the crate itself — being reached only via `[dev-dependencies]`
+  is what keeps it out of real builds. `mock-woocommerce` now depends on it
+  as a dev-dependency. Smoke test does a genuine `reqwest` round trip
+  (confirmed: real TCP, not `tower::ServiceExt::oneshot`) against
+  `/static/moneropay-client.js` (verified dependency-free — no tenant/node/
+  scanner needed). Engine/shared test counts unaffected (269/24); new
+  crate at 1 passed. Independently re-verified (full file read, workspace
+  member diff, test re-run) before commit.
+- 0.5 done: `shared::migrations::apply` now holds the generic transactional
+  migration runner (moved from `src/store.rs`'s `apply_migration_list`,
+  renamed since it's namespaced now — pure move, `unchecked_transaction`
+  usage and all-or-nothing semantics unchanged). Engine keeps its own
+  `MIGRATIONS` list (the `include_str!(...)` paths, meaningless outside
+  the engine crate), the `apply_migrations` wrapper (now a one-line call
+  into `shared::migrations::apply`), and `configure_connection`
+  (`PRAGMA foreign_keys` etc.) — confirmed the required ordering
+  (`configure_connection` then `apply_migrations`, outside any
+  transaction) is untouched at both call sites. Good judgment call on
+  which tests moved: the generic-mechanism test
+  (`a_failing_migration_leaves_neither_its_schema_changes_nor_its_version_row`,
+  built on an ad-hoc migration list) moved to `shared`; two tests that
+  drive the *real* `MIGRATIONS`/`Store` schema
+  (`reopening_an_existing_database_file_does_not_reapply_migrations`,
+  `migration_0004_rebuilds_order_payments_without_losing_existing_rows`)
+  correctly stayed in `store.rs` since they test engine schema content,
+  not the runner itself — only their call site was updated to
+  `shared::migrations::apply(...)`. Engine 269 passed/8 ignored (was 270,
+  −1 moved), `shared` 24 passed (was 23, +1). Independently re-verified
+  (diff read in full, ordering confirmed, tests re-run) before commit.
+- 0.4 done: `shared::password` — new, genuinely new logic (not a move),
+  Argon2id via the `argon2` crate for the control plane's future human
+  account passwords, explicitly separate from `shared::auth`'s SHA-256
+  token hashing (different threat model, documented in the module's own
+  doc comment). Pinned `argon2 = "0.5"` (resolved to 0.5.3) rather than
+  the `cargo add`-default 0.6.0 — 0.6 ships a rewritten `password-hash`
+  0.6.1 API without `SaltString`/`rand_core`, not the standard
+  SaltString+OsRng+PHC-string pattern; 0.5's API is the well-documented,
+  idiomatic one and was what was actually wanted here. `hash_password`
+  returns a self-describing PHC-format string; `verify_password` returns
+  `false` uniformly for both "wrong password" and "malformed hash string"
+  (no panic, no distinguishable side channel). 4 new tests (round-trip,
+  wrong password, per-call-random-salt via two different hashes of the
+  same password, malformed-input handling). `shared` now 23 passed
+  (was 19); engine unaffected at 270. Independently re-verified before
+  commit.
+- 0.3 done: `shared::webhook_sign` now holds HMAC signing/verification
+  *and* the SSRF URL-validation logic (`validate_webhook_url`,
+  `is_disallowed_address`, `WebhookUrlError`) moved from `src/webhook_sign.rs`
+  — same file covered both concerns originally. Same thin-re-export
+  pattern as 0.2; only real call site is `src/webhook_delivery.rs`. Added
+  a new known-vector test (on top of one that already existed and moved
+  over) specifically for the later PHP webhook-receiver task (WBS 1.5.4) to
+  cross-check against:
+  - secret: `known_vector_secret_for_php_crosscheck`
+  - payload: `{"event":"order.paid","order_id":"12345","amount_piconero":"1000000000000"}`
+  - expected signature (hex, lowercase): computed by the test itself from
+    the real `sign_payload` function — see
+    `shared::webhook_sign::tests::known_vector_for_cross_language_php_verification`
+    for the exact value rather than retyping it here (avoids a transcription
+    error propagating into the eventual PHP test).
+  - PHP-side equivalent: `hash_hmac('sha256', PAYLOAD, SECRET)`, compared
+    with `hash_equals()`, not `==` (per the constant-time requirement noted
+    in the WBS at 1.5.4).
+  Engine 270 passed/8 ignored (was 285, −15 moved), `shared` 19 passed
+  (3 + 15 moved + 1 new). Independently re-verified before commit.
+- 0.2 done: `shared::auth` now holds the token generation/hashing logic
+  moved from `src/auth.rs` (SHA-256, unchanged). `src/auth.rs` is a thin
+  `pub use shared::auth::*;` re-export so `src/http/admin.rs` and
+  `src/store.rs` (the only call sites) needed no changes. Root `Cargo.toml`
+  depends on `shared` by path now. Tests moved intact: engine 285
+  passed/8 ignored (was 287 — the 2 moved tests now run from `shared`,
+  which is at 3 passed total including its own placeholder). Independently
+  re-verified (diff + full `cargo test --workspace` re-run) before commit.
+- 0.1 done: root `Cargo.toml` gained a `[workspace]` table
+  (`members = ["shared", "control-plane", "mock-woocommerce"]` — the root
+  package is included implicitly since it already has `[package]`; no
+  separate "." entry needed or accepted). Added `shared/` (lib crate,
+  empty placeholder + trivial test), `control-plane/` (bin crate, `fn
+  main() {}` + trivial test), and `mock-woocommerce/` (bin crate, `fn
+  main() {}` + trivial test, with `moneropay-core = { path = ".." }` as a
+  real dependency for later integration tests). `cargo build --workspace`
+  and `cargo test --workspace` both succeed: engine 287 passed/8 ignored
+  (unchanged from pre-workspace baseline), shared/control-plane/
+  mock-woocommerce each 1 passed. No existing engine file touched other
+  than the new `[workspace]` table in `Cargo.toml`.
+
+## Judgment calls & open questions for the user
+
+- **WBS 1.5 (the real WooCommerce PHP plugin) is blocked on missing tooling
+  in this environment - skipped ahead to 1.7.1 instead, which the WBS itself
+  marks as parallel/non-blocking.** Checked directly (not assumed): this
+  sandbox has no `php`, `composer`, `docker`, or `wp` (wp-cli) binary, and no
+  passwordless `sudo` - `pacman` (this is Arch/CachyOS, not
+  apt/dnf) needs root to install anything. 1.5.1's own acceptance test
+  explicitly requires `wp-env` (Docker-based WordPress) and WooCommerce
+  PHPUnit, neither of which can exist here without installing a real PHP +
+  Docker toolchain onto your actual machine (not a disposable container) -
+  a system-level change I'm not willing to make unilaterally, and one only
+  you can authorize (with your `sudo` password, typed via `!` in the
+  terminal, or by setting the toolchain up yourself). Writing the PHP plugin
+  code without being able to run it against real WooCommerce would break
+  this whole project's established practice of never treating anything as
+  "done" without an independently-run, real test proving it - I'd rather
+  flag this than fake it. **What I did instead**: moved to WBS 1.7.1
+  (Coingecko exchange-rate provider), which only needs the existing Rust
+  toolchain and is explicitly marked "parallel within Track A, non-blocking"
+  in the WBS - see the progress log entry once it lands. **What you'll want
+  to decide**: whether to install `php`, `composer`, and `wp-env`'s Docker
+  dependency yourself, grant me the access to do it, or hold Track 1.5 until
+  you're working from an environment that already has them.
+
+- **Important: this worktree is built on an older baseline than your main
+  checkout, and it matters for one specific area.** While reviewing 0.1's
+  work I found that the docs (`docs/WOOCOMMERCE_WBS.md`,
+  `docs/WOOCOMMERCE_ROADMAP.md`) and my briefing to the 0.1 agent both
+  contained a claim — "the engine's `Cargo.toml` already has an `[[test]]`
+  section and optional `e2e` feature gating `monero-wallet`/
+  `monero-daemon-rpc`/etc." — that came from reading
+  `/home/henry/Downloads/mokulo/Cargo.toml` (your main checkout) during the
+  earlier gap-analysis pass, *not* this worktree. Your main checkout has
+  uncommitted local changes (`git status` there shows `Cargo.toml`,
+  `e2e/.gitignore`, `e2e/README.md`, `e2e/stagenet-wallets.json`,
+  `src/cli.rs`, `src/config.rs`, `src/http/mod.rs`, `src/lib.rs`,
+  `src/main.rs`, `tests/e2e_stagenet.rs`, `tests/support/mod.rs` modified,
+  plus new untracked `src/e2e_wallet.rs`, `src/http/e2e_dev.rs`,
+  `static/e2e-shop.html`) that this worktree — branched from the last
+  *commit*, per how `EnterWorktree` works — never received, since
+  uncommitted changes in one working tree aren't visible from another.
+  - **What I checked to scope the actual impact**: re-read this worktree's
+    real `src/lib.rs`, `src/http/mod.rs` (router table, `AuthedTenant`'s
+    `Bearer` parsing), and `Cargo.toml` directly. The router paths, the
+    `Authorization: Bearer sk_...` auth format, the migration runner, the
+    `KeyCustody` trait, the rate limiter, HMAC signing, and the absence of
+    `argon2`/`governor` — everything this WBS's implementation tasks
+    actually depend on — are identical in both places. The only thing
+    that's genuinely different is your in-progress e2e-tooling refactor
+    (feature-gating the real-transaction-construction dependencies, a
+    `--e2e` dev-server mode, a demo shop page) — unrelated to the
+    WooCommerce/control-plane/SEV-SNP work, as far as I can tell.
+  - **What I did about it**: nothing destructive — I left your main
+    checkout completely untouched and am continuing to build in this
+    worktree, since copying or guessing at unfinished WIP from outside it
+    seemed riskier than proceeding on the last committed state. I fixed the
+    incorrect claim in the 0.1 agent's task (it correctly reported the
+    `[[test]]`/`e2e`-feature structure wasn't actually present, which I'd
+    initially mis-read as *it* being wrong — it wasn't, I was, for briefing
+    it off the wrong checkout).
+  - **What you'll want to do when you're back**: decide whether to commit
+    that e2e-tooling WIP, and if so, merge/rebase this branch
+    (`worktree-woocommerce-roadmap-doc`, currently local-only — recall push
+    to `origin` is denied under current credentials) on top of it once it
+    lands. Until then I'll keep treating this worktree's committed baseline
+    as ground truth and will flag it again if a later task's diff would
+    touch any of the files listed above, since those are the ones a future
+    merge will need to reconcile.

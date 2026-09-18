@@ -1,0 +1,13 @@
+-- Records which exchange-rate provider ("fixed" or "coingecko",
+-- `exchange_rate_config::ExchangeRateConfig::provider_name`) actually
+-- produced the `piconero_per_unit` rate already stored on this row - a
+-- merchant asking "why was I quoted this rate" needs to know not just the
+-- number but where it came from, since a live `coingecko` rate is expected
+-- to drift between orders while a `fixed` one never should.
+--
+-- `DEFAULT 'unknown'` rather than guessing a provider for rows that predate
+-- this column: every row recorded before this migration was quoted by
+-- *some* real provider, but which one isn't recoverable from what was
+-- actually stored, so claiming "fixed" (control-plane's own default) would
+-- be asserting something this database cannot actually prove.
+ALTER TABLE order_fiat_metadata ADD COLUMN provider TEXT NOT NULL DEFAULT 'unknown';

@@ -1,0 +1,38 @@
+[package]
+name = "snp-attest"
+version = "0.1.0"
+edition = "2021"
+
+# WBS 2.2.1: "an attestation-verification script - its pass/fail on the
+# signature chain and reported patch level is the test." This crate is that
+# script (as a real Rust binary + a unit-tested library, matching this
+# workspace's existing key-custody-service/key-custody-server split rather
+# than a one-off shell script - the certificate/signature parsing this needs
+# is genuinely easier and safer to get right in a typed language than in
+# `openssl` CLI invocations glued together with shell).
+#
+# Deliberately pure-Rust crypto throughout (no `openssl` dependency), matching
+# this workspace's existing convention (`rusqlite`'s `bundled` feature,
+# `monero-wallet`'s own pure-Rust curve25519-dalek-based signing) - see
+# src/verify.rs's module doc comment for why the AMD ARK/ASK certificate
+# chain needs RSA-PSS-SHA384 (`rsa`), not ECDSA, despite the attestation
+# report itself being ECDSA P-384 (`p384`/`ecdsa`).
+[dependencies]
+hex = "0.4.3"
+p384 = { version = "0.14.0", features = ["ecdsa"] }
+ecdsa = "0.17.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls"] }
+sha2 = "0.11.0"
+signature = "3.0.0"
+thiserror = "2.0.20"
+tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros"] }
+# "verify" pulls in `ring` to implement X509Certificate::verify_signature -
+# used for the AMD ARK/ASK/VCEK issuance chain (RSASSA-PSS-SHA384). The
+# report's own signature (ECDSA P-384 over a raw byte blob, not an X.509
+# structure) is verified separately, directly against `p384`/`ecdsa` - see
+# src/verify.rs.
+x509-parser = { version = "0.18.1", features = ["verify"] }
+
+[dev-dependencies]
+hex = "0.4.3"
+rand = "0.10.2"

@@ -1,0 +1,56 @@
+<div class="box">
+<h2>Integrate this store</h2>
+<p>Your public key (safe to publish - it identifies your store, it can't move funds or read your data):</p>
+<pre>{{public_key}}</pre>
+
+{{#if is_woocommerce}}
+<p>This store is already connected via the WooCommerce plugin - nothing further to configure there.
+Need to connect a second WordPress site to this same store? From that site's plugin settings, click
+<strong>Connect</strong>, then choose <strong>use an existing store</strong> and pick this one.</p>
+{{else}}
+<p><strong>WooCommerce</strong> - the easiest path if your store runs WooCommerce:</p>
+<ol class="steps">
+<li>Install the <code>monokulo</code> plugin from your WordPress admin.</li>
+<li>Go to <strong>WooCommerce &rarr; Settings &rarr; Payments &rarr; Monokulo</strong> and click <strong>Connect</strong>.</li>
+<li>Choose <strong>use an existing store</strong> and pick this one - no keys to paste in again.</li>
+</ol>
+{{/if}}
+
+<p><strong>Widget embed</strong> - paste this where you want a "Pay with Monero" button on any static page:</p>
+<pre>&lt;button id="monokulo-buy-button"&gt;Pay with Monero&lt;/button&gt;
+&lt;div id="monokulo-checkout"&gt;&lt;/div&gt;
+&lt;script src="/static/monokulo-client.js"&gt;&lt;/script&gt;
+&lt;script&gt;
+document.getElementById('monokulo-buy-button').addEventListener('click', function () {
+  Monokulo.createOrder({
+    publicKey: '{{public_key}}',
+    amount: 9.99,                             // replace with the real amount
+    currency: 'USD',                          // or 'XMR' - always works, no provider needed
+    merchantOrderId: 'order-1234',            // optional - your own order/cart id, shown on the order's dashboard page
+  }).then(function (order) {
+    Monokulo.mount('#monokulo-checkout', order, {
+      onPaid: function () { /* e.g. window.location = '/thank-you.html'; */ },
+    });
+  });
+});
+&lt;/script&gt;</pre>
+<p class="hint">The script infers this instance's own address from its own <code>&lt;script src&gt;</code> - paste it
+verbatim, from wherever this dashboard is hosted.</p>
+
+<p><strong>Direct API integration</strong> - create an order against this same Monokulo instance
+(not the underlying engine - this instance owns pricing and the checkout page) and redirect the buyer to the
+returned checkout link:</p>
+<pre>POST /pay/{{public_key}}/orders
+Content-Type: application/json
+
+{
+  "currency": "USD",
+  "amount": "25.00",
+  "merchant_order_id": "order-1234"
+}</pre>
+<p class="hint"><code>merchant_order_id</code> is optional - your own order/cart id, if you have one.</p>
+<p class="hint">Send this request to wherever this dashboard is hosted (the same origin this page is on). The
+response includes a <code>payment_id</code> - send the buyer to
+<code>/pay/{{public_key}}/orders/&lt;payment_id&gt;</code> (same origin) to complete the payment. This endpoint
+needs no secret - it's safe to call directly from your storefront's backend.</p>
+</div>

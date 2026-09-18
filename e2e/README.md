@@ -62,7 +62,7 @@ an observed full run took ~250s. See the timeout comment in
 
 ## One-time setup
 
-Just `moneropay-core` built:
+Just `scanner` built:
 
 ```bash
 cargo build --manifest-path ../Cargo.toml
@@ -75,7 +75,7 @@ cargo test --test e2e_stagenet -- --ignored --nocapture
 ```
 
 This builds the moneropay router in-process straight from `moneropay-stagenet.toml`
-(via `tower::ServiceExt::oneshot` - no bound port, no separate `moneropay-core`
+(via `tower::ServiceExt::oneshot` - no bound port, no separate `scanner`
 process needed), creates a real order against it, pays that order with a real
 transaction sent from the customer wallet, then drives the real scanner
 (`run_scan_tick`, the same function `main.rs`'s production loop calls on a timer)
@@ -88,7 +88,7 @@ embedded widget, start the server and demo shop separately:
 
 ```bash
 # from e2e/, in one terminal:
-../target/debug/moneropay-core moneropay-stagenet.toml
+../target/debug/scanner moneropay-stagenet.toml
 # prints a pk_... on first boot - note it
 
 # in another terminal:
@@ -111,11 +111,12 @@ database; delete it to start over with a fresh bootstrap.
   resolves in seconds once broadcast. (This field is XMR-denominated, not
   fiat, despite the name it used to have - a real bug caught in the production
   config, see `docs/DESIGN.md` §13.)
-- `USD = "0.0067"` in `[exchange_rate.rates]`: an arbitrary fixed rate (not a
-  live market price) chosen so a human-readable fiat amount like `$0.05` maps
-  to a genuinely tiny real payment (a few hundred thousand piconero), per the
-  project's own constraint of only moving trivial amounts on this shared
-  faucet-funded wallet.
+- The test order's `xmr_amount_piconero` (335_000_000, i.e. 0.000335 XMR) is
+  chosen to be a genuinely tiny real payment, per the project's own constraint
+  of only moving trivial amounts on this shared faucet-funded wallet. The
+  engine itself has no concept of fiat at all (`docs/fx_refactor.md`) - the
+  monokulo owns fiat pricing in production; this test talks to the
+  engine's own XMR-only API directly.
 
 ## A note on running the test repeatedly
 

@@ -1,4 +1,4 @@
-# MoneroPay — Test Suite Document
+# Monokulo — Test Suite Document
 
 Companion to [`DESIGN.md`](DESIGN.md). For each area: what to test, why it matters
 enough to test deliberately (rather than relying on incidental coverage), and how to

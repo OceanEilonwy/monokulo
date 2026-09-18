@@ -6,3 +6,8 @@
 moneropay.db
 moneropay.db-shm
 moneropay.db-wal
+
+# scripts/dev-run.sh's own working state (PID files, logs, both real
+# processes' SQLite databases, a locally-generated dev
+# CONTROL_PLANE_ENCRYPTION_KEY) - see that script's own header comment.
+/.dev-run/

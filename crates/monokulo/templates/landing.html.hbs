@@ -1,0 +1,67 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Monokulo</title>
+{{> styles}}
+</head>
+<body>
+{{> nav}}
+<div class="wrap">
+
+<div class="hero">
+<img src="/static/logo.svg" alt="" width="64" height="64" class="hero-logo">
+<div>
+<h1>Accept Monero. Non-custodial. Nothing to trust but math.</h1>
+<p>Monokulo is a hosted payment gateway for Monero (XMR). You give it a
+<strong>watch-only view key</strong> - never your spend key, never your funds. It watches the chain,
+detects payments, and tells your store when an order is paid. Your coins never pass through us,
+because they never can.</p>
+</div>
+</div>
+<p class="hint">"Monokulo" - <em>mon</em>(ero) + <em>okulo</em> (Esperanto for "eye"): a Monero eye,
+watching one key, nothing else it can see or touch.</p>
+
+{{#if signup_public}}
+<a class="btn" href="/dashboard/signup">Sign up - it's free to connect a store</a>
+{{else}}
+<a class="btn" href="/request-invite">Request an invite to join</a>
+{{/if}}
+<a class="btn btn-secondary" href="/dashboard/login">Log in</a>
+
+<hr class="rule">
+
+<div class="grid-2">
+<div class="box">
+<h2>Non-custodial, provably</h2>
+<p>Only a private <em>view</em> key and a public spend key are ever stored - the pair that lets us
+watch incoming payments, and nothing else. No code path here can ever move your funds, because no
+spend key exists anywhere in this system.</p>
+</div>
+<div class="box">
+<h2>Drop-in for WooCommerce</h2>
+<p>Install the plugin, click Connect, done. No manual key-pasting, no config files - see the
+guided setup once you've signed up.</p>
+</div>
+<div class="box">
+<h2>Real-time detection</h2>
+<p>Zero-conf for small amounts, configurable confirmation depth for larger ones, and automatic
+reorg / double-spend handling - your dashboard and your storefront both learn the moment a
+payment lands.</p>
+</div>
+<div class="box">
+<h2>Own the integration</h2>
+<p>Prefer to talk to the API directly? A store's public key and a plain HTTP endpoint are all you
+need - no SDK required. Full instructions land on your store's page the moment it's connected.</p>
+</div>
+</div>
+
+<hr class="rule">
+<p class="hint">Monokulo is built on the same open-source, self-hostable payment-watching
+engine either way - this is the hosted, zero-ops version of it, with pricing and checkout
+handled for you.</p>
+
+</div>
+</body>
+</html>

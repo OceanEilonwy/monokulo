@@ -1,0 +1,27 @@
+pub mod auth;
+pub mod cli;
+pub mod daemon;
+pub mod daemon_fallback;
+pub mod daemon_rpc;
+/// Real-Monero-transaction spend wallet, gated behind the `e2e` Cargo feature -
+/// see this module's own doc comment. Used by `tests/e2e_stagenet.rs` (via
+/// `tests/support/mod.rs`, a thin re-export) and by `mock-woocommerce`'s own
+/// real stagenet connect-flow test (WBS 1.4.5), which needs it as a library
+/// dependency since it lives in a different crate entirely.
+#[cfg(feature = "e2e")]
+pub mod e2e_wallet;
+pub mod http;
+pub mod key_custody;
+pub mod local_admin;
+pub mod network;
+pub mod scanner;
+pub mod scanner_status;
+pub mod settings;
+pub mod status;
+pub mod store;
+pub mod webhook_delivery;
+pub mod webhook_sign;
+
+pub fn now_unix() -> i64 {
+    std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).unwrap().as_secs() as i64
+}
