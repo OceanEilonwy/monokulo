@@ -1,0 +1,828 @@
+//! In-person Point-of-Sale terminal - a Square-Terminal-like screen a
+//! merchant runs on a device at the counter: enter an amount in the store's
+//! own `base_currency`, show a QR code + `monero:` URI (plus a best-effort
+//! NFC tap write, done client-side) for the customer to pay, then react live
+//! to the payment appearing.
+//!
+//! Deliberately behind [`AuthedUser`] and connection-ownership-checked
+//! ([`load_owned_connection`]) exactly like every other `/dashboard/connections/{id}/*`
+//! route (`http::orders`'s own module doc comment) - unlike `http::pay`'s
+//! public, unauthenticated storefront endpoint, a POS terminal is operated
+//! by the merchant themselves, logged in, standing at the register.
+//!
+//! Order creation reuses the exact same pricing/threshold-resolution path
+//! `http::orders::create_order`/`http::pay::create_order` already use
+//! (`crate::confirmation_thresholds::resolve_for_order`) - a POS sale is not
+//! a different kind of order, just a different UI for creating one, always
+//! denominated in this store's own `base_currency` rather than a
+//! caller-chosen one (there's no currency picker on a terminal screen, see
+//! this task's own spec point 2).
+//!
+//! Unlike the public checkout page (`http::checkout`, JS-free by hard
+//! requirement - a real customer must be able to pay with JavaScript
+//! disabled), this screen is a merchant-operated dashboard tool in the same
+//! bucket as the rest of `/dashboard/*`, which already uses JS as
+//! progressive enhancement elsewhere (`order_detail.html.hbs`'s share
+//! button/local-time script). A live Square-Terminal-style keypad, stacked
+//! backgrounded payments, and NFC tap writes (`NDEFReader` is JS-only by
+//! construction) have no meaningful no-JS fallback, so this screen leans on
+//! JS for its real interaction loop rather than a meta-refresh.
+//!
+//! **Error surfacing** (spec point 12): [`derive_payment_error`] flags
+//! exactly the cases where the merchant, not just the customer's wallet,
+//! needs to step in - a double-spend, an amount that doesn't match what was
+//! asked for (under- or over-paid), or the order expiring before it ever
+//! got there. A poll request itself failing (the engine unreachable) is
+//! surfaced by the HTTP-level failure of [`order_status`], not a field on
+//! its success response - the client already has to handle "the fetch
+//! itself failed" separately from "the fetch succeeded and says there's a
+//! problem".
+
+use axum::extract::{Path, State};
+use axum::http::StatusCode;
+use axum::response::{Html, IntoResponse, Json, Response};
+use serde::{Deserialize, Serialize};
+
+use crate::engine_client::{EngineClientError, OrderView};
+use crate::templates::PosViewModel;
+
+use super::checkout::{qr_svg_for_html, status_label};
+use super::orders::{decrypt_sk, display_name_for, load_owned_connection};
+use super::{ApiError, AppState, AuthedUser};
+
+/// `GET /dashboard/connections/{id}/pos` - the terminal screen itself.
+pub async fn pos_page(State(state): State<AppState>, AuthedUser(user, _): AuthedUser, Path(id): Path<String>) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    // Fiat currencies here are always exactly 2 decimal places (the same
+    // assumption `shared::exchange_rate::compute_xmr_amount` already
+    // enforces server-side) - XMR itself carries its own native 12-decimal
+    // precision (`shared::exchange_rate::parse_xmr_to_piconero`), which a
+    // 2-decimal keypad would silently truncate. See this task's own "Decimal
+    // entry" decision.
+    let base_currency_decimals: u8 = if row.base_currency.eq_ignore_ascii_case("XMR") { 12 } else { 2 };
+
+    let view = PosViewModel {
+        connection_id: id,
+        display_name: display_name_for(&row.site_url),
+        base_currency: row.base_currency,
+        base_currency_decimals,
+        logged_in: true,
+        is_admin: user.is_admin,
+    };
+    let html = state.templates.render_pos(&view).expect("the built-in pos template must always render");
+    Html(html).into_response()
+}
+
+#[derive(Debug, Deserialize)]
+pub struct PosCreateOrderRequest {
+    /// A plain decimal string in the store's own `base_currency` - the
+    /// keypad's own accumulated value, already formatted to the currency's
+    /// real decimal precision (`PosViewModel::base_currency_decimals`)
+    /// before it's ever sent here. Re-validated server-side the same way
+    /// every other order-creation surface in this crate already is
+    /// (`shared::exchange_rate::compute_order_amount`) - a client-side
+    /// keypad bug or a hand-crafted request is not trusted to have gotten
+    /// this right.
+    pub amount: String,
+}
+
+#[derive(Debug, Serialize)]
+pub struct PosCreateOrderResponse {
+    pub payment_id: String,
+    pub address: String,
+    /// `monero:<address>?tx_amount=<xmr>` - the same URI shape a Monero
+    /// wallet's own QR scanner or NFC tap reader expects. The QR code below
+    /// encodes the bare address only (matching every other QR this crate
+    /// renders, `http::checkout::qr_svg_for_html`'s own callers) since a
+    /// wallet scanning a QR with no amount still works fine and a merchant
+    /// may want to under/overpay deliberately (a tip, a partial refund
+    /// offset); the amount-carrying URI is specifically for the NFC tap
+    /// write, where there's no second "type the amount in yourself" step
+    /// once the customer's already tapped.
+    pub monero_uri: String,
+    pub qr_code_svg: String,
+    pub xmr_amount: String,
+    pub amount: String,
+    pub currency: String,
+    pub confirmations_required: u64,
+    pub expires_at: i64,
+}
+
+/// `POST /dashboard/connections/{id}/pos/orders` - creates a real order,
+/// always priced in this store's own `base_currency` (spec point 2 - a POS
+/// terminal has no currency picker). Mirrors
+/// `http::orders::create_order`/`http::pay::create_order` field for field;
+/// see either's own doc comment for why the pricing/threshold-resolution
+/// steps look the way they do.
+pub async fn create_order(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Json(req): Json<PosCreateOrderRequest>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return ApiError::NotFound.into_response(),
+        Err(()) => return ApiError::Internal.into_response(),
+    };
+
+    let amount = req.amount.trim();
+    if amount.is_empty() {
+        return ApiError::BadRequest("Enter an amount.".to_string()).into_response();
+    }
+    let currency = row.base_currency.clone();
+
+    let (piconero_per_unit, provider) = match state.exchange_rate.piconero_per_unit_for(&row, &currency).await {
+        Ok(Some(result)) => result,
+        Ok(None) => return ApiError::BadRequest(format!("unsupported currency: {currency}")).into_response(),
+        Err(crate::exchange_rate_config::ExchangeRateLookupError::ProviderNotConfigured(_)) => {
+            return ApiError::BadRequest(format!("unsupported currency: {currency}")).into_response();
+        }
+        Err(e) => {
+            eprintln!("exchange rate lookup failed for connection {} (currency {currency:?}): {e}", row.id);
+            return ApiError::Internal.into_response();
+        }
+    };
+    let xmr_amount_piconero = match shared::exchange_rate::compute_order_amount(&currency, amount, piconero_per_unit) {
+        Ok(amount) => amount,
+        Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
+    };
+
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return ApiError::Internal.into_response(),
+    };
+    let resolution =
+        match crate::confirmation_thresholds::resolve_for_order(&state, &row, &sk, &currency, piconero_per_unit, xmr_amount_piconero).await {
+            Ok(resolution) => resolution,
+            Err(message) => return ApiError::BadRequest(message).into_response(),
+        };
+
+    match state.engine_client.create_order(&row.tenant_public_key, xmr_amount_piconero, None, Some(resolution.confirmations_required)).await {
+        Ok(order) => {
+            if let Err(e) = state.db.lock().unwrap().create_order_currency_metadata(
+                &row.id,
+                &order.payment_id,
+                &currency,
+                amount,
+                piconero_per_unit,
+                provider,
+                crate::now_unix(),
+                &resolution.base_currency,
+                resolution.base_currency_piconero_per_unit,
+                resolution.confirmations_required,
+            ) {
+                eprintln!(
+                    "failed to record local fiat metadata for POS order {} on connection {}: {e} - the real \
+                     order still exists on the engine and this response is still correct, but its fiat \
+                     display on monokulo's own dashboard will be missing",
+                    order.payment_id, row.id
+                );
+            }
+
+            let qr_code_svg = match qr_svg_for_html(&order.address) {
+                Ok(svg) => svg,
+                Err(_) => return ApiError::Internal.into_response(),
+            };
+            let xmr_amount = shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero);
+            let monero_uri = format!("monero:{}?tx_amount={xmr_amount}", order.address);
+
+            Json(PosCreateOrderResponse {
+                payment_id: order.payment_id,
+                address: order.address,
+                monero_uri,
+                qr_code_svg,
+                xmr_amount,
+                amount: amount.to_string(),
+                currency,
+                confirmations_required: resolution.confirmations_required,
+                expires_at: order.expires_at,
+            })
+            .into_response()
+        }
+        Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
+            ApiError::BadRequest(message).into_response()
+        }
+        Err(_) => ApiError::Internal.into_response(),
+    }
+}
+
+#[derive(Debug, Serialize)]
+pub struct PosStatusResponse {
+    pub status: String,
+    pub confirmations: u64,
+    pub confirmations_required: u64,
+    pub is_terminal: bool,
+    /// `Some(...)` exactly in the cases the merchant needs to step in and
+    /// deal with the customer directly - see [`derive_payment_error`].
+    /// `None` covers both "still pending/confirming normally" and "paid" -
+    /// a real, error-free success is not an error just because it's also
+    /// terminal.
+    pub error: Option<String>,
+}
+
+/// The confirmations_required this *specific* order was actually created
+/// with (`crate::confirmation_thresholds::Resolution::confirmations_required`,
+/// snapshotted at creation time via `Db::create_order_currency_metadata` -
+/// see [`create_order`] above) rather than the tenant's own *current*
+/// default, which may have changed since. Falls back to the tenant's
+/// present default only when no local snapshot exists at all (an order
+/// created directly against the engine, or predating this field) - the same
+/// "a reasonable, safe-side default" posture `http::checkout::render_checkout_page`
+/// already applies to this exact fallback.
+async fn resolve_confirmations_required(state: &AppState, connection_id: &str, sk: &str, payment_id: &str) -> u64 {
+    let local = state.db.lock().unwrap().get_order_currency_metadata(connection_id, payment_id).unwrap_or_default();
+    if let Some(applied) = local.and_then(|m| m.confirmations_required_applied) {
+        return applied;
+    }
+    state.engine_client.get_tenant(sk).await.map(|t| t.confirmations_required).unwrap_or(10)
+}
+
+/// Flags exactly the payment outcomes a merchant needs to personally
+/// resolve with the customer standing in front of them - not every
+/// non-`"paid"` status is an error (`"pending"`/`"unconfirmed"`/`"confirming"`
+/// are all normal, expected, no-action-needed states on the way to a real
+/// payment). See this module's own doc comment for the full reasoning
+/// behind each case picked.
+fn derive_payment_error(order: &OrderView) -> Option<String> {
+    if order.double_spend_detected_at.is_some() {
+        return Some("Double-spend detected on this payment - do not release goods or change.".to_string());
+    }
+    match order.status.as_str() {
+        "partial" => Some("Underpaid - the customer sent less than the requested amount.".to_string()),
+        "overpaid" => Some("Overpaid - the customer sent more than the requested amount.".to_string()),
+        "expired" => Some("This payment expired before it was completed.".to_string()),
+        _ => None,
+    }
+}
+
+/// `GET /dashboard/connections/{id}/pos/orders/{payment_id}/status` - the
+/// small JSON the terminal screen's own poll loop reads, both for the
+/// payment currently on-screen and for every backgrounded one stacked at
+/// the bottom (spec points 7-12) simultaneously polling their own.
+pub async fn order_status(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path((id, payment_id)): Path<(String, String)>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return ApiError::NotFound.into_response(),
+        Err(()) => return ApiError::Internal.into_response(),
+    };
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return ApiError::Internal.into_response(),
+    };
+
+    match state.engine_client.get_order_detail(&sk, &payment_id).await {
+        Ok(detail) => {
+            let confirmations_required = resolve_confirmations_required(&state, &row.id, &sk, &payment_id).await;
+            // `status_label`'s own `is_terminal` already accounts for a
+            // 0-conf-trusted order: the engine only ever reports `"paid"`
+            // once *that order's own* `confirmations_required` (however it
+            // was resolved at creation - possibly `0`) has actually been
+            // met, so there's no separate threshold check to fold in here.
+            let (_, _, is_terminal) = status_label(&detail.order.status);
+            let error = derive_payment_error(&detail.order);
+            Json(PosStatusResponse {
+                status: detail.order.status,
+                confirmations: detail.order.confirmations,
+                confirmations_required,
+                is_terminal,
+                error,
+            })
+            .into_response()
+        }
+        Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
+            ApiError::NotFound.into_response()
+        }
+        Err(_) => ApiError::Internal.into_response(),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::Router;
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use http_body_util::BodyExt;
+    use tower::ServiceExt;
+
+    use crate::db::Db;
+    use crate::engine_client::EngineClient;
+
+    use super::super::{AppState, build_router};
+
+    const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
+    const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
+    const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
+
+    fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
+        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
+    }
+
+    async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
+        let engine = scanner_test_support::TestEngineConfig::new().with_networks(&[monero::Network::Mainnet]).spawn().await;
+        let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+        let state = AppState {
+            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
+            engine_client,
+            encryption_key: TEST_ENCRYPTION_KEY,
+            templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
+            status_cache: crate::http::status_page::new_status_cache(),
+            exchange_rate: test_exchange_rate_provider(),
+            rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+        };
+        (state, engine)
+    }
+
+    async fn body_json(response: axum::response::Response) -> serde_json::Value {
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        serde_json::from_slice(&bytes).unwrap()
+    }
+
+    async fn body_text(response: axum::response::Response) -> String {
+        let bytes = response.into_body().collect().await.unwrap().to_bytes();
+        String::from_utf8(bytes.to_vec()).unwrap()
+    }
+
+    async fn signed_up_and_logged_in_session_token(router: &Router, email: &str, password: &str) -> String {
+        let signup = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/signup")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::json!({ "email": email, "password": password }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(signup.status(), StatusCode::CREATED);
+
+        let login = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/login")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::json!({ "email": email, "password": password }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(login.status(), StatusCode::OK);
+        body_json(login).await.as_object().unwrap().get("session_token").unwrap().as_str().unwrap().to_string()
+    }
+
+    async fn create_connection_with_base_currency(router: &Router, session_token: &str, base_currency: &str) -> String {
+        let body = serde_json::json!({
+            "platform": "custom",
+            "site_url": "https://shop.example.com",
+            "view_key_hex": TEST_VIEW_KEY_HEX,
+            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
+            "network": "mainnet",
+            "allowed_origins": [],
+            "base_currency": base_currency,
+        });
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/connections")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        body_json(response).await.as_object().unwrap().get("connection_id").unwrap().as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn the_pos_page_renders_for_the_owning_user_with_the_stores_own_base_currency() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(&router, "pos-page@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{id}/pos"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("XMR"), "expected the store's own base currency shown, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn the_pos_page_is_a_real_404_not_a_500_for_an_unknown_connection() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(&router, "pos-page-404@example.com", "correct horse battery staple").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/dashboard/connections/nonexistent/pos")
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_pos_page_404s_for_a_connection_owned_by_a_different_user() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let owner_token = signed_up_and_logged_in_session_token(&router, "pos-owner@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &owner_token, "XMR").await;
+
+        let other_token = signed_up_and_logged_in_session_token(&router, "pos-other@example.com", "correct horse battery staple").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{id}/pos"))
+                    .header("authorization", format!("Bearer {other_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "a connection owned by someone else must 404, not leak that it exists");
+    }
+
+    #[tokio::test]
+    async fn the_pos_page_requires_authentication() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(&router, "pos-unauth@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+
+        let response = router
+            .oneshot(Request::builder().method("GET").uri(format!("/dashboard/connections/{id}/pos")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn creating_a_pos_order_uses_the_stores_own_base_currency_and_is_visible_on_the_dashboard() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "pos-create@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::from(serde_json::json!({ "amount": "1.5" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["currency"], "XMR");
+        assert_eq!(body["amount"], "1.5");
+        assert_eq!(body["xmr_amount"], "1.500000000000");
+        let address = body["address"].as_str().unwrap();
+        assert!(!address.is_empty());
+        assert_eq!(body["monero_uri"], format!("monero:{address}?tx_amount=1.500000000000"));
+        assert!(body["qr_code_svg"].as_str().unwrap().contains("<svg"), "expected a real rendered QR code");
+        let payment_id = body["payment_id"].as_str().unwrap().to_string();
+
+        // Spec point 5: an order created through the POS screen is a real
+        // order, visible on the normal orders list like any other.
+        let orders_list = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{id}/orders"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(orders_list.status(), StatusCode::OK);
+        let html = body_text(orders_list).await;
+        assert!(html.contains(&payment_id), "expected the POS-created order to show up in the dashboard's own orders list");
+    }
+
+    #[tokio::test]
+    async fn creating_a_pos_order_rejects_an_empty_amount() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "pos-empty-amount@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::from(serde_json::json!({ "amount": "" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn creating_a_pos_order_rejects_a_malformed_amount() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "pos-bad-amount@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::from(serde_json::json!({ "amount": "not-a-number" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+
+    #[tokio::test]
+    async fn creating_a_pos_order_404s_for_a_connection_owned_by_a_different_user() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let owner_token = signed_up_and_logged_in_session_token(&router, "pos-create-owner@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &owner_token, "XMR").await;
+        let other_token = signed_up_and_logged_in_session_token(&router, "pos-create-other@example.com", "correct horse battery staple").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {other_token}"))
+                    .body(Body::from(serde_json::json!({ "amount": "1.0" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_status_endpoint_reports_pending_with_no_error_for_a_fresh_order() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(&router, "pos-status@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+
+        let create = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::from(serde_json::json!({ "amount": "2.0" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let payment_id = body_json(create).await["payment_id"].as_str().unwrap().to_string();
+
+        let status = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{id}/pos/orders/{payment_id}/status"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(status.status(), StatusCode::OK);
+        let body = body_json(status).await;
+        assert_eq!(body["status"], "pending");
+        assert_eq!(body["confirmations"], 0);
+        assert_eq!(body["is_terminal"], false);
+        assert!(body["error"].is_null(), "a plain pending order must carry no error, got: {body}");
+    }
+
+    #[tokio::test]
+    async fn the_status_endpoint_404s_for_an_unknown_payment_id() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(&router, "pos-status-404@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{id}/pos/orders/nonexistent/status"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn the_status_endpoint_404s_for_a_connection_owned_by_a_different_user() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let owner_token = signed_up_and_logged_in_session_token(&router, "pos-status-owner@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &owner_token, "XMR").await;
+        let create = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {owner_token}"))
+                    .body(Body::from(serde_json::json!({ "amount": "1.0" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let payment_id = body_json(create).await["payment_id"].as_str().unwrap().to_string();
+
+        let other_token = signed_up_and_logged_in_session_token(&router, "pos-status-other@example.com", "correct horse battery staple").await;
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{id}/pos/orders/{payment_id}/status"))
+                    .header("authorization", format!("Bearer {other_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn a_pos_order_created_against_a_fiat_base_currency_is_rejected_with_no_priced_provider_configured() {
+        // This test instance's `exchange_rate` is XMR-only
+        // (`test_exchange_rate_provider`) - a store whose `base_currency` is
+        // a fiat currency simply can't be priced on it, the same
+        // "unsupported currency" outcome `http::pay::create_order`'s own
+        // tests already exercise for the public endpoint. Proves the POS
+        // endpoint surfaces that as a clear `400`, not a `500`.
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(&router, "pos-fiat@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "USD").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::from(serde_json::json!({ "amount": "10.00" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    }
+}
+
+/// [`derive_payment_error`] is pure - no engine, no database - so it's
+/// unit-tested directly against hand-built [`OrderView`]s the same
+/// "I/O-free logic gets its own plain unit tests" split
+/// `confirmation_thresholds`'s own module doc comment already applies. A
+/// real end-to-end double-spend/partial/overpaid/expired order would need
+/// this crate's test engine to actually mine/fund/double-spend a real
+/// transaction, which none of this crate's existing HTTP-level test
+/// harnesses do (they only ever exercise the freshly-created `"pending"`
+/// state) - that's the scanner crate's own job to prove, not this one's.
+#[cfg(test)]
+mod pure_logic_tests {
+    use super::{derive_payment_error, OrderView};
+
+    fn order_with_status(status: &str) -> OrderView {
+        OrderView {
+            payment_id: "pay_test".to_string(),
+            merchant_order_id: None,
+            address: "addr".to_string(),
+            xmr_amount_piconero: 1_000_000_000_000,
+            amount_received_piconero: 0,
+            status: status.to_string(),
+            confirmations: 0,
+            double_spend_detected_at: None,
+            refund_address: None,
+            created_at: 0,
+            expires_at: 1000,
+            updated_at: 0,
+            first_scanned_height: None,
+            last_scanned_height: None,
+            currently_scanning: false,
+        }
+    }
+
+    #[test]
+    fn a_pending_unconfirmed_or_confirming_order_has_no_error() {
+        for status in ["pending", "unconfirmed", "confirming"] {
+            assert_eq!(derive_payment_error(&order_with_status(status)), None, "status {status:?} must not be an error");
+        }
+    }
+
+    #[test]
+    fn a_plain_paid_order_has_no_error() {
+        assert_eq!(derive_payment_error(&order_with_status("paid")), None);
+    }
+
+    #[test]
+    fn a_partial_payment_is_flagged_as_underpaid() {
+        let error = derive_payment_error(&order_with_status("partial")).expect("partial must be flagged");
+        assert!(error.to_lowercase().contains("underpaid"), "got: {error}");
+    }
+
+    #[test]
+    fn an_overpaid_order_is_flagged() {
+        let error = derive_payment_error(&order_with_status("overpaid")).expect("overpaid must be flagged");
+        assert!(error.to_lowercase().contains("overpaid"), "got: {error}");
+    }
+
+    #[test]
+    fn an_expired_order_is_flagged() {
+        let error = derive_payment_error(&order_with_status("expired")).expect("expired must be flagged");
+        assert!(error.to_lowercase().contains("expired"), "got: {error}");
+    }
+
+    #[test]
+    fn a_double_spend_is_flagged_regardless_of_status() {
+        // Double-spend detection takes priority over every other check here
+        // (the `if` in `derive_payment_error` returns before the `match`
+        // ever runs) - proven across several different statuses, not just
+        // one, so a future reordering of that function can't silently drop
+        // this precedence for some statuses but not others.
+        for status in ["unconfirmed", "confirming", "paid", "partial"] {
+            let mut order = order_with_status(status);
+            order.double_spend_detected_at = Some(123);
+            let error = derive_payment_error(&order).expect("a double-spend must always be flagged");
+            assert!(error.to_lowercase().contains("double-spend"), "got: {error}");
+        }
+    }
+}

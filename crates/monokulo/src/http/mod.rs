@@ -57,6 +57,7 @@ mod login;
 mod logout;
 mod orders;
 mod pay;
+mod pos;
 pub mod rate_limit;
 mod signup;
 pub mod status_page;
@@ -166,6 +167,9 @@ pub fn build_router(state: AppState) -> Router {
             "/dashboard/connections/{id}/settings/confirmation-thresholds/{threshold_id}/delete",
             axum::routing::post(orders::delete_confirmation_threshold),
         )
+        .route("/dashboard/connections/{id}/pos", axum::routing::get(pos::pos_page))
+        .route("/dashboard/connections/{id}/pos/orders", axum::routing::post(pos::create_order))
+        .route("/dashboard/connections/{id}/pos/orders/{payment_id}/status", axum::routing::get(pos::order_status))
         .route("/dashboard/connections/{id}/orders", axum::routing::get(orders::orders_list))
         .route("/dashboard/connections/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
         .route(
