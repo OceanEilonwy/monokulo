@@ -93,6 +93,18 @@ async fn body_text(response: axum::response::Response) -> String {
 
 #[tokio::main]
 async fn main() {
+    // monokulo's `signup.mode` now defaults to `"invite_only"` (added after
+    // this harness's sibling `tests/e2e_dashboard_stagenet.rs` was written -
+    // that test's own bare signup, with no invite token, is now equally
+    // affected) - a fresh in-memory `Db` has no stored override, so without
+    // this the plain `/dashboard/signup` call below gets silently rejected
+    // (a re-rendered `200` form, not the `302` it asserts on) instead of
+    // creating the account. `settings::get` resolves this env var live on
+    // every call (env > database > default), so setting it here before
+    // `main` does anything else is enough - scoped to this one process only,
+    // never touches the shared test file above.
+    std::env::set_var("MONOKULO_SIGNUP_MODE", "public");
+
     // ---- real, network-bound engine against the real public stagenet node ----
     let store = Store::open_in_memory().unwrap().into_shared();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
@@ -227,6 +239,18 @@ async fn main() {
                     ("spend_pubkey_hex", WALLET_PUBLIC_SPEND_KEY),
                     ("network", "stagenet"),
                     ("allowed_origins", ""),
+                    // `ConnectForm::base_currency` (`http::dashboard`) has no
+                    // real default despite its `#[serde(default)]` (that
+                    // only covers a missing form field, not what the
+                    // engine/currency validation accepts - an empty string
+                    // fails `crate::currencies::is_known_currency` outright)
+                    // - added after `tests/e2e_dashboard_stagenet.rs`'s own
+                    // identical connect call was written, which is why that
+                    // test's own field list doesn't have this either. `"XMR"`
+                    // matches every real amount this harness ever sends
+                    // (spec point 2: the POS screen always prices in the
+                    // store's own base currency).
+                    ("base_currency", "XMR"),
                 ])))
                 .unwrap(),
         )
