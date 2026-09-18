@@ -180,42 +180,44 @@ async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): 
         .map(|v| v.as_str().expect("known_txids entries must be strings").to_string())
         .collect();
 
-    let daemon = match RpcDaemonClient::new(NODE_HOST, NODE_PORT, NODE_SSL, NODE_ACCEPT_SELF_SIGNED_CERTS) {
-        Ok(d) => d,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to build daemon RPC client: {e}")).into_response(),
-    };
-
-    // Retried - unlike `.send()` below, `.connect()` never broadcasts
-    // anything, so this carries no double-spend risk. The `network_lock`
-    // guard above already rules out contention with this process's *own*
-    // scan loop, but a real, observed failure mode remains even with that
-    // held: this endpoint's very first call in a real Playwright run (after
-    // several seconds of real browser login/navigation/keypad clicks, during
-    // which the scan loop has ticked several more times than in a
-    // fired-within-a-few-seconds-of-boot manual test) has failed on its
-    // first attempt more than once, while back-to-back manual calls against
-    // the same running process succeeded every time - consistent with the
-    // node applying something closer to a rolling request-rate budget than a
-    // hard concurrency cap, which a mutual-exclusion lock alone can't smooth
-    // over. Same retry shape `pos-e2e-send-payment`'s own standalone binary
-    // already carries for the identical reason.
-    const CONNECT_ATTEMPTS: u32 = 4;
-    let mut spend_wallet_result =
-        StagenetSpendWallet::connect(&state.node_url, NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address).await;
-    for attempt in 2..=CONNECT_ATTEMPTS {
-        let Err(e) = &spend_wallet_result else { break };
-        eprintln!("send-payment: attempt {attempt}/{CONNECT_ATTEMPTS}: retrying StagenetSpendWallet::connect after: {e}");
-        tokio::time::sleep(Duration::from_secs(5)).await;
-        spend_wallet_result =
-            StagenetSpendWallet::connect(&state.node_url, NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address).await;
-    }
-    let spend_wallet = match spend_wallet_result {
-        Ok(w) => w,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
-    };
-    let tx_hash = match spend_wallet.send(&daemon, &known_txids, &req.address, piconero_amount).await {
-        Ok(h) => h,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    // Retries the *whole* connect-then-send sequence, not just connect -
+    // real, observed evidence forced this wider than the first version of
+    // this handler had: even with `network_lock` ruling out this process
+    // ever literally holding two connections to the node open at once, this
+    // endpoint has failed, on different real runs, at both
+    // `StagenetSpendWallet::connect`'s own handshake *and*, separately,
+    // `.send()`'s own pre-broadcast `get_transactions` call - consistent
+    // with the node applying something closer to a rolling request-rate
+    // budget than a hard concurrency cap, which affects any call, not just
+    // the first one. Safe to retry the whole sequence from scratch on any
+    // error *except* `SpendWalletError::Broadcast` (a broadcast was actually
+    // attempted and its outcome is genuinely unknown - see that variant's
+    // own doc comment; retrying past it risks a real double-send) - every
+    // other variant (`DaemonUnreachable`, `Rpc`, `Send`, `InsufficientFunds`)
+    // fails strictly before any transaction is signed or broadcast.
+    const SEND_ATTEMPTS: u32 = 5;
+    let mut attempt = 1;
+    let tx_hash = loop {
+        let daemon = match RpcDaemonClient::new(NODE_HOST, NODE_PORT, NODE_SSL, NODE_ACCEPT_SELF_SIGNED_CERTS) {
+            Ok(d) => d,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to build daemon RPC client: {e}")).into_response(),
+        };
+        let result = match StagenetSpendWallet::connect(&state.node_url, NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address).await {
+            Ok(spend_wallet) => spend_wallet.send(&daemon, &known_txids, &req.address, piconero_amount).await,
+            Err(e) => Err(e),
+        };
+        match result {
+            Ok(hash) => break hash,
+            Err(e @ scanner::e2e_wallet::SpendWalletError::Broadcast(_)) => {
+                return (StatusCode::INTERNAL_SERVER_ERROR, format!("broadcast outcome unknown, not retrying: {e}")).into_response();
+            }
+            Err(e) if attempt < SEND_ATTEMPTS => {
+                eprintln!("send-payment: attempt {attempt}/{SEND_ATTEMPTS}: retrying after: {e}");
+                attempt += 1;
+                tokio::time::sleep(Duration::from_secs(5)).await;
+            }
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        }
     };
     let tx_hash_hex = hex::encode(tx_hash);
     record_known_txid(&tx_hash_hex);
