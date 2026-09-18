@@ -113,12 +113,18 @@ fn is_safe_redirect_path(next: &str) -> bool {
 /// `POST /dashboard/connect`'s form fields (WBS 1.3.2) - the browser
 /// equivalent of `POST /connections`'s JSON body, minus `platform` (hardcoded
 /// to `"woocommerce"` below - a real "choose a platform" UI is a later, fuller
-/// dashboard concern) and the three fields the JSON API already treats as
-/// optional (`confirmations_required`/`zero_conf_max_piconero`/
-/// `order_expiry_seconds`), left `None` here so the engine's own defaults
-/// apply. `allowed_origins` arrives as one comma-separated text input rather
-/// than a JSON array, since an HTML form has no native array field - split
-/// into a `Vec<String>` in `connect_submit` below.
+/// dashboard concern) and `order_expiry_seconds` (left `None` here so the
+/// engine's own default applies - no UI field for it yet).
+/// `confirmations_required`/`zero_conf_max_piconero` *are* carried (same
+/// `#[serde(default)]`-to-`None`, no-UI-field-yet treatment
+/// `connect.rs::ConfirmForm` already gives both, for the identical reason:
+/// a caller that needs a non-default value - most concretely, a real
+/// stagenet e2e test that wants a permissive zero-conf ceiling and a low
+/// confirmations_required rather than waiting on real block times - has a
+/// real way to set either through this flow instead of only the JSON `POST
+/// /connections` surface. `allowed_origins` arrives as one comma-separated
+/// text input rather than a JSON array, since an HTML form has no native
+/// array field - split into a `Vec<String>` in `connect_submit` below.
 #[derive(Deserialize)]
 pub struct ConnectForm {
     pub site_url: String,
@@ -130,6 +136,10 @@ pub struct ConnectForm {
     /// that module's own doc comment.
     #[serde(default)]
     pub base_currency: String,
+    #[serde(default)]
+    pub confirmations_required: Option<u64>,
+    #[serde(default)]
+    pub zero_conf_max_piconero: Option<u64>,
 }
 
 /// `logged_in` is always `false` here, not a real per-request session
@@ -374,8 +384,8 @@ pub async fn connect_submit(
         spend_pubkey_hex: form.spend_pubkey_hex.clone(),
         network: Some(form.network.clone()),
         allowed_origins,
-        confirmations_required: None,
-        zero_conf_max_piconero: None,
+        confirmations_required: form.confirmations_required,
+        zero_conf_max_piconero: form.zero_conf_max_piconero,
         order_expiry_seconds: None,
         base_currency: form.base_currency.clone(),
     };
