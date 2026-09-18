@@ -1,10 +1,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
-const { execFileSync } = require('node:child_process');
 
-const REPO_ROOT = path.resolve(__dirname, '..', '..');
 const FIXTURE_PATH = path.join(__dirname, '.pos-e2e-fixture.json');
-const SEND_PAYMENT_BIN = path.join(REPO_ROOT, 'target', 'debug', 'pos-e2e-send-payment');
 
 function loadFixture() {
   return JSON.parse(fs.readFileSync(FIXTURE_PATH, 'utf8'));
@@ -20,13 +17,39 @@ function piconeroFromXmrDisplay(display) {
   return BigInt(whole) * 1_000_000_000_000n + BigInt(frac);
 }
 
-// Shells out to the real Rust binary that connects, signs, and broadcasts an
-// actual stagenet transaction (`scanner::e2e_wallet::StagenetSpendWallet`,
-// via `crates/scanner/src/bin/pos_e2e_send_payment.rs`) - deliberately never
-// reimplemented in JS; this process never touches key material itself.
-// Returns the broadcast tx's hex-encoded hash.
-function sendStagenetPayment(address, piconero) {
-  return execFileSync(SEND_PAYMENT_BIN, [address, piconero.toString()], { cwd: REPO_ROOT, encoding: 'utf8' }).trim();
+// Calls the real, in-process "send a payment" endpoint pos-e2e-server itself
+// exposes (`fixture.send_payment_url`, `send_payment_handler` in
+// crates/scanner/src/bin/pos_e2e_server.rs) - which connects, signs, and
+// broadcasts an actual stagenet transaction via `scanner::e2e_wallet::
+// StagenetSpendWallet`, deliberately never reimplemented in JS; this Node
+// process never touches key material itself.
+//
+// Not a separate `pos-e2e-send-payment` child process any more (that binary
+// still exists, for standalone manual debugging - see its own doc comment) -
+// a real, reproduced failure motivated the move: the public stagenet node
+// (or something in front of it) allows only one concurrent connection per
+// source IP, so a second process's own connection attempt, racing against
+// pos-e2e-server's own background scan loop, failed *consistently* (not
+// flakily) for the scan loop's entire lifetime. Routing the send through
+// pos-e2e-server's own process instead lets it serialize this against its
+// own scan loop with a single in-process lock - see `network_lock`'s own
+// doc comment on the Rust side for the full story.
+async function sendStagenetPayment(sendPaymentUrl, address, piconero) {
+  const response = await fetch(sendPaymentUrl, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    // JSON has no BigInt literal - `piconero` arrives here as a BigInt
+    // (see piconeroFromXmrDisplay), so it's sent as a plain numeral string
+    // and parsed with serde's own u64 support on the Rust side, never
+    // round-tripped through a JS `number` (which can't hold it exactly
+    // past 2^53).
+    body: JSON.stringify({ address, piconero_amount: piconero.toString() }),
+  });
+  if (!response.ok) {
+    throw new Error(`send-payment failed (${response.status}): ${await response.text()}`);
+  }
+  const body = await response.json();
+  return body.tx_hash;
 }
 
 // Square-Terminal-style keypad entry: taps each character of `digits` (e.g.

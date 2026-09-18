@@ -35,15 +35,22 @@ use std::sync::{Arc, RwLock};
 use std::time::Duration;
 
 use axum::body::Body;
+use axum::extract::State;
 use axum::http::{Request, StatusCode};
+use axum::response::{IntoResponse, Response};
+use axum::routing::post;
+use axum::{Json, Router};
 use http_body_util::BodyExt;
 use monero::Network;
+use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use tokio::sync::Mutex as AsyncMutex;
 use tower::ServiceExt;
 
 use scanner::daemon::MoneroDaemonClient;
 use scanner::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use scanner::daemon_rpc::RpcDaemonClient;
+use scanner::e2e_wallet::StagenetSpendWallet;
 use scanner::http::rate_limit::RateLimiter;
 use scanner::http::{build_router as build_engine_router, now_unix, AppState as EngineAppState};
 use scanner::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
@@ -69,6 +76,7 @@ const NODE_ACCEPT_SELF_SIGNED_CERTS: bool = true;
 const WALLET_PRIVATE_VIEW_KEY: &str = "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e";
 const WALLET_PUBLIC_SPEND_KEY: &str = "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335";
 const PAYMENT_REORG_CHECK_DEPTH: u64 = 20;
+const WALLETS_PATH: &str = "e2e/stagenet-wallets.json";
 
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -89,6 +97,107 @@ fn form_body(fields: &[(&str, &str)]) -> String {
 async fn body_text(response: axum::response::Response) -> String {
     let bytes = response.into_body().collect().await.unwrap().to_bytes();
     String::from_utf8(bytes.to_vec()).unwrap()
+}
+
+/// Deliberately duplicated from `tests/e2e_dashboard_stagenet.rs::record_known_txid`
+/// / `pos_e2e_send_payment.rs::record_known_txid` rather than shared - same
+/// reasoning both of those give: never touch another real-money-costing
+/// caller's own copy while editing this one. Same atomic write-back.
+fn record_known_txid(tx_hash: &str) {
+    let mut wallets_json: Value =
+        serde_json::from_str(&std::fs::read_to_string(WALLETS_PATH).unwrap_or_else(|e| panic!("failed to read {WALLETS_PATH}: {e}")))
+            .unwrap_or_else(|e| panic!("failed to parse {WALLETS_PATH}: {e}"));
+    let known = wallets_json["customer"]["known_txids"].as_array_mut().expect("customer.known_txids must be an array");
+    if !known.iter().any(|v| v.as_str() == Some(tx_hash)) {
+        known.push(json!(tx_hash));
+    }
+    let tmp_path = format!("{WALLETS_PATH}.tmp");
+    std::fs::write(&tmp_path, serde_json::to_string_pretty(&wallets_json).unwrap() + "\n").unwrap_or_else(|e| panic!("failed to write {tmp_path}: {e}"));
+    std::fs::rename(&tmp_path, WALLETS_PATH).unwrap_or_else(|e| panic!("failed to move {tmp_path} into place over {WALLETS_PATH}: {e}"));
+}
+
+#[derive(Clone)]
+struct SendPaymentState {
+    node_url: String,
+    /// Held for the *entire* duration of any real call to the stagenet
+    /// node - both here and around every `run_scan_tick` in `main`'s own
+    /// background loop below - so this process never has two connections to
+    /// the node open at once. Added after directly reproducing a real,
+    /// consistent (not flaky) failure: the public node (or something in
+    /// front of it) appears to allow only one concurrent connection per
+    /// source IP, confirmed by running two of this harness's own processes
+    /// against it at the same time and watching one fail *every* attempt for
+    /// the other's entire ~250-600s decoy-selection window - see git log for
+    /// the full investigation. A single in-process `tokio::sync::Mutex` is a
+    /// complete fix *within this one harness* (it can't defend against some
+    /// unrelated third party also hitting the node, but nothing else here
+    /// does) - the actual reason `pos-e2e-send-payment` (the standalone
+    /// `[[bin]]`) is no longer what the Playwright suite calls; this HTTP
+    /// endpoint, sharing this process's own lock with the scan loop, is.
+    network_lock: Arc<AsyncMutex<()>>,
+}
+
+#[derive(Deserialize)]
+struct SendPaymentRequest {
+    address: String,
+    /// A plain numeral string, not a JSON number - the Node side computes
+    /// this as a `BigInt` (`piconeroFromXmrDisplay` in `helpers.js`) and
+    /// sends it as a string specifically so nothing on either side ever
+    /// round-trips it through an IEEE-754 `f64`/JS `number`.
+    piconero_amount: String,
+}
+
+#[derive(Serialize)]
+struct SendPaymentResponse {
+    tx_hash: String,
+}
+
+/// `POST /send-payment` on this harness's own small internal-only router
+/// (bound to a separate ephemeral port, its URL handed to Playwright in the
+/// `POS_E2E_READY` line as `send_payment_url`) - signs and broadcasts one
+/// real stagenet transaction via the same `StagenetSpendWallet`
+/// `tests/e2e_stagenet.rs`/`tests/e2e_dashboard_stagenet.rs` already trust,
+/// serialized against this process's own scan loop via `network_lock` (see
+/// its own doc comment for why that's necessary at all).
+async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): Json<SendPaymentRequest>) -> Response {
+    let piconero_amount: u64 = match req.piconero_amount.parse() {
+        Ok(n) => n,
+        Err(e) => return (StatusCode::BAD_REQUEST, format!("piconero_amount must be a plain integer: {e}")).into_response(),
+    };
+    let _guard = state.network_lock.lock().await;
+
+    let wallets_json: Value = match std::fs::read_to_string(WALLETS_PATH).ok().and_then(|s| serde_json::from_str(&s).ok()) {
+        Some(v) => v,
+        None => return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to read/parse {WALLETS_PATH}")).into_response(),
+    };
+    let customer_address = wallets_json["customer"]["address"].as_str().expect("customer.address missing").to_string();
+    let customer_spend_key_hex = wallets_json["customer"]["private_spend_key"].as_str().expect("customer.private_spend_key missing").to_string();
+    let customer_view_key_hex = wallets_json["customer"]["private_view_key"].as_str().expect("customer.private_view_key missing").to_string();
+    let known_txids: Vec<String> = wallets_json["customer"]["known_txids"]
+        .as_array()
+        .expect("customer.known_txids missing")
+        .iter()
+        .map(|v| v.as_str().expect("known_txids entries must be strings").to_string())
+        .collect();
+
+    let daemon = match RpcDaemonClient::new(NODE_HOST, NODE_PORT, NODE_SSL, NODE_ACCEPT_SELF_SIGNED_CERTS) {
+        Ok(d) => d,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to build daemon RPC client: {e}")).into_response(),
+    };
+    let spend_wallet =
+        match StagenetSpendWallet::connect(&state.node_url, NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address)
+            .await
+        {
+            Ok(w) => w,
+            Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+        };
+    let tx_hash = match spend_wallet.send(&daemon, &known_txids, &req.address, piconero_amount).await {
+        Ok(h) => h,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
+    };
+    let tx_hash_hex = hex::encode(tx_hash);
+    record_known_txid(&tx_hash_hex);
+    Json(SendPaymentResponse { tx_hash: tx_hash_hex }).into_response()
 }
 
 #[tokio::main]
@@ -165,6 +274,26 @@ async fn main() {
     });
     let monokulo_base_url = format!("http://{cp_addr}");
 
+    // See `SendPaymentState::network_lock`'s own doc comment for why this
+    // exists at all - shared by the scan loop below and the `/send-payment`
+    // handler so this whole process never opens two connections to the real
+    // node at once.
+    let network_lock: Arc<AsyncMutex<()>> = Arc::new(AsyncMutex::new(()));
+    let node_url = format!("http{}://{NODE_HOST}:{NODE_PORT}", if NODE_SSL { "s" } else { "" });
+
+    // ---- the internal-only "send a real payment" endpoint (see
+    // `send_payment_handler`'s own doc comment) - its own tiny router, bound
+    // to its own ephemeral port, entirely separate from monokulo's real
+    // production router above. ----
+    let send_payment_state = SendPaymentState { node_url: node_url.clone(), network_lock: network_lock.clone() };
+    let send_payment_router = Router::new().route("/send-payment", post(send_payment_handler)).with_state(send_payment_state);
+    let send_payment_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("failed to bind an ephemeral send-payment port");
+    let send_payment_addr = send_payment_listener.local_addr().unwrap();
+    tokio::spawn(async move {
+        axum::serve(send_payment_listener, send_payment_router).await.expect("send-payment server error");
+    });
+    let send_payment_url = format!("http://{send_payment_addr}/send-payment");
+
     // ---- a real background scan loop, since an external process (Playwright,
     // over real HTTP polling) - not this process's own sequential test code -
     // is what's watching for payment status changes this time; mirrors
@@ -175,14 +304,18 @@ async fn main() {
         let key_custody = key_custody.clone();
         let daemon = daemon.clone();
         let wallet_handles = wallet_handles.clone();
+        let network_lock = network_lock.clone();
         tokio::spawn(async move {
             loop {
                 let tenants: Vec<(String, WalletHandle)> = wallet_handles.read().unwrap().iter().map(|(id, h)| (id.clone(), *h)).collect();
-                if let Err(e) =
-                    run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(Network::Stagenet), &tenants, PAYMENT_REORG_CHECK_DEPTH, 0)
-                        .await
                 {
-                    eprintln!("pos-e2e-server: scan tick failed: {e}");
+                    let _guard = network_lock.lock().await;
+                    if let Err(e) =
+                        run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(Network::Stagenet), &tenants, PAYMENT_REORG_CHECK_DEPTH, 0)
+                            .await
+                    {
+                        eprintln!("pos-e2e-server: scan tick failed: {e}");
+                    }
                 }
                 tokio::time::sleep(Duration::from_secs(2)).await;
             }
@@ -279,6 +412,7 @@ async fn main() {
     let ready: Value = json!({
         "engine_base_url": engine_base_url,
         "monokulo_base_url": monokulo_base_url,
+        "send_payment_url": send_payment_url,
         "public_key": public_key,
         "connection_id": connection_id,
         "email": email,

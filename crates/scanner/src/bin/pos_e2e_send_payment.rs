@@ -86,17 +86,52 @@ async fn main() {
         .collect();
 
     let daemon = RpcDaemonClient::new(NODE_HOST, NODE_PORT, NODE_SSL, NODE_ACCEPT_SELF_SIGNED_CERTS).expect("failed to build daemon RPC client");
-    if let Err(e) = daemon.get_height().await {
-        eprintln!("cannot reach the stagenet node at {NODE_HOST}:{NODE_PORT}: {e}");
+
+    // Retried, unlike `.send()` below: connecting/probing reachability never
+    // broadcasts anything, so retrying it carries no double-spend risk (see
+    // this binary's own doc comment - `.send()` is the one place that isn't
+    // retried, deliberately). Real, reproduced contention motivated this:
+    // this binary and `pos-e2e-server`'s own background scan-tick loop both
+    // hit the same public node from the same machine at the same time, and
+    // a fresh connection attempt landing in that window can fail fast
+    // (observed consistently, not a rare flake) even though the node itself
+    // is genuinely reachable - confirmed by the identical call succeeding
+    // every time when nothing else was hitting the node concurrently.
+    const CONNECT_ATTEMPTS: u32 = 4;
+    let mut last_reachability_error = None;
+    for attempt in 1..=CONNECT_ATTEMPTS {
+        match daemon.get_height().await {
+            Ok(_) => {
+                last_reachability_error = None;
+                break;
+            }
+            Err(e) => {
+                eprintln!("attempt {attempt}/{CONNECT_ATTEMPTS}: cannot reach the stagenet node at {NODE_HOST}:{NODE_PORT} yet: {e}");
+                last_reachability_error = Some(e);
+                if attempt < CONNECT_ATTEMPTS {
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+        }
+    }
+    if let Some(e) = last_reachability_error {
+        eprintln!("cannot reach the stagenet node at {NODE_HOST}:{NODE_PORT} after {CONNECT_ATTEMPTS} attempts: {e}");
         std::process::exit(1);
     }
 
-    let spend_wallet = StagenetSpendWallet::connect(&node_url, NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address)
-        .await
-        .unwrap_or_else(|e| {
-            eprintln!("{e}");
-            std::process::exit(1);
-        });
+    let mut spend_wallet_result =
+        StagenetSpendWallet::connect(&node_url, NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address).await;
+    for attempt in 2..=CONNECT_ATTEMPTS {
+        let Err(e) = &spend_wallet_result else { break };
+        eprintln!("attempt {attempt}/{CONNECT_ATTEMPTS}: retrying StagenetSpendWallet::connect after: {e}");
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        spend_wallet_result =
+            StagenetSpendWallet::connect(&node_url, NODE_ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address).await;
+    }
+    let spend_wallet = spend_wallet_result.unwrap_or_else(|e| {
+        eprintln!("{e}");
+        std::process::exit(1);
+    });
     let tx_hash = spend_wallet.send(&daemon, &known_txids, &address, amount_piconero).await.unwrap_or_else(|e| {
         eprintln!("{e}");
         std::process::exit(1);

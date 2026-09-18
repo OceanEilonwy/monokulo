@@ -6,10 +6,12 @@ const { defineConfig } = require('@playwright/test');
 // default `npm test`/CI invocation anywhere else in this repo.
 module.exports = defineConfig({
   testDir: './tests',
-  // Real stagenet confirmations take real wall-clock time (~2min/block) -
-  // see tests/pos.spec.js's own per-test test.setTimeout calls for the exact
-  // budget each scenario gets; this is just a generous outer bound.
-  timeout: 8 * 60 * 1000,
+  // Real stagenet confirmations take real wall-clock time (~2min/block), and
+  // real decoy selection alone can take up to ~600s worst case - see
+  // tests/pos.spec.js's own per-test test.setTimeout calls for the exact
+  // budget each scenario gets (up to 18min for the slower one); this is just
+  // a generous outer bound in case a test omits its own override.
+  timeout: 20 * 60 * 1000,
   expect: { timeout: 60 * 1000 },
   // Both tests share one real backend process and one real customer wallet
   // (see global-setup.js) - never run them concurrently against each other.
