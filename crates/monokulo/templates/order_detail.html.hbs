@@ -67,6 +67,9 @@ needs to pay this order.</p>
 {{/if}}
 </td></tr>
 <tr><th>Confirmations</th><td>{{order.confirmations}}</td></tr>
+<tr><th>Confirmations required</th><td>{{order.confirmations_required_display}}</td></tr>
+<tr><th>Store base currency (at order creation)</th><td>{{order.base_currency_display}}</td></tr>
+<tr><th>Base currency rate used</th><td>{{order.base_currency_rate_display}}</td></tr>
 {{#if order.double_spend_detected_at}}
 <tr><th>Double-spend detected at</th><td>{{{order.double_spend_detected_at_display}}}</td></tr>
 {{/if}}

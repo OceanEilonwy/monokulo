@@ -152,6 +152,72 @@ async fn create_tenant_then_create_order_happy_path() {
     assert_eq!(body["payment_id"], payment_id);
 }
 
+#[tokio::test]
+async fn creating_an_order_with_a_confirmations_required_override_persists_it() {
+    let state = test_app_state();
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+
+    let req = json_request(
+        "POST",
+        &format!("/api/v1/t/{}/orders", tenant.public_key),
+        None,
+        Some("https://merchant.example"),
+        serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 3 }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let payment_id = body_json(response).await["payment_id"].as_str().unwrap().to_string();
+
+    let guard = store.lock().unwrap();
+    let tenant_id = guard.find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
+    let order = guard.get_order(&tenant_id, &payment_id).unwrap().unwrap();
+    assert_eq!(order.confirmations_required_override, Some(3));
+}
+
+#[tokio::test]
+async fn creating_an_order_with_no_confirmations_required_override_leaves_it_unset() {
+    let state = test_app_state();
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+
+    let req = json_request(
+        "POST",
+        &format!("/api/v1/t/{}/orders", tenant.public_key),
+        None,
+        Some("https://merchant.example"),
+        serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let payment_id = body_json(response).await["payment_id"].as_str().unwrap().to_string();
+
+    let guard = store.lock().unwrap();
+    let tenant_id = guard.find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
+    let order = guard.get_order(&tenant_id, &payment_id).unwrap().unwrap();
+    assert_eq!(order.confirmations_required_override, None);
+}
+
+#[tokio::test]
+async fn creating_an_order_with_an_out_of_range_confirmations_required_is_rejected() {
+    let router = test_router();
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+
+    for bad in [0u64, 721u64] {
+        let req = json_request(
+            "POST",
+            &format!("/api/v1/t/{}/orders", tenant.public_key),
+            None,
+            Some("https://merchant.example"),
+            serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": bad }),
+        );
+        let response = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "confirmations_required={bad} must be rejected");
+    }
+}
+
 /// Regression test: a `spend_pubkey_hex` that's the right length and valid hex
 /// (so `WalletMaterial::from_hex` accepts it) but isn't actually a point on the
 /// curve used to fail all the way through as a bare `500 Internal Server Error`
@@ -1711,6 +1777,7 @@ async fn create_expired_order_with_room_for_a_historical_advanced_range(
         let minor_index = s.allocate_minor_index(&tenant_row.id).unwrap();
         let order = s
             .create_order(crate::store::NewOrder {
+                confirmations_required_override: None,
                 tenant_id: tenant_row.id,
                 merchant_order_id: None,
                 minor_index,

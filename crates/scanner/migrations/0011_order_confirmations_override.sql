@@ -1,0 +1,13 @@
+-- A per-order override for how many confirmations this specific order needs,
+-- distinct from the tenant-wide `tenants.confirmations_required` default -
+-- `recompute_order_status` uses this value when present, falling back to the
+-- tenant's own value exactly as before when it's NULL (every existing order,
+-- and every caller that never sends one, is unaffected).
+--
+-- The caller monokulo sits behind can compute an amount-tiered confirmation
+-- requirement (its own "Confirmation Thresholds" feature) and lock it in at
+-- order-creation time via this column, rather than the engine needing any
+-- concept of currency/amount tiers itself - the engine only ever watches a
+-- fixed piconero amount and a fixed confirmation count per order, same as
+-- always; only *where that count comes from* now has two possible sources.
+ALTER TABLE orders ADD COLUMN confirmations_required_override INTEGER;

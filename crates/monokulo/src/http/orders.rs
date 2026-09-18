@@ -252,6 +252,26 @@ async fn render_order_detail_page(
                 ),
                 None => ("—".to_string(), "—".to_string()),
             };
+            // Same "no snapshot, show a dash" fallback as `rate_display`
+            // above - `metadata`'s own 3 threshold-snapshot fields are all
+            // `Option` for the exact same reasons (migration 0016's own doc
+            // comment).
+            let confirmations_required_display = metadata
+                .as_ref()
+                .and_then(|m| m.confirmations_required_applied)
+                .map(|c| c.to_string())
+                .unwrap_or_else(|| "—".to_string());
+            let base_currency_display =
+                metadata.as_ref().and_then(|m| m.store_base_currency.clone()).unwrap_or_else(|| "—".to_string());
+            let base_currency_rate_display = match metadata.as_ref().and_then(|m| m.store_base_currency.clone()) {
+                Some(base_currency) => match metadata.as_ref().and_then(|m| m.base_currency_piconero_per_unit) {
+                    Some(rate) => {
+                        format!("{} XMR per 1 {base_currency}", shared::exchange_rate::format_piconero_as_xmr(rate))
+                    }
+                    None => "same as order currency".to_string(),
+                },
+                None => "—".to_string(),
+            };
             // `docs/order_rescan_wbs.md` Phase 3.2/3.3 - only ever a real engine
             // call for an `Expired` order (decision 5), since that's the only
             // status the rescan section renders anything for at all.
@@ -277,6 +297,9 @@ async fn render_order_detail_page(
                     amount_received_piconero: detail.order.amount_received_piconero,
                     status: detail.order.status,
                     confirmations: detail.order.confirmations,
+                    confirmations_required_display,
+                    base_currency_display,
+                    base_currency_rate_display,
                     double_spend_detected_at: detail.order.double_spend_detected_at,
                     double_spend_detected_at_display: display_timestamp_or_dash(detail.order.double_spend_detected_at),
                     refund_address: detail.order.refund_address,
@@ -717,6 +740,18 @@ async fn render_store_detail_page(
     let order_currency_options =
         state.exchange_rate.supported_currencies_for(&row).await.unwrap_or_else(|_| vec!["XMR".to_string()]);
     let order_currency_is_locked_to_xmr = order_currency_options.len() == 1 && order_currency_options[0] == "XMR";
+    let (base_currency_options, confirmation_thresholds) = {
+        let db = state.db.lock().unwrap();
+        let options = crate::currencies::currency_options(&db, &row.base_currency).unwrap_or_default();
+        let thresholds = db
+            .list_confirmation_thresholds(&row.id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| crate::templates::ConfirmationThresholdView { id: t.id, unit_amount: t.unit_amount, confirmations_required: t.confirmations_required })
+            .collect::<Vec<_>>();
+        (options, thresholds)
+    };
+    let confirmation_thresholds_at_max = confirmation_thresholds.len() >= 5;
     let view_model = crate::templates::StoreDetailViewModel {
         store: Some(crate::templates::StoreDetailData {
             connection_id: row.id,
@@ -736,6 +771,10 @@ async fn render_store_detail_page(
             confirmations_required,
             fx_provider: row.fx_provider,
             fx_provider_options,
+            base_currency: row.base_currency,
+            base_currency_options,
+            confirmation_thresholds,
+            confirmation_thresholds_at_max,
             settings_error,
         }),
         logged_in: true,
@@ -785,6 +824,18 @@ pub async fn create_order(
         return render_store_detail_page(&state, row, user.is_admin, Some("Enter an amount and a currency.".to_string()), None).await;
     }
 
+    // Selection-time validation first, entirely independent of whether any
+    // provider can actually price it - see `crate::currencies`'s own doc
+    // comment and `http::pay::create_order`'s matching check for why
+    // "unknown currency" and "unsupported currency" are kept as distinct
+    // messages rather than collapsed into one.
+    let currency_known = crate::currencies::is_known_currency(&state.db.lock().unwrap(), currency);
+    match currency_known {
+        Ok(true) => {}
+        Ok(false) => return render_store_detail_page(&state, row, user.is_admin, Some(format!("unknown currency: {currency}")), None).await,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+
     // The engine has no concept of currency any more (`docs/fx_refactor.md`
     // Phase 3) - monokulo's own exchange rate does the same computation
     // `http::pay::create_order` does for a real storefront call. `"XMR"`
@@ -816,7 +867,20 @@ pub async fn create_order(
         if trimmed.is_empty() { None } else { Some(trimmed.to_string()) }
     };
 
-    match state.engine_client.create_order(&row.tenant_public_key, xmr_amount_piconero, merchant_order_id).await {
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let resolution = match crate::confirmation_thresholds::resolve_for_order(&state, &row, &sk, currency, piconero_per_unit, xmr_amount_piconero).await {
+        Ok(resolution) => resolution,
+        Err(message) => return render_store_detail_page(&state, row, user.is_admin, Some(message), None).await,
+    };
+
+    match state
+        .engine_client
+        .create_order(&row.tenant_public_key, xmr_amount_piconero, merchant_order_id, Some(resolution.confirmations_required))
+        .await
+    {
         Ok(order) => {
             if let Err(e) = state.db.lock().unwrap().create_order_currency_metadata(
                 &row.id,
@@ -826,6 +890,9 @@ pub async fn create_order(
                 piconero_per_unit,
                 provider,
                 crate::now_unix(),
+                &resolution.base_currency,
+                resolution.base_currency_piconero_per_unit,
+                resolution.confirmations_required,
             ) {
                 eprintln!(
                     "failed to record local fiat metadata for order {} on connection {}: {e} - the real order \
@@ -949,6 +1016,153 @@ pub async fn update_fx_provider(
     }
 }
 
+#[derive(Deserialize)]
+pub struct UpdateBaseCurrencyForm {
+    pub base_currency: String,
+}
+
+/// `POST /dashboard/connections/{id}/settings/base-currency` - selection-time
+/// validation only (`crate::currencies::resolve_currency`), the same
+/// two-stage split every currency selection in this crate follows - see that
+/// module's own doc comment. Never checks whether any exchange-rate provider
+/// actually supports the chosen currency; that's a separate, later concern
+/// (order creation, threshold resolution), not this handler's job.
+///
+/// Changing the currency deletes every custom confirmation threshold for
+/// this store (`Db::update_store_connection_base_currency`'s own doc
+/// comment) - an old amount in a since-abandoned currency means nothing any
+/// more.
+pub async fn update_base_currency(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Form(form): Form<UpdateBaseCurrencyForm>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    // Bound to a local first, not matched on directly - see
+    // `update_fx_provider`'s own doc comment on exactly this footgun
+    // (a `MutexGuard` temporary in a `match` scrutinee stays alive across
+    // every arm, including one that `.await`s, which would make this
+    // handler's future `!Send`).
+    let resolved = crate::currencies::resolve_currency(&state.db.lock().unwrap(), &form.base_currency);
+    let base_currency = match resolved {
+        Ok(Some(code)) => code,
+        Ok(None) => {
+            return render_store_detail_page(
+                &state,
+                row,
+                user.is_admin,
+                None,
+                Some(format!("{:?} is not a known currency.", form.base_currency)),
+            )
+            .await;
+        }
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let update_result = state.db.lock().unwrap().update_store_connection_base_currency(&row.id, &base_currency);
+    match update_result {
+        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}")),
+        Err(_) => {
+            render_store_detail_page(&state, row, user.is_admin, None, Some("Something went wrong. Please try again.".to_string())).await
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct CreateConfirmationThresholdForm {
+    pub unit_amount: String,
+    pub confirmations_required: String,
+}
+
+/// `POST /dashboard/connections/{id}/settings/confirmation-thresholds` - adds
+/// one custom, amount-tiered confirmation threshold, one at a time (the same
+/// "add form, real POST, redirect back" shape webhooks already use). Three
+/// validated properties, in order: `confirmations_required` is a whole
+/// number; `unit_amount` is a real, non-negative decimal amount; this store
+/// doesn't already have 5 custom thresholds. A duplicate amount is rejected
+/// too, backstopped by `confirmation_thresholds`'s own `UNIQUE` constraint
+/// (`Db::create_confirmation_threshold`'s own doc comment) - the message
+/// here is just the friendlier surfaced form of that same rejection.
+pub async fn create_confirmation_threshold(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Form(form): Form<CreateConfirmationThresholdForm>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let confirmations_required: u64 = match form.confirmations_required.trim().parse() {
+        Ok(n) => n,
+        Err(_) => {
+            return render_store_detail_page(&state, row, user.is_admin, None, Some("Enter a whole number of confirmations.".to_string()))
+                .await;
+        }
+    };
+
+    let unit_amount = form.unit_amount.trim();
+    match unit_amount.parse::<f64>() {
+        Ok(n) if n.is_finite() && n >= 0.0 => {}
+        _ => {
+            return render_store_detail_page(&state, row, user.is_admin, None, Some("Enter a non-negative amount.".to_string())).await;
+        }
+    }
+
+    let count = state.db.lock().unwrap().count_confirmation_thresholds(&row.id).unwrap_or(0);
+    if count >= 5 {
+        return render_store_detail_page(
+            &state,
+            row,
+            user.is_admin,
+            None,
+            Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()),
+        )
+        .await;
+    }
+
+    let threshold_id = uuid::Uuid::new_v4().to_string();
+    let create_result =
+        state.db.lock().unwrap().create_confirmation_threshold(&threshold_id, &row.id, unit_amount, confirmations_required, crate::now_unix());
+    match create_result {
+        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}")),
+        Err(e) if e.is_unique_violation() => {
+            render_store_detail_page(&state, row, user.is_admin, None, Some(format!("A threshold for {unit_amount} already exists.")))
+                .await
+        }
+        Err(_) => {
+            render_store_detail_page(&state, row, user.is_admin, None, Some("Something went wrong. Please try again.".to_string())).await
+        }
+    }
+}
+
+/// `POST /dashboard/connections/{id}/settings/confirmation-thresholds/{threshold_id}/delete` -
+/// the default/fallback threshold isn't one of these rows at all (it's
+/// `tenants.confirmations_required`, edited via `update_confirmations_required`
+/// instead), so there is no way to reach this handler for it - "cannot be
+/// deleted" is true by construction, not an extra check here.
+pub async fn delete_confirmation_threshold(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path((id, threshold_id)): Path<(String, String)>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    state.db.lock().unwrap().delete_confirmation_threshold(&row.id, &threshold_id).ok();
+    redirect_302(&format!("/dashboard/connections/{id}"))
+}
+
 #[cfg(test)]
 mod tests {
     use axum::Router;
@@ -1058,6 +1272,7 @@ mod tests {
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
             "network": "mainnet",
             "allowed_origins": [],
+            "base_currency": "XMR",
         });
         Request::builder()
             .method("POST")
@@ -1729,7 +1944,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn creating_an_order_with_an_unsupported_currency_shows_the_engines_real_error() {
+    async fn creating_an_order_with_an_unknown_currency_shows_a_clear_error() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -1747,8 +1962,38 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK, "a validation error re-renders the page, it doesn't redirect");
         let html = body_text(response).await;
-        assert!(html.contains("unsupported currency"), "expected the engine's real validation error surfaced, got: {html}");
+        assert!(html.contains("unknown currency"), "expected a clear unknown-currency error surfaced, got: {html}");
         assert!(html.contains("<form"), "the create-order form must still be present, got: {html}");
+    }
+
+    /// The other half of the same two-stage split - `USD` is a real, known
+    /// currency; this test's own `test_state_with_real_engine` just has no
+    /// rate provider enabled at all. Must surface as a distinct
+    /// "unsupported", not "unknown", currency error.
+    #[tokio::test]
+    async fn creating_an_order_with_a_known_but_provider_unsupported_currency_gets_a_distinct_error() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "order-create-unsupported-currency@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/orders/new"),
+                &session_token,
+                &[("amount", "10.00"), ("currency", "USD")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "a validation error re-renders the page, it doesn't redirect");
+        let html = body_text(response).await;
+        assert!(html.contains("unsupported currency"), "expected a clear unsupported-currency error surfaced, got: {html}");
     }
 
     #[tokio::test]
@@ -1958,6 +2203,475 @@ mod tests {
             html.contains("not an available exchange rate provider"),
             "expected a clear rejection message, got: {html}"
         );
+    }
+
+    #[tokio::test]
+    async fn updating_the_base_currency_persists_and_shows_on_the_store_page() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "base-currency-update@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/base-currency"),
+                &session_token,
+                &[("base_currency", "EUR")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+
+        let page = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(page).await;
+        assert!(html.contains(r#"<option value="EUR" selected>"#), "expected EUR marked selected, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn an_unknown_base_currency_is_rejected_and_the_existing_value_is_unchanged() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "base-currency-bad@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/base-currency"),
+                &session_token,
+                &[("base_currency", "NOTREAL")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "a rejected currency re-renders the page, it doesn't redirect");
+        let html = body_text(response).await;
+        assert!(html.contains("not a known currency"), "expected a clear rejection message, got: {html}");
+        assert!(html.contains(r#"<option value="XMR" selected>"#), "the store's base currency must still be the original default, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn a_known_currency_with_no_enabled_rate_provider_is_still_accepted_as_a_base_currency_change() {
+        // Same decoupling proof as `connections.rs`'s own equivalent test,
+        // exercised here for the *change* path rather than creation -
+        // `test_state_with_real_engine`'s own `ExchangeRateProviders::xmr_only()`
+        // has no provider enabled at all.
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "base-currency-decoupled@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/base-currency"),
+                &session_token,
+                &[("base_currency", "GBP")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND, "a known currency must be selectable regardless of provider support");
+    }
+
+    #[tokio::test]
+    async fn changing_the_base_currency_deletes_every_custom_threshold() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "base-currency-cascade@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &session_token,
+                &[("unit_amount", "50.00"), ("confirmations_required", "20")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(state.db.lock().unwrap().count_confirmation_thresholds(&connection_id).unwrap(), 1);
+
+        router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/base-currency"),
+                &session_token,
+                &[("base_currency", "EUR")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(
+            state.db.lock().unwrap().count_confirmation_thresholds(&connection_id).unwrap(),
+            0,
+            "every custom threshold must be gone after a base currency change"
+        );
+    }
+
+    #[tokio::test]
+    async fn adding_and_deleting_a_custom_confirmation_threshold_round_trips_through_the_real_page() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "threshold-add-delete@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &session_token,
+                &[("unit_amount", "50.00"), ("confirmations_required", "20")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+
+        let page = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(page).await;
+        assert!(html.contains("50.00"), "expected the new threshold's amount shown, got: {html}");
+        assert!(html.contains(r#"action="/dashboard/connections/{connection_id}/settings/confirmation-thresholds/"#.replace("{connection_id}", &connection_id).as_str()), "expected a real delete form, got: {html}");
+
+        let marker = format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds/");
+        let start = html.find(&marker).unwrap() + marker.len();
+        let rest = &html[start..];
+        let end = rest.find("/delete").unwrap();
+        let threshold_id = rest[..end].to_string();
+
+        let delete_response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds/{threshold_id}/delete"),
+                &session_token,
+                &[],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(delete_response.status(), StatusCode::FOUND);
+
+        let after = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(after).await;
+        assert!(html.contains("No custom thresholds yet."), "expected the threshold to be gone, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn custom_thresholds_are_displayed_in_ascending_order_of_amount() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "threshold-ordering@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        for amount in ["100.00", "10.00", "50.00"] {
+            router
+                .clone()
+                .oneshot(form_post_request(
+                    &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                    &session_token,
+                    &[("unit_amount", amount), ("confirmations_required", "15")],
+                ))
+                .await
+                .unwrap();
+        }
+
+        let page = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(page).await;
+        let pos_10 = html.find("10.00").expect("10.00 shown");
+        let pos_50 = html.find("50.00").expect("50.00 shown");
+        let pos_100 = html.find("100.00").expect("100.00 shown");
+        assert!(pos_10 < pos_50 && pos_50 < pos_100, "expected ascending amount order, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn a_sixth_custom_threshold_is_rejected() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "threshold-max-five@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        for i in 0..5 {
+            let response = router
+                .clone()
+                .oneshot(form_post_request(
+                    &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                    &session_token,
+                    &[("unit_amount", &format!("{i}.00")), ("confirmations_required", "15")],
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::FOUND, "expected threshold {i} to be accepted");
+        }
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &session_token,
+                &[("unit_amount", "999.00"), ("confirmations_required", "15")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "a rejected sixth threshold re-renders the page, it doesn't redirect");
+        let html = body_text(response).await;
+        assert!(html.contains("at most 5 custom thresholds"), "expected a clear rejection message, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn a_duplicate_unit_amount_is_rejected() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "threshold-duplicate@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &session_token,
+                &[("unit_amount", "50.00"), ("confirmations_required", "20")],
+            ))
+            .await
+            .unwrap();
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &session_token,
+                &[("unit_amount", "50.00"), ("confirmations_required", "5")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "a duplicate amount re-renders the page, it doesn't redirect");
+        let html = body_text(response).await;
+        assert!(html.contains("already exists"), "expected a clear rejection message, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn a_negative_unit_amount_is_rejected() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "threshold-negative@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &session_token,
+                &[("unit_amount", "-5.00"), ("confirmations_required", "20")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "a negative amount re-renders the page, it doesn't redirect");
+        let html = body_text(response).await;
+        assert!(html.contains("non-negative"), "expected a clear rejection message, got: {html}");
+    }
+
+    /// Proves the whole resolution chain end to end, against the real
+    /// engine: an order priced *at or above* a custom threshold's own
+    /// `unit_amount` gets that threshold's `confirmations_required` as its
+    /// real per-order override on the engine (not just recorded locally) -
+    /// and the local snapshot row records exactly how that was decided.
+    /// `TEST_CURRENCY` ("XMR") is also this store's own base currency here
+    /// (`create_connection`'s own `"base_currency": "XMR"`), so no rate
+    /// lookup is needed for the base-currency conversion itself - see the
+    /// next test's own doc comment for the cross-currency case.
+    #[tokio::test]
+    async fn an_order_priced_above_a_custom_threshold_gets_that_thresholds_confirmations_required_on_the_real_engine() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "threshold-resolution-above@example.com", "correct horse battery staple").await;
+        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+
+        router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &session_token,
+                &[("unit_amount", "5.00"), ("confirmations_required", "20")],
+            ))
+            .await
+            .unwrap();
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/orders/new"),
+                &session_token,
+                &[("amount", "10.00"), ("currency", TEST_CURRENCY)],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let location = response.headers().get("location").unwrap().to_str().unwrap().to_string();
+        let payment_id = location.rsplit('/').next().unwrap().to_string();
+
+        let store = engine.store().lock().unwrap();
+        let tenant_id = store.find_tenant_by_public_key(&public_key).unwrap().unwrap().id;
+        let stored = store.get_order(&tenant_id, &payment_id).unwrap().unwrap();
+        assert_eq!(
+            stored.confirmations_required_override,
+            Some(20),
+            "a 10.00 XMR order against a 5.00-and-up threshold of 20 confirmations must use that threshold, not the default"
+        );
+        drop(store);
+
+        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&connection_id, &payment_id).unwrap().unwrap();
+        assert_eq!(metadata.store_base_currency, Some("XMR".to_string()));
+        assert_eq!(
+            metadata.base_currency_piconero_per_unit, None,
+            "the order's own currency already was the base currency, so no second conversion rate exists to snapshot"
+        );
+        assert_eq!(metadata.confirmations_required_applied, Some(20));
+
+        // The whole point of the snapshot (WBS: "makes it clear how the
+        // confirmation threshold was decided") - the order's own detail
+        // page must actually show it, not just record it in the database.
+        let detail_response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail_response.status(), StatusCode::OK);
+        let html = body_text(detail_response).await;
+        assert!(html.contains("Confirmations required"), "expected the confirmations-required row's label, got: {html}");
+        assert!(html.contains(">20<"), "expected the resolved threshold's own confirmations_required (20) shown, got: {html}");
+        assert!(html.contains("Store base currency"), "expected the base-currency snapshot row's label, got: {html}");
+        assert!(html.contains("same as order currency"), "expected the no-second-rate case shown plainly, got: {html}");
+    }
+
+    /// The order-below-every-threshold half of the same chain: a threshold
+    /// exists, but the order's own amount never reaches it, so the store's
+    /// plain default (fallback) confirmations_required - the real tenant
+    /// value on the engine, 10 by the engine's own `create_tenant` default
+    /// (`scanner::store::Db::create_tenant`) - is what's actually applied.
+    #[tokio::test]
+    async fn an_order_priced_below_every_custom_threshold_uses_the_stores_default_confirmations_required() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "threshold-resolution-below@example.com", "correct horse battery staple").await;
+        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+
+        router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &session_token,
+                &[("unit_amount", "50.00"), ("confirmations_required", "99")],
+            ))
+            .await
+            .unwrap();
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/orders/new"),
+                &session_token,
+                &[("amount", "10.00"), ("currency", TEST_CURRENCY)],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let location = response.headers().get("location").unwrap().to_str().unwrap().to_string();
+        let payment_id = location.rsplit('/').next().unwrap().to_string();
+
+        let store = engine.store().lock().unwrap();
+        let tenant_id = store.find_tenant_by_public_key(&public_key).unwrap().unwrap().id;
+        let stored = store.get_order(&tenant_id, &payment_id).unwrap().unwrap();
+        assert_eq!(
+            stored.confirmations_required_override,
+            Some(10),
+            "a 10.00 XMR order below the only threshold's 50.00 must fall back to the store's own default"
+        );
+        drop(store);
+
+        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&connection_id, &payment_id).unwrap().unwrap();
+        assert_eq!(metadata.confirmations_required_applied, Some(10));
+    }
+
+    #[tokio::test]
+    async fn the_default_threshold_has_no_delete_control_and_is_not_a_row_in_the_custom_table() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "threshold-default-not-deletable@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let page = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(page).await;
+        assert!(html.contains("Default (fallback)"), "expected the default threshold's own heading, got: {html}");
+        assert!(!html.contains("confirmation-thresholds/"), "a fresh store has no custom thresholds, so no delete form should exist yet, got: {html}");
     }
 
     #[tokio::test]
@@ -2523,6 +3237,9 @@ mod tests {
             amount_received_piconero: 500_000_000_000,
             status: "paid".to_string(),
             confirmations: 10,
+            confirmations_required_display: "10".to_string(),
+            base_currency_display: "XMR".to_string(),
+            base_currency_rate_display: "same as order currency".to_string(),
             double_spend_detected_at: None,
             double_spend_detected_at_display: crate::templates::display_timestamp_or_dash(None),
             refund_address: None,

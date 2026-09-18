@@ -33,6 +33,10 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (10, include_str!("../migrations/0010_utc_suffix_date_columns.sql")),
     (11, include_str!("../migrations/0011_settings_and_admin.sql")),
     (12, include_str!("../migrations/0012_invites.sql")),
+    (13, include_str!("../migrations/0013_currencies.sql")),
+    (14, include_str!("../migrations/0014_store_base_currency.sql")),
+    (15, include_str!("../migrations/0015_confirmation_thresholds.sql")),
+    (16, include_str!("../migrations/0016_order_confirmation_snapshot.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -120,6 +124,13 @@ pub struct StoreConnectionRow {
     /// value - see `exchange_rate_config::ExchangeRateProviders::
     /// piconero_per_unit_for`.
     pub fx_provider: String,
+    /// The unit custom confirmation thresholds are denominated in, and what
+    /// an order's own currency is converted into (via XMR, when they
+    /// differ) to decide which threshold applies - see migration
+    /// `0014_store_base_currency.sql` and `crate::currencies`. Selected
+    /// explicitly at store creation; changing it later clears every custom
+    /// threshold (`Db::set_store_base_currency`'s own doc comment).
+    pub base_currency: String,
 }
 
 /// A row from `order_currency_metadata` (`docs/fx_refactor.md` Phase 1.2) -
@@ -139,6 +150,41 @@ pub struct OrderCurrencyMetadataRow {
     /// this field existed (migration 0006), or a stale `"fixed"` for a row
     /// recorded before that provider's removal.
     pub provider: String,
+    pub created_at: i64,
+    /// This store's `base_currency` at the moment this order was created -
+    /// `None` for a row predating migration 0016, or one created directly
+    /// against the engine's API - see that migration's own doc comment.
+    pub store_base_currency: Option<String>,
+    /// The rate used to convert this order's amount into
+    /// `store_base_currency` terms - `None` either because the order's own
+    /// currency already *was* the base currency (no conversion needed), or
+    /// the row predates this snapshot entirely.
+    pub base_currency_piconero_per_unit: Option<u64>,
+    /// The confirmations_required this order was actually created with on
+    /// the engine (`crate::confirmation_thresholds::Resolution::confirmations_required`) -
+    /// `None` only for a row predating this snapshot.
+    pub confirmations_required_applied: Option<u64>,
+}
+
+/// One row from the static `currencies` reference table - see that
+/// migration's own comment. `tickers` is the raw JSON array text as stored;
+/// `crate::currencies::resolve_currency` is what actually parses and
+/// matches against it.
+pub struct CurrencyRow {
+    pub canonical_code: String,
+    pub description: String,
+    pub tickers_json: String,
+}
+
+/// One custom, amount-tiered confirmation threshold - see that migration's
+/// own comment. `unit_amount` is a decimal string, denominated in the
+/// owning store's `base_currency` at the moment it was saved.
+#[derive(Debug, Clone)]
+pub struct ConfirmationThresholdRow {
+    pub id: String,
+    pub connection_id: String,
+    pub unit_amount: String,
+    pub confirmations_required: u64,
     pub created_at: i64,
 }
 
@@ -368,6 +414,7 @@ impl Db {
     /// `crate::crypto::encrypt`-ed value, never the engine's raw `sk_...`
     /// secret token.
     #[allow(clippy::too_many_arguments)]
+    #[allow(clippy::too_many_arguments)]
     pub fn create_store_connection(
         &self,
         id: &str,
@@ -378,6 +425,7 @@ impl Db {
         tenant_secret_token_encrypted: &str,
         moneropay_endpoint: &str,
         created_at: i64,
+        base_currency: &str,
     ) -> Result<()> {
         // `fx_provider` explicit here (`'coingecko'`), not left to the
         // column's own `DEFAULT` - SQLite can't cheaply change a column
@@ -387,11 +435,16 @@ impl Db {
         // order never reads this column at all (see `StoreConnectionRow::
         // fx_provider`'s own doc comment), and a merchant can still pick a
         // different available provider from their store's settings page
-        // the moment one exists.
+        // the moment one exists. `base_currency` is *not* similarly
+        // defaulted here - the caller (`http::connections::create_connection_for_user`)
+        // is responsible for having already validated it via
+        // `crate::currencies::resolve_currency` before ever reaching this
+        // call, since (unlike `fx_provider`) there is no single safe
+        // implicit choice for it.
         self.conn.execute(
             "INSERT INTO store_connections
-                (id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_provider)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'coingecko')",
+                (id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_provider, base_currency)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 'coingecko', ?9)",
             params![
                 id,
                 user_id,
@@ -400,7 +453,8 @@ impl Db {
                 tenant_public_key,
                 tenant_secret_token_encrypted,
                 moneropay_endpoint,
-                created_at
+                created_at,
+                base_currency,
             ],
         )?;
         Ok(())
@@ -412,7 +466,7 @@ impl Db {
     pub fn get_store_connection_by_id(&self, id: &str) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_provider
+                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_provider, base_currency
                  FROM store_connections WHERE id = ?1",
                 params![id],
                 |row| {
@@ -426,6 +480,7 @@ impl Db {
                         moneropay_endpoint: row.get(6)?,
                         created_at: row.get(7)?,
                         fx_provider: row.get(8)?,
+                    base_currency: row.get(9)?,
                     })
                 },
             )
@@ -451,7 +506,7 @@ impl Db {
     /// growing a field nothing else needs; see `http/home.rs::display_name`.
     pub fn list_store_connections_for_user(&self, user_id: &str) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_provider
+            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_provider, base_currency
              FROM store_connections WHERE user_id = ?1 ORDER BY created_at_utc DESC",
         )?;
         let rows = stmt
@@ -466,6 +521,7 @@ impl Db {
                     moneropay_endpoint: row.get(6)?,
                     created_at: row.get(7)?,
                     fx_provider: row.get(8)?,
+                    base_currency: row.get(9)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -482,6 +538,14 @@ impl Db {
     /// `u64` value SQLite genuinely cannot represent, not a plausible real
     /// one.
     #[allow(clippy::too_many_arguments)]
+    /// `confirmations_required_applied`/`base_currency`/`base_currency_piconero_per_unit`
+    /// are the order-creation-time snapshot of how its confirmation
+    /// threshold was decided (migration `0016_order_confirmation_snapshot.sql`'s
+    /// own doc comment) - `base_currency_piconero_per_unit` is `None`
+    /// specifically when the order's own currency already was the base
+    /// currency (see `confirmation_thresholds::Resolution`), never merely
+    /// "not recorded".
+    #[allow(clippy::too_many_arguments)]
     pub fn create_order_currency_metadata(
         &self,
         connection_id: &str,
@@ -491,14 +555,29 @@ impl Db {
         piconero_per_unit: u64,
         provider: &str,
         created_at: i64,
+        base_currency: &str,
+        base_currency_piconero_per_unit: Option<u64>,
+        confirmations_required_applied: u64,
     ) -> Result<()> {
         let piconero_per_unit = i64::try_from(piconero_per_unit)
             .expect("piconero_per_unit out of i64 range - not a plausible real exchange rate");
         self.conn.execute(
             "INSERT INTO order_currency_metadata
-                (connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at_utc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
-            params![connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at],
+                (connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at_utc,
+                 store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+            params![
+                connection_id,
+                payment_id,
+                currency,
+                amount,
+                piconero_per_unit,
+                provider,
+                created_at,
+                base_currency,
+                base_currency_piconero_per_unit.map(|v| v as i64),
+                confirmations_required_applied as i64,
+            ],
         )?;
         Ok(())
     }
@@ -510,11 +589,14 @@ impl Db {
     pub fn get_order_currency_metadata(&self, connection_id: &str, payment_id: &str) -> Result<Option<OrderCurrencyMetadataRow>> {
         self.conn
             .query_row(
-                "SELECT connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at_utc
+                "SELECT connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at_utc,
+                        store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied
                  FROM order_currency_metadata WHERE connection_id = ?1 AND payment_id = ?2",
                 params![connection_id, payment_id],
                 |row| {
                     let piconero_per_unit: i64 = row.get(4)?;
+                    let base_currency_piconero_per_unit: Option<i64> = row.get(8)?;
+                    let confirmations_required_applied: Option<i64> = row.get(9)?;
                     Ok(OrderCurrencyMetadataRow {
                         connection_id: row.get(0)?,
                         payment_id: row.get(1)?,
@@ -523,6 +605,9 @@ impl Db {
                         piconero_per_unit: piconero_per_unit as u64,
                         provider: row.get(5)?,
                         created_at: row.get(6)?,
+                        store_base_currency: row.get(7)?,
+                        base_currency_piconero_per_unit: base_currency_piconero_per_unit.map(|v| v as u64),
+                        confirmations_required_applied: confirmations_required_applied.map(|v| v as u64),
                     })
                 },
             )
@@ -541,12 +626,15 @@ impl Db {
         connection_id: &str,
     ) -> Result<std::collections::HashMap<String, OrderCurrencyMetadataRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at_utc
+            "SELECT connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at_utc,
+                    store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied
              FROM order_currency_metadata WHERE connection_id = ?1",
         )?;
         let rows = stmt
             .query_map(params![connection_id], |row| {
                 let piconero_per_unit: i64 = row.get(4)?;
+                let base_currency_piconero_per_unit: Option<i64> = row.get(8)?;
+                let confirmations_required_applied: Option<i64> = row.get(9)?;
                 Ok(OrderCurrencyMetadataRow {
                     connection_id: row.get(0)?,
                     payment_id: row.get(1)?,
@@ -555,6 +643,9 @@ impl Db {
                     piconero_per_unit: piconero_per_unit as u64,
                     provider: row.get(5)?,
                     created_at: row.get(6)?,
+                    store_base_currency: row.get(7)?,
+                    base_currency_piconero_per_unit: base_currency_piconero_per_unit.map(|v| v as u64),
+                    confirmations_required_applied: confirmations_required_applied.map(|v| v as u64),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -620,7 +711,7 @@ impl Db {
     pub fn get_store_connection_by_public_key(&self, tenant_public_key: &str) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_provider
+                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_provider, base_currency
                  FROM store_connections WHERE tenant_public_key = ?1",
                 params![tenant_public_key],
                 |row| {
@@ -634,6 +725,7 @@ impl Db {
                         moneropay_endpoint: row.get(6)?,
                         created_at: row.get(7)?,
                         fx_provider: row.get(8)?,
+                    base_currency: row.get(9)?,
                     })
                 },
             )
@@ -651,6 +743,108 @@ impl Db {
     pub fn update_store_connection_site_url(&self, id: &str, site_url: &str) -> Result<()> {
         self.conn.execute("UPDATE store_connections SET site_url = ?2 WHERE id = ?1", params![id, site_url])?;
         Ok(())
+    }
+
+    /// Every row of the static `currencies` reference table, ordered by
+    /// `canonical_code` for a stable, alphabetical dropdown - see that
+    /// migration's own comment and `crate::currencies` for how this is
+    /// actually used.
+    pub fn list_currencies(&self) -> Result<Vec<CurrencyRow>> {
+        let mut stmt = self.conn.prepare("SELECT canonical_code, description, tickers FROM currencies ORDER BY canonical_code")?;
+        let rows = stmt.query_map([], |row| {
+            Ok(CurrencyRow { canonical_code: row.get(0)?, description: row.get(1)?, tickers_json: row.get(2)? })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(DbError::from)
+    }
+
+    /// Updates a store's base currency - and, since every custom threshold
+    /// was denominated in whatever the *old* currency was, deletes every
+    /// `confirmation_thresholds` row for this connection in the same call
+    /// (an old amount in a since-abandoned currency means nothing any more -
+    /// see that table's own migration comment). The default/fallback
+    /// threshold (`tenants.confirmations_required`, on the engine) is
+    /// untouched - it has no currency dimension to invalidate.
+    pub fn update_store_connection_base_currency(&self, id: &str, base_currency: &str) -> Result<()> {
+        self.conn.execute("UPDATE store_connections SET base_currency = ?2 WHERE id = ?1", params![id, base_currency])?;
+        self.conn.execute("DELETE FROM confirmation_thresholds WHERE connection_id = ?1", params![id])?;
+        Ok(())
+    }
+
+    /// How many custom thresholds `connection_id` already has - the "at
+    /// most 5 custom thresholds" cap is enforced by the caller
+    /// (`http::orders::create_confirmation_threshold`) checking this before
+    /// ever calling [`Db::create_confirmation_threshold`], not by this
+    /// table's own schema.
+    pub fn count_confirmation_thresholds(&self, connection_id: &str) -> Result<i64> {
+        self.conn
+            .query_row("SELECT COUNT(*) FROM confirmation_thresholds WHERE connection_id = ?1", params![connection_id], |row| row.get(0))
+            .map_err(DbError::from)
+    }
+
+    /// Every custom threshold for `connection_id`, ordered ascending by
+    /// amount - "custom thresholds should be displayed in ascending order
+    /// of the unit amount" (the default/fallback always renders first, but
+    /// separately - it isn't a row in this table at all). `CAST(... AS
+    /// REAL)` for a real numeric sort: `unit_amount` is stored as a decimal
+    /// string (same reasoning `order_currency_metadata.amount` already
+    /// has), which would sort lexicographically ("10" before "9") without
+    /// this.
+    pub fn list_confirmation_thresholds(&self, connection_id: &str) -> Result<Vec<ConfirmationThresholdRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, connection_id, unit_amount, confirmations_required, created_at_utc
+             FROM confirmation_thresholds WHERE connection_id = ?1
+             ORDER BY CAST(unit_amount AS REAL) ASC",
+        )?;
+        let rows = stmt.query_map(params![connection_id], |row| {
+            Ok(ConfirmationThresholdRow {
+                id: row.get(0)?,
+                connection_id: row.get(1)?,
+                unit_amount: row.get(2)?,
+                confirmations_required: row.get::<_, i64>(3)? as u64,
+                created_at: row.get(4)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(DbError::from)
+    }
+
+    /// Inserts one custom threshold. Fails with a unique-violation
+    /// `DbError` (see [`DbError::is_unique_violation`]) if `connection_id`
+    /// already has a row at this exact `unit_amount` - "you cannot enter
+    /// two thresholds for the same unit amount" - the real, friendlier
+    /// rejection message is the caller's job (`http::orders::create_confirmation_threshold`);
+    /// this is just the backstop. Negative-amount rejection and the
+    /// max-5-per-connection cap are also the caller's job, checked before
+    /// this is ever called - neither has a natural SQL constraint shape
+    /// this table's schema can cheaply express on its own.
+    pub fn create_confirmation_threshold(
+        &self,
+        id: &str,
+        connection_id: &str,
+        unit_amount: &str,
+        confirmations_required: u64,
+        created_at: i64,
+    ) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO confirmation_thresholds (id, connection_id, unit_amount, confirmations_required, created_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![id, connection_id, unit_amount, confirmations_required as i64, created_at],
+        )?;
+        Ok(())
+    }
+
+    /// Deletes one custom threshold, scoped to `connection_id` so one
+    /// store's owner can never delete another store's threshold by id alone
+    /// - the same ownership-scoping convention `delete_webhook` already
+    /// uses. Returns whether a row was actually deleted (`false` for an
+    /// unknown id, or one belonging to a different connection - the caller
+    /// treats both identically, same enumeration-defense convention this
+    /// crate already applies to every other owned-resource lookup).
+    pub fn delete_confirmation_threshold(&self, connection_id: &str, id: &str) -> Result<bool> {
+        let changed = self.conn.execute(
+            "DELETE FROM confirmation_thresholds WHERE id = ?1 AND connection_id = ?2",
+            params![id, connection_id],
+        )?;
+        Ok(changed > 0)
     }
 
     /// `POST /request-invite` (`http::invites::request_invite_submit`) -
@@ -963,6 +1157,7 @@ mod tests {
             "sk_abc",
             "http://127.0.0.1:8080",
             3000,
+        "XMR",
         )
         .unwrap();
 
@@ -990,6 +1185,7 @@ mod tests {
             "sk_abc",
             "http://127.0.0.1:8080",
             3000,
+        "XMR",
         )
         .unwrap();
 
@@ -1051,6 +1247,7 @@ mod tests {
             "sk_abc",
             "http://127.0.0.1:8080",
             3000,
+        "XMR",
         )
         .unwrap();
 
@@ -1077,6 +1274,7 @@ mod tests {
             "sk_xyz",
             "http://127.0.0.1:8080",
             3000,
+        "XMR",
         )
         .unwrap();
 
@@ -1102,6 +1300,7 @@ mod tests {
             "sk_ct",
             "http://127.0.0.1:8080",
             1000,
+        "XMR",
         )
         .unwrap();
         "conn-ct".to_string()
@@ -1178,7 +1377,7 @@ mod tests {
     fn creating_order_fiat_metadata_then_reading_it_back_round_trips() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_order_currency_metadata(&connection_id, "pay_1", "USD", "25.00", 6_700_000_000, "fixed", 1000).unwrap();
+        db.create_order_currency_metadata(&connection_id, "pay_1", "USD", "25.00", 6_700_000_000, "fixed", 1000, "XMR", None, 10).unwrap();
 
         let row = db.get_order_currency_metadata(&connection_id, "pay_1").unwrap().unwrap();
         assert_eq!(row.connection_id, connection_id);
@@ -1188,6 +1387,9 @@ mod tests {
         assert_eq!(row.piconero_per_unit, 6_700_000_000);
         assert_eq!(row.provider, "fixed");
         assert_eq!(row.created_at, 1000);
+        assert_eq!(row.store_base_currency, Some("XMR".to_string()));
+        assert_eq!(row.base_currency_piconero_per_unit, None);
+        assert_eq!(row.confirmations_required_applied, Some(10));
     }
 
     #[test]
@@ -1214,11 +1416,12 @@ mod tests {
             "sk_other",
             "http://127.0.0.1:8080",
             1000,
+        "XMR",
         )
         .unwrap();
 
-        db.create_order_currency_metadata(&connection_id, "pay_shared", "USD", "10.00", 1_000_000, "fixed", 1000).unwrap();
-        db.create_order_currency_metadata("conn-2", "pay_shared", "EUR", "20.00", 2_000_000, "coingecko", 2000).unwrap();
+        db.create_order_currency_metadata(&connection_id, "pay_shared", "USD", "10.00", 1_000_000, "fixed", 1000, "XMR", None, 10).unwrap();
+        db.create_order_currency_metadata("conn-2", "pay_shared", "EUR", "20.00", 2_000_000, "coingecko", 2000, "XMR", None, 10).unwrap();
 
         let first = db.get_order_currency_metadata(&connection_id, "pay_shared").unwrap().unwrap();
         let second = db.get_order_currency_metadata("conn-2", "pay_shared").unwrap().unwrap();
@@ -1232,8 +1435,8 @@ mod tests {
     fn listing_fiat_metadata_for_a_connection_returns_a_map_keyed_by_payment_id() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_order_currency_metadata(&connection_id, "pay_a", "USD", "10.00", 1_000_000, "fixed", 1000).unwrap();
-        db.create_order_currency_metadata(&connection_id, "pay_b", "EUR", "20.00", 2_000_000, "fixed", 2000).unwrap();
+        db.create_order_currency_metadata(&connection_id, "pay_a", "USD", "10.00", 1_000_000, "fixed", 1000, "XMR", None, 10).unwrap();
+        db.create_order_currency_metadata(&connection_id, "pay_b", "EUR", "20.00", 2_000_000, "fixed", 2000, "XMR", None, 10).unwrap();
 
         let map = db.list_order_currency_metadata_for_connection(&connection_id).unwrap();
         assert_eq!(map.len(), 2);
@@ -1246,6 +1449,115 @@ mod tests {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         assert!(db.list_order_currency_metadata_for_connection(&connection_id).unwrap().is_empty());
+    }
+
+    #[test]
+    fn list_currencies_returns_the_seeded_reference_data_in_alphabetical_order() {
+        let db = Db::open_in_memory().unwrap();
+        let all = db.list_currencies().unwrap();
+        assert!(all.len() >= 15);
+        let codes: Vec<&str> = all.iter().map(|c| c.canonical_code.as_str()).collect();
+        let mut sorted = codes.clone();
+        sorted.sort();
+        assert_eq!(codes, sorted, "expected the query's own ORDER BY to already be alphabetical");
+        let usd = all.iter().find(|c| c.canonical_code == "USD").expect("USD must be seeded");
+        assert_eq!(usd.description, "United States Dollar");
+    }
+
+    #[test]
+    fn a_created_confirmation_threshold_round_trips() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        db.create_confirmation_threshold("thresh-1", &connection_id, "50.00", 20, 1000).unwrap();
+
+        let rows = db.list_confirmation_thresholds(&connection_id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].unit_amount, "50.00");
+        assert_eq!(rows[0].confirmations_required, 20);
+    }
+
+    #[test]
+    fn confirmation_thresholds_list_in_ascending_numeric_order_not_lexicographic() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        // Lexicographically "10" < "9" - this must not happen here.
+        db.create_confirmation_threshold("thresh-a", &connection_id, "9", 15, 1000).unwrap();
+        db.create_confirmation_threshold("thresh-b", &connection_id, "10", 20, 1000).unwrap();
+        db.create_confirmation_threshold("thresh-c", &connection_id, "2.5", 12, 1000).unwrap();
+
+        let rows = db.list_confirmation_thresholds(&connection_id).unwrap();
+        let amounts: Vec<&str> = rows.iter().map(|r| r.unit_amount.as_str()).collect();
+        assert_eq!(amounts, vec!["2.5", "9", "10"]);
+    }
+
+    #[test]
+    fn creating_a_second_threshold_at_the_same_amount_is_a_unique_violation() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        db.create_confirmation_threshold("thresh-1", &connection_id, "50.00", 20, 1000).unwrap();
+
+        let err = db.create_confirmation_threshold("thresh-2", &connection_id, "50.00", 5, 1000).unwrap_err();
+        assert!(err.is_unique_violation(), "expected a unique-violation error, got {err:?}");
+        // Nothing about the original row changed.
+        assert_eq!(db.list_confirmation_thresholds(&connection_id).unwrap()[0].confirmations_required, 20);
+    }
+
+    #[test]
+    fn the_same_amount_is_allowed_again_on_a_different_connection() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id_a = seed_connection_for_connect_token_tests(&db);
+        db.create_user("user-b", "b@example.com", "hash", false, 1000).unwrap();
+        db.create_store_connection("conn-b", "user-b", "custom", "https://b.example.com", "pk_b", "sk_b", "http://127.0.0.1:8080", 1000, "XMR")
+            .unwrap();
+
+        db.create_confirmation_threshold("thresh-1", &connection_id_a, "50.00", 20, 1000).unwrap();
+        db.create_confirmation_threshold("thresh-2", "conn-b", "50.00", 5, 1000).unwrap();
+
+        assert_eq!(db.list_confirmation_thresholds(&connection_id_a).unwrap().len(), 1);
+        assert_eq!(db.list_confirmation_thresholds("conn-b").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn count_confirmation_thresholds_reflects_the_real_count() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        assert_eq!(db.count_confirmation_thresholds(&connection_id).unwrap(), 0);
+        db.create_confirmation_threshold("thresh-1", &connection_id, "50.00", 20, 1000).unwrap();
+        db.create_confirmation_threshold("thresh-2", &connection_id, "100.00", 30, 1000).unwrap();
+        assert_eq!(db.count_confirmation_thresholds(&connection_id).unwrap(), 2);
+    }
+
+    #[test]
+    fn deleting_a_confirmation_threshold_is_scoped_to_the_owning_connection() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id_a = seed_connection_for_connect_token_tests(&db);
+        db.create_user("user-b", "b@example.com", "hash", false, 1000).unwrap();
+        db.create_store_connection("conn-b", "user-b", "custom", "https://b.example.com", "pk_b", "sk_b", "http://127.0.0.1:8080", 1000, "XMR")
+            .unwrap();
+        db.create_confirmation_threshold("thresh-1", &connection_id_a, "50.00", 20, 1000).unwrap();
+
+        // conn-b cannot delete connection_id_a's own threshold.
+        assert!(!db.delete_confirmation_threshold("conn-b", "thresh-1").unwrap());
+        assert_eq!(db.list_confirmation_thresholds(&connection_id_a).unwrap().len(), 1);
+
+        assert!(db.delete_confirmation_threshold(&connection_id_a, "thresh-1").unwrap());
+        assert_eq!(db.list_confirmation_thresholds(&connection_id_a).unwrap().len(), 0);
+
+        // A second delete of the same (now-gone) row is a clean no-op.
+        assert!(!db.delete_confirmation_threshold(&connection_id_a, "thresh-1").unwrap());
+    }
+
+    #[test]
+    fn changing_a_stores_base_currency_deletes_every_one_of_its_custom_thresholds() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        db.create_confirmation_threshold("thresh-1", &connection_id, "50.00", 20, 1000).unwrap();
+        db.create_confirmation_threshold("thresh-2", &connection_id, "100.00", 30, 1000).unwrap();
+
+        db.update_store_connection_base_currency(&connection_id, "EUR").unwrap();
+
+        assert_eq!(db.get_store_connection_by_id(&connection_id).unwrap().unwrap().base_currency, "EUR");
+        assert_eq!(db.list_confirmation_thresholds(&connection_id).unwrap().len(), 0, "every custom threshold must be gone");
     }
 
     #[test]

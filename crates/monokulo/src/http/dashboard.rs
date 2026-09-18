@@ -126,6 +126,10 @@ pub struct ConnectForm {
     pub spend_pubkey_hex: String,
     pub network: String,
     pub allowed_origins: String,
+    /// Validated against `crate::currencies` in `connect_submit` - see
+    /// that module's own doc comment.
+    #[serde(default)]
+    pub base_currency: String,
 }
 
 /// `logged_in` is always `false` here, not a real per-request session
@@ -167,6 +171,8 @@ fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>) -> Re
 fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&ConnectForm>, is_admin: bool) -> Response {
     let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
         network_selected_flags(resubmit.map(|f| f.network.as_str()).unwrap_or("mainnet"));
+    let selected_currency = resubmit.map(|f| f.base_currency.as_str()).unwrap_or("XMR");
+    let currency_options = crate::currencies::currency_options(&state.db.lock().unwrap(), selected_currency).unwrap_or_default();
     let html = state
         .templates
         .render_connect(&ConnectViewModel {
@@ -180,6 +186,7 @@ fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&
             network_mainnet_selected,
             network_stagenet_selected,
             network_testnet_selected,
+            currency_options,
             logged_in: true,
             is_admin,
         })
@@ -201,6 +208,7 @@ fn render_connect_success(state: &AppState, public_key: &str, is_admin: bool) ->
             network_mainnet_selected: false,
             network_stagenet_selected: false,
             network_testnet_selected: false,
+            currency_options: Vec::new(),
             logged_in: true,
             is_admin,
         })
@@ -369,6 +377,7 @@ pub async fn connect_submit(
         confirmations_required: None,
         zero_conf_max_piconero: None,
         order_expiry_seconds: None,
+        base_currency: form.base_currency.clone(),
     };
 
     match connections::create_connection_for_user(&state, &user, fields).await {

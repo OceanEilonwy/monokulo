@@ -327,11 +327,12 @@ impl EngineClient {
         pk: &str,
         xmr_amount_piconero: u64,
         merchant_order_id: Option<String>,
+        confirmations_required: Option<u64>,
     ) -> Result<CreateOrderResponse, EngineClientError> {
         let response = self
             .http
             .post(format!("{}/api/v1/t/{pk}/orders", self.base_url))
-            .json(&CreateOrderRequest { xmr_amount_piconero, merchant_order_id })
+            .json(&CreateOrderRequest { xmr_amount_piconero, merchant_order_id, confirmations_required })
             .send()
             .await?;
         parse_response(response).await
@@ -546,6 +547,13 @@ struct PatchTenantRequest {
 struct CreateOrderRequest {
     xmr_amount_piconero: u64,
     merchant_order_id: Option<String>,
+    /// Mirrors the engine's own `public::CreateOrderRequest::confirmations_required` -
+    /// `None` for every caller that doesn't need one (the engine's own
+    /// tenant-level default still applies). Set by monokulo's own
+    /// amount-tiered "Confirmation Thresholds" feature, which resolves the
+    /// right value itself before ever calling here.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    confirmations_required: Option<u64>,
 }
 
 /// Mirrors the engine's own `public::CreateOrderResponse`.
@@ -735,6 +743,39 @@ mod tests {
         assert!(status.poll_interval_secs > 0);
     }
 
+    /// Proves `create_order`'s own `confirmations_required` argument
+    /// actually reaches the engine's stored order row, not just that it's
+    /// accepted on the wire - reads the real value back via the engine's
+    /// own `Store` directly (`scanner_test_support::TestEngineHandle::store`),
+    /// the same way scanner's own equivalent HTTP-level test does.
+    #[tokio::test]
+    async fn create_order_with_a_confirmations_required_override_reaches_the_real_engines_stored_order() {
+        let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let client = EngineClient::new(format!("http://{}", engine.addr));
+        let created = client.create_tenant(test_create_tenant_request()).await.unwrap();
+
+        let order = client.create_order(&created.public_key, 100_000_000_000, None, Some(3)).await.unwrap();
+
+        let store = engine.store().lock().unwrap();
+        let tenant_id = store.find_tenant_by_public_key(&created.public_key).unwrap().unwrap().id;
+        let stored = store.get_order(&tenant_id, &order.payment_id).unwrap().unwrap();
+        assert_eq!(stored.confirmations_required_override, Some(3));
+    }
+
+    #[tokio::test]
+    async fn create_order_with_no_confirmations_required_override_leaves_the_real_engines_stored_order_unset() {
+        let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let client = EngineClient::new(format!("http://{}", engine.addr));
+        let created = client.create_tenant(test_create_tenant_request()).await.unwrap();
+
+        let order = client.create_order(&created.public_key, 100_000_000_000, None, None).await.unwrap();
+
+        let store = engine.store().lock().unwrap();
+        let tenant_id = store.find_tenant_by_public_key(&created.public_key).unwrap().unwrap().id;
+        let stored = store.get_order(&tenant_id, &order.payment_id).unwrap().unwrap();
+        assert_eq!(stored.confirmations_required_override, None);
+    }
+
     // -- Order rescans (`docs/order_rescan_wbs.md` Phase 3.1) ---------------
 
     /// `scanner_test_support::spawn_test_engine_with_networks` deliberately never
@@ -750,7 +791,7 @@ mod tests {
         let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let client = EngineClient::new(format!("http://{}", engine.addr));
         let created = client.create_tenant(test_create_tenant_request()).await.unwrap();
-        let order = client.create_order(&created.public_key, 100_000_000_000, None).await.unwrap();
+        let order = client.create_order(&created.public_key, 100_000_000_000, None, None).await.unwrap();
 
         let err = client
             .trigger_rescan(&created.secret_token, &order.payment_id, "simple", None, None)
@@ -771,7 +812,7 @@ mod tests {
         let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let client = EngineClient::new(format!("http://{}", engine.addr));
         let created = client.create_tenant(test_create_tenant_request()).await.unwrap();
-        let order = client.create_order(&created.public_key, 100_000_000_000, None).await.unwrap();
+        let order = client.create_order(&created.public_key, 100_000_000_000, None, None).await.unwrap();
 
         let status = client.get_rescan_status(&created.secret_token, &order.payment_id).await.unwrap();
         assert!(status.is_none());

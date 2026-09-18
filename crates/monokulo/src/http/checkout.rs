@@ -444,6 +444,7 @@ mod tests {
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
             "network": "mainnet",
             "allowed_origins": [],
+            "base_currency": "XMR",
         });
         let response = router
             .clone()

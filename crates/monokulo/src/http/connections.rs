@@ -43,6 +43,11 @@ pub struct CreateConnectionRequest {
     pub confirmations_required: Option<u64>,
     pub zero_conf_max_piconero: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
+    /// The store's base currency (WBS: "Confirmation Thresholds") -
+    /// validated against `crate::currencies` (a real, known currency by
+    /// canonical code or ticker - see that module's own doc comment on why
+    /// this never depends on which exchange-rate provider is enabled).
+    pub base_currency: String,
 }
 
 #[derive(Serialize)]
@@ -67,6 +72,7 @@ pub(super) struct CreateConnectionFields {
     pub confirmations_required: Option<u64>,
     pub zero_conf_max_piconero: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
+    pub base_currency: String,
 }
 
 /// What a successful connection creation hands back to either caller - the
@@ -102,6 +108,13 @@ pub(super) async fn create_connection_for_user(
     user: &UserRow,
     req: CreateConnectionFields,
 ) -> Result<CreateConnectionOutcome, CreateConnectionError> {
+    // Validated *before* ever provisioning a real engine tenant - a bad
+    // base currency should never leave an orphaned tenant behind that this
+    // connection attempt then fails to record locally.
+    let base_currency = crate::currencies::resolve_currency(&state.db.lock().unwrap(), &req.base_currency)
+        .map_err(|_| CreateConnectionError::Internal)?
+        .ok_or_else(|| CreateConnectionError::BadRequest(format!("{:?} is not a known currency", req.base_currency)))?;
+
     let created = state
         .engine_client
         .create_tenant(CreateTenantRequest {
@@ -142,6 +155,7 @@ pub(super) async fn create_connection_for_user(
             &encrypted_secret_token,
             state.engine_client.base_url(),
             now_unix(),
+            &base_currency,
         )
         .map_err(|_| CreateConnectionError::Internal)?;
 
@@ -163,6 +177,7 @@ pub async fn create_connection(
         confirmations_required: req.confirmations_required,
         zero_conf_max_piconero: req.zero_conf_max_piconero,
         order_expiry_seconds: req.order_expiry_seconds,
+        base_currency: req.base_currency,
     };
 
     let outcome = create_connection_for_user(&state, &user, fields).await.map_err(|e| match e {
@@ -254,6 +269,7 @@ mod tests {
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
             "network": "mainnet",
             "allowed_origins": [],
+            "base_currency": "XMR",
         });
         builder.body(Body::from(body.to_string())).unwrap()
     }
@@ -346,6 +362,7 @@ mod tests {
             .unwrap()
             .expect("the signed-up user should exist");
         assert_eq!(row.user_id, user.id);
+        assert_eq!(row.base_currency, "XMR");
     }
 
     #[tokio::test]
@@ -355,5 +372,79 @@ mod tests {
 
         let response = router.oneshot(create_connection_request(None)).await.unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    }
+
+    #[tokio::test]
+    async fn an_unknown_base_currency_is_rejected_before_ever_provisioning_a_real_tenant() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "bad-currency@example.com", "correct horse battery staple").await;
+
+        let body = serde_json::json!({
+            "platform": "woocommerce",
+            "site_url": "https://shop.example.com",
+            "view_key_hex": TEST_VIEW_KEY_HEX,
+            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
+            "network": "mainnet",
+            "allowed_origins": [],
+            "base_currency": "NOTREAL",
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/connections")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {session_token}"))
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await;
+        assert!(body["error"].as_str().unwrap().contains("NOTREAL"), "expected a clear error naming the bad currency, got: {body}");
+
+        // The real point: rejected before ever provisioning anything - no
+        // local store_connections row exists for this user at all (and, by
+        // extension, no real engine tenant was ever created for it either,
+        // since that's the only thing that would have produced one).
+        let user_id = state.db.lock().unwrap().get_user_by_email("bad-currency@example.com").unwrap().unwrap().id;
+        let rows = state.db.lock().unwrap().list_store_connections_for_user(&user_id).unwrap();
+        assert_eq!(rows.len(), 0, "no local store_connections row should exist either");
+    }
+
+    /// The literal point of decoupling currency selection from provider
+    /// support: `EUR` is a perfectly real, known currency (`crate::currencies`),
+    /// but this test's own `AppState` (`test_state_with_real_engine`) uses
+    /// `ExchangeRateProviders::xmr_only()` - no provider enabled at all.
+    /// Selecting `EUR` as a store's base currency must still succeed; only
+    /// something that actually *needs* a rate for it later would fail.
+    #[tokio::test]
+    async fn a_known_currency_with_no_enabled_rate_provider_is_still_accepted_as_a_base_currency() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "eur-no-provider@example.com", "correct horse battery staple").await;
+
+        let body = serde_json::json!({
+            "platform": "woocommerce",
+            "site_url": "https://shop.example.com",
+            "view_key_hex": TEST_VIEW_KEY_HEX,
+            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
+            "network": "mainnet",
+            "allowed_origins": [],
+            "base_currency": "EUR",
+        });
+        let request = Request::builder()
+            .method("POST")
+            .uri("/connections")
+            .header("content-type", "application/json")
+            .header("authorization", format!("Bearer {session_token}"))
+            .body(Body::from(body.to_string()))
+            .unwrap();
+        let response = router.oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED, "a known currency must be selectable regardless of provider support");
+
+        let connection_id = body_json(response).await["connection_id"].as_str().unwrap().to_string();
+        let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        assert_eq!(row.base_currency, "EUR");
     }
 }

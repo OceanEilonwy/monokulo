@@ -1779,6 +1779,7 @@ mod tests {
 
         let order = store
             .create_order(NewOrder {
+                confirmations_required_override: None,
                 tenant_id: tenant_id.clone(),
                 merchant_order_id: None,
                 minor_index: index,
@@ -1830,6 +1831,7 @@ mod tests {
 
         let order = store
             .create_order(NewOrder {
+                confirmations_required_override: None,
                 tenant_id: tenant_id.clone(),
                 merchant_order_id: None,
                 minor_index: index,
@@ -2724,6 +2726,7 @@ mod tests {
             .unwrap();
         let order = store
             .create_order(NewOrder {
+                confirmations_required_override: None,
                 tenant_id: tenant.tenant.id.clone(),
                 merchant_order_id: None,
                 minor_index: index,
@@ -2832,6 +2835,7 @@ mod tests {
         // work, this tenant would be scanned too.
         store
             .create_order(NewOrder {
+                confirmations_required_override: None,
                 tenant_id: stagenet_tenant.tenant.id.clone(),
                 merchant_order_id: None,
                 minor_index: store.allocate_minor_index(&stagenet_tenant.tenant.id).unwrap(),
@@ -3121,6 +3125,7 @@ mod tests {
         // A second order on the same tenant, already past its deadline and never paid.
         let stale = store
             .create_order(NewOrder {
+                confirmations_required_override: None,
                 tenant_id: tenant_id.clone(),
                 merchant_order_id: None,
                 minor_index: store.allocate_minor_index(&tenant_id).unwrap(),
@@ -5401,6 +5406,7 @@ mod tests {
         assert_eq!(second_index, 2);
         let second_order = store
             .create_order(NewOrder {
+                confirmations_required_override: None,
                 tenant_id: tenant_id.clone(),
                 merchant_order_id: None,
                 minor_index: second_index,
@@ -5569,6 +5575,7 @@ mod tests {
         // "fix" for either from quietly inverting the other.
         let partial = s
             .create_order(NewOrder {
+                confirmations_required_override: None,
                 tenant_id: tenant_id.clone(),
                 merchant_order_id: None,
                 minor_index: s.allocate_minor_index(&tenant_id).unwrap(),

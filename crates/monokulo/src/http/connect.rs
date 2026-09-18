@@ -86,6 +86,8 @@ fn render_confirm_form(
 ) -> Response {
     let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
         network_selected_flags(resubmit.and_then(|f| f.network.as_deref()).unwrap_or("mainnet"));
+    let selected_currency = resubmit.and_then(|f| f.base_currency.as_deref()).unwrap_or("XMR");
+    let currency_options = crate::currencies::currency_options(&state.db.lock().unwrap(), selected_currency).unwrap_or_default();
     let existing_stores = state
         .db
         .lock()
@@ -113,6 +115,7 @@ fn render_confirm_form(
             network_mainnet_selected,
             network_stagenet_selected,
             network_testnet_selected,
+            currency_options,
             existing_stores,
             logged_in: true,
             is_admin: user.is_admin,
@@ -222,6 +225,11 @@ pub struct ConfirmForm {
     /// exactly as before, defaulting to the engine's own default (10).
     #[serde(default)]
     pub confirmations_required: Option<u64>,
+    /// Required when `mode == "new"`, ignored for `"existing"` (an existing
+    /// store already has its own base currency). Validated against
+    /// `crate::currencies` in `connections::create_connection_for_user`.
+    #[serde(default)]
+    pub base_currency: Option<String>,
 }
 
 /// `POST /connect/{platform}` (behind [`AuthedUser`], WBS 1.4.1 step 4): the
@@ -270,6 +278,7 @@ async fn confirm_new_store(state: &AppState, user: &UserRow, platform: &str, for
         confirmations_required: form.confirmations_required,
         zero_conf_max_piconero: form.zero_conf_max_piconero,
         order_expiry_seconds: form.order_expiry_seconds,
+        base_currency: form.base_currency.clone().unwrap_or_default(),
     };
 
     let outcome = match connections::create_connection_for_user(state, user, fields).await {
@@ -714,6 +723,7 @@ mod tests {
                     ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
                     ("network", "mainnet"),
                     ("allowed_origins", ""),
+                ("base_currency", "XMR"),
                 ],
             ))
             .await
@@ -793,6 +803,7 @@ mod tests {
                     ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
                     ("network", "mainnet"),
                     ("allowed_origins", ""),
+                ("base_currency", "XMR"),
                 ],
             ))
             .await
@@ -867,6 +878,7 @@ mod tests {
                     ("network", "mainnet"),
                     ("allowed_origins", ""),
                     ("order_expiry_seconds", "1"),
+                    ("base_currency", "XMR"),
                 ],
             ))
             .await
@@ -936,6 +948,7 @@ mod tests {
                     ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
                     ("network", "mainnet"),
                     ("allowed_origins", ""),
+                ("base_currency", "XMR"),
                 ],
             ))
             .await
@@ -1033,6 +1046,7 @@ mod tests {
                     ("spend_pubkey_hex", &"ff".repeat(32)),
                     ("network", "stagenet"),
                     ("allowed_origins", "https://shop.example.com"),
+                ("base_currency", "XMR"),
                 ],
             ))
             .await
@@ -1058,6 +1072,36 @@ mod tests {
         assert!(html.contains(r#"name="nonce" value="nonce-abc""#));
     }
 
+    #[tokio::test]
+    async fn an_unknown_base_currency_on_the_generic_connect_flow_is_rejected_before_provisioning_a_tenant() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let cookie =
+            signed_up_and_logged_in_session_cookie(&router, "bad-currency-generic-flow@example.com", "correct horse battery staple").await;
+
+        let response = router
+            .oneshot(form_request(
+                "/connect/woocommerce",
+                Some(&cookie),
+                &[
+                    ("site_url", "https://shop.example.com"),
+                    ("return_url", "https://shop.example.com/settings"),
+                    ("nonce", "nonce-bad-currency"),
+                    ("view_key_hex", TEST_VIEW_KEY_HEX),
+                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                    ("network", "mainnet"),
+                    ("allowed_origins", ""),
+                    ("base_currency", "NOTREAL"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "a rejected submission re-renders the confirm form, not a redirect");
+        let html = body_text(response).await;
+        assert!(html.contains("class=\"error\""), "expected a visible error, got: {html}");
+    }
+
     /// Creates a real `store_connections` row for the given session cookie
     /// via the JSON `/connections` API (which accepts a session cookie the
     /// same way it accepts a bearer token - `AuthedUser` takes either),
@@ -1080,6 +1124,7 @@ mod tests {
                             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
                             "network": "mainnet",
                             "allowed_origins": [],
+                            "base_currency": "XMR",
                         })
                         .to_string(),
                     ))
@@ -1251,6 +1296,7 @@ mod tests {
                             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
                             "network": "mainnet",
                             "allowed_origins": ["https://original-site.example.com"],
+                            "base_currency": "XMR",
                         })
                         .to_string(),
                     ))

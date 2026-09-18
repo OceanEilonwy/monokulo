@@ -29,6 +29,115 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Confirmation Thresholds** (monokulo, engine): the landing page used to
+  claim confirmation limits could be configured "by amount" - a feature that
+  didn't actually exist. The user's ask: a store picks a base currency at
+  creation (changeable later, via a dropdown sourced from a real currencies
+  table); a single non-deletable "default" threshold (10 confirmations, no
+  amount - it's the fallback); up to 5 custom thresholds, each pairing a
+  unit amount (in the store's own base currency) with its own confirmation
+  count; custom thresholds shown ascending by amount, no duplicate amounts,
+  no negative amounts; changing the base currency deletes every custom
+  threshold (amounts in the old currency are meaningless in the new one);
+  and at order-creation time the effective threshold is resolved from the
+  real exchange rate, snapshotted (store base currency + rate used) and
+  shown on the order detail page so it's clear how the number was decided.
+  - **Currency selection vs. currency usage, deliberately decoupled** - the
+    user's own mid-review refinement, applied to both store base-currency
+    selection *and* order-currency selection: a new static `currencies`
+    reference table (`crate::currencies`, canonical code + description +
+    JSON ticker list, migration `0013_currencies.sql`, 18 seeded rows)
+    answers "does this currency exist at all" - completely independent of
+    whether any exchange-rate provider can actually price it right now. A
+    currency can be selected (as a base currency, or as an order's own
+    currency) the moment it's merely *known* - it only becomes a genuine,
+    distinct error the moment something needs an actual rate for it (order
+    creation's XMR computation, or threshold resolution's base-currency
+    conversion) and no enabled provider covers it. Every one of the four
+    currency-accepting surfaces (dashboard connect form, generic connect
+    flow, JSON `POST /connections`, both order-creation endpoints) proves
+    this with its own test: a known-but-unpriceable currency is accepted at
+    selection time and only rejected later, with a distinguishable message
+    from "unknown currency" entirely.
+  - **Engine**: a new, purely additive per-order `confirmations_required`
+    override (`orders.confirmations_required_override`, migration
+    `0011_order_confirmations_override.sql`) - `recompute_order_status` uses
+    `order.confirmations_required_override.unwrap_or(tenant.confirmations_required)`.
+    `shared::status::derive_status` itself needed no changes at all; only
+    the store-layer caller changed which value it feeds in. Zero behavior
+    change for any caller that doesn't set it.
+  - **`store_connections.base_currency`** (migration `0014`, default
+    `'XMR'` for backward compat) plus a new `confirmation_thresholds` table
+    (migration `0015`: `unit_amount` as a decimal-string `TEXT`,
+    `UNIQUE(connection_id, unit_amount)` as a DB-level backstop, listed via
+    `ORDER BY CAST(unit_amount AS REAL) ASC` for real numeric, not
+    lexicographic, ordering). Changing the base currency cascades a real
+    delete of every custom threshold for that connection in the same call.
+  - **Resolution is deliberately split**: pure, trivially-unit-testable
+    math (`confirmation_thresholds::piconero_to_currency_amount`/
+    `resolve_confirmations_required` - "largest custom threshold whose
+    amount is `<=` the order's own amount in base-currency terms, falling
+    back to the tenant's plain default", the same "bigger ceiling wins"
+    shape `zero_conf_max_piconero` already uses) versus a separate async
+    I/O wrapper (`resolve_for_order`, the real rate lookup + tenant fetch)
+    that calls it. Wired into both order-creation surfaces
+    (`http::pay::create_order`, `http::orders::create_order`) ahead of the
+    real `EngineClient::create_order` call, so a base-currency rate-lookup
+    failure rejects order creation outright - no order is ever created on
+    the engine with an unresolvable threshold.
+  - **Snapshotted, not recomputed later**: `order_currency_metadata` gains
+    3 nullable columns (migration `0016`: `store_base_currency`,
+    `base_currency_piconero_per_unit`, `confirmations_required_applied`) -
+    an admin changing the default or a threshold afterward must never
+    retroactively change what an already-created order's page claims was
+    used. The order detail page shows all three, with a plain "same as
+    order currency" when no second conversion was ever needed.
+  - **Real, previously-latent bugs found and fixed while writing the
+    stagenet e2e test for this feature** (both pre-dated this feature -
+    confirmed by reproducing them against the pre-Confirmation-Thresholds
+    commit in a disposable scratch worktree before touching anything):
+    1. `mock-woocommerce`'s own real-engine/real-control-plane test harness
+       never accounted for `signup.mode` defaulting to `invite_only`
+       (WBS: public vs. invite-only signup) - `POST /dashboard/signup`
+       silently re-rendered the form instead of creating an account (a
+       plain `200`, not an error status), so every downstream step (login,
+       connect confirm) failed with a confusing `401` that had nothing to
+       do with auth itself. Fixed by explicitly setting `signup.mode =
+       public` on the test harness's own in-memory db
+       (`spawn_test_monokulo`, both in `mock-woocommerce/src/lib.rs` and
+       its duplicate in `tests/e2e_stagenet_connect_flow.rs`) - this alone
+       took `cargo test -p mock-woocommerce`'s default (non-`#[ignore]`d)
+       suite from 4 failing to 8/8 passing.
+    2. A raw inline confirm-form submission in `mock-woocommerce`'s own
+       test module never sent `base_currency` (newly required by this very
+       feature) - fixed alongside it.
+  - **New real stagenet e2e test**
+    (`mock-woocommerce/tests/e2e_stagenet_confirmation_threshold.rs`,
+    `#[ignore]`d like every other real-network test in this workspace, run
+    via `cargo test -p mock-woocommerce --features e2e -- --ignored
+    --nocapture`): signs up and drives monokulo directly with a `Bearer`
+    session token (no cookie jar - a custom threshold is a dashboard action
+    with no equivalent in the plugin-facing connect-flow helper), sets the
+    tenant's own default to 99 confirmations and a real custom threshold to
+    1, creates a real order priced above it, and asserts *twice*: (a)
+    immediately, that the real engine's stored order carries
+    `confirmations_required_override = Some(1)`, not the tenant's default;
+    (b) after paying it with a genuine signed stagenet transaction with
+    zero-conf left disabled, that the order only reaches
+    `paid`/`confirming`/`overpaid` once it has a real confirmation -
+    proving the resolved threshold isn't just recorded but actually
+    enforced by the engine's own status computation. Also asserts the order
+    detail dashboard page shows the resolved snapshot. Not run against the
+    live network in this session (needs a real funded stagenet wallet and
+    live public-node access) - compiles clean
+    (`cargo test -p mock-woocommerce --features e2e --no-run`) and is
+    ready to run whenever those are available.
+  - **Verified**: `cargo test -p monokulo` 307/307, `cargo test -p
+    scanner` 306/306 (both single-threaded - `--test-threads=1` avoids one
+    known-unrelated, pre-existing env-var test-isolation race in scanner's
+    own settings tests under parallel execution), `cargo test -p
+    mock-woocommerce` 8/8, `cargo build --workspace` clean.
+
 - **Public vs invite-only signup, admin invite management.** Follow-up to
   the admin settings/wizard work below - the user's ask: a `signup.mode`
   admin setting (`public`/`invite_only`, default `invite_only`) gating

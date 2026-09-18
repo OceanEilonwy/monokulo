@@ -72,6 +72,19 @@ pub async fn create_order(
         Err(_) => return ApiError::Internal.into_response(),
     };
 
+    // Selection-time validation first, entirely independent of whether any
+    // provider can actually price it (`crate::currencies`'s own doc comment)
+    // - "unknown currency" (this doesn't exist at all) is a genuinely
+    // different, clearer error than "unsupported currency" (a real currency
+    // this instance just can't get a live rate for right now), so the two
+    // get distinct messages rather than being collapsed into one.
+    let currency_known = crate::currencies::is_known_currency(&state.db.lock().unwrap(), &req.currency);
+    match currency_known {
+        Ok(true) => {}
+        Ok(false) => return ApiError::BadRequest(format!("unknown currency: {}", req.currency)).into_response(),
+        Err(_) => return ApiError::Internal.into_response(),
+    }
+
     // Control-plane's own exchange rate is the only rate computation left in
     // the whole system (`docs/fx_refactor.md` Phase 3) - a real, fast `400`
     // for an unsupported currency or a malformed amount, before the engine
@@ -99,7 +112,21 @@ pub async fn create_order(
         Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
     };
 
-    match state.engine_client.create_order(&pk, xmr_amount_piconero, req.merchant_order_id.clone()).await {
+    let sk = match crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted) {
+        Ok(sk) => sk,
+        Err(_) => return ApiError::Internal.into_response(),
+    };
+    let resolution =
+        match crate::confirmation_thresholds::resolve_for_order(&state, &row, &sk, &req.currency, piconero_per_unit, xmr_amount_piconero).await {
+            Ok(resolution) => resolution,
+            Err(message) => return ApiError::BadRequest(message).into_response(),
+        };
+
+    match state
+        .engine_client
+        .create_order(&pk, xmr_amount_piconero, req.merchant_order_id.clone(), Some(resolution.confirmations_required))
+        .await
+    {
         Ok(order) => {
             // Best-effort: a failure to record the local metadata row must
             // never fail an order that the engine has *already* genuinely
@@ -116,6 +143,9 @@ pub async fn create_order(
                 piconero_per_unit,
                 provider,
                 now_unix(),
+                &resolution.base_currency,
+                resolution.base_currency_piconero_per_unit,
+                resolution.confirmations_required,
             ) {
                 eprintln!(
                     "failed to record local fiat metadata for order {} on connection {}: {e} - the real order \
@@ -311,6 +341,7 @@ mod tests {
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
             "network": "mainnet",
             "allowed_origins": [],
+            "base_currency": "XMR",
         });
         let response = router
             .clone()
@@ -392,6 +423,7 @@ mod tests {
                             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
                             "network": "mainnet",
                             "allowed_origins": [],
+                            "base_currency": "XMR",
                         })
                         .to_string(),
                     ))
@@ -468,6 +500,17 @@ mod tests {
         assert_eq!(metadata.currency, TEST_CURRENCY);
         assert_eq!(metadata.amount, "10.00");
         assert_eq!(metadata.piconero_per_unit, TEST_RATE_PICONERO_PER_UNIT);
+
+        // This store's base currency ("XMR", `create_connection`'s own
+        // default) differs from the order's own currency ("USD"), so a
+        // real second rate lookup (for "XMR" itself - always the identity
+        // rate, regardless of provider, same as
+        // `an_xmr_order_is_always_priced_at_the_identity_rate_regardless_of_the_stores_provider`
+        // in `exchange_rate_config`) must have run and been snapshotted
+        // separately from the order's own USD rate above.
+        assert_eq!(metadata.store_base_currency, Some("XMR".to_string()));
+        assert_eq!(metadata.base_currency_piconero_per_unit, Some(TEST_RATE_PICONERO_PER_UNIT));
+        assert_eq!(metadata.confirmations_required_applied, Some(10), "no custom threshold exists, so the tenant's own default (10) applies");
     }
 
     #[tokio::test]
@@ -480,7 +523,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn creating_an_order_with_an_unsupported_currency_is_rejected_before_ever_reaching_the_engine() {
+    async fn creating_an_order_with_an_unknown_currency_is_rejected_before_ever_reaching_the_engine() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -495,7 +538,105 @@ mod tests {
         let response = router.oneshot(create_order_request(&pk, "25.00", "NOTREAL")).await.unwrap();
         assert_eq!(response.status(), StatusCode::BAD_REQUEST);
         let body = body_json(response).await;
+        assert!(body["error"].as_str().unwrap().contains("unknown currency"), "got: {body}");
+    }
+
+    /// The other half of the same two-stage split (`crate::currencies`'s own
+    /// doc comment): `EUR` is a perfectly real, known currency - this test's
+    /// own `spawn_mock_coingecko` only ever prices `"usd"` (a fixed stub
+    /// response), so a request for `EUR` genuinely has no rate available.
+    /// That must surface as a distinct "unsupported", not "unknown",
+    /// currency error.
+    #[tokio::test]
+    async fn creating_an_order_with_a_known_but_provider_unsupported_currency_gets_a_distinct_error() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pay-endpoint-unsupported-currency@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let pk = create_connection(&router, &session_token).await;
+
+        let response = router.oneshot(create_order_request(&pk, "25.00", "EUR")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await;
         assert!(body["error"].as_str().unwrap().contains("unsupported currency"), "got: {body}");
+    }
+
+    /// Same `create_connection` shape, but with a caller-chosen
+    /// `base_currency` rather than the hardcoded `"XMR"` - needed by the
+    /// threshold-resolution tests below, which specifically want a base
+    /// currency this test module's own mock Coingecko *can't* price (it
+    /// only ever stubs `"usd"`).
+    async fn create_connection_with_base_currency(router: &Router, session_token: &str, base_currency: &str) -> String {
+        let body = serde_json::json!({
+            "platform": "custom",
+            "site_url": "https://shop.example.com",
+            "view_key_hex": TEST_VIEW_KEY_HEX,
+            "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
+            "network": "mainnet",
+            "allowed_origins": [],
+            "base_currency": base_currency,
+        });
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/connections")
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::from(body.to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        body_json(response).await.as_object().unwrap().get("public_key").unwrap().as_str().unwrap().to_string()
+    }
+
+    /// The store's own base currency ("EUR", a perfectly real known
+    /// currency - `crate::currencies`'s selection-time check happily
+    /// accepted it when this store was created) turns out to have no
+    /// available rate provider at resolution time (this test module's mock
+    /// Coingecko only ever prices `"usd"`) - resolving the confirmation
+    /// threshold needs a real EUR rate to convert the order's own amount
+    /// into base-currency terms, and there isn't one. The order-currency
+    /// itself ("USD") is perfectly priceable; it's specifically the base
+    /// currency conversion that fails - proving the "usable" check really
+    /// is a separate, later concern from "known" (`crate::currencies`'s own
+    /// doc comment, and `confirmation_thresholds::resolve_for_order`'s).
+    #[tokio::test]
+    async fn creating_an_order_is_rejected_when_the_stores_own_base_currency_has_no_available_rate_provider() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(
+            &router,
+            "pay-endpoint-unpriceable-base-currency@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let pk = create_connection_with_base_currency(&router, &session_token, "EUR").await;
+
+        let response = router.clone().oneshot(create_order_request(&pk, "25.00", "USD")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = body_json(response).await;
+        assert!(
+            body["error"].as_str().unwrap().contains("EUR"),
+            "expected a clear error naming the unpriceable base currency, got: {body}"
+        );
+
+        // The engine must never have created a real order at all - threshold
+        // resolution runs *before* `EngineClient::create_order`, so a
+        // failure here must leave no ghost order behind on the engine.
+        let store = engine.store().lock().unwrap();
+        let tenant_id = store.find_tenant_by_public_key(&pk).unwrap().unwrap().id;
+        let orders = store.list_orders(&tenant_id, None, 100, None).unwrap();
+        assert!(orders.is_empty(), "expected no order to have been created on the real engine, got: {orders:?}");
     }
 
     #[tokio::test]

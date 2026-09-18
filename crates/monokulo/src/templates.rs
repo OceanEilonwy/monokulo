@@ -139,6 +139,12 @@ pub struct ConnectViewModel {
     pub network_mainnet_selected: bool,
     pub network_stagenet_selected: bool,
     pub network_testnet_selected: bool,
+    /// Every known currency (`crate::currencies::currency_options`), for
+    /// the base-currency dropdown - empty on the post-success render, where
+    /// the form itself is no longer shown. See that module's own doc
+    /// comment for why this is never filtered by exchange-rate provider
+    /// support.
+    pub currency_options: Vec<crate::currencies::CurrencyOptionView>,
     /// Always `true` - every caller of `render_connect` is already behind
     /// `AuthedUser` (`http/dashboard.rs`'s `connect_form`/`connect_submit`).
     pub logged_in: bool,
@@ -167,6 +173,10 @@ pub struct PlatformConnectViewModel {
     pub network_mainnet_selected: bool,
     pub network_stagenet_selected: bool,
     pub network_testnet_selected: bool,
+    /// Same as [`ConnectViewModel::currency_options`] - only meaningful for
+    /// the create-a-new-store half of this page (an existing store already
+    /// has its own base currency, never re-selected here).
+    pub currency_options: Vec<crate::currencies::CurrencyOptionView>,
     /// Every store this user already has connected (any platform) - lets
     /// the confirm screen offer "use an existing store" instead of always
     /// forcing a brand-new tenant to be provisioned. Empty for a user with
@@ -429,6 +439,26 @@ pub struct OrderDetailData {
     pub amount_received_piconero: u64,
     pub status: String,
     pub confirmations: u64,
+    /// What `confirmations` (above) actually has to reach for this order -
+    /// the real, resolved value snapshotted at order-creation time
+    /// (`confirmation_thresholds::resolve_for_order`'s own `Resolution`),
+    /// so it's clear which threshold applied even after a merchant later
+    /// edits the default or a custom threshold's own count. A muted dash
+    /// for an order that predates this snapshot (migration
+    /// `0016_order_confirmation_snapshot.sql`) or was created directly
+    /// against the engine, not through monokulo.
+    pub confirmations_required_display: String,
+    /// This store's own `base_currency` at the moment this order was
+    /// created (WBS: "makes it clear how the confirmation threshold was
+    /// decided") - a muted dash for the same "no snapshot" cases as
+    /// `confirmations_required_display` above.
+    pub base_currency_display: String,
+    /// The rate actually used to convert this order's amount into
+    /// `base_currency_display` terms for threshold comparison - e.g.
+    /// `"1.000000000000 XMR per 1 XMR"`, `"same as order currency"` when
+    /// the order's own currency already was the base currency (no separate
+    /// conversion was ever needed), or a muted dash for no snapshot at all.
+    pub base_currency_rate_display: String,
     /// Presence only - gates the whole "Double-spend detected at" row in
     /// the template so it's simply absent for the overwhelming majority of
     /// orders that never had one, rather than a permanently-visible row
@@ -745,6 +775,24 @@ pub struct StoreDetailData {
     /// `network_selected_flags` exists: handlebars-rust has no built-in
     /// equality helper.
     pub fx_provider_options: Vec<FxProviderOption>,
+    /// This store's base currency (`db::StoreConnectionRow::base_currency`) -
+    /// what custom confirmation thresholds below are denominated in.
+    pub base_currency: String,
+    /// Every known currency (`crate::currencies::currency_options`), for
+    /// the base-currency dropdown - never filtered by exchange-rate
+    /// provider support, same as every other currency dropdown in this
+    /// crate (see that module's own doc comment).
+    pub base_currency_options: Vec<crate::currencies::CurrencyOptionView>,
+    /// Every custom confirmation threshold for this store, already in
+    /// ascending amount order (`Db::list_confirmation_thresholds`'s own
+    /// doc comment) - the default/fallback threshold
+    /// (`confirmations_required` above) always renders first, but
+    /// separately, since it isn't one of these rows at all.
+    pub confirmation_thresholds: Vec<ConfirmationThresholdView>,
+    /// `true` once this store already has 5 custom thresholds - "at most 5
+    /// custom thresholds" - the add-threshold form hides itself rather than
+    /// accepting a submission the server would just reject anyway.
+    pub confirmation_thresholds_at_max: bool,
     /// Set only when the "update settings" form on this page (see
     /// `http/orders.rs::update_confirmations_required`/`update_fx_provider`)
     /// was just rejected - the engine's own validation error, or this
@@ -759,6 +807,15 @@ pub struct StoreDetailData {
 pub struct FxProviderOption {
     pub name: String,
     pub selected: bool,
+}
+
+/// One custom confirmation threshold, on the store detail page
+/// (`StoreDetailData::confirmation_thresholds`).
+#[derive(Debug, Serialize)]
+pub struct ConfirmationThresholdView {
+    pub id: String,
+    pub unit_amount: String,
+    pub confirmations_required: u64,
 }
 
 /// One Monero node's row on the status page - mirrors
@@ -1676,6 +1733,10 @@ mod tests {
                     order_currency_is_locked_to_xmr: false,
                     fx_provider: "coingecko".to_string(),
                     fx_provider_options: vec![FxProviderOption { name: "coingecko".to_string(), selected: true }],
+                    base_currency: "XMR".to_string(),
+                    base_currency_options: vec![],
+                    confirmation_thresholds: vec![],
+                    confirmation_thresholds_at_max: false,
                     settings_error: None,
                 }),
                 logged_in: true,
@@ -1728,6 +1789,10 @@ mod tests {
                     order_currency_is_locked_to_xmr: false,
                     fx_provider: "coingecko".to_string(),
                     fx_provider_options: vec![FxProviderOption { name: "coingecko".to_string(), selected: true }],
+                    base_currency: "XMR".to_string(),
+                    base_currency_options: vec![],
+                    confirmation_thresholds: vec![],
+                    confirmation_thresholds_at_max: false,
                     settings_error: None,
                 }),
                 logged_in: true,
@@ -1761,6 +1826,10 @@ mod tests {
                     order_currency_is_locked_to_xmr: false,
                     fx_provider: "coingecko".to_string(),
                     fx_provider_options: vec![FxProviderOption { name: "coingecko".to_string(), selected: true }],
+                    base_currency: "XMR".to_string(),
+                    base_currency_options: vec![],
+                    confirmation_thresholds: vec![],
+                    confirmation_thresholds_at_max: false,
                     settings_error: None,
                 }),
                 logged_in: true,
@@ -1834,6 +1903,9 @@ mod tests {
             amount_received_piconero: 0,
             status: "pending".to_string(),
             confirmations: 0,
+            confirmations_required_display: "10".to_string(),
+            base_currency_display: "XMR".to_string(),
+            base_currency_rate_display: "same as order currency".to_string(),
             double_spend_detected_at,
             double_spend_detected_at_display: display_timestamp_or_dash(double_spend_detected_at),
             refund_address: None,

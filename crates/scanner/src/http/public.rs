@@ -39,6 +39,16 @@ pub struct CreateOrderRequest {
     merchant_order_id: Option<String>,
     xmr_amount_piconero: u64,
     description: Option<String>,
+    /// A per-order confirmation-count override - `None` for every caller
+    /// that doesn't need one (this engine's tenant-level
+    /// `confirmations_required` still applies). Set by monokulo's own
+    /// amount-tiered "Confirmation Thresholds" feature, which resolves the
+    /// right value itself before ever calling here - this engine has no
+    /// concept of currency or amount tiers, it only ever locks in the
+    /// single number it's given. Same validation bound as the tenant-level
+    /// setting (`http::admin::validate_tenant_settings`).
+    #[serde(default)]
+    confirmations_required: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -60,6 +70,14 @@ pub async fn create_order(
 
     if req.xmr_amount_piconero == 0 {
         return Err(ApiError::BadRequest("xmr_amount_piconero must be greater than zero".into()));
+    }
+    if let Some(confirmations) = req.confirmations_required {
+        if confirmations == 0 || confirmations > super::admin::MAX_CONFIRMATIONS_REQUIRED {
+            return Err(ApiError::BadRequest(format!(
+                "confirmations_required must be between 1 and {}; 0 would treat an unconfirmed transaction as final",
+                super::admin::MAX_CONFIRMATIONS_REQUIRED
+            )));
+        }
     }
 
     let handle = resolve_wallet_handle(&state, &tenant).await?;
@@ -94,6 +112,7 @@ pub async fn create_order(
         let order = state.store.lock().unwrap().create_order_claiming_minor_index(
             minor_index,
             NewOrder {
+                confirmations_required_override: req.confirmations_required,
                 tenant_id: tenant.id.clone(),
                 merchant_order_id: req.merchant_order_id.clone(),
                 minor_index,

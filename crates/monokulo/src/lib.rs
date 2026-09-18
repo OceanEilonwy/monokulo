@@ -8,7 +8,9 @@
 //! `http::AppState`/`http::build_router` the same way the engine's own
 //! `main.rs` wires up `scanner::http::{AppState, build_router}`.
 
+pub mod confirmation_thresholds;
 pub mod crypto;
+pub mod currencies;
 pub mod db;
 pub mod engine_client;
 pub mod exchange_rate_config;

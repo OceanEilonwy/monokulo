@@ -441,6 +441,7 @@ mod tests {
             .unwrap();
         let order = store
             .create_order(crate::store::NewOrder {
+                confirmations_required_override: None,
                 tenant_id: tenant.tenant.id.clone(),
                 merchant_order_id: None,
                 minor_index: 1,
@@ -506,6 +507,7 @@ mod tests {
             .unwrap();
         let order = store
             .create_order(crate::store::NewOrder {
+                confirmations_required_override: None,
                 tenant_id: tenant.tenant.id.clone(),
                 merchant_order_id: None,
                 minor_index: 1,
@@ -571,6 +573,7 @@ mod tests {
             .unwrap();
         let order = store
             .create_order(crate::store::NewOrder {
+                confirmations_required_override: None,
                 tenant_id: tenant.tenant.id.clone(),
                 merchant_order_id: None,
                 minor_index: 1,

@@ -337,6 +337,12 @@ pub struct ConnectFlowWallet {
     pub zero_conf_max_piconero: Option<u64>,
     /// Same reasoning as `zero_conf_max_piconero` - see `ConfirmForm::confirmations_required`.
     pub confirmations_required: Option<u64>,
+    /// The tenant's base currency (`ConfirmForm::base_currency`, WBS "Confirmation
+    /// Thresholds") - required by the real confirm form as of that feature (an empty
+    /// submission is rejected as an unknown currency), so unlike the two `Option`
+    /// fields above this one is always submitted, never conditionally. `"XMR"` by
+    /// default, matching every existing caller's own XMR-denominated test order.
+    pub base_currency: String,
 }
 
 impl Default for ConnectFlowWallet {
@@ -347,6 +353,7 @@ impl Default for ConnectFlowWallet {
             network: "mainnet".to_string(),
             zero_conf_max_piconero: None,
             confirmations_required: None,
+            base_currency: "XMR".to_string(),
         }
     }
 }
@@ -560,6 +567,7 @@ async fn run_connect_flow_inner(
         ("spend_pubkey_hex", wallet.spend_pubkey_hex.as_str()),
         ("network", wallet.network.as_str()),
         ("allowed_origins", ""),
+        ("base_currency", wallet.base_currency.as_str()),
     ];
     if let Some(s) = &order_expiry_seconds_string {
         confirm_fields.push(("order_expiry_seconds", s.as_str()));
@@ -887,10 +895,20 @@ mod tests {
         use monokulo::http::{build_router, AppState};
         use monokulo::templates::TemplateEngine;
 
+        let db = Db::open_in_memory().expect("failed to open in-memory monokulo db for test");
+        // Signup defaults to invite-only (`monokulo::settings::SIGNUP_MODE`) -
+        // every driver in this crate signs up its own fresh test account with
+        // no invite token, exactly like a real self-hoster's admin would
+        // first switch signup to public before letting real merchants sign
+        // themselves up. Without this, `signup_submit` silently re-renders
+        // the signup form (a plain `200`, not an error status) instead of
+        // creating an account - `expect_ok`'s own success-status check can't
+        // tell that apart from a real success, so every downstream step
+        // (login, connect confirm) then fails with a genuinely confusing
+        // `401`, far from the actual cause.
+        db.set_setting("signup.mode", "public").expect("failed to set signup.mode for test monokulo db");
         let state = AppState {
-            db: Db::open_in_memory()
-                .expect("failed to open in-memory monokulo db for test")
-                .into_shared(),
+            db: db.into_shared(),
             engine_client: EngineClient::new(format!("http://{engine_addr}")),
             encryption_key: TEST_ENCRYPTION_KEY,
             templates: Arc::new(
@@ -1123,6 +1141,7 @@ mod tests {
                 ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
                 ("network", "mainnet"),
                 ("allowed_origins", ""),
+                ("base_currency", "XMR"),
             ])
             .send()
             .await

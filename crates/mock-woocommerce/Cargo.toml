@@ -53,3 +53,12 @@ e2e = ["scanner/e2e"]
 name = "e2e_stagenet_connect_flow"
 path = "tests/e2e_stagenet_connect_flow.rs"
 required-features = ["e2e"]
+
+# Confirmation Thresholds feature (WBS): a real order against a real
+# stagenet-connected store resolves and enforces a non-default
+# confirmations_required from a custom threshold - see that file's own doc
+# comment.
+[[test]]
+name = "e2e_stagenet_confirmation_threshold"
+path = "tests/e2e_stagenet_confirmation_threshold.rs"
+required-features = ["e2e"]

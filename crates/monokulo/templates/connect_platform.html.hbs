@@ -68,6 +68,14 @@ site)? Connect this one to it directly - no keys to paste in.</p>
 <input type="text" name="allowed_origins" value="{{allowed_origins}}">
 <span class="field-help">Leave blank to default to your site's own origin.</span>
 </label>
+<label>Base currency
+<select name="base_currency">
+{{#each currency_options}}
+<option value="{{this.code}}" {{#if this.selected}}selected{{/if}}>{{this.description}} ({{this.code}})</option>
+{{/each}}
+</select>
+<span class="field-help">What custom confirmation thresholds are denominated in.</span>
+</label>
 <button type="submit">Create a new store</button>
 </form>
 

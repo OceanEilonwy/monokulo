@@ -216,10 +216,12 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
     use monokulo::http::{build_router, AppState};
     use monokulo::templates::TemplateEngine;
 
+    let db = Db::open_in_memory().expect("failed to open in-memory monokulo db for test");
+    // Same "signup defaults to invite-only" fix `mock_woocommerce::spawn_test_monokulo`
+    // (`src/lib.rs`) needs - see that call site's own comment.
+    db.set_setting("signup.mode", "public").expect("failed to set signup.mode for test monokulo db");
     let state = AppState {
-        db: Db::open_in_memory()
-            .expect("failed to open in-memory monokulo db for test")
-            .into_shared(),
+        db: db.into_shared(),
         engine_client: EngineClient::new(format!("http://{engine_addr}")),
         encryption_key: TEST_ENCRYPTION_KEY,
         templates: Arc::new(
@@ -372,6 +374,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
             network: "stagenet".to_string(),
             zero_conf_max_piconero: Some(ZERO_CONF_MAX_PICONERO),
             confirmations_required: Some(1),
+            base_currency: "XMR".to_string(),
         },
     )
     .await

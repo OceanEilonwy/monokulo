@@ -39,6 +39,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (8, include_str!("../migrations/0008_order_scanned_range.sql")),
     (9, include_str!("../migrations/0009_utc_suffix_date_columns.sql")),
     (10, include_str!("../migrations/0010_settings.sql")),
+    (11, include_str!("../migrations/0011_order_confirmations_override.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -175,6 +176,10 @@ pub struct Order {
     /// first tick.
     pub first_scanned_height: Option<i64>,
     pub last_scanned_height: Option<i64>,
+    /// A per-order confirmation-count override, locked in at creation - see
+    /// `recompute_order_status`'s own doc comment on how this interacts with
+    /// `tenants.confirmations_required`.
+    pub confirmations_required_override: Option<u64>,
 }
 
 pub struct NewOrder {
@@ -186,6 +191,12 @@ pub struct NewOrder {
     pub description: Option<String>,
     pub created_at: i64,
     pub expires_at: i64,
+    /// `None` for every existing caller (mock-woocommerce, e2e tests, any
+    /// direct engine API use) - the tenant's own `confirmations_required`
+    /// still applies exactly as before. Only monokulo's own confirmation-
+    /// thresholds feature ever sets this, having already resolved an
+    /// amount-tiered override before calling here.
+    pub confirmations_required_override: Option<u64>,
 }
 
 #[derive(Debug, Clone)]
@@ -752,8 +763,9 @@ impl Store {
     fn insert_order(conn: &Connection, id: &str, new: &NewOrder) -> rusqlite::Result<()> {
         conn.execute(
             "INSERT INTO orders (id, tenant_id, merchant_order_id, minor_index, address,
-                xmr_amount_piconero, description, created_at_utc, expires_at_utc, updated_at_utc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8)",
+                xmr_amount_piconero, description, created_at_utc, expires_at_utc, updated_at_utc,
+                confirmations_required_override)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?8, ?10)",
             params![
                 id,
                 new.tenant_id,
@@ -764,6 +776,7 @@ impl Store {
                 new.description,
                 new.created_at,
                 new.expires_at,
+                new.confirmations_required_override.map(|v| v as i64),
             ],
         )?;
         Ok(())
@@ -795,6 +808,7 @@ impl Store {
             updated_at: row.get("updated_at_utc")?,
             first_scanned_height: row.get("first_scanned_height")?,
             last_scanned_height: row.get("last_scanned_height")?,
+            confirmations_required_override: row.get::<_, Option<i64>>("confirmations_required_override")?.map(|v| v as u64),
         })
     }
 
@@ -1118,6 +1132,12 @@ impl Store {
     /// place `orders.status` is written - see `docs/DESIGN.md` §7.6. Returns
     /// `(old_status, new_status)` so the caller can decide whether a status-transition
     /// webhook event is warranted.
+    /// Uses `order.confirmations_required_override` when the order has one
+    /// (set once, at creation, by a caller like monokulo that already
+    /// resolved an amount-tiered confirmation requirement of its own),
+    /// falling back to `tenant.confirmations_required` exactly as before
+    /// when it's `None` - the ordinary case for every order created outside
+    /// that feature.
     pub fn recompute_order_status(
         &self,
         order_id: &str,
@@ -1150,7 +1170,7 @@ impl Store {
             &views,
             StatusInputs {
                 xmr_amount_piconero: order.xmr_amount_piconero,
-                confirmations_required: tenant.confirmations_required,
+                confirmations_required: order.confirmations_required_override.unwrap_or(tenant.confirmations_required),
                 zero_conf_max_piconero: tenant.zero_conf_max_piconero,
                 now,
                 expires_at: order.expires_at,
@@ -1721,6 +1741,7 @@ mod tests {
     fn new_order(store: &Store, tenant_id: &str, minor_index: u32) -> Order {
         store
             .create_order(NewOrder {
+                confirmations_required_override: None,
                 tenant_id: tenant_id.to_string(),
                 merchant_order_id: None,
                 minor_index,
@@ -1936,6 +1957,49 @@ mod tests {
         assert_eq!(refetched.status, OrderStatus::Paid);
         assert_eq!(refetched.amount_received_piconero, 100);
         assert_eq!(refetched.confirmations, 10);
+    }
+
+    #[test]
+    fn recompute_status_uses_the_per_order_override_instead_of_the_tenants_default() {
+        // The tenant's own default is 10 (`new_tenant`'s own doc comment /
+        // the confirmations_required default in `create_tenant`) - an order
+        // with a `confirmations_required_override` of 2 must settle at 2
+        // confirmations, not wait for the tenant's 10.
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = store
+            .create_order(NewOrder {
+                confirmations_required_override: Some(2),
+                tenant_id: tenant.tenant.id.clone(),
+                merchant_order_id: None,
+                minor_index: 1,
+                address: "sub_1".to_string(),
+                xmr_amount_piconero: 100,
+                description: None,
+                created_at: 1000,
+                expires_at: 2000,
+            })
+            .unwrap();
+        assert_eq!(order.confirmations_required_override, Some(2));
+
+        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50)).unwrap();
+        // current_height 51, payment mined at 50 -> 2 confirmations.
+        let (_, status) = store.recompute_order_status(&order.id, 51, 1600).unwrap();
+        assert_eq!(status, OrderStatus::Paid, "2 confirmations must already be enough under a Some(2) override");
+    }
+
+    #[test]
+    fn recompute_status_falls_back_to_the_tenants_default_when_no_override_is_set() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, &tenant.tenant.id, 1); // confirmations_required_override: None
+        assert_eq!(order.confirmations_required_override, None);
+
+        store.record_payment_match(&order.id, "txabc", 0, 100, "[]", 1500, Some(50)).unwrap();
+        // Same 2-confirmation depth as the override test above, but with no
+        // override this must still be short of the tenant's default of 10.
+        let (_, status) = store.recompute_order_status(&order.id, 51, 1600).unwrap();
+        assert_eq!(status, OrderStatus::Confirming, "with no override, the tenant's own default of 10 must still apply");
     }
 
     #[test]
@@ -2651,6 +2715,7 @@ mod tests {
         let first = store.peek_next_minor_index(&tenant_id).unwrap();
         let order = store
             .create_order_claiming_minor_index(first, NewOrder {
+                confirmations_required_override: None,
                 tenant_id: tenant_id.clone(),
                 merchant_order_id: None,
                 minor_index: first,
@@ -2669,6 +2734,7 @@ mod tests {
         // all - the caller re-derives against the new index rather than burning one.
         let stale = store
             .create_order_claiming_minor_index(first, NewOrder {
+                confirmations_required_override: None,
                 tenant_id: tenant_id.clone(),
                 merchant_order_id: None,
                 minor_index: first,
@@ -2686,6 +2752,7 @@ mod tests {
         // UNIQUE(tenant_id, minor_index)) must roll the counter bump back with it.
         let next = store.peek_next_minor_index(&tenant_id).unwrap();
         let failed = store.create_order_claiming_minor_index(next, NewOrder {
+            confirmations_required_override: None,
             tenant_id: tenant_id.clone(),
             merchant_order_id: None,
             minor_index: first, // deliberately the already-used index, not `next`
@@ -2721,6 +2788,7 @@ mod tests {
         let reopened = Store::open_file(path_str).unwrap();
         let err = reopened
             .create_order(NewOrder {
+                confirmations_required_override: None,
                 tenant_id: "tn_does_not_exist".into(),
                 merchant_order_id: None,
                 minor_index: 1,

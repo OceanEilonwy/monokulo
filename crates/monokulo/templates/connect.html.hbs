@@ -59,6 +59,18 @@ watch a wallet without ever being able to spend from it.</span>
 <span class="field-help">Leave on <code>mainnet</code> unless this is a test wallet.</span>
 </label>
 
+<label>Base currency
+<select name="base_currency">
+{{#each currency_options}}
+<option value="{{this.code}}" {{#if this.selected}}selected{{/if}}>{{this.description}} ({{this.code}})</option>
+{{/each}}
+</select>
+<span class="field-help">What custom confirmation thresholds are denominated in, and what an
+order's own currency is converted into to pick one. Choosing a currency here doesn't require any
+exchange-rate provider to actually support it yet - that only matters once it's actually used to
+price something.</span>
+</label>
+
 <label>Allowed origins (comma-separated)
 <input type="text" name="allowed_origins" id="allowed_origins" value="{{allowed_origins}}" placeholder="https://shop.example.com">
 <span class="field-help">Which browser origins may create orders directly against your store's

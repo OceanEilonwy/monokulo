@@ -700,6 +700,7 @@ async fn a_logged_in_user_submitting_valid_wallet_fields_gets_a_confirmation_pag
                 ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
                 ("network", "mainnet"),
                 ("allowed_origins", "https://shop.example.com, https://admin.example.com"),
+                ("base_currency", "XMR"),
             ],
         ))
         .await
@@ -763,6 +764,7 @@ async fn submitting_an_invalid_view_key_rerenders_the_form_with_a_visible_error(
                 ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
                 ("network", "mainnet"),
                 ("allowed_origins", ""),
+                ("base_currency", "XMR"),
             ],
         ))
         .await
@@ -806,6 +808,7 @@ async fn a_rejected_connect_submission_re_fills_every_field_the_merchant_typed()
                 ("spend_pubkey_hex", &"ff".repeat(32)),
                 ("network", "stagenet"),
                 ("allowed_origins", "https://my-real-shop.example.com, https://admin.example.com"),
+                ("base_currency", "XMR"),
             ],
         ))
         .await
@@ -830,6 +833,32 @@ async fn a_rejected_connect_submission_re_fills_every_field_the_merchant_typed()
     );
     assert!(html.contains(r#"value="stagenet" selected"#), "expected stagenet to stay selected, got: {html}");
     assert!(!html.contains(r#"value="mainnet" selected"#), "mainnet must not silently reappear as selected, got: {html}");
+}
+
+#[tokio::test]
+async fn an_unknown_base_currency_on_the_dashboard_connect_form_is_rejected_before_provisioning_a_tenant() {
+    let (state, _engine) = test_state_with_real_engine().await;
+    let router = build_router(state.clone());
+    let cookie = signed_up_and_logged_in_session_cookie(&router, "bad-currency-form@example.com", "correct horse battery staple").await;
+
+    let response = router
+        .oneshot(connect_post_request(
+            &cookie,
+            &[
+                ("site_url", "https://shop.example.com"),
+                ("view_key_hex", TEST_VIEW_KEY_HEX),
+                ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                ("network", "mainnet"),
+                ("allowed_origins", ""),
+                ("base_currency", "NOTREAL"),
+            ],
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "a rejected submission re-renders the form, not a redirect");
+    let html = body_text(response).await;
+    assert!(html.contains("class=\"error\""), "expected a visible error, got: {html}");
+    assert!(!html.contains("pk_"), "no tenant should have been provisioned for a rejected submission");
 }
 
 // -- WBS 1.4.1: `next`-redirect support on dashboard::login_submit ----------

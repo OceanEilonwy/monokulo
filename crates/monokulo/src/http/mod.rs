@@ -154,6 +154,18 @@ pub fn build_router(state: AppState) -> Router {
             "/dashboard/connections/{id}/settings/fx-provider",
             axum::routing::post(orders::update_fx_provider),
         )
+        .route(
+            "/dashboard/connections/{id}/settings/base-currency",
+            axum::routing::post(orders::update_base_currency),
+        )
+        .route(
+            "/dashboard/connections/{id}/settings/confirmation-thresholds",
+            axum::routing::post(orders::create_confirmation_threshold),
+        )
+        .route(
+            "/dashboard/connections/{id}/settings/confirmation-thresholds/{threshold_id}/delete",
+            axum::routing::post(orders::delete_confirmation_threshold),
+        )
         .route("/dashboard/connections/{id}/orders", axum::routing::get(orders::orders_list))
         .route("/dashboard/connections/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
         .route(

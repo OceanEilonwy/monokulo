@@ -118,8 +118,10 @@ pub async fn create_tenant(
 const MAX_ORDER_EXPIRY_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 /// Upper bound on tenant-chosen confirmations. ~24 hours of blocks; anything beyond
-/// this is indistinguishable from "never settles".
-const MAX_CONFIRMATIONS_REQUIRED: u64 = 720;
+/// this is indistinguishable from "never settles". `pub(crate)` so
+/// `http::public::create_order`'s own per-order override can validate against
+/// the exact same bound rather than a duplicated magic number.
+pub(crate) const MAX_CONFIRMATIONS_REQUIRED: u64 = 720;
 
 /// Shared by tenant creation and tenant patching, because both write the same two
 /// columns and a bound enforced on only one of them is not a bound.

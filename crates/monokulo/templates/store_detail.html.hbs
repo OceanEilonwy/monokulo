@@ -83,14 +83,72 @@ match it back to your own records.</span>
 {{#if store.settings_error}}
 <div class="error">{{store.settings_error}}</div>
 {{/if}}
+
+<h2>Confirmation Thresholds</h2>
+<p class="hint">How many blocks a payment needs before this store's orders read as paid. The default
+below is the fallback used whenever no custom threshold applies; custom thresholds let a higher-value
+order require more confirmations (or a lower-value one fewer) based on its amount in this store's base
+currency.</p>
+
+<h3>Default (fallback)</h3>
 <form method="post" action="/dashboard/connections/{{store.connection_id}}/settings/confirmations">
-<label>Confirmations required before an order is paid
+<label>Confirmations required
 <input type="text" name="confirmations_required" value="{{store.confirmations_required}}" required>
-<span class="field-help">How many blocks a payment needs before this store's orders read as paid. Lower is
-faster but riskier (a transaction can still be replaced before it's confirmed); higher is slower but safer.</span>
+<span class="field-help">Used whenever an order's amount doesn't fall under any custom threshold below (or
+there are none) - the one threshold that always exists and can't be deleted.</span>
 </label>
 <button type="submit">Update</button>
 </form>
+
+<h3>Base currency</h3>
+<form method="post" action="/dashboard/connections/{{store.connection_id}}/settings/base-currency">
+<label>Base currency
+<select name="base_currency">
+{{#each store.base_currency_options}}
+<option value="{{this.code}}" {{#if this.selected}}selected{{/if}}>{{this.description}} ({{this.code}})</option>
+{{/each}}
+</select>
+<span class="field-help">What custom threshold amounts below are denominated in. Changing this deletes every
+custom threshold this store currently has - an amount in a currency you're no longer using means nothing.</span>
+</label>
+<button type="submit">Update</button>
+</form>
+
+<h3>Custom thresholds</h3>
+{{#if store.confirmation_thresholds}}
+<table>
+<thead><tr><th>Amount ({{store.base_currency}})</th><th>Confirmations required</th><th>Actions</th></tr></thead>
+<tbody>
+{{#each store.confirmation_thresholds}}
+<tr>
+<td>{{this.unit_amount}}</td>
+<td>{{this.confirmations_required}}</td>
+<td>
+<form method="post" action="/dashboard/connections/{{../store.connection_id}}/settings/confirmation-thresholds/{{this.id}}/delete" class="inline-form">
+<button type="submit">delete</button>
+</form>
+</td>
+</tr>
+{{/each}}
+</tbody>
+</table>
+{{else}}
+<p class="muted">No custom thresholds yet.</p>
+{{/if}}
+
+{{#unless store.confirmation_thresholds_at_max}}
+<form method="post" action="/dashboard/connections/{{store.connection_id}}/settings/confirmation-thresholds">
+<label>Amount ({{store.base_currency}})
+<input type="text" name="unit_amount" placeholder="50.00" required>
+</label>
+<label>Confirmations required
+<input type="text" name="confirmations_required" placeholder="20" required>
+</label>
+<button type="submit">Add threshold</button>
+</form>
+{{else}}
+<p class="hint">Maximum of 5 custom thresholds reached - delete one to add another.</p>
+{{/unless}}
 
 {{#if store.fx_provider_options}}
 <form method="post" action="/dashboard/connections/{{store.connection_id}}/settings/fx-provider">

@@ -264,6 +264,7 @@ mod tests {
             moneropay_endpoint: "http://127.0.0.1:8080".to_string(),
             created_at: 0,
             fx_provider: fx_provider.to_string(),
+            base_currency: "XMR".to_string(),
         }
     }
 
