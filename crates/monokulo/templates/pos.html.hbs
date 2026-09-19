@@ -63,7 +63,17 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 .pos-status-link .status-dot { margin-left: 0; }
 
 .pos-wrap {
-  max-width: 480px;
+  /* No static `max-width` here - it used to be a fixed 480/540px "centered
+     column" cap, but that silently became the *bottleneck* on anything
+     taller than it was wide (a maximized desktop window, a tablet in
+     portrait): the keypad's own square keys are sized by whichever of
+     available width/height is tighter (`updateKeypadSize` below), so
+     capping the width small kept the keys small even with hundreds of
+     spare vertical pixels, which just piled up as dead centered space
+     above/below the keypad instead of being used. `updateKeypadSize` now
+     sets this element's `max-width` itself, in JS, to whatever the real
+     optimal square key size actually needs - shrink-wrapped tight on a
+     short/wide screen, using the full available width on a narrow one. */
   margin: 0 auto;
   min-height: 100dvh;
   min-height: 100vh;
@@ -72,7 +82,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   flex-direction: column;
   padding: calc(env(safe-area-inset-top, 0px) + 2.6rem) calc(env(safe-area-inset-right, 0px) + 0.9rem) calc(env(safe-area-inset-bottom, 0px) + 0.9rem) calc(env(safe-area-inset-left, 0px) + 0.9rem);
 }
-@media (min-width: 640px) { .pos-wrap { max-width: 540px; } }
 /* A phone in landscape has so little height that the *chrome* around the
    keypad (amount display, note field, Charge button, topbar padding) can
    itself eat most of the screen even before the keys get a turn - shrink
@@ -84,15 +93,18 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 .pos-screen-hidden { display: none !important; }
 
 /* Spec point 4: no currency anywhere on this screen - only the charge
-   screen below shows one, next to the real amount being requested. */
+   screen below shows one, next to the real amount being requested.
+   Deliberately no box (no border/background/padding) around this - it's
+   the one thing on this screen a merchant reads from across a counter,
+   so it gets plain large centered text instead of competing with a card
+   outline, and the reclaimed vertical space goes straight to the keypad
+   via `updateKeypadSize` below (which measures this element's real,
+   live `offsetHeight`, so it never needs to know this number by name). */
 .amount-display {
-  font-size: clamp(2.2rem, 9vw, 3rem);
+  font-size: clamp(2.6rem, 12vw, 4.4rem);
   font-weight: 700;
-  text-align: right;
-  border: 2px solid var(--line);
-  background: var(--paper-raised);
-  padding: 0.35em 0.5em;
-  margin-bottom: 0.7em;
+  text-align: center;
+  margin: 0 0 0.35em;
   overflow-x: auto;
   white-space: nowrap;
   flex: none;
@@ -135,7 +147,14 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 }
 .key:active { background: var(--accent); color: var(--accent-ink); }
 /* Clear/backspace read at the same visual weight as every digit key now -
-   previously much smaller text (spec point 3) than the digits around them. */
+   previously much smaller text (spec point 3) than the digits around them.
+   Each also gets its own color (red for the destructive "clear the whole
+   amount", amber/gold for the more forgiving single-digit "backspace") so
+   the two are told apart at a glance, not just by their icon/label. */
+.key-clear { color: var(--error); border-color: var(--error); }
+.key-clear:active { background: var(--error); color: #fff; }
+.key-backspace { color: var(--warning); border-color: var(--warning); }
+.key-backspace:active { background: var(--warning); color: #fff; }
 /* A fixed size tied to `--key-size` (same 0.4 ratio the digit font-size
    uses), not a percentage - percentage width/height on an inline `<svg>`
    inside a flex container renders unreliably (observed directly). `flex:
@@ -175,6 +194,10 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   cursor: pointer;
 }
 .charge-btn:disabled { background: var(--paper-raised); color: var(--muted); cursor: not-allowed; }
+/* Spec point 3 (this round): once a real amount is entered the button
+   isn't just "not greyed out" - it visibly announces itself as the next
+   step, via a glow no other control on this screen uses. */
+.charge-btn:not(:disabled) { box-shadow: 0 0 0 4px rgba(255, 102, 0, 0.28); }
 .secondary-btn { background: var(--paper-raised); color: var(--ink); }
 
 #pos-error:empty { display: none; }
@@ -296,7 +319,7 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
    last thing in this stylesheet to keep overriding everything above it. */
 @media (max-height: 480px) {
   .pos-wrap { padding-top: calc(env(safe-area-inset-top, 0px) + 1.1rem); }
-  .amount-display { font-size: clamp(1.1rem, 6vw, 1.9rem); padding: 0.15em 0.35em; margin-bottom: 0.25em; }
+  .amount-display { font-size: clamp(1.1rem, 6vw, 1.9rem); margin: 0 0 0.25em; }
   .note-input-row { margin: 0.25em 0 0; }
   .note-input-row input { padding: 0.3em 0.5em; font-size: 0.9rem; }
   .charge-btn, .secondary-btn { padding: 0.3em 0; margin-top: 0.25em; font-size: 1rem; }
@@ -393,6 +416,10 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   var POLL_FAILURE_LIMIT = 3;
   var RING_CIRCUMFERENCE = 2 * Math.PI * 54;
   var MAX_NOTE_LENGTH = 120;
+  // A generous backstop, not a real design constraint - stops a single key
+  // growing absurdly large on a huge monitor with tons of spare height.
+  // Ordinary phone/tablet/desktop sizes never get near it.
+  var ABS_MAX_WRAP_WIDTH = 900;
 
   var digits = "0";
   var amountDisplay = document.getElementById("amount-display");
@@ -452,11 +479,21 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   }
   function updateKeypadSize() {
     var viewportHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    var viewportWidth = window.visualViewport ? window.visualViewport.width : window.innerWidth;
     var wrapStyle = getComputedStyle(posWrapEl);
-    var wrapPadding = (parseFloat(wrapStyle.paddingTop) || 0) + (parseFloat(wrapStyle.paddingBottom) || 0);
+    var wrapPaddingY = (parseFloat(wrapStyle.paddingTop) || 0) + (parseFloat(wrapStyle.paddingBottom) || 0);
+    var wrapPaddingX = (parseFloat(wrapStyle.paddingLeft) || 0) + (parseFloat(wrapStyle.paddingRight) || 0);
     var fixedHeight = outerHeight(amountDisplay) + outerHeight(noteRowEl) + outerHeight(chargeBtn) + outerHeight(posError);
-    var availableHeight = viewportHeight - wrapPadding - fixedHeight;
-    var availableWidth = keypadScreen.clientWidth;
+    var availableHeight = viewportHeight - wrapPaddingY - fixedHeight;
+    // Deliberately the *whole viewport's* width here, not `.pos-wrap`'s own
+    // (or `keypadScreen`'s) current width - `.pos-wrap` no longer has a
+    // static `max-width`, this function sets it below, so reading either
+    // element's current width back would be exactly the same circular-
+    // measurement bug already fixed once for height (see the comment
+    // above): whatever we last set becomes what we read next, so a narrow
+    // guess stays narrow forever. The viewport itself is never downstream
+    // of anything this function does.
+    var availableWidth = viewportWidth - wrapPaddingX;
 
     var style = getComputedStyle(keypadEl);
     var gap = parseFloat(style.rowGap || style.gap) || 8;
@@ -470,6 +507,30 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
     // even shorter device shows up that shrinks past that.
     var size = Math.max(20, Math.floor(Math.min(byWidth, byHeight)));
     keypadEl.style.setProperty("--key-size", size + "px");
+
+    // `.pos-wrap`'s own width now shrink-wraps to whatever this key size
+    // actually needs, instead of a static guess - full available width
+    // when width is the tight dimension (byWidth <= byHeight, so `size`
+    // already equals `byWidth` and this comes out to ~`availableWidth`),
+    // or a tight centered column sized to just the keys when there's
+    // height to spare (byHeight was tighter, so the keys don't need
+    // anywhere near the full width). Either way, no space is left
+    // stranded as a lopsided empty gap the way a fixed cap did.
+    //
+    // `MIN_WRAP_WIDTH` is a floor, not just cosmetic: this same wrapper
+    // also holds the *charge/QR screen*, whose address text wraps onto
+    // more (taller) lines the narrower it is - on a short landscape phone,
+    // the keypad's own ideal width can be barely 150px (small square keys,
+    // deliberately, to fit the height), and shrink-wrapping the payment
+    // screen down to match that blew its own height budget instead
+    // (confirmed directly: this exact regression, on exactly these sizes,
+    // caught by `pos-fit.spec.js`). Never below what the keypad itself
+    // needs, capped at the real viewport width so it can never force
+    // horizontal scrolling on a narrower device either.
+    var contentWidth = size * 3 + gap * 2;
+    var minWrapWidth = Math.min(480, viewportWidth);
+    var wrapWidth = Math.min(Math.max(contentWidth + wrapPaddingX, minWrapWidth), ABS_MAX_WRAP_WIDTH);
+    posWrapEl.style.maxWidth = wrapWidth + "px";
   }
   window.addEventListener("resize", updateKeypadSize);
   window.addEventListener("orientationchange", updateKeypadSize);
