@@ -156,23 +156,20 @@ async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): 
     };
     let _guard = state.network_lock.lock().await;
 
-    let wallets_json: Value = match std::fs::read_to_string(WALLETS_PATH).ok().and_then(|s| serde_json::from_str(&s).ok()) {
-        Some(v) => v,
-        None => return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to read/parse {WALLETS_PATH}")).into_response(),
+    let spender = match stagenet_test_wallet::WalletStore::load(WALLETS_PATH).and_then(|store| store.wallet("spender")) {
+        Ok(w) => w,
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to load the spender wallet from {WALLETS_PATH}: {e}")).into_response(),
     };
-    let customer_address = wallets_json["customer"]["address"].as_str().expect("customer.address missing").to_string();
-    let customer_spend_key_hex = wallets_json["customer"]["private_spend_key"].as_str().expect("customer.private_spend_key missing").to_string();
-    let customer_view_key_hex = wallets_json["customer"]["private_view_key"].as_str().expect("customer.private_view_key missing").to_string();
 
     let wallet_config = stagenet_test_wallet::WalletConfig {
         node_url: &state.node_url,
         accept_invalid_certs: NODE_ACCEPT_SELF_SIGNED_CERTS,
-        private_spend_key_hex: &customer_spend_key_hex,
-        private_view_key_hex: &customer_view_key_hex,
-        expected_address: &customer_address,
+        private_spend_key_hex: &spender.private_spend_key_hex,
+        private_view_key_hex: &spender.private_view_key_hex,
+        expected_address: &spender.address,
         decoy_distribution_path: DECOY_DISTRIBUTION_PATH,
     };
-    let tx_hash = match stagenet_test_wallet::send_payment(wallet_config, KNOWN_OUTPUTS_PATH, &req.address, piconero_amount).await {
+    let tx_hash = match stagenet_test_wallet::send_payment(wallet_config, KNOWN_OUTPUTS_PATH, &req.address, piconero_amount, None).await {
         Ok(hash) => hash,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };

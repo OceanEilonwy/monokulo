@@ -37,8 +37,8 @@
     },
     {
       "txid": "0cd5f366e7a0af66a35e99d7bfc43baf4a1eb87b9cf6fbb52174ef28d7835db5",
-      "height": null,
-      "serialized_output_hex": null,
+      "height": 2210362,
+      "serialized_output_hex": "0cd5f366e7a0af66a35e99d7bfc43baf4a1eb87b9cf6fbb52174ef28d7835db50100000000000000ea3f9900000000008f23616daf1f61337f73fa2e37a58966ee60d601538f0bf964ba4c80d03286f125ab4f8bd56164ecffd270965fb0a5e3cd02924134eb20c1db9acb251a16580b62c3bcade06ae29f288dc5551226ba9ef4578c6e6916c0d172ee98cfd7e8b10f444d2324040000000000010120eb7c05d799081500",
       "amount_piconero": 0,
       "spent": false
     }

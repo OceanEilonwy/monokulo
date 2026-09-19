@@ -280,15 +280,10 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     );
 
     let merchant = load_merchant_watch_only_wallet(WALLETS_PATH);
-    let wallets_json: Value = serde_json::from_str(
-        &std::fs::read_to_string(WALLETS_PATH).unwrap_or_else(|e| panic!("failed to read {WALLETS_PATH}: {e}")),
-    )
-    .unwrap_or_else(|e| panic!("failed to parse {WALLETS_PATH}: {e}"));
-    let customer_address = wallets_json["customer"]["address"].as_str().expect("customer.address missing").to_string();
-    let customer_spend_key_hex =
-        wallets_json["customer"]["private_spend_key"].as_str().expect("customer.private_spend_key missing").to_string();
-    let customer_view_key_hex =
-        wallets_json["customer"]["private_view_key"].as_str().expect("customer.private_view_key missing").to_string();
+    let spender = stagenet_test_wallet::WalletStore::load(WALLETS_PATH)
+        .unwrap_or_else(|e| panic!("failed to load {WALLETS_PATH}: {e}"))
+        .wallet("spender")
+        .unwrap_or_else(|e| panic!("failed to load the spender wallet from {WALLETS_PATH}: {e}"));
 
     // A single `RpcDaemonClient`, used for everything real-network-related in this
     // test (reachability check, wallet connect/send, and the post-payment scan-tick
@@ -325,23 +320,23 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // comment), so there's no real cost to a second one, and `send_payment`
     // does its own connect internally regardless.
     let balance_wallet = retry(5, Duration::from_secs(5), || {
-        StagenetTestWallet::connect(&node_url, node_fixture::ACCEPT_SELF_SIGNED_CERTS, &customer_spend_key_hex, &customer_view_key_hex, &customer_address, DECOY_DISTRIBUTION_PATH)
+        StagenetTestWallet::connect(&node_url, node_fixture::ACCEPT_SELF_SIGNED_CERTS, &spender.private_spend_key_hex, &spender.private_view_key_hex, &spender.address, DECOY_DISTRIBUTION_PATH)
     })
     .await
     .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     const MIN_SPENDABLE_PICONERO: u64 = 10_000_000_000; // 0.01 XMR - comfortably above one test payment + fee.
     let mut ledger = Ledger::load(KNOWN_OUTPUTS_PATH).unwrap_or_else(|e| panic!("\n\n{e}\n"));
-    let balance = balance_wallet.balance(&mut ledger).await.unwrap_or_else(|e| panic!("failed to check customer wallet balance: {e}"));
+    let balance = balance_wallet.balance(&mut ledger).await.unwrap_or_else(|e| panic!("failed to check spender wallet balance: {e}"));
     if balance.spendable_piconero < MIN_SPENDABLE_PICONERO {
         panic!(
-            "\n\ncustomer wallet has only {} piconero spendable across {} output(s) (needs at least \
+            "\n\nspender wallet has only {} piconero spendable across {} output(s) (needs at least \
              {MIN_SPENDABLE_PICONERO}) - fund it from the stagenet faucet \
              (https://stagenet-faucet.xmr-tw.org/, send to {}), add a new ledger entry for the \
              resulting txid in {KNOWN_OUTPUTS_PATH}, then wait ~20 minutes for it to mature.\n",
-            balance.spendable_piconero, balance.spendable_outputs, customer_address,
+            balance.spendable_piconero, balance.spendable_outputs, spender.address,
         );
     }
-    println!("customer wallet balance check passed: {balance:?}");
+    println!("spender wallet balance check passed: {balance:?}");
 
     // A real engine, stagenet-configured. `with_background_loops` is used for its
     // webhook-delivery-tick loop only (it's what actually POSTs the real, signed
@@ -431,9 +426,9 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     let wallet_config = stagenet_test_wallet::WalletConfig {
         node_url: &node_url,
         accept_invalid_certs: node_fixture::ACCEPT_SELF_SIGNED_CERTS,
-        private_spend_key_hex: &customer_spend_key_hex,
-        private_view_key_hex: &customer_view_key_hex,
-        expected_address: &customer_address,
+        private_spend_key_hex: &spender.private_spend_key_hex,
+        private_view_key_hex: &spender.private_view_key_hex,
+        expected_address: &spender.address,
         decoy_distribution_path: DECOY_DISTRIBUTION_PATH,
     };
     let tx_hash = stagenet_test_wallet::send_payment(
@@ -441,6 +436,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         KNOWN_OUTPUTS_PATH,
         &address,
         amount_piconero,
+        None,
     )
     .await
     .unwrap_or_else(|e| panic!("\n\n{e}\n"));
