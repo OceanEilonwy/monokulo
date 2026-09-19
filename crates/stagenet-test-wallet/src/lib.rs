@@ -277,22 +277,6 @@ pub struct WalletCredentials {
     pub private_view_key_hex: String,
 }
 
-/// A watch-only wallet's key material - a view key and a spend *public*
-/// key only, no private spend key at all (e.g. `merchant` in
-/// `stagenet-wallets.json`: moneropay's own tenant, which only ever needs
-/// enough to detect incoming payments, never to spend - see
-/// `e2e/README.md`). A distinct shape from [`WalletCredentials`], not an
-/// optional field on it: a watch-only entry has no `address` recorded
-/// either (it's never needed), and mixing "maybe has a spend key" into one
-/// type invites a caller forgetting to check which case they got.
-#[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct WatchOnlyWallet {
-    #[serde(rename = "private_view_key")]
-    pub private_view_key_hex: String,
-    #[serde(rename = "spend_public_key")]
-    pub spend_public_key_hex: String,
-}
-
 /// Every path/network setting a real caller needs to talk to the e2e
 /// fixtures, in one place - `WalletStore::load`, `Ledger::load`, and
 /// `Wallet::connect`/`send_payment` each need one piece of this,
@@ -337,6 +321,20 @@ pub struct ResolvedWallet {
 }
 
 impl ResolvedWallet {
+    /// This wallet's *public* spend key, hex-encoded - derived locally from
+    /// `self.private_spend_key_hex`, never the private key itself. For
+    /// handing to something that must never see a private key even for a
+    /// worthless stagenet fixture (moneropay's own real connect API, which
+    /// only ever takes a view key + spend *public* key for a watch-only
+    /// tenant) while this crate still holds full credentials for every
+    /// wallet it knows about.
+    pub fn spend_public_key_hex(&self) -> String {
+        let spend_key = scalar_from_hex(&self.private_spend_key_hex);
+        let spend_key_dalek: curve25519_dalek::Scalar = (*spend_key).into();
+        let public_spend = Point::from(&spend_key_dalek * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE);
+        hex::encode(public_spend.compress().to_bytes())
+    }
+
     /// Connects to `self.node_url`, deriving keys from `self`'s own hex-encoded
     /// private spend/view keys and asserting the derived address matches
     /// `self.address` (the same self-check `scanner::e2e_wallet::
@@ -379,10 +377,9 @@ impl ResolvedWallet {
 /// noticing.
 ///
 /// Deliberately backed by a raw `serde_json::Map`, not a fixed struct: the
-/// file also carries bookkeeping this crate doesn't own (`merchant` -
-/// moneropay's own watch-only tenant wallet, `faucet_used`, `network`, ...)
-/// that must round-trip untouched. Same atomic write-then-rename convention
-/// as [`Ledger::save`].
+/// file also carries bookkeeping this crate doesn't own (`faucet_used`,
+/// `network`, ...) that must round-trip untouched. Same atomic
+/// write-then-rename convention as [`Ledger::save`].
 pub struct WalletStore {
     ctx: WalletCtx,
     file: serde_json::Map<String, Value>,
@@ -412,17 +409,22 @@ impl WalletStore {
         std::fs::rename(&tmp_path, path).map_err(|e| WalletError::WalletStore(format!("failed to move {tmp_path} into place over {path}: {e}")))
     }
 
-    /// `name`'s key material, plus this store's own [`WalletCtx`] settings -
-    /// together, everything [`Wallet::connect`] needs, ready to
-    /// convert via `.into()`. Errors if `name` isn't in the file, or is
-    /// present but watch-only (no `private_spend_key` - e.g. `merchant`,
-    /// which deliberately never gets one; see `e2e/README.md`).
     fn entry(&self, name: &str) -> Result<&Value, WalletError> {
         self.file.get(name).ok_or_else(|| {
             WalletError::WalletStore(format!("no wallet named {name:?} in {} (have: {:?})", self.ctx.wallets_path, self.file.keys().collect::<Vec<_>>()))
         })
     }
 
+    /// `name`'s key material, plus this store's own [`WalletCtx`] settings -
+    /// together, everything [`Wallet::connect`] needs. Errors if `name`
+    /// isn't in the file or has no `private_spend_key` recorded. Every
+    /// wallet this crate manages is a worthless stagenet fixture, so there's
+    /// no reason to withhold a spend key from any of them - even
+    /// moneropay's own tenant (`merchant`) has one recorded, for full
+    /// recoverability/CLI use; only the *public* half
+    /// ([`ResolvedWallet::spend_public_key_hex`]) is ever actually handed to
+    /// moneropay's real connect API, so the e2e tests still exercise it
+    /// exactly as a genuinely watch-only tenant would be.
     pub fn wallet(&self, name: &str) -> Result<ResolvedWallet, WalletError> {
         let credentials: WalletCredentials = serde_json::from_value(self.entry(name)?.clone())
             .map_err(|e| WalletError::WalletStore(format!("wallet {name:?} has no usable spend key material: {e}")))?;
@@ -435,15 +437,6 @@ impl WalletStore {
             decoy_distribution_path: self.ctx.decoy_distribution_path.clone(),
             ledger_path: self.ctx.ledger_path.clone(),
         })
-    }
-
-    /// `name`'s watch-only key material - a view key and a spend *public*
-    /// key, no private spend key (e.g. `merchant`; see [`WatchOnlyWallet`]).
-    /// Errors if `name` isn't in the file, or is present but has full spend
-    /// capability instead (use [`Self::wallet`] for that case).
-    pub fn watch_only_wallet(&self, name: &str) -> Result<WatchOnlyWallet, WalletError> {
-        serde_json::from_value(self.entry(name)?.clone())
-            .map_err(|e| WalletError::WalletStore(format!("wallet {name:?} has no usable watch-only key material: {e}")))
     }
 
     /// Adds (or overwrites) `name`'s key material and commits the file.

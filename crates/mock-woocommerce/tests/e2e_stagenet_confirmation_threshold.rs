@@ -195,7 +195,7 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     let ctx = stagenet_test_wallet::WalletCtx::default();
 
     let wallets = stagenet_test_wallet::WalletStore::load(&ctx).unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path));
-    let merchant = wallets.watch_only_wallet("merchant").unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
+    let merchant = wallets.wallet("merchant").unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
     let spender = wallets.wallet("spender").unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 
     // One real daemon client, used sequentially for everything - see
@@ -252,8 +252,8 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .json(&json!({
             "platform": "custom",
             "site_url": "https://e2e-threshold.example.com",
-            "view_key_hex": merchant.private_view_key_hex,
-            "spend_pubkey_hex": merchant.spend_public_key_hex,
+            "view_key_hex": merchant.private_view_key_hex.clone(),
+            "spend_pubkey_hex": merchant.spend_public_key_hex(),
             "network": "stagenet",
             "allowed_origins": [],
             "confirmations_required": TENANT_DEFAULT_CONFIRMATIONS_REQUIRED,
