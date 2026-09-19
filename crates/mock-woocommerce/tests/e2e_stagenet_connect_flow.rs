@@ -152,36 +152,6 @@ where
     Err(last_err.expect("attempts is always >= 1"))
 }
 
-/// The stagenet merchant fixture's watch-only key material - `private_view_key` and
-/// `spend_public_key` only, read directly (this fixture's merchant entry deliberately
-/// has no `private_spend_key` field at all, since it's genuinely watch-only here -
-/// see `e2e/stagenet-wallets.json`'s own `merchant.role` comment and
-/// `e2e/README.md`). This is exactly the same key material a real merchant would type
-/// into the real connect-flow wallet form.
-struct MerchantWatchOnlyWallet {
-    view_key_hex: String,
-    spend_pubkey_hex: String,
-}
-
-fn load_merchant_watch_only_wallet(wallets_json_path: &str) -> MerchantWatchOnlyWallet {
-    let contents = std::fs::read_to_string(wallets_json_path)
-        .unwrap_or_else(|e| panic!("failed to read {wallets_json_path}: {e}"));
-    let json: Value = serde_json::from_str(&contents)
-        .unwrap_or_else(|e| panic!("failed to parse {wallets_json_path}: {e}"));
-    let view_key_hex = json["merchant"]["private_view_key"]
-        .as_str()
-        .unwrap_or_else(|| panic!("merchant.private_view_key missing in {wallets_json_path}"))
-        .to_string();
-    let spend_pubkey_hex = json["merchant"]["spend_public_key"]
-        .as_str()
-        .unwrap_or_else(|| panic!("merchant.spend_public_key missing in {wallets_json_path}"))
-        .to_string();
-    MerchantWatchOnlyWallet {
-        view_key_hex,
-        spend_pubkey_hex,
-    }
-}
-
 /// A running, real (network-bound) monokulo instance for this test - the same
 /// small, private harness `mock-woocommerce/src/lib.rs`'s own `#[cfg(test)] mod tests`
 /// already defines, unavoidably duplicated here rather than shared: that module's
@@ -270,12 +240,10 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // Same standard `e2e/*` layout every real suite in this repo uses - run
     // from the repository root, same as this file's own doc comment says.
     let ctx = stagenet_test_wallet::WalletCtx::default();
+    let wallets = stagenet_test_wallet::WalletStore::load(&ctx).unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path));
 
-    let merchant = load_merchant_watch_only_wallet(&ctx.wallets_path);
-    let spender = stagenet_test_wallet::WalletStore::load(&ctx)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path))
-        .wallet("spender")
-        .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
+    let merchant = wallets.watch_only_wallet("merchant").unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
+    let spender = wallets.wallet("spender").unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 
     // A single `RpcDaemonClient`, used for everything real-network-related in this
     // test (reachability check, wallet connect/send, and the post-payment scan-tick
@@ -353,8 +321,8 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     let credentials = run_connect_flow_with_wallet(
         &monokulo_base_url,
         ConnectFlowWallet {
-            view_key_hex: merchant.view_key_hex,
-            spend_pubkey_hex: merchant.spend_pubkey_hex,
+            view_key_hex: merchant.private_view_key_hex,
+            spend_pubkey_hex: merchant.spend_public_key_hex,
             network: "stagenet".to_string(),
             zero_conf_max_piconero: Some(ZERO_CONF_MAX_PICONERO),
             confirmations_required: Some(1),

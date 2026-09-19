@@ -277,6 +277,22 @@ pub struct WalletCredentials {
     pub private_view_key_hex: String,
 }
 
+/// A watch-only wallet's key material - a view key and a spend *public*
+/// key only, no private spend key at all (e.g. `merchant` in
+/// `stagenet-wallets.json`: moneropay's own tenant, which only ever needs
+/// enough to detect incoming payments, never to spend - see
+/// `e2e/README.md`). A distinct shape from [`WalletCredentials`], not an
+/// optional field on it: a watch-only entry has no `address` recorded
+/// either (it's never needed), and mixing "maybe has a spend key" into one
+/// type invites a caller forgetting to check which case they got.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WatchOnlyWallet {
+    #[serde(rename = "private_view_key")]
+    pub private_view_key_hex: String,
+    #[serde(rename = "spend_public_key")]
+    pub spend_public_key_hex: String,
+}
+
 /// Every path/network setting a real caller needs to talk to the e2e
 /// fixtures, in one place - `WalletStore::load`, `Ledger::load`, and
 /// `Wallet::connect`/`send_payment` each need one piece of this,
@@ -401,11 +417,14 @@ impl WalletStore {
     /// convert via `.into()`. Errors if `name` isn't in the file, or is
     /// present but watch-only (no `private_spend_key` - e.g. `merchant`,
     /// which deliberately never gets one; see `e2e/README.md`).
-    pub fn wallet(&self, name: &str) -> Result<ResolvedWallet, WalletError> {
-        let entry = self.file.get(name).ok_or_else(|| {
+    fn entry(&self, name: &str) -> Result<&Value, WalletError> {
+        self.file.get(name).ok_or_else(|| {
             WalletError::WalletStore(format!("no wallet named {name:?} in {} (have: {:?})", self.ctx.wallets_path, self.file.keys().collect::<Vec<_>>()))
-        })?;
-        let credentials: WalletCredentials = serde_json::from_value(entry.clone())
+        })
+    }
+
+    pub fn wallet(&self, name: &str) -> Result<ResolvedWallet, WalletError> {
+        let credentials: WalletCredentials = serde_json::from_value(self.entry(name)?.clone())
             .map_err(|e| WalletError::WalletStore(format!("wallet {name:?} has no usable spend key material: {e}")))?;
         Ok(ResolvedWallet {
             address: credentials.address,
@@ -416,6 +435,15 @@ impl WalletStore {
             decoy_distribution_path: self.ctx.decoy_distribution_path.clone(),
             ledger_path: self.ctx.ledger_path.clone(),
         })
+    }
+
+    /// `name`'s watch-only key material - a view key and a spend *public*
+    /// key, no private spend key (e.g. `merchant`; see [`WatchOnlyWallet`]).
+    /// Errors if `name` isn't in the file, or is present but has full spend
+    /// capability instead (use [`Self::wallet`] for that case).
+    pub fn watch_only_wallet(&self, name: &str) -> Result<WatchOnlyWallet, WalletError> {
+        serde_json::from_value(self.entry(name)?.clone())
+            .map_err(|e| WalletError::WalletStore(format!("wallet {name:?} has no usable watch-only key material: {e}")))
     }
 
     /// Adds (or overwrites) `name`'s key material and commits the file.
