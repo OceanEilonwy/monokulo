@@ -124,23 +124,6 @@ where
     Err(last_err.expect("attempts is always >= 1"))
 }
 
-/// The stagenet merchant fixture's watch-only key material - same shape
-/// `e2e_stagenet_connect_flow.rs::load_merchant_watch_only_wallet` reads,
-/// duplicated for the same "two independent, manually-run tests" reasoning
-/// as `node_fixture` above.
-fn load_merchant_watch_only_wallet(wallets_json_path: &str) -> (String, String) {
-    let contents = std::fs::read_to_string(wallets_json_path)
-        .unwrap_or_else(|e| panic!("failed to read {wallets_json_path}: {e}"));
-    let json: Value = serde_json::from_str(&contents).unwrap_or_else(|e| panic!("failed to parse {wallets_json_path}: {e}"));
-    let view_key_hex =
-        json["merchant"]["private_view_key"].as_str().unwrap_or_else(|| panic!("merchant.private_view_key missing in {wallets_json_path}")).to_string();
-    let spend_pubkey_hex = json["merchant"]["spend_public_key"]
-        .as_str()
-        .unwrap_or_else(|| panic!("merchant.spend_public_key missing in {wallets_json_path}"))
-        .to_string();
-    (view_key_hex, spend_pubkey_hex)
-}
-
 /// Same small real-monokulo-instance harness `e2e_stagenet_connect_flow.rs`
 /// duplicates from `mock-woocommerce/src/lib.rs`'s own private test module -
 /// see that file's own doc comment on why this is duplicated rather than
@@ -211,11 +194,9 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // from the repository root, same as this file's own doc comment says.
     let ctx = stagenet_test_wallet::WalletCtx::default();
 
-    let (merchant_view_key_hex, merchant_spend_pubkey_hex) = load_merchant_watch_only_wallet(&ctx.wallets_path);
-    let spender = stagenet_test_wallet::WalletStore::load(&ctx)
-        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path))
-        .wallet("spender")
-        .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
+    let wallets = stagenet_test_wallet::WalletStore::load(&ctx).unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path));
+    let merchant = wallets.watch_only_wallet("merchant").unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
+    let spender = wallets.wallet("spender").unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 
     // One real daemon client, used sequentially for everything - see
     // `e2e_stagenet_connect_flow.rs::real_stagenet_connect_flow_pays_a_real_order_end_to_end`'s
@@ -271,8 +252,8 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .json(&json!({
             "platform": "custom",
             "site_url": "https://e2e-threshold.example.com",
-            "view_key_hex": merchant_view_key_hex,
-            "spend_pubkey_hex": merchant_spend_pubkey_hex,
+            "view_key_hex": merchant.private_view_key_hex,
+            "spend_pubkey_hex": merchant.spend_public_key_hex,
             "network": "stagenet",
             "allowed_origins": [],
             "confirmations_required": TENANT_DEFAULT_CONFIRMATIONS_REQUIRED,
