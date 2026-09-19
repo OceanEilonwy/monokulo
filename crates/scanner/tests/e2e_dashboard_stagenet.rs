@@ -128,6 +128,15 @@ async fn body_json(response: axum::response::Response) -> Value {
 #[tokio::test]
 #[ignore]
 async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_received() {
+    // monokulo's `signup.mode` now defaults to `"invite_only"` (added after
+    // this test was written - see `e2e_harness.rs`'s own identical fix for
+    // its sibling POS suite) - without this, the plain `/dashboard/signup`
+    // call below gets silently rejected (a re-rendered `200` form, not the
+    // `302` it asserts on) instead of creating the account. `settings::get`
+    // resolves this env var live on every call, so setting it here before
+    // the signup request is enough.
+    std::env::set_var("MONOKULO_SIGNUP_MODE", "public");
+
     // ---- load the same real fixture + reusable wallet fixtures e2e_stagenet.rs uses ----
     use support::e2e_fixture;
 
@@ -250,6 +259,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
                     ("view_key_hex", e2e_fixture::WALLET_PRIVATE_VIEW_KEY),
                     ("spend_pubkey_hex", e2e_fixture::WALLET_PUBLIC_SPEND_KEY),
                     ("network", "stagenet"),
+                    ("base_currency", "XMR"),
                     ("allowed_origins", ""),
                 ])))
                 .unwrap(),
