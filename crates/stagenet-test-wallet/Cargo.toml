@@ -41,7 +41,25 @@ zeroize = { version = "1.9.0", features = ["derive"] }
 # the same reason crates/scanner/Cargo.toml has its own comment on this) and,
 # with the "time" feature, by `send_payment`'s own built-in retry backoff.
 tokio = { version = "1.53.1", features = ["rt-multi-thread", "macros", "time"] }
+# Real seed-phrase support for `wallet add --seed`: both crates are, as of
+# this writing, empty placeholder stubs on crates.io (0.0.1, their own
+# README says "pending publication until monero-wallet is published" - true
+# now, but not yet acted on) - the actual, working implementation only
+# exists on the `develop` branch of the same author's (kayabaNerve, who also
+# publishes monero-wallet/monero-daemon-rpc/monero-oxide above) repo. A git
+# dependency, not a registry version pin, until that catches up.
+monero-seed = { git = "https://github.com/kayabaNerve/monero-wallet-util", branch = "develop", package = "monero-seed" }
+polyseed = { git = "https://github.com/kayabaNerve/monero-wallet-util", branch = "develop", package = "polyseed" }
+# Backs the `stagenet-wallet-cli` [[bin]] below: --help/usage generation and
+# `clap_complete`'s shell-completion support come for free from the same
+# derive macros, worth the dependency for a CLI meant to stick around.
+clap = { version = "4", features = ["derive"] }
+clap_complete = "4"
 
 [[bin]]
 name = "refresh-decoy-pool"
 path = "src/bin/refresh_decoy_pool.rs"
+
+[[bin]]
+name = "stagenet-wallet-cli"
+path = "src/bin/cli.rs"

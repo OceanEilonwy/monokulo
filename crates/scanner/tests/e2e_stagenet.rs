@@ -90,15 +90,10 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     use support::e2e_fixture;
     let node_url = format!("http{}://{}:{}", if e2e_fixture::NODE_SSL { "s" } else { "" }, e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT);
 
-    let wallets_json: Value = serde_json::from_str(
-        &std::fs::read_to_string(WALLETS_PATH).unwrap_or_else(|e| panic!("failed to read {WALLETS_PATH}: {e}")),
-    )
-    .unwrap_or_else(|e| panic!("failed to parse {WALLETS_PATH}: {e}"));
-    let customer_address = wallets_json["customer"]["address"].as_str().expect("customer.address missing").to_string();
-    let customer_spend_key_hex =
-        wallets_json["customer"]["private_spend_key"].as_str().expect("customer.private_spend_key missing").to_string();
-    let customer_view_key_hex =
-        wallets_json["customer"]["private_view_key"].as_str().expect("customer.private_view_key missing").to_string();
+    let spender = stagenet_test_wallet::WalletStore::load(WALLETS_PATH)
+        .unwrap_or_else(|e| panic!("failed to load {WALLETS_PATH}: {e}"))
+        .wallet("spender")
+        .unwrap_or_else(|e| panic!("failed to load the spender wallet from {WALLETS_PATH}: {e}"));
 
     // Same boot sequence as main.rs's happy path, minus the webhook loop (not
     // exercised by this test) and the bound TCP listener (the router is driven
@@ -186,9 +181,9 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     let wallet_config = stagenet_test_wallet::WalletConfig {
         node_url: &node_url,
         accept_invalid_certs: e2e_fixture::NODE_ACCEPT_SELF_SIGNED_CERTS,
-        private_spend_key_hex: &customer_spend_key_hex,
-        private_view_key_hex: &customer_view_key_hex,
-        expected_address: &customer_address,
+        private_spend_key_hex: &spender.private_spend_key_hex,
+        private_view_key_hex: &spender.private_view_key_hex,
+        expected_address: &spender.address,
         decoy_distribution_path: DECOY_DISTRIBUTION_PATH,
     };
     let tx_hash = stagenet_test_wallet::send_payment(
@@ -196,6 +191,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
         KNOWN_OUTPUTS_PATH,
         &address,
         amount_piconero,
+        None,
     )
     .await
     .unwrap_or_else(|e| panic!("\n\n{e}\n"));

@@ -18,7 +18,7 @@ flow through the actual embedded widget in a browser.
 **The only external dependency is the public stagenet node itself** - no
 wallet-rpc, no `monero-wallet-cli`, no other process. Sending a test payment
 happens by directly signing a real CLSAG + Bulletproofs+ transaction from the
-customer wallet's own private keys against outputs already known to be ours,
+spender wallet's own private keys against outputs already known to be ours,
 selecting decoys from a cached distribution snapshot, and broadcasting it over
 the node's plain RPC - see `crates/stagenet-test-wallet/src/lib.rs`'s own
 module doc comment for the full explanation (why no chain scanning, why decoys
@@ -41,21 +41,24 @@ so a full run is fast (seconds, not minutes) and doesn't depend on a large
 - **Node**: `node.monerodevs.org:38089` (public stagenet node) - configured in
   `moneropay-stagenet.toml`'s `[monero_node.stagenet]` and in
   `crates/scanner/tests/support/mod.rs`'s `e2e_fixture` constants.
-- **Faucet**: https://stagenet-faucet.xmr-tw.org/ - funded the customer wallet
+- **Faucet**: https://stagenet-faucet.xmr-tw.org/ - funded the spender wallet
   below.
-- **`stagenet-wallets.json`**: persists the keys for two wallets so the whole
-  setup is reproducible without re-funding from the faucet every time:
+- **`stagenet-wallets.json`**: persists the keys for every named wallet the
+  suites need, loaded through `stagenet-test-wallet::WalletStore` (never
+  parsed by hand anymore - see below):
   - `merchant` - the tenant's watch-only wallet, bootstrapped into
     `moneropay-stagenet.toml`. moneropay only ever needs its view key + spend
     public key (never the spend key), so that's all that's configured there.
-  - `customer` - an ordinary wallet that received faucet funds and is used to
-    *send* test payments to orders, via `private_spend_key`/`private_view_key`
-    read directly by the e2e tests. Never given to moneropay - it plays the
-    role of "the person paying an invoice."
+  - `spender` - an ordinary wallet that received faucet funds and is used to
+    *send* test payments to orders, via its private spend/view keys. Never
+    given to moneropay - it plays the role of "the person paying an invoice."
+    (Renamed from `customer` once `stagenet-test-wallet` grew a
+    general-purpose wallet store/CLI rather than remaining this one suite's
+    private fixture.)
 
   This file contains real (if worthless - stagenet has no exchange value)
   private keys. Treat it like any other credentials file.
-- **`stagenet-known-outputs.json`**: the customer wallet's ledger - every
+- **`stagenet-known-outputs.json`**: the spender wallet's ledger - every
   output it's ever known to control (original faucet payouts, plus every test
   run's own change output), each with its spent/unspent status and, once
   resolved, its height and raw serialized bytes. `crates/stagenet-test-wallet`
@@ -68,6 +71,47 @@ so a full run is fast (seconds, not minutes) and doesn't depend on a large
   output distribution, refreshed periodically via `stagenet-test-wallet`'s own
   `refresh-decoy-pool` bin (see that crate's doc comment) rather than fetched
   live on every send - the main reason these tests are fast.
+
+## Inspecting/driving the spender wallet by hand
+
+`stagenet-test-wallet` ships a general CLI over the same `WalletStore`/
+`StagenetTestWallet` the suites use as a library - useful for checking on the
+fixture between runs or topping up the pool of spendable outputs, without
+writing a one-off script:
+
+```sh
+cargo run -p stagenet-test-wallet --bin stagenet-wallet-cli -- --help
+
+# check what's there
+cargo run -p stagenet-test-wallet --bin stagenet-wallet-cli -- address
+cargo run -p stagenet-test-wallet --bin stagenet-wallet-cli -- balance
+
+# a real, tiny stagenet payment
+cargo run -p stagenet-test-wallet --bin stagenet-wallet-cli -- send <address> <piconero>
+
+# split the spendable balance into 4 smaller, independently-aged outputs -
+# run this ahead of a test session (each piece still needs its own
+# SPENDABLE_AGE confirmations, ~20 minutes, before it matures), not inline
+# in CI
+cargo run -p stagenet-test-wallet --bin stagenet-wallet-cli -- split 4
+
+# a real payment that also splits its own change into pieces, so ordinary
+# test traffic keeps the pool topped up for free
+cargo run -p stagenet-test-wallet --bin stagenet-wallet-cli -- send <address> <piconero> --split 3
+
+# record an output this wallet received but didn't send itself (e.g. a
+# fresh faucet payout)
+cargo run -p stagenet-test-wallet --bin stagenet-wallet-cli -- output add <txid>
+
+# import a wallet from a real seed phrase (16-word Polyseed or 24/25-word
+# legacy Electrum-style) under a new name
+cargo run -p stagenet-test-wallet --bin stagenet-wallet-cli -- wallet add <name> --seed "<phrase>"
+```
+
+Every subcommand defaults to acting as the `spender` wallet against the
+standard `e2e/*` fixture paths above (`--wallet`/`--wallets-path`/
+`--ledger-path`/`--decoy-distribution-path`/`--node-url` override any of
+that). Shell completions: `stagenet-wallet-cli completions <bash|zsh|fish|...>`.
 
 ## One-time setup
 
@@ -86,7 +130,7 @@ cargo test --test e2e_stagenet -- --ignored --nocapture
 This builds the scanner router in-process straight from `moneropay-stagenet.toml`
 (via `tower::ServiceExt::oneshot` - no bound port, no separate `scanner`
 process needed), creates a real order against it, pays that order with a real
-transaction sent from the customer wallet, then drives the real scanner
+transaction sent from the spender wallet, then drives the real scanner
 (`run_scan_tick`, the same function `main.rs`'s production loop calls on a timer)
 and polls the order's status until it reports `paid` (or a terminal
 confirming/overpaid state) - failing the test otherwise.
@@ -143,9 +187,10 @@ If `stagenet-known-outputs.json`'s tracked outputs ever run dry (everything
 spent, and change too small/young to help):
 
 1. Open https://stagenet-faucet.xmr-tw.org/ and send funds to
-   `stagenet-wallets.json`'s existing `customer.address` (no need to generate a
+   `stagenet-wallets.json`'s existing `spender.address` (no need to generate a
    new wallet - the same address can receive any number of faucet payouts).
-2. Add a new entry for the faucet's txid to `stagenet-known-outputs.json`
-   (`txid`, `amount_piconero`, `spent: false`, `height`/`serialized_output_hex`
+2. Record the faucet's txid: `cargo run -p stagenet-test-wallet --bin
+   stagenet-wallet-cli -- output add <txid>` (or add the entry by hand -
+   `txid`, `amount_piconero`, `spent: false`, `height`/`serialized_output_hex`
    left `null` until the next run resolves them - see `Ledger`'s own doc
    comment in `crates/stagenet-test-wallet/src/lib.rs`).
