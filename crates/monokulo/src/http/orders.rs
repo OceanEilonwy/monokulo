@@ -20,6 +20,8 @@
 //! id must learn nothing beyond what they'd learn guessing a nonexistent
 //! one.
 
+use std::collections::HashMap;
+
 use axum::extract::{Form, Path, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
@@ -1160,6 +1162,123 @@ pub async fn delete_confirmation_threshold(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     state.db.lock().unwrap().delete_confirmation_threshold(&row.id, &threshold_id).ok();
+    redirect_302(&format!("/dashboard/connections/{id}"))
+}
+
+/// `POST /dashboard/connections/{id}/settings/confirmation-thresholds/save` -
+/// the dashboard's condensed "Confirmation Thresholds" table posts here as
+/// one form with one Save button, rather than the default-update,
+/// add-threshold and per-row-delete forms each posting to their own route
+/// (those three still exist unchanged above, for API/e2e compatibility -
+/// `crates/mock-woocommerce/tests/e2e_stagenet_confirmation_threshold.rs`
+/// posts to `create_confirmation_threshold` directly). Fields arrive as a
+/// loose `HashMap` rather than a typed form because the delete checkboxes'
+/// field names are dynamic, one per existing threshold id
+/// (`delete_{threshold.id}`), which a fixed `#[derive(Deserialize)]` struct
+/// can't express. Order of operations: update the default, then delete
+/// checked rows, then (space permitting) add the new row - so deleting a
+/// row and immediately reusing its amount for the new row in the same Save
+/// works.
+pub async fn save_confirmation_thresholds(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Form(raw): Form<HashMap<String, String>>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let confirmations_required: u64 =
+        match raw.get("confirmations_required").map(|s| s.trim()).unwrap_or("").parse() {
+            Ok(n) => n,
+            Err(_) => {
+                return render_store_detail_page(&state, row, user.is_admin, None, Some("Enter a whole number of confirmations.".to_string()))
+                    .await;
+            }
+        };
+
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if let Err(e) = state.engine_client.set_confirmations_required(&sk, confirmations_required).await {
+        let message = match e {
+            EngineClientError::EngineError { status, message } if status == reqwest::StatusCode::BAD_REQUEST => message,
+            _ => "Something went wrong. Please try again.".to_string(),
+        };
+        return render_store_detail_page(&state, row, user.is_admin, None, Some(message)).await;
+    }
+
+    let existing = state.db.lock().unwrap().list_confirmation_thresholds(&row.id).unwrap_or_default();
+    for threshold in &existing {
+        if raw.contains_key(&format!("delete_{}", threshold.id)) {
+            state.db.lock().unwrap().delete_confirmation_threshold(&row.id, &threshold.id).ok();
+        }
+    }
+
+    let new_unit_amount = raw.get("new_unit_amount").map(|s| s.trim()).unwrap_or("");
+    let new_confirmations_required = raw.get("new_confirmations_required").map(|s| s.trim()).unwrap_or("");
+    if !new_unit_amount.is_empty() || !new_confirmations_required.is_empty() {
+        let new_confirmations_required: u64 = match new_confirmations_required.parse() {
+            Ok(n) => n,
+            Err(_) => {
+                return render_store_detail_page(
+                    &state,
+                    row,
+                    user.is_admin,
+                    None,
+                    Some("Enter a whole number of confirmations for the new threshold.".to_string()),
+                )
+                .await;
+            }
+        };
+        match new_unit_amount.parse::<f64>() {
+            Ok(n) if n.is_finite() && n >= 0.0 => {}
+            _ => {
+                return render_store_detail_page(
+                    &state,
+                    row,
+                    user.is_admin,
+                    None,
+                    Some("Enter a non-negative amount for the new threshold.".to_string()),
+                )
+                .await;
+            }
+        }
+
+        let count = state.db.lock().unwrap().count_confirmation_thresholds(&row.id).unwrap_or(0);
+        if count >= 5 {
+            return render_store_detail_page(
+                &state,
+                row,
+                user.is_admin,
+                None,
+                Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()),
+            )
+            .await;
+        }
+
+        let threshold_id = uuid::Uuid::new_v4().to_string();
+        let create_result = state.db.lock().unwrap().create_confirmation_threshold(
+            &threshold_id,
+            &row.id,
+            new_unit_amount,
+            new_confirmations_required,
+            crate::now_unix(),
+        );
+        if let Err(e) = create_result {
+            let message = if e.is_unique_violation() {
+                format!("A threshold for {new_unit_amount} already exists.")
+            } else {
+                "Something went wrong. Please try again.".to_string()
+            };
+            return render_store_detail_page(&state, row, user.is_admin, None, Some(message)).await;
+        }
+    }
+
     redirect_302(&format!("/dashboard/connections/{id}"))
 }
 
@@ -2325,7 +2444,7 @@ mod tests {
     #[tokio::test]
     async fn adding_and_deleting_a_custom_confirmation_threshold_round_trips_through_the_real_page() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token =
             signed_up_and_logged_in_session_token(&router, "threshold-add-delete@example.com", "correct horse battery staple").await;
@@ -2342,6 +2461,8 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
 
+        let threshold_id = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap()[0].id.clone();
+
         let page = router
             .clone()
             .oneshot(
@@ -2356,24 +2477,31 @@ mod tests {
             .unwrap();
         let html = body_text(page).await;
         assert!(html.contains("50.00"), "expected the new threshold's amount shown, got: {html}");
-        assert!(html.contains(r#"action="/dashboard/connections/{connection_id}/settings/confirmation-thresholds/"#.replace("{connection_id}", &connection_id).as_str()), "expected a real delete form, got: {html}");
+        assert!(
+            html.contains(&format!("name=\"delete_{threshold_id}\"")),
+            "expected a real delete checkbox for the new threshold in the condensed table, got: {html}"
+        );
 
-        let marker = format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds/");
-        let start = html.find(&marker).unwrap() + marker.len();
-        let rest = &html[start..];
-        let end = rest.find("/delete").unwrap();
-        let threshold_id = rest[..end].to_string();
-
+        // The condensed table's own single Save button posts every row's
+        // state (default + delete checkboxes + a possible new row) to one
+        // route, not a per-row delete form - see `save_confirmation_thresholds`'s
+        // own doc comment.
+        let delete_field = format!("delete_{threshold_id}");
         let delete_response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds/{threshold_id}/delete"),
+                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds/save"),
                 &session_token,
-                &[],
+                &[("confirmations_required", "10"), (delete_field.as_str(), "on")],
             ))
             .await
             .unwrap();
         assert_eq!(delete_response.status(), StatusCode::FOUND);
+        assert_eq!(
+            state.db.lock().unwrap().count_confirmation_thresholds(&connection_id).unwrap(),
+            0,
+            "expected the threshold to be gone"
+        );
 
         let after = router
             .oneshot(
@@ -2387,7 +2515,10 @@ mod tests {
             .await
             .unwrap();
         let html = body_text(after).await;
-        assert!(html.contains("No custom thresholds yet."), "expected the threshold to be gone, got: {html}");
+        assert!(
+            !html.contains("name=\"delete_"),
+            "expected no delete checkboxes once every custom threshold is gone, got: {html}"
+        );
     }
 
     #[tokio::test]
@@ -2670,8 +2801,11 @@ mod tests {
             .await
             .unwrap();
         let html = body_text(page).await;
-        assert!(html.contains("Default (fallback)"), "expected the default threshold's own heading, got: {html}");
-        assert!(!html.contains("confirmation-thresholds/"), "a fresh store has no custom thresholds, so no delete form should exist yet, got: {html}");
+        assert!(html.contains("Default (fallback)"), "expected the default threshold's own row, got: {html}");
+        assert!(
+            !html.contains("name=\"delete_"),
+            "a fresh store has no custom thresholds, so no delete checkbox should exist yet, got: {html}"
+        );
     }
 
     #[tokio::test]
