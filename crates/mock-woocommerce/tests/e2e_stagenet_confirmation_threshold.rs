@@ -198,14 +198,20 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     let merchant = wallets.wallet("merchant").unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
     let spender = wallets.wallet("spender").unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 
-    // One real daemon client, used sequentially for everything - see
-    // `e2e_stagenet_connect_flow.rs::real_stagenet_connect_flow_pays_a_real_order_end_to_end`'s
-    // own doc comment on why this specific public node needs that.
-    let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
-        RpcDaemonClient::new(node_fixture::HOST, node_fixture::PORT, node_fixture::SSL, node_fixture::ACCEPT_SELF_SIGNED_CERTS)
-            .expect("failed to build daemon RPC client"),
-    );
-    require_daemon_reachable(daemon.as_ref(), node_fixture::HOST, node_fixture::PORT).await;
+    // Deliberately not one daemon client held for the test's whole duration - see
+    // `e2e_stagenet_connect_flow.rs`'s own identical fix/comment: this specific
+    // public node enforces a real concurrent-connections-per-IP limit, and
+    // `ResolvedWallet::connect`/`send_payment` below open their own independent
+    // connection for the balance check and the real send, so this reachability
+    // check's client is scoped to just this block. A fresh one is built again,
+    // below, only once it's actually needed for the post-payment scan-tick polling.
+    {
+        let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
+            RpcDaemonClient::new(node_fixture::HOST, node_fixture::PORT, node_fixture::SSL, node_fixture::ACCEPT_SELF_SIGNED_CERTS)
+                .expect("failed to build daemon RPC client"),
+        );
+        require_daemon_reachable(daemon.as_ref(), node_fixture::HOST, node_fixture::PORT).await;
+    }
 
     let balance_wallet = retry(5, Duration::from_secs(5), || spender.connect()).await.unwrap_or_else(|e| panic!("\n\n{e}\n"));
     const MIN_SPENDABLE_PICONERO: u64 = 10_000_000_000; // 0.01 XMR.
@@ -270,7 +276,11 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
 
     // The real point of this test: one real custom confirmation threshold,
     // added through the real dashboard form (`http::orders::create_confirmation_threshold`),
-    // scoped to this exact store.
+    // scoped to this exact store. `client` is a plain `reqwest::Client::new()`,
+    // which follows redirects by default - so a real success here lands as a
+    // 200 on the store detail page the handler's own 302 points at, not the
+    // 302 itself; checking the landing page actually shows the new row is a
+    // stronger proof of success than a raw status code would be anyway.
     let threshold_response = client
         .post(format!("{monokulo_base_url}/dashboard/connections/{connection_id}/settings/confirmation-thresholds"))
         .header("authorization", &bearer)
@@ -278,7 +288,12 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .send()
         .await
         .unwrap();
-    assert_eq!(threshold_response.status(), reqwest::StatusCode::FOUND, "expected the real threshold to be created and redirect back to the store page");
+    assert!(threshold_response.status().is_success(), "expected the real threshold form's landing page, got: {}", threshold_response.status());
+    let threshold_html = threshold_response.text().await.unwrap();
+    assert!(
+        threshold_html.contains(&format!("<td>{THRESHOLD_UNIT_AMOUNT}</td>")) && threshold_html.contains(&format!("<td>{THRESHOLD_CONFIRMATIONS_REQUIRED}</td>")),
+        "expected the real new threshold row on the landing page, got: {threshold_html}"
+    );
     println!("created a real confirmation threshold: {THRESHOLD_UNIT_AMOUNT} XMR -> {THRESHOLD_CONFIRMATIONS_REQUIRED} confirmations");
 
     // A real order, priced above the threshold's own unit_amount, through
@@ -340,6 +355,13 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);
     println!("sent real stagenet payment, tx {tx_hash_hex}");
+
+    // A fresh connection, built only now - see the earlier reachability check's
+    // own comment on why this isn't kept alive for the test's whole duration.
+    let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
+        RpcDaemonClient::new(node_fixture::HOST, node_fixture::PORT, node_fixture::SSL, node_fixture::ACCEPT_SELF_SIGNED_CERTS)
+            .expect("failed to build daemon RPC client"),
+    );
 
     // A generous deadline: this test needs a real block (~2 minutes on
     // stagenet, typically), not just mempool detection - deliberately

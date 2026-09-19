@@ -245,28 +245,30 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     let merchant = wallets.wallet("merchant").unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
     let spender = wallets.wallet("spender").unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 
-    // A single `RpcDaemonClient`, used for everything real-network-related in this
-    // test (reachability check, wallet connect/send, and the post-payment scan-tick
-    // polling below) - deliberately not split across multiple independent clients,
-    // and deliberately not run concurrently with any other daemon client (see
-    // `scanner_test_support::TestEngineHandle::run_scan_tick_now`'s own doc comment):
-    // observed directly while building this test, this specific public node produced
-    // real, consistent connection failures once a *second*, independently-ticking
-    // real daemon client (the engine's own background scan-tick loop, driven by a
-    // real `MoneroDaemonClient` via an earlier version of this test) ran concurrently
-    // with this test's own foreground daemon use - most likely a modest
-    // concurrent-connections-per-IP limit on the node's own end. One client, used
-    // sequentially, avoided the problem entirely.
-    let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
-        RpcDaemonClient::new(
-            node_fixture::HOST,
-            node_fixture::PORT,
-            node_fixture::SSL,
-            node_fixture::ACCEPT_SELF_SIGNED_CERTS,
-        )
-        .expect("failed to build daemon RPC client"),
-    );
-    require_daemon_reachable(daemon.as_ref(), node_fixture::HOST, node_fixture::PORT).await;
+    // Deliberately not one `RpcDaemonClient` held for the test's whole duration -
+    // this specific public node enforces a real, consistent (not flaky) modest
+    // concurrent-connections-per-IP limit (observed directly while building this
+    // test, with an earlier version whose background scan-tick loop drove a second,
+    // independently-ticking daemon client concurrently with this test's own
+    // foreground use - see `TestEngineHandle::run_scan_tick_now`'s own doc comment).
+    // `stagenet_test_wallet::ResolvedWallet::connect`/`send_payment` below open
+    // their *own* independent connection for the balance check and the real send -
+    // so this reachability check's own client is scoped to just this block and
+    // dropped immediately after, rather than kept alive (and pooled) across that
+    // window too. A fresh one is built again, below, only once it's actually needed
+    // for the post-payment scan-tick polling.
+    {
+        let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
+            RpcDaemonClient::new(
+                node_fixture::HOST,
+                node_fixture::PORT,
+                node_fixture::SSL,
+                node_fixture::ACCEPT_SELF_SIGNED_CERTS,
+            )
+            .expect("failed to build daemon RPC client"),
+        );
+        require_daemon_reachable(daemon.as_ref(), node_fixture::HOST, node_fixture::PORT).await;
+    }
 
     // A cheap pre-flight balance check before this test spends any time on
     // the connect flow/order/engine setup that follows. A fund-starved
@@ -404,6 +406,17 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // seconds), or something is actually wrong and waiting longer just delays
     // finding out. Rich per-tick diagnostics below are what actually answer "what's
     // wrong" - the deadline itself is just a backstop.
+    // A fresh connection, built only now - see the earlier reachability check's
+    // own comment on why this isn't kept alive for the test's whole duration.
+    let daemon: Arc<dyn MoneroDaemonClient> = Arc::new(
+        RpcDaemonClient::new(
+            node_fixture::HOST,
+            node_fixture::PORT,
+            node_fixture::SSL,
+            node_fixture::ACCEPT_SELF_SIGNED_CERTS,
+        )
+        .expect("failed to build daemon RPC client"),
+    );
     let deadline = tokio::time::Instant::now() + Duration::from_secs(180);
     let mut tick = 0u32;
     let matched = loop {

@@ -292,6 +292,27 @@ pub struct WalletCtx {
     pub ledger_path: String,
 }
 
+/// The repository's own `e2e/` directory, anchored to *this crate's* own
+/// compile-time location (`crates/stagenet-test-wallet/`) rather than
+/// whatever the process's current directory happens to be at runtime.
+/// Deliberate: `cargo test` sets a test binary's working directory to its
+/// *own package's* manifest directory - not the repository root, and not
+/// wherever `cargo test` itself was invoked from - so a caller-relative
+/// path like `"e2e/..."` or `"../e2e/..."` is only ever correct for
+/// whichever one crate happened to inspire it, and silently wrong for
+/// every other crate's tests (confirmed the hard way: this bit both
+/// `crates/scanner`'s and `crates/mock-woocommerce`'s real e2e tests,
+/// under their own documented `cargo test` invocations, before this fix).
+/// `CARGO_MANIFEST_DIR` is fixed at compile time to wherever *this* crate's
+/// `Cargo.toml` lives, regardless of which downstream crate's test
+/// ultimately calls `WalletCtx::default()` or what cwd that process has -
+/// so this is correct everywhere, always, by construction.
+macro_rules! e2e_path {
+    ($file:literal) => {
+        concat!(env!("CARGO_MANIFEST_DIR"), "/../../e2e/", $file)
+    };
+}
+
 impl Default for WalletCtx {
     /// The standard layout every real e2e suite in this repo already uses -
     /// see `e2e/README.md`.
@@ -299,9 +320,9 @@ impl Default for WalletCtx {
         Self {
             node_url: "http://node.monerodevs.org:38089".to_string(),
             accept_invalid_certs: true,
-            wallets_path: "e2e/stagenet-wallets.json".to_string(),
-            decoy_distribution_path: "e2e/stagenet-decoy-distribution.json".to_string(),
-            ledger_path: "e2e/stagenet-known-outputs.json".to_string(),
+            wallets_path: e2e_path!("stagenet-wallets.json").to_string(),
+            decoy_distribution_path: e2e_path!("stagenet-decoy-distribution.json").to_string(),
+            ledger_path: e2e_path!("stagenet-known-outputs.json").to_string(),
         }
     }
 }
