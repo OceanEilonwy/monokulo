@@ -89,6 +89,15 @@ pub struct PosCreateOrderRequest {
     /// keypad bug or a hand-crafted request is not trusted to have gotten
     /// this right.
     pub amount: String,
+    /// The terminal's own optional quick note (typically a customer's
+    /// name) - stored as this order's real `merchant_order_id`, the same
+    /// field `http::orders`'s dashboard form and `http::pay`'s public API
+    /// already write, so it shows up wherever any other order's
+    /// `merchant_order_id` does (the order detail page, `OrderView`).
+    /// Trimmed and treated as absent if empty, same convention
+    /// `http::orders::create_order`'s own form field already follows.
+    #[serde(default)]
+    pub merchant_order_id: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -111,6 +120,7 @@ pub struct PosCreateOrderResponse {
     pub currency: String,
     pub confirmations_required: u64,
     pub expires_at: i64,
+    pub merchant_order_id: Option<String>,
 }
 
 /// `POST /dashboard/connections/{id}/pos/orders` - creates a real order,
@@ -136,6 +146,7 @@ pub async fn create_order(
         return ApiError::BadRequest("Enter an amount.".to_string()).into_response();
     }
     let currency = row.base_currency.clone();
+    let merchant_order_id = req.merchant_order_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
 
     let (piconero_per_unit, provider) = match state.exchange_rate.piconero_per_unit_for(&row, &currency).await {
         Ok(Some(result)) => result,
@@ -163,7 +174,11 @@ pub async fn create_order(
             Err(message) => return ApiError::BadRequest(message).into_response(),
         };
 
-    match state.engine_client.create_order(&row.tenant_public_key, xmr_amount_piconero, None, Some(resolution.confirmations_required)).await {
+    match state
+        .engine_client
+        .create_order(&row.tenant_public_key, xmr_amount_piconero, merchant_order_id.clone(), Some(resolution.confirmations_required))
+        .await
+    {
         Ok(order) => {
             if let Err(e) = state.db.lock().unwrap().create_order_currency_metadata(
                 &row.id,
@@ -202,6 +217,7 @@ pub async fn create_order(
                 currency,
                 confirmations_required: resolution.confirmations_required,
                 expires_at: order.expires_at,
+                merchant_order_id,
             })
             .into_response()
         }
@@ -543,6 +559,82 @@ mod tests {
         assert_eq!(orders_list.status(), StatusCode::OK);
         let html = body_text(orders_list).await;
         assert!(html.contains(&payment_id), "expected the POS-created order to show up in the dashboard's own orders list");
+    }
+
+    #[tokio::test]
+    async fn creating_a_pos_order_with_a_note_records_it_as_the_real_merchant_order_id() {
+        // Spec points 5-6: the terminal's own quick note (typically a
+        // customer's name) is the same `merchant_order_id` every other
+        // order-creation surface in this crate already writes - proven here
+        // by checking it shows up on the real order detail page, the same
+        // place `http::pay`'s own equivalent test checks.
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(&router, "pos-note@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::from(serde_json::json!({ "amount": "1.0", "merchant_order_id": "Jane Doe" }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert_eq!(body["merchant_order_id"], "Jane Doe");
+        let payment_id = body["payment_id"].as_str().unwrap().to_string();
+
+        let detail_response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{id}/orders/{payment_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(detail_response.status(), StatusCode::OK);
+        let html = body_text(detail_response).await;
+        assert!(html.contains("Jane Doe"), "expected the real note shown as this order's merchant order id, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn creating_a_pos_order_with_a_blank_note_records_no_merchant_order_id() {
+        // A note field left empty (or whitespace-only - a merchant tapping
+        // it and tapping away) must not record a literal empty-string
+        // `merchant_order_id` - same trim-to-`None` convention
+        // `http::orders::create_order`'s own form field already follows.
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token = signed_up_and_logged_in_session_token(&router, "pos-blank-note@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .header("content-type", "application/json")
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::from(serde_json::json!({ "amount": "1.0", "merchant_order_id": "   " }).to_string()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = body_json(response).await;
+        assert!(body["merchant_order_id"].is_null(), "a whitespace-only note must not become a stored merchant_order_id, got: {body}");
     }
 
     #[tokio::test]

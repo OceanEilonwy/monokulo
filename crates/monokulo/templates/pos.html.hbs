@@ -2,7 +2,7 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <title>POS - {{display_name}} - Monokulo</title>
 {{> styles}}
 <style>
@@ -11,50 +11,158 @@
    see `http::pos`'s module doc comment). Square-Terminal-like: one big
    amount readout, a numeric keypad with no decimal key (digits shift in
    from the right, the decimal point is fixed by the store's own currency),
-   and a full-bleed payment/tick overlay once a sale is charged. */
-body { padding: 1rem; }
-.pos-wrap { max-width: 480px; margin: 0 auto; }
-.pos-header { display: flex; align-items: baseline; justify-content: space-between; gap: 0.6em; }
-.pos-header h1 { margin: 0.4em 0 0.2em; border-bottom: none; font-size: 1.3rem; }
-.pos-currency { font-weight: 700; color: var(--muted); }
+   and a full-bleed payment/tick overlay once a sale is charged.
 
+   Deliberately full-screen (no nav bar, no store title) - this is meant to
+   be left open on a mobile/iPad device at the counter all day, not
+   navigated away from; every screen pixel goes to the amount, the keypad
+   and the payment state, not to chrome nobody reads twice. The only chrome
+   that remains - a small back link and the system status dot - sits in a
+   slim, low-opacity corner bar (`.pos-topbar`) that never competes with the
+   keypad for attention. Sized primarily for a phone or iPad held/propped at
+   the counter (both portrait and landscape), constrained to a centered
+   column on wider desktop screens so it stays usable there too without
+   trying to be its primary target. */
+html, body { height: 100%; }
+body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: contain; }
+
+.pos-topbar {
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: calc(env(safe-area-inset-top, 0px) + 0.5rem) calc(env(safe-area-inset-right, 0px) + 0.7rem) 0.3rem calc(env(safe-area-inset-left, 0px) + 0.7rem);
+  z-index: 20;
+  pointer-events: none;
+}
+.pos-topbar > * { pointer-events: auto; }
+.pos-back {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 2em;
+  height: 2em;
+  font-size: 1.3rem;
+  line-height: 1;
+  color: var(--muted);
+  text-decoration: none;
+  opacity: 0.6;
+}
+.pos-back:hover, .pos-back:active { opacity: 1; color: var(--ink); }
+.pos-status-link {
+  display: inline-flex;
+  align-items: center;
+  padding: 0.5em;
+  opacity: 0.65;
+  text-decoration: none;
+}
+.pos-status-link:hover, .pos-status-link:active { opacity: 1; }
+.pos-status-link .status-dot { margin-left: 0; }
+
+.pos-wrap {
+  max-width: 480px;
+  margin: 0 auto;
+  min-height: 100dvh;
+  min-height: 100vh;
+  box-sizing: border-box;
+  display: flex;
+  flex-direction: column;
+  padding: calc(env(safe-area-inset-top, 0px) + 2.6rem) calc(env(safe-area-inset-right, 0px) + 0.9rem) calc(env(safe-area-inset-bottom, 0px) + 0.9rem) calc(env(safe-area-inset-left, 0px) + 0.9rem);
+}
+@media (min-width: 640px) { .pos-wrap { max-width: 540px; } }
+
+.pos-screen { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .pos-screen-hidden { display: none !important; }
 
+/* Spec point 4: no currency anywhere on this screen - only the charge
+   screen below shows one, next to the real amount being requested. */
 .amount-display {
-  font-size: 2.6rem;
+  font-size: clamp(2.2rem, 9vw, 3rem);
   font-weight: 700;
   text-align: right;
   border: 2px solid var(--line);
   background: var(--paper-raised);
-  padding: 0.4em 0.5em;
-  margin: 0.8em 0;
+  padding: 0.35em 0.5em;
+  margin-bottom: 0.7em;
   overflow-x: auto;
   white-space: nowrap;
+  flex: none;
 }
 
 .keypad {
   display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 0.5em;
+  /* Key size is a real square driven by JS (`updateKeypadSize` below), not
+     plain `1fr` columns - a `1fr`/`aspect-ratio` grid only ever respects
+     available *width*, so on a short or landscape viewport (an iPad on its
+     side, a phone with the on-screen keyboard's own space already gone) the
+     keys just kept growing until the Charge button was pushed below the
+     fold, reachable only by scrolling mid-sale. `--key-size` is instead
+     computed from whichever of the grid's own available width/height is
+     tighter, so the keypad always shrinks to fit the actual screen. `72px`
+     is only the pre-JS fallback for the one frame before that first runs. */
+  grid-template-columns: repeat(3, var(--key-size, 72px));
+  grid-auto-rows: var(--key-size, 72px);
+  gap: 0.55em;
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  justify-content: center;
+  align-content: center;
 }
 .key {
-  font-size: 1.5rem;
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-family: inherit;
+  font-size: calc(var(--key-size, 72px) * 0.4);
   font-weight: 700;
-  padding: 0.7em 0;
+  color: var(--ink);
   border: 2px solid var(--line);
   background: var(--paper-raised);
   cursor: pointer;
+  -webkit-tap-highlight-color: transparent;
 }
 .key:active { background: var(--accent); color: var(--accent-ink); }
-.key-clear, .key-backspace { font-size: 1.1rem; }
+/* Clear/backspace read at the same visual weight as every digit key now -
+   previously much smaller text (spec point 3) than the digits around them. */
+/* A fixed size tied to `--key-size` (same 0.4 ratio the digit font-size
+   uses), not a percentage - percentage width/height on an inline `<svg>`
+   inside a flex container renders unreliably (observed directly). `flex:
+   none` is also required, not cosmetic: without it, `.key`'s own
+   `justify-content: center` flex layout applies its default
+   `flex-shrink: 1`/auto min-width to the svg and squeezes its *width*
+   (only the width - height was unaffected) down to a few pixels even
+   though there was plenty of room and an explicit width was set -
+   confirmed directly by toggling this one property with nothing else
+   changed. */
+.key-backspace svg { display: block; flex: none; width: calc(var(--key-size, 72px) * 0.4); height: calc(var(--key-size, 72px) * 0.4); }
+.key-backspace svg, .key-backspace svg * { stroke: currentColor; }
+
+.note-input-row { flex: none; margin: 0.7em 0 0; }
+.note-input-row input {
+  width: 100%;
+  box-sizing: border-box;
+  font-family: inherit;
+  font-size: 1rem;
+  padding: 0.6em 0.7em;
+  border: 2px solid var(--line);
+  background: #fff;
+  color: var(--ink);
+}
 
 .charge-btn, .secondary-btn {
   display: block;
   width: 100%;
+  flex: none;
   font-size: 1.2rem;
   font-weight: 700;
   padding: 0.7em 0;
-  margin-top: 0.8em;
+  margin-top: 0.7em;
   border: 2px solid var(--line);
   background: var(--accent);
   color: var(--accent-ink);
@@ -64,8 +172,9 @@ body { padding: 1rem; }
 .secondary-btn { background: var(--paper-raised); color: var(--ink); }
 
 #pos-error:empty { display: none; }
-#pos-error { color: var(--error); font-weight: 700; }
+#pos-error { flex: none; color: var(--error); font-weight: 700; margin: 0.6em 0 0; }
 
+#payment-screen { justify-content: center; }
 .payment-panel {
   border: 2px solid var(--line);
   background: var(--paper-raised);
@@ -114,6 +223,12 @@ body { padding: 1rem; }
 }
 .tick-overlay.is-error .tick-mark { color: var(--error); }
 .tick-label { font-size: 1.3rem; font-weight: 700; margin: 0; }
+/* Spec points 5-6: the merchant's own quick note on the order (usually a
+   customer's name), carried through as the order's real `merchant_order_id`
+   - shown here on both the plain success state and the error state, since
+   this one overlay covers both. */
+.tick-note { font-size: 1rem; color: var(--muted); margin: 0; max-width: 22em; }
+.tick-note:empty { display: none; }
 .tick-error { color: var(--error); font-weight: 700; max-width: 22em; margin: 0; }
 .tick-error:empty { display: none; }
 .tick-actions { display: flex; flex-direction: column; gap: 0.5em; width: 100%; max-width: 20em; }
@@ -160,13 +275,13 @@ body { padding: 1rem; }
 </style>
 </head>
 <body data-connection-id="{{connection_id}}" data-base-currency="{{base_currency}}" data-decimals="{{base_currency_decimals}}">
-{{> nav}}
-<div class="pos-wrap">
 
-<div class="pos-header">
-<h1>{{display_name}}</h1>
-<div class="pos-currency">{{base_currency}}</div>
+<div class="pos-topbar">
+<a href="/dashboard/connections/{{connection_id}}" class="pos-back" aria-label="Back to dashboard" title="Back to dashboard">&larr;</a>
+<a href="/status" class="pos-status-link" id="pos-status-link" title="checking..."><span id="pos-status-dot" class="status-dot status-dot-unknown"></span></a>
 </div>
+
+<div class="pos-wrap">
 
 <div id="keypad-screen" class="pos-screen">
 <div class="amount-display" id="amount-display">0.00</div>
@@ -180,12 +295,20 @@ body { padding: 1rem; }
 <button type="button" class="key" data-digit="7">7</button>
 <button type="button" class="key" data-digit="8">8</button>
 <button type="button" class="key" data-digit="9">9</button>
-<button type="button" class="key key-clear" id="key-clear">C</button>
+<button type="button" class="key key-clear" id="key-clear" aria-label="Clear">C</button>
 <button type="button" class="key" data-digit="0">0</button>
-<button type="button" class="key key-backspace" id="key-backspace" aria-label="Backspace">&larr;</button>
+<button type="button" class="key key-backspace" id="key-backspace" aria-label="Backspace">
+<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
+<path d="M8 5 L2 12 L8 19 H21 A1 1 0 0 0 22 18 V6 A1 1 0 0 0 21 5 Z" fill="none" stroke-width="2" stroke-linejoin="round"></path>
+<path d="M12.2 9.3 L17.5 14.7 M17.5 9.3 L12.2 14.7" stroke-width="2" stroke-linecap="round"></path>
+</svg>
+</button>
+</div>
+<div class="note-input-row">
+<input type="text" id="note-input" placeholder="Note (optional) — e.g. a name" maxlength="120" autocomplete="off">
 </div>
 <button type="button" class="charge-btn" id="charge-btn" disabled>Charge</button>
-<p class="pos-note" id="pos-error"></p>
+<p id="pos-error"></p>
 </div>
 
 <div id="payment-screen" class="pos-screen pos-screen-hidden">
@@ -198,6 +321,8 @@ body { padding: 1rem; }
 </div>
 </div>
 
+</div>
+
 <div class="tick-overlay pos-screen-hidden" id="tick-overlay">
 <div class="tick-ring">
 <svg viewBox="0 0 120 120" class="ring-svg" aria-hidden="true" focusable="false">
@@ -207,6 +332,7 @@ body { padding: 1rem; }
 <div class="tick-mark" id="tick-mark">&#10003;</div>
 </div>
 <p class="tick-label" id="tick-label">Paid</p>
+<p class="tick-note" id="tick-note"></p>
 <p class="tick-error" id="tick-error"></p>
 <div class="tick-actions">
 <button type="button" class="secondary-btn pos-screen-hidden" id="background-btn">Confirm in background</button>
@@ -215,8 +341,6 @@ body { padding: 1rem; }
 </div>
 
 <div class="bg-stack" id="bg-stack"></div>
-
-</div>
 
 <noscript>
 <div class="wrap"><p class="error">This screen needs JavaScript for the live keypad, payment status and NFC tap payments. Use the plain "create an order" form on this store's own page instead.</p></div>
@@ -233,11 +357,13 @@ body { padding: 1rem; }
   var POLL_INTERVAL_MS = 2000;
   var POLL_FAILURE_LIMIT = 3;
   var RING_CIRCUMFERENCE = 2 * Math.PI * 54;
+  var MAX_NOTE_LENGTH = 120;
 
   var digits = "0";
   var amountDisplay = document.getElementById("amount-display");
   var chargeBtn = document.getElementById("charge-btn");
   var posError = document.getElementById("pos-error");
+  var noteInput = document.getElementById("note-input");
   var keypadScreen = document.getElementById("keypad-screen");
   var paymentScreen = document.getElementById("payment-screen");
   var paymentAmount = document.getElementById("payment-amount");
@@ -247,19 +373,62 @@ body { padding: 1rem; }
   var cancelBtn = document.getElementById("cancel-btn");
   var tickOverlay = document.getElementById("tick-overlay");
   var tickLabel = document.getElementById("tick-label");
+  var tickNote = document.getElementById("tick-note");
   var tickError = document.getElementById("tick-error");
   var ringProgress = document.getElementById("ring-progress");
   var backgroundBtn = document.getElementById("background-btn");
   var dismissBtn = document.getElementById("dismiss-btn");
   var bgStack = document.getElementById("bg-stack");
+  var statusDot = document.getElementById("pos-status-dot");
+  var statusLink = document.getElementById("pos-status-link");
+  var keypadEl = document.querySelector(".keypad");
 
   ringProgress.style.strokeDasharray = String(RING_CIRCUMFERENCE);
+
+  // Real square keys (spec point 2), sized to whichever of the keypad's own
+  // available width/height is tighter - not just column width - so a short
+  // or landscape viewport shrinks the keys instead of pushing the note
+  // field/Charge button off the bottom of the screen. `.keypad` itself is
+  // already the exact leftover space `flex:1`/`min-height:0` give it once
+  // the amount display, note field and Charge button have taken theirs, so
+  // its own `clientWidth`/`clientHeight` *is* the space to fit 3x4 keys
+  // into - no separate layout pass over the other elements needed.
+  function updateKeypadSize() {
+    var style = getComputedStyle(keypadEl);
+    var gap = parseFloat(style.rowGap || style.gap) || 8;
+    var byWidth = (keypadEl.clientWidth - gap * 2) / 3;
+    var byHeight = (keypadEl.clientHeight - gap * 3) / 4;
+    var size = Math.max(40, Math.floor(Math.min(byWidth, byHeight)));
+    keypadEl.style.setProperty("--key-size", size + "px");
+  }
+  window.addEventListener("resize", updateKeypadSize);
+  window.addEventListener("orientationchange", updateKeypadSize);
+
+  // Small, low-opacity corner status dot (spec point 1) - same
+  // `/status/summary` poll `_nav.html.hbs`'s own nav bar uses, just without
+  // the rest of that bar (this screen has none).
+  (function pollHealth() {
+    fetch("/status/summary").then(function (r) { return r.json(); }).then(function (data) {
+      if (data && data.healthy) {
+        statusDot.className = "status-dot status-dot-ok";
+        statusLink.title = "all systems healthy";
+      } else {
+        statusDot.className = "status-dot status-dot-error";
+        statusLink.title = "an issue was detected - see the status page";
+      }
+    }).catch(function () {
+      statusDot.className = "status-dot status-dot-unknown";
+      statusLink.title = "could not check status";
+    });
+  })();
 
   // Foreground payment currently being polled (the one whose overlay is on
   // screen), separate from `backgrounded` (spec points 10-11) - each has
   // its own independent poll loop, so backgrounding the foreground one just
-  // moves its `payment_id` from this to that.
-  var foreground = null; // { paymentId, timer, failures }
+  // moves its `payment_id` from this to that. `note` is the merchant's own
+  // quick note (spec points 5-6), carried alongside so the tick overlay can
+  // still show it however this payment is later reached.
+  var foreground = null; // { paymentId, timer, failures, note }
   var backgrounded = {}; // paymentId -> { el, timer, failures }
 
   function formatAmount(rawDigits) {
@@ -290,6 +459,12 @@ body { padding: 1rem; }
     chargeBtn.disabled = isZeroAmount();
   }
 
+  document.querySelectorAll(".key[data-digit]").forEach(function (btn) {
+    btn.addEventListener("click", function () { pushDigit(btn.getAttribute("data-digit")); });
+  });
+  document.getElementById("key-backspace").addEventListener("click", backspace);
+  document.getElementById("key-clear").addEventListener("click", clearAmount);
+
   function pushDigit(d) {
     var next = digits + d;
     if (next.length > MAX_DIGITS) next = next.slice(next.length - MAX_DIGITS);
@@ -308,14 +483,15 @@ body { padding: 1rem; }
     renderAmount();
   }
 
-  document.querySelectorAll(".key[data-digit]").forEach(function (btn) {
-    btn.addEventListener("click", function () { pushDigit(btn.getAttribute("data-digit")); });
-  });
-  document.getElementById("key-backspace").addEventListener("click", backspace);
-  document.getElementById("key-clear").addEventListener("click", clearAmount);
-
   document.addEventListener("keydown", function (event) {
     if (keypadScreen.classList.contains("pos-screen-hidden")) return;
+    // The note field is a real text input - typing in it must never also
+    // drive the keypad (a merchant typing "5" into a customer's name would
+    // otherwise silently also punch a 5 into the amount).
+    if (document.activeElement === noteInput) {
+      if (event.key === "Enter") chargeBtn.click();
+      return;
+    }
     if (event.key >= "0" && event.key <= "9") { pushDigit(event.key); }
     else if (event.key === "Backspace") { backspace(); }
     else if (event.key === "Escape") { clearAmount(); }
@@ -355,13 +531,14 @@ body { padding: 1rem; }
   async function chargeAmount() {
     setPosError("");
     var amount = formatAmount(digits);
+    var note = noteInput.value.trim().slice(0, MAX_NOTE_LENGTH);
     chargeBtn.disabled = true;
     var response;
     try {
       response = await fetch("/dashboard/connections/" + connectionId + "/pos/orders", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ amount: amount }),
+        body: JSON.stringify({ amount: amount, merchant_order_id: note ? note : null }),
       });
     } catch (err) {
       setPosError("Couldn't reach the server - check your connection and try again.");
@@ -375,24 +552,25 @@ body { padding: 1rem; }
       return;
     }
     var order = await response.json();
-    openPaymentScreen(order);
+    openPaymentScreen(order, note);
   }
   chargeBtn.addEventListener("click", chargeAmount);
 
-  function openPaymentScreen(order) {
+  function openPaymentScreen(order, note) {
     paymentAmount.textContent = order.amount + " " + order.currency;
     qrHolder.innerHTML = order.qr_code_svg;
     paymentAddress.textContent = order.address;
     nfcStatus.textContent = "";
     showScreen(paymentScreen);
     attemptNfcWrite(order.monero_uri);
-    startForegroundPoll(order.payment_id);
+    startForegroundPoll(order.payment_id, note);
   }
 
   function resetToKeypad() {
     digits = "0";
     renderAmount();
     setPosError("");
+    noteInput.value = "";
     showScreen(keypadScreen);
   }
 
@@ -414,11 +592,12 @@ body { padding: 1rem; }
   }
 
   function showTick(state) {
-    // `state`: { percent, isError, message, canBackground, finished }
+    // `state`: { percent, isError, message, canBackground, finished, note }
     tickOverlay.classList.remove("pos-screen-hidden");
     tickOverlay.classList.toggle("is-error", state.isError);
     setRingProgress(state.percent);
     tickLabel.textContent = state.isError ? "Needs attention" : "Paid";
+    tickNote.textContent = state.note || "";
     tickError.textContent = state.isError ? state.message : "";
     backgroundBtn.classList.toggle("pos-screen-hidden", !state.canBackground);
     dismissBtn.classList.toggle("pos-screen-hidden", !(state.finished && state.isError));
@@ -435,8 +614,8 @@ body { padding: 1rem; }
     return await response.json();
   }
 
-  function startForegroundPoll(paymentId) {
-    foreground = { paymentId: paymentId, timer: null, failures: 0 };
+  function startForegroundPoll(paymentId, note) {
+    foreground = { paymentId: paymentId, timer: null, failures: 0, note: note || "" };
     tickOverlay.classList.remove("is-error");
     var tick = async function () {
       if (!foreground || foreground.paymentId !== paymentId) return;
@@ -446,7 +625,7 @@ body { padding: 1rem; }
       if (result.networkError) {
         foreground.failures += 1;
         if (foreground.failures >= POLL_FAILURE_LIMIT) {
-          showTick({ percent: 100, isError: true, message: "Lost connection to the payment status - the order itself is unaffected. Retrying...", canBackground: false, finished: false });
+          showTick({ percent: 100, isError: true, message: "Lost connection to the payment status - the order itself is unaffected. Retrying...", canBackground: false, finished: false, note: foreground.note });
         }
         foreground.timer = setTimeout(tick, POLL_INTERVAL_MS);
         return;
@@ -473,6 +652,7 @@ body { padding: 1rem; }
         message: result.error || "",
         canBackground: canBackground,
         finished: result.is_terminal,
+        note: foreground.note,
       });
 
       if (result.is_terminal) {
@@ -579,6 +759,7 @@ body { padding: 1rem; }
   }
 
   renderAmount();
+  updateKeypadSize();
 })();
 </script>
 </body>
