@@ -46,9 +46,15 @@ so a full run is fast (seconds, not minutes) and doesn't depend on a large
 - **`stagenet-wallets.json`**: persists the keys for every named wallet the
   suites need, loaded through `stagenet-test-wallet::WalletStore` (never
   parsed by hand anymore - see below):
-  - `merchant` - the tenant's watch-only wallet, bootstrapped into
-    `moneropay-stagenet.toml`. moneropay only ever needs its view key + spend
-    public key (never the spend key), so that's all that's configured there.
+  - `merchant` - moneropay's own tenant, bootstrapped into
+    `moneropay-stagenet.toml` with its view key + spend *public* key only
+    (never the private spend key). Its full spend key is recorded too, like
+    every other fixture here (there's no reason to withhold it - worthless
+    stagenet XMR, and full recoverability/CLI use is strictly more useful,
+    e.g. sweeping funds back to `spender`) - but only the derived public key
+    ever goes to moneropay's real connect API
+    (`ResolvedWallet::spend_public_key_hex`), so the e2e tests still exercise
+    it exactly as a genuinely watch-only tenant would be.
   - `spender` - an ordinary wallet that received faucet funds and is used to
     *send* test payments to orders, via its private spend/view keys. Never
     given to moneropay - it plays the role of "the person paying an invoice."

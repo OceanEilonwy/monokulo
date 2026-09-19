@@ -13,8 +13,9 @@
   "merchant": {
     "address": "54F1KdjaAtnL6Fb4SbLUM1AMQSjSERjYUgYRtVgwjBirA26RyJCzxc4TbWPW65ZvRC6bifBfrTTv3fyu25BFQuvA2ogNiXg",
     "mnemonic": "yahoo friendly keyboard duckling ablaze likewise hiker kiosk hacksaw session ardent twice sowed lamb zigzags ourselves atrium omnibus otherwise bikini sunken goodbye wetsuit ablaze friendly",
+    "private_spend_key": "c1062227347db87da4fdeee556fd5ed3e4c3e5857f295489d8a267b69d758d09",
     "private_view_key": "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e",
-    "role": "The moneropay tenant under test - watch-only. Only private_view_key and spend_public_key are ever given to moneropay; private_spend_key/mnemonic are recorded here only so this wallet can be fully recovered/inspected later, not because moneropay needs them.",
+    "role": "Moneropay's own tenant under test, real spend capability recorded here like any other stagenet fixture wallet (there's no reason to withhold it - this is worthless stagenet XMR in source control, and full recovery/spendability is strictly more useful, e.g. sweeping funds back to `spender` via the CLI). Only view_key_hex/spend_pubkey_hex (the *public* spend key, derived locally from private_spend_key, never transmitted) are ever given to moneropay's own real connect API though - the e2e tests still only exercise it as a genuinely watch-only tenant, exactly as a real merchant's moneropay integration would be. private_spend_key was derived from the mnemonic below (already present, unused until now) via stagenet-test-wallet's own seed-derivation code and confirmed to reproduce this exact address and private_view_key.",
     "spend_public_key": "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335"
   },
   "network": "stagenet",

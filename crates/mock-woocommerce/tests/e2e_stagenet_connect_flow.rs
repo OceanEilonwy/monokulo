@@ -242,7 +242,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     let ctx = stagenet_test_wallet::WalletCtx::default();
     let wallets = stagenet_test_wallet::WalletStore::load(&ctx).unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path));
 
-    let merchant = wallets.watch_only_wallet("merchant").unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
+    let merchant = wallets.wallet("merchant").unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
     let spender = wallets.wallet("spender").unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 
     // A single `RpcDaemonClient`, used for everything real-network-related in this
@@ -321,8 +321,8 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     let credentials = run_connect_flow_with_wallet(
         &monokulo_base_url,
         ConnectFlowWallet {
-            view_key_hex: merchant.private_view_key_hex,
-            spend_pubkey_hex: merchant.spend_public_key_hex,
+            view_key_hex: merchant.private_view_key_hex.clone(),
+            spend_pubkey_hex: merchant.spend_public_key_hex(),
             network: "stagenet".to_string(),
             zero_conf_max_piconero: Some(ZERO_CONF_MAX_PICONERO),
             confirmations_required: Some(1),
