@@ -167,6 +167,10 @@ pub fn build_router(state: AppState) -> Router {
             "/dashboard/connections/{id}/settings/confirmation-thresholds/{threshold_id}/delete",
             axum::routing::post(orders::delete_confirmation_threshold),
         )
+        .route(
+            "/dashboard/connections/{id}/settings/confirmation-thresholds/save",
+            axum::routing::post(orders::save_confirmation_thresholds),
+        )
         .route("/dashboard/connections/{id}/pos", axum::routing::get(pos::pos_page))
         .route("/dashboard/connections/{id}/pos/orders", axum::routing::post(pos::create_order))
         .route("/dashboard/connections/{id}/pos/orders/{payment_id}/status", axum::routing::get(pos::order_status))
