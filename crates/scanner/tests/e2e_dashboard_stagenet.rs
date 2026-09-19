@@ -4,7 +4,7 @@
 //! same reusable merchant watch-only wallet `tests/e2e_stagenet.rs` and
 //! `mock-woocommerce/tests/e2e_stagenet_connect_flow.rs` already use, pays a
 //! real order with a genuine, signed, broadcast stagenet transaction (via
-//! `stagenet_test_wallet::StagenetTestWallet`, same as those two), and asserts the
+//! `stagenet_test_wallet::Wallet`, same as those two), and asserts the
 //! payment shows up on the real monokulo dashboard (`GET /dashboard`)
 //! with the real, correct total-received-XMR figure - not just that the
 //! engine detected it (that's already `e2e_stagenet.rs`'s own job).
@@ -63,10 +63,6 @@ use monokulo::db::Db;
 use monokulo::engine_client::EngineClient;
 use monokulo::http::{build_router as build_monokulo_router, AppState as ControlPlaneAppState};
 use monokulo::templates::TemplateEngine;
-
-const WALLETS_PATH: &str = "e2e/stagenet-wallets.json";
-const KNOWN_OUTPUTS_PATH: &str = "e2e/stagenet-known-outputs.json";
-const DECOY_DISTRIBUTION_PATH: &str = "e2e/stagenet-decoy-distribution.json";
 
 /// Same check `e2e_stagenet.rs` opens with, and for the same reason: fail
 /// with a clear, actionable message before spending anything, rather than
@@ -134,12 +130,12 @@ async fn body_json(response: axum::response::Response) -> Value {
 async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_received() {
     // ---- load the same real fixture + reusable wallet fixtures e2e_stagenet.rs uses ----
     use support::e2e_fixture;
-    let node_url = format!("http{}://{}:{}", if e2e_fixture::NODE_SSL { "s" } else { "" }, e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT);
 
-    let spender = stagenet_test_wallet::WalletStore::load(WALLETS_PATH)
-        .unwrap_or_else(|e| panic!("failed to load {WALLETS_PATH}: {e}"))
+    let ctx = stagenet_test_wallet::WalletCtx::default();
+    let spender = stagenet_test_wallet::WalletStore::load(&ctx)
+        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path))
         .wallet("spender")
-        .unwrap_or_else(|e| panic!("failed to load the spender wallet from {WALLETS_PATH}: {e}"));
+        .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 
     // ---- boot a REAL, network-bound engine (no tenant bootstrapped here - the
     // "advanced connect" flow below creates it, through monokulo, exactly
@@ -298,21 +294,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     println!("created order {payment_id}: {amount_piconero} piconero to {address}");
 
     // ---- 4. pay it for real - genuine signed + broadcast stagenet transaction ----
-    let wallet_config = stagenet_test_wallet::WalletConfig {
-        node_url: &node_url,
-        accept_invalid_certs: e2e_fixture::NODE_ACCEPT_SELF_SIGNED_CERTS,
-        private_spend_key_hex: &spender.private_spend_key_hex,
-        private_view_key_hex: &spender.private_view_key_hex,
-        expected_address: &spender.address,
-        decoy_distribution_path: DECOY_DISTRIBUTION_PATH,
-    };
-    let tx_hash = stagenet_test_wallet::send_payment(
-        wallet_config,
-        KNOWN_OUTPUTS_PATH,
-        &address,
-        amount_piconero,
-        None,
-    )
+    let tx_hash = stagenet_test_wallet::send_payment(spender, &address, amount_piconero, None)
     .await
     .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);

@@ -8,7 +8,7 @@
 //!
 //! The only external dependency this test has is the public stagenet node itself
 //! (`support::e2e_fixture`) - no wallet-rpc or any other external process.
-//! Sending the payment is done by `stagenet_test_wallet::StagenetTestWallet` -
+//! Sending the payment is done by `stagenet_test_wallet::Wallet` -
 //! see that crate's own doc comment for why it's a separate, narrower wallet
 //! from a general-purpose one, built specifically for this kind of real,
 //! repeated, e2e-test use.
@@ -49,10 +49,6 @@ use scanner::scanner::run_scan_tick;
 use scanner::store::{NewTenant, Store};
 use shared::xmr_amount::parse_xmr_to_piconero;
 
-const WALLETS_PATH: &str = "e2e/stagenet-wallets.json";
-const KNOWN_OUTPUTS_PATH: &str = "e2e/stagenet-known-outputs.json";
-const DECOY_DISTRIBUTION_PATH: &str = "e2e/stagenet-decoy-distribution.json";
-
 /// Confirms the configured stagenet node is actually reachable before doing
 /// anything else with it - a misconfigured host/port, or a node that's temporarily
 /// down, would otherwise only surface deep inside the scan-and-poll loop as an
@@ -88,12 +84,12 @@ async fn oneshot_json(router: &axum::Router, method: &str, uri: String, body: Op
 #[ignore]
 async fn real_stagenet_payment_is_detected_end_to_end() {
     use support::e2e_fixture;
-    let node_url = format!("http{}://{}:{}", if e2e_fixture::NODE_SSL { "s" } else { "" }, e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT);
 
-    let spender = stagenet_test_wallet::WalletStore::load(WALLETS_PATH)
-        .unwrap_or_else(|e| panic!("failed to load {WALLETS_PATH}: {e}"))
+    let ctx = stagenet_test_wallet::WalletCtx::default();
+    let spender = stagenet_test_wallet::WalletStore::load(&ctx)
+        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path))
         .wallet("spender")
-        .unwrap_or_else(|e| panic!("failed to load the spender wallet from {WALLETS_PATH}: {e}"));
+        .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 
     // Same boot sequence as main.rs's happy path, minus the webhook loop (not
     // exercised by this test) and the bound TCP listener (the router is driven
@@ -178,21 +174,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     // (no wallet-rpc or any other external wallet process - see
     // crates/stagenet-test-wallet, whose own `send_payment` retries the whole
     // connect-then-send sequence internally on real, observed node flakiness) --
-    let wallet_config = stagenet_test_wallet::WalletConfig {
-        node_url: &node_url,
-        accept_invalid_certs: e2e_fixture::NODE_ACCEPT_SELF_SIGNED_CERTS,
-        private_spend_key_hex: &spender.private_spend_key_hex,
-        private_view_key_hex: &spender.private_view_key_hex,
-        expected_address: &spender.address,
-        decoy_distribution_path: DECOY_DISTRIBUTION_PATH,
-    };
-    let tx_hash = stagenet_test_wallet::send_payment(
-        wallet_config,
-        KNOWN_OUTPUTS_PATH,
-        &address,
-        amount_piconero,
-        None,
-    )
+    let tx_hash = stagenet_test_wallet::send_payment(spender, &address, amount_piconero, None)
     .await
     .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);

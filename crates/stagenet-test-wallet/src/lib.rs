@@ -263,7 +263,7 @@ impl Ledger {
 }
 
 /// Full key material for one wallet this crate can act as - what
-/// [`StagenetTestWallet::connect`] needs, loaded from (and, via
+/// [`Wallet::connect`] needs, loaded from (and, via
 /// [`WalletStore::add_wallet`]/[`WalletStore::add_wallet_from_seed`],
 /// written back to) the committed `stagenet-wallets.json` fixture by name.
 /// Serde field names match that file's own (`private_spend_key`, not
@@ -275,6 +275,83 @@ pub struct WalletCredentials {
     pub private_spend_key_hex: String,
     #[serde(rename = "private_view_key")]
     pub private_view_key_hex: String,
+}
+
+/// Every path/network setting a real caller needs to talk to the e2e
+/// fixtures, in one place - `WalletStore::load`, `Ledger::load`, and
+/// `Wallet::connect`/`send_payment` each need one piece of this,
+/// and every real caller in this repo wants the same standard `e2e/*`
+/// layout, so `WalletCtx::default()` is the one thing most callers need to
+/// name at all.
+#[derive(Debug, Clone)]
+pub struct WalletCtx {
+    pub node_url: String,
+    pub accept_invalid_certs: bool,
+    pub wallets_path: String,
+    pub decoy_distribution_path: String,
+    pub ledger_path: String,
+}
+
+impl Default for WalletCtx {
+    /// The standard layout every real e2e suite in this repo already uses -
+    /// see `e2e/README.md`.
+    fn default() -> Self {
+        Self {
+            node_url: "http://node.monerodevs.org:38089".to_string(),
+            accept_invalid_certs: true,
+            wallets_path: "e2e/stagenet-wallets.json".to_string(),
+            decoy_distribution_path: "e2e/stagenet-decoy-distribution.json".to_string(),
+            ledger_path: "e2e/stagenet-known-outputs.json".to_string(),
+        }
+    }
+}
+
+/// A named wallet's key material plus enough of its [`WalletStore`]'s own
+/// [`WalletCtx`] to connect to it directly - what [`WalletStore::wallet`]
+/// actually returns, and everything [`Self::connect`]/[`send_payment`] need.
+#[derive(Debug, Clone)]
+pub struct ResolvedWallet {
+    pub address: String,
+    pub private_spend_key_hex: String,
+    pub private_view_key_hex: String,
+    pub node_url: String,
+    pub accept_invalid_certs: bool,
+    pub decoy_distribution_path: String,
+    pub ledger_path: String,
+}
+
+impl ResolvedWallet {
+    /// Connects to `self.node_url`, deriving keys from `self`'s own hex-encoded
+    /// private spend/view keys and asserting the derived address matches
+    /// `self.address` (the same self-check `scanner::e2e_wallet::
+    /// StagenetSpendWallet::connect` already made), and loads the cached
+    /// decoy-distribution snapshot at `self.decoy_distribution_path`.
+    pub async fn connect(&self) -> Result<Wallet, WalletError> {
+        let spend_key = scalar_from_hex(&self.private_spend_key_hex);
+        let view_key = scalar_from_hex(&self.private_view_key_hex);
+        let spend_key_dalek: Zeroizing<curve25519_dalek::Scalar> = Zeroizing::new((*spend_key).into());
+        let public_spend = Point::from(&*spend_key_dalek * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE);
+        let view_pair = ViewPair::new(public_spend, view_key).expect("torsioned spend key in stagenet-wallets.json");
+        let address = view_pair.legacy_address(Network::Stagenet);
+        assert_eq!(
+            address.to_string(),
+            self.address,
+            "derived address doesn't match the expected address - private_spend_key/private_view_key don't match that address"
+        );
+
+        let http_client = reqwest::Client::builder()
+            .danger_accept_invalid_certs(self.accept_invalid_certs)
+            .timeout(std::time::Duration::from_secs(60))
+            .build()
+            .expect("failed to build reqwest client");
+        let node_url = self.node_url.trim_end_matches('/').to_string();
+        let transport = ReqwestTransport { client: http_client.clone(), base_url: node_url.clone() };
+        let rpc = MoneroDaemon::new(transport).await.map_err(|source| WalletError::DaemonUnreachable { url: node_url.clone(), source })?;
+        let distribution = load_decoy_distribution(&self.decoy_distribution_path)?;
+        let decoy_cache = DecoyCache { daemon: rpc.clone(), distribution };
+
+        Ok(Wallet { view_pair, spend_key, address, rpc, decoy_cache, http_client, node_url, ledger_path: self.ledger_path.clone() })
+    }
 }
 
 /// The committed, source-controlled `stagenet-wallets.json` fixture - every
@@ -291,12 +368,13 @@ pub struct WalletCredentials {
 /// that must round-trip untouched. Same atomic write-then-rename convention
 /// as [`Ledger::save`].
 pub struct WalletStore {
-    path: String,
+    ctx: WalletCtx,
     file: serde_json::Map<String, Value>,
 }
 
 impl WalletStore {
-    pub fn load(path: &str) -> Result<Self, WalletError> {
+    pub fn load(ctx: &WalletCtx) -> Result<Self, WalletError> {
+        let path = &ctx.wallets_path;
         let file = match std::fs::read_to_string(path) {
             Ok(contents) => match serde_json::from_str::<Value>(&contents)
                 .map_err(|e| WalletError::WalletStore(format!("failed to parse {path}: {e}")))?
@@ -307,26 +385,37 @@ impl WalletStore {
             Err(e) if e.kind() == std::io::ErrorKind::NotFound => serde_json::Map::new(),
             Err(e) => return Err(WalletError::WalletStore(format!("failed to read {path}: {e}"))),
         };
-        Ok(Self { path: path.to_string(), file })
+        Ok(Self { ctx: ctx.clone(), file })
     }
 
     fn save(&self) -> Result<(), WalletError> {
-        let tmp_path = format!("{}.tmp", self.path);
+        let path = &self.ctx.wallets_path;
+        let tmp_path = format!("{path}.tmp");
         std::fs::write(&tmp_path, serde_json::to_string_pretty(&self.file).unwrap() + "\n")
             .map_err(|e| WalletError::WalletStore(format!("failed to write {tmp_path}: {e}")))?;
-        std::fs::rename(&tmp_path, &self.path)
-            .map_err(|e| WalletError::WalletStore(format!("failed to move {tmp_path} into place over {}: {e}", self.path)))
+        std::fs::rename(&tmp_path, path).map_err(|e| WalletError::WalletStore(format!("failed to move {tmp_path} into place over {path}: {e}")))
     }
 
-    /// `name`'s key material. Errors if `name` isn't in the file, or is
+    /// `name`'s key material, plus this store's own [`WalletCtx`] settings -
+    /// together, everything [`Wallet::connect`] needs, ready to
+    /// convert via `.into()`. Errors if `name` isn't in the file, or is
     /// present but watch-only (no `private_spend_key` - e.g. `merchant`,
     /// which deliberately never gets one; see `e2e/README.md`).
-    pub fn wallet(&self, name: &str) -> Result<WalletCredentials, WalletError> {
+    pub fn wallet(&self, name: &str) -> Result<ResolvedWallet, WalletError> {
         let entry = self.file.get(name).ok_or_else(|| {
-            WalletError::WalletStore(format!("no wallet named {name:?} in {} (have: {:?})", self.path, self.file.keys().collect::<Vec<_>>()))
+            WalletError::WalletStore(format!("no wallet named {name:?} in {} (have: {:?})", self.ctx.wallets_path, self.file.keys().collect::<Vec<_>>()))
         })?;
-        serde_json::from_value(entry.clone())
-            .map_err(|e| WalletError::WalletStore(format!("wallet {name:?} has no usable spend key material: {e}")))
+        let credentials: WalletCredentials = serde_json::from_value(entry.clone())
+            .map_err(|e| WalletError::WalletStore(format!("wallet {name:?} has no usable spend key material: {e}")))?;
+        Ok(ResolvedWallet {
+            address: credentials.address,
+            private_spend_key_hex: credentials.private_spend_key_hex,
+            private_view_key_hex: credentials.private_view_key_hex,
+            node_url: self.ctx.node_url.clone(),
+            accept_invalid_certs: self.ctx.accept_invalid_certs,
+            decoy_distribution_path: self.ctx.decoy_distribution_path.clone(),
+            ledger_path: self.ctx.ledger_path.clone(),
+        })
     }
 
     /// Adds (or overwrites) `name`'s key material and commits the file.
@@ -376,7 +465,7 @@ const ELECTRUM_LANGUAGES: [ElectrumLanguage; 13] = [
 ];
 
 /// Derives `WalletCredentials` (address + hex-encoded spend/view keys) from
-/// a real spend key the same way [`StagenetTestWallet::connect`] validates
+/// a real spend key the same way [`Wallet::connect`] validates
 /// stored key material - by deriving the matching view key deterministically
 /// (`view = Hs(spend)`, exactly [`Scalar::hash`]'s own documented
 /// definition) and the address from both, rather than trusting a
@@ -427,7 +516,7 @@ fn wallet_credentials_from_seed(phrase: &str) -> Result<WalletCredentials, Walle
     Err(WalletError::WalletStore(format!("seed phrase has {word_count} words - expected 16 (Polyseed) or 24/25 (legacy Electrum-style)")))
 }
 
-impl StagenetTestWallet {
+impl Wallet {
     /// Resolves every still-`Pending` ledger entry it can (locates the
     /// txid's block height over a plain `/get_transactions` call, scans
     /// *that one block* - deliberately not the whole chain - for the real
@@ -485,7 +574,7 @@ impl StagenetTestWallet {
     }
 }
 
-pub struct StagenetTestWallet {
+pub struct Wallet {
     view_pair: ViewPair,
     spend_key: Zeroizing<Scalar>,
     address: MoneroAddress,
@@ -493,6 +582,11 @@ pub struct StagenetTestWallet {
     decoy_cache: DecoyCache,
     http_client: reqwest::Client,
     node_url: String,
+    /// Where this wallet's ledger lives - carried over from the
+    /// [`ResolvedWallet`] this was connected from, so every method below
+    /// loads/saves it on its own; nothing outside this type ever touches a
+    /// [`Ledger`] directly once a [`Wallet`] exists.
+    ledger_path: String,
 }
 
 fn hex32(hex_str: &str) -> [u8; 32] {
@@ -549,43 +643,7 @@ async fn locate_height(client: &reqwest::Client, node_url: &str, txid: &str) -> 
     Ok(response["txs"].as_array().and_then(|txs| txs.first()).and_then(|tx| tx["block_height"].as_u64()))
 }
 
-impl StagenetTestWallet {
-    /// Connects to `node_url`, derives keys from the given hex-encoded
-    /// private spend/view keys (asserting the derived address matches
-    /// `expected_address`, the same self-check
-    /// `scanner::e2e_wallet::StagenetSpendWallet::connect` already made),
-    /// and loads the cached decoy-distribution snapshot at
-    /// `decoy_distribution_path`.
-    pub async fn connect(
-        node_url: &str,
-        accept_invalid_certs: bool,
-        private_spend_key_hex: &str,
-        private_view_key_hex: &str,
-        expected_address: &str,
-        decoy_distribution_path: &str,
-    ) -> Result<Self, WalletError> {
-        let spend_key = scalar_from_hex(private_spend_key_hex);
-        let view_key = scalar_from_hex(private_view_key_hex);
-        let spend_key_dalek: Zeroizing<curve25519_dalek::Scalar> = Zeroizing::new((*spend_key).into());
-        let public_spend = Point::from(&*spend_key_dalek * curve25519_dalek::constants::ED25519_BASEPOINT_TABLE);
-        let view_pair = ViewPair::new(public_spend, view_key).expect("torsioned spend key in stagenet-wallets.json");
-        let address = view_pair.legacy_address(Network::Stagenet);
-        assert_eq!(
-            address.to_string(),
-            expected_address,
-            "derived address doesn't match the expected address - private_spend_key/private_view_key don't match that address"
-        );
-
-        let http_client =
-            reqwest::Client::builder().danger_accept_invalid_certs(accept_invalid_certs).timeout(std::time::Duration::from_secs(60)).build().expect("failed to build reqwest client");
-        let transport = ReqwestTransport { client: http_client.clone(), base_url: node_url.trim_end_matches('/').to_string() };
-        let rpc = MoneroDaemon::new(transport).await.map_err(|source| WalletError::DaemonUnreachable { url: node_url.to_string(), source })?;
-        let distribution = load_decoy_distribution(decoy_distribution_path)?;
-        let decoy_cache = DecoyCache { daemon: rpc.clone(), distribution };
-
-        Ok(Self { view_pair, spend_key, address, rpc, decoy_cache, http_client, node_url: node_url.trim_end_matches('/').to_string() })
-    }
-
+impl Wallet {
     pub fn address(&self) -> String {
         self.address.to_string()
     }
@@ -595,8 +653,13 @@ impl StagenetTestWallet {
     /// already-spendable outputs, records the new change output as a
     /// pending entry, and marks whichever entries were actually spent.
     /// Returns the new transaction's hash on success.
-    pub async fn send(&self, ledger: &mut Ledger, to: &str, amount: u64) -> Result<[u8; 32], WalletError> {
-        self.send_impl(ledger, Some(to), amount, None).await
+    /// Loads this wallet's own ledger (`self.ledger_path`) fresh - callers
+    /// never hold onto a [`Ledger`] themselves, so there's never a stale
+    /// in-memory copy to worry about; disk stays the single source of
+    /// truth, same as every write path already assumed.
+    pub async fn send(&self, to: &str, amount: u64) -> Result<[u8; 32], WalletError> {
+        let mut ledger = Ledger::load(&self.ledger_path)?;
+        self.send_impl(&mut ledger, Some(to), amount, None).await
     }
 
     /// Same as [`Self::send`], but splits whatever's left over after
@@ -605,8 +668,9 @@ impl StagenetTestWallet {
     /// payment also grows the pool of independently-aged spendable outputs
     /// a later `send`/`split` can draw on, at no extra RPC cost (same tx,
     /// more outputs). `split_change_into < 2` behaves exactly like `send`.
-    pub async fn send_with_change_split(&self, ledger: &mut Ledger, to: &str, amount: u64, split_change_into: usize) -> Result<[u8; 32], WalletError> {
-        self.send_impl(ledger, Some(to), amount, Some(split_change_into)).await
+    pub async fn send_with_change_split(&self, to: &str, amount: u64, split_change_into: usize) -> Result<[u8; 32], WalletError> {
+        let mut ledger = Ledger::load(&self.ledger_path)?;
+        self.send_impl(&mut ledger, Some(to), amount, Some(split_change_into)).await
     }
 
     /// Splits this wallet's spendable balance into `into` roughly-equal
@@ -615,9 +679,10 @@ impl StagenetTestWallet {
     /// Existing outputs aren't touched until this tx actually confirms;
     /// each new piece needs its own `SPENDABLE_AGE` confirmations before
     /// it's usable, same as any other change output.
-    pub async fn split(&self, ledger: &mut Ledger, into: usize) -> Result<[u8; 32], WalletError> {
+    pub async fn split(&self, into: usize) -> Result<[u8; 32], WalletError> {
         assert!(into >= 2, "split needs at least 2 pieces, got {into}");
-        self.send_impl(ledger, None, 0, Some(into)).await
+        let mut ledger = Ledger::load(&self.ledger_path)?;
+        self.send_impl(&mut ledger, None, 0, Some(into)).await
     }
 
     /// The shared implementation behind `send`/`send_with_change_split`/
@@ -733,9 +798,10 @@ impl StagenetTestWallet {
     /// immediately if it's already confirmed - `wallet add-output <txid>`
     /// on the CLI. Thin wrapper: [`Ledger::record_pending`] plus
     /// [`Self::resolve_pending`] already do all the real work.
-    pub async fn add_output(&self, ledger: &mut Ledger, txid: &str) -> Result<(), WalletError> {
+    pub async fn add_output(&self, txid: &str) -> Result<(), WalletError> {
+        let mut ledger = Ledger::load(&self.ledger_path)?;
         ledger.record_pending(txid, 0)?;
-        self.resolve_pending(ledger).await
+        self.resolve_pending(&mut ledger).await
     }
 
     /// A cheap, real pre-flight check for callers that want to fail fast
@@ -744,8 +810,9 @@ impl StagenetTestWallet {
     /// discovering an empty wallet deep inside `send`'s own error. Resolves
     /// any pending entries first, so this reports the ledger's real,
     /// current state, not a stale snapshot.
-    pub async fn balance(&self, ledger: &mut Ledger) -> Result<WalletBalance, WalletError> {
-        self.resolve_pending(ledger).await?;
+    pub async fn balance(&self) -> Result<WalletBalance, WalletError> {
+        let mut ledger = Ledger::load(&self.ledger_path)?;
+        self.resolve_pending(&mut ledger).await?;
         let latest_height = self.rpc.latest_block_number().await.map_err(|e| WalletError::Rpc(e.to_string()))? as u64;
         let mut balance = WalletBalance::default();
         for entry in &ledger.entries {
@@ -768,27 +835,13 @@ impl StagenetTestWallet {
     }
 }
 
-/// See [`StagenetTestWallet::balance`].
+/// See [`Wallet::balance`].
 #[derive(Debug, Clone, Copy, Default, Serialize)]
 pub struct WalletBalance {
     pub spendable_piconero: u64,
     pub spendable_outputs: usize,
     pub pending_piconero: u64,
     pub pending_outputs: usize,
-}
-
-/// The wallet-identifying parameters every real caller needs to pass around
-/// together - grouped into one struct purely to keep [`send_payment`]'s own
-/// argument count reasonable (`StagenetTestWallet::connect` still takes
-/// these positionally; six is well under the threshold that makes grouping
-/// worth it, `send_payment`'s own nine wasn't).
-pub struct WalletConfig<'a> {
-    pub node_url: &'a str,
-    pub accept_invalid_certs: bool,
-    pub private_spend_key_hex: &'a str,
-    pub private_view_key_hex: &'a str,
-    pub expected_address: &'a str,
-    pub decoy_distribution_path: &'a str,
 }
 
 /// Connects, resolves any pending ledger entries, and sends `amount`
@@ -807,33 +860,18 @@ pub struct WalletConfig<'a> {
 /// in here once, rather than duplicating it at every call site, is what
 /// "a robust library is sufficient" actually means in practice.
 ///
-/// `split_change_into` forwards to [`StagenetTestWallet::send_with_change_split`]
+/// `split_change_into` forwards to [`Wallet::send_with_change_split`]
 /// when `Some` (`None` keeps today's single-`Change`-output behavior).
-pub async fn send_payment(
-    config: WalletConfig<'_>,
-    ledger_path: &str,
-    to: &str,
-    amount: u64,
-    split_change_into: Option<usize>,
-) -> Result<[u8; 32], WalletError> {
+pub async fn send_payment(wallet: ResolvedWallet, to: &str, amount: u64, split_change_into: Option<usize>) -> Result<[u8; 32], WalletError> {
     const ATTEMPTS: u32 = 5;
     const RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(5);
     let mut attempt = 1;
     loop {
         let result: Result<[u8; 32], WalletError> = async {
-            let wallet = StagenetTestWallet::connect(
-                config.node_url,
-                config.accept_invalid_certs,
-                config.private_spend_key_hex,
-                config.private_view_key_hex,
-                config.expected_address,
-                config.decoy_distribution_path,
-            )
-            .await?;
-            let mut ledger = Ledger::load(ledger_path)?;
+            let wallet = wallet.connect().await?;
             match split_change_into {
-                Some(n) => wallet.send_with_change_split(&mut ledger, to, amount, n).await,
-                None => wallet.send(&mut ledger, to, amount).await,
+                Some(n) => wallet.send_with_change_split(to, amount, n).await,
+                None => wallet.send(to, amount).await,
             }
         }
         .await;

@@ -1,5 +1,5 @@
 //! A general-purpose CLI over `stagenet-test-wallet`'s `WalletStore`/
-//! `StagenetTestWallet` - the same fast, ledger-based, no-chain-scanning
+//! `Wallet` - the same fast, ledger-based, no-chain-scanning
 //! wallet every real-stagenet e2e suite in this repo already uses as a
 //! library, now reachable by hand for setup/maintenance work (checking a
 //! balance, seeding a fresh wallet from a seed phrase, splitting a big
@@ -14,20 +14,10 @@
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use stagenet_test_wallet::{Ledger, StagenetTestWallet, WalletStore};
+use stagenet_test_wallet::{WalletCtx, WalletStore};
 
-/// Standard locations every real e2e suite in this repo already uses -
-/// good defaults for this CLI too, overridable for someone running it
-/// against a different checkout or fixture set.
-mod defaults {
-    pub const NODE_URL: &str = "http://node.monerodevs.org:38089";
-    pub const ACCEPT_INVALID_CERTS: bool = true;
-    pub const WALLETS_PATH: &str = "e2e/stagenet-wallets.json";
-    pub const LEDGER_PATH: &str = "e2e/stagenet-known-outputs.json";
-    pub const DECOY_DISTRIBUTION_PATH: &str = "e2e/stagenet-decoy-distribution.json";
-    /// The wallet this crate exists to spend from - see `e2e/README.md`.
-    pub const WALLET_NAME: &str = "spender";
-}
+/// The wallet this crate exists to spend from - see `e2e/README.md`.
+const DEFAULT_WALLET_NAME: &str = "spender";
 
 #[derive(Parser)]
 #[command(name = "stagenet-wallet-cli", about = "Inspect and drive the stagenet e2e test wallet by hand")]
@@ -36,23 +26,45 @@ struct Cli {
     command: Command,
 
     /// Which named wallet in `--wallets-path` to act as.
-    #[arg(long, global = true, default_value = defaults::WALLET_NAME)]
+    #[arg(long, global = true, default_value = DEFAULT_WALLET_NAME)]
     wallet: String,
 
-    #[arg(long, global = true, default_value = defaults::NODE_URL)]
-    node_url: String,
+    /// Overrides `WalletCtx::default()`'s node URL.
+    #[arg(long, global = true)]
+    node_url: Option<String>,
 
-    #[arg(long, global = true, default_value_t = defaults::ACCEPT_INVALID_CERTS)]
-    accept_invalid_certs: bool,
+    /// Overrides `WalletCtx::default()`'s wallets file path.
+    #[arg(long, global = true)]
+    wallets_path: Option<String>,
 
-    #[arg(long, global = true, default_value = defaults::WALLETS_PATH)]
-    wallets_path: String,
+    /// Overrides `WalletCtx::default()`'s ledger file path.
+    #[arg(long, global = true)]
+    ledger_path: Option<String>,
 
-    #[arg(long, global = true, default_value = defaults::LEDGER_PATH)]
-    ledger_path: String,
+    /// Overrides `WalletCtx::default()`'s decoy-distribution file path.
+    #[arg(long, global = true)]
+    decoy_distribution_path: Option<String>,
+}
 
-    #[arg(long, global = true, default_value = defaults::DECOY_DISTRIBUTION_PATH)]
-    decoy_distribution_path: String,
+impl Cli {
+    /// The standard `e2e/*` layout ([`WalletCtx::default`]), with any of
+    /// this CLI's own path/URL flags overlaid on top.
+    fn ctx(&self) -> WalletCtx {
+        let mut ctx = WalletCtx::default();
+        if let Some(v) = &self.node_url {
+            ctx.node_url = v.clone();
+        }
+        if let Some(v) = &self.wallets_path {
+            ctx.wallets_path = v.clone();
+        }
+        if let Some(v) = &self.ledger_path {
+            ctx.ledger_path = v.clone();
+        }
+        if let Some(v) = &self.decoy_distribution_path {
+            ctx.decoy_distribution_path = v.clone();
+        }
+        ctx
+    }
 }
 
 #[derive(Subcommand)]
@@ -123,13 +135,15 @@ async fn main() -> ExitCode {
 }
 
 async fn run(cli: Cli) -> Result<(), stagenet_test_wallet::WalletError> {
+    let ctx = cli.ctx();
+
     match &cli.command {
         Command::Completions { shell } => {
             clap_complete::generate(*shell, &mut Cli::command(), "stagenet-wallet-cli", &mut std::io::stdout());
             return Ok(());
         }
         Command::Wallet(WalletCommand::Add { name, seed, generate }) => {
-            let mut store = WalletStore::load(&cli.wallets_path)?;
+            let mut store = WalletStore::load(&ctx)?;
             match (seed, generate) {
                 (Some(phrase), false) => store.add_wallet_from_seed(name, phrase)?,
                 (None, true) => {
@@ -141,49 +155,37 @@ async fn run(cli: Cli) -> Result<(), stagenet_test_wallet::WalletError> {
                     return Err(stagenet_test_wallet::WalletError::WalletStore("pass exactly one of --seed <phrase> or --generate".to_string()));
                 }
             }
-            println!("added wallet {name:?} to {}", cli.wallets_path);
+            println!("added wallet {name:?} to {}", ctx.wallets_path);
             return Ok(());
         }
         _ => {}
     }
 
-    let credentials = WalletStore::load(&cli.wallets_path)?.wallet(&cli.wallet)?;
-    let wallet = StagenetTestWallet::connect(
-        &cli.node_url,
-        cli.accept_invalid_certs,
-        &credentials.private_spend_key_hex,
-        &credentials.private_view_key_hex,
-        &credentials.address,
-        &cli.decoy_distribution_path,
-    )
-    .await?;
+    let resolved = WalletStore::load(&ctx)?.wallet(&cli.wallet)?;
+    let wallet = resolved.connect().await?;
 
     match cli.command {
         Command::Address => println!("{}", wallet.address()),
         Command::Balance => {
-            let mut ledger = Ledger::load(&cli.ledger_path)?;
-            let balance = wallet.balance(&mut ledger).await?;
+            let balance = wallet.balance().await?;
             println!(
                 "spendable: {} piconero across {} output(s)\npending:   {} piconero across {} output(s)",
                 balance.spendable_piconero, balance.spendable_outputs, balance.pending_piconero, balance.pending_outputs,
             );
         }
         Command::Send { to, piconero, split } => {
-            let mut ledger = Ledger::load(&cli.ledger_path)?;
             let hash = match split {
-                Some(n) => wallet.send_with_change_split(&mut ledger, &to, piconero, n).await?,
-                None => wallet.send(&mut ledger, &to, piconero).await?,
+                Some(n) => wallet.send_with_change_split(&to, piconero, n).await?,
+                None => wallet.send(&to, piconero).await?,
             };
             println!("sent, tx {}", hex::encode(hash));
         }
         Command::Split { into } => {
-            let mut ledger = Ledger::load(&cli.ledger_path)?;
-            let hash = wallet.split(&mut ledger, into).await?;
+            let hash = wallet.split(into).await?;
             println!("split, tx {}", hex::encode(hash));
         }
         Command::Output(OutputCommand::Add { txid }) => {
-            let mut ledger = Ledger::load(&cli.ledger_path)?;
-            wallet.add_output(&mut ledger, &txid).await?;
+            wallet.add_output(&txid).await?;
             println!("added output {txid} (resolved if already confirmed, pending otherwise)");
         }
         Command::Wallet(WalletCommand::Add { .. }) | Command::Completions { .. } => unreachable!("handled above"),
