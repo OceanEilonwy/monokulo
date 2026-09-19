@@ -77,9 +77,6 @@ const NODE_ACCEPT_SELF_SIGNED_CERTS: bool = true;
 const WALLET_PRIVATE_VIEW_KEY: &str = "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e";
 const WALLET_PUBLIC_SPEND_KEY: &str = "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335";
 const PAYMENT_REORG_CHECK_DEPTH: u64 = 20;
-const WALLETS_PATH: &str = "e2e/stagenet-wallets.json";
-const KNOWN_OUTPUTS_PATH: &str = "e2e/stagenet-known-outputs.json";
-const DECOY_DISTRIBUTION_PATH: &str = "e2e/stagenet-decoy-distribution.json";
 
 fn urlencode(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
@@ -156,20 +153,15 @@ async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): 
     };
     let _guard = state.network_lock.lock().await;
 
-    let spender = match stagenet_test_wallet::WalletStore::load(WALLETS_PATH).and_then(|store| store.wallet("spender")) {
+    // `state.node_url` and `WalletCtx::default()`'s own are the same value
+    // (both built from the same NODE_HOST/NODE_PORT above) - set explicitly
+    // anyway, so this stays correct if that ever changes.
+    let ctx = stagenet_test_wallet::WalletCtx { node_url: state.node_url.clone(), ..Default::default() };
+    let spender = match stagenet_test_wallet::WalletStore::load(&ctx).and_then(|store| store.wallet("spender")) {
         Ok(w) => w,
-        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to load the spender wallet from {WALLETS_PATH}: {e}")).into_response(),
+        Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to load the spender wallet: {e}")).into_response(),
     };
-
-    let wallet_config = stagenet_test_wallet::WalletConfig {
-        node_url: &state.node_url,
-        accept_invalid_certs: NODE_ACCEPT_SELF_SIGNED_CERTS,
-        private_spend_key_hex: &spender.private_spend_key_hex,
-        private_view_key_hex: &spender.private_view_key_hex,
-        expected_address: &spender.address,
-        decoy_distribution_path: DECOY_DISTRIBUTION_PATH,
-    };
-    let tx_hash = match stagenet_test_wallet::send_payment(wallet_config, KNOWN_OUTPUTS_PATH, &req.address, piconero_amount, None).await {
+    let tx_hash = match stagenet_test_wallet::send_payment(spender, &req.address, piconero_amount, None).await {
         Ok(hash) => hash,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };

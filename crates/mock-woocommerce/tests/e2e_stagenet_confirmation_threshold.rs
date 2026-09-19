@@ -58,11 +58,6 @@ use serde_json::{json, Value};
 
 use scanner::daemon::MoneroDaemonClient;
 use scanner::daemon_rpc::RpcDaemonClient;
-use stagenet_test_wallet::{Ledger, StagenetTestWallet};
-
-const WALLETS_PATH: &str = "../e2e/stagenet-wallets.json";
-const KNOWN_OUTPUTS_PATH: &str = "../e2e/stagenet-known-outputs.json";
-const DECOY_DISTRIBUTION_PATH: &str = "../e2e/stagenet-decoy-distribution.json";
 
 /// Same fixed public stagenet node `e2e_stagenet_connect_flow.rs` uses -
 /// duplicated rather than shared, same reasoning as that file's own
@@ -212,13 +207,15 @@ async fn body_json(response: reqwest::Response) -> Value {
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 #[ignore]
 async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_threshold() {
-    let node_url = format!("http{}://{}:{}", if node_fixture::SSL { "s" } else { "" }, node_fixture::HOST, node_fixture::PORT);
+    // Same standard `e2e/*` layout every real suite in this repo uses - run
+    // from the repository root, same as this file's own doc comment says.
+    let ctx = stagenet_test_wallet::WalletCtx::default();
 
-    let (merchant_view_key_hex, merchant_spend_pubkey_hex) = load_merchant_watch_only_wallet(WALLETS_PATH);
-    let spender = stagenet_test_wallet::WalletStore::load(WALLETS_PATH)
-        .unwrap_or_else(|e| panic!("failed to load {WALLETS_PATH}: {e}"))
+    let (merchant_view_key_hex, merchant_spend_pubkey_hex) = load_merchant_watch_only_wallet(&ctx.wallets_path);
+    let spender = stagenet_test_wallet::WalletStore::load(&ctx)
+        .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path))
         .wallet("spender")
-        .unwrap_or_else(|e| panic!("failed to load the spender wallet from {WALLETS_PATH}: {e}"));
+        .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 
     // One real daemon client, used sequentially for everything - see
     // `e2e_stagenet_connect_flow.rs::real_stagenet_connect_flow_pays_a_real_order_end_to_end`'s
@@ -229,21 +226,16 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     );
     require_daemon_reachable(daemon.as_ref(), node_fixture::HOST, node_fixture::PORT).await;
 
-    let balance_wallet = retry(5, Duration::from_secs(5), || {
-        StagenetTestWallet::connect(&node_url, node_fixture::ACCEPT_SELF_SIGNED_CERTS, &spender.private_spend_key_hex, &spender.private_view_key_hex, &spender.address, DECOY_DISTRIBUTION_PATH)
-    })
-    .await
-    .unwrap_or_else(|e| panic!("\n\n{e}\n"));
+    let balance_wallet = retry(5, Duration::from_secs(5), || spender.connect()).await.unwrap_or_else(|e| panic!("\n\n{e}\n"));
     const MIN_SPENDABLE_PICONERO: u64 = 10_000_000_000; // 0.01 XMR.
-    let mut ledger = Ledger::load(KNOWN_OUTPUTS_PATH).unwrap_or_else(|e| panic!("\n\n{e}\n"));
-    let balance = balance_wallet.balance(&mut ledger).await.unwrap_or_else(|e| panic!("failed to check spender wallet balance: {e}"));
+    let balance = balance_wallet.balance().await.unwrap_or_else(|e| panic!("failed to check spender wallet balance: {e}"));
     if balance.spendable_piconero < MIN_SPENDABLE_PICONERO {
         panic!(
             "\n\nspender wallet has only {} piconero spendable across {} output(s) (needs at least \
              {MIN_SPENDABLE_PICONERO}) - fund it from the stagenet faucet \
              (https://stagenet-faucet.xmr-tw.org/, send to {}), add a new ledger entry for the \
-             resulting txid in {KNOWN_OUTPUTS_PATH}, then wait ~20 minutes for it to mature.\n",
-            balance.spendable_piconero, balance.spendable_outputs, spender.address,
+             resulting txid in {}, then wait ~20 minutes for it to mature.\n",
+            balance.spendable_piconero, balance.spendable_outputs, spender.address, ctx.ledger_path,
         );
     }
     println!("spender wallet balance check passed: {balance:?}");
@@ -362,21 +354,7 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // the real order's status - no zero-conf ceiling was configured above
     // (`zero_conf_max_piconero` omitted from the `/connections` request), so
     // this can only succeed once the payment has a real confirmation.
-    let wallet_config = stagenet_test_wallet::WalletConfig {
-        node_url: &node_url,
-        accept_invalid_certs: node_fixture::ACCEPT_SELF_SIGNED_CERTS,
-        private_spend_key_hex: &spender.private_spend_key_hex,
-        private_view_key_hex: &spender.private_view_key_hex,
-        expected_address: &spender.address,
-        decoy_distribution_path: DECOY_DISTRIBUTION_PATH,
-    };
-    let tx_hash = stagenet_test_wallet::send_payment(
-        wallet_config,
-        KNOWN_OUTPUTS_PATH,
-        &address,
-        amount_piconero,
-        None,
-    )
+    let tx_hash = stagenet_test_wallet::send_payment(spender, &address, amount_piconero, None)
     .await
     .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);
