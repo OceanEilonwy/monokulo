@@ -73,7 +73,13 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   padding: calc(env(safe-area-inset-top, 0px) + 2.6rem) calc(env(safe-area-inset-right, 0px) + 0.9rem) calc(env(safe-area-inset-bottom, 0px) + 0.9rem) calc(env(safe-area-inset-left, 0px) + 0.9rem);
 }
 @media (min-width: 640px) { .pos-wrap { max-width: 540px; } }
-
+/* A phone in landscape has so little height that the *chrome* around the
+   keypad (amount display, note field, Charge button, topbar padding) can
+   itself eat most of the screen even before the keys get a turn - shrink
+   it directly rather than let `updateKeypadSize`'s own floor force an
+   overflow (confirmed directly: without this, iPhone SE/14 and several
+   Android phones in landscape all failed the "never needs to scroll"
+   requirement, by 90-200px). */
 .pos-screen { flex: 1; display: flex; flex-direction: column; min-height: 0; }
 .pos-screen-hidden { display: none !important; }
 
@@ -272,6 +278,35 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 .bg-item .bg-bar-fill { position: absolute; inset: 0; width: 0%; background: var(--success); }
 .bg-item.is-error .bg-bar-fill { background: var(--error); }
 .bg-item .bg-dismiss { border: none; background: none; cursor: pointer; font-weight: 700; color: inherit; }
+
+/* A phone in landscape has so little height that the *chrome* around the
+   keypad/charge screens (amount display, note field, Charge/Cancel
+   buttons, the QR code, topbar padding) can itself eat most of the
+   screen before the keys or the QR code get a turn - shrink it directly
+   rather than let `updateKeypadSize`'s own floor (or a fixed-size QR
+   code) force an overflow. Confirmed directly in a real browser, twice
+   over: (1) without this at all, several real phones in landscape
+   (iPhone SE/14, several Android sizes) failed the "never needs to
+   scroll" requirement by 90-200px; (2) an earlier version of this same
+   block, placed *before* the plain rules above instead of after, had
+   zero effect at all - CSS media queries don't add specificity, so a
+   later plain rule of equal specificity (e.g. `.qr-holder`'s own
+   `max-width: 260px` above) always wins over an earlier conditional one
+   regardless of whether the condition matches. This block must stay the
+   last thing in this stylesheet to keep overriding everything above it. */
+@media (max-height: 480px) {
+  .pos-wrap { padding-top: calc(env(safe-area-inset-top, 0px) + 1.1rem); }
+  .amount-display { font-size: clamp(1.1rem, 6vw, 1.9rem); padding: 0.15em 0.35em; margin-bottom: 0.25em; }
+  .note-input-row { margin: 0.25em 0 0; }
+  .note-input-row input { padding: 0.3em 0.5em; font-size: 0.9rem; }
+  .charge-btn, .secondary-btn { padding: 0.3em 0; margin-top: 0.25em; font-size: 1rem; }
+  .keypad { gap: 0.25em; }
+  .payment-panel { padding: 0.6em; }
+  .payment-amount { font-size: 1.2rem; margin-bottom: 0.25em; }
+  .qr-holder { max-width: min(260px, 30vh); }
+  .address-row { margin: 0.3em 0; font-size: 0.7rem; }
+  .nfc-status { font-size: 0.75rem; min-height: 0; }
+}
 </style>
 </head>
 <body data-connection-id="{{connection_id}}" data-base-currency="{{base_currency}}" data-decimals="{{base_currency_decimals}}">
@@ -382,27 +417,74 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   var statusDot = document.getElementById("pos-status-dot");
   var statusLink = document.getElementById("pos-status-link");
   var keypadEl = document.querySelector(".keypad");
+  var noteRowEl = document.querySelector(".note-input-row");
+  var posWrapEl = document.querySelector(".pos-wrap");
 
   ringProgress.style.strokeDasharray = String(RING_CIRCUMFERENCE);
 
-  // Real square keys (spec point 2), sized to whichever of the keypad's own
-  // available width/height is tighter - not just column width - so a short
-  // or landscape viewport shrinks the keys instead of pushing the note
-  // field/Charge button off the bottom of the screen. `.keypad` itself is
-  // already the exact leftover space `flex:1`/`min-height:0` give it once
-  // the amount display, note field and Charge button have taken theirs, so
-  // its own `clientWidth`/`clientHeight` *is* the space to fit 3x4 keys
-  // into - no separate layout pass over the other elements needed.
+  // Real square keys (spec point 2), sized to whichever of the available
+  // width/height is tighter - not just column width - so a short or
+  // landscape viewport shrinks the keys instead of pushing the note
+  // field/Charge button off the bottom of the screen (or, on resize,
+  // silently leaving them stuck too big for the new size).
+  //
+  // Deliberately measured from quantities that can *never* depend on the
+  // keypad's own current size - the real viewport height
+  // (`visualViewport.height`, which also tracks a mobile browser's
+  // address bar/toolbar showing or hiding) minus each fixed sibling's own
+  // `offsetHeight` + margins (their own content-driven size, never
+  // influenced by the keypad next to them). Two earlier approaches both
+  // turned out circular and were confirmed broken in a real browser, not
+  // just in theory: (1) reading `.keypad`'s own `clientHeight` back to
+  // decide its *next* size just measures where the keys already are; (2)
+  // reading the note row's `getBoundingClientRect().top` looked
+  // independent but isn't - in normal document flow that position *is*
+  // "amount display bottom + the keypad's current (possibly already-too-
+  // big) height", so an oversized keypad pushes the note row down, which
+  // then reads back as "more space was available", which computes an
+  // even-bigger size next time. Neither self-corrects; this can't get
+  // stuck the same way because nothing here is downstream of the
+  // keypad's own box.
+  function outerHeight(el) {
+    if (!el) return 0;
+    var cs = getComputedStyle(el);
+    return el.offsetHeight + (parseFloat(cs.marginTop) || 0) + (parseFloat(cs.marginBottom) || 0);
+  }
   function updateKeypadSize() {
+    var viewportHeight = window.visualViewport ? window.visualViewport.height : window.innerHeight;
+    var wrapStyle = getComputedStyle(posWrapEl);
+    var wrapPadding = (parseFloat(wrapStyle.paddingTop) || 0) + (parseFloat(wrapStyle.paddingBottom) || 0);
+    var fixedHeight = outerHeight(amountDisplay) + outerHeight(noteRowEl) + outerHeight(chargeBtn) + outerHeight(posError);
+    var availableHeight = viewportHeight - wrapPadding - fixedHeight;
+    var availableWidth = keypadScreen.clientWidth;
+
     var style = getComputedStyle(keypadEl);
     var gap = parseFloat(style.rowGap || style.gap) || 8;
-    var byWidth = (keypadEl.clientWidth - gap * 2) / 3;
-    var byHeight = (keypadEl.clientHeight - gap * 3) / 4;
-    var size = Math.max(40, Math.floor(Math.min(byWidth, byHeight)));
+    var byWidth = (availableWidth - gap * 2) / 3;
+    var byHeight = (availableHeight - gap * 3) / 4;
+    // A low floor, not a comfortable minimum tap target - "never needs to
+    // scroll" (confirmed as this screen's actual hard requirement) wins
+    // over key size on the rare, cramped short-landscape-phone case the
+    // `max-height: 480px` chrome above already does most of the work for;
+    // this floor only stops the keys collapsing to nothing if a future,
+    // even shorter device shows up that shrinks past that.
+    var size = Math.max(20, Math.floor(Math.min(byWidth, byHeight)));
     keypadEl.style.setProperty("--key-size", size + "px");
   }
   window.addEventListener("resize", updateKeypadSize);
   window.addEventListener("orientationchange", updateKeypadSize);
+  if (window.visualViewport) {
+    // Mobile browser chrome (address bar/toolbar) showing or hiding
+    // changes the *available* height without necessarily firing a plain
+    // `resize` event at all sizes/browsers - `visualViewport` catches it.
+    window.visualViewport.addEventListener("resize", updateKeypadSize);
+  }
+  if (document.fonts && document.fonts.ready) {
+    // A pre-font-load measurement can be wrong (digits render narrower/
+    // shorter in a fallback font, so the amount display's real height
+    // hasn't settled yet) - recompute once the real font is actually in.
+    document.fonts.ready.then(updateKeypadSize);
+  }
 
   // Small, low-opacity corner status dot (spec point 1) - same
   // `/status/summary` poll `_nav.html.hbs`'s own nav bar uses, just without
