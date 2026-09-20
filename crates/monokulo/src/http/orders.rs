@@ -704,6 +704,13 @@ async fn render_store_detail_page(
     let tenant_result = state.engine_client.get_tenant(&sk).await;
     let (health, health_label) = health_of_tenant_lookup(&tenant_result);
     let confirmations_required = tenant_result.as_ref().map(|t| t.confirmations_required).unwrap_or(0);
+    let zero_conf_max_xmr = tenant_result
+        .as_ref()
+        .ok()
+        .and_then(|t| t.zero_conf_max_piconero)
+        .filter(|&piconero| piconero > 0)
+        .map(shared::xmr_amount::format_piconero_as_xmr)
+        .unwrap_or_default();
 
     // A store whose engine is currently unreachable still gets a real page -
     // just with no order data available, rather than a hard error. The
@@ -777,6 +784,7 @@ async fn render_store_detail_page(
             base_currency_options,
             confirmation_thresholds,
             confirmation_thresholds_at_max,
+            zero_conf_max_xmr,
             settings_error,
         }),
         logged_in: true,
@@ -1070,6 +1078,67 @@ pub async fn update_base_currency(
     let update_result = state.db.lock().unwrap().update_store_connection_base_currency(&row.id, &base_currency);
     match update_result {
         Ok(()) => redirect_302(&format!("/dashboard/connections/{id}")),
+        Err(_) => {
+            render_store_detail_page(&state, row, user.is_admin, None, Some("Something went wrong. Please try again.".to_string())).await
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct UpdateZeroConfForm {
+    /// An XMR decimal amount (`shared::xmr_amount::parse_xmr_to_piconero`),
+    /// not a piconero integer - the same "human enters a real-world unit"
+    /// convention every other amount field on this page already follows.
+    /// Blank means "accept no 0-conf payments at all", not a validation
+    /// error - the field has no `required` attribute in the template, since
+    /// "off" is this setting's own valid, common value.
+    #[serde(default)]
+    pub zero_conf_max_xmr: String,
+}
+
+/// `POST /dashboard/connections/{id}/settings/zero-conf` - sets (or clears,
+/// via an empty submission) this store's `zero_conf_max_piconero`: orders at
+/// or under this XMR amount can read as `paid` off a mempool-only,
+/// zero-confirmation transaction (`EngineClient::set_zero_conf_max_piconero`'s
+/// own doc comment covers why `0` - what a blank field parses to here - is a
+/// real, safe "disabled" value rather than something this handler needs to
+/// special-case). This is a real double-spend exposure a merchant is opting
+/// into for low-value/in-person orders, not a free lunch - the field help
+/// text on this page says so; this handler only validates the amount itself.
+pub async fn update_zero_conf_max_piconero(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Form(form): Form<UpdateZeroConfForm>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let trimmed = form.zero_conf_max_xmr.trim();
+    let zero_conf_max_piconero = if trimmed.is_empty() {
+        0
+    } else {
+        match shared::xmr_amount::parse_xmr_to_piconero(trimmed) {
+            Ok(piconero) => piconero,
+            Err(e) => {
+                return render_store_detail_page(&state, row, user.is_admin, None, Some(format!("Enter a valid XMR amount: {e}"))).await;
+            }
+        }
+    };
+
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    match state.engine_client.set_zero_conf_max_piconero(&sk, zero_conf_max_piconero).await {
+        Ok(_) => redirect_302(&format!("/dashboard/connections/{id}")),
+        Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
+            render_store_detail_page(&state, row, user.is_admin, None, Some(message)).await
+        }
         Err(_) => {
             render_store_detail_page(&state, row, user.is_admin, None, Some("Something went wrong. Please try again.".to_string())).await
         }
@@ -2357,6 +2426,66 @@ mod tests {
             .unwrap();
         let html = body_text(page).await;
         assert!(html.contains(r#"<option value="EUR" selected>"#), "expected EUR marked selected, got: {html}");
+    }
+
+    #[tokio::test]
+    async fn setting_a_zero_conf_ceiling_persists_and_shows_on_the_store_page() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "zero-conf-update@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/zero-conf"),
+                &session_token,
+                &[("zero_conf_max_xmr", "0.5")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+
+        let page = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(page).await;
+        assert!(
+            html.contains(r#"name="zero_conf_max_xmr" value="0.500000000000""#),
+            "expected the new ceiling's own value to round-trip, got: {html}"
+        );
+    }
+
+    #[tokio::test]
+    async fn an_invalid_zero_conf_amount_is_rejected_with_a_clear_error() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "zero-conf-invalid@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let response = router
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/settings/zero-conf"),
+                &session_token,
+                &[("zero_conf_max_xmr", "not-a-number")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "a validation error re-renders the page, it doesn't redirect");
+        let html = body_text(response).await;
+        assert!(html.contains("Enter a valid XMR amount"), "expected a clear validation error, got: {html}");
     }
 
     #[tokio::test]

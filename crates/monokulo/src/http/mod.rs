@@ -160,6 +160,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(orders::update_base_currency),
         )
         .route(
+            "/dashboard/connections/{id}/settings/zero-conf",
+            axum::routing::post(orders::update_zero_conf_max_piconero),
+        )
+        .route(
             "/dashboard/connections/{id}/settings/confirmation-thresholds",
             axum::routing::post(orders::create_confirmation_threshold),
         )

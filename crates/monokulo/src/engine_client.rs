@@ -282,7 +282,11 @@ impl EngineClient {
             .http
             .patch(format!("{}/api/v1/admin/tenant", self.base_url))
             .bearer_auth(sk)
-            .json(&PatchTenantRequest { allowed_origins: Some(allowed_origins), confirmations_required: None })
+            .json(&PatchTenantRequest {
+                allowed_origins: Some(allowed_origins),
+                confirmations_required: None,
+                zero_conf_max_piconero: None,
+            })
             .send()
             .await?;
         parse_response(response).await
@@ -302,7 +306,34 @@ impl EngineClient {
             .http
             .patch(format!("{}/api/v1/admin/tenant", self.base_url))
             .bearer_auth(sk)
-            .json(&PatchTenantRequest { allowed_origins: None, confirmations_required: Some(confirmations_required) })
+            .json(&PatchTenantRequest {
+                allowed_origins: None,
+                confirmations_required: Some(confirmations_required),
+                zero_conf_max_piconero: None,
+            })
+            .send()
+            .await?;
+        parse_response(response).await
+    }
+
+    /// `PATCH {base_url}/api/v1/admin/tenant` — sets `sk`'s tenant's
+    /// `zero_conf_max_piconero`: the ceiling (in piconero) under which an
+    /// order can read as `paid` off a mempool-only, zero-confirmation
+    /// transaction (`status.rs`'s own `zero_conf_trusted` check at the repo
+    /// root - `total <= ceiling`). `0` is this method's own "disabled"
+    /// value - see `PatchTenantRequest`'s own doc comment for why that's
+    /// safe and preferred over trying to send a `null` the engine can't
+    /// actually distinguish from "leave unchanged" at this HTTP layer.
+    pub async fn set_zero_conf_max_piconero(&self, sk: &str, zero_conf_max_piconero: u64) -> Result<TenantView, EngineClientError> {
+        let response = self
+            .http
+            .patch(format!("{}/api/v1/admin/tenant", self.base_url))
+            .bearer_auth(sk)
+            .json(&PatchTenantRequest {
+                allowed_origins: None,
+                confirmations_required: None,
+                zero_conf_max_piconero: Some(zero_conf_max_piconero),
+            })
             .send()
             .await?;
         parse_response(response).await
@@ -517,21 +548,32 @@ pub struct OrderDetailResponse {
 }
 
 /// A partial mirror of the engine's own `PatchTenantRequest`
-/// (`src/http/admin.rs` at the repo root, which has two more `Option`
-/// fields this client has no caller for yet - `zero_conf_max_piconero`/
-/// `order_expiry_seconds`). Every field left `None` is safe to omit from
-/// the JSON body: serde treats a struct's `Option<T>` fields as optional
-/// automatically (a missing JSON key deserializes to `None`, no
-/// `#[serde(default)]` needed), so the engine sees exactly "leave
-/// everything not set here unchanged" - the same "unchanged vs. set to a
-/// value" contract `TenantConfigPatch`'s own doc comment (`src/store.rs`
-/// at the repo root) describes. Both `set_allowed_origins` and
-/// `set_confirmations_required` below construct this with every other
-/// field `None`.
+/// (`src/http/admin.rs` at the repo root, which has one more `Option`
+/// field this client has no caller for yet - `order_expiry_seconds`).
+/// Every field left `None` is safe to omit from the JSON body: serde
+/// treats a struct's `Option<T>` fields as optional automatically (a
+/// missing JSON key deserializes to `None`, no `#[serde(default)]`
+/// needed), so the engine sees exactly "leave everything not set here
+/// unchanged" - the same "unchanged vs. set to a value" contract
+/// `TenantConfigPatch`'s own doc comment (`src/store.rs` at the repo
+/// root) describes. `set_allowed_origins`, `set_confirmations_required`
+/// and `set_zero_conf_max_piconero` below each construct this with every
+/// other field `None`.
+///
+/// Note the engine's own `PatchTenantRequest::zero_conf_max_piconero` is
+/// `Option<u64>` at the JSON layer too, so an explicit JSON `null` and an
+/// omitted key are indistinguishable there - `TenantConfigPatch`'s real
+/// "clear it back to unset" ability (`zero_conf_max_piconero_set: bool`)
+/// isn't reachable through this HTTP surface. `set_zero_conf_max_piconero`
+/// below sidesteps that rather than needing it: a ceiling of `0` piconero
+/// is itself a real, always-safe "disabled" value (`status.rs`'s own
+/// `zero_conf_trusted` check is `total <= ceiling`, and a real order's
+/// `total` is never `0`), so this client never needs to send `null`.
 #[derive(Serialize)]
 struct PatchTenantRequest {
     allowed_origins: Option<Vec<String>>,
     confirmations_required: Option<u64>,
+    zero_conf_max_piconero: Option<u64>,
 }
 
 /// Mirrors the engine's own `public::CreateOrderRequest` - `description` is

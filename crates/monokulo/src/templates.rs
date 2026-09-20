@@ -794,6 +794,12 @@ pub struct StoreDetailData {
     /// custom thresholds" - the add-threshold form hides itself rather than
     /// accepting a submission the server would just reject anyway.
     pub confirmation_thresholds_at_max: bool,
+    /// This store's current zero-conf ceiling (`TenantView::zero_conf_max_piconero`),
+    /// formatted as an XMR decimal string (`shared::xmr_amount::format_piconero_as_xmr`)
+    /// for the settings field's `value` - empty when `None` or `0` ("accepting
+    /// 0-conf payments" is off), matching the empty-means-disabled convention
+    /// `http::orders::update_zero_conf_max_piconero` reads back on submit.
+    pub zero_conf_max_xmr: String,
     /// Set only when the "update settings" form on this page (see
     /// `http/orders.rs::update_confirmations_required`/`update_fx_provider`)
     /// was just rejected - the engine's own validation error, or this
@@ -1765,6 +1771,7 @@ mod tests {
                     base_currency_options: vec![],
                     confirmation_thresholds: vec![],
                     confirmation_thresholds_at_max: false,
+                    zero_conf_max_xmr: String::new(),
                     settings_error: None,
                 }),
                 logged_in: true,
@@ -1821,6 +1828,7 @@ mod tests {
                     base_currency_options: vec![],
                     confirmation_thresholds: vec![],
                     confirmation_thresholds_at_max: false,
+                    zero_conf_max_xmr: String::new(),
                     settings_error: None,
                 }),
                 logged_in: true,
@@ -1858,6 +1866,7 @@ mod tests {
                     base_currency_options: vec![],
                     confirmation_thresholds: vec![],
                     confirmation_thresholds_at_max: false,
+                    zero_conf_max_xmr: String::new(),
                     settings_error: None,
                 }),
                 logged_in: true,
