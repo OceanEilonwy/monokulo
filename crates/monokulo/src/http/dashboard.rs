@@ -18,12 +18,13 @@
 
 use axum::extract::{Form, Query, State};
 use axum::http::{StatusCode, header};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use serde::Deserialize;
 
-use crate::templates::{network_selected_flags, ConnectViewModel};
+use crate::db::UserRow;
+use crate::templates::network_selected_flags;
 use crate::views;
 
 use super::AppState;
@@ -169,52 +170,44 @@ fn render_login(error: Option<&str>, next: Option<&str>) -> Response {
 /// `ConnectViewModel`'s own doc comment for why that's the right call here
 /// (these are plain-text inputs already, not password fields - echoing
 /// doesn't change what was ever visible on the merchant's own screen).
-fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&ConnectForm>, is_admin: bool) -> Response {
+fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&ConnectForm>, user: &UserRow) -> Response {
     let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
         network_selected_flags(resubmit.map(|f| f.network.as_str()).unwrap_or("mainnet"));
     let selected_currency = resubmit.map(|f| f.base_currency.as_str()).unwrap_or("XMR");
     let currency_options = crate::currencies::currency_options(&state.db.lock().unwrap(), selected_currency).unwrap_or_default();
-    let html = state
-        .templates
-        .render_connect(&ConnectViewModel {
-            error: error.map(str::to_string),
-            public_key: None,
-            endpoint: String::new(),
-            site_url: resubmit.map(|f| f.site_url.clone()).unwrap_or_default(),
-            view_key_hex: resubmit.map(|f| f.view_key_hex.clone()).unwrap_or_default(),
-            spend_pubkey_hex: resubmit.map(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
-            allowed_origins: resubmit.map(|f| f.allowed_origins.clone()).unwrap_or_default(),
-            network_mainnet_selected,
-            network_stagenet_selected,
-            network_testnet_selected,
-            currency_options,
-            logged_in: true,
-            is_admin,
-        })
-        .expect("the built-in connect template must always render");
-    Html(html).into_response()
+    let chrome = views::PageChrome::from_user(Some(user), "/dashboard/connect");
+    let data = views::connect::ConnectViewModel {
+        error: error.map(str::to_string),
+        public_key: None,
+        endpoint: String::new(),
+        site_url: resubmit.map(|f| f.site_url.clone()).unwrap_or_default(),
+        view_key_hex: resubmit.map(|f| f.view_key_hex.clone()).unwrap_or_default(),
+        spend_pubkey_hex: resubmit.map(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
+        allowed_origins: resubmit.map(|f| f.allowed_origins.clone()).unwrap_or_default(),
+        network_mainnet_selected,
+        network_stagenet_selected,
+        network_testnet_selected,
+        currency_options,
+    };
+    views::connect::page(&chrome, &data).into_response()
 }
 
-fn render_connect_success(state: &AppState, public_key: &str, is_admin: bool) -> Response {
-    let html = state
-        .templates
-        .render_connect(&ConnectViewModel {
-            error: None,
-            public_key: Some(public_key.to_string()),
-            endpoint: state.engine_client.base_url().to_string(),
-            site_url: String::new(),
-            view_key_hex: String::new(),
-            spend_pubkey_hex: String::new(),
-            allowed_origins: String::new(),
-            network_mainnet_selected: false,
-            network_stagenet_selected: false,
-            network_testnet_selected: false,
-            currency_options: Vec::new(),
-            logged_in: true,
-            is_admin,
-        })
-        .expect("the built-in connect template must always render");
-    Html(html).into_response()
+fn render_connect_success(state: &AppState, public_key: &str, user: &UserRow) -> Response {
+    let chrome = views::PageChrome::from_user(Some(user), "/dashboard/connect");
+    let data = views::connect::ConnectViewModel {
+        error: None,
+        public_key: Some(public_key.to_string()),
+        endpoint: state.engine_client.base_url().to_string(),
+        site_url: String::new(),
+        view_key_hex: String::new(),
+        spend_pubkey_hex: String::new(),
+        allowed_origins: String::new(),
+        network_mainnet_selected: false,
+        network_stagenet_selected: false,
+        network_testnet_selected: false,
+        currency_options: Vec::new(),
+    };
+    views::connect::page(&chrome, &data).into_response()
 }
 
 /// `303`-free, deliberate `302 Found` redirect (axum's own `Redirect::to`
@@ -359,7 +352,7 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
 /// the dashboard yet, so a bare `401` here is the consistent choice rather
 /// than inventing new behavior for just this one route.
 pub async fn connect_form(State(state): State<AppState>, AuthedUser(user, _token_hash): AuthedUser) -> Response {
-    render_connect_form(&state, None, None, user.is_admin)
+    render_connect_form(&state, None, None, &user)
 }
 
 /// `POST /dashboard/connect` (WBS 1.3.2) - the form equivalent of
@@ -405,12 +398,12 @@ pub async fn connect_submit(
     };
 
     match connections::create_connection_for_user(&state, &user, fields).await {
-        Ok(outcome) => render_connect_success(&state, &outcome.public_key, user.is_admin),
+        Ok(outcome) => render_connect_success(&state, &outcome.public_key, &user),
         Err(CreateConnectionError::BadRequest(message)) => {
-            render_connect_form(&state, Some(&message), Some(&form), user.is_admin)
+            render_connect_form(&state, Some(&message), Some(&form), &user)
         }
         Err(CreateConnectionError::Internal) => {
-            render_connect_form(&state, Some("Something went wrong. Please try again."), Some(&form), user.is_admin)
+            render_connect_form(&state, Some("Something went wrong. Please try again."), Some(&form), &user)
         }
     }
 }

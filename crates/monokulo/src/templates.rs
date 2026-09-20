@@ -18,10 +18,7 @@ const STYLES_PARTIAL: &str = include_str!("views/head.html");
 const NAV_PARTIAL: &str = include_str!("../templates/_nav.html.hbs");
 const INTEGRATION_HELP_PARTIAL: &str = include_str!("../templates/_integration_help.html.hbs");
 
-const CONNECT_TEMPLATE: &str = include_str!("../templates/connect.html.hbs");
 const WEBHOOKS_TEMPLATE: &str = include_str!("../templates/webhooks.html.hbs");
-const CONNECT_PLATFORM_TEMPLATE: &str = include_str!("../templates/connect_platform.html.hbs");
-const NEW_STORE_PICKER_TEMPLATE: &str = include_str!("../templates/new_store_picker.html.hbs");
 const WOOCOMMERCE_INSTRUCTIONS_TEMPLATE: &str = include_str!("../templates/woocommerce_instructions.html.hbs");
 const STORE_DETAIL_TEMPLATE: &str = include_str!("../templates/store_detail.html.hbs");
 const STATUS_TEMPLATE: &str = include_str!("../templates/status.html.hbs");
@@ -58,101 +55,6 @@ pub struct SetupViewModel {
     /// false, i.e. before any account, admin or otherwise, could exist).
     pub logged_in: bool,
     pub is_admin: bool,
-}
-
-/// The view model the wallet-connection template (WBS 1.3.2) takes: either
-/// `error` is set (re-rendering the form after the engine rejected the
-/// request) or `public_key` is set (a successful connection, showing the
-/// confirmation view instead of the form) - never both, and plain `GET`
-/// requests get neither.
-#[derive(Debug, Default, Serialize)]
-pub struct ConnectViewModel {
-    pub error: Option<String>,
-    pub public_key: Option<String>,
-    /// The engine's real base URL (`EngineClient::base_url()`) - only ever
-    /// populated (and only ever rendered) alongside `public_key` on a
-    /// successful connection, so the integration-help partial shown here
-    /// gets the store's real endpoint rather than a placeholder string. Left
-    /// as the default empty string on the plain form render, where it's
-    /// never used.
-    pub endpoint: String,
-    /// The submitted field values, echoed back into the re-rendered form on
-    /// a validation error so a rejected submission doesn't throw away
-    /// everything the merchant typed - including the two key fields, which
-    /// are long, easy-to-mistype hex strings nobody wants to retype from
-    /// scratch after one bad character. All empty strings (and the network
-    /// flags below defaulting to mainnet) on a plain `GET` of the form.
-    /// Never populated (and never rendered - see the template's own `{{#if
-    /// public_key}}`) on a successful submission.
-    pub site_url: String,
-    pub view_key_hex: String,
-    pub spend_pubkey_hex: String,
-    pub allowed_origins: String,
-    pub network_mainnet_selected: bool,
-    pub network_stagenet_selected: bool,
-    pub network_testnet_selected: bool,
-    /// Every known currency (`crate::currencies::currency_options`), for
-    /// the base-currency dropdown - empty on the post-success render, where
-    /// the form itself is no longer shown. See that module's own doc
-    /// comment for why this is never filtered by exchange-rate provider
-    /// support.
-    pub currency_options: Vec<crate::currencies::CurrencyOptionView>,
-    /// Always `true` - every caller of `render_connect` is already behind
-    /// `AuthedUser` (`http/dashboard.rs`'s `connect_form`/`connect_submit`).
-    pub logged_in: bool,
-    pub is_admin: bool,
-}
-
-/// The view model the generic platform-connect confirm form (WBS 1.4.1,
-/// `GET`/`POST /connect/{platform}`) takes - the same wallet-connection
-/// fields the `/dashboard/connect` form (`ConnectViewModel`) has, plus the
-/// three values that must survive the round trip as hidden fields
-/// (`return_url`/`nonce`) or be shown to the merchant (`site_url`), and
-/// `platform` so the form's own `action` can post back to the same
-/// `/connect/{platform}` path it was reached at.
-#[derive(Debug, Default, Serialize)]
-pub struct PlatformConnectViewModel {
-    pub platform: String,
-    pub site_url: String,
-    pub return_url: String,
-    pub nonce: String,
-    pub error: Option<String>,
-    /// Same re-fill purpose as [`ConnectViewModel`]'s own matching fields -
-    /// see that struct's doc comment.
-    pub view_key_hex: String,
-    pub spend_pubkey_hex: String,
-    pub allowed_origins: String,
-    pub network_mainnet_selected: bool,
-    pub network_stagenet_selected: bool,
-    pub network_testnet_selected: bool,
-    /// Same as [`ConnectViewModel::currency_options`] - only meaningful for
-    /// the create-a-new-store half of this page (an existing store already
-    /// has its own base currency, never re-selected here).
-    pub currency_options: Vec<crate::currencies::CurrencyOptionView>,
-    /// Every store this user already has connected (any platform) - lets
-    /// the confirm screen offer "use an existing store" instead of always
-    /// forcing a brand-new tenant to be provisioned. Empty for a user with
-    /// no stores yet, in which case the template shows only the
-    /// create-a-new-store form (`{{#if existing_stores}}` is falsy for an
-    /// empty vec, same convention `DashboardViewModel::has_stores` already
-    /// relies on).
-    pub existing_stores: Vec<ExistingStoreOption>,
-    /// Always `true` - `GET`/`POST /connect/{platform}` only ever render
-    /// this template once a session is already confirmed (see
-    /// `http/connect.rs::start`'s own doc comment: no session redirects to
-    /// `/dashboard/login` instead of rendering this at all).
-    pub logged_in: bool,
-    pub is_admin: bool,
-}
-
-/// One row of the "use an existing store" picker
-/// (`connect_platform.html.hbs`) - just enough to identify and label a
-/// choice, not the full [`crate::db::StoreConnectionRow`].
-#[derive(Debug, Serialize)]
-pub struct ExistingStoreOption {
-    pub connection_id: String,
-    pub display_name: String,
-    pub platform: String,
 }
 
 /// The three `<option>` "selected" flags both connect forms' network
@@ -826,10 +728,7 @@ impl TemplateEngine {
         handlebars.register_template_string("nav", NAV_PARTIAL)?;
         handlebars.register_template_string("integration_help", INTEGRATION_HELP_PARTIAL)?;
 
-        handlebars.register_template_string("connect", CONNECT_TEMPLATE)?;
         handlebars.register_template_string("webhooks", WEBHOOKS_TEMPLATE)?;
-        handlebars.register_template_string("connect_platform", CONNECT_PLATFORM_TEMPLATE)?;
-        handlebars.register_template_string("new_store_picker", NEW_STORE_PICKER_TEMPLATE)?;
         handlebars.register_template_string("woocommerce_instructions", WOOCOMMERCE_INSTRUCTIONS_TEMPLATE)?;
         handlebars.register_template_string("store_detail", STORE_DETAIL_TEMPLATE)?;
         handlebars.register_template_string("status", STATUS_TEMPLATE)?;
@@ -860,20 +759,8 @@ impl TemplateEngine {
         Ok(self.handlebars.render("admin_invites", data)?)
     }
 
-    pub fn render_platform_connect(&self, data: &PlatformConnectViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("connect_platform", data)?)
-    }
-
-    pub fn render_connect(&self, data: &ConnectViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("connect", data)?)
-    }
-
     pub fn render_webhooks(&self, data: &WebhooksViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("webhooks", data)?)
-    }
-
-    pub fn render_new_store_picker(&self, logged_in: bool, is_admin: bool) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("new_store_picker", &NavOnlyViewModel { logged_in, is_admin })?)
     }
 
     pub fn render_woocommerce_instructions(&self, logged_in: bool, is_admin: bool) -> Result<String, TemplateError> {
@@ -989,155 +876,15 @@ mod tests {
     // Signup/login page tests moved to `views::auth`'s own test module -
     // those pages no longer go through this engine at all.
 
-    #[test]
-    fn connect_platform_template_renders_the_confirm_form() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_platform_connect(&PlatformConnectViewModel {
-                platform: "woocommerce".to_string(),
-                site_url: "https://shop.example.com".to_string(),
-                return_url: "https://shop.example.com/settings".to_string(),
-                nonce: "nonce-abc".to_string(),
-                error: None,
-                ..Default::default()
-            })
-            .unwrap();
-        assert!(html.contains("https://shop.example.com"));
-        assert!(html.contains(r#"action="/connect/woocommerce""#));
-        assert!(html.contains(r#"name="return_url" value="https://shop.example.com/settings""#));
-        assert!(html.contains(r#"name="nonce" value="nonce-abc""#));
-        assert!(html.contains("view_key_hex"));
-    }
-
-    #[test]
-    fn connect_platform_template_shows_the_error_when_present() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_platform_connect(&PlatformConnectViewModel {
-                platform: "woocommerce".to_string(),
-                site_url: "https://shop.example.com".to_string(),
-                return_url: "https://shop.example.com/settings".to_string(),
-                nonce: "nonce-abc".to_string(),
-                error: Some("bad view key hex".to_string()),
-                ..Default::default()
-            })
-            .unwrap();
-        assert!(html.contains("bad view key hex"));
-        assert!(html.contains("<form"), "the form must still be present on error");
-    }
-
-    #[test]
-    fn connect_platform_template_re_fills_every_submitted_field_when_re_rendered_after_a_rejected_submission() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_platform_connect(&PlatformConnectViewModel {
-                platform: "woocommerce".to_string(),
-                site_url: "https://shop.example.com".to_string(),
-                return_url: "https://shop.example.com/settings".to_string(),
-                nonce: "nonce-abc".to_string(),
-                error: Some("bad view key hex".to_string()),
-                view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707".to_string(),
-                spend_pubkey_hex: "deadbeef".to_string(),
-                allowed_origins: "https://shop.example.com".to_string(),
-                network_stagenet_selected: true,
-                ..Default::default()
-            })
-            .unwrap();
-        assert!(
-            html.contains(r#"value="0707070707070707070707070707070707070707070707070707070707070707""#),
-            "expected view_key_hex echoed back, got: {html}"
-        );
-        assert!(html.contains(r#"value="deadbeef""#), "expected spend_pubkey_hex echoed back, got: {html}");
-        assert!(
-            html.contains(r#"name="allowed_origins" value="https://shop.example.com""#),
-            "expected allowed_origins echoed back, got: {html}"
-        );
-        assert!(html.contains(r#"value="stagenet" selected"#), "expected the stagenet option marked selected, got: {html}");
-    }
-
-    #[test]
-    fn connect_template_renders_the_form_with_no_error_or_public_key() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_connect(&ConnectViewModel::default()).unwrap();
-        assert!(html.contains("<form"));
-        assert!(html.contains("view_key_hex"));
-    }
-
-    #[test]
-    fn connect_template_shows_the_error_when_present() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_connect(&ConnectViewModel { error: Some("bad view key hex".to_string()), ..Default::default() })
-            .unwrap();
-        assert!(html.contains("bad view key hex"));
-        assert!(html.contains("<form"), "the form must still be present on error");
-    }
-
-    /// The actual bug being fixed: a rejected submission used to lose every
-    /// field the merchant typed, forcing them to retype two long hex keys
-    /// from scratch. `error` being set must not mean these are gone.
-    #[test]
-    fn connect_template_re_fills_every_submitted_field_when_re_rendered_after_a_rejected_submission() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_connect(&ConnectViewModel {
-                error: Some("bad view key hex".to_string()),
-                site_url: "https://shop.example.com".to_string(),
-                view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707".to_string(),
-                spend_pubkey_hex: "deadbeef".to_string(),
-                allowed_origins: "https://shop.example.com, https://admin.example.com".to_string(),
-                network_stagenet_selected: true,
-                ..Default::default()
-            })
-            .unwrap();
-        assert!(html.contains(r#"value="https://shop.example.com""#), "expected site_url echoed back, got: {html}");
-        assert!(
-            html.contains(r#"value="0707070707070707070707070707070707070707070707070707070707070707""#),
-            "expected view_key_hex echoed back, got: {html}"
-        );
-        assert!(html.contains(r#"value="deadbeef""#), "expected spend_pubkey_hex echoed back, got: {html}");
-        assert!(
-            html.contains(r#"value="https://shop.example.com, https://admin.example.com""#),
-            "expected allowed_origins echoed back, got: {html}"
-        );
-        assert!(
-            html.contains(r#"value="stagenet" selected"#),
-            "expected the stagenet option marked selected, got: {html}"
-        );
-        assert!(
-            !html.contains(r#"value="mainnet" selected"#),
-            "mainnet must not stay marked selected once stagenet was actually submitted, got: {html}"
-        );
-    }
-
-    #[test]
-    fn connect_template_shows_the_public_key_instead_of_the_form_on_success() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_connect(&ConnectViewModel {
-                error: None,
-                public_key: Some("pk_deadbeef".to_string()),
-                endpoint: "http://127.0.0.1:8080".to_string(),
-                ..Default::default()
-            })
-            .unwrap();
-        assert!(html.contains("pk_deadbeef"));
-        assert!(!html.contains("<form"), "the confirmation view should not still show the form");
-    }
+    // Connect / connect-platform / new-store-picker page tests moved to
+    // `views::connect`'s own test module - those pages no longer go through
+    // this engine at all.
 
     // Landing page tests moved to `views::landing`'s own test module - that
     // page no longer goes through this engine at all.
 
     // Dashboard home page tests moved to `views::dashboard`'s own test
     // module - that page no longer goes through this engine at all.
-
-    #[test]
-    fn new_store_picker_links_to_both_flows() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_new_store_picker(true, false).unwrap();
-        assert!(html.contains(r#"href="/dashboard/connections/new/woocommerce""#));
-        assert!(html.contains(r#"href="/dashboard/connect""#));
-    }
 
     #[test]
     fn woocommerce_instructions_page_renders() {

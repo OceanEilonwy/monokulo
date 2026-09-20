@@ -41,7 +41,8 @@ use url::Url;
 use crate::crypto;
 use crate::db::UserRow;
 use crate::now_unix;
-use crate::templates::{network_selected_flags, ExistingStoreOption, PlatformConnectViewModel};
+use crate::templates::network_selected_flags;
+use crate::views::connect::{ExistingStoreOption, PlatformConnectViewModel};
 
 use super::connections::{self, CreateConnectionError, CreateConnectionFields};
 use super::dashboard::redirect_302;
@@ -101,27 +102,23 @@ fn render_confirm_form(
             platform: row.platform,
         })
         .collect();
-    let html = state
-        .templates
-        .render_platform_connect(&PlatformConnectViewModel {
-            platform: platform.to_string(),
-            site_url: site_url.to_string(),
-            return_url: return_url.to_string(),
-            nonce: nonce.to_string(),
-            error: error.map(str::to_string),
-            view_key_hex: resubmit.and_then(|f| f.view_key_hex.clone()).unwrap_or_default(),
-            spend_pubkey_hex: resubmit.and_then(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
-            allowed_origins: resubmit.and_then(|f| f.allowed_origins.clone()).unwrap_or_default(),
-            network_mainnet_selected,
-            network_stagenet_selected,
-            network_testnet_selected,
-            currency_options,
-            existing_stores,
-            logged_in: true,
-            is_admin: user.is_admin,
-        })
-        .expect("the built-in platform-connect template must always render");
-    axum::response::Html(html).into_response()
+    let chrome = crate::views::PageChrome::from_user(Some(user), format!("/connect/{platform}"));
+    let data = PlatformConnectViewModel {
+        platform: platform.to_string(),
+        site_url: site_url.to_string(),
+        return_url: return_url.to_string(),
+        nonce: nonce.to_string(),
+        error: error.map(str::to_string),
+        view_key_hex: resubmit.and_then(|f| f.view_key_hex.clone()).unwrap_or_default(),
+        spend_pubkey_hex: resubmit.and_then(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
+        allowed_origins: resubmit.and_then(|f| f.allowed_origins.clone()).unwrap_or_default(),
+        network_mainnet_selected,
+        network_stagenet_selected,
+        network_testnet_selected,
+        currency_options,
+        existing_stores,
+    };
+    crate::views::connect::platform_page(&chrome, &data).into_response()
 }
 
 /// Percent-encodes `s` for safe embedding as one query-string value - the

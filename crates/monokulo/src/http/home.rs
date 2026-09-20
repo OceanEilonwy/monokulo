@@ -43,12 +43,9 @@ pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Respo
 /// flows (WBS follow-up: "custom (advanced)" is the existing
 /// `/dashboard/connect` form; "simple -> woocommerce" is the guided page
 /// below). Behind [`AuthedUser`] like every other `/dashboard/*` route.
-pub async fn new_store_picker(State(state): State<AppState>, AuthedUser(user, _): AuthedUser) -> Response {
-    let html = state
-        .templates
-        .render_new_store_picker(true, user.is_admin)
-        .expect("the built-in new-store-picker template must always render");
-    Html(html).into_response()
+pub async fn new_store_picker(AuthedUser(user, _): AuthedUser) -> Response {
+    let chrome = views::PageChrome::from_user(Some(&user), "/dashboard/connections/new");
+    views::connect::new_store_picker_page(&chrome).into_response()
 }
 
 /// `GET /dashboard/connections/new/woocommerce` - a real live connect *form*
