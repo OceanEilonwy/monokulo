@@ -6,7 +6,7 @@
 
 use axum::extract::State;
 use axum::http::HeaderMap;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 
 use crate::views;
 use crate::views::dashboard::{DashboardOrderRow, DashboardRescanRow, DashboardStoreRow, DashboardViewModel};
@@ -55,12 +55,9 @@ pub async fn new_store_picker(AuthedUser(user, _): AuthedUser) -> Response {
 /// dashboard has no way to manufacture a legitimate `return_url` back into
 /// someone else's WordPress admin. So this is instructions, not a form; see
 /// this page's own template for the reasoning restated for the merchant.
-pub async fn woocommerce_instructions(State(state): State<AppState>, AuthedUser(user, _): AuthedUser) -> Response {
-    let html = state
-        .templates
-        .render_woocommerce_instructions(true, user.is_admin)
-        .expect("the built-in woocommerce-instructions template must always render");
-    Html(html).into_response()
+pub async fn woocommerce_instructions(AuthedUser(user, _): AuthedUser) -> Response {
+    let chrome = views::PageChrome::from_user(Some(&user), "/dashboard/connections/new/woocommerce");
+    views::store_detail::woocommerce_instructions_page(&chrome).into_response()
 }
 
 /// `GET /dashboard` - the real dashboard home page: every store the user
