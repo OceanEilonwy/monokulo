@@ -77,7 +77,6 @@ use serde_json::json;
 
 use crate::db::{SharedDb, UserRow};
 use crate::engine_client::EngineClient;
-use crate::templates::TemplateEngine;
 
 /// Name of the cookie the browser-facing login flow (`dashboard::login_submit`)
 /// sets and [`AuthedUser`] reads back — a plain constant so the two sides
@@ -94,10 +93,6 @@ pub struct AppState {
     /// environment variable in the real binary (`main.rs`); tests just
     /// construct a fixed key directly.
     pub encryption_key: [u8; 32],
-    /// Renders the two fixed browser-facing pages (WBS 1.3.1). `Arc`-wrapped
-    /// since it's built once (parsing the two built-in templates) and only
-    /// ever read afterward — cheap to clone into every `AppState` clone.
-    pub templates: Arc<TemplateEngine>,
     /// Short-TTL cache of the engine's own `GET /status` response, shared by
     /// every viewer - see `http::status_page`'s own module doc comment for
     /// why this exists (a real incident: the nav bar's status dot alone

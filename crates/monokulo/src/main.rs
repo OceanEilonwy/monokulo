@@ -9,7 +9,6 @@ use monokulo::exchange_rate_config::{self, ExchangeRateConfig};
 use monokulo::http::status_page::new_status_cache;
 use monokulo::http::{AppState, build_router};
 use monokulo::settings::{self, ScalarSetting};
-use monokulo::templates::TemplateEngine;
 use shared::rate_limit::RateLimiter;
 use std::sync::Arc;
 
@@ -72,8 +71,6 @@ async fn main() {
     let engine_client =
         EngineClient::with_cache_limit(settings::get::<String>(&db, &settings::ENGINE_URL), http_cache_max_mb * 1024 * 1024);
     let encryption_key = encryption_key_from_env();
-    let templates =
-        std::sync::Arc::new(TemplateEngine::new().expect("built-in signup/login templates must parse"));
     let exchange_rate_cfg = exchange_rate_config_from_settings(&db);
     // No background refresh loop any more (`docs/fx_refactor.md` follow-up:
     // "looked up with an async call, rather than having it poll in the
@@ -87,7 +84,6 @@ async fn main() {
         db: db.into_shared(),
         engine_client,
         encryption_key,
-        templates,
         status_cache: new_status_cache(),
         exchange_rate,
         rate_limiter,

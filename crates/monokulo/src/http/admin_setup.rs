@@ -158,7 +158,6 @@ mod tests {
             db: Db::open_in_memory().unwrap().into_shared(),
             engine_client: EngineClient::new("http://127.0.0.1:1"),
             encryption_key: TEST_ENCRYPTION_KEY,
-            templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
