@@ -138,6 +138,19 @@ another.{{/if}}</span>
 <button type="submit">Save</button>
 </form>
 
+<h3>Zero-confirmation payments</h3>
+<form method="post" action="/dashboard/connections/{{store.connection_id}}/settings/zero-conf">
+<label>Accept unconfirmed payments up to (XMR)
+<input type="text" name="zero_conf_max_xmr" value="{{store.zero_conf_max_xmr}}" placeholder="0.00 (disabled)">
+<span class="field-help">An order at or under this XMR amount can read as paid the moment its transaction
+reaches this store's node's mempool, before any block confirms it - useful for fast, low-value, in-person
+sales. This is a real double-spend risk for exactly that amount of XMR (an attacker who can out-race the
+transaction to a miner keeps both the goods and the coin) - keep this at the smallest amount you're actually
+willing to lose. Leave blank to require the confirmations above for every order, with no exception.</span>
+</label>
+<button type="submit">Update</button>
+</form>
+
 {{#if store.fx_provider_options}}
 <form method="post" action="/dashboard/connections/{{store.connection_id}}/settings/fx-provider">
 <label>Exchange rate provider
