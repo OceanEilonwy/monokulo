@@ -39,14 +39,15 @@
 use std::collections::{BTreeMap, HashMap};
 
 use axum::extract::{Form, State};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use serde::{Deserialize, Serialize};
 
 use shared::settings::SettingSource;
 
-use crate::db::Db;
+use crate::db::{Db, UserRow};
 use crate::settings::{ScalarSetting, ALL_SCALAR};
-use crate::templates::{AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel};
+use crate::views;
+use crate::views::admin::{AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel};
 
 use super::{AppState, AuthedAdmin};
 
@@ -158,7 +159,7 @@ async fn build_view_model(
     error: Option<String>,
     success: Option<String>,
 ) -> AdminSettingsViewModel {
-    let mut view = AdminSettingsViewModel { error, success, monokulo_fields, logged_in: true, is_admin: true, ..Default::default() };
+    let mut view = AdminSettingsViewModel { error, success, monokulo_fields, ..Default::default() };
     match fetch_scanner_settings(&engine_url, &admin_token).await {
         Ok(Some((fields, networks))) => {
             view.scanner_configured = true;
@@ -178,19 +179,19 @@ async fn build_view_model(
     view
 }
 
-fn render(state: &AppState, view: AdminSettingsViewModel) -> Response {
-    let html = state.templates.render_admin_settings(&view).expect("the built-in admin-settings template must always render");
-    Html(html).into_response()
+fn render(admin_user: &UserRow, view: AdminSettingsViewModel) -> Response {
+    let chrome = views::PageChrome::from_user(Some(admin_user), "/dashboard/admin/settings");
+    views::admin::admin_settings_page(&chrome, &view).into_response()
 }
 
 /// `GET /dashboard/admin/settings`.
-pub async fn page(State(state): State<AppState>, _admin: AuthedAdmin) -> Response {
+pub async fn page(State(state): State<AppState>, AuthedAdmin(admin_user, _): AuthedAdmin) -> Response {
     let (fields, engine_url, admin_token) = {
         let db = state.db.lock().unwrap();
         (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
     };
     let view = build_view_model(fields, engine_url, admin_token, None, None).await;
-    render(&state, view)
+    render(&admin_user, view)
 }
 
 /// Validates one monokulo scalar's submitted raw value against the type its
@@ -245,11 +246,15 @@ fn validate_monokulo_scalar(setting: &ScalarSetting, value: &str) -> Result<(), 
 /// submitted. All-or-nothing: one invalid field re-renders the whole page
 /// with an error and changes nothing, the same policy scanner's own
 /// `update_settings` applies to its scalars.
-pub async fn save_monokulo(State(state): State<AppState>, _admin: AuthedAdmin, Form(form): Form<HashMap<String, String>>) -> Response {
+pub async fn save_monokulo(
+    State(state): State<AppState>,
+    AuthedAdmin(admin_user, _): AuthedAdmin,
+    Form(form): Form<HashMap<String, String>>,
+) -> Response {
     for setting in ALL_SCALAR {
         if let Some(value) = form.get(setting.key) {
             if let Err(message) = validate_monokulo_scalar(setting, value) {
-                return render_error(&state, message).await;
+                return render_error(&state, &admin_user, message).await;
             }
         }
     }
@@ -263,7 +268,7 @@ pub async fn save_monokulo(State(state): State<AppState>, _admin: AuthedAdmin, F
     };
 
     if save_error.is_some() {
-        return render_error(&state, "Something went wrong saving these settings. Please try again.".to_string()).await;
+        return render_error(&state, &admin_user, "Something went wrong saving these settings. Please try again.".to_string()).await;
     }
 
     let (fields, engine_url, admin_token) = {
@@ -271,19 +276,19 @@ pub async fn save_monokulo(State(state): State<AppState>, _admin: AuthedAdmin, F
         (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
     };
     let view = build_view_model(fields, engine_url, admin_token, None, Some("Monokulo settings saved.".to_string())).await;
-    render(&state, view)
+    render(&admin_user, view)
 }
 
 /// Re-reads the current state fresh and re-renders the page with `message`
 /// as the error banner - the common "a submission was rejected, show the
 /// whole page again with nothing changed" path both `POST` handlers use.
-async fn render_error(state: &AppState, message: String) -> Response {
+async fn render_error(state: &AppState, admin_user: &UserRow, message: String) -> Response {
     let (fields, engine_url, admin_token) = {
         let db = state.db.lock().unwrap();
         (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
     };
     let view = build_view_model(fields, engine_url, admin_token, Some(message), None).await;
-    render(state, view)
+    render(admin_user, view)
 }
 
 #[derive(Serialize, Default)]
@@ -298,13 +303,17 @@ struct RemoteUpdateRequest {
 /// these fields (it doesn't know scanner's own rules, and shouldn't have to
 /// duplicate them) - whatever the scanner instance itself rejects comes back
 /// as this page's own error banner, verbatim.
-pub async fn save_scanner(State(state): State<AppState>, _admin: AuthedAdmin, Form(form): Form<HashMap<String, String>>) -> Response {
+pub async fn save_scanner(
+    State(state): State<AppState>,
+    AuthedAdmin(admin_user, _): AuthedAdmin,
+    Form(form): Form<HashMap<String, String>>,
+) -> Response {
     let (engine_url, admin_token) = {
         let db = state.db.lock().unwrap();
         engine_connection(&db)
     };
     if engine_url.trim().is_empty() || admin_token.trim().is_empty() {
-        return render_error(&state, "No scanner connection is configured.".to_string()).await;
+        return render_error(&state, &admin_user, "No scanner connection is configured.".to_string()).await;
     }
 
     let mut req = RemoteUpdateRequest::default();
@@ -319,7 +328,7 @@ pub async fn save_scanner(State(state): State<AppState>, _admin: AuthedAdmin, Fo
                     req.monero_node.insert(network.to_string(), Some(parsed));
                 }
                 Err(e) => {
-                    return render_error(&state, format!("Monero node config for {network} is not valid JSON: {e}")).await;
+                    return render_error(&state, &admin_user, format!("Monero node config for {network} is not valid JSON: {e}")).await;
                 }
             }
         } else {
@@ -344,7 +353,7 @@ pub async fn save_scanner(State(state): State<AppState>, _admin: AuthedAdmin, Fo
         (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
     };
     let view = build_view_model(fields, engine_url, admin_token, error, success).await;
-    render(&state, view)
+    render(&admin_user, view)
 }
 
 #[cfg(test)]

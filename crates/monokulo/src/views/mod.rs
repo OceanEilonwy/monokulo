@@ -19,6 +19,7 @@ use maud::{html, Markup, PreEscaped, DOCTYPE};
 
 use crate::db::{Theme, UserRow};
 
+pub mod admin;
 pub mod auth;
 pub mod connect;
 pub mod dashboard;
@@ -29,7 +30,7 @@ pub mod status;
 pub mod store_detail;
 pub mod webhooks;
 // More page modules are added here as they're migrated off handlebars -
-// `admin`, `checkout`, `invites`, `pos`.
+// `checkout`, `pos`.
 
 /// The shared `<head>` content (fonts, the full color/spacing/radius token
 /// system, every component's CSS) - see that file's own header comment.

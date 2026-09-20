@@ -20,12 +20,13 @@
 //! login.
 
 use axum::extract::{Form, State};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use serde::Deserialize;
 
-use crate::templates::SetupViewModel;
+use crate::views;
+use crate::views::admin::SetupViewModel;
 
 use super::dashboard::redirect_302;
 use super::login;
@@ -47,12 +48,10 @@ pub struct SetupForm {
     pub confirm_password: String,
 }
 
-fn render_setup_form(state: &AppState, error: Option<&str>, email: &str) -> Response {
-    let html = state
-        .templates
-        .render_admin_setup(&SetupViewModel { error: error.map(str::to_string), email: email.to_string(), logged_in: false, is_admin: false })
-        .expect("the built-in admin-setup template must always render");
-    Html(html).into_response()
+fn render_setup_form(_state: &AppState, error: Option<&str>, email: &str) -> Response {
+    let chrome = views::PageChrome::from_user(None, "/admin/setup");
+    let data = SetupViewModel { error: error.map(str::to_string), email: email.to_string() };
+    views::admin::setup_page(&chrome, &data).into_response()
 }
 
 /// `GET /admin/setup`. Once setup is already complete this is no longer a
