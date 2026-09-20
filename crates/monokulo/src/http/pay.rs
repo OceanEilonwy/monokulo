@@ -218,6 +218,29 @@ pub async fn favicon_svg() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], FAVICON_SVG)
 }
 
+const MANROPE_500_WOFF2: &[u8] = include_bytes!("../../static/manrope-500.woff2");
+const MANROPE_700_WOFF2: &[u8] = include_bytes!("../../static/manrope-700.woff2");
+const MANROPE_800_WOFF2: &[u8] = include_bytes!("../../static/manrope-800.woff2");
+
+/// `GET /static/manrope-{500,700,800}.woff2` - the UI typeface
+/// (`_styles.html.hbs`'s `@font-face`), self-hosted for the same reason as
+/// the logo/favicon/client-library assets above: no third-party CDN
+/// dependency on any page. This one matters more than most - a Google
+/// Fonts `<link>` would leak every visitor's IP to Google on every page
+/// load, checkout included, which is the wrong tradeoff for a
+/// privacy-focused payment tool. Latin subset only (this UI has no other
+/// script), matching what a Google Fonts request for this weight range
+/// would itself have served.
+pub async fn manrope_500_woff2() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "font/woff2")], MANROPE_500_WOFF2)
+}
+pub async fn manrope_700_woff2() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "font/woff2")], MANROPE_700_WOFF2)
+}
+pub async fn manrope_800_woff2() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "font/woff2")], MANROPE_800_WOFF2)
+}
+
 #[cfg(test)]
 mod tests {
     use axum::Router;

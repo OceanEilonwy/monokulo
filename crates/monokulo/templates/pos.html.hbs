@@ -23,27 +23,6 @@
    the counter (both portrait and landscape), constrained to a centered
    column on wider desktop screens so it stays usable there too without
    trying to be its primary target. */
-/* Page-scoped palette: the shared `_styles` partial's tokens are
-   deliberately hard-black/no-radius/no-shadow ("semi-brutalist"), but this
-   screen is the first step of a deliberate, separate move to a calmer,
-   less brutalist look (indigo/purple, soft edges) - starting here rather
-   than across every page at once. Redeclaring `:root` down here (after
-   the shared partial's own `:root`, included just above) wins on source
-   order at equal specificity, and only affects this page's own DOM -
-   nothing else changes yet. */
-:root {
-  --ink: #2c2650;
-  --paper: #f4f2fb;
-  --paper-raised: #ffffff;
-  --line: #c3bbee;
-  --accent: #7c6cf0;
-  --accent-ink: #ffffff;
-  --error: #d1477a;
-  --success: #24a17a;
-  --warning: #c98a2e;
-  --muted: #6f6a92;
-  --pos-frame: #b6ace6;
-}
 html, body { height: 100%; }
 body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: contain; }
 
@@ -221,8 +200,14 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
      flattens both into a single tight shadow and nudges the cap down
      (`.key:active` below) to read as a real, physical press. */
   border-radius: 22%;
-  background: linear-gradient(165deg, #ffffff 0%, #eeecfb 100%);
-  box-shadow: 0 0.12em 0 rgba(44, 38, 80, 0.28), 0 0.3em 0.5em rgba(44, 38, 80, 0.15);
+  /* `var(--paper-raised)`, never a literal white: this gradient's base is
+     the theme's own surface color, or dark mode gets a near-white keycap
+     under near-white `--ink` text - unreadable by construction. Shadow
+     tint is `--shadow-rgb` (a fixed dark constant, not `--ink`, which
+     flips to near-white in dark mode - a shadow must stay dark regardless
+     of the surface it's cast on). */
+  background: linear-gradient(165deg, var(--paper-raised) 0%, color-mix(in srgb, var(--pos-frame) 18%, var(--paper-raised)) 100%);
+  box-shadow: 0 0.12em 0 rgba(var(--shadow-rgb), 0.28), 0 0.3em 0.5em rgba(var(--shadow-rgb), 0.15);
   transition: transform 0.06s ease, box-shadow 0.06s ease, background 0.06s ease;
 }
 /* `currentColor` (not a fixed color) so this ring automatically matches
@@ -231,23 +216,29 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
    before `.key:active` below so a press (both `:hover` and `:active` true
    at once) still resolves to the pressed look, not a blend of the two. */
 .key:hover .key-face {
-  box-shadow: 0 0.12em 0 rgba(44, 38, 80, 0.28), 0 0.3em 0.5em rgba(44, 38, 80, 0.15), inset 0 0 0 0.12em currentColor;
+  box-shadow: 0 0.12em 0 rgba(var(--shadow-rgb), 0.28), 0 0.3em 0.5em rgba(var(--shadow-rgb), 0.15), inset 0 0 0 0.12em currentColor;
 }
 .key:active .key-face {
   background: var(--accent);
   color: var(--accent-ink);
-  box-shadow: 0 0.02em 0 rgba(44, 38, 80, 0.28);
+  box-shadow: 0 0.02em 0 rgba(var(--shadow-rgb), 0.28);
   transform: translateY(0.08em);
 }
 /* Clear/backspace read at the same visual weight as every digit key, and
    now also get their own colored keycap (not just a colored glyph) - red
    for the destructive "clear the whole amount", amber for the more
    forgiving single-digit "backspace" - the way a real keyboard's accent
-   keycaps work, rather than a plain color swap on the label alone. */
-.key-clear .key-face { color: var(--error); background: linear-gradient(165deg, #fdeaf0 0%, #f6cedb 100%); }
-.key-clear:active .key-face { background: var(--error); color: #fff; }
-.key-backspace .key-face { color: var(--warning); background: linear-gradient(165deg, #fbf0dc 0%, #f0dcac 100%); }
-.key-backspace:active .key-face { background: var(--warning); color: #fff; }
+   keycaps work, rather than a plain color swap on the label alone. Tints
+   via `color-mix` off `--paper-raised` (never a literal hex) so they stay
+   correct in dark mode too. Pressed text is `--error-ink`/`--warning-ink`,
+   not a literal white: `--error`/`--warning` flip from dark (light mode)
+   to light (dark mode), so the readable ink on top of them flips too - a
+   fixed white would be unreadable on dark mode's much lighter error/
+   warning once pressed. */
+.key-clear .key-face { color: var(--error); background: linear-gradient(165deg, color-mix(in srgb, var(--error) 12%, var(--paper-raised)), color-mix(in srgb, var(--error) 24%, var(--paper-raised))); }
+.key-clear:active .key-face { background: var(--error); color: var(--error-ink); }
+.key-backspace .key-face { color: var(--warning); background: linear-gradient(165deg, color-mix(in srgb, var(--warning) 12%, var(--paper-raised)), color-mix(in srgb, var(--warning) 24%, var(--paper-raised))); }
+.key-backspace:active .key-face { background: var(--warning); color: var(--warning-ink); }
 /* Sized in `em`, tracking `.key`'s own font-size, rather than a separate
    calc - one fewer thing to keep in sync with the digit glyphs next to it.
    `flex: none` is still required, not cosmetic: without it, `.key`'s own
@@ -269,7 +260,7 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   padding: 0.6em 0.7em;
   border: 2px solid var(--line);
   border-radius: 0.6em;
-  background: #fff;
+  background: var(--paper-raised);
   color: var(--ink);
 }
 

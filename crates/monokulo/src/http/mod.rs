@@ -218,6 +218,9 @@ pub fn build_router(state: AppState) -> Router {
     let router = router.route("/static/logo.svg", axum::routing::get(pay::logo_svg));
     let router = router.route("/static/logo-inverted.svg", axum::routing::get(pay::logo_inverted_svg));
     let router = router.route("/static/favicon.svg", axum::routing::get(pay::favicon_svg));
+    let router = router.route("/static/manrope-500.woff2", axum::routing::get(pay::manrope_500_woff2));
+    let router = router.route("/static/manrope-700.woff2", axum::routing::get(pay::manrope_700_woff2));
+    let router = router.route("/static/manrope-800.woff2", axum::routing::get(pay::manrope_800_woff2));
 
     // Test-only route exercising `AuthedUser` - see its doc comment.
     // Compiled only under `#[cfg(test)]`, so it never exists in the real
