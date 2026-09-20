@@ -18,12 +18,13 @@
 
 use axum::extract::{Form, Path, Query, State};
 use axum::http::HeaderMap;
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
-use crate::db::InviteRequestRow;
+use crate::db::{InviteRequestRow, UserRow};
 use crate::now_unix;
-use crate::templates::{AdminInviteRequestRow, AdminInvitesViewModel, RequestInviteViewModel};
+use crate::views;
+use crate::views::admin::{AdminInviteRequestRow, AdminInvitesViewModel, RequestInviteViewModel};
 
 use super::dashboard::redirect_302;
 use super::{AppState, AuthedAdmin};
@@ -36,12 +37,10 @@ pub struct RequestInviteForm {
     pub message: String,
 }
 
-fn render_request_invite(state: &AppState, error: Option<&str>, submitted: bool) -> Response {
-    let html = state
-        .templates
-        .render_request_invite(&RequestInviteViewModel { error: error.map(str::to_string), submitted, logged_in: false, is_admin: false })
-        .expect("the built-in request-invite template must always render");
-    Html(html).into_response()
+fn render_request_invite(_state: &AppState, error: Option<&str>, submitted: bool) -> Response {
+    let chrome = views::PageChrome::from_user(None, "/request-invite");
+    let data = RequestInviteViewModel { error: error.map(str::to_string), submitted };
+    views::admin::request_invite_page(&chrome, &data).into_response()
 }
 
 /// `GET /request-invite`.
@@ -178,6 +177,7 @@ pub struct InvitesPageQuery {
 #[allow(clippy::too_many_arguments)]
 fn render_invites_page(
     state: &AppState,
+    admin_user: &UserRow,
     headers: &HeaderMap,
     requested_page: u32,
     deleted_id: Option<&str>,
@@ -209,30 +209,28 @@ fn render_invites_page(
         previous_page: page.saturating_sub(1).max(1),
         next_page: (page + 1).min(total_pages),
         created_link,
-        logged_in: true,
-        is_admin: true,
     };
-    let html = state.templates.render_admin_invites(&view).expect("the built-in admin-invites template must always render");
-    Html(html).into_response()
+    let chrome = views::PageChrome::from_user(Some(admin_user), "/dashboard/admin/invites");
+    views::admin::admin_invites_page(&chrome, &view).into_response()
 }
 
 /// `GET /dashboard/admin/invites?page=N&deleted=<id>` (or `?cleared=N` right
 /// after "delete all").
 pub async fn invites_page(
     State(state): State<AppState>,
-    _admin: AuthedAdmin,
+    AuthedAdmin(admin_user, _): AuthedAdmin,
     headers: HeaderMap,
     Query(query): Query<InvitesPageQuery>,
 ) -> Response {
     let success = query.cleared.map(|n| format!("{n} request{} deleted.", if n == 1 { "" } else { "s" }));
-    render_invites_page(&state, &headers, query.page.unwrap_or(1), query.deleted.as_deref(), None, None, success)
+    render_invites_page(&state, &admin_user, &headers, query.page.unwrap_or(1), query.deleted.as_deref(), None, None, success)
 }
 
 /// `POST /dashboard/admin/invites/create-link` - the standalone-link
 /// button: a fresh, never-request-linked invite, shown exactly once (see
 /// `AdminInvitesViewModel::created_link`'s own doc comment) and only ever
 /// stored hashed.
-pub async fn create_invite_link(State(state): State<AppState>, _admin: AuthedAdmin, headers: HeaderMap) -> Response {
+pub async fn create_invite_link(State(state): State<AppState>, AuthedAdmin(admin_user, _): AuthedAdmin, headers: HeaderMap) -> Response {
     let raw_token = shared::auth::generate_invite_token();
     let token_hash = shared::auth::hash_secret_token(&raw_token);
     let link_id = uuid::Uuid::new_v4().to_string();
@@ -241,6 +239,7 @@ pub async fn create_invite_link(State(state): State<AppState>, _admin: AuthedAdm
         drop(db);
         return render_invites_page(
             &state,
+            &admin_user,
             &headers,
             1,
             None,
@@ -250,7 +249,7 @@ pub async fn create_invite_link(State(state): State<AppState>, _admin: AuthedAdm
         );
     }
     drop(db);
-    render_invites_page(&state, &headers, 1, None, Some(invite_signup_url(&base_url(&headers), &raw_token)), None, None)
+    render_invites_page(&state, &admin_user, &headers, 1, None, Some(invite_signup_url(&base_url(&headers), &raw_token)), None, None)
 }
 
 /// `POST /dashboard/admin/invites/{id}/delete?page=N` - see this module's

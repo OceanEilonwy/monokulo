@@ -20,10 +20,6 @@ const NAV_PARTIAL: &str = include_str!("../templates/_nav.html.hbs");
 const CHECKOUT_TEMPLATE: &str = include_str!("../templates/checkout.html.hbs");
 const CHECKOUT_NOT_FOUND_TEMPLATE: &str = include_str!("../templates/checkout_not_found.html.hbs");
 const CHECKOUT_SHARE_TEMPLATE: &str = include_str!("../templates/checkout_share.html.hbs");
-const ADMIN_SETUP_TEMPLATE: &str = include_str!("../templates/admin_setup.html.hbs");
-const ADMIN_SETTINGS_TEMPLATE: &str = include_str!("../templates/admin_settings.html.hbs");
-const REQUEST_INVITE_TEMPLATE: &str = include_str!("../templates/request_invite.html.hbs");
-const ADMIN_INVITES_TEMPLATE: &str = include_str!("../templates/admin_invites.html.hbs");
 const POS_TEMPLATE: &str = include_str!("../templates/pos.html.hbs");
 
 #[derive(Debug, thiserror::Error)]
@@ -32,24 +28,6 @@ pub enum TemplateError {
     Register(#[from] handlebars::TemplateError),
     #[error("failed to render template: {0}")]
     Render(#[from] handlebars::RenderError),
-}
-
-/// The view model the first-run admin setup wizard takes
-/// (`http/admin_setup.rs`): `error` means the same thing every other page's
-/// own re-render-on-rejection `error` field does; `email` is echoed back into the form on a rejected submission (a
-/// duplicate email, or mismatched passwords) so the merchant doesn't have to
-/// retype it - the two password fields are never echoed back, same
-/// no-echo-a-password convention every other credential field in this
-/// codebase already follows.
-#[derive(Debug, Default, Serialize)]
-pub struct SetupViewModel {
-    pub error: Option<String>,
-    pub email: String,
-    /// Always `false` - nobody has a session yet at this point in a fresh
-    /// install (this page only ever renders when `is_setup_complete` is
-    /// false, i.e. before any account, admin or otherwise, could exist).
-    pub logged_in: bool,
-    pub is_admin: bool,
 }
 
 /// The three `<option>` "selected" flags both connect forms' network
@@ -330,135 +308,10 @@ pub struct PosViewModel {
     pub is_admin: bool,
 }
 
-/// One editable field on the admin settings page (`http/admin_settings.rs`) -
-/// either one of monokulo's own settings (`crate::settings::ALL_SCALAR`) or
-/// one of the *proxied* scanner settings, fetched live over HTTP from
-/// whichever scanner instance is configured. The same shape serves both:
-/// neither side needs anything the other doesn't also have.
-#[derive(Debug, Serialize)]
-pub struct AdminScalarFieldView {
-    /// The stable settings-table key (also the form field's `name` - what
-    /// comes back in the `POST` body identifies exactly which setting to
-    /// write, with no separate label-to-key mapping to keep in sync).
-    pub key: String,
-    /// A human-readable label derived from `key` (see
-    /// `http::admin_settings::humanize_key`) - e.g. `"rescan.max_lookback_days"`
-    /// becomes `"rescan max lookback days"`.
-    pub label: String,
-    /// The field's current *effective* value - what wins under
-    /// `env > database > default`. Rendered as the input's `value="..."` so
-    /// the page always shows what's actually in force, per the explicit
-    /// "settings should have a value='' that corresponds to the active
-    /// setting" requirement - never a blank field just because nothing was
-    /// ever explicitly saved.
-    pub value: String,
-    /// `"environment variable"`, `"saved value"`, or `"default"` - shown
-    /// next to the field so an operator can tell whether editing it here
-    /// would actually take effect (it wouldn't, while an environment
-    /// variable is set) before wondering why a save didn't change anything.
-    pub source_label: String,
-}
-
-/// One `monero_node.<network>` entry on the scanner-settings half of the
-/// admin page - the raw JSON blob scanner's own admin API already returns
-/// for this key (`scanner::settings::MoneroNodeSetting`, serialized),
-/// shown/edited as a single JSON text field rather than one input per
-/// sub-field. Deliberately not modeled as a matching Rust struct here:
-/// monokulo and scanner talk over HTTP as separate services (see
-/// `engine_client.rs`'s own module doc comment on why the two never share
-/// types), so this stays whatever JSON scanner itself considers valid,
-/// round-tripped opaquely.
-#[derive(Debug, Serialize)]
-pub struct AdminNetworkFieldView {
-    pub network: String,
-    /// Empty when this network has no node configured yet - never a
-    /// fabricated placeholder value.
-    pub value_json: String,
-}
-
-/// The view model the admin settings page (`GET`/`POST /dashboard/admin/settings`,
-/// `POST /dashboard/admin/scanner-settings`) takes. Always rendered by an
-/// [`AuthedAdmin`](crate::http::AuthedAdmin)-gated handler, so `logged_in` is
-/// always `true` and `is_admin` always `true` - kept as real fields anyway
-/// (rather than hardcoded in the template) purely so the shared `{{> nav}}`
-/// partial doesn't need a special case for this one page.
-#[derive(Debug, Default, Serialize)]
-pub struct AdminSettingsViewModel {
-    pub error: Option<String>,
-    pub success: Option<String>,
-    pub monokulo_fields: Vec<AdminScalarFieldView>,
-    /// `true` once `engine.url`/`engine.admin_token` are both non-empty -
-    /// gates whether the page even attempts to reach the scanner at all.
-    pub scanner_configured: bool,
-    /// `true` only after a real, successful `GET` of the scanner's own
-    /// `/api/v1/admin/settings` - `scanner_fields`/`scanner_networks` are
-    /// only ever populated (and the scanner-settings form only ever shown)
-    /// when this is `true`.
-    pub scanner_reachable: bool,
-    pub scanner_error: Option<String>,
-    pub scanner_fields: Vec<AdminScalarFieldView>,
-    pub scanner_networks: Vec<AdminNetworkFieldView>,
-    pub logged_in: bool,
-    pub is_admin: bool,
-}
-
-/// The view model `GET`/`POST /request-invite` takes (`http::invites`) -
-/// the public "let me in" form shown on an invite-only instance's landing
-/// page in place of a plain sign-up button.
-#[derive(Debug, Default, Serialize)]
-pub struct RequestInviteViewModel {
-    pub error: Option<String>,
-    /// `true` after a successful `POST` - the template shows a plain
-    /// thank-you message instead of the form again, so a visitor can't
-    /// accidentally double-submit by refreshing.
-    pub submitted: bool,
-    pub logged_in: bool,
-    pub is_admin: bool,
-}
-
-/// One row on the admin invites page's pending-requests table
-/// (`http::invites::invites_page`) - the `mailto:` link is built server-side
-/// (real HTML `<a href>`, no JS - see `invite_links`'s own migration
-/// comment on why the raw token has to already be in the rendered page) and
-/// is `None` only for the pathological case `InviteRequestRow::invite_token_encrypted`'s
-/// own doc comment describes.
-#[derive(Debug, Serialize)]
-pub struct AdminInviteRequestRow {
-    pub id: String,
-    pub email: String,
-    pub message: String,
-    pub created_at_display: String,
-    pub mailto_href: Option<String>,
-    /// Set only for the one row this page just deleted (`?deleted=<id>`) -
-    /// rendered struck-through, as a one-time confirmation, outside the
-    /// page's own real pagination count. Always `false` for every row
-    /// coming from the real paginated query below it.
-    pub just_deleted: bool,
-}
-
-/// The view model `GET /dashboard/admin/invites` takes.
-#[derive(Debug, Default, Serialize)]
-pub struct AdminInvitesViewModel {
-    pub error: Option<String>,
-    pub success: Option<String>,
-    /// The just-deleted row's own one-time addendum (see
-    /// [`AdminInviteRequestRow::just_deleted`]) - `None` on a plain load.
-    pub just_deleted_row: Option<AdminInviteRequestRow>,
-    pub rows: Vec<AdminInviteRequestRow>,
-    pub page: u32,
-    pub total_pages: u32,
-    pub has_previous: bool,
-    pub has_next: bool,
-    pub previous_page: u32,
-    pub next_page: u32,
-    /// The freshly generated standalone link from "create invite link" -
-    /// shown exactly once, on this one response, never stored reversibly
-    /// (see `invite_links`'s own migration comment) and never redisplayed
-    /// on any later load.
-    pub created_link: Option<String>,
-    pub logged_in: bool,
-    pub is_admin: bool,
-}
+// SetupViewModel/RequestInviteViewModel/AdminInviteRequestRow/AdminInvitesViewModel/
+// AdminScalarFieldView/AdminNetworkFieldView/AdminSettingsViewModel moved to
+// `views::admin` as part of the Maud migration - those pages no longer go
+// through this engine at all.
 
 pub struct TemplateEngine {
     handlebars: Handlebars<'static>,
@@ -480,28 +333,8 @@ impl TemplateEngine {
         handlebars.register_template_string("checkout", CHECKOUT_TEMPLATE)?;
         handlebars.register_template_string("checkout_not_found", CHECKOUT_NOT_FOUND_TEMPLATE)?;
         handlebars.register_template_string("checkout_share", CHECKOUT_SHARE_TEMPLATE)?;
-        handlebars.register_template_string("admin_setup", ADMIN_SETUP_TEMPLATE)?;
-        handlebars.register_template_string("admin_settings", ADMIN_SETTINGS_TEMPLATE)?;
-        handlebars.register_template_string("request_invite", REQUEST_INVITE_TEMPLATE)?;
-        handlebars.register_template_string("admin_invites", ADMIN_INVITES_TEMPLATE)?;
         handlebars.register_template_string("pos", POS_TEMPLATE)?;
         Ok(TemplateEngine { handlebars })
-    }
-
-    pub fn render_admin_setup(&self, data: &SetupViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("admin_setup", data)?)
-    }
-
-    pub fn render_admin_settings(&self, data: &AdminSettingsViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("admin_settings", data)?)
-    }
-
-    pub fn render_request_invite(&self, data: &RequestInviteViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("request_invite", data)?)
-    }
-
-    pub fn render_admin_invites(&self, data: &AdminInvitesViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("admin_invites", data)?)
     }
 
     pub fn render_checkout(&self, data: &CheckoutViewModel) -> Result<String, TemplateError> {
@@ -619,74 +452,9 @@ mod tests {
     // moved to `views::store_detail`'s own test module - those pages no
     // longer go through this engine at all.
 
-    #[test]
-    fn request_invite_form_renders_plain_and_submitted_states() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_request_invite(&RequestInviteViewModel::default()).unwrap();
-        assert!(html.contains(r#"<form method="post" action="/request-invite">"#));
-
-        let html = engine.render_request_invite(&RequestInviteViewModel { submitted: true, ..Default::default() }).unwrap();
-        assert!(!html.contains("<form"), "a submitted request must not re-show the form");
-        assert!(html.to_lowercase().contains("thanks"));
-    }
-
-    #[test]
-    fn admin_invites_page_renders_with_no_pending_requests() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_admin_invites(&AdminInvitesViewModel {
-                page: 1,
-                total_pages: 1,
-                logged_in: true,
-                is_admin: true,
-                ..Default::default()
-            })
-            .unwrap();
-        assert!(html.to_lowercase().contains("no pending invite requests"));
-    }
-
-    #[test]
-    fn admin_invites_page_renders_rows_pagination_and_the_just_deleted_addendum() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_admin_invites(&AdminInvitesViewModel {
-                just_deleted_row: Some(AdminInviteRequestRow {
-                    id: "req-old".to_string(),
-                    email: "gone@example.com".to_string(),
-                    message: "bye".to_string(),
-                    created_at_display: "2024-01-01".to_string(),
-                    mailto_href: None,
-                    just_deleted: true,
-                }),
-                rows: vec![AdminInviteRequestRow {
-                    id: "req-1".to_string(),
-                    email: "hopeful@example.com".to_string(),
-                    message: "let me in".to_string(),
-                    created_at_display: "2024-01-02".to_string(),
-                    mailto_href: Some("mailto:hopeful@example.com?subject=hi&body=there".to_string()),
-                    just_deleted: false,
-                }],
-                page: 2,
-                total_pages: 3,
-                has_previous: true,
-                has_next: true,
-                previous_page: 1,
-                next_page: 3,
-                logged_in: true,
-                is_admin: true,
-                ..Default::default()
-            })
-            .unwrap();
-        assert!(html.contains("gone@example.com"), "expected the just-deleted addendum row, got: {html}");
-        assert!(html.contains("hopeful@example.com"), "expected the real pending row, got: {html}");
-        assert!(
-            html.contains("mailto:hopeful@example.com?subject") && html.contains("hi") && html.contains("body") && html.contains("there"),
-            "expected the mailto link, got: {html}"
-        );
-        assert!(html.contains("Page 2 of 3"));
-        assert!(html.contains(r#"href="/dashboard/admin/invites?page=1""#));
-        assert!(html.contains(r#"href="/dashboard/admin/invites?page=3""#));
-    }
+    // Admin setup / admin settings / request-invite / admin-invites page
+    // tests moved to `views::admin`'s own test module - those pages no
+    // longer go through this engine at all.
 
     fn test_checkout_view_model(is_terminal: bool) -> CheckoutViewModel {
         CheckoutViewModel {
