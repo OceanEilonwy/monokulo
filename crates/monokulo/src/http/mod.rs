@@ -142,6 +142,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/signup", axum::routing::get(dashboard::signup_form).post(dashboard::signup_submit))
         .route("/dashboard/login", axum::routing::get(dashboard::login_form).post(dashboard::login_submit))
         .route("/dashboard/logout", axum::routing::post(dashboard::logout_submit))
+        .route("/dashboard/theme", axum::routing::post(dashboard::theme_submit))
         .route("/dashboard/connect", axum::routing::get(dashboard::connect_form).post(dashboard::connect_submit))
         .route("/dashboard/connections/new", axum::routing::get(home::new_store_picker))
         .route("/dashboard/connections/new/woocommerce", axum::routing::get(home::woocommerce_instructions))

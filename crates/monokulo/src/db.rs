@@ -37,6 +37,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (14, include_str!("../migrations/0014_store_base_currency.sql")),
     (15, include_str!("../migrations/0015_confirmation_thresholds.sql")),
     (16, include_str!("../migrations/0016_order_confirmation_snapshot.sql")),
+    (17, include_str!("../migrations/0017_user_theme.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -90,6 +91,55 @@ pub struct UserRow {
     /// user `POST /dashboard/signup` creates. Gates the nav's own "admin"
     /// link and `/dashboard/admin/*` - see `AuthedUser`'s own doc comment.
     pub is_admin: bool,
+    /// This user's stored light/dark preference (`users.theme`, migration
+    /// 0017) - read fresh on every request via [`AuthedUser`]'s own DB
+    /// lookup, so a theme change (`POST /dashboard/theme`) takes effect on
+    /// the very next page load with no session/cookie invalidation needed.
+    pub theme: Theme,
+}
+
+/// A user's stored light/dark preference. `System` (the default, and every
+/// pre-migration row's backfilled value) means "no explicit choice - follow
+/// the browser's own `prefers-color-scheme`"; `Light`/`Dark` mean the user
+/// explicitly overrode it via the nav's theme-toggle form, which always wins
+/// over the OS preference either way (`_styles.html.hbs`'s
+/// `:root[data-theme="dark"]` block).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Theme {
+    System,
+    Light,
+    Dark,
+}
+
+impl Theme {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Theme::System => "system",
+            Theme::Light => "light",
+            Theme::Dark => "dark",
+        }
+    }
+
+    /// An unrecognized stored value (shouldn't happen - only this type ever
+    /// writes the column - but a raw `TEXT` column is still not a closed
+    /// set at the SQL level) falls back to `System`, the safe "just follow
+    /// the OS" default, rather than erroring on every page load.
+    pub fn from_db_str(s: &str) -> Theme {
+        match s {
+            "light" => Theme::Light,
+            "dark" => Theme::Dark,
+            _ => Theme::System,
+        }
+    }
+
+    /// The toggle's cycle order: System -> Light -> Dark -> System.
+    pub fn next(self) -> Theme {
+        match self {
+            Theme::System => Theme::Light,
+            Theme::Light => Theme::Dark,
+            Theme::Dark => Theme::System,
+        }
+    }
 }
 
 /// A row from `sessions`. `token_hash` is the SHA-256 hash of the raw
@@ -253,13 +303,21 @@ impl Db {
         Ok(())
     }
 
+    /// `POST /dashboard/theme` - the nav's own no-JS toggle form. Same
+    /// "update a single column, keyed by id" shape as
+    /// `update_store_connection_fx_provider`.
+    pub fn update_user_theme(&self, id: &str, theme: Theme) -> Result<()> {
+        self.conn.execute("UPDATE users SET theme = ?2 WHERE id = ?1", params![id, theme.as_str()])?;
+        Ok(())
+    }
+
     /// Direct row lookup by email — used by tests to confirm what actually
     /// landed in the database (e.g. that `password_hash` is a real Argon2
     /// hash, never the plaintext password).
     pub fn get_user_by_email(&self, email: &str) -> Result<Option<UserRow>> {
         self.conn
             .query_row(
-                "SELECT id, email, password_hash, created_at_utc, is_admin FROM users WHERE email = ?1",
+                "SELECT id, email, password_hash, created_at_utc, is_admin, theme FROM users WHERE email = ?1",
                 params![email],
                 |row| {
                     Ok(UserRow {
@@ -268,6 +326,7 @@ impl Db {
                         password_hash: row.get(2)?,
                         created_at: row.get(3)?,
                         is_admin: row.get(4)?,
+                        theme: Theme::from_db_str(&row.get::<_, String>(5)?),
                     })
                 },
             )
@@ -280,7 +339,7 @@ impl Db {
     pub fn get_user_by_id(&self, id: &str) -> Result<Option<UserRow>> {
         self.conn
             .query_row(
-                "SELECT id, email, password_hash, created_at_utc, is_admin FROM users WHERE id = ?1",
+                "SELECT id, email, password_hash, created_at_utc, is_admin, theme FROM users WHERE id = ?1",
                 params![id],
                 |row| {
                     Ok(UserRow {
@@ -289,6 +348,7 @@ impl Db {
                         password_hash: row.get(2)?,
                         created_at: row.get(3)?,
                         is_admin: row.get(4)?,
+                        theme: Theme::from_db_str(&row.get::<_, String>(5)?),
                     })
                 },
             )

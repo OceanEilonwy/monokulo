@@ -11,13 +11,13 @@
 use handlebars::Handlebars;
 use serde::Serialize;
 
-const STYLES_PARTIAL: &str = include_str!("../templates/_styles.html.hbs");
+// Moved to `views/head.html` as part of the Maud migration (it carried zero
+// handlebars syntax to begin with) - still shared by every page here that
+// hasn't moved off this engine yet.
+const STYLES_PARTIAL: &str = include_str!("views/head.html");
 const NAV_PARTIAL: &str = include_str!("../templates/_nav.html.hbs");
 const INTEGRATION_HELP_PARTIAL: &str = include_str!("../templates/_integration_help.html.hbs");
 
-const LANDING_TEMPLATE: &str = include_str!("../templates/landing.html.hbs");
-const SIGNUP_TEMPLATE: &str = include_str!("../templates/signup.html.hbs");
-const LOGIN_TEMPLATE: &str = include_str!("../templates/login.html.hbs");
 const CONNECT_TEMPLATE: &str = include_str!("../templates/connect.html.hbs");
 const ORDERS_TEMPLATE: &str = include_str!("../templates/orders.html.hbs");
 const ORDER_DETAIL_TEMPLATE: &str = include_str!("../templates/order_detail.html.hbs");
@@ -45,37 +45,9 @@ pub enum TemplateError {
     Render(#[from] handlebars::RenderError),
 }
 
-/// The view model the signup template takes: an optional, human-readable
-/// error message to display on re-render (a duplicate email, an invalid
-/// invite) - `None` on the plain `GET` form.
-#[derive(Debug, Default, Serialize)]
-pub struct FormViewModel {
-    pub error: Option<String>,
-    /// Drives the nav bar's log-in-state links (`_nav.html.hbs`, inherited
-    /// automatically by `{{> nav}}` since handlebars partials share their
-    /// parent's context unless given an explicit one) - see
-    /// `http::dashboard::render_signup`'s own doc comment for why this page
-    /// always renders `false` regardless of any existing session.
-    pub logged_in: bool,
-    /// `true` when this instance's `signup.mode` is `"invite_only"` and no
-    /// valid-looking invite token is in play - the template shows a "you
-    /// need an invite" message and a link to `/request-invite` *instead of*
-    /// the email/password form entirely (there's nothing a visitor could
-    /// usefully submit without one). Always `false` in `"public"` mode.
-    pub invite_required: bool,
-    /// Carried through as a hidden form field (`GET
-    /// /dashboard/signup?invite=...`'s query param, echoed back on a
-    /// rejected `POST` the same way every other field on this form already
-    /// is) - the raw, not-yet-validated token; real validation happens at
-    /// submit time (`Db::redeem_invite_and_create_user`), never here. Empty
-    /// in `"public"` mode, where it's rendered but simply ignored by the
-    /// handler.
-    pub invite_token: String,
-}
-
 /// The view model the first-run admin setup wizard takes
-/// (`http/admin_setup.rs`): `error` means the same thing `FormViewModel::error`
-/// does; `email` is echoed back into the form on a rejected submission (a
+/// (`http/admin_setup.rs`): `error` means the same thing every other page's
+/// own re-render-on-rejection `error` field does; `email` is echoed back into the form on a rejected submission (a
 /// duplicate email, or mismatched passwords) so the merchant doesn't have to
 /// retype it - the two password fields are never echoed back, same
 /// no-echo-a-password convention every other credential field in this
@@ -89,24 +61,6 @@ pub struct SetupViewModel {
     /// false, i.e. before any account, admin or otherwise, could exist).
     pub logged_in: bool,
     pub is_admin: bool,
-}
-
-/// The view model the login template takes (WBS 1.4.1 extends the plain
-/// `FormViewModel` used elsewhere with `next`): `error` means the same thing
-/// `FormViewModel::error` does. `next`, when present, is rendered as a
-/// hidden form field so a successful login can redirect back to it (see
-/// `dashboard::login_submit`) instead of the default inline confirmation -
-/// this is the raw, caller-supplied query value, not yet validated as a safe
-/// redirect target here (that validation happens in `login_submit`, right
-/// before it's ever used as a redirect location, never here at render
-/// time).
-#[derive(Debug, Default, Serialize)]
-pub struct LoginViewModel {
-    pub error: Option<String>,
-    pub next: Option<String>,
-    /// Same purpose as [`FormViewModel::logged_in`] - always `false` here
-    /// too, same reasoning.
-    pub logged_in: bool,
 }
 
 /// The view model the wallet-connection template (WBS 1.3.2) takes: either
@@ -897,22 +851,6 @@ pub struct NavOnlyViewModel {
     pub is_admin: bool,
 }
 
-/// The view model the landing page takes - [`NavOnlyViewModel`]'s two
-/// fields plus `signup_public`, which decides which of the two calls to
-/// action it shows: a plain "Sign up" (`signup.mode == "public"`) or
-/// "Request an invite to join" linking to `/request-invite`
-/// (`"invite_only"`, the default) - see `http::home::landing`'s own doc
-/// comment. Kept as its own struct rather than added onto `NavOnlyViewModel`
-/// itself, since that one's shared by two other pages
-/// (`new_store_picker`/`woocommerce_instructions`) that have nothing to do
-/// with signup mode at all.
-#[derive(Debug, Serialize)]
-pub struct LandingViewModel {
-    pub logged_in: bool,
-    pub is_admin: bool,
-    pub signup_public: bool,
-}
-
 /// One payment row on the checkout page's payments table
 /// (`docs/fx_refactor.md` Phase 2.2) - mirrors the engine's own (soon-
 /// removed) `PaymentViewModel` field-for-field.
@@ -1175,9 +1113,6 @@ impl TemplateEngine {
         handlebars.register_template_string("nav", NAV_PARTIAL)?;
         handlebars.register_template_string("integration_help", INTEGRATION_HELP_PARTIAL)?;
 
-        handlebars.register_template_string("landing", LANDING_TEMPLATE)?;
-        handlebars.register_template_string("signup", SIGNUP_TEMPLATE)?;
-        handlebars.register_template_string("login", LOGIN_TEMPLATE)?;
         handlebars.register_template_string("connect", CONNECT_TEMPLATE)?;
         handlebars.register_template_string("orders", ORDERS_TEMPLATE)?;
         handlebars.register_template_string("order_detail", ORDER_DETAIL_TEMPLATE)?;
@@ -1215,14 +1150,6 @@ impl TemplateEngine {
         Ok(self.handlebars.render("admin_invites", data)?)
     }
 
-    pub fn render_signup(&self, data: &FormViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("signup", data)?)
-    }
-
-    pub fn render_login(&self, data: &LoginViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("login", data)?)
-    }
-
     pub fn render_platform_connect(&self, data: &PlatformConnectViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("connect_platform", data)?)
     }
@@ -1241,10 +1168,6 @@ impl TemplateEngine {
 
     pub fn render_webhooks(&self, data: &WebhooksViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("webhooks", data)?)
-    }
-
-    pub fn render_landing(&self, logged_in: bool, is_admin: bool, signup_public: bool) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("landing", &LandingViewModel { logged_in, is_admin, signup_public })?)
     }
 
     pub fn render_dashboard_home(&self, data: &DashboardViewModel) -> Result<String, TemplateError> {
@@ -1365,81 +1288,8 @@ mod tests {
         assert_eq!(format_duration_until(now - 100, now), "any moment", "an already-passed target must not show a negative duration");
     }
 
-    #[test]
-    fn signup_template_renders_with_no_error() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_signup(&FormViewModel::default()).unwrap();
-        assert!(html.contains("<form"));
-        assert!(html.to_lowercase().contains("sign up"));
-    }
-
-    #[test]
-    fn signup_template_shows_the_error_when_present() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_signup(&FormViewModel {
-                error: Some("that email is already registered".to_string()),
-                logged_in: false,
-                invite_required: false,
-                invite_token: String::new(),
-            })
-            .unwrap();
-        assert!(html.contains("that email is already registered"));
-    }
-
-    #[test]
-    fn login_template_renders_with_no_error() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_login(&LoginViewModel::default()).unwrap();
-        assert!(html.contains("<form"));
-        assert!(html.to_lowercase().contains("log in"));
-    }
-
-    #[test]
-    fn login_template_shows_the_error_when_present() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_login(&LoginViewModel { error: Some("invalid email or password".to_string()), next: None, logged_in: false })
-            .unwrap();
-        assert!(html.contains("invalid email or password"));
-    }
-
-    #[test]
-    fn login_template_includes_a_hidden_next_field_when_present() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_login(&LoginViewModel { error: None, next: Some("/connect/woocommerce?nonce=abc".to_string()), logged_in: false })
-            .unwrap();
-        assert!(html.contains(r#"type="hidden" name="next""#), "expected a hidden next field, got: {html}");
-        // Handlebars auto-escapes HTML-significant characters (including
-        // `=`, as `&#x3D;`) in attribute values by default - correct, safe
-        // behavior (never `{{{next}}}`/triple-stash - see
-        // `connect.html.hbs`'s own precedent), so check for the value's
-        // *content* surviving, not a byte-for-byte unescaped match.
-        assert!(html.contains("/connect/woocommerce?nonce"), "expected the next value's content present, got: {html}");
-        assert!(html.contains("abc"), "expected the next value's content present, got: {html}");
-    }
-
-    #[test]
-    fn login_template_escapes_special_characters_in_next_rather_than_injecting_them_raw() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_login(&LoginViewModel {
-                error: None,
-                next: Some("/connect/woocommerce?a=1&b=2".to_string()),
-                logged_in: false,
-            })
-            .unwrap();
-        assert!(html.contains("&amp;"), "expected the & in next to be HTML-escaped, got: {html}");
-        assert!(!html.contains("a=1&b=2"), "a raw, unescaped & would be a template-injection smell, got: {html}");
-    }
-
-    #[test]
-    fn login_template_has_no_hidden_next_field_when_absent() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_login(&LoginViewModel::default()).unwrap();
-        assert!(!html.contains(r#"name="next""#), "expected no hidden next field, got: {html}");
-    }
+    // Signup/login page tests moved to `views::auth`'s own test module -
+    // those pages no longer go through this engine at all.
 
     #[test]
     fn connect_platform_template_renders_the_confirm_form() {
@@ -1577,22 +1427,8 @@ mod tests {
         assert!(!html.contains("<form"), "the confirmation view should not still show the form");
     }
 
-    #[test]
-    fn landing_page_renders_with_a_signup_cta_in_public_mode() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_landing(false, false, true).unwrap();
-        assert!(html.contains(r#"class="btn" href="/dashboard/signup""#), "expected the main sign-up CTA, got: {html}");
-        assert!(!html.contains("Request an invite"));
-        assert!(html.to_lowercase().contains("monero"));
-    }
-
-    #[test]
-    fn landing_page_renders_with_a_request_invite_cta_in_invite_only_mode() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_landing(false, false, false).unwrap();
-        assert!(html.contains(r#"href="/request-invite""#), "expected the request-invite CTA, got: {html}");
-        assert!(!html.contains(r#"class="btn" href="/dashboard/signup""#), "the main sign-up CTA must not appear in invite-only mode");
-    }
+    // Landing page tests moved to `views::landing`'s own test module - that
+    // page no longer goes through this engine at all.
 
     #[test]
     fn dashboard_home_shows_the_add_store_cta_when_the_user_has_no_stores() {

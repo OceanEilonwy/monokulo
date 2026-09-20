@@ -23,7 +23,8 @@ use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use serde::Deserialize;
 
-use crate::templates::{network_selected_flags, ConnectViewModel, FormViewModel, LoginViewModel};
+use crate::templates::{network_selected_flags, ConnectViewModel};
+use crate::views;
 
 use super::AppState;
 use super::AuthedUser;
@@ -36,7 +37,7 @@ pub struct SignupForm {
     pub email: String,
     pub password: String,
     /// The hidden field `signup.html.hbs` always renders (see
-    /// `FormViewModel::invite_token`'s own doc comment) - empty in
+    /// `views::auth::SignupViewModel::invite_token`'s own doc comment) - empty in
     /// `"public"` mode, where it's submitted but simply ignored.
     #[serde(default)]
     pub invite: String,
@@ -46,7 +47,7 @@ pub struct SignupForm {
 pub struct SignupQuery {
     /// `GET /dashboard/signup?invite=<token>` - carried straight into the
     /// rendered form's hidden field, unvalidated (see
-    /// `FormViewModel::invite_token`'s own doc comment on why validation
+    /// `views::auth::SignupViewModel::invite_token`'s own doc comment on why validation
     /// only ever happens at submit time).
     #[serde(default)]
     pub invite: Option<String>,
@@ -142,33 +143,23 @@ pub struct ConnectForm {
     pub zero_conf_max_piconero: Option<u64>,
 }
 
-/// `logged_in` is always `false` here, not a real per-request session
-/// check - this page's whole purpose is establishing a *new* session, so
-/// showing the sign-up/log-in links regardless of any existing one is the
-/// reasonable default (see `templates::FormViewModel::logged_in`'s own doc
-/// comment).
+/// `chrome.logged_in` is always `false` here, not a real per-request
+/// session check - this page's whole purpose is establishing a *new*
+/// session, so showing the sign-up/log-in links regardless of any existing
+/// one is the reasonable default (see `views::auth`'s own doc comment).
 fn render_signup(state: &AppState, error: Option<&str>, invite_token: &str) -> Response {
     let invite_required =
         crate::settings::signup_mode(&state.db.lock().unwrap()) == crate::settings::SignupMode::InviteOnly && invite_token.trim().is_empty();
-    let html = state
-        .templates
-        .render_signup(&FormViewModel {
-            error: error.map(str::to_string),
-            logged_in: false,
-            invite_required,
-            invite_token: invite_token.to_string(),
-        })
-        .expect("the built-in signup template must always render");
-    Html(html).into_response()
+    let chrome = views::PageChrome::from_user(None, "");
+    let data = views::auth::SignupViewModel { error: error.map(str::to_string), invite_required, invite_token: invite_token.to_string() };
+    views::auth::signup_page(&chrome, &data).into_response()
 }
 
-/// Same `logged_in: false` reasoning as `render_signup` above.
-fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>) -> Response {
-    let html = state
-        .templates
-        .render_login(&LoginViewModel { error: error.map(str::to_string), next: next.map(str::to_string), logged_in: false })
-        .expect("the built-in login template must always render");
-    Html(html).into_response()
+/// Same `chrome.logged_in == false` reasoning as `render_signup` above.
+fn render_login(error: Option<&str>, next: Option<&str>) -> Response {
+    let chrome = views::PageChrome::from_user(None, "");
+    let data = views::auth::LoginViewModel { error: error.map(str::to_string), next: next.map(str::to_string) };
+    views::auth::login_page(&chrome, &data).into_response()
 }
 
 /// `resubmit` is `None` on a plain `GET` (empty form, mainnet selected by
@@ -261,8 +252,8 @@ pub async fn signup_submit(State(state): State<AppState>, Form(form): Form<Signu
     }
 }
 
-pub async fn login_form(State(state): State<AppState>, Query(query): Query<LoginQuery>) -> Response {
-    render_login(&state, None, query.next.as_deref())
+pub async fn login_form(Query(query): Query<LoginQuery>) -> Response {
+    render_login(None, query.next.as_deref())
 }
 
 /// `POST /dashboard/logout` - the browser-facing nav's "log out" link (a
@@ -287,6 +278,29 @@ pub async fn logout_submit(State(state): State<AppState>, AuthedUser(_user, toke
         .build();
     let jar = CookieJar::new().add(cookie);
     (jar, redirect_302("/")).into_response()
+}
+
+/// `POST /dashboard/theme` - the nav's own no-JS theme toggle
+/// (`views::nav`). Cycles System -> Light -> Dark -> System
+/// ([`crate::db::Theme::next`]) and persists the result against the
+/// authenticated user (not a cookie - see the design-language rollout's own
+/// migration comment, `migrations/0017_user_theme.sql`, for why this is
+/// server-side per-user state rather than client storage), then redirects
+/// back to wherever the form was submitted from - the same validated-`next`
+/// pattern `login_submit` already uses (see [`is_safe_redirect_path`]),
+/// falling back to `/dashboard` for anything that doesn't validate. No CSRF
+/// token needed beyond what `logout_submit` above already relies on
+/// (`SameSite=Lax`) - same-origin `<form method="post">`, nothing more.
+#[derive(Deserialize)]
+pub struct ThemeForm {
+    pub next: Option<String>,
+}
+
+pub async fn theme_submit(State(state): State<AppState>, AuthedUser(user, _): AuthedUser, Form(form): Form<ThemeForm>) -> Response {
+    let next_theme = user.theme.next();
+    state.db.lock().unwrap().update_user_theme(&user.id, next_theme).ok();
+    let target = form.next.as_deref().filter(|next| is_safe_redirect_path(next)).unwrap_or("/dashboard");
+    redirect_302(target)
 }
 
 /// `POST /dashboard/login`. WBS 1.4.1 adds `next`-redirect support on top of
@@ -331,9 +345,9 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
             // "you're logged in, here's your stuff" flow.
             (jar, redirect_302("/dashboard")).into_response()
         }
-        Err(LoginError::Unauthorized) => render_login(&state, Some("Invalid email or password."), form.next.as_deref()),
+        Err(LoginError::Unauthorized) => render_login(Some("Invalid email or password."), form.next.as_deref()),
         Err(LoginError::Internal) => {
-            render_login(&state, Some("Something went wrong. Please try again."), form.next.as_deref())
+            render_login(Some("Something went wrong. Please try again."), form.next.as_deref())
         }
     }
 }
