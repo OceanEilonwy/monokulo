@@ -116,42 +116,41 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 }
 
 .keypad {
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  grid-auto-rows: 1fr;
-  gap: 0.55em;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  container-type: size;
   min-height: 0;
   min-width: 0;
 }
-/* Real squares, no JS, no hand-computed size - but NOT via plain
-   `aspect-ratio` on the grid item alone. Verified directly in a real
-   browser that this doesn't work the way it's often described: when a
-   grid item's column width AND row height are *both* already definite
-   (as they are here - `.keypad`'s tracks are plain `1fr` on both axes),
-   `aspect-ratio` picks one axis (width) as authoritative and derives the
-   other from it, rather than fitting inside whichever is smaller - it
-   does not behave like `object-fit: contain`. Measured overflow from
-   exactly this: a row track of 95.5px height with a key rendered at
-   110.5x110.5 (matching column width), spilling 15px past its own row.
-   `aspect-ratio` correctly enforces *shape*; picking *how big*, bounded
-   by whichever of two independent definite sizes is smaller, is a
-   different problem, and the only mechanism that can query both actual
-   resolved dimensions at once (short of JS) is a size container query.
-   So: `.key` (the button) fills its grid cell fully - whatever rectangle
-   that is - and is a query container for it; `.key-face` inside is the
-   actual visible square, sized to `min(100cqw, 100cqh)` (that IS a real
-   `Math.min`, just resolved by the browser's own layout instead of
-   authored by hand) with `aspect-ratio: 1` fixing its shape and `margin:
-   auto` centering it in whichever axis has slack. Because `.keypad`'s own
-   tracks are plain `1fr`, they always sum to exactly the space
-   `#keypad-screen`'s `minmax(0, 1fr)` row gave it - the keypad can't
-   physically exceed that, so overflow here isn't possible by
-   construction, in either orientation; only the per-key *square-fit*
-   needed the container query. */
+/* 12 keys in a fixed 3-column x 4-row layout means the *whole grid* has a
+   fixed 3:4 aspect ratio, not just each individual key - so it's the grid
+   that gets fit (contain-style) into whatever box `#keypad-screen`'s
+   `minmax(0, 1fr)` row hands `.keypad`, via the same
+   query-both-actual-dimensions-and-take-the-min trick used before, just
+   applied one level up. `.keypad` is a plain flex-centered container
+   query context (its own box is exactly the row's box, so `cqw`/`cqh`
+   read that box's real, current dimensions); `.key-grid` is sized to
+   `min(100cqw, 100cqh * 3/4)` wide by `min(100cqh, 100cqw * 4/3)` tall,
+   which is a real two-axis "shrink to fit, preserve ratio" - the browser
+   resolves it, not a hand-picked breakpoint. Once `.key-grid` itself is
+   exactly 3:4, its 3 equal-width columns and 4 equal-height rows are
+   *always* exact squares by construction (col width = W/3, row height =
+   (W*4/3)/4 = W/3), at every size, in both orientations - no per-key
+   container query needed any more, and with `gap: 0` the key faces tile
+   edge to edge with no visible seam anywhere on screen. */
+.key-grid {
+  width: min(100cqw, 100cqh * 3 / 4);
+  height: min(100cqh, 100cqw * 4 / 3);
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  grid-template-rows: repeat(4, 1fr);
+  gap: 0;
+}
 .key {
   width: 100%;
   height: 100%;
-  container-type: size;
+  margin: 0;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -162,9 +161,8 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   -webkit-tap-highlight-color: transparent;
 }
 .key-face {
-  width: min(100cqw, 100cqh);
-  aspect-ratio: 1;
-  margin: auto;
+  width: 100%;
+  height: 100%;
   display: flex;
   align-items: center;
   justify-content: center;
@@ -332,9 +330,9 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 .bg-item .bg-dismiss { border: none; background: none; cursor: pointer; font-weight: 700; color: inherit; }
 
 /* A phone in landscape has very little height. On the keypad screen this
-   is no longer a correctness concern - `.keypad`'s `1fr` tracks can't
-   exceed the space `#keypad-screen`'s grid gives them, so it can't
-   overflow regardless of how short the screen gets - these rules just
+   is no longer a correctness concern - `.key-grid`'s `min(100cqw, ...)`
+   sizing can't exceed the space `#keypad-screen`'s grid gives `.keypad`,
+   so it can't overflow regardless of how short the screen gets - these rules just
    keep it looking tidy (smaller type/padding, comfortable tap targets)
    rather than leaving lots of unused chrome around a tiny keypad.
    On the charge/QR screen it's still load-bearing: `.qr-holder`'s
@@ -350,7 +348,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   .note-input-row { margin: 0.25em 0 0; }
   .note-input-row input { padding: 0.3em 0.5em; font-size: 0.9rem; }
   .charge-btn, .secondary-btn { padding: 0.3em 0; margin-top: 0.25em; font-size: 1rem; }
-  .keypad { gap: 0.25em; }
   .key-face { font-size: clamp(1rem, 5vw, 1.6rem); }
   .payment-panel { padding: 0.6em; }
   .payment-amount { font-size: 1.2rem; margin-bottom: 0.25em; }
@@ -372,6 +369,7 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 <div id="keypad-screen" class="pos-screen">
 <div class="amount-display" id="amount-display">0.00</div>
 <div class="keypad">
+<div class="key-grid">
 <button type="button" class="key" data-digit="1"><span class="key-face">1</span></button>
 <button type="button" class="key" data-digit="2"><span class="key-face">2</span></button>
 <button type="button" class="key" data-digit="3"><span class="key-face">3</span></button>
@@ -391,6 +389,7 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 </svg>
 </span>
 </button>
+</div>
 </div>
 <div class="note-input-row">
 <input type="text" id="note-input" placeholder="Note (optional) — e.g. a name" maxlength="120" autocomplete="off">
