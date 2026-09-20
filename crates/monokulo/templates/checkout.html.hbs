@@ -40,9 +40,9 @@
 body { padding: 1.2rem; background: var(--paper-raised); }
 .pay-wrap { max-width: 720px; margin: 0 auto; }
 .pay-header { display: flex; align-items: center; justify-content: center; gap: 0.6em; flex-wrap: wrap; margin-bottom: 0.8em; }
-.status-pending, .status-unconfirmed, .status-confirming, .status-partial { background: #fff3cd; }
-.status-paid { background: #dff5d8; }
-.status-expired, .status-unknown { background: #f8d7da; }
+.status-pending, .status-unconfirmed, .status-confirming, .status-partial { background: var(--tint-warning); }
+.status-paid { background: var(--tint-success); }
+.status-expired, .status-unknown { background: var(--tint-error); }
 /* Quiet by design (see this style block's own header comment) - a plain
    bordered pill in the muted tone until time actually starts running low,
    then a two-stage color shift (`expiry_urgency_class`, picked server-side
@@ -56,8 +56,8 @@ body { padding: 1.2rem; background: var(--paper-raised); }
   font-size: 0.8em;
   font-weight: 700;
 }
-.expiry-pill.expiry-soon { border-color: #b8860b; color: #8a6300; background: #fff3cd; }
-.expiry-pill.expiry-urgent { border-color: var(--error); color: var(--error); background: #f8d7da; }
+.expiry-pill.expiry-soon { border-color: var(--warning); color: var(--warning); background: var(--tint-warning); }
+.expiry-pill.expiry-urgent { border-color: var(--error); color: var(--error); background: var(--tint-error); }
 .pay-grid { display: grid; grid-template-columns: 1fr; gap: 0; text-align: center; }
 @media (min-width: 700px) {
   .pay-grid { grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 2rem; text-align: left; }
@@ -112,7 +112,7 @@ body { padding: 1.2rem; background: var(--paper-raised); }
 .pay-grid > .pay-col-primary > .section:first-child,
 .pay-grid > .pay-col-secondary > .section:first-child { margin-top: 0; padding-top: 0; border-top: none; }
 .progress-row { display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 0.4em; }
-.progress-bar { border: 1px solid var(--line); height: 0.5em; background: var(--paper); }
+.progress-bar { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; height: 0.5em; background: var(--paper); }
 .progress-fill { height: 100%; background: var(--accent); }
 .payments-table { font-size: 0.8em; margin-top: 1.2em; }
 .meta { margin-top: 1.4em; font-size: 0.8em; color: var(--muted); text-align: left; }
