@@ -9,6 +9,7 @@ use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 
 use crate::templates::{DashboardOrderRow, DashboardRescanRow, DashboardStoreRow, DashboardViewModel};
+use crate::views;
 
 use super::dashboard::redirect_302;
 use super::orders::{display_name_for, health_of_tenant_lookup};
@@ -33,14 +34,9 @@ pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Respo
         return redirect_302("/admin/setup");
     }
     let authed = resolve_authed_user(&state, &headers);
-    let logged_in = authed.is_some();
-    let is_admin = authed.is_some_and(|(user, _)| user.is_admin);
+    let chrome = views::PageChrome::from_user(authed.as_ref().map(|(user, _)| user), "/");
     let signup_public = { crate::settings::signup_mode(&state.db.lock().unwrap()) == crate::settings::SignupMode::Public };
-    let html = state
-        .templates
-        .render_landing(logged_in, is_admin, signup_public)
-        .expect("the built-in landing template must always render");
-    Html(html).into_response()
+    views::landing::page(&chrome, signup_public).into_response()
 }
 
 /// `GET /dashboard/connections/new` - the picker between the two connect
