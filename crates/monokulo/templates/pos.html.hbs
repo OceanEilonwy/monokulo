@@ -170,7 +170,15 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   font-size: clamp(1.4rem, 6vw, 2.6rem);
   font-weight: 700;
   color: var(--ink);
-  border: 2px solid var(--line);
+  /* `outline`, not `border`: adjacent keys touch edge to edge (`gap: 0`
+     on `.key-grid`), so each shared edge is really two keys' borders
+     drawn side by side there, doubling the visible thickness. An outline
+     doesn't take layout space, and `outline-offset` at *minus half its
+     own width* centers it on the box edge instead of drawing outside it
+     - so two touching keys' outlines land on the exact same pixels
+     instead of stacking, and collapse back down to one 2px line. */
+  outline: 2px solid var(--line);
+  outline-offset: -1px;
   background: var(--paper-raised);
 }
 .key:active .key-face { background: var(--accent); color: var(--accent-ink); }
@@ -179,9 +187,9 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
    Each also gets its own color (red for the destructive "clear the whole
    amount", amber/gold for the more forgiving single-digit "backspace") so
    the two are told apart at a glance, not just by their icon/label. */
-.key-clear .key-face { color: var(--error); border-color: var(--error); }
+.key-clear .key-face { color: var(--error); outline-color: var(--error); }
 .key-clear:active .key-face { background: var(--error); color: #fff; }
-.key-backspace .key-face { color: var(--warning); border-color: var(--warning); }
+.key-backspace .key-face { color: var(--warning); outline-color: var(--warning); }
 .key-backspace:active .key-face { background: var(--warning); color: #fff; }
 /* Sized in `em`, tracking `.key`'s own font-size, rather than a separate
    calc - one fewer thing to keep in sync with the digit glyphs next to it.
