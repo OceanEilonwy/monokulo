@@ -19,8 +19,6 @@ const NAV_PARTIAL: &str = include_str!("../templates/_nav.html.hbs");
 const INTEGRATION_HELP_PARTIAL: &str = include_str!("../templates/_integration_help.html.hbs");
 
 const CONNECT_TEMPLATE: &str = include_str!("../templates/connect.html.hbs");
-const ORDERS_TEMPLATE: &str = include_str!("../templates/orders.html.hbs");
-const ORDER_DETAIL_TEMPLATE: &str = include_str!("../templates/order_detail.html.hbs");
 const WEBHOOKS_TEMPLATE: &str = include_str!("../templates/webhooks.html.hbs");
 const CONNECT_PLATFORM_TEMPLATE: &str = include_str!("../templates/connect_platform.html.hbs");
 const NEW_STORE_PICKER_TEMPLATE: &str = include_str!("../templates/new_store_picker.html.hbs");
@@ -180,16 +178,6 @@ pub struct OrderRowViewModel {
     pub created_at: i64,
 }
 
-/// The view model `GET /dashboard/connections/{id}/orders` takes.
-#[derive(Debug, Serialize)]
-pub struct OrdersViewModel {
-    pub connection_id: String,
-    pub orders: Vec<OrderRowViewModel>,
-    /// Always `true` - every caller is behind `AuthedUser`.
-    pub logged_in: bool,
-    pub is_admin: bool,
-}
-
 /// A muted placeholder for a field with nothing to show - same
 /// `<span class="muted">-</span>` convention the status page already uses
 /// for "no value" (`height_display`, `_nav.html.hbs`'s own "Active" column),
@@ -340,199 +328,6 @@ pub fn date_string_to_unix_midnight(s: &str) -> Option<i64> {
         return None;
     }
     Some(days_from_civil(y, m, d) * 86_400)
-}
-
-/// One payment row inside the order detail page's `payments` table -
-/// mirrors the engine's own `PaymentView`, but with every timestamp/
-/// optional field already rendered to a display string (`Option<i64>` ->
-/// human-readable UTC or a muted dash) rather than left for the template to
-/// interpret - the display strings are trusted HTML (`NO_VALUE` carries a
-/// real `<span>`), so they're rendered with handlebars' triple-stash
-/// (`{{{ }}}`) in the template, same as `network_selected_flags`-style
-/// values elsewhere are computed in Rust rather than branched on in the
-/// template.
-#[derive(Debug, Serialize)]
-pub struct PaymentRowViewModel {
-    pub txid: String,
-    pub output_index: i64,
-    pub amount_piconero: u64,
-    pub first_seen_at_display: String,
-    pub block_height_display: String,
-    pub voided_at_display: String,
-}
-
-/// The full order detail shown by `GET
-/// /dashboard/connections/{id}/orders/{payment_id}` on a successful lookup -
-/// every `OrderView` field plus the `payments` list from
-/// `OrderDetailResponse`, with timestamps/optional fields already rendered
-/// to display strings - see [`PaymentRowViewModel`]'s own doc comment for
-/// why.
-#[derive(Debug, Serialize)]
-pub struct OrderDetailData {
-    pub payment_id: String,
-    /// Raw, *not* pre-rendered to a trusted-HTML display string like the
-    /// timestamp fields below - unlike a missing timestamp (always our own
-    /// internally-generated value), a merchant order id is caller-supplied
-    /// free text (the engine's public order-creation API accepts it as-is),
-    /// so it must stay ordinary escaped template output
-    /// (`{{order.merchant_order_id}}`), never `{{{ }}}` - see
-    /// `order_detail.html.hbs`'s own `{{#if}}` handling of `None`.
-    pub merchant_order_id: Option<String>,
-    pub address: String,
-    pub currency: String,
-    pub amount: String,
-    /// e.g. `"0.006700000000 XMR per 1 USD"`, or a muted dash for an order
-    /// with no local fiat metadata (predates the feature, or was created
-    /// directly against the engine rather than through monokulo).
-    pub rate_display: String,
-    /// Which provider (`"fixed"`/`"coingecko"`) quoted `rate_display` -
-    /// `"unknown"` for a row that predates recording this at all (migration
-    /// 0006), or a muted dash alongside `rate_display` for no metadata.
-    pub rate_provider: String,
-    pub xmr_amount_piconero: u64,
-    pub amount_received_piconero: u64,
-    pub status: String,
-    pub confirmations: u64,
-    /// What `confirmations` (above) actually has to reach for this order -
-    /// the real, resolved value snapshotted at order-creation time
-    /// (`confirmation_thresholds::resolve_for_order`'s own `Resolution`),
-    /// so it's clear which threshold applied even after a merchant later
-    /// edits the default or a custom threshold's own count. A muted dash
-    /// for an order that predates this snapshot (migration
-    /// `0016_order_confirmation_snapshot.sql`) or was created directly
-    /// against the engine, not through monokulo.
-    pub confirmations_required_display: String,
-    /// This store's own `base_currency` at the moment this order was
-    /// created (WBS: "makes it clear how the confirmation threshold was
-    /// decided") - a muted dash for the same "no snapshot" cases as
-    /// `confirmations_required_display` above.
-    pub base_currency_display: String,
-    /// The rate actually used to convert this order's amount into
-    /// `base_currency_display` terms for threshold comparison - e.g.
-    /// `"1.000000000000 XMR per 1 XMR"`, `"same as order currency"` when
-    /// the order's own currency already was the base currency (no separate
-    /// conversion was ever needed), or a muted dash for no snapshot at all.
-    pub base_currency_rate_display: String,
-    /// Presence only - gates the whole "Double-spend detected at" row in
-    /// the template so it's simply absent for the overwhelming majority of
-    /// orders that never had one, rather than a permanently-visible row
-    /// showing a dash - a real, alarming-sounding label sitting on every
-    /// order's page regardless of relevance reads as a warning even when
-    /// it says nothing happened. The actual text comes from
-    /// `double_spend_detected_at_display` below, pre-rendered server-side.
-    pub double_spend_detected_at: Option<i64>,
-    pub double_spend_detected_at_display: String,
-    /// Same caller-supplied-text caveat as `merchant_order_id` above (set
-    /// via the engine's `set_refund_address` endpoint) - raw, escaped by
-    /// the template, never triple-stashed.
-    pub refund_address: Option<String>,
-    pub created_at_display: String,
-    pub expires_at_display: String,
-    pub updated_at_display: String,
-    pub payments: Vec<PaymentRowViewModel>,
-    /// `/pay/{pk}/orders/{payment_id}/share` - the real follow-up to
-    /// `docs/fx_refactor.md`: a "payment link" a merchant can hand to
-    /// whoever needs to pay this order. Precomputed here (a relative path,
-    /// not an absolute URL - this instance doesn't reliably know its own
-    /// externally-reachable origin, and a relative link resolves correctly
-    /// regardless of what it's copied into) rather than built in the
-    /// template, matching this codebase's own "compute in Rust, not in
-    /// handlebars" convention for anything beyond plain field access.
-    pub payment_link: String,
-    /// `docs/order_rescan_wbs.md` Phase 5.4 - `"{first} - {last}"` once fully
-    /// covered, `"{first}+"` while still growing (`currently_scanning`), or a
-    /// muted dash if `first_scanned_height` is still `None` (an order that
-    /// predates this feature, or genuinely hasn't had its first tick yet).
-    /// Trusted HTML (the muted-dash fallback carries a real `<span>`), same
-    /// convention `NO_VALUE`-backed fields elsewhere on this page already use -
-    /// rendered with `{{{ }}}`, never `{{ }}`.
-    pub scan_range_display: String,
-    /// `docs/order_rescan_wbs.md` Phase 3.2/3.3 - present only for an
-    /// `Expired` order (decision 5), `None` for every other status so the
-    /// template's own `{{#if}}` is what actually gates the whole rescan
-    /// section, not a separate status string comparison duplicated in
-    /// handlebars.
-    pub rescan: Option<OrderRescanSectionViewModel>,
-    /// Set only immediately after a rejected trigger submission - deliberately
-    /// independent of `rescan` above (which can be `None` here, e.g. a real
-    /// race where the order stopped being `Expired` between page load and
-    /// form submit): a rejection must always be shown to the merchant who
-    /// just clicked something, whether or not the rescan section itself
-    /// renders anything at all.
-    pub rescan_error: Option<String>,
-}
-
-/// The order-rescan section of the order detail page - either a trigger form
-/// (`form`, when nothing has run or the last run finished) or a live
-/// progress view (`progress`, while one is `running`); never both. Built
-/// entirely server-side (`http/orders.rs::order_detail`), same "compute in
-/// Rust, not in handlebars" convention as the rest of this page.
-#[derive(Debug, Serialize)]
-pub struct OrderRescanSectionViewModel {
-    pub form: Option<RescanTriggerFormViewModel>,
-    pub progress: Option<RescanProgressViewModel>,
-}
-
-/// What the trigger form (`docs/order_rescan_wbs.md` Phase 3.2) needs to
-/// render both modes at once, no JavaScript required to switch between them -
-/// simple mode's own label states the real, already-computed date outright
-/// ("Rescan from 2026-08-10"), and advanced mode's two native
-/// `<input type="date">` fields get their real, server-computed `min`/`max`
-/// as HTML attributes, not merely enforced silently by the engine's own
-/// `400` on an out-of-range submission.
-#[derive(Debug, Serialize)]
-pub struct RescanTriggerFormViewModel {
-    /// e.g. `Rescan from <span data-utc-date="2026-08-10">2026-08-10
-    /// (UTC)</span>` - `max(order.created_at, now - X days)`, already
-    /// formatted, so the merchant never does the "last X days" math
-    /// themselves. Trusted HTML (the `data-utc-date` span the page's own
-    /// progressive-enhancement script hooks into to show a local-time
-    /// equivalent), never user input - rendered with `{{{ }}}`, never `{{ }}`.
-    pub simple_label: String,
-    /// `YYYY-MM-DD` - `max(order.created_at, now - N days)`, the same bound
-    /// decision 4 imposes for advanced mode, rendered as the real `min`
-    /// attribute on both date inputs.
-    pub min_date: String,
-    /// `YYYY-MM-DD` - today, the real `max` attribute on both date inputs.
-    pub max_date: String,
-    /// The same bound restated in plain words next to the form - decision
-    /// 4's "make this apparent to them," not just enforced silently by a
-    /// `400` on submission.
-    pub bound_text: String,
-}
-
-/// The live view of a rescan that's currently `running` - `http/orders.rs::
-/// order_detail` only ever builds this when the engine's own status really
-/// is `"running"`; a `completed`/`failed` job renders the trigger form again
-/// instead (a merchant can re-trigger it, and its actual effect - a found
-/// payment, or none - is already visible in the order's own status/payments
-/// table above, not restated here).
-#[derive(Debug, Serialize)]
-pub struct RescanProgressViewModel {
-    pub percent_complete: u8,
-    pub mode: String,
-    /// Mirrors the engine's own `RescanStatusView.stalled` - a `running` job with
-    /// no recent progress write. Purely a different badge/copy, not a different
-    /// status: the underlying job is still genuinely `running`.
-    pub stalled: bool,
-}
-
-/// The view model `GET /dashboard/connections/{id}/orders/{payment_id}`
-/// takes - `order` is `None` for an unknown `payment_id` (or one belonging
-/// to a different tenant), rendering a "not found" state instead of the
-/// detail table.
-#[derive(Debug, Serialize)]
-pub struct OrderDetailViewModel {
-    pub connection_id: String,
-    pub order: Option<OrderDetailData>,
-    /// `docs/order_rescan_wbs.md` Phase 3.3 - `5` while this order has a
-    /// rescan genuinely `running`, `15` otherwise (this page's own original,
-    /// unconditional interval) - computed once in `http/orders.rs::
-    /// order_detail`, never branched on again in the template.
-    pub meta_refresh_secs: u32,
-    /// Always `true` - every caller is behind `AuthedUser`.
-    pub logged_in: bool,
-    pub is_admin: bool,
 }
 
 /// One row of the webhooks list page (WBS 1.3.3) - mirrors the engine's own
@@ -1032,8 +827,6 @@ impl TemplateEngine {
         handlebars.register_template_string("integration_help", INTEGRATION_HELP_PARTIAL)?;
 
         handlebars.register_template_string("connect", CONNECT_TEMPLATE)?;
-        handlebars.register_template_string("orders", ORDERS_TEMPLATE)?;
-        handlebars.register_template_string("order_detail", ORDER_DETAIL_TEMPLATE)?;
         handlebars.register_template_string("webhooks", WEBHOOKS_TEMPLATE)?;
         handlebars.register_template_string("connect_platform", CONNECT_PLATFORM_TEMPLATE)?;
         handlebars.register_template_string("new_store_picker", NEW_STORE_PICKER_TEMPLATE)?;
@@ -1073,14 +866,6 @@ impl TemplateEngine {
 
     pub fn render_connect(&self, data: &ConnectViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("connect", data)?)
-    }
-
-    pub fn render_orders(&self, data: &OrdersViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("orders", data)?)
-    }
-
-    pub fn render_order_detail(&self, data: &OrderDetailViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("order_detail", data)?)
     }
 
     pub fn render_webhooks(&self, data: &WebhooksViewModel) -> Result<String, TemplateError> {
@@ -1621,67 +1406,6 @@ mod tests {
         );
     }
 
-    fn test_order_detail_data(double_spend_detected_at: Option<i64>) -> OrderDetailData {
-        OrderDetailData {
-            payment_id: "pay_abc123".to_string(),
-            merchant_order_id: None,
-            address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
-            currency: "XMR".to_string(),
-            amount: "0.5".to_string(),
-            rate_display: "1.000000000000 XMR per 1 XMR".to_string(),
-            rate_provider: "xmr".to_string(),
-            xmr_amount_piconero: 500_000_000_000,
-            amount_received_piconero: 0,
-            status: "pending".to_string(),
-            confirmations: 0,
-            confirmations_required_display: "10".to_string(),
-            base_currency_display: "XMR".to_string(),
-            base_currency_rate_display: "same as order currency".to_string(),
-            double_spend_detected_at,
-            double_spend_detected_at_display: display_timestamp_or_dash(double_spend_detected_at),
-            refund_address: None,
-            created_at_display: "1000".to_string(),
-            expires_at_display: "2000".to_string(),
-            updated_at_display: "1000".to_string(),
-            payments: vec![],
-            payment_link: "http://127.0.0.1:8081/pay/pk_abc123/orders/pay_abc123/share".to_string(),
-            scan_range_display: NO_VALUE.to_string(),
-            rescan: None,
-            rescan_error: None,
-        }
-    }
-
-    #[test]
-    fn order_detail_hides_the_double_spend_row_entirely_when_none_was_detected() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_order_detail(&OrderDetailViewModel {
-                connection_id: "conn_1".to_string(),
-                order: Some(test_order_detail_data(None)),
-                meta_refresh_secs: 15,
-                logged_in: true,
-                is_admin: false,
-            })
-            .unwrap();
-        // The real point of this follow-up: no dash, no row at all - a
-        // permanently-visible "Double-spend detected at" label reads as a
-        // warning even when it says nothing happened.
-        assert!(!html.contains("Double-spend detected at"), "expected the row fully absent when no double-spend occurred, got: {html}");
-    }
-
-    #[test]
-    fn order_detail_shows_the_double_spend_row_when_one_was_detected() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_order_detail(&OrderDetailViewModel {
-                connection_id: "conn_1".to_string(),
-                order: Some(test_order_detail_data(Some(1_700_000_000))),
-                meta_refresh_secs: 15,
-                logged_in: true,
-                is_admin: false,
-            })
-            .unwrap();
-        assert!(html.contains("Double-spend detected at"), "expected the row present when a double-spend was detected, got: {html}");
-        assert!(html.contains("1700000000"), "expected the real detected-at timestamp shown, got: {html}");
-    }
+    // Orders list / order detail page tests moved to `views::orders`'s own
+    // test module - those pages no longer go through this engine at all.
 }

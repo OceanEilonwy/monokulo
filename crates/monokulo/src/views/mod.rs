@@ -22,8 +22,9 @@ use crate::db::{Theme, UserRow};
 pub mod auth;
 pub mod dashboard;
 pub mod landing;
+pub mod orders;
 // More page modules are added here as they're migrated off handlebars -
-// `admin`, `checkout`, `connect`, `invites`, `orders`, `pos`, `status`,
+// `admin`, `checkout`, `connect`, `invites`, `pos`, `status`,
 // `store_detail`, `webhooks`.
 
 /// The shared `<head>` content (fonts, the full color/spacing/radius token

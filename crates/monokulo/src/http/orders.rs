@@ -30,10 +30,11 @@ use serde::Deserialize;
 use crate::crypto;
 use crate::db::{StoreConnectionRow, UserRow};
 use crate::engine_client::{EngineClientError, RescanStatusView};
-use crate::templates::{
-    display_or_dash, display_scan_range, display_timestamp, display_timestamp_or_dash, unix_to_date_string,
+use crate::templates::{display_or_dash, display_scan_range, display_timestamp, display_timestamp_or_dash, unix_to_date_string, WebhookRowViewModel, WebhooksViewModel};
+use crate::views;
+use crate::views::orders::{
     OrderDetailData, OrderDetailViewModel, OrderRescanSectionViewModel, OrderRowViewModel, OrdersViewModel,
-    PaymentRowViewModel, RescanProgressViewModel, RescanTriggerFormViewModel, WebhookRowViewModel, WebhooksViewModel,
+    PaymentRowViewModel, RescanProgressViewModel, RescanTriggerFormViewModel,
 };
 
 use super::dashboard::redirect_302;
@@ -85,7 +86,7 @@ pub async fn orders_list(
     let fiat_metadata = state.db.lock().unwrap().list_order_currency_metadata_for_connection(&row.id).unwrap_or_default();
 
     let view_model = OrdersViewModel {
-        connection_id: id,
+        connection_id: id.clone(),
         orders: orders
             .into_iter()
             .map(|o| {
@@ -96,11 +97,9 @@ pub async fn orders_list(
                 OrderRowViewModel { payment_id: o.payment_id, status: o.status, amount, currency, created_at: o.created_at }
             })
             .collect(),
-        logged_in: true,
-        is_admin: user.is_admin,
     };
-    let html = state.templates.render_orders(&view_model).expect("the built-in orders template must always render");
-    Html(html).into_response()
+    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/connections/{id}/orders"));
+    views::orders::list_page(&chrome, &view_model).into_response()
 }
 
 /// `MONOKULO_RESCAN_DEFAULT_LOOKBACK_DAYS`/`MONOKULO_RESCAN_MAX_LOOKBACK_DAYS`
@@ -204,7 +203,7 @@ pub async fn order_detail(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_order_detail_page(&state, &row, &sk, &id, &payment_id, &headers, user.is_admin, None).await
+    render_order_detail_page(&state, &row, &sk, &id, &payment_id, &headers, &user, None).await
 }
 
 /// The real body of `order_detail` - factored out so `trigger_rescan` can
@@ -219,9 +218,10 @@ async fn render_order_detail_page(
     id: &str,
     payment_id: &str,
     headers: &HeaderMap,
-    is_admin: bool,
+    user: &UserRow,
     rescan_error: Option<String>,
 ) -> Response {
+    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/connections/{id}/orders/{payment_id}"));
     // A real, absolute, copy-pasteable URL - not just the path - since the
     // whole point is something a merchant can paste into an email or chat
     // to someone who isn't already looking at this dashboard. This
@@ -330,28 +330,12 @@ async fn render_order_detail_page(
                     rescan_error,
                 }),
                 meta_refresh_secs,
-                logged_in: true,
-                is_admin,
             };
-            let html = state
-                .templates
-                .render_order_detail(&view_model)
-                .expect("the built-in order detail template must always render");
-            Html(html).into_response()
+            views::orders::detail_page(&chrome, &view_model).into_response()
         }
         Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
-            let view_model = OrderDetailViewModel {
-                connection_id: id.to_string(),
-                order: None,
-                meta_refresh_secs: 15,
-                logged_in: true,
-                is_admin,
-            };
-            let html = state
-                .templates
-                .render_order_detail(&view_model)
-                .expect("the built-in order detail template must always render");
-            (StatusCode::NOT_FOUND, Html(html)).into_response()
+            let view_model = OrderDetailViewModel { connection_id: id.to_string(), order: None, meta_refresh_secs: 15 };
+            (StatusCode::NOT_FOUND, views::orders::detail_page(&chrome, &view_model)).into_response()
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
@@ -408,7 +392,7 @@ pub async fn trigger_rescan(
                 &id,
                 &payment_id,
                 &headers,
-                user.is_admin,
+                &user,
                 Some("Enter a valid start date.".to_string()),
             )
             .await;
@@ -422,7 +406,7 @@ pub async fn trigger_rescan(
                 &id,
                 &payment_id,
                 &headers,
-                user.is_admin,
+                &user,
                 Some("Enter a valid end date.".to_string()),
             )
             .await;
@@ -439,7 +423,7 @@ pub async fn trigger_rescan(
         // mistake, surfaced verbatim, same convention `webhooks_create`
         // already applies to the engine's own webhook-url `400`.
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_order_detail_page(&state, &row, &sk, &id, &payment_id, &headers, user.is_admin, Some(message)).await
+            render_order_detail_page(&state, &row, &sk, &id, &payment_id, &headers, &user, Some(message)).await
         }
         Err(_) => {
             render_order_detail_page(
@@ -449,7 +433,7 @@ pub async fn trigger_rescan(
                 &id,
                 &payment_id,
                 &headers,
-                user.is_admin,
+                &user,
                 Some("Something went wrong. Please try again.".to_string()),
             )
             .await
@@ -728,7 +712,10 @@ async fn render_store_detail_page(
                         Some(m) => (m.amount.clone(), m.currency.clone()),
                         None => ("—".to_string(), "".to_string()),
                     };
-                    OrderRowViewModel { payment_id: o.payment_id, status: o.status, amount, currency, created_at: o.created_at }
+                    // Still the `templates::` version here, not `views::orders::` -
+                    // `store_detail`'s own view model hasn't migrated yet (see
+                    // that struct's own doc comment).
+                    crate::templates::OrderRowViewModel { payment_id: o.payment_id, status: o.status, amount, currency, created_at: o.created_at }
                 })
                 .collect()
         }
@@ -1361,7 +1348,7 @@ mod tests {
 
     use crate::db::Db;
     use crate::engine_client::EngineClient;
-    use crate::templates::{OrderDetailData, OrderDetailViewModel};
+    use crate::views::orders::{OrderDetailData, OrderDetailViewModel};
 
     use super::super::{AppState, build_router};
     use super::parse_extra_headers;
@@ -3487,7 +3474,6 @@ mod tests {
     /// the two tests above.
     #[test]
     fn scan_range_row_shows_a_closed_range_once_no_longer_being_watched() {
-        let engine = crate::templates::TemplateEngine::new().unwrap();
         let order = OrderDetailData {
             payment_id: "pay_abc123".to_string(),
             merchant_order_id: None,
@@ -3515,15 +3501,9 @@ mod tests {
             rescan: None,
             rescan_error: None,
         };
-        let html = engine
-            .render_order_detail(&OrderDetailViewModel {
-                connection_id: "conn_1".to_string(),
-                order: Some(order),
-                meta_refresh_secs: 15,
-                logged_in: true,
-                is_admin: false,
-            })
-            .unwrap();
+        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), order: Some(order), meta_refresh_secs: 15 };
+        let chrome = crate::views::PageChrome::from_user(None, "");
+        let html = crate::views::orders::detail_page(&chrome, &data).into_string();
         assert!(html.contains("100 - 250"), "expected the closed range display, got: {html}");
         assert!(!html.contains("100+"), "must not show a still-growing range once no longer being watched, got: {html}");
     }
