@@ -886,14 +886,13 @@ mod tests {
 
     /// Spawns a real monokulo instance (in-memory `Db`, an
     /// `EngineClient` pointed at `engine_addr`, the fixed test encryption
-    /// key, `TemplateEngine::new()`) bound to a real ephemeral local port.
-    /// No exchange rate/order-creation setup needed on the engine side -
-    /// this flow never creates an order, only a tenant.
+    /// key) bound to a real ephemeral local port. No exchange rate/order-
+    /// creation setup needed on the engine side - this flow never creates
+    /// an order, only a tenant.
     async fn spawn_test_monokulo(engine_addr: SocketAddr) -> TestControlPlaneHandle {
         use monokulo::db::Db;
         use monokulo::engine_client::EngineClient;
         use monokulo::http::{build_router, AppState};
-        use monokulo::templates::TemplateEngine;
 
         let db = Db::open_in_memory().expect("failed to open in-memory monokulo db for test");
         // Signup defaults to invite-only (`monokulo::settings::SIGNUP_MODE`) -
@@ -911,9 +910,6 @@ mod tests {
             db: db.into_shared(),
             engine_client: EngineClient::new(format!("http://{engine_addr}")),
             encryption_key: TEST_ENCRYPTION_KEY,
-            templates: Arc::new(
-                TemplateEngine::new().expect("built-in monokulo templates must parse"),
-            ),
             status_cache: monokulo::http::status_page::new_status_cache(),
             exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
