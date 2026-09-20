@@ -26,11 +26,12 @@ pub mod dashboard;
 pub mod integration_help;
 pub mod landing;
 pub mod orders;
+pub mod pos;
 pub mod status;
 pub mod store_detail;
 pub mod webhooks;
 // More page modules are added here as they're migrated off handlebars -
-// `checkout`, `pos`.
+// `checkout`.
 
 /// The shared `<head>` content (fonts, the full color/spacing/radius token
 /// system, every component's CSS) - see that file's own header comment.
@@ -84,8 +85,10 @@ fn theme_attr(theme: Theme) -> Option<&'static str> {
 /// full `<title>` text (not auto-suffixed - some pages, e.g. the landing
 /// page, deliberately have no " - Monokulo" suffix, so each caller states
 /// its own title exactly).
+const DEFAULT_VIEWPORT: &str = "width=device-width, initial-scale=1";
+
 pub fn layout(chrome: &PageChrome, title: &str, body: Markup) -> Markup {
-    page_shell(chrome, title, None, Some(nav(chrome)), body)
+    page_shell(chrome, title, DEFAULT_VIEWPORT, None, Some(nav(chrome)), body)
 }
 
 /// Same page shell, but with no nav bar - for a screen deliberately built
@@ -94,23 +97,31 @@ pub fn layout(chrome: &PageChrome, title: &str, body: Markup) -> Markup {
 /// `data-theme`, since a merchant who chose dark mode should get it here
 /// too, even without a nav to toggle it from.
 pub fn layout_bare(chrome: &PageChrome, title: &str, body: Markup) -> Markup {
-    page_shell(chrome, title, None, None, body)
+    page_shell(chrome, title, DEFAULT_VIEWPORT, None, None, body)
 }
 
 /// Same as [`layout`], plus arbitrary extra `<head>` content (e.g. a
 /// conditional `<meta http-equiv="refresh">`) rendered right after the
 /// shared head partial - for the handful of pages that need one.
 pub fn layout_with_head(chrome: &PageChrome, title: &str, extra_head: Markup, body: Markup) -> Markup {
-    page_shell(chrome, title, Some(extra_head), Some(nav(chrome)), body)
+    page_shell(chrome, title, DEFAULT_VIEWPORT, Some(extra_head), Some(nav(chrome)), body)
 }
 
-fn page_shell(chrome: &PageChrome, title: &str, extra_head: Option<Markup>, nav: Option<Markup>, body: Markup) -> Markup {
+/// [`layout_bare`] plus extra `<head>` content and a custom `viewport`
+/// (the POS terminal wants `maximum-scale=1, viewport-fit=cover` - no
+/// accidental pinch-zoom on a counter device, and safe-area insets around a
+/// notch/home-indicator - see `views::pos`'s own doc comment).
+pub fn layout_bare_with_head(chrome: &PageChrome, title: &str, viewport: &str, extra_head: Markup, body: Markup) -> Markup {
+    page_shell(chrome, title, viewport, Some(extra_head), None, body)
+}
+
+fn page_shell(chrome: &PageChrome, title: &str, viewport: &str, extra_head: Option<Markup>, nav: Option<Markup>, body: Markup) -> Markup {
     html! {
         (DOCTYPE)
         html lang="en" data-theme=[theme_attr(chrome.theme)] {
             head {
                 meta charset="utf-8";
-                meta name="viewport" content="width=device-width, initial-scale=1";
+                meta name="viewport" content=(viewport);
                 title { (title) }
                 (PreEscaped(HEAD_PARTIAL))
                 @if let Some(extra_head) = extra_head {

@@ -40,11 +40,12 @@
 
 use axum::extract::{Path, State};
 use axum::http::StatusCode;
-use axum::response::{Html, IntoResponse, Json, Response};
+use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
 use crate::engine_client::{EngineClientError, OrderView};
-use crate::templates::PosViewModel;
+use crate::views;
+use crate::views::pos::PosViewModel;
 
 use super::checkout::{qr_svg_for_html, status_label};
 use super::orders::{decrypt_sk, display_name_for, load_owned_connection};
@@ -71,11 +72,9 @@ pub async fn pos_page(State(state): State<AppState>, AuthedUser(user, _): Authed
         display_name: display_name_for(&row.site_url),
         base_currency: row.base_currency,
         base_currency_decimals,
-        logged_in: true,
-        is_admin: user.is_admin,
     };
-    let html = state.templates.render_pos(&view).expect("the built-in pos template must always render");
-    Html(html).into_response()
+    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/connections/{}/pos", view.connection_id));
+    views::pos::page(&chrome, &view).into_response()
 }
 
 #[derive(Debug, Deserialize)]
