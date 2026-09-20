@@ -20,7 +20,6 @@ const NAV_PARTIAL: &str = include_str!("../templates/_nav.html.hbs");
 const CHECKOUT_TEMPLATE: &str = include_str!("../templates/checkout.html.hbs");
 const CHECKOUT_NOT_FOUND_TEMPLATE: &str = include_str!("../templates/checkout_not_found.html.hbs");
 const CHECKOUT_SHARE_TEMPLATE: &str = include_str!("../templates/checkout_share.html.hbs");
-const POS_TEMPLATE: &str = include_str!("../templates/pos.html.hbs");
 
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateError {
@@ -286,32 +285,10 @@ pub struct CheckoutShareViewModel {
     pub is_admin: bool,
 }
 
-/// `http/pos.rs::pos_page` - the terminal screen's own static shell. Every
-/// live value (the entered amount, the QR/URI/NFC payment view, the
-/// tick/progress overlay, backgrounded payments stacked at the bottom) is
-/// driven client-side by JS talking to `http::pos`'s JSON endpoints - see
-/// `http::pos`'s own module doc comment for why this screen, unlike the
-/// public checkout page, leans on JS rather than working around it.
-#[derive(Debug, Serialize)]
-pub struct PosViewModel {
-    pub connection_id: String,
-    pub display_name: String,
-    pub base_currency: String,
-    /// How many decimal places the keypad's digit-shift should keep before
-    /// inserting a decimal point - `2` for every fiat currency (matching
-    /// `shared::exchange_rate::compute_xmr_amount`'s own 2-decimal-place
-    /// limit), `12` when this store's `base_currency` is itself `"XMR"`
-    /// (matching `shared::exchange_rate::parse_xmr_to_piconero`'s own native
-    /// precision) - see `http::pos::pos_page`'s own doc comment.
-    pub base_currency_decimals: u8,
-    pub logged_in: bool,
-    pub is_admin: bool,
-}
-
 // SetupViewModel/RequestInviteViewModel/AdminInviteRequestRow/AdminInvitesViewModel/
 // AdminScalarFieldView/AdminNetworkFieldView/AdminSettingsViewModel moved to
-// `views::admin` as part of the Maud migration - those pages no longer go
-// through this engine at all.
+// `views::admin`, and PosViewModel to `views::pos`, as part of the Maud
+// migration - those pages no longer go through this engine at all.
 
 pub struct TemplateEngine {
     handlebars: Handlebars<'static>,
@@ -333,7 +310,6 @@ impl TemplateEngine {
         handlebars.register_template_string("checkout", CHECKOUT_TEMPLATE)?;
         handlebars.register_template_string("checkout_not_found", CHECKOUT_NOT_FOUND_TEMPLATE)?;
         handlebars.register_template_string("checkout_share", CHECKOUT_SHARE_TEMPLATE)?;
-        handlebars.register_template_string("pos", POS_TEMPLATE)?;
         Ok(TemplateEngine { handlebars })
     }
 
@@ -347,10 +323,6 @@ impl TemplateEngine {
 
     pub fn render_checkout_share(&self, data: &CheckoutShareViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("checkout_share", data)?)
-    }
-
-    pub fn render_pos(&self, data: &PosViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("pos", data)?)
     }
 }
 

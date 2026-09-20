@@ -1,28 +1,129 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
-<title>POS - {{display_name}} - Monokulo</title>
-{{> styles}}
-<style>
-/* A merchant-operated terminal screen, not the customer-facing checkout page
-   (`checkout.html.hbs`'s own JS-free hard requirement does not apply here -
-   see `http::pos`'s module doc comment). Square-Terminal-like: one big
-   amount readout, a numeric keypad with no decimal key (digits shift in
-   from the right, the decimal point is fixed by the store's own currency),
-   and a full-bleed payment/tick overlay once a sale is charged.
+//! `http/pos.rs::pos_page` - the terminal screen's own static shell. Every
+//! live value (the entered amount, the QR/URI/NFC payment view, the
+//! tick/progress overlay, backgrounded payments stacked at the bottom) is
+//! driven client-side by JS talking to `http::pos`'s JSON endpoints - see
+//! `http::pos`'s own module doc comment for why this screen, unlike the
+//! public checkout page, leans on JS rather than working around it.
+//!
+//! Deliberately full-screen (no nav bar, no store title) via
+//! [`super::layout_bare_with_head`] - meant to be left open on a
+//! merchant's device at the counter all day, not navigated away from.
 
-   Deliberately full-screen (no nav bar, no store title) - this is meant to
-   be left open on a mobile/iPad device at the counter all day, not
-   navigated away from; every screen pixel goes to the amount, the keypad
-   and the payment state, not to chrome nobody reads twice. The only chrome
-   that remains - a small back link and the system status dot - sits in a
-   slim, low-opacity corner bar (`.pos-topbar`) that never competes with the
-   keypad for attention. Sized primarily for a phone or iPad held/propped at
-   the counter (both portrait and landscape), constrained to a centered
-   column on wider desktop screens so it stays usable there too without
-   trying to be its primary target. */
+use maud::{html, Markup, PreEscaped};
+
+use super::{layout_bare_with_head, PageChrome};
+
+pub struct PosViewModel {
+    pub connection_id: String,
+    pub display_name: String,
+    pub base_currency: String,
+    /// How many decimal places the keypad's digit-shift should keep before
+    /// inserting a decimal point - `2` for every fiat currency (matching
+    /// `shared::exchange_rate::compute_xmr_amount`'s own 2-decimal-place
+    /// limit), `12` when this store's `base_currency` is itself `"XMR"`
+    /// (matching `shared::exchange_rate::parse_xmr_to_piconero`'s own native
+    /// precision) - see `http::pos::pos_page`'s own doc comment.
+    pub base_currency_decimals: u8,
+}
+
+const VIEWPORT: &str = "width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover";
+
+pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
+    let title = format!("POS - {} - Monokulo", data.display_name);
+    let extra_head = html! { style { (PreEscaped(POS_STYLE)) } };
+    let body = html! {
+        div class="pos-topbar" {
+            a href=(format!("/dashboard/connections/{}", data.connection_id)) class="pos-back" aria-label="Back to dashboard" title="Back to dashboard" { "←" }
+            a href="/status" class="pos-status-link" id="pos-status-link" title="checking..." {
+                span id="pos-status-dot" class="status-dot status-dot-unknown" {}
+            }
+        }
+
+        div class="pos-wrap" {
+            div id="pos-config"
+                data-connection-id=(data.connection_id)
+                data-base-currency=(data.base_currency)
+                data-decimals=(data.base_currency_decimals)
+                style="display:none" {}
+
+            div id="keypad-screen" class="pos-screen" {
+                div class="amount-display" id="amount-display" { "0.00" }
+                div class="keypad" {
+                    div class="key-grid" {
+                        @for digit in ["1", "2", "3", "4", "5", "6", "7", "8", "9"] {
+                            button type="button" class="key" data-digit=(digit) { span class="key-face" { (digit) } }
+                        }
+                        button type="button" class="key key-clear" id="key-clear" aria-label="Clear" { span class="key-face" { "C" } }
+                        button type="button" class="key" data-digit="0" { span class="key-face" { "0" } }
+                        button type="button" class="key key-backspace" id="key-backspace" aria-label="Backspace" {
+                            span class="key-face" {
+                                svg viewBox="0 0 24 24" aria-hidden="true" focusable="false" {
+                                    path d="M8 5 L2 12 L8 19 H21 A1 1 0 0 0 22 18 V6 A1 1 0 0 0 21 5 Z" fill="none" stroke-width="2" stroke-linejoin="round" {}
+                                    path d="M12.2 9.3 L17.5 14.7 M17.5 9.3 L12.2 14.7" stroke-width="2" stroke-linecap="round" {}
+                                }
+                            }
+                        }
+                    }
+                }
+                div class="note-input-row" {
+                    input type="text" id="note-input" placeholder="Note (optional) — e.g. a name" maxlength="120" autocomplete="off";
+                }
+                button type="button" class="charge-btn" id="charge-btn" disabled { "Charge" }
+                p id="pos-error" {}
+            }
+
+            div id="payment-screen" class="pos-screen pos-screen-hidden" {
+                div class="payment-panel" {
+                    div class="payment-amount" id="payment-amount" {}
+                    div class="qr-holder" id="qr-holder" {}
+                    div class="address-row" { code id="payment-address" {} }
+                    p class="nfc-status" id="nfc-status" {}
+                    button type="button" class="secondary-btn" id="cancel-btn" { "Cancel" }
+                }
+            }
+        }
+
+        div class="tick-overlay pos-screen-hidden" id="tick-overlay" {
+            div class="tick-ring" {
+                svg viewBox="0 0 120 120" class="ring-svg" aria-hidden="true" focusable="false" {
+                    circle class="ring-track" cx="60" cy="60" r="54" {}
+                    circle class="ring-progress" id="ring-progress" cx="60" cy="60" r="54" {}
+                }
+                div class="tick-mark" id="tick-mark" { "✓" }
+            }
+            p class="tick-label" id="tick-label" { "Paid" }
+            p class="tick-note" id="tick-note" {}
+            p class="tick-error" id="tick-error" {}
+            div class="tick-actions" {
+                button type="button" class="secondary-btn pos-screen-hidden" id="background-btn" { "Confirm in background" }
+                button type="button" class="secondary-btn pos-screen-hidden" id="dismiss-btn" { "Dismiss" }
+            }
+        }
+
+        div class="bg-stack" id="bg-stack" {}
+
+        noscript {
+            div class="wrap" { p class="error" { "This screen needs JavaScript for the live keypad, payment status and NFC tap payments. Use the plain \"create an order\" form on this store's own page instead." } }
+        }
+
+        script { (PreEscaped(POS_SCRIPT)) }
+    };
+    layout_bare_with_head(chrome, &title, VIEWPORT, extra_head, body)
+}
+
+/// A merchant-operated terminal screen, not the customer-facing checkout
+/// page (`views::checkout`'s own JS-free hard requirement does not apply
+/// here - see `http::pos`'s module doc comment). Square-Terminal-like: one
+/// big amount readout, a numeric keypad with no decimal key (digits shift
+/// in from the right, the decimal point is fixed by the store's own
+/// currency), and a full-bleed payment/tick overlay once a sale is charged.
+///
+/// Unchanged, verbatim, from the old `pos.html.hbs`'s own `<style>` block -
+/// it carried no handlebars syntax to begin with (confirmed - zero `{{` in
+/// it), so there was nothing to convert; kept as a page-specific `<style>`
+/// rather than folded into `views/head.html` since none of it applies to
+/// any other page.
+const POS_STYLE: &str = r#"
 html, body { height: 100%; }
 body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: contain; }
 
@@ -63,22 +164,7 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 .pos-status-link .status-dot { margin-left: 0; }
 
 .pos-wrap {
-  /* No `max-width` at all - nothing here needs one. `#keypad-screen`'s own
-     grid (below) resolves the keypad's size purely from whatever box it's
-     actually given, in either orientation, so there's no "wasted space"
-     failure mode left to cap around, and `.payment-panel` caps its own
-     width independently. One less thing to keep in sync. */
   margin: 0 auto;
-  /* A real, definite `height` - not just `min-height` - matters here: this
-     screen's whole "never scroll" guarantee works by giving
-     `#keypad-screen`'s `minmax(0, 1fr)` row a hard ceiling to shrink
-     against. `min-height` alone lets a block box grow past it to fit its
-     own content, which is exactly what happened here - `#keypad-screen`'s
-     grid rows have no definite basis to size against, so they fall back to
-     their content's natural (un-shrunk) size, `.pos-wrap` grows to fit
-     that, and the "1fr can't overflow its container" guarantee breaks one
-     level up from where it was built (confirmed directly: this is what
-     produced a real, large overflow on first implementation). */
   height: 100vh;
   height: 100dvh;
   box-sizing: border-box;
@@ -88,24 +174,8 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 }
 .pos-screen { flex: 1; min-height: 0; }
 .pos-screen-hidden { display: none !important; }
-/* The keypad screen (amount / keypad / note / charge / error) is a plain
-   row-stack grid - `auto` rows size to their own content for free, and
-   `minmax(0, 1fr)` gives the keypad whatever's left, in either
-   orientation, with no JS and no hand-computed height budget. The `0` in
-   `minmax(0, 1fr)` matters: without it this track (like a flex item)
-   would refuse to shrink below its content's own preferred size, which
-   defeats the point on a short screen. `#payment-screen` stays a plain
-   flex-centered single panel - it never needed any of this. */
 #keypad-screen { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto auto; }
 
-/* Spec point 4: no currency anywhere on this screen - only the charge
-   screen below shows one, next to the real amount being requested.
-   Deliberately no box (no border/background/padding) around this - it's
-   the one thing on this screen a merchant reads from across a counter,
-   so it gets plain large centered text instead of competing with a card
-   outline, and the reclaimed vertical space goes straight to the keypad
-   for free via `#keypad-screen`'s `minmax(0, 1fr)` row - whatever height
-   this element ends up at, the keypad gets the rest. */
 .amount-display {
   font-size: clamp(2.6rem, 12vw, 4.4rem);
   font-weight: 700;
@@ -123,25 +193,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   min-height: 0;
   min-width: 0;
 }
-/* 12 keys in a fixed 3-column x 4-row layout means the *whole grid* has a
-   fixed 3:4 aspect ratio, not just each individual key - so it's the grid
-   that gets fit (contain-style) into whatever box `#keypad-screen`'s
-   `minmax(0, 1fr)` row hands `.keypad`, via a query-both-actual-
-   dimensions-and-take-the-min trick: `.keypad` is a plain flex-centered
-   container query context (its own box is exactly the row's box, so
-   `cqw`/`cqh` read that box's real, current dimensions); `.key-grid` is
-   sized to `min(100cqw, 100cqh * 3/4)` wide by `min(100cqh, 100cqw * 4/3)`
-   tall, a real two-axis "shrink to fit, preserve ratio" the browser
-   resolves, not a hand-picked breakpoint. Once `.key-grid` itself is
-   exactly 3:4, its 3 equal-width columns and 4 equal-height rows are
-   *always* exact squares by construction (col width = W/3, row height =
-   (W*4/3)/4 = W/3), at every size, in both orientations. `border-radius`
-   is in `cqmin` (not `%`) so the case's corners stay a real, even round -
-   a `%` radius on a non-square box would resolve to a different pixel
-   radius on each axis. The gap revealing this frame color between
-   keycaps is real space carved out of `.key`'s own padding below, not
-   `gap` here - so it can't unbalance the square math above; it comes out
-   of each already-square cell equally on every side. */
 .key-grid {
   width: min(100cqw, 100cqh * 3 / 4);
   height: min(100cqh, 100cqw * 4 / 3);
@@ -156,15 +207,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   width: 100%;
   height: 100%;
   margin: 0;
-  /* A real gap between keycaps - the frame color peeking through, like a
-     physical keyboard's tray between keys - as `padding`, not grid `gap`,
-     and deliberately in `%`: percentage padding always resolves against
-     the *width*, on every side, top/bottom included (a genuine CSS quirk,
-     not a bug). Because `.key` is already an exact square (see
-     `.key-grid` above), that means the same absolute pixel gap lands on
-     all four sides of every key - including the outer ones, which is
-     what produces the case's outer bezel too, for free, with no separate
-     frame element needed. */
   padding: 6%;
   box-sizing: border-box;
   display: flex;
@@ -175,12 +217,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
-/* The shared partial's generic `button:hover` paints the *whole* button -
-   fine for a normal button, but here that button is the full grid cell,
-   padding (the gap to neighboring keys) included, so it would highlight
-   the gap along with the cap. Cancel it back to nothing at the cell level
-   and re-apply the highlight only on `.key-face`, the actual visible cap,
-   below. */
 .key:hover { background: none; border-color: transparent; }
 .key-face {
   width: 100%;
@@ -192,29 +228,11 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   font-size: clamp(1.4rem, 6vw, 2.6rem);
   font-weight: 700;
   color: var(--ink);
-  /* A real keycap, not a flat swatch: `border-radius` in `%` (safe here -
-     unlike `.key-grid`, this box is always an exact square) rounds the
-     cap itself; the gradient is the cap's own curved-top highlight; the
-     two-part shadow is the cap's plastic "wall" (a hard, short offset)
-     plus its ambient drop shadow onto the switch below. Pressing a key
-     flattens both into a single tight shadow and nudges the cap down
-     (`.key:active` below) to read as a real, physical press. */
   border-radius: 22%;
-  /* `var(--paper-raised)`, never a literal white: this gradient's base is
-     the theme's own surface color, or dark mode gets a near-white keycap
-     under near-white `--ink` text - unreadable by construction. Shadow
-     tint is `--shadow-rgb` (a fixed dark constant, not `--ink`, which
-     flips to near-white in dark mode - a shadow must stay dark regardless
-     of the surface it's cast on). */
   background: linear-gradient(165deg, var(--paper-raised) 0%, color-mix(in srgb, var(--pos-frame) 18%, var(--paper-raised)) 100%);
   box-shadow: 0 0.12em 0 rgba(var(--shadow-rgb), 0.28), 0 0.3em 0.5em rgba(var(--shadow-rgb), 0.15);
   transition: transform 0.06s ease, box-shadow 0.06s ease, background 0.06s ease;
 }
-/* `currentColor` (not a fixed color) so this ring automatically matches
-   whichever key it's on - `--ink` for digits, `--error`/`--warning` for
-   clear/backspace - with one rule instead of one per key type. Placed
-   before `.key:active` below so a press (both `:hover` and `:active` true
-   at once) still resolves to the pressed look, not a blend of the two. */
 .key:hover .key-face {
   box-shadow: 0 0.12em 0 rgba(var(--shadow-rgb), 0.28), 0 0.3em 0.5em rgba(var(--shadow-rgb), 0.15), inset 0 0 0 0.12em currentColor;
 }
@@ -224,30 +242,10 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   box-shadow: 0 0.02em 0 rgba(var(--shadow-rgb), 0.28);
   transform: translateY(0.08em);
 }
-/* Clear/backspace read at the same visual weight as every digit key, and
-   now also get their own colored keycap (not just a colored glyph) - red
-   for the destructive "clear the whole amount", amber for the more
-   forgiving single-digit "backspace" - the way a real keyboard's accent
-   keycaps work, rather than a plain color swap on the label alone. Tints
-   via `color-mix` off `--paper-raised` (never a literal hex) so they stay
-   correct in dark mode too. Pressed text is `--error-ink`/`--warning-ink`,
-   not a literal white: `--error`/`--warning` flip from dark (light mode)
-   to light (dark mode), so the readable ink on top of them flips too - a
-   fixed white would be unreadable on dark mode's much lighter error/
-   warning once pressed. */
 .key-clear .key-face { color: var(--error); background: linear-gradient(165deg, color-mix(in srgb, var(--error) 12%, var(--paper-raised)), color-mix(in srgb, var(--error) 24%, var(--paper-raised))); }
 .key-clear:active .key-face { background: var(--error); color: var(--error-ink); }
 .key-backspace .key-face { color: var(--warning); background: linear-gradient(165deg, color-mix(in srgb, var(--warning) 12%, var(--paper-raised)), color-mix(in srgb, var(--warning) 24%, var(--paper-raised))); }
 .key-backspace:active .key-face { background: var(--warning); color: var(--warning-ink); }
-/* Sized in `em`, tracking `.key`'s own font-size, rather than a separate
-   calc - one fewer thing to keep in sync with the digit glyphs next to it.
-   `flex: none` is still required, not cosmetic: without it, `.key`'s own
-   `justify-content: center` flex layout applies its default
-   `flex-shrink: 1`/auto min-width to the svg and squeezes its *width*
-   (only the width - height was unaffected) down to a few pixels even
-   though there was plenty of room and an explicit width was set -
-   confirmed directly by toggling this one property with nothing else
-   changed. */
 .key-backspace svg { display: block; flex: none; width: 1em; height: 1em; }
 .key-backspace svg, .key-backspace svg * { stroke: currentColor; }
 
@@ -279,9 +277,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   cursor: pointer;
 }
 .charge-btn:disabled { background: var(--paper-raised); color: var(--muted); cursor: not-allowed; }
-/* Spec point 3 (this round): once a real amount is entered the button
-   isn't just "not greyed out" - it visibly announces itself as the next
-   step, via a glow no other control on this screen uses. */
 .charge-btn:not(:disabled) { box-shadow: 0 0 0 4px rgba(124, 108, 240, 0.28); }
 .secondary-btn { background: var(--paper-raised); color: var(--ink); }
 
@@ -339,10 +334,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 }
 .tick-overlay.is-error .tick-mark { color: var(--error); }
 .tick-label { font-size: 1.3rem; font-weight: 700; margin: 0; }
-/* Spec points 5-6: the merchant's own quick note on the order (usually a
-   customer's name), carried through as the order's real `merchant_order_id`
-   - shown here on both the plain success state and the error state, since
-   this one overlay covers both. */
 .tick-note { font-size: 1rem; color: var(--muted); margin: 0; max-width: 22em; }
 .tick-note:empty { display: none; }
 .tick-error { color: var(--error); font-weight: 700; max-width: 22em; margin: 0; }
@@ -391,19 +382,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 .bg-item.is-error .bg-bar-fill { background: var(--error); }
 .bg-item .bg-dismiss { border: none; background: none; cursor: pointer; font-weight: 700; color: inherit; }
 
-/* A phone in landscape has very little height. On the keypad screen this
-   is no longer a correctness concern - `.key-grid`'s `min(100cqw, ...)`
-   sizing can't exceed the space `#keypad-screen`'s grid gives `.keypad`,
-   so it can't overflow regardless of how short the screen gets - these rules just
-   keep it looking tidy (smaller type/padding, comfortable tap targets)
-   rather than leaving lots of unused chrome around a tiny keypad.
-   On the charge/QR screen it's still load-bearing: `.qr-holder`'s
-   `max-width: 260px` above is a fixed size that genuinely can overflow a
-   short viewport if left alone. This block must stay the last thing in
-   this stylesheet - CSS media queries add no specificity, so a later
-   plain rule of equal specificity always wins over an earlier
-   conditional one regardless of whether the condition matches; placing
-   this first had zero effect when that was tried (confirmed directly). */
 @media (max-height: 480px) {
   .pos-wrap { padding-top: calc(env(safe-area-inset-top, 0px) + 1.1rem); }
   .amount-display { font-size: clamp(1.1rem, 6vw, 1.9rem); margin: 0 0 0.25em; }
@@ -417,91 +395,20 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   .address-row { margin: 0.3em 0; font-size: 0.7rem; }
   .nfc-status { font-size: 0.75rem; min-height: 0; }
 }
-</style>
-</head>
-<body data-connection-id="{{connection_id}}" data-base-currency="{{base_currency}}" data-decimals="{{base_currency_decimals}}">
+"#;
 
-<div class="pos-topbar">
-<a href="/dashboard/connections/{{connection_id}}" class="pos-back" aria-label="Back to dashboard" title="Back to dashboard">&larr;</a>
-<a href="/status" class="pos-status-link" id="pos-status-link" title="checking..."><span id="pos-status-dot" class="status-dot status-dot-unknown"></span></a>
-</div>
-
-<div class="pos-wrap">
-
-<div id="keypad-screen" class="pos-screen">
-<div class="amount-display" id="amount-display">0.00</div>
-<div class="keypad">
-<div class="key-grid">
-<button type="button" class="key" data-digit="1"><span class="key-face">1</span></button>
-<button type="button" class="key" data-digit="2"><span class="key-face">2</span></button>
-<button type="button" class="key" data-digit="3"><span class="key-face">3</span></button>
-<button type="button" class="key" data-digit="4"><span class="key-face">4</span></button>
-<button type="button" class="key" data-digit="5"><span class="key-face">5</span></button>
-<button type="button" class="key" data-digit="6"><span class="key-face">6</span></button>
-<button type="button" class="key" data-digit="7"><span class="key-face">7</span></button>
-<button type="button" class="key" data-digit="8"><span class="key-face">8</span></button>
-<button type="button" class="key" data-digit="9"><span class="key-face">9</span></button>
-<button type="button" class="key key-clear" id="key-clear" aria-label="Clear"><span class="key-face">C</span></button>
-<button type="button" class="key" data-digit="0"><span class="key-face">0</span></button>
-<button type="button" class="key key-backspace" id="key-backspace" aria-label="Backspace">
-<span class="key-face">
-<svg viewBox="0 0 24 24" aria-hidden="true" focusable="false">
-<path d="M8 5 L2 12 L8 19 H21 A1 1 0 0 0 22 18 V6 A1 1 0 0 0 21 5 Z" fill="none" stroke-width="2" stroke-linejoin="round"></path>
-<path d="M12.2 9.3 L17.5 14.7 M17.5 9.3 L12.2 14.7" stroke-width="2" stroke-linecap="round"></path>
-</svg>
-</span>
-</button>
-</div>
-</div>
-<div class="note-input-row">
-<input type="text" id="note-input" placeholder="Note (optional) — e.g. a name" maxlength="120" autocomplete="off">
-</div>
-<button type="button" class="charge-btn" id="charge-btn" disabled>Charge</button>
-<p id="pos-error"></p>
-</div>
-
-<div id="payment-screen" class="pos-screen pos-screen-hidden">
-<div class="payment-panel">
-<div class="payment-amount" id="payment-amount"></div>
-<div class="qr-holder" id="qr-holder"></div>
-<div class="address-row"><code id="payment-address"></code></div>
-<p class="nfc-status" id="nfc-status"></p>
-<button type="button" class="secondary-btn" id="cancel-btn">Cancel</button>
-</div>
-</div>
-
-</div>
-
-<div class="tick-overlay pos-screen-hidden" id="tick-overlay">
-<div class="tick-ring">
-<svg viewBox="0 0 120 120" class="ring-svg" aria-hidden="true" focusable="false">
-<circle class="ring-track" cx="60" cy="60" r="54"></circle>
-<circle class="ring-progress" id="ring-progress" cx="60" cy="60" r="54"></circle>
-</svg>
-<div class="tick-mark" id="tick-mark">&#10003;</div>
-</div>
-<p class="tick-label" id="tick-label">Paid</p>
-<p class="tick-note" id="tick-note"></p>
-<p class="tick-error" id="tick-error"></p>
-<div class="tick-actions">
-<button type="button" class="secondary-btn pos-screen-hidden" id="background-btn">Confirm in background</button>
-<button type="button" class="secondary-btn pos-screen-hidden" id="dismiss-btn">Dismiss</button>
-</div>
-</div>
-
-<div class="bg-stack" id="bg-stack"></div>
-
-<noscript>
-<div class="wrap"><p class="error">This screen needs JavaScript for the live keypad, payment status and NFC tap payments. Use the plain "create an order" form on this store's own page instead.</p></div>
-</noscript>
-
-<script>
+/// Unchanged, verbatim, from the old `pos.html.hbs`'s own `<script>` block,
+/// except reading its three config values from `#pos-config`'s own
+/// `data-*` attributes rather than `<body>`'s - a plain, invisible element
+/// is a cleaner seam for this than special-casing `<body>`'s own attributes
+/// through the shared [`super::page_shell`] every other page also renders
+/// through.
+const POS_SCRIPT: &str = r#"
 (function () {
   "use strict";
-  var body = document.body;
-  var connectionId = body.getAttribute("data-connection-id");
-  var decimals = parseInt(body.getAttribute("data-decimals"), 10) || 2;
-  var baseCurrency = body.getAttribute("data-base-currency") || "";
+  var config = document.getElementById("pos-config");
+  var connectionId = config.getAttribute("data-connection-id");
+  var decimals = parseInt(config.getAttribute("data-decimals"), 10) || 2;
   var MAX_DIGITS = decimals + 9;
   var POLL_INTERVAL_MS = 2000;
   var POLL_FAILURE_LIMIT = 3;
@@ -533,15 +440,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 
   ringProgress.style.strokeDasharray = String(RING_CIRCUMFERENCE);
 
-  // Square keys, "never needs to scroll" in both orientations, and the
-  // keypad/charge screens fitting the available space are all handled by
-  // plain CSS now (see `.keypad`/`.key`/`#keypad-screen` in <style> above)
-  // - no measurement, no resize/orientationchange listener, nothing to
-  // keep synchronized with the DOM from here.
-
-  // Small, low-opacity corner status dot (spec point 1) - same
-  // `/status/summary` poll `_nav.html.hbs`'s own nav bar uses, just without
-  // the rest of that bar (this screen has none).
   (function pollHealth() {
     fetch("/status/summary").then(function (r) { return r.json(); }).then(function (data) {
       if (data && data.healthy) {
@@ -557,12 +455,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
     });
   })();
 
-  // Foreground payment currently being polled (the one whose overlay is on
-  // screen), separate from `backgrounded` (spec points 10-11) - each has
-  // its own independent poll loop, so backgrounding the foreground one just
-  // moves its `payment_id` from this to that. `note` is the merchant's own
-  // quick note (spec points 5-6), carried alongside so the tick overlay can
-  // still show it however this payment is later reached.
   var foreground = null; // { paymentId, timer, failures, note }
   var backgrounded = {}; // paymentId -> { el, timer, failures }
 
@@ -620,9 +512,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 
   document.addEventListener("keydown", function (event) {
     if (keypadScreen.classList.contains("pos-screen-hidden")) return;
-    // The note field is a real text input - typing in it must never also
-    // drive the keypad (a merchant typing "5" into a customer's name would
-    // otherwise silently also punch a 5 into the amount).
     if (document.activeElement === noteInput) {
       if (event.key === "Enter") chargeBtn.click();
       return;
@@ -656,9 +545,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
       await reader.write({ records: [{ recordType: "url", data: moneroUri }] });
       nfcStatus.textContent = "Ready for tap-to-pay, or scan the QR code.";
     } catch (err) {
-      // Best-effort only (spec point 6) - permission denied, no reader
-      // present, or the browser rejected the write for any other reason
-      // all fall back to the QR code, which is always shown regardless.
       nfcStatus.textContent = "Tap-to-pay unavailable - use the QR code.";
     }
   }
@@ -727,7 +613,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   }
 
   function showTick(state) {
-    // `state`: { percent, isError, message, canBackground, finished, note }
     tickOverlay.classList.remove("pos-screen-hidden");
     tickOverlay.classList.toggle("is-error", state.isError);
     setRingProgress(state.percent);
@@ -768,8 +653,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
       foreground.failures = 0;
 
       if (result.status === "pending") {
-        // Not yet seen in the mempool at all - stay on the QR/address view,
-        // no tick yet (spec point 7 only fires once a tx actually appears).
         tickOverlay.classList.add("pos-screen-hidden");
         foreground.timer = setTimeout(tick, POLL_INTERVAL_MS);
         return;
@@ -792,9 +675,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 
       if (result.is_terminal) {
         if (success) {
-          // Spec point 8: 0-conf trusted (or fully confirmed) success
-          // auto-hides and returns to the keypad - no merchant action
-          // needed for a clean payment.
           setTimeout(function () {
             if (foreground && foreground.paymentId === paymentId) {
               stopForegroundPoll();
@@ -802,9 +682,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
             }
           }, 2500);
         }
-        // A terminal error (expired, overpaid, double-spend) stays on
-        // screen until the merchant explicitly dismisses it (spec point
-        // 12) - handled by `dismiss-btn` below, not auto-cleared here.
         return;
       }
 
@@ -836,9 +713,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
     el.querySelector(".bg-id").textContent = shortId(paymentId);
     var fill = el.querySelector(".bg-bar-fill");
     var dismiss = el.querySelector(".bg-dismiss");
-    // Newest backgrounded payment stacks at the bottom (spec point 11) -
-    // `.bg-stack` is `column-reverse`, so appending here visually adds each
-    // new one at the bottom of the growing stack.
     bgStack.appendChild(el);
 
     var entry = { el: el, timer: null, failures: 0 };
@@ -884,8 +758,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
             }
           }, 4000);
         }
-        // A terminal error stays stacked (with its dismiss button shown)
-        // until the merchant clears it, same as the foreground overlay.
         return;
       }
       entry.timer = setTimeout(tick, POLL_INTERVAL_MS);
@@ -895,6 +767,38 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 
   renderAmount();
 })();
-</script>
-</body>
-</html>
+"#;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn chrome() -> PageChrome {
+        PageChrome::from_user(None, "/dashboard/connections/conn-1/pos")
+    }
+
+    fn data() -> PosViewModel {
+        PosViewModel {
+            connection_id: "conn-1".to_string(),
+            display_name: "example.com".to_string(),
+            base_currency: "XMR".to_string(),
+            base_currency_decimals: 12,
+        }
+    }
+
+    #[test]
+    fn renders_no_nav_and_carries_the_stores_base_currency_and_connection_id() {
+        let html = page(&chrome(), &data()).into_string();
+        assert!(html.contains("XMR"), "expected the store's own base currency shown, got: {html}");
+        assert!(html.contains(r#"data-connection-id="conn-1""#));
+        assert!(html.contains(r#"data-decimals="12""#));
+        assert!(html.contains("/dashboard/connections/conn-1"), "expected the back link to this connection's dashboard");
+        assert!(!html.contains("<nav class=\"site-nav\""), "the POS terminal must render with no site nav element at all");
+    }
+
+    #[test]
+    fn title_includes_the_display_name() {
+        let html = page(&chrome(), &data()).into_string();
+        assert!(html.contains("<title>POS - example.com - Monokulo</title>"));
+    }
+}
