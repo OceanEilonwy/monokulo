@@ -26,8 +26,9 @@ pub mod integration_help;
 pub mod landing;
 pub mod orders;
 pub mod store_detail;
+pub mod webhooks;
 // More page modules are added here as they're migrated off handlebars -
-// `admin`, `checkout`, `invites`, `pos`, `status`, `webhooks`.
+// `admin`, `checkout`, `invites`, `pos`, `status`.
 
 /// The shared `<head>` content (fonts, the full color/spacing/radius token
 /// system, every component's CSS) - see that file's own header comment.

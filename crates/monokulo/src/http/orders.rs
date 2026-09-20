@@ -24,13 +24,13 @@ use std::collections::HashMap;
 
 use axum::extract::{Form, Path, State};
 use axum::http::{HeaderMap, StatusCode};
-use axum::response::{Html, IntoResponse, Response};
+use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
 
 use crate::crypto;
 use crate::db::{StoreConnectionRow, UserRow};
 use crate::engine_client::{EngineClientError, RescanStatusView};
-use crate::templates::{display_or_dash, display_scan_range, display_timestamp, display_timestamp_or_dash, unix_to_date_string, WebhookRowViewModel, WebhooksViewModel};
+use crate::templates::{display_or_dash, display_scan_range, display_timestamp, display_timestamp_or_dash, unix_to_date_string};
 use crate::views;
 use crate::views::orders::{
     OrderDetailData, OrderDetailViewModel, OrderRescanSectionViewModel, OrderRowViewModel, OrdersViewModel,
@@ -458,7 +458,7 @@ pub async fn webhooks_list(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_webhooks_page(&state, &id, &sk, user.is_admin, None, None).await
+    render_webhooks_page(&state, &id, &sk, &user, None, None).await
 }
 
 /// Shared by `webhooks_list`/`webhooks_create`/`webhooks_delete` - every one
@@ -469,7 +469,7 @@ async fn render_webhooks_page(
     state: &AppState,
     connection_id: &str,
     sk: &str,
-    is_admin: bool,
+    user: &UserRow,
     error: Option<String>,
     created_webhook_signing_secret: Option<String>,
 ) -> Response {
@@ -478,11 +478,12 @@ async fn render_webhooks_page(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    let view_model = WebhooksViewModel {
+    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/connections/{connection_id}/webhooks"));
+    let view_model = views::webhooks::WebhooksViewModel {
         connection_id: connection_id.to_string(),
         webhooks: webhooks
             .into_iter()
-            .map(|w| WebhookRowViewModel {
+            .map(|w| views::webhooks::WebhookRowViewModel {
                 webhook_id: w.webhook_id,
                 url: w.url,
                 enabled: w.enabled,
@@ -491,12 +492,8 @@ async fn render_webhooks_page(
             .collect(),
         error,
         created_webhook_signing_secret,
-        logged_in: true,
-        is_admin,
     };
-    let html =
-        state.templates.render_webhooks(&view_model).expect("the built-in webhooks template must always render");
-    Html(html).into_response()
+    views::webhooks::page(&chrome, &view_model).into_response()
 }
 
 #[derive(Deserialize)]
@@ -567,24 +564,24 @@ pub async fn webhooks_create(
 
     let url = form.url.trim();
     if url.is_empty() {
-        return render_webhooks_page(&state, &id, &sk, user.is_admin, Some("Enter a webhook URL.".to_string()), None).await;
+        return render_webhooks_page(&state, &id, &sk, &user, Some("Enter a webhook URL.".to_string()), None).await;
     }
     let extra_headers = match parse_extra_headers(&form.extra_headers) {
         Ok(headers) => headers,
-        Err(message) => return render_webhooks_page(&state, &id, &sk, user.is_admin, Some(message), None).await,
+        Err(message) => return render_webhooks_page(&state, &id, &sk, &user, Some(message), None).await,
     };
 
     match state.engine_client.create_webhook(&sk, url, &extra_headers).await {
-        Ok((_webhook_id, signing_secret)) => render_webhooks_page(&state, &id, &sk, user.is_admin, None, Some(signing_secret)).await,
+        Ok((_webhook_id, signing_secret)) => render_webhooks_page(&state, &id, &sk, &user, None, Some(signing_secret)).await,
         // The engine's own validation (a malformed URL, a non-http(s) scheme -
         // `src/http/admin.rs::create_webhook` at the repo root) - the
         // caller's mistake, surfaced verbatim, same convention
         // `connections::create_connection_for_user` already applies to the
         // engine's tenant-creation `400`s.
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_webhooks_page(&state, &id, &sk, user.is_admin, Some(message), None).await
+            render_webhooks_page(&state, &id, &sk, &user, Some(message), None).await
         }
-        Err(_) => render_webhooks_page(&state, &id, &sk, user.is_admin, Some("Something went wrong. Please try again.".to_string()), None).await,
+        Err(_) => render_webhooks_page(&state, &id, &sk, &user, Some("Something went wrong. Please try again.".to_string()), None).await,
     }
 }
 
@@ -615,7 +612,7 @@ pub async fn webhooks_delete(
         Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
             redirect_302(&format!("/dashboard/connections/{id}/webhooks"))
         }
-        Err(_) => render_webhooks_page(&state, &id, &sk, user.is_admin, Some("Could not delete that webhook. Please try again.".to_string()), None).await,
+        Err(_) => render_webhooks_page(&state, &id, &sk, &user, Some("Could not delete that webhook. Please try again.".to_string()), None).await,
     }
 }
 
