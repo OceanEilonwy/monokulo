@@ -23,6 +23,27 @@
    the counter (both portrait and landscape), constrained to a centered
    column on wider desktop screens so it stays usable there too without
    trying to be its primary target. */
+/* Page-scoped palette: the shared `_styles` partial's tokens are
+   deliberately hard-black/no-radius/no-shadow ("semi-brutalist"), but this
+   screen is the first step of a deliberate, separate move to a calmer,
+   less brutalist look (indigo/purple, soft edges) - starting here rather
+   than across every page at once. Redeclaring `:root` down here (after
+   the shared partial's own `:root`, included just above) wins on source
+   order at equal specificity, and only affects this page's own DOM -
+   nothing else changes yet. */
+:root {
+  --ink: #2c2650;
+  --paper: #f4f2fb;
+  --paper-raised: #ffffff;
+  --line: #c3bbee;
+  --accent: #7c6cf0;
+  --accent-ink: #ffffff;
+  --error: #d1477a;
+  --success: #24a17a;
+  --warning: #c98a2e;
+  --muted: #6f6a92;
+  --pos-frame: #b6ace6;
+}
 html, body { height: 100%; }
 body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: contain; }
 
@@ -126,19 +147,22 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 /* 12 keys in a fixed 3-column x 4-row layout means the *whole grid* has a
    fixed 3:4 aspect ratio, not just each individual key - so it's the grid
    that gets fit (contain-style) into whatever box `#keypad-screen`'s
-   `minmax(0, 1fr)` row hands `.keypad`, via the same
-   query-both-actual-dimensions-and-take-the-min trick used before, just
-   applied one level up. `.keypad` is a plain flex-centered container
-   query context (its own box is exactly the row's box, so `cqw`/`cqh`
-   read that box's real, current dimensions); `.key-grid` is sized to
-   `min(100cqw, 100cqh * 3/4)` wide by `min(100cqh, 100cqw * 4/3)` tall,
-   which is a real two-axis "shrink to fit, preserve ratio" - the browser
-   resolves it, not a hand-picked breakpoint. Once `.key-grid` itself is
+   `minmax(0, 1fr)` row hands `.keypad`, via a query-both-actual-
+   dimensions-and-take-the-min trick: `.keypad` is a plain flex-centered
+   container query context (its own box is exactly the row's box, so
+   `cqw`/`cqh` read that box's real, current dimensions); `.key-grid` is
+   sized to `min(100cqw, 100cqh * 3/4)` wide by `min(100cqh, 100cqw * 4/3)`
+   tall, a real two-axis "shrink to fit, preserve ratio" the browser
+   resolves, not a hand-picked breakpoint. Once `.key-grid` itself is
    exactly 3:4, its 3 equal-width columns and 4 equal-height rows are
    *always* exact squares by construction (col width = W/3, row height =
-   (W*4/3)/4 = W/3), at every size, in both orientations - no per-key
-   container query needed any more, and with `gap: 0` the key faces tile
-   edge to edge with no visible seam anywhere on screen. */
+   (W*4/3)/4 = W/3), at every size, in both orientations. `border-radius`
+   is in `cqmin` (not `%`) so the case's corners stay a real, even round -
+   a `%` radius on a non-square box would resolve to a different pixel
+   radius on each axis. The gap revealing this frame color between
+   keycaps is real space carved out of `.key`'s own padding below, not
+   `gap` here - so it can't unbalance the square math above; it comes out
+   of each already-square cell equally on every side. */
 .key-grid {
   width: min(100cqw, 100cqh * 3 / 4);
   height: min(100cqh, 100cqw * 4 / 3);
@@ -146,15 +170,27 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   grid-template-columns: repeat(3, 1fr);
   grid-template-rows: repeat(4, 1fr);
   gap: 0;
+  background: var(--pos-frame);
+  border-radius: 6cqmin;
 }
 .key {
   width: 100%;
   height: 100%;
   margin: 0;
+  /* A real gap between keycaps - the frame color peeking through, like a
+     physical keyboard's tray between keys - as `padding`, not grid `gap`,
+     and deliberately in `%`: percentage padding always resolves against
+     the *width*, on every side, top/bottom included (a genuine CSS quirk,
+     not a bug). Because `.key` is already an exact square (see
+     `.key-grid` above), that means the same absolute pixel gap lands on
+     all four sides of every key - including the outer ones, which is
+     what produces the case's outer bezel too, for free, with no separate
+     frame element needed. */
+  padding: 6%;
+  box-sizing: border-box;
   display: flex;
   align-items: center;
   justify-content: center;
-  padding: 0;
   border: none;
   background: none;
   cursor: pointer;
@@ -170,26 +206,32 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   font-size: clamp(1.4rem, 6vw, 2.6rem);
   font-weight: 700;
   color: var(--ink);
-  /* `outline`, not `border`: adjacent keys touch edge to edge (`gap: 0`
-     on `.key-grid`), so each shared edge is really two keys' borders
-     drawn side by side there, doubling the visible thickness. An outline
-     doesn't take layout space, and `outline-offset` at *minus half its
-     own width* centers it on the box edge instead of drawing outside it
-     - so two touching keys' outlines land on the exact same pixels
-     instead of stacking, and collapse back down to one 2px line. */
-  outline: 2px solid var(--line);
-  outline-offset: -1px;
-  background: var(--paper-raised);
+  /* A real keycap, not a flat swatch: `border-radius` in `%` (safe here -
+     unlike `.key-grid`, this box is always an exact square) rounds the
+     cap itself; the gradient is the cap's own curved-top highlight; the
+     two-part shadow is the cap's plastic "wall" (a hard, short offset)
+     plus its ambient drop shadow onto the switch below. Pressing a key
+     flattens both into a single tight shadow and nudges the cap down
+     (`.key:active` below) to read as a real, physical press. */
+  border-radius: 22%;
+  background: linear-gradient(165deg, #ffffff 0%, #eeecfb 100%);
+  box-shadow: 0 0.12em 0 rgba(44, 38, 80, 0.28), 0 0.3em 0.5em rgba(44, 38, 80, 0.15);
+  transition: transform 0.06s ease, box-shadow 0.06s ease, background 0.06s ease;
 }
-.key:active .key-face { background: var(--accent); color: var(--accent-ink); }
-/* Clear/backspace read at the same visual weight as every digit key now -
-   previously much smaller text (spec point 3) than the digits around them.
-   Each also gets its own color (red for the destructive "clear the whole
-   amount", amber/gold for the more forgiving single-digit "backspace") so
-   the two are told apart at a glance, not just by their icon/label. */
-.key-clear .key-face { color: var(--error); }
+.key:active .key-face {
+  background: var(--accent);
+  color: var(--accent-ink);
+  box-shadow: 0 0.02em 0 rgba(44, 38, 80, 0.28);
+  transform: translateY(0.08em);
+}
+/* Clear/backspace read at the same visual weight as every digit key, and
+   now also get their own colored keycap (not just a colored glyph) - red
+   for the destructive "clear the whole amount", amber for the more
+   forgiving single-digit "backspace" - the way a real keyboard's accent
+   keycaps work, rather than a plain color swap on the label alone. */
+.key-clear .key-face { color: var(--error); background: linear-gradient(165deg, #fdeaf0 0%, #f6cedb 100%); }
 .key-clear:active .key-face { background: var(--error); color: #fff; }
-.key-backspace .key-face { color: var(--warning); }
+.key-backspace .key-face { color: var(--warning); background: linear-gradient(165deg, #fbf0dc 0%, #f0dcac 100%); }
 .key-backspace:active .key-face { background: var(--warning); color: #fff; }
 /* Sized in `em`, tracking `.key`'s own font-size, rather than a separate
    calc - one fewer thing to keep in sync with the digit glyphs next to it.
@@ -211,6 +253,7 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   font-size: 1rem;
   padding: 0.6em 0.7em;
   border: 2px solid var(--line);
+  border-radius: 0.6em;
   background: #fff;
   color: var(--ink);
 }
@@ -224,6 +267,7 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   padding: 0.7em 0;
   margin-top: 0.7em;
   border: 2px solid var(--line);
+  border-radius: 0.7em;
   background: var(--accent);
   color: var(--accent-ink);
   cursor: pointer;
@@ -232,7 +276,7 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 /* Spec point 3 (this round): once a real amount is entered the button
    isn't just "not greyed out" - it visibly announces itself as the next
    step, via a glow no other control on this screen uses. */
-.charge-btn:not(:disabled) { box-shadow: 0 0 0 4px rgba(255, 102, 0, 0.28); }
+.charge-btn:not(:disabled) { box-shadow: 0 0 0 4px rgba(124, 108, 240, 0.28); }
 .secondary-btn { background: var(--paper-raised); color: var(--ink); }
 
 #pos-error:empty { display: none; }
@@ -241,9 +285,11 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 #payment-screen { display: flex; flex-direction: column; justify-content: center; }
 .payment-panel {
   border: 2px solid var(--line);
+  border-radius: 1em;
   background: var(--paper-raised);
   padding: 1em;
   text-align: center;
+  box-shadow: 0 0.4em 1em rgba(44, 38, 80, 0.1);
 }
 .payment-amount { font-size: 1.8rem; font-weight: 700; margin-bottom: 0.5em; }
 .qr-holder { max-width: 260px; margin: 0 auto; }
@@ -316,11 +362,13 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   align-items: center;
   gap: 0.6em;
   border: 2px solid var(--line);
+  border-radius: 0.6em;
   background: var(--paper-raised);
   padding: 0.4em 0.7em;
   font-size: 0.85rem;
   max-width: 360px;
   width: 100%;
+  box-shadow: 0 0.3em 0.7em rgba(44, 38, 80, 0.1);
 }
 .bg-item.is-paid { border-color: var(--success); }
 .bg-item.is-error { border-color: var(--error); color: var(--error); }
