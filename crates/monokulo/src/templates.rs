@@ -17,7 +17,6 @@ use serde::Serialize;
 const STYLES_PARTIAL: &str = include_str!("views/head.html");
 const NAV_PARTIAL: &str = include_str!("../templates/_nav.html.hbs");
 
-const WEBHOOKS_TEMPLATE: &str = include_str!("../templates/webhooks.html.hbs");
 const STATUS_TEMPLATE: &str = include_str!("../templates/status.html.hbs");
 const CHECKOUT_TEMPLATE: &str = include_str!("../templates/checkout.html.hbs");
 const CHECKOUT_NOT_FOUND_TEMPLATE: &str = include_str!("../templates/checkout_not_found.html.hbs");
@@ -216,39 +215,6 @@ pub fn date_string_to_unix_midnight(s: &str) -> Option<i64> {
         return None;
     }
     Some(days_from_civil(y, m, d) * 86_400)
-}
-
-/// One row of the webhooks list page (WBS 1.3.3) - mirrors the engine's own
-/// `WebhookView` field-for-field.
-#[derive(Debug, Serialize)]
-pub struct WebhookRowViewModel {
-    pub webhook_id: String,
-    pub url: String,
-    pub enabled: bool,
-    pub created_at: i64,
-}
-
-/// The view model `GET /dashboard/connections/{id}/webhooks` (and the
-/// create/delete handlers, which all re-render this same page rather than
-/// redirect) takes.
-#[derive(Debug, Default, Serialize)]
-pub struct WebhooksViewModel {
-    pub connection_id: String,
-    pub webhooks: Vec<WebhookRowViewModel>,
-    pub error: Option<String>,
-    /// Set only immediately after a successful `POST .../webhooks` - the
-    /// engine's own `CreateWebhookResponse` hands back a real signing secret
-    /// exactly once, at creation time; its `WebhookView` (what every later
-    /// `GET .../webhooks` list call returns, confirmed by reading that
-    /// struct directly - `src/http/admin.rs` at the repo root) has no
-    /// `signing_secret` field at all, so there is no way to ever fetch it
-    /// again after this moment - same one-time-reveal shape as a tenant's
-    /// own `sk_...` at connect time. Never populated on a plain `GET`, and
-    /// gone again the moment the page is reloaded.
-    pub created_webhook_signing_secret: Option<String>,
-    /// Always `true` - every caller is behind `AuthedUser`.
-    pub logged_in: bool,
-    pub is_admin: bool,
 }
 
 /// One Monero node's row on the status page - mirrors
@@ -575,7 +541,6 @@ impl TemplateEngine {
         handlebars.register_template_string("styles", STYLES_PARTIAL)?;
         handlebars.register_template_string("nav", NAV_PARTIAL)?;
 
-        handlebars.register_template_string("webhooks", WEBHOOKS_TEMPLATE)?;
         handlebars.register_template_string("status", STATUS_TEMPLATE)?;
         handlebars.register_template_string("checkout", CHECKOUT_TEMPLATE)?;
         handlebars.register_template_string("checkout_not_found", CHECKOUT_NOT_FOUND_TEMPLATE)?;
@@ -602,10 +567,6 @@ impl TemplateEngine {
 
     pub fn render_admin_invites(&self, data: &AdminInvitesViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("admin_invites", data)?)
-    }
-
-    pub fn render_webhooks(&self, data: &WebhooksViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("webhooks", data)?)
     }
 
     pub fn render_status(&self, data: &StatusPageViewModel) -> Result<String, TemplateError> {
