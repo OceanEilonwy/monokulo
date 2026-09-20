@@ -35,11 +35,11 @@ use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use axum::extract::State;
-use axum::response::{Html, IntoResponse, Json, Response};
+use axum::response::{IntoResponse, Json, Response};
 use serde_json::json;
 
 use crate::engine_client::{EngineClientError, EngineStatusResponse, NetworkStatus};
-use crate::templates::{StatusNetworkView, StatusNodeView, StatusPageViewModel, StatusScannerView};
+use crate::views;
 
 use super::AppState;
 
@@ -86,15 +86,18 @@ async fn get_status_cached(state: &AppState) -> Result<EngineStatusResponse, Str
 /// per-request check (see `StatusPageViewModel::logged_in`'s own doc
 /// comment), not a fixed literal like most other pages.
 pub async fn status_page(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    let mut view_model = match get_status_cached(&state).await {
+    let view_model = match get_status_cached(&state).await {
         Ok(status) => build_view_model(status),
-        Err(message) => StatusPageViewModel { engine_error: Some(message), ..Default::default() },
+        Err(message) => views::status::StatusPageViewModel {
+            engine_error: Some(message),
+            networks: Vec::new(),
+            poll_interval_secs: 0,
+            generated_at_display: String::new(),
+        },
     };
     let authed = super::resolve_authed_user(&state, &headers);
-    view_model.logged_in = authed.is_some();
-    view_model.is_admin = authed.is_some_and(|(user, _)| user.is_admin);
-    let html = state.templates.render_status(&view_model).expect("the built-in status template must always render");
-    Html(html).into_response()
+    let chrome = views::PageChrome::from_user(authed.as_ref().map(|(user, _)| user), "/status");
+    views::status::page(&chrome, &view_model).into_response()
 }
 
 /// `GET /status/summary` - a small, cheap JSON endpoint the nav bar's status
@@ -129,26 +132,22 @@ fn describe_engine_error(err: &EngineClientError) -> String {
     }
 }
 
-fn build_view_model(status: EngineStatusResponse) -> StatusPageViewModel {
+fn build_view_model(status: EngineStatusResponse) -> views::status::StatusPageViewModel {
     let now = crate::now_unix();
     let networks = status.networks.into_iter().map(|n| build_network_view(n, now)).collect();
-    StatusPageViewModel {
+    views::status::StatusPageViewModel {
         engine_error: None,
         networks,
         poll_interval_secs: status.poll_interval_secs,
         generated_at_display: relative_time(now, status.generated_at),
-        // Overwritten by `status_page`'s own real per-request check right
-        // after this returns - a placeholder here, never the value shown.
-        logged_in: false,
-        is_admin: false,
     }
 }
 
-fn build_network_view(network: NetworkStatus, now: i64) -> StatusNetworkView {
+fn build_network_view(network: NetworkStatus, now: i64) -> views::status::StatusNetworkView {
     let nodes = network
         .nodes
         .into_iter()
-        .map(|node| StatusNodeView {
+        .map(|node| views::status::StatusNodeView {
             label: node.label,
             is_active: node.is_active,
             is_reachable: node.error.is_none(),
@@ -168,10 +167,10 @@ fn build_network_view(network: NetworkStatus, now: i64) -> StatusNetworkView {
         ("healthy", "tag-ok")
     };
 
-    StatusNetworkView {
+    views::status::StatusNetworkView {
         network: network.network,
         nodes,
-        scanner: StatusScannerView {
+        scanner: views::status::StatusScannerView {
             ever_ticked: scanner.ever_ticked,
             status_label: status_label.to_string(),
             status_tag_class: status_tag_class.to_string(),

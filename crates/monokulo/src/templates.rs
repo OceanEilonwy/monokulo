@@ -17,7 +17,6 @@ use serde::Serialize;
 const STYLES_PARTIAL: &str = include_str!("views/head.html");
 const NAV_PARTIAL: &str = include_str!("../templates/_nav.html.hbs");
 
-const STATUS_TEMPLATE: &str = include_str!("../templates/status.html.hbs");
 const CHECKOUT_TEMPLATE: &str = include_str!("../templates/checkout.html.hbs");
 const CHECKOUT_NOT_FOUND_TEMPLATE: &str = include_str!("../templates/checkout_not_found.html.hbs");
 const CHECKOUT_SHARE_TEMPLATE: &str = include_str!("../templates/checkout_share.html.hbs");
@@ -216,69 +215,6 @@ pub fn date_string_to_unix_midnight(s: &str) -> Option<i64> {
     }
     Some(days_from_civil(y, m, d) * 86_400)
 }
-
-/// One Monero node's row on the status page - mirrors
-/// `engine_client::NodeStatus` but with presentation already done
-/// (`height_display`/`is_reachable`) since the monokulo is the one
-/// place that logic belongs now (see `http/status_page.rs`'s own doc
-/// comment on why the engine's own `/status` deliberately stays JSON-only).
-/// Handlebars-rust's `{{#if}}` treats the number `0` as falsy exactly like
-/// JS, so a genuine height of 0 must never be branched on directly in the
-/// template - `height_display` is always a pre-formatted string, same fix
-/// as `network_selected_flags`.
-#[derive(Debug, Serialize)]
-pub struct StatusNodeView {
-    pub label: String,
-    pub is_active: bool,
-    pub is_reachable: bool,
-    pub height_display: String,
-    pub error: Option<String>,
-}
-
-/// One network's scanner-loop row on the status page - mirrors
-/// `engine_client::ScannerStatusView` plus a single overall `status_label`
-/// ("healthy" / "stale" / "tick failing" / "has not been scanned yet") so
-/// the template renders one tag instead of re-deriving it from three bools.
-#[derive(Debug, Serialize)]
-pub struct StatusScannerView {
-    pub ever_ticked: bool,
-    pub status_label: String,
-    pub status_tag_class: String,
-    pub last_tick_display: String,
-    pub tick_count: u64,
-    pub tenants_scanned: usize,
-    pub last_error: Option<String>,
-}
-
-#[derive(Debug, Serialize)]
-pub struct StatusNetworkView {
-    pub network: String,
-    pub nodes: Vec<StatusNodeView>,
-    pub scanner: StatusScannerView,
-}
-
-/// The view model `GET /status` takes. `engine_error`, when set, means the
-/// engine itself couldn't be reached at all (a genuinely different, more
-/// serious case than any one node or scanner being unhealthy) - the
-/// template shows a plain error banner instead of the networks table in
-/// that case, same "degrade honestly, don't fabricate data" approach the
-/// engine's own daemon fallback uses.
-#[derive(Debug, Default, Serialize)]
-pub struct StatusPageViewModel {
-    pub engine_error: Option<String>,
-    pub networks: Vec<StatusNetworkView>,
-    pub poll_interval_secs: u64,
-    pub generated_at_display: String,
-    /// Unlike every other view model's `logged_in` (always a fixed
-    /// literal, since those pages are always/never behind `AuthedUser`),
-    /// this one is a genuine, per-request lookup - `/status` is
-    /// unauthenticated, so whether the nav shows "log out" here reflects
-    /// whatever session (if any) the visitor actually presented. See
-    /// `status_page`'s own handler.
-    pub logged_in: bool,
-    pub is_admin: bool,
-}
-
 
 /// One payment row on the checkout page's payments table
 /// (`docs/fx_refactor.md` Phase 2.2) - mirrors the engine's own (soon-
@@ -541,7 +477,6 @@ impl TemplateEngine {
         handlebars.register_template_string("styles", STYLES_PARTIAL)?;
         handlebars.register_template_string("nav", NAV_PARTIAL)?;
 
-        handlebars.register_template_string("status", STATUS_TEMPLATE)?;
         handlebars.register_template_string("checkout", CHECKOUT_TEMPLATE)?;
         handlebars.register_template_string("checkout_not_found", CHECKOUT_NOT_FOUND_TEMPLATE)?;
         handlebars.register_template_string("checkout_share", CHECKOUT_SHARE_TEMPLATE)?;
@@ -567,10 +502,6 @@ impl TemplateEngine {
 
     pub fn render_admin_invites(&self, data: &AdminInvitesViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("admin_invites", data)?)
-    }
-
-    pub fn render_status(&self, data: &StatusPageViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("status", data)?)
     }
 
     pub fn render_checkout(&self, data: &CheckoutViewModel) -> Result<String, TemplateError> {
