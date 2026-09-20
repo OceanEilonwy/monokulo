@@ -187,9 +187,9 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
    Each also gets its own color (red for the destructive "clear the whole
    amount", amber/gold for the more forgiving single-digit "backspace") so
    the two are told apart at a glance, not just by their icon/label. */
-.key-clear .key-face { color: var(--error); outline-color: var(--error); }
+.key-clear .key-face { color: var(--error); }
 .key-clear:active .key-face { background: var(--error); color: #fff; }
-.key-backspace .key-face { color: var(--warning); outline-color: var(--warning); }
+.key-backspace .key-face { color: var(--warning); }
 .key-backspace:active .key-face { background: var(--warning); color: #fff; }
 /* Sized in `em`, tracking `.key`'s own font-size, rather than a separate
    calc - one fewer thing to keep in sync with the digit glyphs next to it.
