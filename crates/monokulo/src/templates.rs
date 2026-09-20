@@ -16,11 +16,8 @@ use serde::Serialize;
 // hasn't moved off this engine yet.
 const STYLES_PARTIAL: &str = include_str!("views/head.html");
 const NAV_PARTIAL: &str = include_str!("../templates/_nav.html.hbs");
-const INTEGRATION_HELP_PARTIAL: &str = include_str!("../templates/_integration_help.html.hbs");
 
 const WEBHOOKS_TEMPLATE: &str = include_str!("../templates/webhooks.html.hbs");
-const WOOCOMMERCE_INSTRUCTIONS_TEMPLATE: &str = include_str!("../templates/woocommerce_instructions.html.hbs");
-const STORE_DETAIL_TEMPLATE: &str = include_str!("../templates/store_detail.html.hbs");
 const STATUS_TEMPLATE: &str = include_str!("../templates/status.html.hbs");
 const CHECKOUT_TEMPLATE: &str = include_str!("../templates/checkout.html.hbs");
 const CHECKOUT_NOT_FOUND_TEMPLATE: &str = include_str!("../templates/checkout_not_found.html.hbs");
@@ -67,17 +64,6 @@ pub struct SetupViewModel {
 /// same as an unrecognized value would render in a plain `<select>` anyway.
 pub fn network_selected_flags(network: &str) -> (bool, bool, bool) {
     (network == "mainnet", network == "stagenet", network == "testnet")
-}
-
-/// One row of the orders list page (WBS 1.3.3) - just the fields the table
-/// shows, not the full engine `OrderView`.
-#[derive(Debug, Serialize)]
-pub struct OrderRowViewModel {
-    pub payment_id: String,
-    pub status: String,
-    pub amount: String,
-    pub currency: String,
-    pub created_at: i64,
 }
 
 /// A muted placeholder for a field with nothing to show - same
@@ -265,135 +251,6 @@ pub struct WebhooksViewModel {
     pub is_admin: bool,
 }
 
-/// The view model the integration-help partial (`_integration_help.html.hbs`)
-/// takes - shared verbatim by the post-connect success page
-/// (`connect.html.hbs`) and the store detail page (`store_detail.html.hbs`),
-/// so the two can never show different instructions for the same store.
-#[derive(Debug, Serialize)]
-pub struct IntegrationHelpViewModel {
-    pub public_key: String,
-    pub endpoint: String,
-}
-
-/// The view model `GET /dashboard/connections/{id}` (the store detail page)
-/// takes. `store` is `None` for an unknown/not-owned connection id (same
-/// enumeration-defense convention as [`OrderDetailViewModel`] and
-/// `http/orders.rs`'s own `load_owned_connection` doc comment - a missing
-/// row and someone else's row render identically).
-#[derive(Debug, Serialize)]
-pub struct StoreDetailViewModel {
-    pub store: Option<StoreDetailData>,
-    /// Always `true` - every caller is behind `AuthedUser`.
-    pub logged_in: bool,
-    pub is_admin: bool,
-}
-
-#[derive(Debug, Serialize)]
-pub struct StoreDetailData {
-    pub connection_id: String,
-    pub display_name: String,
-    pub platform: String,
-    pub site_url: String,
-    pub public_key: String,
-    pub endpoint: String,
-    pub health: String,
-    pub health_label: String,
-    pub created_at: i64,
-    pub recent_orders: Vec<OrderRowViewModel>,
-    /// Drives which half of `_integration_help.html.hbs` renders -
-    /// handlebars-rust has no built-in string-equality helper (same reason
-    /// `network_selected_flags` exists), so this is `platform ==
-    /// "woocommerce"` computed once here rather than in the template.
-    pub is_woocommerce: bool,
-    /// Set only when the "create an order" form on this page (see
-    /// `http/orders.rs::create_order`) was just rejected - the engine's own
-    /// validation error (an unsupported currency, an unparseable amount),
-    /// surfaced verbatim, same convention `WebhooksViewModel::error` already
-    /// applies to webhook creation. `None` on a plain page load.
-    pub order_creation_error: Option<String>,
-    /// Every currency the "create an order" form's dropdown can offer right
-    /// now (`exchange_rate_config::ExchangeRateProviders::
-    /// supported_currencies_for`) - always includes `"XMR"` first, plus
-    /// whatever this store's `fx_provider` currently supports. `XMR` is
-    /// always first in this list, so it's also the `<select>`'s default
-    /// choice with no `selected` attribute needed.
-    pub order_currency_options: Vec<String>,
-    /// `true` exactly when `order_currency_options` is `["XMR"]` alone (no
-    /// fiat provider enabled/configured for this store) - the template
-    /// shows a plain `readonly` "XMR" field instead of a one-option
-    /// dropdown, since a `<select>` with nothing to actually choose between
-    /// is misleading busywork, not a real choice.
-    pub order_currency_is_locked_to_xmr: bool,
-    /// The tenant's current confirmation threshold, as last fetched from
-    /// the engine (`TenantView::confirmations_required`) - `0` when the
-    /// engine is currently unreachable (`health == "error"`), same
-    /// "degrade honestly, show *something* real-ish rather than fail the
-    /// whole page" approach `recent_orders` already takes for that case.
-    pub confirmations_required: u64,
-    /// This store's chosen exchange-rate provider name (e.g. `"coingecko"`,
-    /// `db::StoreConnectionRow::fx_provider`) - shown as read-only text
-    /// alongside the dropdown below, useful precisely when it's *not* one
-    /// of `fx_provider_options` any more (an admin disabled a provider a
-    /// store was previously using), which the dropdown alone can't
-    /// represent.
-    pub fx_provider: String,
-    /// Every provider name this instance actually has configured
-    /// (`exchange_rate_config::ExchangeRateProviders::available_providers`),
-    /// each flagged with whether it's this store's current choice - drives
-    /// the settings dropdown. `selected` is precomputed here rather than a
-    /// template-side string comparison for the same reason
-    /// `network_selected_flags` exists: handlebars-rust has no built-in
-    /// equality helper.
-    pub fx_provider_options: Vec<FxProviderOption>,
-    /// This store's base currency (`db::StoreConnectionRow::base_currency`) -
-    /// what custom confirmation thresholds below are denominated in.
-    pub base_currency: String,
-    /// Every known currency (`crate::currencies::currency_options`), for
-    /// the base-currency dropdown - never filtered by exchange-rate
-    /// provider support, same as every other currency dropdown in this
-    /// crate (see that module's own doc comment).
-    pub base_currency_options: Vec<crate::currencies::CurrencyOptionView>,
-    /// Every custom confirmation threshold for this store, already in
-    /// ascending amount order (`Db::list_confirmation_thresholds`'s own
-    /// doc comment) - the default/fallback threshold
-    /// (`confirmations_required` above) always renders first, but
-    /// separately, since it isn't one of these rows at all.
-    pub confirmation_thresholds: Vec<ConfirmationThresholdView>,
-    /// `true` once this store already has 5 custom thresholds - "at most 5
-    /// custom thresholds" - the add-threshold form hides itself rather than
-    /// accepting a submission the server would just reject anyway.
-    pub confirmation_thresholds_at_max: bool,
-    /// This store's current zero-conf ceiling (`TenantView::zero_conf_max_piconero`),
-    /// formatted as an XMR decimal string (`shared::xmr_amount::format_piconero_as_xmr`)
-    /// for the settings field's `value` - empty when `None` or `0` ("accepting
-    /// 0-conf payments" is off), matching the empty-means-disabled convention
-    /// `http::orders::update_zero_conf_max_piconero` reads back on submit.
-    pub zero_conf_max_xmr: String,
-    /// Set only when the "update settings" form on this page (see
-    /// `http/orders.rs::update_confirmations_required`/`update_fx_provider`)
-    /// was just rejected - the engine's own validation error, or this
-    /// page's own "not a provider this instance offers" message, surfaced
-    /// verbatim. Shared by every settings sub-form on this page, since only
-    /// one can ever be submitted at a time. `None` on a plain page load.
-    pub settings_error: Option<String>,
-}
-
-/// One row of the FX-provider settings dropdown (`StoreDetailData::fx_provider_options`).
-#[derive(Debug, Serialize)]
-pub struct FxProviderOption {
-    pub name: String,
-    pub selected: bool,
-}
-
-/// One custom confirmation threshold, on the store detail page
-/// (`StoreDetailData::confirmation_thresholds`).
-#[derive(Debug, Serialize)]
-pub struct ConfirmationThresholdView {
-    pub id: String,
-    pub unit_amount: String,
-    pub confirmations_required: u64,
-}
-
 /// One Monero node's row on the status page - mirrors
 /// `engine_client::NodeStatus` but with presentation already done
 /// (`height_display`/`is_reachable`) since the monokulo is the one
@@ -456,15 +313,6 @@ pub struct StatusPageViewModel {
     pub is_admin: bool,
 }
 
-/// The view model for a page whose only dynamic content is the nav bar's
-/// own log-in-state links - `landing`/`new_store_picker`/
-/// `woocommerce_instructions` used to render with `&()` (no context at
-/// all); each needs exactly this one field now.
-#[derive(Debug, Serialize)]
-pub struct NavOnlyViewModel {
-    pub logged_in: bool,
-    pub is_admin: bool,
-}
 
 /// One payment row on the checkout page's payments table
 /// (`docs/fx_refactor.md` Phase 2.2) - mirrors the engine's own (soon-
@@ -722,15 +570,12 @@ impl TemplateEngine {
         // comments. Registered under names with no leading underscore
         // (handlebars-rust has no notion of "partial vs. template", a
         // registered template is callable as `{{> name}}` by whatever name
-        // it's registered under) so `{{> styles}}`/`{{> nav}}`/
-        // `{{> integration_help}}` read cleanly from every page.
+        // it's registered under) so `{{> styles}}`/`{{> nav}}` read cleanly
+        // from every page.
         handlebars.register_template_string("styles", STYLES_PARTIAL)?;
         handlebars.register_template_string("nav", NAV_PARTIAL)?;
-        handlebars.register_template_string("integration_help", INTEGRATION_HELP_PARTIAL)?;
 
         handlebars.register_template_string("webhooks", WEBHOOKS_TEMPLATE)?;
-        handlebars.register_template_string("woocommerce_instructions", WOOCOMMERCE_INSTRUCTIONS_TEMPLATE)?;
-        handlebars.register_template_string("store_detail", STORE_DETAIL_TEMPLATE)?;
         handlebars.register_template_string("status", STATUS_TEMPLATE)?;
         handlebars.register_template_string("checkout", CHECKOUT_TEMPLATE)?;
         handlebars.register_template_string("checkout_not_found", CHECKOUT_NOT_FOUND_TEMPLATE)?;
@@ -761,14 +606,6 @@ impl TemplateEngine {
 
     pub fn render_webhooks(&self, data: &WebhooksViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("webhooks", data)?)
-    }
-
-    pub fn render_woocommerce_instructions(&self, logged_in: bool, is_admin: bool) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("woocommerce_instructions", &NavOnlyViewModel { logged_in, is_admin })?)
-    }
-
-    pub fn render_store_detail(&self, data: &StoreDetailViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("store_detail", data)?)
     }
 
     pub fn render_status(&self, data: &StatusPageViewModel) -> Result<String, TemplateError> {
@@ -886,13 +723,9 @@ mod tests {
     // Dashboard home page tests moved to `views::dashboard`'s own test
     // module - that page no longer goes through this engine at all.
 
-    #[test]
-    fn woocommerce_instructions_page_renders() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_woocommerce_instructions(true, false).unwrap();
-        assert!(html.to_lowercase().contains("woocommerce"));
-        assert!(html.contains(r#"href="/dashboard/connect""#));
-    }
+    // Store detail / integration-help / woocommerce-instructions page tests
+    // moved to `views::store_detail`'s own test module - those pages no
+    // longer go through this engine at all.
 
     #[test]
     fn request_invite_form_renders_plain_and_submitted_states() {
@@ -961,146 +794,6 @@ mod tests {
         assert!(html.contains("Page 2 of 3"));
         assert!(html.contains(r#"href="/dashboard/admin/invites?page=1""#));
         assert!(html.contains(r#"href="/dashboard/admin/invites?page=3""#));
-    }
-
-    #[test]
-    fn store_detail_renders_not_found_state_when_store_is_none() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_store_detail(&StoreDetailViewModel { store: None, logged_in: true, is_admin: false }).unwrap();
-        assert!(html.to_lowercase().contains("not found"));
-    }
-
-    #[test]
-    fn store_detail_renders_integration_help_with_the_right_public_key_via_the_shared_partial() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_store_detail(&StoreDetailViewModel {
-                store: Some(StoreDetailData {
-                    connection_id: "conn_1".to_string(),
-                    display_name: "shop.example.com".to_string(),
-                    platform: "woocommerce".to_string(),
-                    site_url: "https://shop.example.com".to_string(),
-                    public_key: "pk_abc123".to_string(),
-                    endpoint: "http://127.0.0.1:8080".to_string(),
-                    health: "error".to_string(),
-                    health_label: "unreachable".to_string(),
-                    created_at: 1000,
-                    recent_orders: vec![],
-                    is_woocommerce: true,
-                    order_creation_error: None,
-                    confirmations_required: 10,
-                    order_currency_options: vec!["XMR".to_string(), "USD".to_string()],
-                    order_currency_is_locked_to_xmr: false,
-                    fx_provider: "coingecko".to_string(),
-                    fx_provider_options: vec![FxProviderOption { name: "coingecko".to_string(), selected: true }],
-                    base_currency: "XMR".to_string(),
-                    base_currency_options: vec![],
-                    confirmation_thresholds: vec![],
-                    confirmation_thresholds_at_max: false,
-                    zero_conf_max_xmr: String::new(),
-                    settings_error: None,
-                }),
-                logged_in: true,
-                is_admin: false,
-            })
-            .unwrap();
-        // Proves the integration_help partial actually received this
-        // store's own public_key/endpoint via its explicit hash params
-        // (`{{> integration_help public_key=store.public_key ...}}`), not
-        // some stale or empty context - the exact same partial the
-        // post-connect success page uses (see
-        // `connect_template_shows_the_public_key_instead_of_the_form_on_success`),
-        // so the two can never drift on what "integrate this store" means.
-        assert!(html.contains("pk_abc123"));
-        assert!(html.contains("http://127.0.0.1:8080"));
-        assert!(html.contains("tag-error"));
-        assert!(html.contains("Integrate this store"));
-        // is_woocommerce: true must render the "already connected" copy,
-        // not the "install the plugin" onboarding steps - real bug: this
-        // used to always show WooCommerce onboarding instructions even for
-        // stores connected through the advanced/custom form.
-        assert!(html.contains("already connected via the WooCommerce plugin"));
-        assert!(!html.contains("Install the"), "should not show plugin-install instructions for an already-connected store");
-    }
-
-    /// The other half of the same real bug: a store connected via the
-    /// advanced (custom) form must show generic direct-API instructions,
-    /// never the WooCommerce-specific onboarding steps - it was never
-    /// connected through the plugin at all.
-    #[test]
-    fn store_detail_shows_generic_integration_help_for_a_non_woocommerce_store() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_store_detail(&StoreDetailViewModel {
-                store: Some(StoreDetailData {
-                    connection_id: "conn_1".to_string(),
-                    display_name: "shop.example.com".to_string(),
-                    platform: "custom".to_string(),
-                    site_url: "https://shop.example.com".to_string(),
-                    public_key: "pk_abc123".to_string(),
-                    endpoint: "http://127.0.0.1:8080".to_string(),
-                    health: "ok".to_string(),
-                    health_label: "healthy".to_string(),
-                    created_at: 1000,
-                    recent_orders: vec![],
-                    is_woocommerce: false,
-                    order_creation_error: None,
-                    confirmations_required: 10,
-                    order_currency_options: vec!["XMR".to_string(), "USD".to_string()],
-                    order_currency_is_locked_to_xmr: false,
-                    fx_provider: "coingecko".to_string(),
-                    fx_provider_options: vec![FxProviderOption { name: "coingecko".to_string(), selected: true }],
-                    base_currency: "XMR".to_string(),
-                    base_currency_options: vec![],
-                    confirmation_thresholds: vec![],
-                    confirmation_thresholds_at_max: false,
-                    zero_conf_max_xmr: String::new(),
-                    settings_error: None,
-                }),
-                logged_in: true,
-                is_admin: false,
-            })
-            .unwrap();
-        assert!(html.contains("Install the"), "expected the WooCommerce onboarding steps to still be offered, got: {html}");
-        assert!(!html.contains("already connected via the WooCommerce plugin"));
-    }
-
-    #[test]
-    fn store_detail_shows_the_create_order_error_when_present() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_store_detail(&StoreDetailViewModel {
-                store: Some(StoreDetailData {
-                    connection_id: "conn_1".to_string(),
-                    display_name: "shop.example.com".to_string(),
-                    platform: "custom".to_string(),
-                    site_url: "https://shop.example.com".to_string(),
-                    public_key: "pk_abc123".to_string(),
-                    endpoint: "http://127.0.0.1:8080".to_string(),
-                    health: "ok".to_string(),
-                    health_label: "healthy".to_string(),
-                    created_at: 1000,
-                    recent_orders: vec![],
-                    is_woocommerce: false,
-                    order_creation_error: Some("unsupported currency: XYZ".to_string()),
-                    confirmations_required: 10,
-                    order_currency_options: vec!["XMR".to_string(), "USD".to_string()],
-                    order_currency_is_locked_to_xmr: false,
-                    fx_provider: "coingecko".to_string(),
-                    fx_provider_options: vec![FxProviderOption { name: "coingecko".to_string(), selected: true }],
-                    base_currency: "XMR".to_string(),
-                    base_currency_options: vec![],
-                    confirmation_thresholds: vec![],
-                    confirmation_thresholds_at_max: false,
-                    zero_conf_max_xmr: String::new(),
-                    settings_error: None,
-                }),
-                logged_in: true,
-                is_admin: false,
-            })
-            .unwrap();
-        assert!(html.contains("unsupported currency: XYZ"), "expected the real error surfaced, got: {html}");
-        assert!(html.contains("<form"), "the create-order form must still be present on error");
     }
 
     fn test_checkout_view_model(is_terminal: bool) -> CheckoutViewModel {

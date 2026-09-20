@@ -656,15 +656,13 @@ pub async fn store_detail(
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => {
-            let html = state
-                .templates
-                .render_store_detail(&crate::templates::StoreDetailViewModel { store: None, logged_in: true, is_admin: user.is_admin })
-                .expect("the built-in store detail template must always render");
-            return (StatusCode::NOT_FOUND, Html(html)).into_response();
+            let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/connections/{id}"));
+            let data = views::store_detail::StoreDetailViewModel { store: None };
+            return (StatusCode::NOT_FOUND, views::store_detail::page(&chrome, &data)).into_response();
         }
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_store_detail_page(&state, row, user.is_admin, None, None).await
+    render_store_detail_page(&state, row, &user, None, None).await
 }
 
 /// Shared by `store_detail`, `create_order`, and `update_confirmations_required`
@@ -676,10 +674,11 @@ pub async fn store_detail(
 async fn render_store_detail_page(
     state: &AppState,
     row: StoreConnectionRow,
-    is_admin: bool,
+    user: &UserRow,
     order_creation_error: Option<String>,
     settings_error: Option<String>,
 ) -> Response {
+    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/connections/{}", row.id));
     let sk = match decrypt_sk(state, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -712,10 +711,7 @@ async fn render_store_detail_page(
                         Some(m) => (m.amount.clone(), m.currency.clone()),
                         None => ("—".to_string(), "".to_string()),
                     };
-                    // Still the `templates::` version here, not `views::orders::` -
-                    // `store_detail`'s own view model hasn't migrated yet (see
-                    // that struct's own doc comment).
-                    crate::templates::OrderRowViewModel { payment_id: o.payment_id, status: o.status, amount, currency, created_at: o.created_at }
+                    views::orders::OrderRowViewModel { payment_id: o.payment_id, status: o.status, amount, currency, created_at: o.created_at }
                 })
                 .collect()
         }
@@ -727,7 +723,7 @@ async fn render_store_detail_page(
         .exchange_rate
         .available_providers()
         .into_iter()
-        .map(|name| crate::templates::FxProviderOption { selected: name == row.fx_provider, name: name.to_string() })
+        .map(|name| views::store_detail::FxProviderOption { selected: name == row.fx_provider, name: name.to_string() })
         .collect();
     // A live Coingecko failure here degrades to "XMR only" rather than
     // failing this whole page - same "show something real-ish rather than
@@ -743,13 +739,13 @@ async fn render_store_detail_page(
             .list_confirmation_thresholds(&row.id)
             .unwrap_or_default()
             .into_iter()
-            .map(|t| crate::templates::ConfirmationThresholdView { id: t.id, unit_amount: t.unit_amount, confirmations_required: t.confirmations_required })
+            .map(|t| views::store_detail::ConfirmationThresholdView { id: t.id, unit_amount: t.unit_amount, confirmations_required: t.confirmations_required })
             .collect::<Vec<_>>();
         (options, thresholds)
     };
     let confirmation_thresholds_at_max = confirmation_thresholds.len() >= 5;
-    let view_model = crate::templates::StoreDetailViewModel {
-        store: Some(crate::templates::StoreDetailData {
+    let view_model = views::store_detail::StoreDetailViewModel {
+        store: Some(views::store_detail::StoreDetailData {
             connection_id: row.id,
             display_name: display_name_for(&row.site_url),
             platform: row.platform,
@@ -774,12 +770,8 @@ async fn render_store_detail_page(
             zero_conf_max_xmr,
             settings_error,
         }),
-        logged_in: true,
-        is_admin,
     };
-    let html =
-        state.templates.render_store_detail(&view_model).expect("the built-in store detail template must always render");
-    Html(html).into_response()
+    views::store_detail::page(&chrome, &view_model).into_response()
 }
 
 #[derive(Deserialize)]
@@ -818,7 +810,7 @@ pub async fn create_order(
     let amount = form.amount.trim();
     let currency = form.currency.trim();
     if amount.is_empty() || currency.is_empty() {
-        return render_store_detail_page(&state, row, user.is_admin, Some("Enter an amount and a currency.".to_string()), None).await;
+        return render_store_detail_page(&state, row, &user, Some("Enter an amount and a currency.".to_string()), None).await;
     }
 
     // Selection-time validation first, entirely independent of whether any
@@ -829,7 +821,7 @@ pub async fn create_order(
     let currency_known = crate::currencies::is_known_currency(&state.db.lock().unwrap(), currency);
     match currency_known {
         Ok(true) => {}
-        Ok(false) => return render_store_detail_page(&state, row, user.is_admin, Some(format!("unknown currency: {currency}")), None).await,
+        Ok(false) => return render_store_detail_page(&state, row, &user, Some(format!("unknown currency: {currency}")), None).await,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 
@@ -841,23 +833,23 @@ pub async fn create_order(
     let (piconero_per_unit, provider) = match state.exchange_rate.piconero_per_unit_for(&row, currency).await {
         Ok(Some(result)) => result,
         Ok(None) => {
-            return render_store_detail_page(&state, row, user.is_admin, Some(format!("unsupported currency: {currency}")), None).await
+            return render_store_detail_page(&state, row, &user, Some(format!("unsupported currency: {currency}")), None).await
         }
         Err(crate::exchange_rate_config::ExchangeRateLookupError::ProviderNotConfigured(_)) => {
             // Not a real failure - this store's provider (or no provider at
             // all) simply can't price this currency on this instance, same
             // user-facing meaning as `Ok(None)` above.
-            return render_store_detail_page(&state, row, user.is_admin, Some(format!("unsupported currency: {currency}")), None).await
+            return render_store_detail_page(&state, row, &user, Some(format!("unsupported currency: {currency}")), None).await
         }
         Err(e) => {
             eprintln!("exchange rate lookup failed for connection {} (currency {currency:?}): {e}", row.id);
-            return render_store_detail_page(&state, row, user.is_admin, Some("Something went wrong looking up the exchange rate. Please try again.".to_string()), None)
+            return render_store_detail_page(&state, row, &user, Some("Something went wrong looking up the exchange rate. Please try again.".to_string()), None)
                 .await;
         }
     };
     let xmr_amount_piconero = match shared::exchange_rate::compute_order_amount(currency, amount, piconero_per_unit) {
         Ok(amount) => amount,
-        Err(e) => return render_store_detail_page(&state, row, user.is_admin, Some(e.to_string()), None).await,
+        Err(e) => return render_store_detail_page(&state, row, &user, Some(e.to_string()), None).await,
     };
     let merchant_order_id = {
         let trimmed = form.merchant_order_id.trim();
@@ -870,7 +862,7 @@ pub async fn create_order(
     };
     let resolution = match crate::confirmation_thresholds::resolve_for_order(&state, &row, &sk, currency, piconero_per_unit, xmr_amount_piconero).await {
         Ok(resolution) => resolution,
-        Err(message) => return render_store_detail_page(&state, row, user.is_admin, Some(message), None).await,
+        Err(message) => return render_store_detail_page(&state, row, &user, Some(message), None).await,
     };
 
     match state
@@ -901,10 +893,10 @@ pub async fn create_order(
             redirect_302(&format!("/dashboard/connections/{id}/orders/{}", order.payment_id))
         }
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_store_detail_page(&state, row, user.is_admin, Some(message), None).await
+            render_store_detail_page(&state, row, &user, Some(message), None).await
         }
         Err(_) => {
-            render_store_detail_page(&state, row, user.is_admin, Some("Something went wrong. Please try again.".to_string()), None).await
+            render_store_detail_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
         }
     }
 }
@@ -938,7 +930,7 @@ pub async fn update_confirmations_required(
     let confirmations_required: u64 = match form.confirmations_required.trim().parse() {
         Ok(n) => n,
         Err(_) => {
-            return render_store_detail_page(&state, row, user.is_admin, None, Some("Enter a whole number of confirmations.".to_string()))
+            return render_store_detail_page(&state, row, &user, None, Some("Enter a whole number of confirmations.".to_string()))
                 .await;
         }
     };
@@ -951,10 +943,10 @@ pub async fn update_confirmations_required(
     match state.engine_client.set_confirmations_required(&sk, confirmations_required).await {
         Ok(_) => redirect_302(&format!("/dashboard/connections/{id}")),
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_store_detail_page(&state, row, user.is_admin, None, Some(message)).await
+            render_store_detail_page(&state, row, &user, None, Some(message)).await
         }
         Err(_) => {
-            render_store_detail_page(&state, row, user.is_admin, None, Some("Something went wrong. Please try again.".to_string())).await
+            render_store_detail_page(&state, row, &user, None, Some("Something went wrong. Please try again.".to_string())).await
         }
     }
 }
@@ -992,7 +984,7 @@ pub async fn update_fx_provider(
         return render_store_detail_page(
             &state,
             row,
-            user.is_admin,
+            &user,
             None,
             Some(format!("{:?} is not an available exchange rate provider on this instance.", form.fx_provider)),
         )
@@ -1008,7 +1000,7 @@ pub async fn update_fx_provider(
     match update_result {
         Ok(()) => redirect_302(&format!("/dashboard/connections/{id}")),
         Err(_) => {
-            render_store_detail_page(&state, row, user.is_admin, None, Some("Something went wrong. Please try again.".to_string())).await
+            render_store_detail_page(&state, row, &user, None, Some("Something went wrong. Please try again.".to_string())).await
         }
     }
 }
@@ -1053,7 +1045,7 @@ pub async fn update_base_currency(
             return render_store_detail_page(
                 &state,
                 row,
-                user.is_admin,
+                &user,
                 None,
                 Some(format!("{:?} is not a known currency.", form.base_currency)),
             )
@@ -1066,7 +1058,7 @@ pub async fn update_base_currency(
     match update_result {
         Ok(()) => redirect_302(&format!("/dashboard/connections/{id}")),
         Err(_) => {
-            render_store_detail_page(&state, row, user.is_admin, None, Some("Something went wrong. Please try again.".to_string())).await
+            render_store_detail_page(&state, row, &user, None, Some("Something went wrong. Please try again.".to_string())).await
         }
     }
 }
@@ -1111,7 +1103,7 @@ pub async fn update_zero_conf_max_piconero(
         match shared::xmr_amount::parse_xmr_to_piconero(trimmed) {
             Ok(piconero) => piconero,
             Err(e) => {
-                return render_store_detail_page(&state, row, user.is_admin, None, Some(format!("Enter a valid XMR amount: {e}"))).await;
+                return render_store_detail_page(&state, row, &user, None, Some(format!("Enter a valid XMR amount: {e}"))).await;
             }
         }
     };
@@ -1124,10 +1116,10 @@ pub async fn update_zero_conf_max_piconero(
     match state.engine_client.set_zero_conf_max_piconero(&sk, zero_conf_max_piconero).await {
         Ok(_) => redirect_302(&format!("/dashboard/connections/{id}")),
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_store_detail_page(&state, row, user.is_admin, None, Some(message)).await
+            render_store_detail_page(&state, row, &user, None, Some(message)).await
         }
         Err(_) => {
-            render_store_detail_page(&state, row, user.is_admin, None, Some("Something went wrong. Please try again.".to_string())).await
+            render_store_detail_page(&state, row, &user, None, Some("Something went wrong. Please try again.".to_string())).await
         }
     }
 }
@@ -1162,7 +1154,7 @@ pub async fn create_confirmation_threshold(
     let confirmations_required: u64 = match form.confirmations_required.trim().parse() {
         Ok(n) => n,
         Err(_) => {
-            return render_store_detail_page(&state, row, user.is_admin, None, Some("Enter a whole number of confirmations.".to_string()))
+            return render_store_detail_page(&state, row, &user, None, Some("Enter a whole number of confirmations.".to_string()))
                 .await;
         }
     };
@@ -1171,7 +1163,7 @@ pub async fn create_confirmation_threshold(
     match unit_amount.parse::<f64>() {
         Ok(n) if n.is_finite() && n >= 0.0 => {}
         _ => {
-            return render_store_detail_page(&state, row, user.is_admin, None, Some("Enter a non-negative amount.".to_string())).await;
+            return render_store_detail_page(&state, row, &user, None, Some("Enter a non-negative amount.".to_string())).await;
         }
     }
 
@@ -1180,7 +1172,7 @@ pub async fn create_confirmation_threshold(
         return render_store_detail_page(
             &state,
             row,
-            user.is_admin,
+            &user,
             None,
             Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()),
         )
@@ -1193,11 +1185,11 @@ pub async fn create_confirmation_threshold(
     match create_result {
         Ok(()) => redirect_302(&format!("/dashboard/connections/{id}")),
         Err(e) if e.is_unique_violation() => {
-            render_store_detail_page(&state, row, user.is_admin, None, Some(format!("A threshold for {unit_amount} already exists.")))
+            render_store_detail_page(&state, row, &user, None, Some(format!("A threshold for {unit_amount} already exists.")))
                 .await
         }
         Err(_) => {
-            render_store_detail_page(&state, row, user.is_admin, None, Some("Something went wrong. Please try again.".to_string())).await
+            render_store_detail_page(&state, row, &user, None, Some("Something went wrong. Please try again.".to_string())).await
         }
     }
 }
@@ -1251,7 +1243,7 @@ pub async fn save_confirmation_thresholds(
         match raw.get("confirmations_required").map(|s| s.trim()).unwrap_or("").parse() {
             Ok(n) => n,
             Err(_) => {
-                return render_store_detail_page(&state, row, user.is_admin, None, Some("Enter a whole number of confirmations.".to_string()))
+                return render_store_detail_page(&state, row, &user, None, Some("Enter a whole number of confirmations.".to_string()))
                     .await;
             }
         };
@@ -1265,7 +1257,7 @@ pub async fn save_confirmation_thresholds(
             EngineClientError::EngineError { status, message } if status == reqwest::StatusCode::BAD_REQUEST => message,
             _ => "Something went wrong. Please try again.".to_string(),
         };
-        return render_store_detail_page(&state, row, user.is_admin, None, Some(message)).await;
+        return render_store_detail_page(&state, row, &user, None, Some(message)).await;
     }
 
     let existing = state.db.lock().unwrap().list_confirmation_thresholds(&row.id).unwrap_or_default();
@@ -1284,7 +1276,7 @@ pub async fn save_confirmation_thresholds(
                 return render_store_detail_page(
                     &state,
                     row,
-                    user.is_admin,
+                    &user,
                     None,
                     Some("Enter a whole number of confirmations for the new threshold.".to_string()),
                 )
@@ -1297,7 +1289,7 @@ pub async fn save_confirmation_thresholds(
                 return render_store_detail_page(
                     &state,
                     row,
-                    user.is_admin,
+                    &user,
                     None,
                     Some("Enter a non-negative amount for the new threshold.".to_string()),
                 )
@@ -1310,7 +1302,7 @@ pub async fn save_confirmation_thresholds(
             return render_store_detail_page(
                 &state,
                 row,
-                user.is_admin,
+                &user,
                 None,
                 Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()),
             )
@@ -1331,7 +1323,7 @@ pub async fn save_confirmation_thresholds(
             } else {
                 "Something went wrong. Please try again.".to_string()
             };
-            return render_store_detail_page(&state, row, user.is_admin, None, Some(message)).await;
+            return render_store_detail_page(&state, row, &user, None, Some(message)).await;
         }
     }
 
