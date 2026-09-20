@@ -25,7 +25,7 @@
 //! simply shows a dash rather than a fabricated amount.
 
 use axum::extract::{Form, Path, State};
-use axum::response::{Html, IntoResponse, Json, Response};
+use axum::response::{IntoResponse, Json, Response};
 use axum::http::{HeaderMap, StatusCode};
 use qrcode::render::svg;
 use qrcode::QrCode;
@@ -33,7 +33,8 @@ use serde::{Deserialize, Serialize};
 
 use crate::db::StoreConnectionRow;
 use crate::engine_client::{EngineClientError, OrderDetailResponse};
-use crate::templates::{CheckoutPaymentViewModel, CheckoutShareViewModel, CheckoutViewModel};
+use crate::views;
+use crate::views::checkout::{CheckoutPaymentViewModel, CheckoutShareViewModel, CheckoutViewModel};
 
 use super::dashboard::redirect_302;
 use super::{ApiError, AppState};
@@ -121,16 +122,15 @@ async fn load_order(
 pub async fn checkout_page(State(state): State<AppState>, Path((pk, payment_id)): Path<(String, String)>) -> Response {
     let (row, sk, detail) = match load_order(&state, &pk, &payment_id).await {
         Ok(loaded) => loaded,
-        Err(LoadError::NotFound) => {
-            let html = state
-                .templates
-                .render_checkout_not_found()
-                .expect("the built-in checkout-not-found template must always render");
-            return (StatusCode::NOT_FOUND, Html(html)).into_response();
-        }
+        Err(LoadError::NotFound) => return not_found_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     render_checkout_page(&state, pk, row, sk, detail, None).await
+}
+
+fn not_found_response() -> Response {
+    let chrome = views::PageChrome::from_user(None, "/");
+    (StatusCode::NOT_FOUND, views::checkout::not_found_page(&chrome)).into_response()
 }
 
 /// The real body of the checkout page, shared by the plain `GET` above and
@@ -194,7 +194,6 @@ async fn render_checkout_page(
     };
     let view = CheckoutViewModel {
         payment_id: detail.order.payment_id.clone(),
-        status: detail.order.status.clone(),
         status_label: status_text.to_string(),
         status_class: status_class.to_string(),
         address: detail.order.address.clone(),
@@ -211,10 +210,9 @@ async fn render_checkout_page(
         double_spend_detected_at_display: crate::templates::display_timestamp_or_dash(detail.order.double_spend_detected_at),
         expires_in_display: crate::templates::format_duration_until(detail.order.expires_at, crate::now_unix()),
         expiry_urgency_class,
-        merchant_order_id: detail.order.merchant_order_id.clone(),
         refund_address: detail.order.refund_address.clone(),
         refund_address_error,
-        pk,
+        pk: pk.clone(),
         payments: detail
             .payments
             .iter()
@@ -230,8 +228,8 @@ async fn render_checkout_page(
             .collect(),
     };
 
-    let html = state.templates.render_checkout(&view).expect("the built-in checkout template must always render");
-    Html(html).into_response()
+    let chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{}", detail.order.payment_id));
+    views::checkout::checkout_page(&chrome, &view).into_response()
 }
 
 #[derive(Deserialize)]
@@ -264,13 +262,7 @@ pub async fn set_refund_address(
 ) -> Response {
     let (row, sk, detail) = match load_order(&state, &pk, &payment_id).await {
         Ok(loaded) => loaded,
-        Err(LoadError::NotFound) => {
-            let html = state
-                .templates
-                .render_checkout_not_found()
-                .expect("the built-in checkout-not-found template must always render");
-            return (StatusCode::NOT_FOUND, Html(html)).into_response();
-        }
+        Err(LoadError::NotFound) => return not_found_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
@@ -340,15 +332,10 @@ pub async fn checkout_share_page(
     };
     let status = if found { StatusCode::OK } else { StatusCode::NOT_FOUND };
     let authed = super::resolve_authed_user(&state, &headers);
-    let view = CheckoutShareViewModel {
-        pk,
-        payment_id,
-        found,
-        logged_in: authed.is_some(),
-        is_admin: authed.is_some_and(|(user, _)| user.is_admin),
-    };
-    let html = state.templates.render_checkout_share(&view).expect("the built-in checkout-share template must always render");
-    (status, Html(html)).into_response()
+    let current_path = format!("/pay/{pk}/orders/{payment_id}/share");
+    let chrome = views::PageChrome::from_user(authed.as_ref().map(|(user, _)| user), current_path);
+    let view = CheckoutShareViewModel { pk, payment_id, found };
+    (status, views::checkout::share_page(&chrome, &view)).into_response()
 }
 
 #[cfg(test)]

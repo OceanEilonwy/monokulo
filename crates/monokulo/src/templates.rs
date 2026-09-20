@@ -9,17 +9,12 @@
 //! `include_str!`-embedded templates, always the built-in ones.
 
 use handlebars::Handlebars;
-use serde::Serialize;
 
 // Moved to `views/head.html` as part of the Maud migration (it carried zero
 // handlebars syntax to begin with) - still shared by every page here that
 // hasn't moved off this engine yet.
 const STYLES_PARTIAL: &str = include_str!("views/head.html");
 const NAV_PARTIAL: &str = include_str!("../templates/_nav.html.hbs");
-
-const CHECKOUT_TEMPLATE: &str = include_str!("../templates/checkout.html.hbs");
-const CHECKOUT_NOT_FOUND_TEMPLATE: &str = include_str!("../templates/checkout_not_found.html.hbs");
-const CHECKOUT_SHARE_TEMPLATE: &str = include_str!("../templates/checkout_share.html.hbs");
 
 #[derive(Debug, thiserror::Error)]
 pub enum TemplateError {
@@ -193,98 +188,6 @@ pub fn date_string_to_unix_midnight(s: &str) -> Option<i64> {
     Some(days_from_civil(y, m, d) * 86_400)
 }
 
-/// One payment row on the checkout page's payments table
-/// (`docs/fx_refactor.md` Phase 2.2) - mirrors the engine's own (soon-
-/// removed) `PaymentViewModel` field-for-field.
-#[derive(Debug, Serialize)]
-pub struct CheckoutPaymentViewModel {
-    pub txid_short: String,
-    pub amount_xmr: String,
-    pub confirmations: u64,
-    pub is_zero_conf: bool,
-}
-
-/// The view model `GET /pay/{pk}/orders/{payment_id}` takes - mirrors the
-/// engine's own (soon-removed) `CheckoutViewModel` field-for-field, with
-/// one addition (`pk`, needed by the page's own polling script to build
-/// its status-check URL) and no `logged_in` at all (this page carries no
-/// site nav - see `http::checkout`'s own module doc comment for why).
-#[derive(Debug, Serialize)]
-pub struct CheckoutViewModel {
-    pub payment_id: String,
-    pub status: String,
-    pub status_label: String,
-    pub status_class: String,
-    pub address: String,
-    pub qr_code_svg: String,
-    pub xmr_amount: String,
-    pub amount_received_xmr: String,
-    pub amount: String,
-    pub currency: String,
-    pub confirmations: u64,
-    pub confirmations_required: u64,
-    /// `min(100, round(confirmations / confirmations_required * 100))`,
-    /// pre-computed server-side - the progress bar's fill width is a plain
-    /// `style="width: {{progress_percent}}%"`, not something a `<script>`
-    /// sets after load (this page has none - see `expires_in_display`'s own
-    /// doc comment on why).
-    pub progress_percent: u8,
-    pub is_terminal: bool,
-    /// Presence only - gates the `{{#if}}` banner in the template. The
-    /// actual text comes from `double_spend_detected_at_display` below,
-    /// pre-rendered server-side.
-    pub double_spend_detected_at: Option<i64>,
-    pub double_spend_detected_at_display: String,
-    /// A moment.js-style relative duration ("12h", "4h 15m", "2d 4h"),
-    /// pre-rendered server-side by `format_duration_until` - this page is
-    /// customer-facing and must stay fully meaningful with JavaScript
-    /// disabled, so nothing about it (including this) may depend on
-    /// `<script>` to be understandable. Only shown when `!is_terminal`;
-    /// meaningless (and unused) otherwise.
-    pub expires_in_display: String,
-    /// `""`, `"expiry-soon"`, or `"expiry-urgent"` - a CSS class picked
-    /// server-side from how much time is actually left (see
-    /// `http::checkout::render_checkout_page`), so the timer can shift color
-    /// as expiry nears without any client-side timer/JS of its own. Always
-    /// `""` once `is_terminal` (an expired/paid/overpaid order has nothing
-    /// left to be urgent about).
-    pub expiry_urgency_class: String,
-    pub merchant_order_id: Option<String>,
-    /// `Some` once a customer (or their storefront, on their behalf) has
-    /// set one via the form below - shown read-only from then on. `None`
-    /// shows the form instead. Raw, not pre-rendered to a trusted-HTML
-    /// display string - a refund address is caller-supplied free text (the
-    /// engine's own `set_refund_address` does no format validation of its
-    /// own either), so it stays ordinary escaped template output, same
-    /// caveat `merchant_order_id`'s own doc comment already carries.
-    pub refund_address: Option<String>,
-    /// Set only when the refund-address form below was just rejected (empty
-    /// submission, or a real engine failure) - `None` on a plain page load.
-    pub refund_address_error: Option<String>,
-    pub pk: String,
-    pub payments: Vec<CheckoutPaymentViewModel>,
-}
-
-/// The view model `GET /pay/{pk}/orders/{payment_id}/share` takes (a real
-/// follow-up to `docs/fx_refactor.md` - see `http::checkout::checkout_share_page`'s
-/// own doc comment). Unlike `CheckoutViewModel` this page *does* carry the
-/// site nav, so `logged_in` is real here, computed the same
-/// authenticated-or-not way `status_page.rs`'s own unauthenticated page
-/// does - the customer paying an invoice usually isn't a logged-in
-/// merchant, but the nav should reflect reality either way, not assume one.
-#[derive(Debug, Serialize)]
-pub struct CheckoutShareViewModel {
-    pub pk: String,
-    pub payment_id: String,
-    /// Whether the order actually exists - `false` renders a real
-    /// not-found state (still with the site's own nav around it, unlike
-    /// `checkout_not_found`'s bare equivalent), rather than a page whose
-    /// only content is a broken iframe.
-    pub found: bool,
-    pub logged_in: bool,
-    pub is_admin: bool,
-}
-
 // SetupViewModel/RequestInviteViewModel/AdminInviteRequestRow/AdminInvitesViewModel/
 // AdminScalarFieldView/AdminNetworkFieldView/AdminSettingsViewModel moved to
 // `views::admin`, and PosViewModel to `views::pos`, as part of the Maud
@@ -306,23 +209,7 @@ impl TemplateEngine {
         // from every page.
         handlebars.register_template_string("styles", STYLES_PARTIAL)?;
         handlebars.register_template_string("nav", NAV_PARTIAL)?;
-
-        handlebars.register_template_string("checkout", CHECKOUT_TEMPLATE)?;
-        handlebars.register_template_string("checkout_not_found", CHECKOUT_NOT_FOUND_TEMPLATE)?;
-        handlebars.register_template_string("checkout_share", CHECKOUT_SHARE_TEMPLATE)?;
         Ok(TemplateEngine { handlebars })
-    }
-
-    pub fn render_checkout(&self, data: &CheckoutViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("checkout", data)?)
-    }
-
-    pub fn render_checkout_not_found(&self) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("checkout_not_found", &())?)
-    }
-
-    pub fn render_checkout_share(&self, data: &CheckoutShareViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("checkout_share", data)?)
     }
 }
 
@@ -428,56 +315,10 @@ mod tests {
     // tests moved to `views::admin`'s own test module - those pages no
     // longer go through this engine at all.
 
-    fn test_checkout_view_model(is_terminal: bool) -> CheckoutViewModel {
-        CheckoutViewModel {
-            payment_id: "pay_abc123".to_string(),
-            status: if is_terminal { "paid".to_string() } else { "pending".to_string() },
-            status_label: if is_terminal { "Paid".to_string() } else { "Waiting for payment".to_string() },
-            status_class: if is_terminal { "status-paid".to_string() } else { "status-pending".to_string() },
-            address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
-            qr_code_svg: "<svg></svg>".to_string(),
-            xmr_amount: "0.500000000000".to_string(),
-            amount_received_xmr: "0.000000000000".to_string(),
-            amount: "0.5".to_string(),
-            currency: "XMR".to_string(),
-            confirmations: 0,
-            confirmations_required: 10,
-            progress_percent: 0,
-            is_terminal,
-            double_spend_detected_at: None,
-            double_spend_detected_at_display: display_timestamp_or_dash(None),
-            expires_in_display: "30m".to_string(),
-            expiry_urgency_class: String::new(),
-            merchant_order_id: None,
-            refund_address: None,
-            refund_address_error: None,
-            pk: "pk_abc123".to_string(),
-            payments: vec![],
-        }
-    }
-
-    #[test]
-    fn checkout_page_carries_no_script_and_meta_refreshes_a_still_in_progress_order() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_checkout(&test_checkout_view_model(false)).unwrap();
-        assert!(!html.contains("<script"), "the checkout page must carry no JavaScript at all, got: {html}");
-        assert!(
-            html.contains(r#"<meta http-equiv="refresh""#),
-            "expected a meta-refresh directive on a still-in-progress order, got: {html}"
-        );
-    }
-
-    #[test]
-    fn checkout_page_stops_meta_refreshing_once_the_order_is_terminal() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine.render_checkout(&test_checkout_view_model(true)).unwrap();
-        assert!(!html.contains("<script"), "the checkout page must carry no JavaScript at all, got: {html}");
-        assert!(
-            !html.contains(r#"<meta http-equiv="refresh""#),
-            "a paid/terminal order must not keep re-fetching itself, got: {html}"
-        );
-    }
-
     // Orders list / order detail page tests moved to `views::orders`'s own
     // test module - those pages no longer go through this engine at all.
+
+    // Checkout / checkout-not-found / checkout-share page tests moved to
+    // `views::checkout`'s own test module - those pages no longer go
+    // through this engine at all.
 }
