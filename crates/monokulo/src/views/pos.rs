@@ -174,13 +174,14 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 }
 .pos-screen { flex: 1; min-height: 0; }
 .pos-screen-hidden { display: none !important; }
-#keypad-screen { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto auto; }
+#keypad-screen { display: grid; grid-template-rows: auto minmax(0, 1fr) auto auto auto; gap: 1em; }
+#keypad-screen > * { margin: 0; }
 
 .amount-display {
   font-size: clamp(2.6rem, 12vw, 4.4rem);
+  line-height: clamp(2.6rem, 12vw, 4.4rem);
   font-weight: 700;
   text-align: center;
-  margin: 0 0 0.35em;
   overflow-x: auto;
   white-space: nowrap;
 }
@@ -249,7 +250,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 .key-backspace svg { display: block; flex: none; width: 1em; height: 1em; }
 .key-backspace svg, .key-backspace svg * { stroke: currentColor; }
 
-.note-input-row { margin: 0.7em 0 0; }
 .note-input-row input {
   width: 100%;
   box-sizing: border-box;
@@ -269,7 +269,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   font-size: 1.2rem;
   font-weight: 700;
   padding: 0.7em 0;
-  margin-top: 0.7em;
   border: 2px solid var(--line);
   border-radius: 0.7em;
   background: var(--accent);
@@ -384,8 +383,7 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 
 @media (max-height: 480px) {
   .pos-wrap { padding-top: calc(env(safe-area-inset-top, 0px) + 1.1rem); }
-  .amount-display { font-size: clamp(1.1rem, 6vw, 1.9rem); margin: 0 0 0.25em; }
-  .note-input-row { margin: 0.25em 0 0; }
+  .amount-display { font-size: clamp(1.1rem, 6vw, 1.9rem); }
   .note-input-row input { padding: 0.3em 0.5em; font-size: 0.9rem; }
   .charge-btn, .secondary-btn { padding: 0.3em 0; margin-top: 0.25em; font-size: 1rem; }
   .key-face { font-size: clamp(1rem, 5vw, 1.6rem); }
@@ -789,11 +787,20 @@ mod tests {
     #[test]
     fn renders_no_nav_and_carries_the_stores_base_currency_and_connection_id() {
         let html = page(&chrome(), &data()).into_string();
-        assert!(html.contains("XMR"), "expected the store's own base currency shown, got: {html}");
+        assert!(
+            html.contains("XMR"),
+            "expected the store's own base currency shown, got: {html}"
+        );
         assert!(html.contains(r#"data-connection-id="conn-1""#));
         assert!(html.contains(r#"data-decimals="12""#));
-        assert!(html.contains("/dashboard/connections/conn-1"), "expected the back link to this connection's dashboard");
-        assert!(!html.contains("<nav class=\"site-nav\""), "the POS terminal must render with no site nav element at all");
+        assert!(
+            html.contains("/dashboard/connections/conn-1"),
+            "expected the back link to this connection's dashboard"
+        );
+        assert!(
+            !html.contains("<nav class=\"site-nav\""),
+            "the POS terminal must render with no site nav element at all"
+        );
     }
 
     #[test]
