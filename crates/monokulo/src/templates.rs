@@ -1,28 +1,8 @@
-//! Minimal built-in HTML templates for the monokulo's browser-facing
-//! signup/login pages (WBS 1.3.1, `http/dashboard.rs`).
-//!
-//! Loosely mirrors the engine's own `TemplateEngine`
-//! (`../scanner/src/templates.rs` at the repo root, which loads a
-//! per-tenant custom checkout template from disk with an embedded
-//! fallback) but is deliberately much simpler: monokulo has no
-//! per-tenant customization concept for these pages, just two fixed,
-//! `include_str!`-embedded templates, always the built-in ones.
-
-use handlebars::Handlebars;
-
-// Moved to `views/head.html` as part of the Maud migration (it carried zero
-// handlebars syntax to begin with) - still shared by every page here that
-// hasn't moved off this engine yet.
-const STYLES_PARTIAL: &str = include_str!("views/head.html");
-const NAV_PARTIAL: &str = include_str!("../templates/_nav.html.hbs");
-
-#[derive(Debug, thiserror::Error)]
-pub enum TemplateError {
-    #[error("failed to register template: {0}")]
-    Register(#[from] handlebars::TemplateError),
-    #[error("failed to render template: {0}")]
-    Render(#[from] handlebars::RenderError),
-}
+//! Plain, engine-agnostic display/formatting helpers shared by several
+//! `views`/`http` modules (date/duration formatting, the connect forms'
+//! network-select flags, ...) - all that's left here since every page this
+//! module used to render through its own Handlebars-based `TemplateEngine`
+//! now renders through `views` (Maud) instead.
 
 /// The three `<option>` "selected" flags both connect forms' network
 /// `<select>` need, derived from a submitted (or default) network value.
@@ -190,28 +170,13 @@ pub fn date_string_to_unix_midnight(s: &str) -> Option<i64> {
 
 // SetupViewModel/RequestInviteViewModel/AdminInviteRequestRow/AdminInvitesViewModel/
 // AdminScalarFieldView/AdminNetworkFieldView/AdminSettingsViewModel moved to
-// `views::admin`, and PosViewModel to `views::pos`, as part of the Maud
-// migration - those pages no longer go through this engine at all.
-
-pub struct TemplateEngine {
-    handlebars: Handlebars<'static>,
-}
-
-impl TemplateEngine {
-    pub fn new() -> Result<Self, TemplateError> {
-        let mut handlebars = Handlebars::new();
-        handlebars.set_strict_mode(true);
-        // Partials shared by every page below - see their own files'
-        // comments. Registered under names with no leading underscore
-        // (handlebars-rust has no notion of "partial vs. template", a
-        // registered template is callable as `{{> name}}` by whatever name
-        // it's registered under) so `{{> styles}}`/`{{> nav}}` read cleanly
-        // from every page.
-        handlebars.register_template_string("styles", STYLES_PARTIAL)?;
-        handlebars.register_template_string("nav", NAV_PARTIAL)?;
-        Ok(TemplateEngine { handlebars })
-    }
-}
+// `views::admin`, PosViewModel to `views::pos`, and CheckoutViewModel/
+// CheckoutPaymentViewModel/CheckoutShareViewModel to `views::checkout`, as
+// part of the Maud migration - every page that used to go through this
+// module's own `TemplateEngine`/Handlebars now renders through `views`
+// instead, so that engine (and the `handlebars` dependency itself) is gone;
+// only the plain, engine-agnostic display/formatting helpers below remain,
+// still used directly by several `views`/`http` modules.
 
 #[cfg(test)]
 mod tests {

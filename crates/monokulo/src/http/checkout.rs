@@ -374,7 +374,6 @@ mod tests {
             db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
             engine_client,
             encryption_key: TEST_ENCRYPTION_KEY,
-            templates: std::sync::Arc::new(crate::templates::TemplateEngine::new().unwrap()),
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
