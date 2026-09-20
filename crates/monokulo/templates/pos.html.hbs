@@ -196,6 +196,13 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   cursor: pointer;
   -webkit-tap-highlight-color: transparent;
 }
+/* The shared partial's generic `button:hover` paints the *whole* button -
+   fine for a normal button, but here that button is the full grid cell,
+   padding (the gap to neighboring keys) included, so it would highlight
+   the gap along with the cap. Cancel it back to nothing at the cell level
+   and re-apply the highlight only on `.key-face`, the actual visible cap,
+   below. */
+.key:hover { background: none; border-color: transparent; }
 .key-face {
   width: 100%;
   height: 100%;
@@ -217,6 +224,14 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   background: linear-gradient(165deg, #ffffff 0%, #eeecfb 100%);
   box-shadow: 0 0.12em 0 rgba(44, 38, 80, 0.28), 0 0.3em 0.5em rgba(44, 38, 80, 0.15);
   transition: transform 0.06s ease, box-shadow 0.06s ease, background 0.06s ease;
+}
+/* `currentColor` (not a fixed color) so this ring automatically matches
+   whichever key it's on - `--ink` for digits, `--error`/`--warning` for
+   clear/backspace - with one rule instead of one per key type. Placed
+   before `.key:active` below so a press (both `:hover` and `:active` true
+   at once) still resolves to the pressed look, not a blend of the two. */
+.key:hover .key-face {
+  box-shadow: 0 0.12em 0 rgba(44, 38, 80, 0.28), 0 0.3em 0.5em rgba(44, 38, 80, 0.15), inset 0 0 0 0.12em currentColor;
 }
 .key:active .key-face {
   background: var(--accent);
