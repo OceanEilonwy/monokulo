@@ -50,6 +50,18 @@
   --accent: #ff6600;
   --accent-ink: #111111;
   --brand-orange: #ff6600;
+  /* `--chrome-bg`/`--chrome-ink`: the nav bar, table headers and primary
+     buttons deliberately invert (dark bar, light text) as this site's
+     black & orange identity - previously that inversion literally
+     reused `--ink`/`--paper`, which is correct in light mode (`--ink` is
+     black) but backfires in dark mode, where `--ink` flips to a near-white
+     text color: the "black" nav bar/table header/button silently became a
+     solid near-white one - the exact "blinding chunk of white in a dark
+     theme" bug this pair exists to fix. `--chrome-bg`/`--chrome-ink` are
+     fixed (not redefined in the dark-mode blocks below) precisely so this
+     chrome stays a dark bar with light text in both themes. */
+  --chrome-bg: #111111;
+  --chrome-ink: #f4f1ea;
   --error: #b00020;
   /* `--error-ink`/`--warning-ink`: unlike `--accent-ink` (always #111111 -
      `--accent` stays the same bright orange in both modes), `--error` and
@@ -118,13 +130,21 @@
    formula (the light `--error`, for one, is only 2.2:1 on the dark
    surface - failing outright - so nothing here is derived from its light
    counterpart). Shape/type tokens are unchanged - only color differs
-   between modes. */
+   between modes.
+   Deliberately NOT near-black/near-white (an earlier pass used `--paper:
+   #1b1815`/`--ink: #f1ece2`, close enough to true black/white that at
+   night it read as harsh, and - combined with the `--chrome-bg`/`--ink`
+   mixup fixed above - produced solid glare-white chunks): retuned to a
+   softer, neutral VS Code "Dark+"-like scale (editor/panel grays, a
+   muted mid-gray foreground instead of near-white) so both the base
+   surface and body text sit closer to the middle of the brightness range
+   a screen shown at night should stay in. */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --ink: #f1ece2;
-    --paper: #1b1815;
-    --paper-raised: #242019;
-    --line: #8a806a;
+    --ink: #d4d4d4;
+    --paper: #1e1e1e;
+    --paper-raised: #2a2a2a;
+    --line: #454545;
     --accent: #ff6600;
     --accent-ink: #111111;
     --brand-orange: #ff6600;
@@ -133,18 +153,18 @@
     --success: #4cc27a;
     --warning: #e0a83d;
     --warning-ink: #111111;
-    --muted: #a89f8c;
-    --pos-frame: #2a251d;
+    --muted: #9d9d9d;
+    --pos-frame: #262626;
   }
 }
 /* Dark - the page's own toggle (`data-theme="dark"` on `<html>`), wins
    over OS preference either way. No such toggle exists yet - this is
    here so adding one later is a one-line change, not a new stylesheet. */
 :root[data-theme="dark"] {
-  --ink: #f1ece2;
-  --paper: #1b1815;
-  --paper-raised: #242019;
-  --line: #8a806a;
+  --ink: #d4d4d4;
+  --paper: #1e1e1e;
+  --paper-raised: #2a2a2a;
+  --line: #454545;
   --accent: #ff6600;
   --accent-ink: #111111;
   --brand-orange: #ff6600;
@@ -153,8 +173,8 @@
   --success: #4cc27a;
   --warning: #e0a83d;
   --warning-ink: #111111;
-  --muted: #a89f8c;
-  --pos-frame: #2a251d;
+  --muted: #9d9d9d;
+  --pos-frame: #262626;
 }
 
 * { box-sizing: border-box; }
@@ -238,7 +258,7 @@ th, td { border: 1px solid var(--line); padding: var(--space-xs) var(--space-sm)
 /* A code/pre value inside a table cell (an address, a txid) shouldn't carry
    its own box on top of the cell's own border - the cell border is enough. */
 td code, td pre, th code, th pre { background: none; border: none; padding: 0; }
-th { background: var(--ink); color: var(--paper); font-weight: 700; }
+th { background: var(--chrome-bg); color: var(--chrome-ink); font-weight: 700; }
 /* `color-mix` with `transparent`, not a flat `rgba(0,0,0,...)`: a literal
    black tint darkens a light surface but is imperceptible on a dark one.
    Mixing a sliver of `--ink` itself means the stripe darkens in light mode
@@ -288,8 +308,8 @@ button, .btn {
   font-family: inherit;
   font-size: 1em;
   font-weight: 700;
-  background: var(--ink);
-  color: var(--paper);
+  background: var(--chrome-bg);
+  color: var(--chrome-ink);
   border: 2px solid var(--line);
   border-radius: var(--radius-sm);
   padding: var(--space-sm) var(--space-lg);
@@ -350,7 +370,7 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
    toggle - no JS involved in showing/hiding the menu itself) has real
    selectors to work with. Above the breakpoint this all just renders as a
    normal flex row; the checkbox/label stay hidden and irrelevant. */
-.site-nav { background: var(--ink); color: var(--paper); border-bottom: 3px solid var(--accent); }
+.site-nav { background: var(--chrome-bg); color: var(--chrome-ink); border-bottom: 3px solid var(--accent); }
 .site-nav-row {
   display: flex;
   align-items: center;
@@ -360,11 +380,11 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
   flex-wrap: wrap;
   position: relative;
 }
-.site-nav-brand { color: var(--paper); text-decoration: none; font-weight: 700; letter-spacing: -0.02em; display: inline-flex; align-items: center; gap: 0.45em; }
+.site-nav-brand { color: var(--chrome-ink); text-decoration: none; font-weight: 700; letter-spacing: -0.02em; display: inline-flex; align-items: center; gap: 0.45em; }
 .site-nav-logo { display: block; }
 .site-nav-links { display: flex; align-items: center; flex-wrap: wrap; }
 .site-nav-links a, .site-nav-links .nav-link-button {
-  color: var(--paper);
+  color: var(--chrome-ink);
   margin: 0 0 0 1.2em;
   background: none;
   border: none;
@@ -378,7 +398,7 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .nav-status-link { text-decoration: none !important; }
 .nav-status-text { text-decoration: underline; }
 .nav-toggle-checkbox { position: absolute; opacity: 0; pointer-events: none; }
-.nav-toggle-label { display: none; color: var(--paper); font-size: 1.4rem; line-height: 1; cursor: pointer; user-select: none; }
+.nav-toggle-label { display: none; color: var(--chrome-ink); font-size: 1.4rem; line-height: 1; cursor: pointer; user-select: none; }
 /* No-JS-required small-screen menu: below the breakpoint, the link group
    wraps onto its own full-width row (the honest "progressive enhancement"
    fallback) *and* starts collapsed behind the checkbox-driven hamburger -
