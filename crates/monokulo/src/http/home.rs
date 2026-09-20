@@ -8,8 +8,8 @@ use axum::extract::State;
 use axum::http::HeaderMap;
 use axum::response::{Html, IntoResponse, Response};
 
-use crate::templates::{DashboardOrderRow, DashboardRescanRow, DashboardStoreRow, DashboardViewModel};
 use crate::views;
+use crate::views::dashboard::{DashboardOrderRow, DashboardRescanRow, DashboardStoreRow, DashboardViewModel};
 
 use super::dashboard::redirect_302;
 use super::orders::{display_name_for, health_of_tenant_lookup};
@@ -156,6 +156,7 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
 
     let active_rescans_count_label =
         if active_rescans.len() == 1 { "1 order".to_string() } else { format!("{} orders", active_rescans.len()) };
+    let chrome = views::PageChrome::from_user(Some(&user), "/dashboard");
     let view_model = DashboardViewModel {
         has_stores: !stores.is_empty(),
         stores,
@@ -163,14 +164,8 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
         total_received_xmr: format_piconero_as_xmr(total_received_piconero),
         active_rescans,
         active_rescans_count_label,
-        logged_in: true,
-        is_admin: user.is_admin,
     };
-    let html = state
-        .templates
-        .render_dashboard_home(&view_model)
-        .expect("the built-in dashboard home template must always render");
-    Html(html).into_response()
+    views::dashboard::page(&chrome, &view_model).into_response()
 }
 
 /// 1 XMR = 10^12 piconero (the same fixed-point convention every other

@@ -23,7 +23,6 @@ const ORDERS_TEMPLATE: &str = include_str!("../templates/orders.html.hbs");
 const ORDER_DETAIL_TEMPLATE: &str = include_str!("../templates/order_detail.html.hbs");
 const WEBHOOKS_TEMPLATE: &str = include_str!("../templates/webhooks.html.hbs");
 const CONNECT_PLATFORM_TEMPLATE: &str = include_str!("../templates/connect_platform.html.hbs");
-const DASHBOARD_HOME_TEMPLATE: &str = include_str!("../templates/dashboard_home.html.hbs");
 const NEW_STORE_PICKER_TEMPLATE: &str = include_str!("../templates/new_store_picker.html.hbs");
 const WOOCOMMERCE_INSTRUCTIONS_TEMPLATE: &str = include_str!("../templates/woocommerce_instructions.html.hbs");
 const STORE_DETAIL_TEMPLATE: &str = include_str!("../templates/store_detail.html.hbs");
@@ -569,87 +568,6 @@ pub struct WebhooksViewModel {
     pub is_admin: bool,
 }
 
-/// One connected store as shown on the dashboard home page - a much smaller
-/// projection of [`crate::db::StoreConnectionRow`] than the full order/
-/// webhook views need, plus two fields no engine or database call directly
-/// hands back: `display_name` (there is no user-facing name column on
-/// `store_connections` - see `Db::list_store_connections_for_user`'s own
-/// doc comment for why this derives one from `site_url` instead of adding
-/// one) and `health` (`"ok"` if `EngineClient::get_tenant` on this
-/// connection's decrypted `sk_...` succeeded, `"error"` otherwise - the only
-/// signal actually available without this service also probing the
-/// merchant's own `site_url`, which nothing here does).
-#[derive(Debug, Serialize)]
-pub struct DashboardStoreRow {
-    pub connection_id: String,
-    pub display_name: String,
-    pub platform: String,
-    pub site_url: String,
-    pub public_key: String,
-    pub health: String,
-    pub health_label: String,
-}
-
-/// One order row on the dashboard home page - like [`OrderRowViewModel`] but
-/// also carrying which store it belongs to, since the dashboard shows
-/// orders across every connected store, not just one.
-#[derive(Debug, Serialize)]
-pub struct DashboardOrderRow {
-    pub connection_id: String,
-    pub display_name: String,
-    pub payment_id: String,
-    pub status: String,
-    pub amount: String,
-    pub currency: String,
-    pub created_at: i64,
-}
-
-/// The view model `GET /dashboard` takes (WBS follow-up to 1.3.3 - the
-/// actual dashboard-home page that task's own `dashboard.rs` doc comment
-/// notes doesn't exist yet). `has_stores` is redundant with
-/// `!stores.is_empty()` but kept as an explicit field rather than computed
-/// in the template - handlebars' `{{#if}}` on an array already means
-/// "non-empty", so this is really just documentation of that fact at the
-/// call site rather than a second source of truth to drift.
-#[derive(Debug, Serialize)]
-pub struct DashboardViewModel {
-    pub has_stores: bool,
-    pub stores: Vec<DashboardStoreRow>,
-    pub recent_orders: Vec<DashboardOrderRow>,
-    /// Sum of every order's `amount_received_piconero` across every
-    /// connected store - "total received XMR that has been detected",
-    /// deliberately the *detected* amount (what the scanner actually
-    /// matched on-chain) rather than only orders in a `paid`/`overpaid`
-    /// status, since a partially-paid or still-confirming order has still
-    /// genuinely had funds detected for it.
-    pub total_received_xmr: String,
-    /// `docs/order_rescan_wbs.md` Phase 3.4 - every currently-`running`
-    /// rescan across every one of this user's connected stores (in practice
-    /// almost always empty or a single entry, given the engine's own
-    /// one-job-per-tenant guardrail) - drives the "syncing" banner and its
-    /// tightened meta-refresh, one link per active job so a merchant with
-    /// more than one store mid-rescan sees all of them, not just the first.
-    pub active_rescans: Vec<DashboardRescanRow>,
-    /// e.g. `"1 order"`/`"2 orders"` - precomputed here rather than a plural
-    /// check in handlebars (this codebase's own "compute in Rust, not in
-    /// handlebars" convention). Empty (and never read - the template gates
-    /// the whole banner on `active_rescans` being non-empty) when nothing is
-    /// running.
-    pub active_rescans_count_label: String,
-    /// Always `true` - every caller is behind `AuthedUser`.
-    pub logged_in: bool,
-    pub is_admin: bool,
-}
-
-/// One entry in the dashboard-home "syncing" banner (Phase 3.4).
-#[derive(Debug, Serialize)]
-pub struct DashboardRescanRow {
-    pub connection_id: String,
-    pub payment_id: String,
-    pub percent_complete: u8,
-    pub stalled: bool,
-}
-
 /// The view model the integration-help partial (`_integration_help.html.hbs`)
 /// takes - shared verbatim by the post-connect success page
 /// (`connect.html.hbs`) and the store detail page (`store_detail.html.hbs`),
@@ -1118,7 +1036,6 @@ impl TemplateEngine {
         handlebars.register_template_string("order_detail", ORDER_DETAIL_TEMPLATE)?;
         handlebars.register_template_string("webhooks", WEBHOOKS_TEMPLATE)?;
         handlebars.register_template_string("connect_platform", CONNECT_PLATFORM_TEMPLATE)?;
-        handlebars.register_template_string("dashboard_home", DASHBOARD_HOME_TEMPLATE)?;
         handlebars.register_template_string("new_store_picker", NEW_STORE_PICKER_TEMPLATE)?;
         handlebars.register_template_string("woocommerce_instructions", WOOCOMMERCE_INSTRUCTIONS_TEMPLATE)?;
         handlebars.register_template_string("store_detail", STORE_DETAIL_TEMPLATE)?;
@@ -1168,10 +1085,6 @@ impl TemplateEngine {
 
     pub fn render_webhooks(&self, data: &WebhooksViewModel) -> Result<String, TemplateError> {
         Ok(self.handlebars.render("webhooks", data)?)
-    }
-
-    pub fn render_dashboard_home(&self, data: &DashboardViewModel) -> Result<String, TemplateError> {
-        Ok(self.handlebars.render("dashboard_home", data)?)
     }
 
     pub fn render_new_store_picker(&self, logged_in: bool, is_admin: bool) -> Result<String, TemplateError> {
@@ -1430,63 +1343,8 @@ mod tests {
     // Landing page tests moved to `views::landing`'s own test module - that
     // page no longer goes through this engine at all.
 
-    #[test]
-    fn dashboard_home_shows_the_add_store_cta_when_the_user_has_no_stores() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_dashboard_home(&DashboardViewModel {
-                has_stores: false,
-                stores: vec![],
-                recent_orders: vec![],
-                total_received_xmr: "0".to_string(),
-                active_rescans: vec![],
-                active_rescans_count_label: String::new(),
-                logged_in: true,
-                is_admin: false,
-            })
-            .unwrap();
-        assert!(html.contains(r#"href="/dashboard/connections/new""#));
-        assert!(!html.contains("<table"), "an empty dashboard shouldn't render a store table at all");
-    }
-
-    #[test]
-    fn dashboard_home_lists_stores_and_recent_orders_when_present() {
-        let engine = TemplateEngine::new().unwrap();
-        let html = engine
-            .render_dashboard_home(&DashboardViewModel {
-                has_stores: true,
-                stores: vec![DashboardStoreRow {
-                    connection_id: "conn_1".to_string(),
-                    display_name: "shop.example.com".to_string(),
-                    platform: "woocommerce".to_string(),
-                    site_url: "https://shop.example.com".to_string(),
-                    public_key: "pk_abc123".to_string(),
-                    health: "ok".to_string(),
-                    health_label: "healthy".to_string(),
-                }],
-                recent_orders: vec![DashboardOrderRow {
-                    connection_id: "conn_1".to_string(),
-                    display_name: "shop.example.com".to_string(),
-                    payment_id: "pay_xyz".to_string(),
-                    status: "paid".to_string(),
-                    amount: "25.00".to_string(),
-                    currency: "USD".to_string(),
-                    created_at: 1000,
-                }],
-                total_received_xmr: "1.234567890123".to_string(),
-                active_rescans: vec![],
-                active_rescans_count_label: String::new(),
-                logged_in: true,
-                is_admin: false,
-            })
-            .unwrap();
-        assert!(html.contains("pk_abc123"));
-        assert!(html.contains("1.234567890123"));
-        assert!(html.contains("tag-ok"));
-        assert!(html.contains(r#"href="/dashboard/connections/conn_1""#));
-        assert!(html.contains("pay_xyz"));
-        assert!(html.contains(r#"href="/dashboard/connections/conn_1/orders/pay_xyz""#));
-    }
+    // Dashboard home page tests moved to `views::dashboard`'s own test
+    // module - that page no longer goes through this engine at all.
 
     #[test]
     fn new_store_picker_links_to_both_flows() {
