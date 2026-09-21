@@ -255,29 +255,33 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   box-sizing: border-box;
   font-family: inherit;
   font-size: 1rem;
-  padding: 0.6em 0.7em;
+  padding: var(--space-sm) var(--space-md);
   border: 2px solid var(--line);
-  border-radius: 0.6em;
+  border-radius: var(--radius-sm);
   background: var(--paper-raised);
   color: var(--ink);
 }
+.note-input-row input:focus { outline: 3px solid var(--accent); outline-offset: 0; }
 
 .charge-btn, .secondary-btn {
   display: block;
   width: 100%;
   flex: none;
+  font-family: inherit;
   font-size: 1.2rem;
   font-weight: 700;
   padding: 0.7em 0;
   border: 2px solid var(--line);
-  border-radius: 0.7em;
+  border-radius: var(--radius-sm);
   background: var(--accent);
   color: var(--accent-ink);
   cursor: pointer;
 }
 .charge-btn:disabled { background: var(--paper-raised); color: var(--muted); cursor: not-allowed; }
-.charge-btn:not(:disabled) { box-shadow: 0 0 0 4px rgba(124, 108, 240, 0.28); }
+.charge-btn:not(:disabled) { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent); }
+.charge-btn:not(:disabled):hover { filter: brightness(0.95); }
 .secondary-btn { background: var(--paper-raised); color: var(--ink); }
+.secondary-btn:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 
 #pos-error:empty { display: none; }
 #pos-error { color: var(--error); font-weight: 700; margin: 0.6em 0 0; }
@@ -285,11 +289,11 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 #payment-screen { display: flex; flex-direction: column; justify-content: center; }
 .payment-panel {
   border: 2px solid var(--line);
-  border-radius: 1em;
+  border-radius: var(--radius-md);
   background: var(--paper-raised);
   padding: 1em;
   text-align: center;
-  box-shadow: 0 0.4em 1em rgba(44, 38, 80, 0.1);
+  box-shadow: 0 0.4em 1em rgba(var(--shadow-rgb), 0.1);
 }
 .payment-amount { font-size: 1.8rem; font-weight: 700; margin-bottom: 0.5em; }
 .qr-holder { max-width: 260px; margin: 0 auto; }
@@ -358,13 +362,13 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   align-items: center;
   gap: 0.6em;
   border: 2px solid var(--line);
-  border-radius: 0.6em;
+  border-radius: var(--radius-sm);
   background: var(--paper-raised);
   padding: 0.4em 0.7em;
   font-size: 0.85rem;
   max-width: 360px;
   width: 100%;
-  box-shadow: 0 0.3em 0.7em rgba(44, 38, 80, 0.1);
+  box-shadow: 0 0.3em 0.7em rgba(var(--shadow-rgb), 0.1);
 }
 .bg-item.is-paid { border-color: var(--success); }
 .bg-item.is-error { border-color: var(--error); color: var(--error); }
