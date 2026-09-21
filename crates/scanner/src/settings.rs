@@ -113,6 +113,7 @@ scalar_settings! {
     PAYMENT_DEFAULT_RESCAN_LOOKBACK_DAYS => { key: "payment.default_rescan_lookback_days", env: "SCANNER_PAYMENT_DEFAULT_RESCAN_LOOKBACK_DAYS", default: "7" },
     PAYMENT_MAX_RESCAN_LOOKBACK_DAYS => { key: "payment.max_rescan_lookback_days", env: "SCANNER_PAYMENT_MAX_RESCAN_LOOKBACK_DAYS", default: "90" },
     PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES => { key: "payment.expired_order_grace_period_minutes", env: "SCANNER_PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES", default: "360" },
+    PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB => { key: "payment.scan_chunk_memory_budget_mb", env: "SCANNER_PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB", default: "8" },
     SERVER_BIND => { key: "server.bind", env: "SCANNER_SERVER_BIND", default: "0.0.0.0:8443" },
     SERVER_WORKER_THREADS => { key: "server.worker_threads", env: "SCANNER_SERVER_WORKER_THREADS", default: "2" },
     SERVER_RATE_LIMIT_PER_IP_PER_MIN => { key: "server.rate_limit_per_ip_per_min", env: "SCANNER_SERVER_RATE_LIMIT_PER_IP_PER_MIN", default: "20" },
@@ -160,6 +161,7 @@ mod tests {
         let _: u32 = get(&store, &PAYMENT_DEFAULT_RESCAN_LOOKBACK_DAYS);
         let _: u32 = get(&store, &PAYMENT_MAX_RESCAN_LOOKBACK_DAYS);
         let _: i64 = get(&store, &PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES);
+        let _: u32 = get(&store, &PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB);
         let _: String = get(&store, &SERVER_BIND);
         let _: usize = get(&store, &SERVER_WORKER_THREADS);
         let _: u32 = get(&store, &SERVER_RATE_LIMIT_PER_IP_PER_MIN);

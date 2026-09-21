@@ -1054,6 +1054,52 @@ pub fn spawn_rescan_job(
 /// tip rather than replaying the entire chain from genesis - this is a payment
 /// gateway watching for new incoming payments, not a block explorer backfilling
 /// history.
+/// Never request fewer than this many blocks in one `get_blocks_range` call,
+/// regardless of how large `avg_bytes_per_block` has drifted - a pathological
+/// (e.g. cold-start-too-low) estimate must not compute a chunk size of `0`
+/// and stall the catch-up walk forever.
+const SCAN_CHUNK_MIN_BLOCKS: u64 = 1;
+/// Never request more than this many blocks in one call, regardless of how
+/// small `avg_bytes_per_block` has drifted (e.g. a long run of near-empty
+/// blocks) - `payment.scan_chunk_memory_budget_mb` alone would technically
+/// allow an enormous request in that case, and an older monerod ignoring
+/// `get_blocks.bin`'s own `max_block_count` hint (see `get_blocks_range`'s
+/// own doc comment) has no other backstop against that.
+const SCAN_CHUNK_MAX_BLOCKS: u64 = 500;
+/// How fast the running average of bytes-per-block reacts to a real chunk's
+/// own observed size - `0.3` weighs recent chunks heavily (so a genuine shift
+/// in block size, e.g. catching up through a period of network congestion,
+/// is reflected within a handful of chunks) without letting one anomalous
+/// chunk (a single giant consolidation tx, or a run of empty blocks) swing
+/// the next chunk's size wildly.
+const SCAN_CHUNK_EWMA_ALPHA: f64 = 0.3;
+/// The cold-start estimate for bytes-per-block, before any chunk in this tick
+/// has actually been fetched - deliberately conservative (real average block
+/// sizes on a healthy network are often smaller than this), so the very
+/// first chunk of a catch-up walk undershoots `scan_chunk_memory_budget_mb`
+/// rather than overshoots it. Self-correcting from the second chunk onward
+/// regardless.
+const SCAN_CHUNK_INITIAL_AVG_BYTES: f64 = 50_000.0;
+
+/// Pure sizing decision, extracted from `run_scan_tick`'s own loop specifically
+/// so it's directly, cheaply unit-testable - the real behavior lives entirely
+/// in arithmetic over three numbers, and proving "a larger average yields a
+/// smaller chunk" shouldn't require driving real transactions through real
+/// crypto to observe.
+fn next_scan_chunk_size(budget_bytes: u64, avg_bytes_per_block: f64, remaining: u64) -> u64 {
+    let by_budget = ((budget_bytes as f64) / avg_bytes_per_block).floor() as u64;
+    by_budget.clamp(SCAN_CHUNK_MIN_BLOCKS, SCAN_CHUNK_MAX_BLOCKS).min(remaining)
+}
+
+/// Pure EWMA update, same reasoning as `next_scan_chunk_size` above - `chunk_
+/// bytes`/`block_count` are already known before this is called, so this is
+/// just the averaging formula on its own, testable without any daemon or
+/// store at all.
+fn update_avg_bytes_per_block(avg_bytes_per_block: f64, chunk_bytes: usize, block_count: usize) -> f64 {
+    let observed_avg = chunk_bytes as f64 / block_count as f64;
+    SCAN_CHUNK_EWMA_ALPHA * observed_avg + (1.0 - SCAN_CHUNK_EWMA_ALPHA) * avg_bytes_per_block
+}
+
 pub async fn run_scan_tick(
     store: &crate::store::SharedStore,
     key_custody: &dyn KeyCustody,
@@ -1195,93 +1241,130 @@ pub async fn run_scan_tick(
     // which returning here would discard (a bug this function has had once before -
     // see the comment above `current_height`).
     if let Some((scan_from, scan_to)) = scan_range {
-        'heights: for height in scan_from..=scan_to {
-            // Silence here is uniquely dangerous, because unlike every other failure
-            // in this loop it is not necessarily transient. A node that cannot supply
-            // one of block `height`'s transactions - a pruned node with no blob for
-            // it, or any transaction this build of `monero-rs` cannot deserialize -
-            // fails this call identically on every subsequent tick, at the same
-            // height, forever. The high-water mark never moves again and *no payment
-            // on this network is ever detected again*, which without a log line is
-            // indistinguishable from "no customers are paying". Stopping the range is
-            // still the right call (marking the block scanned would lose whatever it
-            // contains); saying so out loud is what makes it diagnosable.
-            let block_txs = match daemon.get_block_transactions(height).await {
-                Ok(txs) => txs,
+        // Fetches transactions in `get_blocks_range` chunks sized against
+        // `payment.scan_chunk_memory_budget_mb` (read fresh from the store each
+        // tick - a live, no-restart-needed knob, same as every other setting a
+        // handler reads via `settings::get` at the point it's used) rather than
+        // one `get_block_transactions` call per height - the catch-up walk after
+        // real downtime can span thousands of blocks, and each one used to cost
+        // its own daemon round trip. `avg_bytes_per_block` is a per-tick-local
+        // EWMA seeded from `SCAN_CHUNK_INITIAL_AVG_BYTES`, updated from each
+        // chunk's own real transaction sizes as it goes - see the constants'
+        // own doc comments above for the reasoning. Deliberately *not*
+        // batching `get_block_hash` below - see `docs/txid_lookup_and_scan_
+        // chunking_wbs.md`'s "scope limit" for why real block-hash computation
+        // stays out of this change entirely.
+        let scan_chunk_memory_budget_mb: u32 =
+            crate::settings::get(&store.lock().unwrap(), &crate::settings::PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB);
+        let budget_bytes = (scan_chunk_memory_budget_mb as u64).saturating_mul(1024 * 1024);
+        let mut avg_bytes_per_block = SCAN_CHUNK_INITIAL_AVG_BYTES;
+
+        let mut height = scan_from;
+        'heights: while height <= scan_to {
+            let remaining = scan_to - height + 1;
+            let chunk_size = next_scan_chunk_size(budget_bytes, avg_bytes_per_block, remaining);
+
+            // Same danger as the old per-block `get_block_transactions` failure
+            // this replaces: silence here is not necessarily transient (a
+            // pruned node with no blob for this range, or an undecodable
+            // transaction, fails identically forever), so it's logged loudly,
+            // and the range is abandoned here rather than marking anything
+            // scanned - the next tick retries from the same place.
+            let chunk = match daemon.get_blocks_range(height, chunk_size).await {
+                Ok(c) => c,
                 Err(e) => {
                     eprintln!(
-                        "fetching the transactions of block {height} on {network} failed - leaving block \
-                         {height} unscanned so the next tick retries it. If this repeats at the same height, \
-                         the scanner is stuck there and no payment on {network} is being detected: {e}"
+                        "fetching blocks {height}..+{chunk_size} on {network} failed - leaving block {height} \
+                         unscanned so the next tick retries it. If this repeats at the same height, the \
+                         scanner is stuck there and no payment on {network} is being detected: {e}"
                     );
                     break 'heights;
                 }
             };
-            for tx in &block_txs {
-                for (tenant_id, handle, minor_range) in &ranges {
-                    let scan = match scan_transaction(key_custody, *handle, tx, minor_range.clone()).await {
-                        Ok(scan) => scan,
-                        Err(e) => {
-                            eprintln!(
-                                "scanning a tx in block {height} on {network} for tenant {tenant_id} failed - \
-                                 leaving block {height} unscanned so the next tick retries it: {e}"
-                            );
-                            break 'heights;
+            if chunk.is_empty() {
+                eprintln!(
+                    "get_blocks_range returned zero blocks for a chunk starting at height {height} on \
+                     {network} (asked for {chunk_size}) - leaving it unscanned so the next tick retries it"
+                );
+                break 'heights;
+            }
+
+            // `get_blocks_range` may return fewer than `chunk_size` (an older
+            // node ignoring monerod's own `max_block_count` hint, or simply
+            // running short of the requested range) - update the running
+            // average and advance by however many blocks actually came back,
+            // never by `chunk_size` itself, so an under-delivering node can't
+            // desync progress from what was truly recorded.
+            let chunk_bytes: usize =
+                chunk.iter().flatten().map(|tx| monero::consensus::encode::serialize(tx).len()).sum();
+            avg_bytes_per_block = update_avg_bytes_per_block(avg_bytes_per_block, chunk_bytes, chunk.len());
+
+            for (offset, block_txs) in chunk.iter().enumerate() {
+                let height = height + offset as u64;
+                for tx in block_txs {
+                    for (tenant_id, handle, minor_range) in &ranges {
+                        let scan = match scan_transaction(key_custody, *handle, tx, minor_range.clone()).await {
+                            Ok(scan) => scan,
+                            Err(e) => {
+                                eprintln!(
+                                    "scanning a tx in block {height} on {network} for tenant {tenant_id} failed - \
+                                     leaving block {height} unscanned so the next tick retries it: {e}"
+                                );
+                                break 'heights;
+                            }
+                        };
+                        let recorded = {
+                            let s = store.lock().unwrap();
+                            record_scan_match(&s, tenant_id, &scan, now, Some(height))
+                        };
+                        match recorded {
+                            Ok(order_ids) => touched.extend(order_ids),
+                            Err(e) => {
+                                eprintln!(
+                                    "recording a match in block {height} on {network} for tenant {tenant_id} \
+                                     failed - leaving block {height} unscanned so the next tick retries it: {e}"
+                                );
+                                break 'heights;
+                            }
                         }
-                    };
-                    let recorded = {
-                        let s = store.lock().unwrap();
-                        record_scan_match(&s, tenant_id, &scan, now, Some(height))
-                    };
-                    match recorded {
-                        Ok(order_ids) => touched.extend(order_ids),
-                        Err(e) => {
+                    }
+                }
+                // Failing to read the hash of a block that was otherwise scanned
+                // fine is the same "abandon the range here" situation as any
+                // other failure at this height, and for a sharper reason than it
+                // looks: continuing would leave a *hole* - height H unrecorded
+                // while H+1 onwards are - and `check_for_reorg_and_reconcile`
+                // skips heights it has no stored hash for. A later reorg
+                // starting at H is then first noticed at H+1, so the reorg point
+                // is reported one block too high: the payments actually
+                // orphaned at H are never re-evaluated (they keep counting
+                // towards their order at a height that no longer exists) and
+                // block H of the replacement chain is never rescanned. Stopping
+                // here instead simply re-scans H next tick, which is a no-op
+                // for anything already recorded. Still one call per height,
+                // unbatched - see this block's own opening comment.
+                match daemon.get_block_hash(height).await {
+                    Ok(hash) => {
+                        let written = store.lock().unwrap().set_scanned_block(network, height, &hash);
+                        if let Err(e) = written {
                             eprintln!(
-                                "recording a match in block {height} on {network} for tenant {tenant_id} failed - \
-                                 leaving block {height} unscanned so the next tick retries it: {e}"
+                                "recording block {height} on {network} as scanned failed - leaving it unscanned \
+                                 so the next tick retries it: {e}"
                             );
                             break 'heights;
                         }
                     }
-                }
-            }
-            // Failing to read the hash of a block that was otherwise scanned fine is
-            // the same "abandon the range here" situation as any other failure at
-            // this height, and for a sharper reason than it looks: continuing would
-            // leave a *hole* - height H unrecorded while H+1 onwards are - and
-            // `check_for_reorg_and_reconcile` skips heights it has no stored hash
-            // for. A later reorg starting at H is then first noticed at H+1, so the
-            // reorg point is reported one block too high: the payments actually
-            // orphaned at H are never re-evaluated (they keep counting towards their
-            // order at a height that no longer exists) and block H of the replacement
-            // chain is never rescanned. Stopping here instead simply re-scans H next
-            // tick, which is a no-op for anything already recorded.
-            match daemon.get_block_hash(height).await {
-                // `break 'heights` rather than `?` on the store write, for the same
-                // reason every other failure in this loop breaks: returning here
-                // would discard the mempool matches gathered above before their
-                // status recompute and webhooks ever run - the exact bug called out
-                // twice in the comments above. Not marking the height scanned leaves
-                // the next tick to redo it, which is a no-op for anything already
-                // recorded.
-                Ok(hash) => {
-                    let written = store.lock().unwrap().set_scanned_block(network, height, &hash);
-                    if let Err(e) = written {
+                    Err(e) => {
                         eprintln!(
-                            "recording block {height} on {network} as scanned failed - leaving it unscanned \
-                             so the next tick retries it: {e}"
+                            "reading the hash of block {height} on {network} failed - leaving block {height} \
+                             unscanned so the next tick retries it rather than leaving a gap in the reorg window: {e}"
                         );
                         break 'heights;
                     }
                 }
-                Err(e) => {
-                    eprintln!(
-                        "reading the hash of block {height} on {network} failed - leaving block {height} \
-                         unscanned so the next tick retries it rather than leaving a gap in the reorg window: {e}"
-                    );
-                    break 'heights;
-                }
             }
+
+            height += chunk.len() as u64;
         }
     }
 
@@ -1654,6 +1737,20 @@ mod tests {
     enum DaemonCall {
         Height,
         BlockTransactions,
+        /// Counts calls to `get_blocks_range` itself, distinct from
+        /// `BlockTransactions` - `DaemonFailingFrom` overrides `get_blocks_range`
+        /// to gate/count it directly rather than falling through to the trait's
+        /// own default (which would decompose it into per-height
+        /// `BlockTransactions` calls, making the two indistinguishable). This is
+        /// what lets a test assert "the chunked scan loop issued N real batched
+        /// calls," not just "N blocks were eventually fetched somehow."
+        BlocksRange,
+        /// Counts calls to `get_block_hash` - proves the deliberate scope limit
+        /// (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A's own "why the
+        /// target moved" section): block-hash fetching for `scanned_blocks`
+        /// stays one call per height regardless of how transaction-fetching is
+        /// chunked.
+        BlockHash,
         Mempool,
         Locate,
         KeyImageSpent,
@@ -1726,6 +1823,7 @@ mod tests {
             self.inner.get_height().await
         }
         async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
+            self.gate(DaemonCall::BlockHash).await?;
             self.inner.get_block_hash(height).await
         }
         async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
@@ -1734,6 +1832,25 @@ mod tests {
         async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.gate(DaemonCall::BlockTransactions).await?;
             self.inner.get_block_transactions(height).await
+        }
+        async fn get_blocks_range(&self, start_height: u64, count: u64) -> std::result::Result<Vec<Vec<Transaction>>, DaemonError> {
+            self.gate(DaemonCall::BlocksRange).await?;
+            // Deliberately *not* `self.inner.get_blocks_range(...)`: that would call
+            // `inner`'s own `get_block_transactions` directly for each height,
+            // bypassing this wrapper's `BlockTransactions` gate entirely (silently
+            // breaking every test that injects a failure at a specific
+            // `BlockTransactions` call number). Looping through `self.
+            // get_block_transactions` instead - the trait's own default body,
+            // copied here rather than inherited, so it stays wrapped - keeps both
+            // gates independently meaningful: a `BlocksRange`-gated test sees one
+            // count per top-level call this wrapper receives, a
+            // `BlockTransactions`-gated test still sees one count per height
+            // regardless of how many blocks one `get_blocks_range` call covers.
+            let mut out = Vec::new();
+            for height in start_height..start_height.saturating_add(count) {
+                out.push(self.get_block_transactions(height).await?);
+            }
+            Ok(out)
         }
         async fn get_mempool_transactions(&self) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.gate(DaemonCall::Mempool).await?;
@@ -4836,14 +4953,20 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_node_failing_partway_through_the_block_range_resumes_from_that_exact_block() {
+    async fn a_node_failing_partway_through_a_scan_chunk_retries_the_whole_chunk_next_tick() {
         // A tick is not atomic - it is a sequence of independent RPCs - so "the node
-        // went away mid-tick" has as many shapes as there are calls in it. This is
-        // the shape with the sharpest consequence: the range loop has already scanned
-        // and recorded one block when the *next* block's transactions fail to arrive.
-        // The high-water mark must stop exactly there, not step over the block it
-        // never read, and the next healthy tick must pick it up with no payment lost
-        // and none recorded twice.
+        // went away mid-tick" has as many shapes as there are calls in it. Since the
+        // block-fetching path batches into `get_blocks_range` chunks (`RESCAN_
+        // CHUNK_BLOCKS`'s successor, `docs/txid_lookup_and_scan_chunking_wbs.md`
+        // Part A), a failure *within* a chunk abandons the whole chunk, not just the
+        // one block that failed - there is no partial-response concept for a real
+        // `get_blocks.bin` HTTP call to recover mid-flight the way the old
+        // one-block-at-a-time loop could. This is the accepted, real trade-off of
+        // batching, not a regression: the high-water mark simply doesn't move past
+        // wherever the chunk started until a whole chunk succeeds, and the next tick
+        // retries the identical range - no payment lost, none recorded twice, just a
+        // coarser (and, in the default-daemon test-double case only, more repeated)
+        // unit of retry than before.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         store.set_scanned_block("mainnet", 1, "h1").unwrap();
         let store = store.into_shared();
@@ -4853,12 +4976,22 @@ mod tests {
         fake.push_block("h2", vec![]);
         fake.push_block("h3", vec![fixture_tx()]); // the payment is in the block that fails
         fake.push_block("h4", vec![]);
+        // The whole 2..=4 range fits in one chunk (well under `SCAN_CHUNK_MAX_
+        // BLOCKS`), so this is really "the daemon fails while fetching the chunk
+        // that covers the whole remaining range" - the second `BlockTransactions`
+        // call the default `get_blocks_range` implementation makes internally
+        // (height 2 succeeds as call 0, height 3 fails as call 1), which fails the
+        // entire chunk before any of it is recorded.
         let daemon = DaemonFailingFrom::failing_from(fake, DaemonCall::BlockTransactions, 1);
 
         run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
         {
             let s = store.lock().unwrap();
-            assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(2), "the range stops at the block it could not read");
+            assert_eq!(
+                s.max_scanned_height("mainnet").unwrap(),
+                Some(1),
+                "the whole chunk failed, so the high-water mark stays exactly where it was before this tick"
+            );
             assert!(s.get_all_payments(&order_id).unwrap().is_empty());
         }
 
@@ -4870,6 +5003,153 @@ mod tests {
         let payments = s.get_all_payments(&order_id).unwrap();
         assert_eq!(payments.len(), 1, "exactly one payment - not lost by the failure, not duplicated by the retry");
         assert_eq!(payments[0].block_height, Some(3));
+    }
+
+    #[tokio::test]
+    async fn run_scan_tick_batches_a_wide_catchup_range_into_far_fewer_daemon_calls_than_blocks() {
+        // The real-world case this whole mechanism exists for
+        // (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A): a process that was
+        // down for a while faces a scan range spanning many blocks on its very next
+        // tick. Before batching, that was one `get_block_transactions` call per
+        // block; now it should be a small number of `get_blocks_range` calls
+        // regardless of how wide the range is, as long as the blocks are small
+        // enough to fit many per chunk under the default memory budget.
+        //
+        // Two separate runs, not one nested wrapper counting both call types at
+        // once: `DaemonFailingFrom::get_blocks_range`'s own override always
+        // decomposes into per-height `get_block_transactions` calls on `self`
+        // (needed so a *different* wrapper gating `BlockTransactions` still sees
+        // every sub-call - see that override's own doc comment), which means an
+        // outer wrapper's `get_blocks_range` never actually reaches an inner
+        // wrapper's own `get_blocks_range` counter. Not a limitation that matters
+        // here - each half is a real, independent claim anyway.
+        // A pre-existing high-water mark (height 1, same idiom the mid-chunk-
+        // failure test above uses) is essential, not incidental: without it,
+        // `run_scan_tick`'s own first-run bootstrap (`max_scanned_height` is
+        // `None`) seeds one block behind the current tip and scans forward from
+        // there - a genuinely fresh scanner never replays history - which would
+        // collapse this "many blocks piled up" scenario down to a single-block
+        // scan regardless of how many blocks were pushed, proving nothing.
+        // `NEW_BLOCK_COUNT` blocks then arrive on top of that baseline (heights
+        // 2..=NEW_BLOCK_COUNT+1) - the actual range this tick has to catch up on.
+        const NEW_BLOCK_COUNT: u64 = 40;
+
+        {
+            let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
+            store.set_scanned_block("mainnet", 1, "h1").unwrap();
+            let store = store.into_shared();
+            let fake = FakeDaemonClient::new();
+            fake.push_block("h1", vec![]); // the already-scanned baseline, mirrored into the daemon too
+            for i in 0..NEW_BLOCK_COUNT {
+                fake.push_block(&format!("h{}", i + 2), vec![]); // small, empty blocks - cheap to batch heavily
+            }
+            let daemon = DaemonFailingFrom::counting(fake, DaemonCall::BlocksRange);
+
+            run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 20, 0).await.unwrap();
+
+            assert_eq!(
+                store.lock().unwrap().max_scanned_height("mainnet").unwrap(),
+                Some(NEW_BLOCK_COUNT + 1),
+                "the whole wide range must still be fully scanned in one tick, batching or not"
+            );
+            assert!(
+                daemon.call_count() < NEW_BLOCK_COUNT,
+                "expected far fewer than {NEW_BLOCK_COUNT} get_blocks_range calls for {NEW_BLOCK_COUNT} small \
+                 blocks under the default memory budget, got {}",
+                daemon.call_count()
+            );
+        }
+
+        // Block-hash fetching (`get_block_hash`, for `scanned_blocks`) is
+        // deliberately *not* part of this batching (see `SCAN_CHUNK_MIN_BLOCKS`'s
+        // own "scope limit" doc comment) - still exactly one call per new block,
+        // asserted here on a fresh scenario so that scope limit is a tested
+        // guarantee, not just a comment. `reorg_check_depth` is `0` here
+        // specifically (every other test in this file conventionally passes
+        // `20`): `check_for_reorg_and_reconcile` - unconditionally called at the
+        // end of every tick, unrelated to this change - also calls
+        // `get_block_hash` to re-verify already-recorded blocks within that
+        // depth of the tip, which would otherwise inflate this count with a
+        // second, genuinely unrelated mechanism's own calls.
+        {
+            let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
+            store.set_scanned_block("mainnet", 1, "h1").unwrap();
+            let store = store.into_shared();
+            let fake = FakeDaemonClient::new();
+            fake.push_block("h1", vec![]);
+            for i in 0..NEW_BLOCK_COUNT {
+                fake.push_block(&format!("h{}", i + 2), vec![]);
+            }
+            let daemon = DaemonFailingFrom::counting(fake, DaemonCall::BlockHash);
+
+            run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 0, 0).await.unwrap();
+
+            assert_eq!(
+                daemon.call_count(),
+                // One more than the number of newly-arrived blocks: even with
+                // `reorg_check_depth = 0`, `check_for_reorg_and_reconcile`
+                // (unconditionally called at the end of every tick, unrelated to
+                // this change) still re-checks the current tip's own hash -
+                // `>= tip - 0` includes the tip itself. A real, pre-existing
+                // extra call, not batching leaking through.
+                NEW_BLOCK_COUNT + 1,
+                "get_block_hash must be called once per newly-arrived block (plus reconciliation's own tip check) \
+                 - it is deliberately never batched, and the already-scanned baseline block must not be re-fetched"
+            );
+        }
+    }
+
+    #[test]
+    fn next_scan_chunk_size_shrinks_as_the_observed_average_grows() {
+        // The actual claim behind "dynamic, memory-budget-based chunk sizing"
+        // (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A), proven directly
+        // against the pure sizing function rather than by driving real
+        // transactions through real crypto to observe it indirectly - a fast,
+        // precise unit test where an end-to-end one would need thousands of
+        // scanned outputs just to move the needle.
+        let budget_bytes = 8 * 1024 * 1024;
+        let small_block_chunk = next_scan_chunk_size(budget_bytes, 1_000.0, u64::MAX);
+        let medium_block_chunk = next_scan_chunk_size(budget_bytes, 100_000.0, u64::MAX);
+        let large_block_chunk = next_scan_chunk_size(budget_bytes, 10_000_000.0, u64::MAX);
+        assert!(
+            small_block_chunk > medium_block_chunk,
+            "1KB-average blocks ({small_block_chunk}) should fit far more per chunk than 100KB-average ones \
+             ({medium_block_chunk})"
+        );
+        assert!(
+            medium_block_chunk > large_block_chunk,
+            "100KB-average blocks ({medium_block_chunk}) should still fit more per chunk than 10MB-average ones \
+             ({large_block_chunk})"
+        );
+    }
+
+    #[test]
+    fn next_scan_chunk_size_respects_its_own_bounds() {
+        let budget_bytes = 8 * 1024 * 1024;
+        // An average so small it would otherwise compute a chunk far larger
+        // than `SCAN_CHUNK_MAX_BLOCKS` - the backstop `RESCAN_CHUNK_MAX_BLOCKS`'s
+        // own doc comment names (an older node ignoring `max_block_count`).
+        assert_eq!(next_scan_chunk_size(budget_bytes, 1.0, u64::MAX), SCAN_CHUNK_MAX_BLOCKS);
+        // An average so large it would otherwise compute a chunk of `0`, which
+        // must never happen (it would stall the catch-up walk forever).
+        assert_eq!(next_scan_chunk_size(budget_bytes, f64::MAX, u64::MAX), SCAN_CHUNK_MIN_BLOCKS);
+        // Never larger than what's actually left to scan, regardless of budget.
+        assert_eq!(next_scan_chunk_size(budget_bytes, 1.0, 3), 3);
+    }
+
+    #[test]
+    fn update_avg_bytes_per_block_weighs_recent_data_by_the_configured_alpha() {
+        let after_one_big_chunk = update_avg_bytes_per_block(SCAN_CHUNK_INITIAL_AVG_BYTES, 1_000_000, 1);
+        assert!(
+            after_one_big_chunk > SCAN_CHUNK_INITIAL_AVG_BYTES,
+            "a chunk far bigger than the cold-start guess must pull the average up, not leave it unchanged"
+        );
+        // A single all-zero (empty-block) chunk should pull the average down
+        // but - by design, `SCAN_CHUNK_EWMA_ALPHA < 1.0` - not all the way to
+        // zero in one step; a lone anomalous chunk shouldn't swing the very
+        // next chunk's size wildly.
+        let after_one_empty_chunk = update_avg_bytes_per_block(SCAN_CHUNK_INITIAL_AVG_BYTES, 0, 10);
+        assert!(after_one_empty_chunk > 0.0 && after_one_empty_chunk < SCAN_CHUNK_INITIAL_AVG_BYTES);
     }
 
     #[tokio::test]
