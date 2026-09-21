@@ -230,23 +230,20 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   font-weight: 700;
   color: var(--ink);
   border-radius: 22%;
-  background: linear-gradient(165deg, var(--paper-raised) 0%, color-mix(in srgb, var(--pos-frame) 18%, var(--paper-raised)) 100%);
-  box-shadow: 0 0.12em 0 rgba(var(--shadow-rgb), 0.28), 0 0.3em 0.5em rgba(var(--shadow-rgb), 0.15);
-  transition: transform 0.06s ease, box-shadow 0.06s ease, background 0.06s ease;
+  border: 2px solid var(--line);
+  background: var(--paper-raised);
+  transition: background 0.06s ease, color 0.06s ease, border-color 0.06s ease;
 }
-.key:hover .key-face {
-  box-shadow: 0 0.12em 0 rgba(var(--shadow-rgb), 0.28), 0 0.3em 0.5em rgba(var(--shadow-rgb), 0.15), inset 0 0 0 0.12em currentColor;
-}
+.key:hover .key-face { border-color: var(--accent); }
 .key:active .key-face {
   background: var(--accent);
   color: var(--accent-ink);
-  box-shadow: 0 0.02em 0 rgba(var(--shadow-rgb), 0.28);
-  transform: translateY(0.08em);
+  border-color: var(--accent);
 }
-.key-clear .key-face { color: var(--error); background: linear-gradient(165deg, color-mix(in srgb, var(--error) 12%, var(--paper-raised)), color-mix(in srgb, var(--error) 24%, var(--paper-raised))); }
-.key-clear:active .key-face { background: var(--error); color: var(--error-ink); }
-.key-backspace .key-face { color: var(--warning); background: linear-gradient(165deg, color-mix(in srgb, var(--warning) 12%, var(--paper-raised)), color-mix(in srgb, var(--warning) 24%, var(--paper-raised))); }
-.key-backspace:active .key-face { background: var(--warning); color: var(--warning-ink); }
+.key-clear .key-face { color: var(--error); }
+.key-clear:active .key-face { background: var(--error); color: var(--error-ink); border-color: var(--error); }
+.key-backspace .key-face { color: var(--warning); }
+.key-backspace:active .key-face { background: var(--warning); color: var(--warning-ink); border-color: var(--warning); }
 .key-backspace svg { display: block; flex: none; width: 1em; height: 1em; }
 .key-backspace svg, .key-backspace svg * { stroke: currentColor; }
 
@@ -268,9 +265,9 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   width: 100%;
   flex: none;
   font-family: inherit;
-  font-size: 1.2rem;
+  font-size: 1.1rem;
   font-weight: 700;
-  padding: 0.7em 0;
+  padding: var(--space-sm) 0;
   border: 2px solid var(--line);
   border-radius: var(--radius-sm);
   background: var(--accent);
@@ -278,7 +275,6 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   cursor: pointer;
 }
 .charge-btn:disabled { background: var(--paper-raised); color: var(--muted); cursor: not-allowed; }
-.charge-btn:not(:disabled) { box-shadow: 0 0 0 4px color-mix(in srgb, var(--accent) 28%, transparent); }
 .charge-btn:not(:disabled):hover { filter: brightness(0.95); }
 .secondary-btn { background: var(--paper-raised); color: var(--ink); }
 .secondary-btn:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
