@@ -190,6 +190,7 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             "/api/v1/admin/tenant/orders/{payment_id}/rescan",
             post(admin::trigger_rescan).get(admin::get_rescan_status),
         )
+        .route("/api/v1/admin/tenant/payments/lookup", post(admin::lookup_payment))
         .route(
             "/api/v1/admin/tenant/webhooks",
             get(admin::list_webhooks).post(admin::create_webhook),

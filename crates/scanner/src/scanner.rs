@@ -499,7 +499,7 @@ fn new_event_id() -> String {
 /// merchant's `order.paid`, it destroyed it - permanently, for an order that really
 /// is paid. Rolling the status back with the failed enqueue leaves the next tick to
 /// redo both.
-fn recompute_and_notify(store: &Store, order_id: &str, current_height: u64, now: i64) -> Result<()> {
+pub(crate) fn recompute_and_notify(store: &Store, order_id: &str, current_height: u64, now: i64) -> Result<()> {
     store.in_transaction(|store| recompute_and_notify_in_tx(store, order_id, current_height, now))
 }
 

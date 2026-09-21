@@ -823,3 +823,108 @@ pub async fn list_rescans(
     Ok(with_rescan_cache_headers((StatusCode::OK, Json(body)).into_response(), &etag))
 }
 
+#[derive(Deserialize)]
+pub struct LookupPaymentRequest {
+    txid: String,
+}
+
+/// `docs/txid_lookup_and_scan_chunking_wbs.md` Part B's own direct replacement
+/// for the manual chain-rescan feature above: no block-range walk, no
+/// background job, no per-tenant "one at a time" guardrail to enforce - two
+/// daemon calls (`locate_transaction`, `get_transaction`) and the same
+/// `scan_transaction`/`record_scan_match` primitives the live scanner already
+/// uses, narrowed to nothing (this scans the tenant's *whole* address range,
+/// not one order's `minor_index` - see below for why).
+#[derive(Serialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum PaymentLookupView {
+    /// The daemon has no record of this txid at all, in a block or the pool.
+    NotFoundOnChain,
+    /// The transaction is real and was decoded, but none of its outputs
+    /// decrypt against this tenant's wallet - a genuine, honest "not yours"
+    /// rather than a guess.
+    NoMatchingOrder,
+    /// At least one output matched one of this tenant's orders and was
+    /// recorded (idempotently - looking up an already-applied txid a second
+    /// time is a safe no-op that still reports the same match). A list, not a
+    /// single id: a transaction can in principle pay more than one of a
+    /// tenant's subaddresses in one output set.
+    Matched { order_ids: Vec<String> },
+}
+
+/// `POST /api/v1/admin/tenant/payments/lookup` - `docs/txid_lookup_and_scan_
+/// chunking_wbs.md` Part B.2. Unlike the rescan trigger above, this is scoped
+/// to the whole tenant (`0..tenant.next_minor_index`), not one specific
+/// order's `minor_index`: a merchant who has a customer's txid doesn't
+/// necessarily know which order it belongs to ahead of time - that's exactly
+/// the real support scenario this exists for ("I paid, here's my txid," not
+/// "I paid order X"). No `Expired`-only restriction either, for the same
+/// reason: a real match is a real match regardless of the order's current
+/// status.
+///
+/// Uses `state.daemons` (the live scanner's own pool), not a separate one:
+/// this is two quick calls, not a bulk historical walk, so it poses none of
+/// the sustained-request-volume contention `AppState::rescan_daemons` exists
+/// to prevent - see that field's own doc comment for the class of problem
+/// this endpoint is deliberately too small to be.
+pub async fn lookup_payment(
+    AuthedTenant(tenant): AuthedTenant,
+    State(state): State<AppState>,
+    Json(req): Json<LookupPaymentRequest>,
+) -> Result<Json<PaymentLookupView>, ApiError> {
+    let txid = req.txid.trim().to_lowercase();
+    if txid.len() != 64 || !txid.bytes().all(|b| b.is_ascii_hexdigit()) {
+        return Err(ApiError::BadRequest("txid must be 64 hex characters".to_string()));
+    }
+
+    let network = parse_network(&tenant.network)
+        .map_err(|e| ApiError::Internal(format!("tenant has an unrecognized network {:?}: {e}", tenant.network)))?;
+    let daemon = state
+        .daemons
+        .get(&network)
+        .ok_or_else(|| ApiError::Internal(format!("no daemon configured for network {network:?}")))?
+        .clone();
+
+    let location = daemon.locate_transaction(&txid).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let block_height = match location {
+        crate::daemon::TxLocation::NotFound => return Ok(Json(PaymentLookupView::NotFoundOnChain)),
+        crate::daemon::TxLocation::InPool => None,
+        crate::daemon::TxLocation::InBlock(h) => Some(h),
+    };
+
+    let tx = daemon.get_transaction(&txid).await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    let handle = resolve_wallet_handle(&state, &tenant).await?;
+    let now = now_unix();
+
+    // Computed (async, no `&Store` held) then persisted (sync, brief lock) as
+    // two separate steps, same as `run_scan_tick`/`scanner::rescan_order`
+    // already do everywhere else in this codebase - never a single
+    // await-spanning call holding the store's lock.
+    let scan = crate::scanner::scan_transaction(state.key_custody.as_ref(), handle, &tx, 0..tenant.next_minor_index)
+        .await
+        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let touched = {
+        let store = state.store.lock().unwrap();
+        crate::scanner::record_scan_match(&store, &tenant.id, &scan, now, block_height).map_err(|e| ApiError::Internal(e.to_string()))?
+    };
+
+    if touched.is_empty() {
+        return Ok(Json(PaymentLookupView::NoMatchingOrder));
+    }
+
+    // A current tip for `recompute_order_status` to derive confirmation counts
+    // against - `block_height` itself is not a safe substitute (a mempool
+    // match has none, and even a mined match's own height could already be
+    // behind the real tip by an unrelated confirmation or two).
+    let current_height = daemon.get_height().await.map_err(|e| ApiError::Internal(e.to_string()))?;
+    {
+        let store = state.store.lock().unwrap();
+        for order_id in &touched {
+            crate::scanner::recompute_and_notify(&store, order_id, current_height, now)
+                .map_err(|e| ApiError::Internal(e.to_string()))?;
+        }
+    }
+
+    Ok(Json(PaymentLookupView::Matched { order_ids: touched.into_iter().collect() }))
+}
+

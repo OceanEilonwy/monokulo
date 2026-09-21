@@ -12,7 +12,8 @@ use axum::Router;
 use axum::body::Body;
 use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
-use monero::{Network, PrivateKey, PublicKey};
+use monero::consensus::encode::deserialize;
+use monero::{Network, PrivateKey, PublicKey, Transaction};
 use tower::ServiceExt;
 
 use crate::daemon::fake::FakeDaemonClient;
@@ -2216,4 +2217,156 @@ async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_toke
     let router = build_router(state, 1_000_000);
     let response = router.oneshot(settings_request("GET", Some(&generated), None)).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK, "the freshly generated token must actually authenticate");
+}
+
+// -- Payment lookup by txid (`docs/txid_lookup_and_scan_chunking_wbs.md` Part B) --
+
+fn lookup_request(token: &str, txid: &str) -> Request<Body> {
+    json_request("POST", "/api/v1/admin/tenant/payments/lookup", Some(token), None, serde_json::json!({ "txid": txid }))
+}
+
+fn fixture_tx_for_lookup_tests() -> Transaction {
+    let raw_tx = hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap();
+    deserialize(&raw_tx).unwrap()
+}
+
+/// The real view/spend key pair `subaddress_tx.hex` actually pays (subaddress
+/// 0/1) - duplicated from `scanner.rs`'s own private `fixture_view_key`/
+/// `fixture_spend_pubkey` test helpers, which aren't reachable from this
+/// module (`scanner::tests` is a private module). A `create_tenant`-issued
+/// random per-seed key pair could never match this fixed fixture transaction,
+/// and this crate's own convention keeps real crypto-matching correctness
+/// tested at the scanner-level (`scanner.rs`'s own exhaustive suite) rather
+/// than re-proven through the full HTTP stack - these two helpers exist only
+/// so the one thing that's genuinely new here (this handler's own wiring of
+/// already-proven primitives) gets one real, opt-in-if-you-want-it, true
+/// end-to-end check too.
+fn fixture_view_key_hex() -> String {
+    hex::encode(
+        PrivateKey::from_slice(&hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07").unwrap())
+            .unwrap()
+            .to_bytes(),
+    )
+}
+
+fn fixture_spend_pubkey_hex() -> String {
+    let secret_spend =
+        PrivateKey::from_slice(&hex::decode("e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907").unwrap()).unwrap();
+    hex::encode(PublicKey::from_private_key(&secret_spend).to_bytes())
+}
+
+async fn create_fixture_tenant(router: &Router, allowed_origins: Vec<&str>) -> TestTenant {
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenants",
+        None,
+        None,
+        serde_json::json!({
+            "view_key_hex": fixture_view_key_hex(),
+            "spend_pubkey_hex": fixture_spend_pubkey_hex(),
+            "allowed_origins": allowed_origins,
+        }),
+    );
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    TestTenant { public_key: body["public_key"].as_str().unwrap().to_string(), secret_token: body["secret_token"].as_str().unwrap().to_string() }
+}
+
+#[tokio::test]
+async fn lookup_payment_rejects_a_malformed_txid() {
+    let (state, _daemon) = rescan_test_app_state();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec![]).await;
+
+    let response = router.clone().oneshot(lookup_request(&tenant.secret_token, "not-a-real-txid")).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn lookup_payment_requires_authentication() {
+    let (state, _daemon) = rescan_test_app_state();
+    let router = build_router(state, 1_000_000);
+    let req = json_request("POST", "/api/v1/admin/tenant/payments/lookup", None, None, serde_json::json!({ "txid": "0".repeat(64) }));
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[tokio::test]
+async fn lookup_payment_reports_not_found_on_chain_for_an_unknown_txid() {
+    let (state, _daemon) = rescan_test_app_state();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec![]).await;
+
+    let bogus = "0".repeat(64);
+    let response = router.clone().oneshot(lookup_request(&tenant.secret_token, &bogus)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["outcome"], "not_found_on_chain");
+}
+
+#[tokio::test]
+async fn lookup_payment_reports_no_matching_order_for_a_real_but_unrelated_tx() {
+    let (state, daemon) = rescan_test_app_state();
+    let router = build_router(state, 1_000_000);
+    // Random, non-fixture keys - this tenant genuinely has no claim on the
+    // fixture transaction's outputs.
+    let tenant = create_tenant(&router, 1, vec![]).await;
+
+    let tx = fixture_tx_for_lookup_tests();
+    daemon.set_mempool(vec![tx.clone()]);
+    use monero::cryptonote::hash::Hashable;
+    let txid = hex::encode(tx.hash().to_bytes());
+
+    let response = router.clone().oneshot(lookup_request(&tenant.secret_token, &txid)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["outcome"], "no_matching_order");
+}
+
+#[tokio::test]
+async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
+    let (state, daemon) = rescan_test_app_state();
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_fixture_tenant(&router, vec!["https://merchant.example"]).await;
+
+    // A real order against this tenant's own minor_index 1 (`subaddress_tx.hex`
+    // pays subaddress 0/1, the same fixture `scanner.rs`'s own tests already
+    // rely on) - the first order any fresh tenant creates gets minor_index 1
+    // (`store::tests::minor_index_allocation_starts_at_one_and_increments`).
+    let req = json_request(
+        "POST",
+        &format!("/api/v1/t/{}/orders", tenant.public_key),
+        None,
+        Some("https://merchant.example"),
+        serde_json::json!({ "xmr_amount_piconero": 1u64 }),
+    );
+    let response = router.clone().oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let payment_id = body_json(response).await["payment_id"].as_str().unwrap().to_string();
+
+    let tx = fixture_tx_for_lookup_tests();
+    daemon.set_mempool(vec![tx.clone()]);
+    use monero::cryptonote::hash::Hashable;
+    let txid = hex::encode(tx.hash().to_bytes());
+
+    let response = router.clone().oneshot(lookup_request(&tenant.secret_token, &txid)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["outcome"], "matched");
+    assert_eq!(body["order_ids"].as_array().unwrap(), &[serde_json::Value::String(payment_id.clone())]);
+
+    let payments = store.lock().unwrap().get_all_payments(&payment_id).unwrap();
+    assert_eq!(payments.len(), 1, "the match must actually be recorded, not just reported");
+
+    // A second lookup of the same, already-applied txid must be a safe no-op
+    // that still reports the same match - `record_scan_match`'s own existing
+    // idempotency, exercised through this new endpoint specifically.
+    let response = router.clone().oneshot(lookup_request(&tenant.secret_token, &txid)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["outcome"], "matched");
+    let payments = store.lock().unwrap().get_all_payments(&payment_id).unwrap();
+    assert_eq!(payments.len(), 1, "looking the same txid up twice must not duplicate the recorded payment");
 }

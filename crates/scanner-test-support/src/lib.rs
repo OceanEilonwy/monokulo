@@ -105,6 +105,10 @@ impl MoneroDaemonClient for NoopDaemonClient {
         Ok(TxLocation::NotFound)
     }
 
+    async fn get_transaction(&self, txid: &str) -> Result<monero::Transaction, DaemonError> {
+        Err(DaemonError::Request(format!("no such transaction: {txid}")))
+    }
+
     async fn is_key_image_spent(
         &self,
         key_images: &[String],
@@ -836,6 +840,10 @@ mod tests {
 
         async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
             Ok(TxLocation::NotFound)
+        }
+
+        async fn get_transaction(&self, _txid: &str) -> Result<monero::Transaction, DaemonError> {
+            Ok(fixture_tx())
         }
 
         async fn is_key_image_spent(
