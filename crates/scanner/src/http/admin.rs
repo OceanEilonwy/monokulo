@@ -674,8 +674,11 @@ pub async fn trigger_rescan(
 
     let network = parse_network(&tenant.network)
         .map_err(|e| ApiError::Internal(format!("tenant has an unrecognized network {:?}: {e}", tenant.network)))?;
+    // `rescan_daemons`, not `daemons` (the live scanner's own map) - this walk
+    // can be thousands of blocks and must not compete with the live scanner's
+    // own request latency against the same node; see `AppState::rescan_daemons`.
     let daemon = state
-        .daemons
+        .rescan_daemons
         .get(&network)
         .ok_or_else(|| ApiError::Internal(format!("no daemon configured for network {network:?}")))?
         .clone();

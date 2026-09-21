@@ -249,9 +249,9 @@ impl TestEngineConfig {
         self
     }
 
-    /// Wires an inert [`NoopDaemonClient`] into `AppState::daemons` for every
-    /// configured network - opt-in, since most callers of this harness never
-    /// need it (see `spawn`'s own doc comment on `daemons` for why an empty
+    /// Wires an inert [`NoopDaemonClient`] into `AppState::rescan_daemons` for
+    /// every configured network - opt-in, since most callers of this harness
+    /// never need it (see `spawn`'s own doc comment on `rescan_daemons` for why an empty
     /// map is the honest default). A caller that drives the engine's real
     /// `/api/v1/admin/tenant/orders/{id}/rescan` endpoint through a genuine
     /// HTTP round trip - not a synthetic request built directly against the
@@ -430,12 +430,17 @@ impl TestEngineConfig {
             // This harness's own background scan loop (below) talks to a
             // bare `NoopDaemonClient` directly, never through
             // `AppState::daemons` - no caller of this crate exercises the
-            // engine's `/status` page or its admin rescan-trigger endpoint by
-            // default, so an empty map here is honest, not a stub standing in
-            // for something real. See [`TestEngineConfig::with_admin_rescan_
-            // daemon`] for the opt-in that does wire one in, for a caller
-            // that specifically needs it.
-            daemons: Arc::new(if self.admin_rescan_daemon {
+            // engine's `/status` page by default, so an empty map here is
+            // honest, not a stub standing in for something real.
+            daemons: Arc::new(HashMap::new()),
+            // `admin::trigger_rescan` reads `rescan_daemons`, not `daemons` -
+            // see `AppState::rescan_daemons`'s own doc comment for why the two
+            // are deliberately separate in production. No caller of this crate
+            // exercises the admin rescan-trigger endpoint by default, so an
+            // empty map here is honest too; see [`TestEngineConfig::
+            // with_admin_rescan_daemon`] for the opt-in that wires one in, for
+            // a caller that specifically needs it.
+            rescan_daemons: Arc::new(if self.admin_rescan_daemon {
                 self.networks
                     .iter()
                     .map(|&network| {

@@ -105,6 +105,18 @@ pub struct AppState {
     /// rather than only the aggregate view `MoneroDaemonClient`'s own trait
     /// methods give.
     pub daemons: Arc<HashMap<monero::Network, Arc<FallbackDaemonClient>>>,
+    /// A second, independent set of `FallbackDaemonClient`s for the rescan path
+    /// only (`admin::trigger_rescan`, and `main.rs::resume_running_rescans` at
+    /// boot) - built from the same node configuration as `daemons` above, but
+    /// deliberately *not* the same `Arc`. A rescan walks a historical range one
+    /// block at a time, potentially thousands of sequential daemon calls; if it
+    /// shared `daemons`' own `reqwest::Client`/connection pool, that traffic
+    /// would compete with the live scanner's own latency-sensitive per-tick
+    /// calls to the same node - degrading (in one real case, ~18x) live payment
+    /// detection for as long as the rescan runs, even though the two are
+    /// otherwise fully independent tasks. See `main.rs::build_daemon_clients`'s
+    /// own doc comment for the full story.
+    pub rescan_daemons: Arc<HashMap<monero::Network, Arc<FallbackDaemonClient>>>,
     /// Live scan-tick history per network, updated by `main.rs`'s own scan
     /// loop after every tick - see `scanner_status`'s own module doc
     /// comment.

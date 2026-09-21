@@ -66,7 +66,8 @@ fn test_app_state() -> AppState {
         // tested separately, end to end, in `rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info`.
         rate_limiter: Arc::new(RateLimiter::new(10_000)),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
-        daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
+        daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon.clone())])),
+        rescan_daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
         scanner_status: new_scanner_status_map(),
         scan_poll_interval_secs: 2,
         default_rescan_lookback_days: 7,
@@ -1299,7 +1300,12 @@ fn rescan_test_app_state() -> (AppState, Arc<FakeDaemonClient>) {
         configured_networks: Arc::new(HashSet::from([Network::Mainnet])),
         rate_limiter: Arc::new(RateLimiter::new(10_000)),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
-        daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
+        daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon.clone())])),
+        // `trigger_rescan` reads `rescan_daemons`, not `daemons` - this helper's
+        // whole point is a daemon the rescan tests can script, so both fields
+        // point at the same `FakeDaemonClient` here (no real contention to
+        // separate in a unit test against an in-memory fake).
+        rescan_daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
         scanner_status: new_scanner_status_map(),
         scan_poll_interval_secs: 2,
         default_rescan_lookback_days: 7,
@@ -2197,6 +2203,7 @@ async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_toke
         rate_limiter: Arc::new(RateLimiter::new(10_000)),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         daemons: Arc::new(HashMap::new()),
+        rescan_daemons: Arc::new(HashMap::new()),
         scanner_status: new_scanner_status_map(),
         scan_poll_interval_secs: 2,
         default_rescan_lookback_days: 7,

@@ -136,29 +136,27 @@ async fn main() {
     // is a `FallbackDaemonClient` wrapping its primary node plus any configured
     // fallbacks, so a single flaky/down public node doesn't stop scanning that
     // network - see `daemon_fallback`'s own doc comment for the failover policy.
-    let daemons: HashMap<Network, Arc<FallbackDaemonClient>> = settings::NETWORKS
-        .iter()
-        .filter_map(|&network_name| {
-            let network = scanner::network::parse_network(network_name).ok()?;
-            let node_setting = settings::monero_node_setting(&store.lock().unwrap(), network_name)?;
-            let build = |host: &str, port: u16, ssl: bool, accept_self_signed_certs: bool| {
-                let accept_self_signed = accept_self_signed_certs && !strict_tls;
-                RpcDaemonClient::new(host, port, ssl, accept_self_signed)
-                    .unwrap_or_else(|e| panic!("failed to build Monero daemon RPC client for {network:?}: {e}"))
-            };
-            let mut nodes = vec![FallbackNode {
-                label: format!("{}:{}", node_setting.host, node_setting.port),
-                client: Arc::new(build(&node_setting.host, node_setting.port, node_setting.ssl, node_setting.accept_self_signed_certs)),
-            }];
-            for fallback in &node_setting.fallbacks {
-                nodes.push(FallbackNode {
-                    label: format!("{}:{}", fallback.host, fallback.port),
-                    client: Arc::new(build(&fallback.host, fallback.port, fallback.ssl, fallback.accept_self_signed_certs)),
-                });
-            }
-            Some((network, Arc::new(FallbackDaemonClient::new(nodes))))
-        })
-        .collect();
+    let daemons: HashMap<Network, Arc<FallbackDaemonClient>> = build_daemon_clients(&store.lock().unwrap(), strict_tls);
+    // A second, independent set of daemon clients for the rescan path (both
+    // `resume_running_rescans` below and `http::admin::trigger_rescan`) -
+    // deliberately *not* `daemons.clone()`. A rescan walks a historical range
+    // block by block, potentially thousands of sequential `get_block_transactions`
+    // calls against the same public node the live scanner is also polling every
+    // tick; sharing one `RpcDaemonClient` (one `reqwest::Client`, one connection
+    // pool) between the two means a large rescan's own request volume can queue
+    // up behind - or force a real public node to serialize behind - the live
+    // loop's own latency-sensitive calls, degrading live payment detection while
+    // a rescan runs even though the two are otherwise fully independent tasks
+    // (separate `tokio::spawn`s, no shared lock held across an `.await`). A real
+    // user hit exactly this: a resumed rescan at boot left the live scanner
+    // taking ~18x longer per tick than its configured poll interval, which reads
+    // on `/status` as "has not been scanned yet" for however long that lasts.
+    // Rebuilding the same node config into a second, physically separate set of
+    // `RpcDaemonClient`s (own `reqwest::Client`, own connection pool, own
+    // failover state) costs nothing at boot and gives the rescan path its own
+    // I/O path to the same nodes, so its traffic can no longer compete with the
+    // live loop's own requests for the same client-side connection pool.
+    let rescan_daemons: HashMap<Network, Arc<FallbackDaemonClient>> = build_daemon_clients(&store.lock().unwrap(), strict_tls);
     if daemons.is_empty() {
         // A warning, not a hard exit: the server still has to come up far enough to
         // serve the instance-admin settings API (`http::instance_admin`) itself,
@@ -180,6 +178,7 @@ async fn main() {
     }
     let configured_networks: Arc<HashSet<Network>> = Arc::new(daemons.keys().copied().collect());
     let daemons = Arc::new(daemons);
+    let rescan_daemons = Arc::new(rescan_daemons);
     let scanner_status = scanner_status::new_scanner_status_map();
 
     let mempool_poll_interval_ms: u64 = settings::get(&store.lock().unwrap(), &settings::PAYMENT_MEMPOOL_POLL_INTERVAL_MS);
@@ -190,7 +189,7 @@ async fn main() {
     let scan_poll_interval_secs = mempool_poll_interval_ms / 1000;
 
     let wallet_handles = Arc::new(RwLock::new(register_all_tenants(&store, &key_custody).await));
-    resume_running_rescans(&store, &key_custody, &daemons, &wallet_handles).await;
+    resume_running_rescans(&store, &key_custody, &rescan_daemons, &wallet_handles).await;
 
     let rate_limit_per_ip_per_min: u32 = settings::get(&store.lock().unwrap(), &settings::SERVER_RATE_LIMIT_PER_IP_PER_MIN);
     let rate_limit_per_token_per_min: u32 = settings::get(&store.lock().unwrap(), &settings::SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN);
@@ -208,6 +207,7 @@ async fn main() {
         admin_rate_limiter: Arc::new(RateLimiter::new(rate_limit_per_token_per_min)),
         configured_networks,
         daemons: daemons.clone(),
+        rescan_daemons: rescan_daemons.clone(),
         scanner_status: scanner_status.clone(),
         scan_poll_interval_secs,
         default_rescan_lookback_days,
@@ -257,6 +257,39 @@ async fn main() {
     axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .await
         .expect("server error");
+}
+
+/// Builds one `FallbackDaemonClient` per configured `[monero_node.<network>]`
+/// network - a real `RpcDaemonClient` (its own `reqwest::Client`) per primary
+/// node plus its configured fallbacks. Called twice at boot (`main`): once for
+/// the live scanner's own `daemons`, once more for `rescan_daemons` - see that
+/// call site's own comment for why these must be two physically separate sets
+/// of HTTP clients rather than one shared `Arc`, even though both are built
+/// from identical node configuration.
+fn build_daemon_clients(store: &Store, strict_tls: bool) -> HashMap<Network, Arc<FallbackDaemonClient>> {
+    settings::NETWORKS
+        .iter()
+        .filter_map(|&network_name| {
+            let network = scanner::network::parse_network(network_name).ok()?;
+            let node_setting = settings::monero_node_setting(store, network_name)?;
+            let build = |host: &str, port: u16, ssl: bool, accept_self_signed_certs: bool| {
+                let accept_self_signed = accept_self_signed_certs && !strict_tls;
+                RpcDaemonClient::new(host, port, ssl, accept_self_signed)
+                    .unwrap_or_else(|e| panic!("failed to build Monero daemon RPC client for {network:?}: {e}"))
+            };
+            let mut nodes = vec![FallbackNode {
+                label: format!("{}:{}", node_setting.host, node_setting.port),
+                client: Arc::new(build(&node_setting.host, node_setting.port, node_setting.ssl, node_setting.accept_self_signed_certs)),
+            }];
+            for fallback in &node_setting.fallbacks {
+                nodes.push(FallbackNode {
+                    label: format!("{}:{}", fallback.host, fallback.port),
+                    client: Arc::new(build(&fallback.host, fallback.port, fallback.ssl, fallback.accept_self_signed_certs)),
+                });
+            }
+            Some((network, Arc::new(FallbackDaemonClient::new(nodes))))
+        })
+        .collect()
 }
 
 // `supervise` itself moved to `shared::supervise` (`docs/fx_refactor.md`
@@ -381,10 +414,15 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
 /// marked `failed` rather than silently left `running` forever - a `running` row
 /// that can never actually run again would otherwise permanently occupy that
 /// tenant's one-job-at-a-time slot (WBS 1.2 decision 4).
+///
+/// `rescan_daemons` (not `daemons`, the live scanner's own map) - a resumed job
+/// can be an arbitrarily large historical walk, and must never compete with the
+/// live scanner's own request latency for the same node's connection pool; see
+/// `rescan_daemons`'s own construction comment in `main` for why.
 async fn resume_running_rescans(
     store: &SharedStore,
     key_custody: &Arc<dyn KeyCustody>,
-    daemons: &Arc<HashMap<Network, Arc<FallbackDaemonClient>>>,
+    rescan_daemons: &Arc<HashMap<Network, Arc<FallbackDaemonClient>>>,
     wallet_handles: &Arc<RwLock<HashMap<String, WalletHandle>>>,
 ) {
     let running = match store.lock().unwrap().list_running_rescans() {
@@ -417,7 +455,7 @@ async fn resume_running_rescans(
             let _ = store.lock().unwrap().fail_rescan(&job.id, "tenant network unrecognized", now_unix());
             continue;
         };
-        let Some(daemon) = daemons.get(&network) else {
+        let Some(daemon) = rescan_daemons.get(&network) else {
             eprintln!(
                 "rescan {}: no daemon configured for tenant {}'s network {:?} - cannot resume, marking failed",
                 job.id, job.tenant_id, network
