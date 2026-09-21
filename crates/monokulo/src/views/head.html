@@ -98,7 +98,7 @@
   --tint-neutral: color-mix(in srgb, var(--muted) 12%, var(--paper-raised));
   --tint-highlight: color-mix(in srgb, var(--brand-orange) 20%, var(--paper-raised));
 
-  /* Shape scale - Monero classic, tuned: Manrope, 0.9x density, 10%
+  /* Shape scale - Monero classic, tuned: Manrope, 1x density, 10%
      roundedness, 0% elevation. `--space-*` and `--radius-*` are absolute
      px (not em) so component chrome (buttons, boxes, controls) keeps one
      consistent rhythm regardless of the text size inside it; typographic
@@ -109,10 +109,10 @@
      so "flat" really means flat rather than a faint shadow nobody asked
      for - see the design tool's own audit notes for why that matters. */
   --space-xs: 4px;
-  --space-sm: 7px;
-  --space-md: 11px;
-  --space-lg: 14px;
-  --space-xl: 22px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
   --radius-sm: 5px;
   --radius-md: 9px;
   --radius-lg: 16px;
@@ -291,6 +291,13 @@ tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparen
 }
 form label { display: block; margin: 0.9em 0 0.3em; font-weight: 700; }
 form .field-help { display: block; font-weight: 400; color: var(--muted); margin-top: 0.15em; font-size: 0.88em; }
+/* `.setting-source` (admin settings page): a caption naming where a field's
+   current value came from. Left inline, it lets a submit `button` that
+   immediately follows the last field in a form (e.g. "Save scanner
+   settings") ride up onto the same line as this caption instead of
+   starting its own line below the form - block, like `.field-help` above,
+   fixes that regardless of how much room is left on the line. */
+.setting-source { display: block; margin-top: 0.15em; }
 input[type=text], input[type=email], input[type=password], input[type=url], select, textarea {
   width: 100%;
   font-family: inherit;
@@ -303,6 +310,12 @@ input[type=text], input[type=email], input[type=password], input[type=url], sele
 }
 textarea { resize: vertical; }
 input:focus, select:focus, textarea:focus { outline: 3px solid var(--accent); outline-offset: 0; }
+/* `margin-right`: two `.btn`/`button` elements written as separate Maud
+   markup expressions (e.g. the landing page's "Sign up" + "Log in") render
+   with no whitespace text node between them - unlike a hand-written .hbs
+   template's literal newline/indentation, Maud never inserts one - so an
+   explicit horizontal gap is the only thing keeping adjacent buttons from
+   touching. */
 button, .btn {
   display: inline-block;
   font-family: inherit;
@@ -316,6 +329,7 @@ button, .btn {
   cursor: pointer;
   text-decoration: none;
   margin-top: 0.9em;
+  margin-right: var(--space-md);
 }
 button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .btn-secondary { background: var(--paper-raised); color: var(--ink); }
