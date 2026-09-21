@@ -175,6 +175,25 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         Err(last_err.unwrap_or_else(Self::note_all_failed))
     }
 
+    async fn get_blocks_range(&self, start_height: u64, count: u64) -> Result<Vec<Vec<Transaction>>, DaemonError> {
+        let start = self.current.load(Ordering::Relaxed);
+        let mut last_err = None;
+        for offset in 0..self.nodes.len() {
+            let idx = (start + offset) % self.nodes.len();
+            match self.nodes[idx].client.get_blocks_range(start_height, count).await {
+                Ok(v) => {
+                    self.note_success(idx);
+                    return Ok(v);
+                }
+                Err(e) => {
+                    self.note_failure(idx, &e);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(Self::note_all_failed))
+    }
+
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
         let start = self.current.load(Ordering::Relaxed);
         let mut last_err = None;

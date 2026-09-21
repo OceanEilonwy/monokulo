@@ -789,6 +789,24 @@ pub const RESCAN_PROGRESS_PERSIST_INTERVAL_BLOCKS: u64 = 50;
 const RESCAN_STEP_MAX_ATTEMPTS: u32 = 3;
 const RESCAN_STEP_RETRY_DELAY: std::time::Duration = std::time::Duration::from_millis(500);
 
+/// How many blocks [`rescan_order`] asks [`MoneroDaemonClient::get_blocks_range`]
+/// for in one daemon round trip. A rescan can span tens of thousands of blocks
+/// (a default lookback window is weeks); fetching them one at a time (the
+/// original shape) meant one HTTP round trip per block, competing for the same
+/// public node's request capacity as the live scanner for as long as the
+/// rescan ran (see `AppState::rescan_daemons`'s own doc comment for the
+/// contention bug that motivated this). `RpcDaemonClient::get_blocks_range`
+/// batches this into monerod's own `get_blocks.bin`, one round trip per chunk
+/// instead of per block. 100 is a conservative middle ground: real Monero
+/// blocks vary widely in size (near-empty to several hundred KB under load),
+/// and monerod only started honoring `get_blocks.bin`'s own `max_block_count`
+/// field in v0.18.4.3 - an older node ignoring it and returning more than
+/// asked is still handled correctly (the caller advances by however many
+/// blocks actually came back, not by this constant), so this number trades
+/// off round-trip count against a single response's size on a well-behaved
+/// node, not correctness either way.
+const RESCAN_CHUNK_BLOCKS: u64 = 100;
+
 /// Retries `f` up to [`RESCAN_STEP_MAX_ATTEMPTS`] times, a short fixed delay
 /// apart, before giving up with its last error - the one bounded-retry point
 /// every daemon call inside [`rescan_order`] goes through.
@@ -834,14 +852,39 @@ pub async fn rescan_order(
     let minor_range = minor_index..(minor_index + 1);
     let mut touched: HashSet<String> = HashSet::new();
 
-    for height in from_height..=to_height {
-        let block_txs = retry_rescan_step(|| daemon.get_block_transactions(height)).await?;
-        for tx in &block_txs {
-            let scan = scan_transaction(key_custody, handle, tx, minor_range.clone()).await?;
-            let s = store.lock().unwrap();
-            touched.extend(record_scan_match(&s, tenant_id, &scan, now, Some(height))?);
+    // Chunked, not per-block (see `RESCAN_CHUNK_BLOCKS`'s own doc comment for
+    // why): `daemon.get_blocks_range` may return fewer blocks than asked (an
+    // older node ignoring `max_block_count`, or simply running short of the
+    // requested range) - the loop advances by however many actually came
+    // back, `chunk.len()`, never by the requested chunk size, so a
+    // permissive/older node can't desync progress from what was truly
+    // recorded. A chunk of zero blocks is the one case that can't mean
+    // anything but a stuck daemon (the requested range is always within
+    // `to_height`, itself resolved against a real chain tip no earlier than
+    // trigger time), so that's a hard error rather than a silent infinite
+    // loop.
+    let mut height = from_height;
+    while height <= to_height {
+        let remaining = to_height - height + 1;
+        let chunk_size = remaining.min(RESCAN_CHUNK_BLOCKS);
+        let chunk = retry_rescan_step(|| daemon.get_blocks_range(height, chunk_size)).await?;
+        if chunk.is_empty() {
+            return Err(DaemonError::Request(format!(
+                "get_blocks_range returned zero blocks for a chunk starting at height {height} \
+                 (asked for {chunk_size}) - refusing to loop forever without progress"
+            ))
+            .into());
         }
-        on_progress(height);
+        for (offset, block_txs) in chunk.iter().enumerate() {
+            let height = height + offset as u64;
+            for tx in block_txs {
+                let scan = scan_transaction(key_custody, handle, tx, minor_range.clone()).await?;
+                let s = store.lock().unwrap();
+                touched.extend(record_scan_match(&s, tenant_id, &scan, now, Some(height))?);
+            }
+            on_progress(height);
+        }
+        height += chunk.len() as u64;
     }
 
     // WBS 1.4: catches a payment that was broadcast but not yet mined by the time

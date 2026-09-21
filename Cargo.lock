@@ -2781,6 +2781,7 @@ dependencies = [
  "http-body-util",
  "key-custody-service",
  "monero",
+ "monero-epee",
  "monokulo",
  "qrcode",
  "rand 0.10.2",

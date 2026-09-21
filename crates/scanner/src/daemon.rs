@@ -35,6 +35,37 @@ pub trait MoneroDaemonClient: Send + Sync {
     async fn get_height(&self) -> Result<u64, DaemonError>;
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError>;
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError>;
+
+    /// Fetches transactions for a contiguous range of up to `count` blocks
+    /// starting at `start_height`, in as few daemon round trips as the
+    /// implementor can manage. The result is in ascending height order
+    /// starting at `start_height` (entry `i` is the transactions of block
+    /// `start_height + i`) but MAY be shorter than `count` - a node that
+    /// doesn't honor a batch-size hint, or a range that runs past what the
+    /// node currently has, are both real possibilities a caller must handle
+    /// by advancing by the returned length, not by `count`. Only an empty
+    /// result for a genuinely available range signals a real problem.
+    ///
+    /// The default implementation is the always-correct fallback every test
+    /// double gets for free, with no override required: one
+    /// [`Self::get_block_transactions`] call per height, in order - no
+    /// batching, but nothing new to get wrong either. `RpcDaemonClient`
+    /// overrides this with monerod's own `get_blocks.bin`, a single real
+    /// HTTP round trip per chunk instead of one per block - see its own doc
+    /// comment. Added for `scanner::rescan_order`, which can walk tens of
+    /// thousands of blocks in one job; the live scanner's own per-tick walk
+    /// stays on `get_block_transactions` (it only ever advances by a handful
+    /// of blocks a tick, where the fixed overhead of a second RPC call to
+    /// resolve `get_block_hash` per height already dominates any batching
+    /// win).
+    async fn get_blocks_range(&self, start_height: u64, count: u64) -> Result<Vec<Vec<Transaction>>, DaemonError> {
+        let mut out = Vec::new();
+        for height in start_height..start_height.saturating_add(count) {
+            out.push(self.get_block_transactions(height).await?);
+        }
+        Ok(out)
+    }
+
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError>;
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError>;
     async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError>;

@@ -28,6 +28,17 @@ http-body-util = "0.1.5"
 # ever dials as a client.
 key-custody-service = { path = "../key-custody-service" }
 monero = "0.22.0"
+# `RpcDaemonClient::get_blocks_range`'s real `get_blocks.bin` batching (see
+# `daemon_rpc.rs`'s own doc comment) - a small, standalone epee-binary-protocol
+# decoder, not the whole `monero-daemon-rpc` client this workspace already uses
+# in `cli-wallet` (that crate's own `Transaction`/`Block` types come from
+# `monero-oxide`, a different Monero crate family from the `monero` 0.22.0
+# (monero-rs) types this crate decodes everything else into - reusing its
+# client would mean converting between two independent type systems for every
+# call). `monero-epee` decodes the wire format only; this file still turns the
+# resulting raw transaction blobs into `monero::Transaction` the same way
+# every other daemon call already does (`monero::consensus::encode::deserialize`).
+monero-epee = "0.2.1"
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
 rand = "0.10.2"
 reqwest = { version = "0.13.4", default-features = false, features = ["rustls", "json"] }
