@@ -1680,6 +1680,9 @@ mod tests {
         async fn locate_transaction(&self, _txid: &str) -> std::result::Result<TxLocation, DaemonError> {
             Err(DaemonError::Request("simulated node failure mid-reconciliation".into()))
         }
+        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+            self.inner.get_transaction(txid).await
+        }
         async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             self.inner.is_key_image_spent(key_images).await
         }
@@ -1722,6 +1725,9 @@ mod tests {
         }
         async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
             self.inner.locate_transaction(txid).await
+        }
+        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+            self.inner.get_transaction(txid).await
         }
         async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             self.inner.is_key_image_spent(key_images).await
@@ -1859,6 +1865,9 @@ mod tests {
         async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
             self.gate(DaemonCall::Locate).await?;
             self.inner.locate_transaction(txid).await
+        }
+        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+            self.inner.get_transaction(txid).await
         }
         async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             self.gate(DaemonCall::KeyImageSpent).await?;
@@ -2385,6 +2394,9 @@ mod tests {
         async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
             self.inner.locate_transaction(txid).await
         }
+        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+            self.inner.get_transaction(txid).await
+        }
         async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             self.inner.is_key_image_spent(key_images).await
         }
@@ -2433,6 +2445,9 @@ mod tests {
         }
         async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
             self.inner.locate_transaction(txid).await
+        }
+        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+            self.inner.get_transaction(txid).await
         }
         async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             self.inner.is_key_image_spent(key_images).await
@@ -4681,6 +4696,9 @@ mod tests {
         }
         async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
             self.inner.locate_transaction(txid).await
+        }
+        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+            self.inner.get_transaction(txid).await
         }
         async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             let n = self.calls.fetch_add(1, Ordering::SeqCst);

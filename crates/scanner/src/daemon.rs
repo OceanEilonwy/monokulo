@@ -68,6 +68,15 @@ pub trait MoneroDaemonClient: Send + Sync {
 
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError>;
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError>;
+    /// Fetches one transaction by its hash - `docs/txid_lookup_and_scan_
+    /// chunking_wbs.md` Part B's own "look up a payment by txid" action, the
+    /// direct replacement for the manual chain-rescan feature this trait's own
+    /// `get_blocks_range` was originally added for. Deliberately its own
+    /// method rather than reusing `locate_transaction` (which only answers
+    /// *where* a transaction is, never gives back its content) - a caller that
+    /// already knows a txid and wants to scan it against a tenant's wallet
+    /// needs the real `Transaction`, not just its location.
+    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError>;
     async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError>;
 
     /// A block's own declared timestamp (unix seconds) - the one primitive
@@ -393,6 +402,20 @@ pub mod fake {
                 .get(txid)
                 .copied()
                 .unwrap_or(TxLocation::NotFound))
+        }
+
+        async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
+            self.require_online()?;
+            let state = self.state.lock().unwrap();
+            for block in state.blocks.values() {
+                if let Some(tx) = block.txs.iter().find(|tx| txid_of(tx) == txid) {
+                    return Ok(tx.clone());
+                }
+            }
+            if let Some(tx) = state.mempool.iter().find(|tx| txid_of(tx) == txid) {
+                return Ok(tx.clone());
+            }
+            Err(DaemonError::Request(format!("no such transaction: {txid}")))
         }
 
         async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {

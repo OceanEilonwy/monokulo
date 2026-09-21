@@ -232,6 +232,25 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         Err(last_err.unwrap_or_else(Self::note_all_failed))
     }
 
+    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
+        let start = self.current.load(Ordering::Relaxed);
+        let mut last_err = None;
+        for offset in 0..self.nodes.len() {
+            let idx = (start + offset) % self.nodes.len();
+            match self.nodes[idx].client.get_transaction(txid).await {
+                Ok(v) => {
+                    self.note_success(idx);
+                    return Ok(v);
+                }
+                Err(e) => {
+                    self.note_failure(idx, &e);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(Self::note_all_failed))
+    }
+
     async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
         let start = self.current.load(Ordering::Relaxed);
         let mut last_err = None;
@@ -387,6 +406,9 @@ mod tests {
         async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
+        async fn get_transaction(&self, _txid: &str) -> Result<Transaction, DaemonError> {
+            unimplemented!("not exercised by these tests")
+        }
 
         async fn is_key_image_spent(&self, _key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
             unimplemented!("not exercised by these tests")
@@ -513,6 +535,9 @@ mod tests {
             unimplemented!("not exercised by these tests")
         }
         async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
+            unimplemented!("not exercised by these tests")
+        }
+        async fn get_transaction(&self, _txid: &str) -> Result<Transaction, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
         async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {

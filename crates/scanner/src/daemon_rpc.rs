@@ -648,6 +648,14 @@ impl MoneroDaemonClient for RpcDaemonClient {
         classify_located_transaction(txid, resp)
     }
 
+    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
+        // Reuses `fetch_transactions` - already exactly this shape
+        // (`get_block_transactions` above already calls it with a block's own
+        // hash list), just with a single-element list here.
+        let mut txs = self.fetch_transactions(std::slice::from_ref(&txid.to_string())).await?;
+        txs.pop().ok_or_else(|| DaemonError::Request(format!("no such transaction: {txid}")))
+    }
+
     async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
         if key_images.is_empty() {
             return Ok(vec![]);
@@ -1108,6 +1116,35 @@ mod live_node_tests {
             .await
             .unwrap();
         assert_eq!(location, TxLocation::InBlock(3_755_690));
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn real_node_get_transaction_matches_the_same_tx_fetched_via_its_block() {
+        // `docs/txid_lookup_and_scan_chunking_wbs.md` Part B's own new
+        // capability - proves it against the same known-confirmed txid
+        // `real_node_locate_transaction_finds_a_known_confirmed_tx` already
+        // uses, comparing the standalone fetch to that transaction's own copy
+        // inside the already-proven `get_block_transactions` path, hash for
+        // hash.
+        let txid = "24f70768d285ca14dd8080a9cddf1ecdebce7553933c9a638090b5fda2101fa8";
+        let c = client();
+        let fetched = c.get_transaction(txid).await.unwrap();
+
+        use monero::cryptonote::hash::Hashable;
+        let block_txs = c.get_block_transactions(3_755_690).await.unwrap();
+        let expected = block_txs
+            .into_iter()
+            .find(|tx| hex::encode(tx.hash().to_bytes()) == txid)
+            .expect("the known txid must be one of this block's own transactions");
+        assert_eq!(fetched.hash(), expected.hash());
+    }
+
+    #[tokio::test]
+    #[ignore]
+    async fn real_node_get_transaction_errors_for_a_bogus_hash() {
+        let result = client().get_transaction("0000000000000000000000000000000000000000000000000000000000000000").await;
+        assert!(result.is_err(), "a nonexistent txid must be a real error, not a silently empty/default transaction");
     }
 
     #[tokio::test]
