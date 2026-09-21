@@ -1,5 +1,5 @@
 [package]
-name = "stagenet-test-wallet"
+name = "cli-wallet"
 version = "0.1.0"
 edition = "2021"
 
@@ -14,7 +14,7 @@ edition = "2021"
 # Every dependency below is unconditional (no Cargo feature of its own gates
 # them) - deliberately, since this whole crate is meaningless without real
 # transaction-construction support. Its callers (`scanner`, `mock-woocommerce`)
-# keep it behind their own optional, `e2e`-feature-gated `stagenet-test-wallet
+# keep it behind their own optional, `e2e`-feature-gated `cli-wallet
 # = { path = ..., optional = true }` dependency, same as they gated the
 # predecessor this replaced - but a plain `cargo build --workspace`/`cargo
 # test --workspace` still compiles this crate's own real deps regardless,

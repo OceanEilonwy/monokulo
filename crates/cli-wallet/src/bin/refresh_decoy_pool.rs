@@ -9,10 +9,10 @@
 //! arbitrarily old.
 //!
 //! ```sh
-//! cargo run -p stagenet-test-wallet --bin refresh-decoy-pool -- \
+//! cargo run -p cli-wallet --bin refresh-decoy-pool -- \
 //!   <node_url> <from_height> <to_height> <out_path>
 //! # e.g., from the repository root:
-//! cargo run -p stagenet-test-wallet --bin refresh-decoy-pool -- \
+//! cargo run -p cli-wallet --bin refresh-decoy-pool -- \
 //!   http://node.monerodevs.org:38089 0 1700000 e2e/stagenet-decoy-distribution.json
 //! ```
 //!
@@ -57,7 +57,7 @@ async fn main() {
         std::process::exit(2);
     });
 
-    match stagenet_test_wallet::refresh_decoy_distribution(&node_url, true, from, to, &out_path).await {
+    match cli_wallet::refresh_decoy_distribution(&node_url, true, from, to, &out_path).await {
         Ok(len) => println!("wrote {len} distribution entries to {out_path}"),
         Err(e) => {
             eprintln!("{e}");

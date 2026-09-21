@@ -4,7 +4,7 @@
 //! same reusable merchant watch-only wallet `tests/e2e_stagenet.rs` and
 //! `mock-woocommerce/tests/e2e_stagenet_connect_flow.rs` already use, pays a
 //! real order with a genuine, signed, broadcast stagenet transaction (via
-//! `stagenet_test_wallet::Wallet`, same as those two), and asserts the
+//! `cli_wallet::Wallet`, same as those two), and asserts the
 //! payment shows up on the real monokulo dashboard (`GET /dashboard`)
 //! with the real, correct total-received-XMR figure - not just that the
 //! engine detected it (that's already `e2e_stagenet.rs`'s own job).
@@ -140,8 +140,8 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     // ---- load the same real fixture + reusable wallet fixtures e2e_stagenet.rs uses ----
     use support::e2e_fixture;
 
-    let ctx = stagenet_test_wallet::WalletCtx::default();
-    let spender = stagenet_test_wallet::WalletStore::load(&ctx)
+    let ctx = cli_wallet::WalletCtx::default();
+    let spender = cli_wallet::WalletStore::load(&ctx)
         .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path))
         .wallet("spender")
         .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
@@ -304,7 +304,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     println!("created order {payment_id}: {amount_piconero} piconero to {address}");
 
     // ---- 4. pay it for real - genuine signed + broadcast stagenet transaction ----
-    let tx_hash = stagenet_test_wallet::send_payment(spender, &address, amount_piconero, None)
+    let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero, None)
     .await
     .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);

@@ -293,7 +293,7 @@ pub struct WalletCtx {
 }
 
 /// The repository's own `e2e/` directory, anchored to *this crate's* own
-/// compile-time location (`crates/stagenet-test-wallet/`) rather than
+/// compile-time location (`crates/cli-wallet/`) rather than
 /// whatever the process's current directory happens to be at runtime.
 /// Deliberate: `cargo test` sets a test binary's working directory to its
 /// *own package's* manifest directory - not the repository root, and not
@@ -582,7 +582,7 @@ impl Wallet {
                 // Genuinely shouldn't happen (we only ever add our own
                 // txids), but a wrong/stale ledger entry is a data problem,
                 // not a reason to crash the whole run.
-                eprintln!("stagenet-test-wallet: resolve_pending: txid {txid} confirmed at height {height} but no matching output found when scanning that block - leaving it unresolved");
+                eprintln!("cli-wallet: resolve_pending: txid {txid} confirmed at height {height} but no matching output found when scanning that block - leaving it unresolved");
                 continue;
             };
             let entry = ledger.entries.iter_mut().find(|e| e.txid == txid).expect("txid came from this same ledger's own pending list");
@@ -921,7 +921,7 @@ pub async fn send_payment(wallet: ResolvedWallet, to: &str, amount: u64, split_c
             Ok(hash) => return Ok(hash),
             Err(e @ WalletError::Broadcast(_)) => return Err(e),
             Err(e) if attempt < ATTEMPTS => {
-                eprintln!("stagenet-test-wallet: attempt {attempt}/{ATTEMPTS}: retrying after: {e}");
+                eprintln!("cli-wallet: attempt {attempt}/{ATTEMPTS}: retrying after: {e}");
                 attempt += 1;
                 tokio::time::sleep(RETRY_DELAY).await;
             }
@@ -940,7 +940,7 @@ mod tests {
 
     #[test]
     fn ledger_round_trips_through_a_real_file() {
-        let dir = std::env::temp_dir().join(format!("stagenet-test-wallet-ledger-{}", std::process::id()));
+        let dir = std::env::temp_dir().join(format!("cli-wallet-ledger-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
         let path = dir.join("ledger.json");
         let path_str = path.to_str().unwrap();

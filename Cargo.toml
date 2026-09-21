@@ -6,7 +6,7 @@ members = [
     "crates/monokulo",
     "crates/mock-woocommerce",
     "crates/scanner-test-support",
-    "crates/stagenet-test-wallet",
+    "crates/cli-wallet",
     "crates/key-custody-service",
     "crates/key-custody-server",
     "crates/snp-attest",

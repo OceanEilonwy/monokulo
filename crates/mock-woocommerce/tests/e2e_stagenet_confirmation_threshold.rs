@@ -192,9 +192,9 @@ async fn body_json(response: reqwest::Response) -> Value {
 async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_threshold() {
     // Same standard `e2e/*` layout every real suite in this repo uses - run
     // from the repository root, same as this file's own doc comment says.
-    let ctx = stagenet_test_wallet::WalletCtx::default();
+    let ctx = cli_wallet::WalletCtx::default();
 
-    let wallets = stagenet_test_wallet::WalletStore::load(&ctx).unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path));
+    let wallets = cli_wallet::WalletStore::load(&ctx).unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path));
     let merchant = wallets.wallet("merchant").unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
     let spender = wallets.wallet("spender").unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
 
@@ -350,7 +350,7 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // the real order's status - no zero-conf ceiling was configured above
     // (`zero_conf_max_piconero` omitted from the `/connections` request), so
     // this can only succeed once the payment has a real confirmation.
-    let tx_hash = stagenet_test_wallet::send_payment(spender, &address, amount_piconero, None)
+    let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero, None)
     .await
     .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);

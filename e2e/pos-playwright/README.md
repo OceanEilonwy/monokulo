@@ -6,7 +6,7 @@ the real public Monero **stagenet** node, a real, network-bound `monokulo`, one 
 account with one real store connected (the same reusable merchant watch-only wallet
 `../README.md`'s own Rust e2e tests use), driven through an actual Chromium browser
 via [Playwright](https://playwright.dev/), paying real orders with genuine signed and
-broadcast stagenet transactions (via `crates/stagenet-test-wallet::StagenetTestWallet`,
+broadcast stagenet transactions (via `crates/cli-wallet::StagenetTestWallet`,
 real CLSAG + Bulletproofs+ signing, no external wallet-rpc process - see that crate's
 own doc comment for why it exists as a separate, narrower wallet from the one
 `cargo test --test e2e_stagenet` uses).
@@ -58,7 +58,7 @@ npx playwright install chromium
 
 The Rust binary this suite drives is built automatically by `global-setup.js`
 (`cargo build -p scanner --features e2e --bin e2e-harness`) the first time you run
-it - that first build pulls in `stagenet-test-wallet`'s own real transaction-signing
+it - that first build pulls in `cli-wallet`'s own real transaction-signing
 dependencies (`monero-wallet`, `monero-daemon-rpc`, `curve25519-dalek`) and can take a
 little while; every run after that is a fast no-op rebuild check.
 
@@ -95,11 +95,11 @@ screenshots on failure).
   Rust, never reimplemented in JS. Deliberately not a separate child process per send:
   running one concurrently with `e2e-harness`'s own scan loop hit a real, reproducible
   node-side reliability limit (only one concurrent connection per source IP) - see
-  `crates/stagenet-test-wallet`'s own module doc comment and the git history around its
+  `crates/cli-wallet`'s own module doc comment and the git history around its
   introduction for the full story. `send_payment_handler` shares its `network_lock`
   with the scan loop instead, so this one process never opens two connections to the
   node at once.
-- Uses `crates/stagenet-test-wallet` to sign and broadcast - a fast, narrow,
+- Uses `crates/cli-wallet` to sign and broadcast - a fast, narrow,
   stagenet-only wallet with no chain scanning (informed of its own outputs directly,
   via the committed `e2e/stagenet-known-outputs.json` ledger) and decoy selection
   served from the committed `e2e/stagenet-decoy-distribution.json` snapshot rather than

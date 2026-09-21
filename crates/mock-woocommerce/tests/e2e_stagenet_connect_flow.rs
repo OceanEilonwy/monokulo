@@ -5,7 +5,7 @@
 //! **merchant** wallet's view key/spend pubkey from `e2e/stagenet-wallets.json`
 //! against a real, stagenet-configured engine, creates a real order, pays it
 //! with a real, signed stagenet transaction sent from the **customer** wallet
-//! (`stagenet_test_wallet::send_payment` - the exact same fast, no-scanning,
+//! (`cli_wallet::send_payment` - the exact same fast, no-scanning,
 //! cached-decoys wallet `tests/e2e_stagenet.rs` at the repo root already
 //! proves, reused here as a library dependency, not reimplemented), drives a
 //! real chain scan against the real node
@@ -21,7 +21,7 @@
 //!
 //! ## Why this needs the `e2e` feature
 //!
-//! Sending the real payment needs `stagenet_test_wallet::send_payment`,
+//! Sending the real payment needs `cli_wallet::send_payment`,
 //! which needs real transaction-construction dependencies
 //! (`monero-wallet`/`monero-daemon-rpc`/`rand_core`/`curve25519-dalek`) gated
 //! behind that crate's own `e2e`-flavored optionality (see `Cargo.toml`).
@@ -239,8 +239,8 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
 async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // Same standard `e2e/*` layout every real suite in this repo uses - run
     // from the repository root, same as this file's own doc comment says.
-    let ctx = stagenet_test_wallet::WalletCtx::default();
-    let wallets = stagenet_test_wallet::WalletStore::load(&ctx).unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path));
+    let ctx = cli_wallet::WalletCtx::default();
+    let wallets = cli_wallet::WalletStore::load(&ctx).unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path));
 
     let merchant = wallets.wallet("merchant").unwrap_or_else(|e| panic!("failed to load the merchant wallet: {e}"));
     let spender = wallets.wallet("spender").unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
@@ -251,7 +251,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // test, with an earlier version whose background scan-tick loop drove a second,
     // independently-ticking daemon client concurrently with this test's own
     // foreground use - see `TestEngineHandle::run_scan_tick_now`'s own doc comment).
-    // `stagenet_test_wallet::ResolvedWallet::connect`/`send_payment` below open
+    // `cli_wallet::ResolvedWallet::connect`/`send_payment` below open
     // their *own* independent connection for the balance check and the real send -
     // so this reachability check's own client is scoped to just this block and
     // dropped immediately after, rather than kept alive (and pooled) across that
@@ -278,7 +278,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     // this task's scope is otherwise just the one capstone test. A fresh
     // connect, not reused for the real send below - `ResolvedWallet::
     // connect` is cheap now (decoy selection is served from a committed
-    // cache, not a live fetch - see `stagenet-test-wallet`'s own doc
+    // cache, not a live fetch - see `cli-wallet`'s own doc
     // comment), so there's no real cost to a second one, and `send_payment`
     // does its own connect internally regardless.
     let balance_wallet = retry(5, Duration::from_secs(5), || spender.connect()).await.unwrap_or_else(|e| panic!("\n\n{e}\n"));
@@ -375,13 +375,13 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
 
     // Pay it for real: construct, sign, and broadcast the transaction ourselves (no
     // wallet-rpc or any other external wallet process) - the exact same
-    // `stagenet_test_wallet::send_payment` machinery `tests/e2e_stagenet.rs` already
+    // `cli_wallet::send_payment` machinery `tests/e2e_stagenet.rs` already
     // proves, reused here as a library dependency. Its own built-in retry (see that
     // crate's own doc comment) replaces this file's local `retry` helper for this
     // one call - the ledger write-back (this run's own new change output) happens
     // internally too, no separate record-keeping call needed here any more.
     let tx_hash =
-        stagenet_test_wallet::send_payment(spender, &address, amount_piconero, None).await.unwrap_or_else(|e| panic!("\n\n{e}\n"));
+        cli_wallet::send_payment(spender, &address, amount_piconero, None).await.unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);
     println!("sent real stagenet payment, tx {tx_hash_hex}");
 

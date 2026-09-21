@@ -1,4 +1,4 @@
-//! A general-purpose CLI over `stagenet-test-wallet`'s `WalletStore`/
+//! A general-purpose CLI over `cli-wallet`'s `WalletStore`/
 //! `Wallet` - the same fast, ledger-based, no-chain-scanning
 //! wallet every real-stagenet e2e suite in this repo already uses as a
 //! library, now reachable by hand for setup/maintenance work (checking a
@@ -8,13 +8,13 @@
 //! one-off script every time.
 //!
 //! ```sh
-//! cargo run -p stagenet-test-wallet --bin stagenet-wallet-cli -- --help
+//! cargo run -p cli-wallet --bin stagenet-wallet-cli -- --help
 //! ```
 
 use std::process::ExitCode;
 
 use clap::{CommandFactory, Parser, Subcommand};
-use stagenet_test_wallet::{WalletCtx, WalletStore};
+use cli_wallet::{WalletCtx, WalletStore};
 
 /// The wallet this crate exists to spend from - see `e2e/README.md`.
 const DEFAULT_WALLET_NAME: &str = "spender";
@@ -134,7 +134,7 @@ async fn main() -> ExitCode {
     }
 }
 
-async fn run(cli: Cli) -> Result<(), stagenet_test_wallet::WalletError> {
+async fn run(cli: Cli) -> Result<(), cli_wallet::WalletError> {
     let ctx = cli.ctx();
 
     match &cli.command {
@@ -147,12 +147,12 @@ async fn run(cli: Cli) -> Result<(), stagenet_test_wallet::WalletError> {
             match (seed, generate) {
                 (Some(phrase), false) => store.add_wallet_from_seed(name, phrase)?,
                 (None, true) => {
-                    return Err(stagenet_test_wallet::WalletError::WalletStore(
+                    return Err(cli_wallet::WalletError::WalletStore(
                         "generating a brand-new wallet isn't wired up yet - pass --seed \"<phrase>\" to import one".to_string(),
                     ));
                 }
                 _ => {
-                    return Err(stagenet_test_wallet::WalletError::WalletStore("pass exactly one of --seed <phrase> or --generate".to_string()));
+                    return Err(cli_wallet::WalletError::WalletStore("pass exactly one of --seed <phrase> or --generate".to_string()));
                 }
             }
             println!("added wallet {name:?} to {}", ctx.wallets_path);

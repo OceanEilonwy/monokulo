@@ -2,13 +2,13 @@
 //! library (config -> store -> key custody -> scanner -> router - the same pieces
 //! `main.rs` wires together, just driven directly instead of over a bound TCP
 //! socket), pays it with a genuine tiny transaction constructed, signed, and
-//! broadcast entirely in Rust (see `crates/stagenet-test-wallet`) from a real,
+//! broadcast entirely in Rust (see `crates/cli-wallet`) from a real,
 //! faucet-funded Monero **stagenet** wallet, and asserts the real chain scanner
 //! detects it.
 //!
 //! The only external dependency this test has is the public stagenet node itself
 //! (`support::e2e_fixture`) - no wallet-rpc or any other external process.
-//! Sending the payment is done by `stagenet_test_wallet::Wallet` -
+//! Sending the payment is done by `cli_wallet::Wallet` -
 //! see that crate's own doc comment for why it's a separate, narrower wallet
 //! from a general-purpose one, built specifically for this kind of real,
 //! repeated, e2e-test use.
@@ -85,8 +85,8 @@ async fn oneshot_json(router: &axum::Router, method: &str, uri: String, body: Op
 async fn real_stagenet_payment_is_detected_end_to_end() {
     use support::e2e_fixture;
 
-    let ctx = stagenet_test_wallet::WalletCtx::default();
-    let spender = stagenet_test_wallet::WalletStore::load(&ctx)
+    let ctx = cli_wallet::WalletCtx::default();
+    let spender = cli_wallet::WalletStore::load(&ctx)
         .unwrap_or_else(|e| panic!("failed to load {}: {e}", ctx.wallets_path))
         .wallet("spender")
         .unwrap_or_else(|e| panic!("failed to load the spender wallet: {e}"));
@@ -172,9 +172,9 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
 
     // -- pay it for real: construct, sign, and broadcast the transaction ourselves
     // (no wallet-rpc or any other external wallet process - see
-    // crates/stagenet-test-wallet, whose own `send_payment` retries the whole
+    // crates/cli-wallet, whose own `send_payment` retries the whole
     // connect-then-send sequence internally on real, observed node flakiness) --
-    let tx_hash = stagenet_test_wallet::send_payment(spender, &address, amount_piconero, None)
+    let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero, None)
     .await
     .unwrap_or_else(|e| panic!("\n\n{e}\n"));
     let tx_hash_hex = hex::encode(tx_hash);

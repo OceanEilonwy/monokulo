@@ -479,6 +479,27 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1c133bc6a41be0d194c306b5506d15e6feeea7b1d6604bd3f8310dfb2ca96486"
 
 [[package]]
+name = "cli-wallet"
+version = "0.1.0"
+dependencies = [
+ "clap",
+ "clap_complete",
+ "curve25519-dalek",
+ "hex",
+ "monero-daemon-rpc",
+ "monero-seed",
+ "monero-wallet",
+ "polyseed",
+ "rand_core 0.6.4",
+ "reqwest",
+ "serde",
+ "serde_json",
+ "thiserror 2.0.20",
+ "tokio",
+ "zeroize",
+]
+
+[[package]]
 name = "cmake"
 version = "0.1.58"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1712,6 +1733,7 @@ name = "mock-woocommerce"
 version = "0.1.0"
 dependencies = [
  "axum",
+ "cli-wallet",
  "hex",
  "monero",
  "monokulo",
@@ -1721,7 +1743,6 @@ dependencies = [
  "serde",
  "serde_json",
  "shared",
- "stagenet-test-wallet",
  "thiserror 2.0.20",
  "tokio",
  "url",
@@ -2753,6 +2774,7 @@ version = "0.1.0"
 dependencies = [
  "async-trait",
  "axum",
+ "cli-wallet",
  "handlebars",
  "hex",
  "hmac 0.13.0",
@@ -2768,7 +2790,6 @@ dependencies = [
  "serde_json",
  "sha2 0.11.0",
  "shared",
- "stagenet-test-wallet",
  "thiserror 2.0.20",
  "tokio",
  "toml",
@@ -3121,27 +3142,6 @@ name = "stable_deref_trait"
 version = "1.2.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "6ce2be8dc25455e1f91df71bfa12ad37d7af1092ae736f3a6cd0e37bc7810596"
-
-[[package]]
-name = "stagenet-test-wallet"
-version = "0.1.0"
-dependencies = [
- "clap",
- "clap_complete",
- "curve25519-dalek",
- "hex",
- "monero-daemon-rpc",
- "monero-seed",
- "monero-wallet",
- "polyseed",
- "rand_core 0.6.4",
- "reqwest",
- "serde",
- "serde_json",
- "thiserror 2.0.20",
- "tokio",
- "zeroize",
-]
 
 [[package]]
 name = "static_assertions"

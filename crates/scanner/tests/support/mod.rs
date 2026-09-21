@@ -1,6 +1,6 @@
 //! The real-money-costing wallet used to *implement* this test previously
 //! (`scanner::e2e_wallet::StagenetSpendWallet`, re-exported from here) has
-//! been replaced by `crates/stagenet-test-wallet::Wallet` - see
+//! been replaced by `crates/cli-wallet::Wallet` - see
 //! that crate's own doc comment for why. This module now holds only the
 //! shared stagenet fixture data every real e2e test in this crate still
 //! needs regardless of which wallet implementation sends the payment.

@@ -58,21 +58,21 @@ zeroize = { version = "1.9.0", features = ["derive"] }
 # [dev-dependencies].
 monokulo = { path = "../monokulo", optional = true }
 # The fast/reliable stagenet test wallet every real e2e test/binary in this
-# crate uses to sign and broadcast real payments - see `stagenet-test-wallet`'s
+# crate uses to sign and broadcast real payments - see `cli-wallet`'s
 # own crate doc comment for why it's a separate, narrower wallet from a
 # general-purpose one. This crate no longer needs the real transaction-
 # construction dependencies (`monero-wallet`/`monero-daemon-rpc`/`rand_core`/
-# `curve25519-dalek`) directly at all - they moved to `stagenet-test-wallet`'s
+# `curve25519-dalek`) directly at all - they moved to `cli-wallet`'s
 # own Cargo.toml along with the wallet code that used them.
-stagenet-test-wallet = { path = "../stagenet-test-wallet", optional = true }
+cli-wallet = { path = "../cli-wallet", optional = true }
 
 [features]
 # Real-spend-wallet support for the e2e tests and the POS e2e harness binary
-# below. Never enabled by default - keeping `stagenet-test-wallet`'s own real
+# below. Never enabled by default - keeping `cli-wallet`'s own real
 # transaction-construction dependencies (and the extra `monokulo` needed to
 # drive a whole hosted stack) out of the tree for a normal `cargo build`/
 # `cargo test --workspace` is the point.
-e2e = ["dep:monokulo", "dep:stagenet-test-wallet"]
+e2e = ["dep:monokulo", "dep:cli-wallet"]
 
 [[test]]
 name = "e2e_stagenet"

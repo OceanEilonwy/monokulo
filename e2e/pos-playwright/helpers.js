@@ -20,7 +20,7 @@ function piconeroFromXmrDisplay(display) {
 // Calls the real, in-process "send a payment" endpoint e2e-harness itself
 // exposes (`fixture.send_payment_url`, `send_payment_handler` in
 // crates/scanner/src/bin/e2e_harness.rs) - which connects, signs, and
-// broadcasts an actual stagenet transaction via `stagenet_test_wallet::
+// broadcasts an actual stagenet transaction via `cli_wallet::
 // StagenetTestWallet`, deliberately never reimplemented in JS; this Node
 // process never touches key material itself.
 //

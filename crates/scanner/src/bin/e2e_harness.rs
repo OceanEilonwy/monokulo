@@ -7,7 +7,7 @@
 //! *is* the client), one real signed-up account with one real store
 //! connected to that engine, and this process's own internal
 //! `/send-payment` endpoint (see `send_payment_handler` below) - the one
-//! place `stagenet-test-wallet` ever gets called from in this whole suite.
+//! place `cli-wallet` ever gets called from in this whole suite.
 //!
 //! A real `[[bin]]`, not another `#[ignore]`d `#[tokio::test]` - see
 //! `Cargo.toml`'s own comment on the `[[bin]]` entry for why: Playwright
@@ -24,10 +24,10 @@
 //!
 //! `#[cfg(feature = "e2e")]`-equivalent via `required-features` in
 //! `Cargo.toml` - this binary doesn't even exist in a normal build (needs the
-//! same real transaction-signing dependencies `stagenet-test-wallet` does,
+//! same real transaction-signing dependencies `cli-wallet` does,
 //! via `monokulo`'s own `scanner-test-support` -> `scanner` dev-dependency
 //! chain being irrelevant here; what actually gates this is the
-//! `monokulo`/`stagenet-test-wallet`/`http-body-util` optional deps, all
+//! `monokulo`/`cli-wallet`/`http-body-util` optional deps, all
 //! behind the same `e2e` feature every other real-stagenet test in this
 //! crate uses).
 
@@ -138,7 +138,7 @@ struct SendPaymentResponse {
 /// `POST /send-payment` on this harness's own small internal-only router
 /// (bound to a separate ephemeral port, its URL handed to Playwright in the
 /// `POS_E2E_READY` line as `send_payment_url`) - signs and broadcasts one
-/// real stagenet transaction via `stagenet_test_wallet::send_payment` (the
+/// real stagenet transaction via `cli_wallet::send_payment` (the
 /// fast, no-scanning, cached-decoys wallet this crate replaced
 /// `scanner::e2e_wallet::StagenetSpendWallet` with here, with its own
 /// built-in connect-then-send retry - see that crate's own doc comments for
@@ -156,12 +156,12 @@ async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): 
     // `state.node_url` and `WalletCtx::default()`'s own are the same value
     // (both built from the same NODE_HOST/NODE_PORT above) - set explicitly
     // anyway, so this stays correct if that ever changes.
-    let ctx = stagenet_test_wallet::WalletCtx { node_url: state.node_url.clone(), ..Default::default() };
-    let spender = match stagenet_test_wallet::WalletStore::load(&ctx).and_then(|store| store.wallet("spender")) {
+    let ctx = cli_wallet::WalletCtx { node_url: state.node_url.clone(), ..Default::default() };
+    let spender = match cli_wallet::WalletStore::load(&ctx).and_then(|store| store.wallet("spender")) {
         Ok(w) => w,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to load the spender wallet: {e}")).into_response(),
     };
-    let tx_hash = match stagenet_test_wallet::send_payment(spender, &req.address, piconero_amount, None).await {
+    let tx_hash = match cli_wallet::send_payment(spender, &req.address, piconero_amount, None).await {
         Ok(hash) => hash,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()).into_response(),
     };
@@ -271,7 +271,7 @@ async fn main() {
     // more defensive 10s (back when `/send-payment` still went through
     // `scanner::e2e_wallet`, whose per-send RPC-call count scaled with a
     // known_txids list that only ever grew - see the git history around
-    // `stagenet-test-wallet`'s introduction). That's no longer the dominant
+    // `cli-wallet`'s introduction). That's no longer the dominant
     // concern: a steady-state send through the new wallet costs a handful
     // of calls regardless of history, so there's little left to protect by
     // ticking slowly, and a snappier loop matters again for the UI actually
