@@ -282,8 +282,13 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 #pos-error:empty { display: none; }
 #pos-error { color: var(--error); font-weight: 700; margin: 0.6em 0 0; }
 
-#payment-screen { display: flex; flex-direction: column; justify-content: center; }
+#payment-screen { display: flex; flex-direction: column; }
 .payment-panel {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
   border: 2px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--paper-raised);
