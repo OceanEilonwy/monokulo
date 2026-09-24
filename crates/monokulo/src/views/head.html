@@ -478,6 +478,59 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .site-nav-links .nav-logout-form, .site-nav-links .nav-theme-form { margin: 0; display: inline; }
 .nav-status-link { text-decoration: none !important; }
 .nav-status-text { text-decoration: underline; }
+/* Visually hidden but still readable by assistive tech - used by the theme
+   toggle below, whose visible content is icons/a thumb, not text. */
+.sr-only {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+/* The theme control - a day/night slider, not the plain text button every
+   other nav item is. Still just a `<button type="submit">` in a `<form>`
+   (see `views::theme_toggle`'s own doc comment) - three real states
+   (System/Light/Dark) don't fit a literal on/off switch, so the thumb
+   parks left/center/right per `.theme-toggle-{state}` below, sun at the
+   light end and moon at the dark end. */
+.theme-toggle {
+  margin: 0 0 0 1.2em;
+  padding: 0;
+  border: 2px solid var(--line);
+  border-radius: 999px;
+  background: var(--paper-raised);
+  cursor: pointer;
+  line-height: 0;
+}
+.theme-toggle:hover { border-color: var(--accent); }
+.theme-toggle-track {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  box-sizing: border-box;
+  width: 3.4em;
+  height: 1.7em;
+  padding: 0 0.32em;
+}
+.theme-toggle-icon { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; width: 1em; height: 1em; color: var(--muted); }
+.theme-toggle-icon svg { width: 100%; height: 100%; display: block; }
+.theme-toggle-thumb {
+  position: absolute;
+  top: 0.18em;
+  left: 0.18em;
+  width: 1.24em;
+  height: 1.24em;
+  border-radius: 50%;
+  background: var(--accent);
+  transition: left 0.15s ease;
+}
+.theme-toggle-system .theme-toggle-thumb { left: calc(50% - 0.62em); }
+.theme-toggle-dark .theme-toggle-thumb { left: calc(100% - 1.24em - 0.18em); }
 .nav-toggle-checkbox { position: absolute; opacity: 0; pointer-events: none; }
 .nav-toggle-label { display: none; color: var(--chrome-ink); font-size: 1.4rem; line-height: 1; cursor: pointer; user-select: none; }
 /* No-JS-required small-screen menu: below the breakpoint, the link group
@@ -494,7 +547,7 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
     gap: 0.6em;
     margin-top: 0.6em;
   }
-  .site-nav-links a, .site-nav-links .nav-link-button { margin-left: 0; }
+  .site-nav-links a, .site-nav-links .nav-link-button, .theme-toggle { margin-left: 0; }
   .nav-toggle-checkbox:checked ~ .site-nav-links { display: flex; }
 }
 .status-dot {

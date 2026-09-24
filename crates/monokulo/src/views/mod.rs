@@ -167,31 +167,121 @@ fn nav(chrome: &PageChrome) -> Markup {
                 label for="nav-toggle" class="nav-toggle-label" aria-label="Menu" { "☰" }
                 div class="site-nav-links" {
                     a href="/dashboard" { "dashboard" }
+                    @if chrome.is_admin {
+                        a href="/dashboard/admin/settings" { "admin" }
+                        a href="/dashboard/admin/invites" { "invites" }
+                    }
                     @if chrome.logged_in {
                         form method="post" action="/dashboard/logout" class="nav-logout-form" {
                             button type="submit" class="nav-link-button" { "log out" }
-                        }
-                        form method="post" action="/dashboard/theme" class="nav-theme-form" {
-                            input type="hidden" name="next" value=(chrome.current_path);
-                            button type="submit" class="nav-link-button" title="Cycle light / dark / system theme" {
-                                "theme: " (chrome.theme.as_str())
-                            }
                         }
                     } @else {
                         a href="/dashboard/login" { "log in" }
                         a href="/dashboard/signup" { "sign up" }
                     }
-                    @if chrome.is_admin {
-                        a href="/dashboard/admin/settings" { "admin" }
-                        a href="/dashboard/admin/invites" { "invites" }
-                    }
                     a href="/status" class="nav-status-link" {
                         span class="nav-status-text" { "status" }
                         span id="nav-status-dot" class="status-dot status-dot-unknown" title="checking..." {}
+                    }
+                    @if chrome.logged_in {
+                        (theme_toggle(chrome))
                     }
                 }
             }
         }
         script { (PreEscaped(NAV_STATUS_SCRIPT)) }
+    }
+}
+
+/// The no-JS theme control - a day/night slider/switch, same "plain `<form>`,
+/// one `<button type="submit">`" mechanism the old text button used (still
+/// posts to `/dashboard/theme`, still cycles System -> Light -> Dark ->
+/// System server-side via `Theme::next`, see `http::dashboard::theme_submit`)
+/// - only the visual changed. Three states don't map onto a literal on/off
+/// switch, so the thumb sits at the left/center/right of the track for
+/// Light/System/Dark respectively (`.theme-toggle-{state}` in `head.html`
+/// positions it), with a sun at the light end and a moon at the dark end.
+fn theme_toggle(chrome: &PageChrome) -> Markup {
+    html! {
+        form method="post" action="/dashboard/theme" class="nav-theme-form" {
+            input type="hidden" name="next" value=(chrome.current_path);
+            button
+                type="submit"
+                class=(format!("theme-toggle theme-toggle-{}", chrome.theme.as_str()))
+                title=(format!("Theme: {} - click to cycle light / dark / system", chrome.theme.as_str())) {
+                span class="theme-toggle-track" {
+                    span class="theme-toggle-icon theme-toggle-icon-sun" {
+                        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round" aria-hidden="true" focusable="false" {
+                            circle cx="12" cy="12" r="4" {}
+                            line x1="12" y1="2" x2="12" y2="4" {}
+                            line x1="12" y1="20" x2="12" y2="22" {}
+                            line x1="4.2" y1="4.2" x2="5.6" y2="5.6" {}
+                            line x1="18.4" y1="18.4" x2="19.8" y2="19.8" {}
+                            line x1="2" y1="12" x2="4" y2="12" {}
+                            line x1="20" y1="12" x2="22" y2="12" {}
+                            line x1="4.2" y1="19.8" x2="5.6" y2="18.4" {}
+                            line x1="18.4" y1="5.6" x2="19.8" y2="4.2" {}
+                        }
+                    }
+                    span class="theme-toggle-icon theme-toggle-icon-moon" {
+                        svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true" focusable="false" {
+                            path d="M21 12.5A9 9 0 1 1 11.5 3 7 7 0 0 0 21 12.5Z" {}
+                        }
+                    }
+                    span class="theme-toggle-thumb" {}
+                }
+                span class="sr-only" { "Theme: " (chrome.theme.as_str()) }
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn logged_in_admin_nav_order_is_dashboard_admin_invites_logout_status_theme() {
+        let chrome = PageChrome { logged_in: true, is_admin: true, theme: Theme::Dark, current_path: "/dashboard".to_string() };
+        let html = nav(&chrome).into_string();
+
+        let dashboard = html.find(r#"href="/dashboard""#).expect("dashboard link");
+        let admin = html.find(r#"href="/dashboard/admin/settings""#).expect("admin link");
+        let invites = html.find(r#"href="/dashboard/admin/invites""#).expect("invites link");
+        let logout = html.find(r#"action="/dashboard/logout""#).expect("logout form");
+        let status = html.find(r#"href="/status""#).expect("status link");
+        let theme = html.find(r#"action="/dashboard/theme""#).expect("theme form");
+
+        assert!(dashboard < admin, "dashboard must come before admin, got: {html}");
+        assert!(admin < invites, "admin must come before invites, got: {html}");
+        assert!(invites < logout, "invites must come before log out, got: {html}");
+        assert!(logout < status, "log out must come before status, got: {html}");
+        assert!(status < theme, "status must come before the theme toggle (rightmost), got: {html}");
+    }
+
+    #[test]
+    fn logged_out_nav_has_no_admin_logout_or_theme_controls() {
+        let chrome = PageChrome::from_user(None, "/dashboard");
+        let html = nav(&chrome).into_string();
+        assert!(html.contains(r#"href="/dashboard/login""#));
+        assert!(html.contains(r#"href="/dashboard/signup""#));
+        assert!(!html.contains("admin"));
+        assert!(!html.contains(r#"action="/dashboard/logout""#));
+        assert!(!html.contains("theme-toggle"));
+    }
+
+    #[test]
+    fn theme_toggle_renders_a_slider_with_a_thumb_positioned_for_the_current_theme() {
+        for (theme, class) in [(Theme::Light, "theme-toggle-light"), (Theme::System, "theme-toggle-system"), (Theme::Dark, "theme-toggle-dark")] {
+            let chrome = PageChrome { logged_in: true, is_admin: false, theme, current_path: "/dashboard".to_string() };
+            let html = nav(&chrome).into_string();
+            assert!(html.contains(&class.to_string()), "expected {class} on the toggle for {theme:?}, got: {html}");
+            assert!(html.contains("theme-toggle-icon-sun") && html.contains("theme-toggle-icon-moon"), "expected both sun and moon icons, got: {html}");
+            assert!(html.contains("theme-toggle-thumb"), "expected a thumb element, got: {html}");
+            // Still the exact same no-JS mechanism: one POST form, one submit button.
+            assert!(html.contains(r#"<form method="post" action="/dashboard/theme""#));
+            assert!(html.contains(r#"<input type="hidden" name="next" value="/dashboard">"#));
+        }
     }
 }
