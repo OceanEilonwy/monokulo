@@ -413,9 +413,13 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 /* Store overview page: the health/help disclosure and the "Settings" link
    sit on the same row, the latter pinned to the right - the settings page
    is reached "via a link next to the Help button" rather than a nav item. */
-.store-header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 1em; flex-wrap: wrap; }
-.store-header-row .help-disclosure { flex: 1 1 auto; min-width: 0; }
+/* `.settings-link` comes first in both DOM order and visual order (flex
+   row, no wrap) - `flex: none` keeps it a fixed-size box entirely
+   independent of `.help-disclosure`'s own height, so it stays put exactly
+   where it is whether that `<details>` is open or closed. */
+.store-header-row { display: flex; align-items: flex-start; gap: 1em; flex-wrap: nowrap; }
 .store-header-row .settings-link { flex: none; margin-top: 0.3em; }
+.store-header-row .help-disclosure { flex: 1 1 auto; min-width: 0; }
 .help-disclosure { margin: 0.6em 0 1.2em; }
 .help-disclosure summary {
   display: flex;

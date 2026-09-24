@@ -42,6 +42,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 h1 { (store.display_name) }
 
                 div class="store-header-row" {
+                    a class="btn-secondary settings-link" href=(format!("/dashboard/connections/{}/settings", store.connection_id)) { "Settings" }
                     details class="help-disclosure" {
                         summary {
                             span {
@@ -53,7 +54,6 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                         }
                         (super::integration_help::fragment(&store.public_key, &store.endpoint, store.is_woocommerce))
                     }
-                    a class="btn-secondary settings-link" href=(format!("/dashboard/connections/{}/settings", store.connection_id)) { "Settings" }
                 }
 
                 table {
@@ -103,13 +103,6 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 }
 
                 h2 { "Recent orders" }
-                (lookup_payment_card(
-                    &format!("/dashboard/connections/{}/orders/lookup", store.connection_id),
-                    &store.lookup_txid_value,
-                    &store.lookup_message,
-                    &store.lookup_found_payment_id,
-                    |payment_id| format!("/dashboard/connections/{}/orders/{}", store.connection_id, payment_id),
-                ))
                 @if store.recent_orders.is_empty() {
                     p class="muted" { "No orders yet." }
                 } @else {
@@ -134,6 +127,14 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 p {
                     a href=(format!("/dashboard/connections/{}/orders", store.connection_id)) { "all orders →" }
                 }
+
+                (lookup_payment_card(
+                    &format!("/dashboard/connections/{}/orders/lookup", store.connection_id),
+                    &store.lookup_txid_value,
+                    &store.lookup_message,
+                    &store.lookup_found_payment_id,
+                    |payment_id| format!("/dashboard/connections/{}/orders/{}", store.connection_id, payment_id),
+                ))
             } @else {
                 h1 { "Store not found" }
                 p { "This store doesn't exist, or isn't connected to your account." }

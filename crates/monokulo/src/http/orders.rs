@@ -115,7 +115,7 @@ pub struct LookupPaymentForm {
 }
 
 /// The engine call shared by `lookup_payment`'s only caller
-/// (`views::store_detail`'s own "Look up a payment" card, folded there from
+/// (`views::store_detail`'s own "Look up a transaction" card, folded there from
 /// the standalone orders list page it used to live on) - a plain,
 /// human-readable result message plus the matched order's id, if any.
 async fn perform_payment_lookup(state: &AppState, sk: &str, txid: &str) -> Result<(String, Option<String>), ()> {

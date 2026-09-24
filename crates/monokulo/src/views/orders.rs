@@ -21,7 +21,7 @@ pub struct OrdersViewModel {
     pub orders: Vec<OrderRowViewModel>,
 }
 
-/// The "Look up a payment" card - a customer's transaction id, looked up
+/// The "Look up a transaction" card - a customer's transaction id, looked up
 /// directly against the engine with no need to know which order it belongs
 /// to. Lives on the store overview page's own "Recent orders" section
 /// (`views::store_detail`) - `action` and `order_href` are still parameters
@@ -36,7 +36,7 @@ pub fn lookup_payment_card(
 ) -> Markup {
     html! {
         div class="card" {
-            h2 { "Look up a payment" }
+            h2 { "Look up a transaction" }
             p { "Have a customer's transaction ID? Look it up directly - no need to know which order it belongs to." }
             form method="post" action=(action) {
                 input
