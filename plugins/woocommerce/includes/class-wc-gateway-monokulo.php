@@ -99,7 +99,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 
 	/**
 	 * The order-meta key `process_payment()` writes the engine's own
-	 * `payment_id` under, and `find_order_by_payment_id()` (WBS 1.5.4) reads
+	 * `order_id` under, and `find_order_by_order_id()` (WBS 1.5.4) reads
 	 * back to map an incoming webhook to a `WC_Order` - promoted to a
 	 * constant, rather than the literal string 1.5.2 originally hardcoded
 	 * inline, specifically because this step adds a second, independent call
@@ -110,7 +110,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *
 	 * @var string
 	 */
-	const META_PAYMENT_ID = '_monokulo_payment_id';
+	const META_ORDER_ID = '_monokulo_order_id';
 
 	/**
 	 * The order-meta key `event_already_applied()`/`mark_event_applied()`
@@ -296,7 +296,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		// checkout - per `docs/WOOCOMMERCE_ROADMAP.md` Stage 7's explicit
 		// integration choice, paying with Monero means redirecting the
 		// customer to the engine's own already-built, already-tested
-		// `/pay/v1/{pk}/{payment_id}` checkout page, not embedding a new
+		// `/pay/v1/{pk}/{order_id}` checkout page, not embedding a new
 		// widget into WooCommerce's checkout form. `has_fields = false` is
 		// what tells WooCommerce's checkout template not to reserve any
 		// inline space for this gateway.
@@ -631,7 +631,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *   `wp_send_json( $result )` sends back (AJAX/Blocks checkout) - neither
 	 *   path constrains the URL's shape or origin. So `redirect` here is the
 	 *   engine's own already-built checkout page,
-	 *   `GET /pay/v1/{pk}/{payment_id}`, off-site by design.
+	 *   `GET /pay/v1/{pk}/{order_id}`, off-site by design.
 	 * - Failure is signaled by *throwing*, not by returning
 	 *   `array( 'result' => 'fail' )` - confirmed against `WC_Checkout::
 	 *   process_checkout()` directly: it calls `process_order_payment()`
@@ -670,25 +670,25 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$engine_order = $this->create_engine_order( $order );
 
 		// The one point in this gateway's whole flow that ever sees the
-		// mapping between a WC order and the engine's own payment_id -
+		// mapping between a WC order and the engine's own order_id -
 		// recorded now, while it's in hand, so it isn't thrown away.
 		// WBS 1.5.4's webhook receiver will need exactly this lookup (an
-		// incoming delivery carries a payment_id, not a WC order id) to know
+		// incoming delivery carries an order_id, not a WC order id) to know
 		// which order to update; nothing here *consumes* that meta key yet -
 		// that consumption is 1.5.4's job, not built here.
-		$order->update_meta_data( self::META_PAYMENT_ID, $engine_order['payment_id'] );
+		$order->update_meta_data( self::META_ORDER_ID, $engine_order['order_id'] );
 		$order->add_order_note(
 			sprintf(
-				/* translators: %s: Monokulo payment_id */
-				__( 'Customer redirected to Monokulo checkout for payment_id %s.', 'monokulo' ),
-				$engine_order['payment_id']
+				/* translators: %s: Monokulo order_id */
+				__( 'Customer redirected to Monokulo checkout for order_id %s.', 'monokulo' ),
+				$engine_order['order_id']
 			)
 		);
 		$order->save();
 
 		return array(
 			'result'   => 'success',
-			'redirect' => $this->get_engine_checkout_url( $engine_order['payment_id'] ),
+			'redirect' => $this->get_engine_checkout_url( $engine_order['order_id'] ),
 		);
 	}
 
@@ -698,7 +698,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * paraphrased - a **public** route: no secret token, only the tenant's
 	 * public key in the URL path) to create a real order for `$order`, and
 	 * returns the decoded JSON response
-	 * (`payment_id`/`address`/`xmr_amount_piconero`/`fiat_amount`/
+	 * (`order_id`/`address`/`xmr_amount_piconero`/`fiat_amount`/
 	 * `fiat_currency`/`expires_at`) on success.
 	 *
 	 * Every failure mode below throws a plain, customer-safe `Exception`
@@ -708,7 +708,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * is this contract's real failure signal.
 	 *
 	 * @param WC_Order $order The order to create an engine-side order for.
-	 * @return array{payment_id: string, address: string, xmr_amount_piconero: int,
+	 * @return array{order_id: string, address: string, xmr_amount_piconero: int,
 	 *               fiat_amount: string, fiat_currency: string, expires_at: int}
 	 * @throws Exception See above.
 	 */
@@ -796,7 +796,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		}
 
 		$decoded = json_decode( $raw_body, true );
-		if ( ! is_array( $decoded ) || empty( $decoded['payment_id'] ) ) {
+		if ( ! is_array( $decoded ) || empty( $decoded['order_id'] ) ) {
 			$this->log(
 				sprintf( 'Order creation response from %s was not the expected shape: %s', $request_url, $raw_body ),
 				'error'
@@ -828,25 +828,25 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * `{endpoint}/pay/v1/{pk}/{payment_id}` - the engine's own already-built
-	 * checkout page (`src/http/mod.rs`'s `.route("/pay/v1/{pk}/{payment_id}",
+	 * `{endpoint}/pay/v1/{pk}/{order_id}` - the engine's own already-built
+	 * checkout page (`src/http/mod.rs`'s `.route("/pay/v1/{pk}/{order_id}",
 	 * get(public::payment_page))`, read directly) this gateway redirects the
-	 * customer to. `rawurlencode()` on `payment_id` even though the engine's
+	 * customer to. `rawurlencode()` on `order_id` even though the engine's
 	 * own ids are UUID-shaped today (never containing characters this would
 	 * change) - cheap, correct-by-construction defense against that
 	 * assumption quietly becoming false in a later engine version, rather
 	 * than this gateway silently relying on it.
 	 *
-	 * @param string $payment_id The engine's own order id, from
+	 * @param string $order_id The engine's own order id, from
 	 *                            `create_engine_order()`'s response.
 	 * @return string
 	 */
-	private function get_engine_checkout_url( $payment_id ) {
+	private function get_engine_checkout_url( $order_id ) {
 		return sprintf(
 			'%s/pay/v1/%s/%s',
 			rtrim( $this->api_base_url, '/' ),
 			rawurlencode( $this->tenant_public_key ),
-			rawurlencode( $payment_id )
+			rawurlencode( $order_id )
 		);
 	}
 
@@ -1395,34 +1395,34 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *   fact ("this request did not prove it knows the shared secret").
 	 *   **No order lookup or mutation ever happens before this check passes**
 	 *   - the whole point of verifying first is that everything downstream
-	 *   can trust `payment_id` came from the engine, not from anyone who
+	 *   can trust `order_id` came from the engine, not from anyone who
 	 *   found this URL.
 	 * - **400 Bad Request**: the signature is valid but the body isn't the
 	 *   envelope shape `enqueue_webhook_event()` in `src/scanner.rs` always
-	 *   produces (`event`/`event_id`/`payment_id`, read directly - every
+	 *   produces (`event`/`event_id`/`order_id`, read directly - every
 	 *   event this engine ever sends has all three). A signed-but-malformed
 	 *   body is a client error on the sender's side, not a "we don't
 	 *   recognize this order" case (404) or an auth failure (401) - 400 is
 	 *   the one of the three that actually means "your request, not our
 	 *   data, is the problem," matching ordinary REST convention.
 	 * - **404 Not Found**: a well-formed, correctly-signed event for a
-	 *   `payment_id` with no matching order *on this WordPress site*.
+	 *   `order_id` with no matching order *on this WordPress site*.
 	 *   Mirrors the engine's own `ApiError::NotFound => StatusCode::
 	 *   NOT_FOUND` convention for "the referenced resource doesn't exist
 	 *   here" (`src/http/mod.rs`, same file as above) - chosen deliberately
 	 *   over a 2xx "swallow it silently" response, because an unknown
-	 *   `payment_id` reaching a *correctly-signed* request (it already
+	 *   `order_id` reaching a *correctly-signed* request (it already
 	 *   passed the 401 check, so this webhook's `signing_secret` really is
 	 *   this site's) is a real operational fact worth an operator noticing
 	 *   in logs - a stale webhook registration surviving a database reset,
 	 *   or (in principle) a site's webhook secret having leaked - not
 	 *   something to hide by pretending success. Also deliberately not
 	 *   treated as a reason to retry forever: since `process_payment()`
-	 *   always creates the engine-side order and records its `payment_id`
-	 *   (`META_PAYMENT_ID`) *before* that order can possibly generate any
+	 *   always creates the engine-side order and records its `order_id`
+	 *   (`META_ORDER_ID`) *before* that order can possibly generate any
 	 *   webhook event at all, "the order doesn't exist yet, try again
 	 *   later" is not a real race this endpoint has to accommodate - an
-	 *   unknown `payment_id` here means "never will," not "not yet."
+	 *   unknown `order_id` here means "never will," not "not yet."
 	 *
 	 * @param string $raw_body  The exact raw request body bytes, unmodified.
 	 * @param string $signature The `X-Monokulo-Signature` header value, or
@@ -1439,16 +1439,16 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		if ( ! is_array( $event )
 			|| empty( $event['event'] ) || ! is_string( $event['event'] )
 			|| empty( $event['event_id'] ) || ! is_string( $event['event_id'] )
-			|| empty( $event['payment_id'] ) || ! is_string( $event['payment_id'] )
+			|| empty( $event['order_id'] ) || ! is_string( $event['order_id'] )
 		) {
 			$this->log( sprintf( 'Webhook rejected: correctly signed but not the expected envelope shape: %s', $raw_body ), 'error' );
 			return 400;
 		}
 
-		$order = $this->find_order_by_payment_id( $event['payment_id'] );
+		$order = $this->find_order_by_order_id( $event['order_id'] );
 		if ( ! $order instanceof WC_Order ) {
 			$this->log(
-				sprintf( 'Webhook for payment_id %s (event %s) has no matching order on this site.', $event['payment_id'], $event['event_id'] ),
+				sprintf( 'Webhook for order_id %s (event %s) has no matching order on this site.', $event['order_id'], $event['event_id'] ),
 				'warning'
 			);
 			return 404;
@@ -1531,8 +1531,8 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * Finds the `WC_Order` an incoming webhook's `payment_id` refers to, by
-	 * querying for the `META_PAYMENT_ID` meta key `process_payment()`
+	 * Finds the `WC_Order` an incoming webhook's `order_id` refers to, by
+	 * querying for the `META_ORDER_ID` meta key `process_payment()`
 	 * writes - via `wc_get_orders()` (WooCommerce's own real order-query
 	 * abstraction, `WC_Order_Query` under the hood), **not** a raw SQL query
 	 * against `wp_postmeta`/the HPOS order-meta tables directly, because
@@ -1564,15 +1564,15 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * the `meta_query` array shape WooCommerce's own CPT store explicitly
 	 * warns is CPT-unsupported.
 	 *
-	 * @param string $payment_id The engine's own order id from the webhook
+	 * @param string $order_id The engine's own order id from the webhook
 	 *                            payload.
 	 * @return WC_Order|null
 	 */
-	private function find_order_by_payment_id( $payment_id ) {
+	private function find_order_by_order_id( $order_id ) {
 		$orders = wc_get_orders(
 			array(
-				'meta_key'   => self::META_PAYMENT_ID, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
-				'meta_value' => $payment_id, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
+				'meta_key'   => self::META_ORDER_ID, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_key
+				'meta_value' => $order_id, // phpcs:ignore WordPress.DB.SlowDBQuery.slow_db_query_meta_value
 				'limit'      => 1,
 				'return'     => 'objects',
 			)
@@ -1678,11 +1678,11 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * *notices* (a prominent order note), never to re-derive or second-guess
 	 * a status this receiver has no authoritative data to recompute anyway
 	 * (the double-spend payloads carry no amount/confirmation data at all -
-	 * only `payment_id`, plus `txid` for the reversal).
+	 * only `order_id`, plus `txid` for the reversal).
 	 *
 	 * @param WC_Order $order The already-matched order.
 	 * @param array    $event The decoded webhook envelope (`event`,
-	 *                         `event_id`, `payment_id`, plus whatever
+	 *                         `event_id`, `order_id`, plus whatever
 	 *                         event-specific fields that event type carries).
 	 */
 	private function apply_webhook_event( WC_Order $order, array $event ) {
@@ -1941,7 +1941,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *
 	 * @param string $message Log message. Deliberately never includes raw
 	 *                         customer/order PII beyond what's already an
-	 *                         order note-worthy fact (order id, payment_id).
+	 *                         order note-worthy fact (order id, order_id).
 	 * @param string $level   A `WC_Log_Levels` level ('info'|'error'|...).
 	 */
 	private function log( $message, $level = 'info' ) {

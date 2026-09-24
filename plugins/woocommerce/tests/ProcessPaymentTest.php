@@ -3,7 +3,7 @@
  * WBS 1.5.2's acceptance test: `process_payment()` actually calls the real
  * engine order-creation API with the request WooCommerce's own real checkout
  * flow would have produced, and hands WooCommerce back the real
- * `/pay/v1/{pk}/{payment_id}` redirect shape.
+ * `/pay/v1/{pk}/{order_id}` redirect shape.
  *
  * **Why `pre_http_request`, not a hand-rolled HTTP client mock**: WordPress's
  * HTTP API (`wp_remote_post`/`wp_remote_get`, both of which ultimately go
@@ -126,7 +126,7 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 	 * this gateway sends the exact request WooCommerce's real checkout would
 	 * have sent (URL, method, JSON body) to the engine's real
 	 * `POST /api/v1/t/{pk}/orders`, and returns the exact
-	 * `/pay/v1/{pk}/{payment_id}` redirect WooCommerce's own checkout JS
+	 * `/pay/v1/{pk}/{order_id}` redirect WooCommerce's own checkout JS
 	 * (`WC_Checkout::process_order_payment()`, read directly - see this
 	 * class's file-level doc comment) sends the customer's browser to.
 	 */
@@ -139,7 +139,7 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 				'headers'  => array(),
 				'body'     => wp_json_encode(
 					array(
-						'payment_id'           => 'pay_deadbeef',
+						'order_id'           => 'pay_deadbeef',
 						'address'              => '4Axxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx',
 						'xmr_amount_piconero'  => 123456789012,
 						'fiat_amount'          => '42.50',
@@ -185,20 +185,20 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 		$this->assertArrayHasKey( 'description', $sent_body );
 
 		// --- The redirect WooCommerce receives back, asserted against the ---
-		// --- real /pay/v1/{pk}/{payment_id} shape the mocked response's   ---
-		// --- own payment_id implies.                                     ---
+		// --- real /pay/v1/{pk}/{order_id} shape the mocked response's   ---
+		// --- own order_id implies.                                     ---
 		$this->assertSame( 'success', $result['result'] );
 		$this->assertSame(
 			'http://engine.test/pay/v1/pk_test_abc123/pay_deadbeef',
 			$result['redirect'],
-			'Should redirect to the engine\'s own already-built checkout page for the payment_id the ' .
+			'Should redirect to the engine\'s own already-built checkout page for the order_id the ' .
 			'canned order-creation response returned - not WooCommerce\'s own get_return_url() thank-you ' .
 			'page, since no payment has actually happened yet.'
 		);
 
 		// The one fact 1.5.4's webhook receiver will need later, recorded now.
 		$order = wc_get_order( $order->get_id() );
-		$this->assertSame( 'pay_deadbeef', $order->get_meta( '_monokulo_payment_id' ) );
+		$this->assertSame( 'pay_deadbeef', $order->get_meta( '_monokulo_order_id' ) );
 	}
 
 	/**

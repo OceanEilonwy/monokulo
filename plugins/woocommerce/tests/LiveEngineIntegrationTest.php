@@ -150,8 +150,8 @@ class LiveEngineIntegrationTest extends WP_UnitTestCase {
 	/**
 	 * The core WBS 1.5.2 live acceptance assertion: `process_payment()`
 	 * against a real `WC_Order` really calls the real engine's real
-	 * `POST /api/v1/t/{pk}/orders`, gets back a real `payment_id`, and hands
-	 * WooCommerce a real `/pay/v1/{pk}/{payment_id}` redirect - then,
+	 * `POST /api/v1/t/{pk}/orders`, gets back a real `order_id`, and hands
+	 * WooCommerce a real `/pay/v1/{pk}/{order_id}` redirect - then,
 	 * independently of the gateway's own return value, this test asks the
 	 * *engine itself* whether that order really exists, so a bug that made
 	 * `process_payment()` merely *construct* a plausible-looking redirect
@@ -178,14 +178,14 @@ class LiveEngineIntegrationTest extends WP_UnitTestCase {
 		$this->assertStringStartsWith(
 			$expected_redirect_prefix,
 			$result['redirect'],
-			'redirect should point at the real engine\'s own /pay/v1/{pk}/{payment_id} checkout page.'
+			'redirect should point at the real engine\'s own /pay/v1/{pk}/{order_id} checkout page.'
 		);
-		$payment_id = substr( $result['redirect'], strlen( $expected_redirect_prefix ) );
-		$this->assertNotEmpty( $payment_id );
+		$order_id = substr( $result['redirect'], strlen( $expected_redirect_prefix ) );
+		$this->assertNotEmpty( $order_id );
 		$this->assertSame(
-			$payment_id,
-			$order->get_meta( '_monokulo_payment_id' ),
-			'The payment_id in the redirect URL and the one recorded on the order should be the same value.'
+			$order_id,
+			$order->get_meta( '_monokulo_order_id' ),
+			'The order_id in the redirect URL and the one recorded on the order should be the same value.'
 		);
 
 		// --- The independent, non-circular check: ask the engine itself. ---
@@ -193,7 +193,7 @@ class LiveEngineIntegrationTest extends WP_UnitTestCase {
 			'%s/api/v1/t/%s/orders/%s',
 			rtrim( $this->live_config['endpoint'], '/' ),
 			rawurlencode( $this->live_config['public_key'] ),
-			rawurlencode( $payment_id )
+			rawurlencode( $order_id )
 		);
 		$status_response = wp_remote_get( $status_url, array( 'timeout' => 15 ) );
 		$this->assertNotWPError(
@@ -205,7 +205,7 @@ class LiveEngineIntegrationTest extends WP_UnitTestCase {
 
 		$engine_order = json_decode( wp_remote_retrieve_body( $status_response ), true );
 		$this->assertIsArray( $engine_order );
-		$this->assertSame( $payment_id, $engine_order['payment_id'] );
+		$this->assertSame( $order_id, $engine_order['order_id'] );
 		$this->assertSame(
 			'pending',
 			$engine_order['status'],

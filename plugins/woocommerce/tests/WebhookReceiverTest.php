@@ -30,17 +30,17 @@ class WebhookReceiverTest extends WP_UnitTestCase {
 
 	/**
 	 * Builds a real, saved `WC_Order` already carrying the
-	 * `_monokulo_payment_id` meta `process_payment()` would have
-	 * written - the exact fact `find_order_by_payment_id()` looks up.
+	 * `_monokulo_order_id` meta `process_payment()` would have
+	 * written - the exact fact `find_order_by_order_id()` looks up.
 	 *
-	 * @param string $payment_id
+	 * @param string $order_id
 	 * @param string $status Initial WC order status.
 	 * @return WC_Order
 	 */
-	private function create_order_for_payment_id( $payment_id, $status = 'pending' ) {
+	private function create_order_for_order_id( $order_id, $status = 'pending' ) {
 		$order = wc_create_order();
 		$order->set_status( $status );
-		$order->update_meta_data( WC_Gateway_Monokulo::META_PAYMENT_ID, $payment_id );
+		$order->update_meta_data( WC_Gateway_Monokulo::META_ORDER_ID, $order_id );
 		$order->save();
 		return $order;
 	}
@@ -62,7 +62,7 @@ class WebhookReceiverTest extends WP_UnitTestCase {
 	 * bytes. Returns both the raw body and its real signature, so a test can
 	 * corrupt either independently.
 	 *
-	 * @param array  $fields Event-specific fields (plus event/event_id/payment_id,
+	 * @param array  $fields Event-specific fields (plus event/event_id/order_id,
 	 *                        which callers may override).
 	 * @param string $secret Signing key - defaults to `self::SECRET`, overridable
 	 *                        so a test can prove a wrong-secret signature is
@@ -85,9 +85,9 @@ class WebhookReceiverTest extends WP_UnitTestCase {
 	// --- Signature verification, at the request-handling level. ------------
 
 	public function test_correctly_signed_known_event_returns_200_and_processes_it() {
-		$order = $this->create_order_for_payment_id( 'pay_receiver_ok' );
+		$order = $this->create_order_for_order_id( 'pay_receiver_ok' );
 		list( $body, $sig ) = $this->build_signed_event(
-			array( 'event' => 'order.paid', 'payment_id' => 'pay_receiver_ok', 'status' => 'paid' )
+			array( 'event' => 'order.paid', 'order_id' => 'pay_receiver_ok', 'status' => 'paid' )
 		);
 
 		$status_code = $this->create_gateway()->process_webhook_request( $body, $sig );
@@ -98,9 +98,9 @@ class WebhookReceiverTest extends WP_UnitTestCase {
 	}
 
 	public function test_missing_signature_is_rejected_and_the_order_is_left_untouched() {
-		$order = $this->create_order_for_payment_id( 'pay_receiver_nosig', 'pending' );
+		$order = $this->create_order_for_order_id( 'pay_receiver_nosig', 'pending' );
 		list( $body, $sig ) = $this->build_signed_event(
-			array( 'event' => 'order.paid', 'payment_id' => 'pay_receiver_nosig', 'status' => 'paid' )
+			array( 'event' => 'order.paid', 'order_id' => 'pay_receiver_nosig', 'status' => 'paid' )
 		);
 
 		$status_code = $this->create_gateway()->process_webhook_request( $body, '' );
@@ -110,9 +110,9 @@ class WebhookReceiverTest extends WP_UnitTestCase {
 	}
 
 	public function test_invalid_signature_is_rejected_and_the_order_is_left_untouched() {
-		$order = $this->create_order_for_payment_id( 'pay_receiver_badsig', 'pending' );
+		$order = $this->create_order_for_order_id( 'pay_receiver_badsig', 'pending' );
 		list( $body, $real_sig ) = $this->build_signed_event(
-			array( 'event' => 'order.paid', 'payment_id' => 'pay_receiver_badsig', 'status' => 'paid' )
+			array( 'event' => 'order.paid', 'order_id' => 'pay_receiver_badsig', 'status' => 'paid' )
 		);
 		// Flip one hex character - a near-miss, exactly the input a
 		// non-constant-time comparison would take longest to reject.
@@ -129,9 +129,9 @@ class WebhookReceiverTest extends WP_UnitTestCase {
 		// configured secret, not merely "is this valid hex of the right
 		// length" - a signature that is perfectly well-formed, just signed
 		// with the wrong key.
-		$order = $this->create_order_for_payment_id( 'pay_receiver_wrongkey', 'pending' );
+		$order = $this->create_order_for_order_id( 'pay_receiver_wrongkey', 'pending' );
 		list( $body, $sig ) = $this->build_signed_event(
-			array( 'event' => 'order.paid', 'payment_id' => 'pay_receiver_wrongkey', 'status' => 'paid' ),
+			array( 'event' => 'order.paid', 'order_id' => 'pay_receiver_wrongkey', 'status' => 'paid' ),
 			'a-completely-different-secret'
 		);
 
@@ -153,7 +153,7 @@ class WebhookReceiverTest extends WP_UnitTestCase {
 	}
 
 	public function test_correctly_signed_body_missing_required_envelope_fields_is_rejected_as_bad_request() {
-		$body = wp_json_encode( array( 'event' => 'order.paid' ) ); // no event_id, no payment_id
+		$body = wp_json_encode( array( 'event' => 'order.paid' ) ); // no event_id, no order_id
 		$sig  = hash_hmac( 'sha256', $body, self::SECRET );
 
 		$status_code = $this->create_gateway()->process_webhook_request( $body, $sig );
@@ -163,23 +163,23 @@ class WebhookReceiverTest extends WP_UnitTestCase {
 
 	// --- Order lookup. ---------------------------------------------------------
 
-	public function test_unknown_payment_id_is_rejected_cleanly_as_not_found_with_no_fatal() {
-		// No order created for this payment_id at all.
+	public function test_unknown_order_id_is_rejected_cleanly_as_not_found_with_no_fatal() {
+		// No order created for this order_id at all.
 		list( $body, $sig ) = $this->build_signed_event(
-			array( 'event' => 'order.paid', 'payment_id' => 'pay_does_not_exist_on_this_site', 'status' => 'paid' )
+			array( 'event' => 'order.paid', 'order_id' => 'pay_does_not_exist_on_this_site', 'status' => 'paid' )
 		);
 
 		$status_code = $this->create_gateway()->process_webhook_request( $body, $sig );
 
-		$this->assertSame( 404, $status_code, 'An unknown payment_id (already-authenticated) should fail cleanly as not-found, never fatal.' );
+		$this->assertSame( 404, $status_code, 'An unknown order_id (already-authenticated) should fail cleanly as not-found, never fatal.' );
 	}
 
 	// --- event_id dedupe. --------------------------------------------------------
 
 	public function test_a_repeated_event_id_is_skipped_and_not_double_processed() {
-		$order = $this->create_order_for_payment_id( 'pay_receiver_dedupe', 'pending' );
+		$order = $this->create_order_for_order_id( 'pay_receiver_dedupe', 'pending' );
 		list( $body, $sig ) = $this->build_signed_event(
-			array( 'event' => 'order.expired', 'payment_id' => 'pay_receiver_dedupe', 'status' => 'expired' )
+			array( 'event' => 'order.expired', 'order_id' => 'pay_receiver_dedupe', 'status' => 'expired' )
 		);
 		$gateway = $this->create_gateway();
 
@@ -209,17 +209,17 @@ class WebhookReceiverTest extends WP_UnitTestCase {
 		// The dedupe must be keyed by event_id, not merely "have we ever
 		// touched this order before" - a real order legitimately receives
 		// several distinct events over its lifetime.
-		$order = $this->create_order_for_payment_id( 'pay_receiver_two_events', 'pending' );
+		$order = $this->create_order_for_order_id( 'pay_receiver_two_events', 'pending' );
 		$gateway = $this->create_gateway();
 
 		list( $body1, $sig1 ) = $this->build_signed_event(
-			array( 'event' => 'order.confirming', 'payment_id' => 'pay_receiver_two_events', 'status' => 'confirming' )
+			array( 'event' => 'order.confirming', 'order_id' => 'pay_receiver_two_events', 'status' => 'confirming' )
 		);
 		$this->assertSame( 200, $gateway->process_webhook_request( $body1, $sig1 ) );
 		$this->assertSame( 'on-hold', wc_get_order( $order->get_id() )->get_status() );
 
 		list( $body2, $sig2 ) = $this->build_signed_event(
-			array( 'event' => 'order.paid', 'payment_id' => 'pay_receiver_two_events', 'status' => 'paid' )
+			array( 'event' => 'order.paid', 'order_id' => 'pay_receiver_two_events', 'status' => 'paid' )
 		);
 		$this->assertSame( 200, $gateway->process_webhook_request( $body2, $sig2 ) );
 		$this->assertTrue( wc_get_order( $order->get_id() )->has_status( array( 'processing', 'completed' ) ) );

@@ -29,10 +29,10 @@ class WebhookStatusMappingTest extends WP_UnitTestCase {
 		return new WC_Gateway_Monokulo();
 	}
 
-	private function create_order_for_payment_id( $payment_id, $status = 'pending' ) {
+	private function create_order_for_order_id( $order_id, $status = 'pending' ) {
 		$order = wc_create_order();
 		$order->set_status( $status );
-		$order->update_meta_data( WC_Gateway_Monokulo::META_PAYMENT_ID, $payment_id );
+		$order->update_meta_data( WC_Gateway_Monokulo::META_ORDER_ID, $order_id );
 		$order->save();
 		return $order;
 	}
@@ -62,7 +62,7 @@ class WebhookStatusMappingTest extends WP_UnitTestCase {
 	 * step's own correct behavior does not guarantee for every order.
 	 *
 	 * @return array<string, array{0: string, 1: string, 2: string[]}>
-	 *         [event type, payment_id, acceptable resulting WC statuses]
+	 *         [event type, order_id, acceptable resulting WC statuses]
 	 */
 	public function status_mapping_provider() {
 		return array(
@@ -80,15 +80,15 @@ class WebhookStatusMappingTest extends WP_UnitTestCase {
 	 * @dataProvider status_mapping_provider
 	 */
 	public function test_status_mapping( $event_type, $engine_status, array $acceptable_wc_statuses ) {
-		$payment_id = 'pay_mapping_' . str_replace( '.', '_', $event_type );
-		$order      = $this->create_order_for_payment_id( $payment_id );
+		$order_id = 'pay_mapping_' . str_replace( '.', '_', $event_type );
+		$order      = $this->create_order_for_order_id( $order_id );
 		$gateway    = $this->create_gateway();
 
 		$status_code = $this->send_event(
 			$gateway,
 			array(
 				'event'      => $event_type,
-				'payment_id' => $payment_id,
+				'order_id' => $order_id,
 				'status'     => $engine_status,
 			)
 		);
@@ -110,12 +110,12 @@ class WebhookStatusMappingTest extends WP_UnitTestCase {
 		// payment makes derive_status() in src/status.rs genuinely return
 		// to Pending (total == 0). The mapping must apply this regression
 		// faithfully, not resist it.
-		$order   = $this->create_order_for_payment_id( 'pay_regression_to_pending', 'on-hold' );
+		$order   = $this->create_order_for_order_id( 'pay_regression_to_pending', 'on-hold' );
 		$gateway = $this->create_gateway();
 
 		$status_code = $this->send_event(
 			$gateway,
-			array( 'event' => 'order.pending', 'payment_id' => 'pay_regression_to_pending', 'status' => 'pending' )
+			array( 'event' => 'order.pending', 'order_id' => 'pay_regression_to_pending', 'status' => 'pending' )
 		);
 
 		$this->assertSame( 200, $status_code );
@@ -123,12 +123,12 @@ class WebhookStatusMappingTest extends WP_UnitTestCase {
 	}
 
 	public function test_overpaid_adds_an_explicit_manual_refund_note_beyond_the_payment_complete_note() {
-		$order   = $this->create_order_for_payment_id( 'pay_overpaid_note' );
+		$order   = $this->create_order_for_order_id( 'pay_overpaid_note' );
 		$gateway = $this->create_gateway();
 
 		$this->send_event(
 			$gateway,
-			array( 'event' => 'order.overpaid', 'payment_id' => 'pay_overpaid_note', 'status' => 'overpaid' )
+			array( 'event' => 'order.overpaid', 'order_id' => 'pay_overpaid_note', 'status' => 'overpaid' )
 		);
 
 		$notes = wc_get_order_notes( array( 'order_id' => $order->get_id() ) );
@@ -141,12 +141,12 @@ class WebhookStatusMappingTest extends WP_UnitTestCase {
 	}
 
 	public function test_expired_note_explains_manual_handling_is_required_for_any_partial_funds() {
-		$order   = $this->create_order_for_payment_id( 'pay_expired_note' );
+		$order   = $this->create_order_for_order_id( 'pay_expired_note' );
 		$gateway = $this->create_gateway();
 
 		$this->send_event(
 			$gateway,
-			array( 'event' => 'order.expired', 'payment_id' => 'pay_expired_note', 'status' => 'expired' )
+			array( 'event' => 'order.expired', 'order_id' => 'pay_expired_note', 'status' => 'expired' )
 		);
 
 		$notes = wc_get_order_notes( array( 'order_id' => $order->get_id() ) );
@@ -161,12 +161,12 @@ class WebhookStatusMappingTest extends WP_UnitTestCase {
 		// simulating the case where other payments still cover the order,
 		// so recompute_and_notify_in_tx() found no transition and only
 		// void_and_notify()'s own order.double_spend_detected event fired.
-		$order   = $this->create_order_for_payment_id( 'pay_double_spend_detected', 'processing' );
+		$order   = $this->create_order_for_order_id( 'pay_double_spend_detected', 'processing' );
 		$gateway = $this->create_gateway();
 
 		$status_code = $this->send_event(
 			$gateway,
-			array( 'event' => 'order.double_spend_detected', 'payment_id' => 'pay_double_spend_detected' )
+			array( 'event' => 'order.double_spend_detected', 'order_id' => 'pay_double_spend_detected' )
 		);
 
 		$this->assertSame( 200, $status_code );
@@ -187,14 +187,14 @@ class WebhookStatusMappingTest extends WP_UnitTestCase {
 	}
 
 	public function test_double_spend_reversed_adds_a_note_with_the_txid_without_changing_status_by_itself() {
-		$order   = $this->create_order_for_payment_id( 'pay_double_spend_reversed', 'on-hold' );
+		$order   = $this->create_order_for_order_id( 'pay_double_spend_reversed', 'on-hold' );
 		$gateway = $this->create_gateway();
 
 		$status_code = $this->send_event(
 			$gateway,
 			array(
 				'event'      => 'order.double_spend_reversed',
-				'payment_id' => 'pay_double_spend_reversed',
+				'order_id' => 'pay_double_spend_reversed',
 				'txid'       => 'abc123deadbeef',
 			)
 		);
