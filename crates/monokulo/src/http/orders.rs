@@ -519,6 +519,7 @@ async fn render_store_detail_page(
             site_url: row.site_url,
             public_key: row.tenant_public_key,
             endpoint: row.moneropay_endpoint,
+            base_currency: row.base_currency,
             health,
             health_label,
             created_at: row.created_at,

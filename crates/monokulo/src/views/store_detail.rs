@@ -12,7 +12,13 @@ pub struct StoreDetailData {
     pub platform: String,
     pub site_url: String,
     pub public_key: String,
+    /// No longer shown anywhere on this page (an internal detail, not
+    /// something a merchant needs day to day) - kept only because
+    /// `integration_help::fragment` still takes it as a parameter, for
+    /// signature parity with the old partial it replaced; that fragment
+    /// itself never actually renders it (`let _ = endpoint;`).
     pub endpoint: String,
+    pub base_currency: String,
     pub health: String,
     pub health_label: String,
     pub created_at: i64,
@@ -57,8 +63,8 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 }
 
                 table {
+                    tr { th { "Base currency" } td { (store.base_currency) } }
                     tr { th { "Public key" } td { code { (store.public_key) } } }
-                    tr { th { "Engine endpoint" } td { code { (store.endpoint) } } }
                     tr { th { "Connected" } td { (store.created_at) } }
                 }
 
@@ -193,6 +199,7 @@ mod tests {
             site_url: "https://shop.example.com".to_string(),
             public_key: "pk_abc123".to_string(),
             endpoint: "http://127.0.0.1:8080".to_string(),
+            base_currency: "XMR".to_string(),
             health: "ok".to_string(),
             health_label: "healthy".to_string(),
             created_at: 1000,
@@ -215,12 +222,14 @@ mod tests {
         let store = StoreDetailData { health: "error".to_string(), health_label: "unreachable".to_string(), ..base_store(true) };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
         // Proves the integration_help fragment actually received this
-        // store's own public_key/endpoint, not some stale or empty value -
-        // the exact same fragment the post-connect success page uses
+        // store's own public_key, not some stale or empty value - the exact
+        // same fragment the post-connect success page uses
         // (`views::connect`'s own tests), so the two can never drift on
-        // what "integrate this store" means.
+        // what "integrate this store" means. `endpoint` isn't asserted here -
+        // `integration_help::fragment` never actually renders it (`let _ =
+        // endpoint;` in that function, kept only for signature parity), and
+        // this page's own "Engine endpoint" table row is gone by design.
         assert!(html.contains("pk_abc123"));
-        assert!(html.contains("http://127.0.0.1:8080"));
         assert!(html.contains("tag-error"));
         assert!(html.contains("Integrate this store"));
         // is_woocommerce: true must render the "already connected" copy,
@@ -240,6 +249,17 @@ mod tests {
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(base_store(false)) }).into_string();
         assert!(html.contains("Install the"), "expected the WooCommerce onboarding steps to still be offered, got: {html}");
         assert!(!html.contains("already connected via the WooCommerce plugin"));
+    }
+
+    #[test]
+    fn shows_the_base_currency_at_the_top_of_the_table_and_hides_the_engine_endpoint() {
+        let store = StoreDetailData { base_currency: "USD".to_string(), ..base_store(false) };
+        let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
+        assert!(html.contains(r#"<th>Base currency</th><td>USD</td>"#), "expected the base currency row, got: {html}");
+        let base_currency_pos = html.find("Base currency").expect("base currency row missing");
+        let public_key_pos = html.find("Public key").expect("public key row missing");
+        assert!(base_currency_pos < public_key_pos, "expected Base currency above Public key, got: {html}");
+        assert!(!html.contains("Engine endpoint"), "the engine endpoint row should no longer render on this page, got: {html}");
     }
 
     #[test]
