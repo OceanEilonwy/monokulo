@@ -75,8 +75,11 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
             @if let Some(store) = &data.store {
-                p { a href=(format!("/dashboard/connections/{}", store.connection_id)) { "← back to store" } }
-                h1 { "Settings" " " span class="muted" { (store.display_name) } }
+                h1 class="breadcrumb-header" {
+                    a href=(format!("/dashboard/connections/{}", store.connection_id)) { (store.display_name) }
+                    span class="breadcrumb-sep" { "›" }
+                    "Settings"
+                }
 
                 @if let Some(error) = &store.settings_error {
                     div class="error" { (error) }
@@ -280,6 +283,15 @@ mod tests {
     fn renders_not_found_state_when_store_is_none() {
         let html = page(&chrome(), &StoreSettingsViewModel { store: None }).into_string();
         assert!(html.to_lowercase().contains("not found"));
+    }
+
+    #[test]
+    fn shows_a_store_name_settings_breadcrumb_linking_back_to_the_store_page() {
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        assert!(
+            html.contains(r#"<h1 class="breadcrumb-header"><a href="/dashboard/connections/conn_1">shop.example.com</a>"#),
+            "expected a store-name -> Settings breadcrumb, got: {html}"
+        );
     }
 
     #[test]

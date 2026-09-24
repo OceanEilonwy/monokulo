@@ -417,6 +417,11 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
    row, no wrap) - `flex: none` keeps it a fixed-size box entirely
    independent of `.help-disclosure`'s own height, so it stays put exactly
    where it is whether that `<details>` is open or closed. */
+/* A "store name › Settings" breadcrumb heading (settings page only) - the
+   first segment is a real link back to the store page. */
+.breadcrumb-header { display: flex; align-items: baseline; gap: 0.5em; flex-wrap: wrap; }
+.breadcrumb-header a { color: inherit; }
+.breadcrumb-sep { color: var(--muted); font-weight: 400; }
 .store-header-row { display: flex; align-items: flex-start; gap: 1em; flex-wrap: nowrap; }
 .store-header-row .settings-link { flex: none; margin-top: 0.3em; }
 .store-header-row .help-disclosure { flex: 1 1 auto; min-width: 0; }
