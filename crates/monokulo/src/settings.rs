@@ -46,8 +46,6 @@ scalar_settings! {
     EXCHANGE_RATE_COINGECKO_ENABLED => { key: "exchange_rate.coingecko_enabled", env: "MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED", default: "true" },
     EXCHANGE_RATE_COINGECKO_BASE_URL => { key: "exchange_rate.coingecko_base_url", env: "MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL", default: "https://api.coingecko.com" },
     EXCHANGE_RATE_CACHE_SECONDS => { key: "exchange_rate.cache_seconds", env: "MONOKULO_EXCHANGE_RATE_CACHE_SECONDS", default: "30" },
-    RESCAN_DEFAULT_LOOKBACK_DAYS => { key: "rescan.default_lookback_days", env: "MONOKULO_RESCAN_DEFAULT_LOOKBACK_DAYS", default: "7" },
-    RESCAN_MAX_LOOKBACK_DAYS => { key: "rescan.max_lookback_days", env: "MONOKULO_RESCAN_MAX_LOOKBACK_DAYS", default: "90" },
     HTTP_CACHE_MAX_MB => { key: "http_cache.max_mb", env: "MONOKULO_HTTP_CACHE_MAX_MB", default: "16" },
     RATE_LIMIT_PER_IP_PER_MIN => { key: "rate_limit.per_ip_per_min", env: "MONOKULO_RATE_LIMIT_PER_IP_PER_MIN", default: "20" },
 }
@@ -98,8 +96,6 @@ mod tests {
         let _: bool = get(&db, &EXCHANGE_RATE_COINGECKO_ENABLED);
         let _: String = get(&db, &EXCHANGE_RATE_COINGECKO_BASE_URL);
         let _: u64 = get(&db, &EXCHANGE_RATE_CACHE_SECONDS);
-        let _: u32 = get(&db, &RESCAN_DEFAULT_LOOKBACK_DAYS);
-        let _: u32 = get(&db, &RESCAN_MAX_LOOKBACK_DAYS);
         let _: u64 = get(&db, &HTTP_CACHE_MAX_MB);
         let _: u32 = get(&db, &RATE_LIMIT_PER_IP_PER_MIN);
     }
@@ -107,18 +103,18 @@ mod tests {
     #[test]
     fn a_saved_scalar_setting_is_read_back_over_the_default() {
         let db = Db::open_in_memory().unwrap();
-        db.set_setting(RESCAN_DEFAULT_LOOKBACK_DAYS.key, "3").unwrap();
-        let value: u32 = get(&db, &RESCAN_DEFAULT_LOOKBACK_DAYS);
+        db.set_setting(EXCHANGE_RATE_CACHE_SECONDS.key, "3").unwrap();
+        let value: u64 = get(&db, &EXCHANGE_RATE_CACHE_SECONDS);
         assert_eq!(value, 3);
     }
 
     #[test]
     fn an_env_var_overrides_a_saved_setting() {
         let db = Db::open_in_memory().unwrap();
-        db.set_setting(RESCAN_DEFAULT_LOOKBACK_DAYS.key, "3").unwrap();
-        std::env::set_var(RESCAN_DEFAULT_LOOKBACK_DAYS.env_var, "9");
-        let value: u32 = get(&db, &RESCAN_DEFAULT_LOOKBACK_DAYS);
-        std::env::remove_var(RESCAN_DEFAULT_LOOKBACK_DAYS.env_var);
+        db.set_setting(EXCHANGE_RATE_CACHE_SECONDS.key, "3").unwrap();
+        std::env::set_var(EXCHANGE_RATE_CACHE_SECONDS.env_var, "9");
+        let value: u64 = get(&db, &EXCHANGE_RATE_CACHE_SECONDS);
+        std::env::remove_var(EXCHANGE_RATE_CACHE_SECONDS.env_var);
         assert_eq!(value, 9);
     }
 

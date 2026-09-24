@@ -171,12 +171,9 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         rate_limiter: Arc::new(RateLimiter::new(10_000)),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         configured_networks: Arc::new(HashSet::from([Network::Stagenet])),
-        daemons: Arc::new(HashMap::from([(Network::Stagenet, fallback_daemon.clone())])),
-        rescan_daemons: Arc::new(HashMap::from([(Network::Stagenet, fallback_daemon)])),
+        daemons: Arc::new(HashMap::from([(Network::Stagenet, fallback_daemon)])),
         scanner_status: new_scanner_status_map(),
         scan_poll_interval_secs: 2,
-        default_rescan_lookback_days: 7,
-        max_rescan_lookback_days: 90,
         expired_order_grace_period_seconds: 0,
     };
     let engine_router = build_engine_router(engine_state, 1_000_000);

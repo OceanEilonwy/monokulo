@@ -1,5 +1,12 @@
 # Expired-Order Rescan — Work Breakdown Structure
 
+> **Superseded.** The manual rescan feature this document designs was fully
+> removed and replaced by a direct txid-lookup endpoint — see
+> [`docs/txid_lookup_and_scan_chunking_wbs.md`](txid_lookup_and_scan_chunking_wbs.md)
+> Part C for the removal, and its Part B for the replacement design. Kept here
+> as the historical record of why the original feature was built the way it
+> was; nothing described below reflects the current codebase.
+
 Lets a merchant trigger a one-off, background chain rescan for a *single*
 order, starting from around that order's creation time — for the real
 support case this exists to solve: a customer says they sent funds to an

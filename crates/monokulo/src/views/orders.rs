@@ -1,6 +1,6 @@
 //! `GET /dashboard/connections/{id}/orders` and
 //! `/dashboard/connections/{id}/orders/{payment_id}` -
-//! `http::orders::orders_list`/`order_detail`/`trigger_rescan`.
+//! `http::orders::orders_list`/`order_detail`/`lookup_payment`.
 
 use maud::{html, Markup, PreEscaped};
 
@@ -101,30 +101,6 @@ pub struct PaymentRowViewModel {
     pub voided_at_display: String,
 }
 
-/// `docs/order_rescan_wbs.md` Phase 5.4 - either a trigger form (`form`, when
-/// nothing has run or the last run finished) or a live progress view
-/// (`progress`, while one is `running`); never both.
-pub struct OrderRescanSectionViewModel {
-    pub form: Option<RescanTriggerFormViewModel>,
-    pub progress: Option<RescanProgressViewModel>,
-}
-
-pub struct RescanTriggerFormViewModel {
-    /// Trusted HTML (a `data-utc-date` span the page's own progressive-
-    /// enhancement script hooks into) - rendered via `PreEscaped`, never
-    /// user input.
-    pub simple_label: String,
-    pub min_date: String,
-    pub max_date: String,
-    pub bound_text: String,
-}
-
-pub struct RescanProgressViewModel {
-    pub percent_complete: u8,
-    pub mode: String,
-    pub stalled: bool,
-}
-
 pub struct OrderDetailData {
     pub payment_id: String,
     /// Raw, *not* pre-rendered to a trusted-HTML display string like the
@@ -153,15 +129,11 @@ pub struct OrderDetailData {
     pub payments: Vec<PaymentRowViewModel>,
     pub payment_link: String,
     pub scan_range_display: String,
-    pub rescan: Option<OrderRescanSectionViewModel>,
-    pub rescan_error: Option<String>,
 }
 
 pub struct OrderDetailViewModel {
     pub connection_id: String,
     pub order: Option<OrderDetailData>,
-    /// `docs/order_rescan_wbs.md` Phase 3.3 - `5` while this order has a
-    /// rescan genuinely `running`, `15` otherwise.
     pub meta_refresh_secs: u32,
 }
 
@@ -198,41 +170,6 @@ const SHARE_SCRIPT: &str = r#"(function () {
   link.addEventListener("click", function (event) {
     event.preventDefault();
     navigator.share({ title: "Pay this Monero order", url: link.href }).catch(function () {});
-  });
-})();"#;
-
-/// Progressive enhancement only - every rescan date shown/entered here is
-/// authoritative in UTC either way (server-rendered, server-validated);
-/// this only adds a local-time reading alongside it for a JS-enabled
-/// viewer's own convenience. Never changes what gets submitted.
-const RESCAN_LOCAL_TIME_SCRIPT: &str = r#"(function () {
-  if (typeof Intl === "undefined" || typeof Intl.DateTimeFormat !== "function") return;
-
-  function localLabel(dateStr) {
-    if (!dateStr) return "";
-    var d = new Date(dateStr + "T00:00:00Z");
-    if (isNaN(d.getTime())) return "";
-    return d.toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
-  }
-
-  var simpleDateSpan = document.querySelector("[data-utc-date]");
-  if (simpleDateSpan) {
-    var simpleLocal = localLabel(simpleDateSpan.getAttribute("data-utc-date"));
-    if (simpleLocal) {
-      simpleDateSpan.textContent += " (your time: " + simpleLocal + ")";
-    }
-  }
-
-  ["from", "to"].forEach(function (name) {
-    var input = document.getElementById("rescan-" + name);
-    var hint = document.getElementById("rescan-" + name + "-local");
-    if (!input || !hint) return;
-    function update() {
-      var local = localLabel(input.value);
-      hint.textContent = local ? "= " + local + " your time" : "";
-    }
-    input.addEventListener("change", update);
-    update();
   });
 })();"#;
 
@@ -277,21 +214,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                     tr { th { "Rate provider" } td { (order.rate_provider) } }
                     tr { th { "XMR amount (piconero)" } td { (order.xmr_amount_piconero) } }
                     tr { th { "Amount received (piconero)" } td { (order.amount_received_piconero) } }
-                    tr {
-                        th { "Status" }
-                        td {
-                            (order.status)
-                            @if let Some(rescan) = &order.rescan {
-                                @if let Some(progress) = &rescan.progress {
-                                    @if progress.stalled {
-                                        " " span class="tag tag-stalled" { "Stalled at " (progress.percent_complete) "%" }
-                                    } @else {
-                                        " " span class="tag tag-syncing" { "Syncing " (progress.percent_complete) "%" }
-                                    }
-                                }
-                            }
-                        }
-                    }
+                    tr { th { "Status" } td { (order.status) } }
                     tr { th { "Confirmations" } td { (order.confirmations) } }
                     tr { th { "Confirmations required" } td { (order.confirmations_required_display) } }
                     tr { th { "Store base currency (at order creation)" } td { (order.base_currency_display) } }
@@ -332,50 +255,6 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                     }
                 }
 
-                @if let Some(rescan_error) = &order.rescan_error {
-                    p class="error" { (rescan_error) }
-                }
-                @if let Some(rescan) = &order.rescan {
-                    h2 { "Rescan for late payment" }
-                    @if let Some(progress) = &rescan.progress {
-                        @if progress.stalled {
-                            p class="hint" {
-                                "This rescan hasn't made progress in a while - it may have stalled. It will resume on its own if "
-                                "the server restarts; otherwise you may want to wait a bit longer or check the server's own logs."
-                            }
-                        } @else {
-                            p class="hint" { "Rescanning (" (progress.mode) " mode) - this can take a while for a wide date range." }
-                        }
-                        div class="progress-bar" role="progressbar" aria-valuemin="0" aria-valuemax="100"
-                            aria-valuenow=(progress.percent_complete) aria-valuetext=(format!("{}% complete", progress.percent_complete)) {
-                            div class="progress-fill" style=(format!("width: {}%", progress.percent_complete)) {}
-                        }
-                    }
-                    @if let Some(form) = &rescan.form {
-                        p class="hint" {
-                            "This order expired before a payment was detected. If the customer says they sent funds anyway, "
-                            "scan the chain again for a late arrival."
-                        }
-                        form method="post" action=(format!("/dashboard/connections/{}/orders/{}/rescan", data.connection_id, order.payment_id)) {
-                            p { label { input type="radio" name="mode" value="simple" checked; " " (PreEscaped(&form.simple_label)) } }
-                            p { label { input type="radio" name="mode" value="advanced"; " Advanced - choose a range" } }
-                            p class="grid-2" {
-                                label {
-                                    "From "
-                                    input type="date" id="rescan-from" name="from" min=(form.min_date) max=(form.max_date);
-                                    span class="hint" id="rescan-from-local" {}
-                                }
-                                label {
-                                    "To "
-                                    input type="date" id="rescan-to" name="to" min=(form.min_date) max=(form.max_date);
-                                    span class="hint" id="rescan-to-local" {}
-                                }
-                            }
-                            p class="hint" { (form.bound_text) }
-                            button type="submit" class="btn" { "Rescan for late payment" }
-                        }
-                    }
-                }
             } @else {
                 h1 { "Order not found" }
                 p { "This order does not exist." }
@@ -383,7 +262,6 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
         }
         @if data.order.is_some() {
             script { (PreEscaped(SHARE_SCRIPT)) }
-            script { (PreEscaped(RESCAN_LOCAL_TIME_SCRIPT)) }
         }
     };
 
@@ -444,8 +322,6 @@ mod tests {
             payments: vec![],
             payment_link: "http://127.0.0.1:8081/pay/pk_abc123/orders/pay_abc123/share".to_string(),
             scan_range_display: "<span class=\"muted\">-</span>".to_string(),
-            rescan: None,
-            rescan_error: None,
         }
     }
 
@@ -474,9 +350,8 @@ mod tests {
         let html = detail_page(&chrome(), &data).into_string();
         assert!(html.to_lowercase().contains("not found"));
         // The nav's own status-dot poll script always renders regardless -
-        // it's the two order-specific scripts (share button, rescan local
-        // time) that must be absent with no order to attach them to.
+        // it's the order-specific share-button script that must be absent
+        // with no order to attach it to.
         assert!(!html.contains("share-payment-link"), "no order means no share button to enhance");
-        assert!(!html.contains("rescan-from"), "no order means no rescan form to enhance");
     }
 }

@@ -110,8 +110,6 @@ scalar_settings! {
     PAYMENT_ORDER_EXPIRY_MINUTES => { key: "payment.order_expiry_minutes", env: "SCANNER_PAYMENT_ORDER_EXPIRY_MINUTES", default: "30" },
     PAYMENT_REORG_CHECK_DEPTH => { key: "payment.reorg_check_depth", env: "SCANNER_PAYMENT_REORG_CHECK_DEPTH", default: "20" },
     PAYMENT_MEMPOOL_POLL_INTERVAL_MS => { key: "payment.mempool_poll_interval_ms", env: "SCANNER_PAYMENT_MEMPOOL_POLL_INTERVAL_MS", default: "1000" },
-    PAYMENT_DEFAULT_RESCAN_LOOKBACK_DAYS => { key: "payment.default_rescan_lookback_days", env: "SCANNER_PAYMENT_DEFAULT_RESCAN_LOOKBACK_DAYS", default: "7" },
-    PAYMENT_MAX_RESCAN_LOOKBACK_DAYS => { key: "payment.max_rescan_lookback_days", env: "SCANNER_PAYMENT_MAX_RESCAN_LOOKBACK_DAYS", default: "90" },
     PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES => { key: "payment.expired_order_grace_period_minutes", env: "SCANNER_PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES", default: "360" },
     PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB => { key: "payment.scan_chunk_memory_budget_mb", env: "SCANNER_PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB", default: "8" },
     SERVER_BIND => { key: "server.bind", env: "SCANNER_SERVER_BIND", default: "0.0.0.0:8443" },
@@ -158,8 +156,6 @@ mod tests {
         let _: i64 = get(&store, &PAYMENT_ORDER_EXPIRY_MINUTES);
         let _: u64 = get(&store, &PAYMENT_REORG_CHECK_DEPTH);
         let _: u64 = get(&store, &PAYMENT_MEMPOOL_POLL_INTERVAL_MS);
-        let _: u32 = get(&store, &PAYMENT_DEFAULT_RESCAN_LOOKBACK_DAYS);
-        let _: u32 = get(&store, &PAYMENT_MAX_RESCAN_LOOKBACK_DAYS);
         let _: i64 = get(&store, &PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES);
         let _: u32 = get(&store, &PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB);
         let _: String = get(&store, &SERVER_BIND);

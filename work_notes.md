@@ -29,6 +29,55 @@ Key architectural facts an agent should not have to rediscover:
 
 ## Current repo state
 
+- **Independent rescan/live-scan daemon connections, real block-batching,
+  dynamic EWMA chunk sizing, and the manual rescan feature's full removal**
+  (engine, monokulo) - full design record:
+  [`docs/txid_lookup_and_scan_chunking_wbs.md`](docs/txid_lookup_and_scan_chunking_wbs.md).
+  Three changes, landed in sequence as the user's own understanding of the
+  right design evolved:
+  - **Part 0 (bug fix)**: a merchant's manual rescan and ordinary live
+    payment detection shared one daemon connection pool - a rescan in
+    progress could starve live scanning for every other merchant on the
+    same instance (`/status` showing "has not been scanned yet" with
+    nothing in the logs). Fixed by giving rescans their own, separate
+    daemon client pool (`AppState::rescan_daemons`), independent of the
+    live scanner's `AppState::daemons` - later made moot entirely by Part C
+    below, once there was no rescan feature left to isolate.
+  - **Part A**: replaced the rescan block-walk's one-block-at-a-time daemon
+    calls with real `get_blocks.bin` epee-binary batching, then (once the
+    rescan feature above was slated for removal) retargeted the same
+    dynamic, EWMA-based chunk sizing at the live scanner's own catch-up
+    walk instead - `payment.scan_chunk_memory_budget_mb`, a new admin-page
+    setting (§ engine settings), bounds how much memory one tick's in-flight
+    batch may use; the chunk size (block count) is derived each tick from
+    an EWMA of observed bytes/block against that budget, not a fixed
+    constant.
+  - **Part B**: added `POST /api/v1/admin/tenant/payments/lookup`
+    (`scanner::http::admin::lookup_payment`) - given a raw txid, locates
+    that one transaction on chain (mempool or a specific block height),
+    decodes it against the tenant's subaddress range, and records/
+    recomputes a match if it belongs to one of this tenant's orders. Wired
+    through `EngineClient::lookup_payment` and a plain, JS-free HTML form
+    on monokulo's orders page.
+  - **Part C**: removed the old manual, merchant-triggered chain-rescan
+    feature entirely (`docs/order_rescan_wbs.md`, now marked superseded) -
+    the `order_rescans` table (migration `0012_drop_order_rescans.sql`),
+    every rescan-specific type/handler/route/setting on both the engine and
+    monokulo sides, and the corresponding UI (the orders-page trigger form,
+    the order-detail syncing/stalled badges, the dashboard syncing banner
+    and its meta-refresh). `orders.first_scanned_height`/
+    `last_scanned_height` stay - still meaningful as live-scanning-only
+    bookkeeping now that rescans no longer also write into them. Rationale
+    (the user's own words): a direct txid lookup is "a much more scalable
+    design than allowing people to scan the chain repeatedly using the
+    server" - no durable job state, no per-tenant concurrency guardrail, no
+    daemon-isolation concern, for a feature that in practice only ever
+    needed to resolve one specific late payment. Full workspace build and
+    test suite (engine + monokulo) green after removal; the two
+    feature-gated (`--features e2e`) stagenet test harnesses had their own
+    stale `rescan_daemons`/lookback `AppState` fields fixed too, though
+    those binaries have an unrelated, pre-existing `monokulo::templates::
+    TemplateEngine` compile break not touched by this work.
 - **Confirmation Thresholds** (monokulo, engine): the landing page used to
   claim confirmation limits could be configured "by amount" - a feature that
   didn't actually exist. The user's ask: a store picks a base currency at

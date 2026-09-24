@@ -549,8 +549,6 @@ mod tests {
             ("exchange_rate.coingecko_enabled", "false"),
             ("exchange_rate.coingecko_base_url", "http://127.0.0.1:9999"),
             ("exchange_rate.cache_seconds", "77"),
-            ("rescan.default_lookback_days", "11"),
-            ("rescan.max_lookback_days", "111"),
             ("http_cache.max_mb", "42"),
             ("rate_limit.per_ip_per_min", "33"),
         ];
@@ -572,7 +570,7 @@ mod tests {
     }
 
     /// The scanner half of the same requirement - every one of
-    /// `scanner::settings::ALL_SCALAR`'s 18 keys, saved together through the
+    /// `scanner::settings::ALL_SCALAR`'s 17 keys, saved together through the
     /// real proxy `POST` and confirmed to round-trip via a real, separately
     /// spawned scanner instance (this monokulo page holds none of this state
     /// itself - see this module's own doc comment).
@@ -591,9 +589,8 @@ mod tests {
             ("payment.order_expiry_minutes", "45"),
             ("payment.reorg_check_depth", "15"),
             ("payment.mempool_poll_interval_ms", "2000"),
-            ("payment.default_rescan_lookback_days", "10"),
-            ("payment.max_rescan_lookback_days", "100"),
             ("payment.expired_order_grace_period_minutes", "500"),
+            ("payment.scan_chunk_memory_budget_mb", "16"),
             ("server.bind", "0.0.0.0:9443"),
             ("server.worker_threads", "4"),
             ("server.rate_limit_per_ip_per_min", "50"),
@@ -603,7 +600,7 @@ mod tests {
             ("webhooks.delivery_timeout_ms", "10000"),
             ("webhooks.max_attempts", "12"),
         ];
-        assert_eq!(new_values.len(), 18, "this test must cover every known scanner setting (scanner::settings::ALL_SCALAR has 18 entries)");
+        assert_eq!(new_values.len(), 17, "this test must cover every known scanner setting (scanner::settings::ALL_SCALAR has 17 entries)");
 
         let save = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/scanner-settings", &cookie, new_values)).await.unwrap();
         assert_eq!(save.status(), StatusCode::OK);

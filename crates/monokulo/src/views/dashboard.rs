@@ -2,7 +2,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout, layout_with_head, PageChrome};
+use super::{layout, PageChrome};
 
 /// One connected store as shown on the dashboard home page - a much smaller
 /// projection of [`crate::db::StoreConnectionRow`] than the full order/
@@ -37,15 +37,6 @@ pub struct DashboardOrderRow {
     pub created_at: i64,
 }
 
-/// One entry in the dashboard-home "syncing" banner
-/// (`docs/order_rescan_wbs.md` Phase 3.4).
-pub struct DashboardRescanRow {
-    pub connection_id: String,
-    pub payment_id: String,
-    pub percent_complete: u8,
-    pub stalled: bool,
-}
-
 /// `has_stores` is redundant with `!stores.is_empty()` but kept as an
 /// explicit field rather than computed in the view - documentation of that
 /// fact at the call site rather than a second source of truth to drift.
@@ -59,40 +50,12 @@ pub struct DashboardViewModel {
     /// `paid`/`overpaid` status, since a partially-paid or still-confirming
     /// order has still genuinely had funds detected for it.
     pub total_received_xmr: String,
-    /// `docs/order_rescan_wbs.md` Phase 3.4 - every currently-`running`
-    /// rescan across every one of this user's connected stores. Drives the
-    /// "syncing" banner and its tightened meta-refresh.
-    pub active_rescans: Vec<DashboardRescanRow>,
-    /// e.g. `"1 order"`/`"2 orders"` - precomputed by the caller. Empty (and
-    /// never read - the banner is gated on `active_rescans` being
-    /// non-empty) when nothing is running.
-    pub active_rescans_count_label: String,
 }
 
 pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
             h1 { "Dashboard" }
-
-            @if !data.active_rescans.is_empty() {
-                div class="box" {
-                    span class="tag tag-syncing" { "Syncing" }
-                    " " (data.active_rescans_count_label) " for possible late payments - this page "
-                    "refreshes every 5s while that's true."
-                    ul {
-                        @for rescan in &data.active_rescans {
-                            li {
-                                a href=(format!("/dashboard/connections/{}/orders/{}", rescan.connection_id, rescan.payment_id)) {
-                                    (rescan.payment_id)
-                                    " (" (rescan.percent_complete) "%"
-                                    @if rescan.stalled { ", stalled" }
-                                    ") →"
-                                }
-                            }
-                        }
-                    }
-                }
-            }
 
             @if data.has_stores {
                 div class="box" {
@@ -157,12 +120,7 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
         }
     };
 
-    if data.active_rescans.is_empty() {
-        layout(chrome, "Dashboard - Monokulo", body)
-    } else {
-        let extra_head = html! { meta http-equiv="refresh" content="5"; };
-        layout_with_head(chrome, "Dashboard - Monokulo", extra_head, body)
-    }
+    layout(chrome, "Dashboard - Monokulo", body)
 }
 
 #[cfg(test)]
@@ -179,8 +137,6 @@ mod tests {
             stores: vec![],
             recent_orders: vec![],
             total_received_xmr: "0".to_string(),
-            active_rescans: vec![],
-            active_rescans_count_label: String::new(),
         }
     }
 
@@ -214,8 +170,6 @@ mod tests {
                 created_at: 1000,
             }],
             total_received_xmr: "1.234567890123".to_string(),
-            active_rescans: vec![],
-            active_rescans_count_label: String::new(),
         };
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains("pk_abc123"));
@@ -227,21 +181,11 @@ mod tests {
     }
 
     #[test]
-    fn shows_a_meta_refresh_only_while_a_rescan_is_active() {
+    fn never_shows_a_meta_refresh() {
+        // `docs/txid_lookup_and_scan_chunking_wbs.md` Part C.8 - the dashboard's
+        // only meta-refresh was the rescan syncing banner's; with that feature
+        // gone, this page never auto-refreshes at all.
         let html = page(&chrome(), &empty_data()).into_string();
         assert!(!html.contains(r#"<meta http-equiv="refresh""#));
-
-        let mut data = empty_data();
-        data.active_rescans = vec![DashboardRescanRow {
-            connection_id: "conn_1".to_string(),
-            payment_id: "pay_1".to_string(),
-            percent_complete: 40,
-            stalled: false,
-        }];
-        data.active_rescans_count_label = "1 order".to_string();
-        let html = page(&chrome(), &data).into_string();
-        assert!(html.contains(r#"<meta http-equiv="refresh" content="5">"#));
-        assert!(html.contains("pay_1"));
-        assert!(html.contains("40%"));
     }
 }

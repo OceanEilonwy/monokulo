@@ -105,18 +105,6 @@ pub struct AppState {
     /// rather than only the aggregate view `MoneroDaemonClient`'s own trait
     /// methods give.
     pub daemons: Arc<HashMap<monero::Network, Arc<FallbackDaemonClient>>>,
-    /// A second, independent set of `FallbackDaemonClient`s for the rescan path
-    /// only (`admin::trigger_rescan`, and `main.rs::resume_running_rescans` at
-    /// boot) - built from the same node configuration as `daemons` above, but
-    /// deliberately *not* the same `Arc`. A rescan walks a historical range one
-    /// block at a time, potentially thousands of sequential daemon calls; if it
-    /// shared `daemons`' own `reqwest::Client`/connection pool, that traffic
-    /// would compete with the live scanner's own latency-sensitive per-tick
-    /// calls to the same node - degrading (in one real case, ~18x) live payment
-    /// detection for as long as the rescan runs, even though the two are
-    /// otherwise fully independent tasks. See `main.rs::build_daemon_clients`'s
-    /// own doc comment for the full story.
-    pub rescan_daemons: Arc<HashMap<monero::Network, Arc<FallbackDaemonClient>>>,
     /// Live scan-tick history per network, updated by `main.rs`'s own scan
     /// loop after every tick - see `scanner_status`'s own module doc
     /// comment.
@@ -127,13 +115,6 @@ pub struct AppState {
     /// happened in a while actually is, relative to what's actually
     /// configured, rather than against an arbitrary hardcoded guess.
     pub scan_poll_interval_secs: u64,
-    /// `docs/order_rescan_wbs.md` Phase 2 decision 4's two lookback knobs
-    /// (`config.payment.default_rescan_lookback_days`/`max_rescan_lookback_days`),
-    /// carried down the same way `scan_poll_interval_secs` above is - a handler
-    /// needs the resolved value, not the whole `Config`, and `AppState` deliberately
-    /// never holds a `Config` itself (see this struct's own field-by-field shape).
-    pub default_rescan_lookback_days: u32,
-    pub max_rescan_lookback_days: u32,
     /// `docs/order_rescan_wbs.md` Phase 4/5.3 -
     /// `config.payment.expired_order_grace_period_minutes * 60`, threaded down the
     /// same way the two lookback-day fields above already are. Needed here (not
@@ -185,11 +166,6 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route("/api/v1/admin/tenant/rotate-secret", post(admin::rotate_secret))
         .route("/api/v1/admin/tenant/orders", get(admin::list_orders))
         .route("/api/v1/admin/tenant/orders/{payment_id}", get(admin::get_order_detail))
-        .route("/api/v1/admin/tenant/rescans", get(admin::list_rescans))
-        .route(
-            "/api/v1/admin/tenant/orders/{payment_id}/rescan",
-            post(admin::trigger_rescan).get(admin::get_rescan_status),
-        )
         .route("/api/v1/admin/tenant/payments/lookup", post(admin::lookup_payment))
         .route(
             "/api/v1/admin/tenant/webhooks",

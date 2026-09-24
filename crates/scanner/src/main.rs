@@ -137,26 +137,6 @@ async fn main() {
     // fallbacks, so a single flaky/down public node doesn't stop scanning that
     // network - see `daemon_fallback`'s own doc comment for the failover policy.
     let daemons: HashMap<Network, Arc<FallbackDaemonClient>> = build_daemon_clients(&store.lock().unwrap(), strict_tls);
-    // A second, independent set of daemon clients for the rescan path (both
-    // `resume_running_rescans` below and `http::admin::trigger_rescan`) -
-    // deliberately *not* `daemons.clone()`. A rescan walks a historical range
-    // block by block, potentially thousands of sequential `get_block_transactions`
-    // calls against the same public node the live scanner is also polling every
-    // tick; sharing one `RpcDaemonClient` (one `reqwest::Client`, one connection
-    // pool) between the two means a large rescan's own request volume can queue
-    // up behind - or force a real public node to serialize behind - the live
-    // loop's own latency-sensitive calls, degrading live payment detection while
-    // a rescan runs even though the two are otherwise fully independent tasks
-    // (separate `tokio::spawn`s, no shared lock held across an `.await`). A real
-    // user hit exactly this: a resumed rescan at boot left the live scanner
-    // taking ~18x longer per tick than its configured poll interval, which reads
-    // on `/status` as "has not been scanned yet" for however long that lasts.
-    // Rebuilding the same node config into a second, physically separate set of
-    // `RpcDaemonClient`s (own `reqwest::Client`, own connection pool, own
-    // failover state) costs nothing at boot and gives the rescan path its own
-    // I/O path to the same nodes, so its traffic can no longer compete with the
-    // live loop's own requests for the same client-side connection pool.
-    let rescan_daemons: HashMap<Network, Arc<FallbackDaemonClient>> = build_daemon_clients(&store.lock().unwrap(), strict_tls);
     if daemons.is_empty() {
         // A warning, not a hard exit: the server still has to come up far enough to
         // serve the instance-admin settings API (`http::instance_admin`) itself,
@@ -178,7 +158,6 @@ async fn main() {
     }
     let configured_networks: Arc<HashSet<Network>> = Arc::new(daemons.keys().copied().collect());
     let daemons = Arc::new(daemons);
-    let rescan_daemons = Arc::new(rescan_daemons);
     let scanner_status = scanner_status::new_scanner_status_map();
 
     let mempool_poll_interval_ms: u64 = settings::get(&store.lock().unwrap(), &settings::PAYMENT_MEMPOOL_POLL_INTERVAL_MS);
@@ -189,12 +168,9 @@ async fn main() {
     let scan_poll_interval_secs = mempool_poll_interval_ms / 1000;
 
     let wallet_handles = Arc::new(RwLock::new(register_all_tenants(&store, &key_custody).await));
-    resume_running_rescans(&store, &key_custody, &rescan_daemons, &wallet_handles).await;
 
     let rate_limit_per_ip_per_min: u32 = settings::get(&store.lock().unwrap(), &settings::SERVER_RATE_LIMIT_PER_IP_PER_MIN);
     let rate_limit_per_token_per_min: u32 = settings::get(&store.lock().unwrap(), &settings::SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN);
-    let default_rescan_lookback_days: u32 = settings::get(&store.lock().unwrap(), &settings::PAYMENT_DEFAULT_RESCAN_LOOKBACK_DAYS);
-    let max_rescan_lookback_days: u32 = settings::get(&store.lock().unwrap(), &settings::PAYMENT_MAX_RESCAN_LOOKBACK_DAYS);
     let expired_order_grace_period_minutes: i64 =
         settings::get(&store.lock().unwrap(), &settings::PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES);
 
@@ -207,11 +183,8 @@ async fn main() {
         admin_rate_limiter: Arc::new(RateLimiter::new(rate_limit_per_token_per_min)),
         configured_networks,
         daemons: daemons.clone(),
-        rescan_daemons: rescan_daemons.clone(),
         scanner_status: scanner_status.clone(),
         scan_poll_interval_secs,
-        default_rescan_lookback_days,
-        max_rescan_lookback_days,
         expired_order_grace_period_seconds: expired_order_grace_period_minutes * 60,
     };
 
@@ -396,82 +369,6 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
         }
     }
     handles
-}
-
-/// Re-spawns `scanner::run_rescan_job` for every rescan job still `running` when
-/// this process starts - the restart-resume half of `docs/order_rescan_wbs.md`
-/// Phase 1.2's durability guarantee. A row left `running` when the previous process
-/// stopped is not a terminal state (the table has no `interrupted` status); this is
-/// what actually resumes it, reading `Store::list_running_rescans` once at boot
-/// rather than polling for it - each job's own row is what tracks its progress from
-/// here on, the same way `register_all_tenants` seeds `wallet_handles` once and then
-/// relies on the running system to keep it current.
-///
-/// Only two things can make a still-`running` row unresumable, both of which mean
-/// the world it was triggered against no longer exists at all: its tenant's wallet
-/// isn't registered (`KeyCustody` lost its material, or the tenant was disabled
-/// between trigger and this boot), or the tenant row itself is gone. Either is
-/// marked `failed` rather than silently left `running` forever - a `running` row
-/// that can never actually run again would otherwise permanently occupy that
-/// tenant's one-job-at-a-time slot (WBS 1.2 decision 4).
-///
-/// `rescan_daemons` (not `daemons`, the live scanner's own map) - a resumed job
-/// can be an arbitrarily large historical walk, and must never compete with the
-/// live scanner's own request latency for the same node's connection pool; see
-/// `rescan_daemons`'s own construction comment in `main` for why.
-async fn resume_running_rescans(
-    store: &SharedStore,
-    key_custody: &Arc<dyn KeyCustody>,
-    rescan_daemons: &Arc<HashMap<Network, Arc<FallbackDaemonClient>>>,
-    wallet_handles: &Arc<RwLock<HashMap<String, WalletHandle>>>,
-) {
-    let running = match store.lock().unwrap().list_running_rescans() {
-        Ok(rows) => rows,
-        Err(e) => {
-            eprintln!("failed to list still-running rescan jobs at boot - none will be resumed: {e}");
-            return;
-        }
-    };
-    for job in running {
-        let tenant = store.lock().unwrap().get_tenant_by_id(&job.tenant_id).ok().flatten();
-        let Some(tenant) = tenant else {
-            eprintln!("rescan {}: tenant {} no longer exists - cannot resume, marking failed", job.id, job.tenant_id);
-            let _ = store.lock().unwrap().fail_rescan(&job.id, "tenant no longer exists", now_unix());
-            continue;
-        };
-        let Some(handle) = wallet_handles.read().unwrap().get(&job.tenant_id).copied() else {
-            eprintln!(
-                "rescan {}: tenant {} has no registered wallet handle at boot - cannot resume, marking failed",
-                job.id, job.tenant_id
-            );
-            let _ = store.lock().unwrap().fail_rescan(&job.id, "tenant wallet not registered at boot", now_unix());
-            continue;
-        };
-        let Ok(network) = scanner::network::parse_network(&tenant.network) else {
-            eprintln!(
-                "rescan {}: tenant {} has an unrecognized network {:?} - cannot resume, marking failed",
-                job.id, job.tenant_id, tenant.network
-            );
-            let _ = store.lock().unwrap().fail_rescan(&job.id, "tenant network unrecognized", now_unix());
-            continue;
-        };
-        let Some(daemon) = rescan_daemons.get(&network) else {
-            eprintln!(
-                "rescan {}: no daemon configured for tenant {}'s network {:?} - cannot resume, marking failed",
-                job.id, job.tenant_id, network
-            );
-            let _ = store.lock().unwrap().fail_rescan(&job.id, "no daemon configured for tenant's network", now_unix());
-            continue;
-        };
-        println!("resuming rescan {} for order {} from height {} to {}", job.id, job.order_id, job.current_height, job.to_height);
-        scanner::scanner::spawn_rescan_job(
-            store.clone(),
-            key_custody.clone(),
-            daemon.clone() as Arc<dyn scanner::daemon::MoneroDaemonClient>,
-            handle,
-            job.id,
-        );
-    }
 }
 
 async fn run_webhook_delivery_loop(

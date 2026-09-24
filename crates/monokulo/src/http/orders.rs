@@ -29,13 +29,10 @@ use serde::Deserialize;
 
 use crate::crypto;
 use crate::db::{StoreConnectionRow, UserRow};
-use crate::engine_client::{EngineClientError, PaymentLookupView, RescanStatusView};
-use crate::templates::{display_or_dash, display_scan_range, display_timestamp, display_timestamp_or_dash, unix_to_date_string};
+use crate::engine_client::{EngineClientError, PaymentLookupView};
+use crate::templates::{display_or_dash, display_scan_range, display_timestamp, display_timestamp_or_dash};
 use crate::views;
-use crate::views::orders::{
-    OrderDetailData, OrderDetailViewModel, OrderRescanSectionViewModel, OrderRowViewModel, OrdersViewModel,
-    PaymentRowViewModel, RescanProgressViewModel, RescanTriggerFormViewModel,
-};
+use crate::views::orders::{OrderDetailData, OrderDetailViewModel, OrderRowViewModel, OrdersViewModel, PaymentRowViewModel};
 
 use super::dashboard::redirect_302;
 use super::{AppState, AuthedUser};
@@ -123,11 +120,10 @@ pub struct LookupPaymentForm {
 }
 
 /// `POST /dashboard/connections/{id}/orders/lookup` - `docs/txid_lookup_and_
-/// scan_chunking_wbs.md` Part B.3, the direct replacement for the rescan
-/// trigger form below. Re-renders the same orders list with the result
+/// scan_chunking_wbs.md` Part B.3, the direct replacement for the old
+/// manual rescan feature. Re-renders the same orders list with the result
 /// shown inline (a plain message, plus a link to the matched order if any) -
-/// the same "recompute and redisplay, never a redirect that would lose the
-/// result" pattern `trigger_rescan`'s own error path below already uses.
+/// recompute and redisplay, never a redirect that would lose the result.
 pub async fn lookup_payment(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -173,84 +169,6 @@ pub async fn lookup_payment(
     views::orders::list_page(&chrome, &view_model).into_response()
 }
 
-/// `MONOKULO_RESCAN_DEFAULT_LOOKBACK_DAYS`/`MONOKULO_RESCAN_MAX_LOOKBACK_DAYS`
-/// - monokulo's own copy of the engine's `payment.default_rescan_lookback_days`/
-/// `max_rescan_lookback_days` (`docs/order_rescan_wbs.md` Phase 2's config
-/// knobs), read fresh on every call rather than threaded through `AppState` -
-/// this is the only place either value is used. Only ever affects what's
-/// *displayed* (the "Rescan from <date>" label, and the advanced-mode date
-/// inputs' `min` attribute): a mismatch against the engine's real configured
-/// value would make the displayed bound wrong, never the enforced one - the
-/// engine's own `400` on an out-of-range submission (`docs/order_rescan_wbs.md`
-/// 2.1) is the real guardrail regardless of what this instance displays.
-/// Same defaults as the engine's own (7/90), so an operator who hasn't
-/// touched either config still sees a correct display. Resolved with the
-/// usual `env > database > default` precedence (`crate::settings`) - a value
-/// saved from the admin settings page takes effect the same way an
-/// environment variable always did.
-fn rescan_lookback_days(db: &crate::db::Db) -> (u32, u32) {
-    (crate::settings::get(db, &crate::settings::RESCAN_DEFAULT_LOOKBACK_DAYS), crate::settings::get(db, &crate::settings::RESCAN_MAX_LOOKBACK_DAYS))
-}
-
-/// Builds the order-rescan section of the order detail page
-/// (`docs/order_rescan_wbs.md` Phase 3.2/3.3) - `None` for anything but an
-/// `Expired` order (decision 5). While `active_rescan` is genuinely
-/// `"running"`, this is the live progress view; otherwise (nothing ever
-/// triggered, or the last one finished) it's the trigger form - the two are
-/// mutually exclusive, never both shown at once. A rejected trigger
-/// submission's error message is a separate, top-level field on
-/// `OrderDetailData` (`rescan_error`), not threaded through here - see its
-/// own doc comment for why.
-fn build_rescan_section(
-    db: &crate::db::Db,
-    order_status: &str,
-    order_created_at: i64,
-    active_rescan: Option<&RescanStatusView>,
-) -> Option<OrderRescanSectionViewModel> {
-    if order_status != "expired" {
-        return None;
-    }
-    if let Some(job) = active_rescan {
-        if job.status == "running" {
-            return Some(OrderRescanSectionViewModel {
-                form: None,
-                progress: Some(RescanProgressViewModel {
-                    percent_complete: job.percent_complete,
-                    mode: job.mode.clone(),
-                    stalled: job.stalled,
-                }),
-            });
-        }
-    }
-    let now = crate::now_unix();
-    let (default_days, max_days) = rescan_lookback_days(db);
-    let earliest_allowed = order_created_at.max(now - max_days as i64 * 86_400);
-    let simple_from = order_created_at.max(now - default_days as i64 * 86_400);
-    Some(OrderRescanSectionViewModel {
-        form: Some(RescanTriggerFormViewModel {
-            // A small `<span data-utc-date="...">` around the date, not plain
-            // text - lets the order-detail page's own progressive-enhancement
-            // script (JS-enabled viewers only; the form works identically
-            // without it) append a local-time equivalent next to it. Fully
-            // server-computed, never user input, so trusting it as HTML here is
-            // safe - rendered with `{{{ }}}` in the template, same as every
-            // other trusted-HTML field on this page.
-            simple_label: format!(
-                r#"Rescan from <span class="utc-date" data-utc-date="{date}">{date} (UTC)</span>"#,
-                date = unix_to_date_string(simple_from)
-            ),
-            min_date: unix_to_date_string(earliest_allowed),
-            max_date: unix_to_date_string(now),
-            bound_text: format!(
-                "Orders can only be rescanned from their own creation date ({}) or the last {max_days} days, \
-                 whichever is later. Dates below are in UTC.",
-                unix_to_date_string(order_created_at)
-            ),
-        }),
-        progress: None,
-    })
-}
-
 /// `GET /dashboard/connections/{id}/orders/{payment_id}` - the order's full
 /// detail (every `OrderView` field plus its `payments` list). A
 /// `payment_id` the engine doesn't recognize for this tenant (unknown, or
@@ -274,25 +192,7 @@ pub async fn order_detail(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_order_detail_page(&state, &row, &sk, &id, &payment_id, &headers, &user, None).await
-}
-
-/// The real body of `order_detail` - factored out so `trigger_rescan` can
-/// re-render this exact same page (with `rescan_error` set) after a rejected
-/// submission, same "the create/delete handler re-renders the list page
-/// itself rather than redirecting to it" convention `webhooks_create`'s own
-/// `render_webhooks_page` already established.
-async fn render_order_detail_page(
-    state: &AppState,
-    row: &StoreConnectionRow,
-    sk: &str,
-    id: &str,
-    payment_id: &str,
-    headers: &HeaderMap,
-    user: &UserRow,
-    rescan_error: Option<String>,
-) -> Response {
-    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/connections/{id}/orders/{payment_id}"));
+    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/connections/{id}/orders/{payment_id}"));
     // A real, absolute, copy-pasteable URL - not just the path - since the
     // whole point is something a merchant can paste into an email or chat
     // to someone who isn't already looking at this dashboard. This
@@ -307,13 +207,13 @@ async fn render_order_detail_page(
     let scheme = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).unwrap_or("http");
     let payment_link = format!("{scheme}://{host}/pay/{}/orders/{}/share", row.tenant_public_key, payment_id);
 
-    match state.engine_client.get_order_detail(sk, payment_id).await {
+    match state.engine_client.get_order_detail(&sk, &payment_id).await {
         Ok(detail) => {
             // The engine has no concept of fiat any more (`docs/fx_refactor.md`
             // Phase 3) - fiat display comes entirely from monokulo's own
             // local `order_currency_metadata`, absent for any order that predates
             // this record (falls back to a dash rather than failing the page).
-            let metadata = state.db.lock().unwrap().get_order_currency_metadata(&row.id, payment_id).ok().flatten();
+            let metadata = state.db.lock().unwrap().get_order_currency_metadata(&row.id, &payment_id).ok().flatten();
             let (amount, currency) = match &metadata {
                 Some(m) => (m.amount.clone(), m.currency.clone()),
                 None => ("—".to_string(), "".to_string()),
@@ -345,17 +245,6 @@ async fn render_order_detail_page(
                 },
                 None => "—".to_string(),
             };
-            // `docs/order_rescan_wbs.md` Phase 3.2/3.3 - only ever a real engine
-            // call for an `Expired` order (decision 5), since that's the only
-            // status the rescan section renders anything for at all.
-            let active_rescan = if detail.order.status == "expired" {
-                state.engine_client.get_rescan_status(sk, payment_id).await.ok().flatten()
-            } else {
-                None
-            };
-            let meta_refresh_secs =
-                if active_rescan.as_ref().is_some_and(|j| j.status == "running") { 5 } else { 15 };
-            let rescan = build_rescan_section(&state.db.lock().unwrap(), &detail.order.status, detail.order.created_at, active_rescan.as_ref());
             let view_model = OrderDetailViewModel {
                 connection_id: id.to_string(),
                 order: Some(OrderDetailData {
@@ -397,10 +286,8 @@ async fn render_order_detail_page(
                         detail.order.last_scanned_height,
                         detail.order.currently_scanning,
                     ),
-                    rescan,
-                    rescan_error,
                 }),
-                meta_refresh_secs,
+                meta_refresh_secs: 15,
             };
             views::orders::detail_page(&chrome, &view_model).into_response()
         }
@@ -409,106 +296,6 @@ async fn render_order_detail_page(
             (StatusCode::NOT_FOUND, views::orders::detail_page(&chrome, &view_model)).into_response()
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    }
-}
-
-#[derive(Deserialize)]
-pub struct TriggerRescanForm {
-    /// `"simple"` or `"advanced"` - the two radios the form always submits
-    /// one of; anything else is treated as `"advanced"` missing its dates
-    /// below (a real `400`-shaped error, not a panic) rather than trusted at
-    /// face value, same as every other form on this site.
-    mode: String,
-    /// Advanced mode only - `<input type="date">` values (`YYYY-MM-DD`).
-    /// Present but ignored for simple mode, same "the server reads whichever
-    /// the submitted mode radio selected and ignores the other's fields"
-    /// zero-JS shape `docs/order_rescan_wbs.md` 3.2 describes.
-    from: Option<String>,
-    to: Option<String>,
-}
-
-/// `POST /dashboard/connections/{id}/orders/{payment_id}/rescan` -
-/// `docs/order_rescan_wbs.md` Phase 3.2. POST-redirect-GET on success
-/// (reloading the order page after a trigger must not risk resubmitting
-/// it, same as every other state-changing form on this site); a rejected
-/// submission - an unparseable advanced-mode date, or the engine's own real
-/// `400` (decision 4's bounds, decision 5's expired-only guardrail) -
-/// re-renders the order page with the form's error explained instead,
-/// same convention `webhooks_create`'s own `render_webhooks_page` already
-/// follows.
-pub async fn trigger_rescan(
-    State(state): State<AppState>,
-    AuthedUser(user, _): AuthedUser,
-    Path((id, payment_id)): Path<(String, String)>,
-    headers: HeaderMap,
-    Form(form): Form<TriggerRescanForm>,
-) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
-        Ok(Some(row)) => row,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let sk = match decrypt_sk(&state, &row) {
-        Ok(sk) => sk,
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    let (from, to) = if form.mode == "advanced" {
-        let from = form.from.as_deref().and_then(crate::templates::date_string_to_unix_midnight);
-        let Some(from) = from else {
-            return render_order_detail_page(
-                &state,
-                &row,
-                &sk,
-                &id,
-                &payment_id,
-                &headers,
-                &user,
-                Some("Enter a valid start date.".to_string()),
-            )
-            .await;
-        };
-        let to = form.to.as_deref().and_then(crate::templates::date_string_to_unix_midnight);
-        if form.to.is_some() && to.is_none() {
-            return render_order_detail_page(
-                &state,
-                &row,
-                &sk,
-                &id,
-                &payment_id,
-                &headers,
-                &user,
-                Some("Enter a valid end date.".to_string()),
-            )
-            .await;
-        }
-        (Some(from), to)
-    } else {
-        (None, None)
-    };
-
-    match state.engine_client.trigger_rescan(&sk, &payment_id, &form.mode, from, to).await {
-        Ok(_) => redirect_302(&format!("/dashboard/connections/{id}/orders/{payment_id}")),
-        // The engine's own real validation (decision 4's bounds, decision 5's
-        // expired-only guardrail, or an unrecognized mode) - the caller's
-        // mistake, surfaced verbatim, same convention `webhooks_create`
-        // already applies to the engine's own webhook-url `400`.
-        Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_order_detail_page(&state, &row, &sk, &id, &payment_id, &headers, &user, Some(message)).await
-        }
-        Err(_) => {
-            render_order_detail_page(
-                &state,
-                &row,
-                &sk,
-                &id,
-                &payment_id,
-                &headers,
-                &user,
-                Some("Something went wrong. Please try again.".to_string()),
-            )
-            .await
-        }
     }
 }
 
@@ -1453,35 +1240,9 @@ mod tests {
     }
 
     /// Same as [`test_state_with_real_engine`], but with a real (if inert)
-    /// daemon wired into the engine's own `AppState::daemons` - needed only by
-    /// a caller that drives `admin::trigger_rescan` through a genuine HTTP
-    /// round trip (see `TestEngineConfig::with_admin_rescan_daemon`'s own doc
-    /// comment for why that endpoint specifically needs it and nothing else
-    /// here does). Kept separate from `test_state_with_real_engine` itself
-    /// rather than turned on there unconditionally, so every other test in
-    /// this file keeps the same daemon-less engine it always has.
-    async fn test_state_with_real_engine_and_admin_rescan_daemon() -> (AppState, scanner_test_support::TestEngineHandle)
-    {
-        let engine = scanner_test_support::TestEngineConfig::new()
-            .with_networks(&[monero::Network::Mainnet])
-            .with_admin_rescan_daemon()
-            .spawn()
-            .await;
-        let engine_client = EngineClient::new(format!("http://{}", engine.addr));
-        let state = AppState {
-            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
-            engine_client,
-            encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: test_exchange_rate_provider(),
-            rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
-        };
-        (state, engine)
-    }
-
-    /// Same shape as `test_state_with_real_engine_and_admin_rescan_daemon`,
-    /// for `lookup_payment` below - `admin::lookup_payment` reads the
-    /// engine's live-scanner daemon map unconditionally too.
+    /// daemon wired into the engine's own `AppState::daemons` - needed by a
+    /// caller that drives `admin::lookup_payment` through a genuine HTTP
+    /// round trip, which reads that map unconditionally.
     async fn test_state_with_real_engine_and_admin_lookup_daemon() -> (AppState, scanner_test_support::TestEngineHandle)
     {
         let engine = scanner_test_support::TestEngineConfig::new()
@@ -3095,80 +2856,6 @@ mod tests {
         assert_eq!(delete_response.status(), StatusCode::NOT_FOUND);
     }
 
-    // -- Order rescans (`docs/order_rescan_wbs.md` Phase 3.2/3.3/3.4) -------
-
-    /// Drives an order straight to `Expired` against the engine's own real,
-    /// live store (via `TestEngineHandle::store`) - the same shortcut the
-    /// engine's own scanner tests use to reach a terminal status without
-    /// waiting out a real 30-minute default expiry.
-    fn force_order_expired(store: &scanner::store::SharedStore, public_key: &str, payment_id: &str) {
-        let s = store.lock().unwrap();
-        let tenant = s.find_tenant_by_public_key(public_key).unwrap().unwrap();
-        let order = s.get_order(&tenant.id, payment_id).unwrap().unwrap();
-        let (_, new_status) = s.recompute_order_status(&order.id, 0, order.expires_at + 1).unwrap();
-        assert_eq!(
-            new_status,
-            scanner::status::OrderStatus::Expired,
-            "test setup must actually produce an expired order"
-        );
-    }
-
-    /// Seeds a genuinely `running` `order_rescans` row directly against the
-    /// engine's own store, at `percent` complete - the harness this crate's
-    /// tests spawn an engine through configures no real daemon
-    /// (`scanner_test_support`'s own doc comment), so a rescan that actually
-    /// runs to completion via HTTP isn't reachable here; what these tests are
-    /// about is monokulo's own rendering of a job's state, not the
-    /// engine's rescan mechanics themselves (already covered end to end by
-    /// the engine's own Phase 1/2 tests).
-    fn seed_running_rescan(store: &scanner::store::SharedStore, public_key: &str, payment_id: &str, percent: u8) -> String {
-        let s = store.lock().unwrap();
-        let tenant = s.find_tenant_by_public_key(public_key).unwrap().unwrap();
-        let order = s.get_order(&tenant.id, payment_id).unwrap().unwrap();
-        let job = s
-            .trigger_rescan(
-                scanner::store::NewOrderRescan {
-                    order_id: order.id,
-                    tenant_id: tenant.id,
-                    minor_index: order.minor_index,
-                    mode: scanner::store::RescanMode::Simple,
-                    from_height: 0,
-                    to_height: 100,
-                },
-                scanner::now_unix(),
-            )
-            .unwrap()
-            .into_job();
-        s.update_rescan_progress(&job.id, percent as u64, scanner::now_unix()).unwrap();
-        job.id
-    }
-
-    #[tokio::test]
-    async fn triggering_a_rescan_against_a_non_expired_order_reshows_the_form_with_the_engines_real_error() {
-        let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "rescan-reject-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
-        let payment_id = seed_real_order(engine.addr, &public_key).await; // starts `pending`, not expired
-
-        let response = router
-            .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/orders/{payment_id}/rescan"),
-                &session_token,
-                &[("mode", "simple")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "a rejected trigger re-renders the page, it doesn't redirect");
-        let html = body_text(response).await;
-        assert!(html.contains("expired"), "expected the engine's real rejection reason surfaced, got: {html}");
-    }
-
     /// `docs/txid_lookup_and_scan_chunking_wbs.md` Part B.3 - the direct
     /// replacement for the rescan trigger form above. `with_admin_lookup_
     /// daemon`'s inert `NoopDaemonClient` always reports a txid as not found,
@@ -3198,272 +2885,6 @@ mod tests {
         let html = body_text(response).await;
         assert!(html.contains("No transaction with that ID was found"), "expected the not-found message, got: {html}");
         assert!(html.contains(&txid), "the submitted txid must repopulate the form's own input");
-    }
-
-    /// The full, real path a browser actually drives: a merchant picks a plain
-    /// `<input type="date">` value (no raw timestamp, no JS bypassing it) for an
-    /// order the engine already scanned past a real high-water mark - the exact
-    /// scenario `docs/order_rescan_wbs.md` Phase 5.2's gap-prevention guardrail
-    /// exists to catch, reached here through monokulo's own
-    /// `date_string_to_unix_midnight` conversion and a real HTTP round trip to
-    /// the engine, not a synthetic i64 constructed at the engine's own test
-    /// layer (the engine's `advanced_mode_to_one_block_before_last_scanned_
-    /// height_is_rejected` already covers that half). Exists specifically
-    /// because this session's UTC-date-labeling work touched exactly this path
-    /// - this pins that the two ends (monokulo's date parsing, the engine's own
-    /// guardrail) still agree once wired together for real.
-    #[tokio::test]
-    async fn advanced_mode_rescan_via_a_typed_date_still_hits_the_gap_guardrail() {
-        let (state, engine) = test_state_with_real_engine_and_admin_rescan_daemon().await;
-        let router = build_router(state);
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "rescan-guardrail-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
-        let payment_id = seed_real_order(engine.addr, &public_key).await;
-        force_order_expired(engine.store(), &public_key, &payment_id);
-
-        // A real high-water mark, as if a previous (wider) rescan already
-        // covered up to block 500 - the same store-level shortcut
-        // `seed_running_rescan` above uses to reach a real, persisted state
-        // without waiting out an actual rescan.
-        {
-            let s = engine.store().lock().unwrap();
-            let tenant = s.find_tenant_by_public_key(&public_key).unwrap().unwrap();
-            let order = s.get_order(&tenant.id, &payment_id).unwrap().unwrap();
-            s.bump_scanned_range_for_order(&order.id, 0, 500).unwrap();
-        }
-
-        // The test harness's `NoopDaemonClient` (`scanner_test_support`'s own
-        // doc comment) resolves every timestamp to height 0 regardless of which
-        // date is chosen, so today's date - now a valid "from"/"to" for a
-        // same-day order after this session's day-floor fix - still resolves
-        // to a "to" height (0) earlier than the height-500 mark set above,
-        // exactly the gap this guardrail exists to catch.
-        let today = crate::templates::unix_to_date_string(crate::now_unix());
-        let response = router
-            .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/orders/{payment_id}/rescan"),
-                &session_token,
-                &[("mode", "advanced"), ("from", &today), ("to", &today)],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "a rejected trigger re-renders the page, it doesn't redirect");
-        let html = body_text(response).await;
-        assert!(
-            html.contains("already-scanned"),
-            "expected the engine's real gap-prevention rejection surfaced through the typed-date path, got: {html}"
-        );
-    }
-
-    #[tokio::test]
-    async fn order_detail_for_an_expired_order_shows_the_trigger_form_with_real_computed_date_bounds() {
-        let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "rescan-form-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
-        let payment_id = seed_real_order(engine.addr, &public_key).await;
-        force_order_expired(engine.store(), &public_key, &payment_id);
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
-                    .header("authorization", format!("Bearer {session_token}"))
-                    .header("host", "test.example")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(html.contains("Rescan for late payment"), "expected the rescan section present for an expired order, got: {html}");
-        assert!(html.contains(r#"name="mode" value="simple""#), "expected the simple-mode radio, got: {html}");
-        assert!(html.contains(r#"name="mode" value="advanced""#), "expected the advanced-mode radio, got: {html}");
-        // This order was created moments ago (well inside both the default
-        // and max lookback windows), so `min` on both date inputs must equal
-        // its own creation date - the `max(created_at, now - N days)` bound
-        // collapses to `created_at` for a young order.
-        let today = crate::templates::unix_to_date_string(crate::now_unix());
-        assert!(
-            html.contains(&format!(r#"<input type="date" id="rescan-from" name="from" min="{today}""#)),
-            "expected the advanced 'from' input's min to be today (this order's own creation date), got: {html}"
-        );
-        assert!(html.contains("Rescan from"), "expected the simple-mode label present, got: {html}");
-        assert!(
-            html.contains(&format!(r#"data-utc-date="{today}">{today} (UTC)"#)),
-            "expected the simple-mode label to state today's date and be explicitly labeled UTC, got: {html}"
-        );
-        assert!(html.contains("or the last 90 days"), "expected the plain-language bound text, got: {html}");
-        assert!(html.contains("Dates below are in UTC"), "expected the timezone note next to the date inputs, got: {html}");
-    }
-
-    #[tokio::test]
-    async fn order_detail_shows_the_syncing_badge_and_progress_bar_while_a_rescan_is_running() {
-        let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "rescan-progress-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
-        let payment_id = seed_real_order(engine.addr, &public_key).await;
-        force_order_expired(engine.store(), &public_key, &payment_id);
-        seed_running_rescan(engine.store(), &public_key, &payment_id, 42);
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
-                    .header("authorization", format!("Bearer {session_token}"))
-                    .header("host", "test.example")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(html.contains("Syncing 42%"), "expected the in-progress badge with the real percentage, got: {html}");
-        assert!(html.contains("width: 42%"), "expected the progress bar's real width, got: {html}");
-        assert!(
-            !html.contains(r#"name="mode" value="simple""#),
-            "the trigger form must not show while a rescan is already running, got: {html}"
-        );
-        assert!(
-            html.contains(r#"<meta http-equiv="refresh" content="5">"#),
-            "expected the tightened 5s meta-refresh while a rescan is running, got: {html}"
-        );
-    }
-
-    #[tokio::test]
-    async fn order_detail_shows_a_stalled_badge_once_a_running_rescan_stops_making_progress() {
-        let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "rescan-stalled-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
-        let payment_id = seed_real_order(engine.addr, &public_key).await;
-        force_order_expired(engine.store(), &public_key, &payment_id);
-        let rescan_id = seed_running_rescan(engine.store(), &public_key, &payment_id, 10);
-        // Backdate the last progress write well past the stall threshold - the
-        // exact state a merchant genuinely wants surfaced, distinct from a job
-        // that's simply still walking a wide range.
-        engine
-            .store()
-            .lock()
-            .unwrap()
-            .update_rescan_progress(&rescan_id, 10, scanner::now_unix() - 600)
-            .unwrap();
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
-                    .header("authorization", format!("Bearer {session_token}"))
-                    .header("host", "test.example")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(html.contains("Stalled at 10%"), "expected the stalled badge with the real percentage, got: {html}");
-        assert!(!html.contains("Syncing 10%"), "must not show the ordinary syncing badge once stalled, got: {html}");
-    }
-
-    #[tokio::test]
-    async fn dashboard_home_shows_a_syncing_banner_with_a_real_link_while_a_rescan_is_running() {
-        let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "rescan-dashboard-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
-        let payment_id = seed_real_order(engine.addr, &public_key).await;
-        force_order_expired(engine.store(), &public_key, &payment_id);
-        seed_running_rescan(engine.store(), &public_key, &payment_id, 10);
-
-        let response = router
-            .clone()
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/dashboard")
-                    .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(html.contains("Syncing"), "expected the syncing banner, got: {html}");
-        assert!(html.contains("1 order"), "expected the real singular count, got: {html}");
-        assert!(
-            html.contains(&format!("/dashboard/connections/{connection_id}/orders/{payment_id}")),
-            "expected a real link to the syncing order, got: {html}"
-        );
-        assert!(
-            html.contains(r#"<meta http-equiv="refresh" content="5">"#),
-            "expected the dashboard's own meta-refresh to tighten while something is syncing, got: {html}"
-        );
-    }
-
-    #[tokio::test]
-    async fn dashboard_home_with_nothing_syncing_shows_no_banner_and_no_meta_refresh() {
-        let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "rescan-dashboard-quiet-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (_connection_id, public_key) = create_connection(&router, &session_token).await;
-        seed_real_order(engine.addr, &public_key).await;
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri("/dashboard")
-                    .header("authorization", format!("Bearer {session_token}"))
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(!html.contains("Syncing"), "expected no syncing banner with nothing running, got: {html}");
-        assert!(
-            !html.contains(r#"<meta http-equiv="refresh""#),
-            "expected no meta-refresh at all with nothing syncing, got: {html}"
-        );
     }
 
     // -- "Scan range" row (`docs/order_rescan_wbs.md` Phase 5.4) ------------
@@ -3515,8 +2936,17 @@ mod tests {
         let (connection_id, public_key) = create_connection(&router, &session_token).await;
         let payment_id = seed_real_order(engine.addr, &public_key).await;
         // Still `pending` (non-terminal) - genuinely still in scope, so the range
-        // must read as still growing ("N+"), not a closed span.
-        engine.store().lock().unwrap().bump_scanned_range_for_order(&payment_id, 100, 250).unwrap();
+        // must read as still growing ("N+"), not a closed span. Two calls to the
+        // live scanner's own bulk bump (its only mover now that the manual rescan
+        // feature is gone) rather than a single-order setter: the first (COALESCE)
+        // establishes `first_scanned_height`, the second only advances `last_
+        // scanned_height`, matching exactly how two real scan ticks would move it.
+        {
+            let s = engine.store().lock().unwrap();
+            let tenant = s.find_tenant_by_public_key(&public_key).unwrap().unwrap();
+            s.bump_scanned_heights_for_tenant(&tenant.id, 100, crate::now_unix(), 0).unwrap();
+            s.bump_scanned_heights_for_tenant(&tenant.id, 250, crate::now_unix(), 0).unwrap();
+        }
 
         let response = router
             .oneshot(
@@ -3534,43 +2964,6 @@ mod tests {
         let html = body_text(response).await;
         assert!(html.contains("100+"), "expected the still-growing range display, got: {html}");
         assert!(!html.contains("100 - 250"), "must not show a closed range while still in scope, got: {html}");
-    }
-
-    #[tokio::test]
-    async fn scan_range_row_shows_a_growing_range_while_a_rescan_is_running() {
-        let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-        let session_token = signed_up_and_logged_in_session_token(
-            &router,
-            "scan-range-rescanning-owner@example.com",
-            "correct horse battery staple",
-        )
-        .await;
-        let (connection_id, public_key) = create_connection(&router, &session_token).await;
-        let payment_id = seed_real_order(engine.addr, &public_key).await;
-        force_order_expired(engine.store(), &public_key, &payment_id);
-        engine.store().lock().unwrap().bump_scanned_range_for_order(&payment_id, 10, 50).unwrap();
-        seed_running_rescan(engine.store(), &public_key, &payment_id, 5);
-        engine.store().lock().unwrap().bump_scanned_range_for_order(&payment_id, 1, 60).unwrap();
-
-        let response = router
-            .oneshot(
-                Request::builder()
-                    .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
-                    .header("authorization", format!("Bearer {session_token}"))
-                    .header("host", "test.example")
-                    .body(Body::empty())
-                    .unwrap(),
-            )
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
-        assert!(
-            html.contains("1+"),
-            "a currently-running rescan must show a still-growing range even for an otherwise expired order, got: {html}"
-        );
     }
 
     /// `currently_scanning: false` (a closed, no-longer-growing range) needs an
@@ -3609,8 +3002,6 @@ mod tests {
             payments: vec![],
             payment_link: "http://127.0.0.1:8081/pay/pk_abc123/orders/pay_abc123/share".to_string(),
             scan_range_display: crate::templates::display_scan_range(Some(100), Some(250), false),
-            rescan: None,
-            rescan_error: None,
         };
         let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), order: Some(order), meta_refresh_secs: 15 };
         let chrome = crate::views::PageChrome::from_user(None, "");

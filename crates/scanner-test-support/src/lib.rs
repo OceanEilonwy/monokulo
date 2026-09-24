@@ -233,9 +233,6 @@ pub struct TestEngineConfig {
     /// `Some(path)` when [`TestEngineConfig::with_socket_key_custody`] has been
     /// used - see that method's own doc comment.
     key_custody_socket_path: Option<String>,
-    /// `true` when [`TestEngineConfig::with_admin_rescan_daemon`] has been used -
-    /// see that method's own doc comment.
-    admin_rescan_daemon: bool,
     /// `true` when [`TestEngineConfig::with_admin_lookup_daemon`] has been used -
     /// see that method's own doc comment.
     admin_lookup_daemon: bool,
@@ -256,33 +253,16 @@ impl TestEngineConfig {
         self
     }
 
-    /// Wires an inert [`NoopDaemonClient`] into `AppState::rescan_daemons` for
-    /// every configured network - opt-in, since most callers of this harness
-    /// never need it (see `spawn`'s own doc comment on `rescan_daemons` for why an empty
-    /// map is the honest default). A caller that drives the engine's real
-    /// `/api/v1/admin/tenant/orders/{id}/rescan` endpoint through a genuine
-    /// HTTP round trip - not a synthetic request built directly against the
-    /// engine's own test layer - needs this: `admin::trigger_rescan` looks a
-    /// daemon up from this map unconditionally and fails with a real 500
-    /// ("no daemon configured for network") without it, regardless of
-    /// whether the caller cares about actual chain-scanning results. Like
-    /// [`NoopDaemonClient`] itself, this can resolve request-shape logic
-    /// (bounds checking, the gap-prevention guardrail) but can never
-    /// simulate a real scan - height 0 and empty blocks/mempool always.
-    pub fn with_admin_rescan_daemon(mut self) -> Self {
-        self.admin_rescan_daemon = true;
-        self
-    }
-
     /// Wires an inert [`NoopDaemonClient`] into `AppState::daemons` (the live
-    /// scanner's own map, not `rescan_daemons` above) for every configured
-    /// network - the same opt-in shape as [`Self::with_admin_rescan_daemon`],
-    /// for a caller driving `POST /api/v1/admin/tenant/payments/lookup`
+    /// scanner's own map) for every configured network - opt-in, since most
+    /// callers of this harness never need it (see `spawn`'s own doc comment on
+    /// `daemons` for why an empty map is the honest default). A caller
+    /// driving `POST /api/v1/admin/tenant/payments/lookup`
     /// (`docs/txid_lookup_and_scan_chunking_wbs.md` Part B) through a genuine
     /// HTTP round trip: that handler looks a daemon up from `daemons`
-    /// unconditionally too. Same ceiling as `with_admin_rescan_daemon`'s own
-    /// `NoopDaemonClient` - it can resolve request-shape logic (a malformed
-    /// txid, a genuinely-absent one) but never simulate a real match.
+    /// unconditionally too. A `NoopDaemonClient` can resolve request-shape
+    /// logic (a malformed txid, a genuinely-absent one) but never simulate a
+    /// real match.
     pub fn with_admin_lookup_daemon(mut self) -> Self {
         self.admin_lookup_daemon = true;
         self
@@ -471,33 +451,8 @@ impl TestEngineConfig {
             } else {
                 HashMap::new()
             }),
-            // `admin::trigger_rescan` reads `rescan_daemons`, not `daemons` -
-            // see `AppState::rescan_daemons`'s own doc comment for why the two
-            // are deliberately separate in production. No caller of this crate
-            // exercises the admin rescan-trigger endpoint by default, so an
-            // empty map here is honest too; see [`TestEngineConfig::
-            // with_admin_rescan_daemon`] for the opt-in that wires one in, for
-            // a caller that specifically needs it.
-            rescan_daemons: Arc::new(if self.admin_rescan_daemon {
-                self.networks
-                    .iter()
-                    .map(|&network| {
-                        (
-                            network,
-                            Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-                                label: "noop-test-daemon".to_string(),
-                                client: Arc::new(NoopDaemonClient),
-                            }])),
-                        )
-                    })
-                    .collect::<HashMap<_, _>>()
-            } else {
-                HashMap::new()
-            }),
             scanner_status: scanner::scanner_status::new_scanner_status_map(),
             scan_poll_interval_secs: BACKGROUND_LOOP_INTERVAL.as_secs().max(1),
-            default_rescan_lookback_days: 7,
-            max_rescan_lookback_days: 90,
             // Matches `run_scan_tick_now`'s own hardcoded `0` - this harness's
             // background loops don't exercise grace-period timing (see that
             // method's own doc comment).

@@ -588,10 +588,12 @@ matter — and note that a *single* node is also the unit an eclipse attack targ
 (there is published work on practical eclipse attacks against Monero's P2P layer), so
 "my own node" means one whose peers you are willing to trust too.
 
-### 7.8 Merchant-triggered order rescan
+### 7.8 Late payments: grace period + direct txid lookup
 
-Full design record: [`docs/order_rescan_wbs.md`](order_rescan_wbs.md). Summary for
-future readers of this file:
+Full design record: [`docs/txid_lookup_and_scan_chunking_wbs.md`](txid_lookup_and_scan_chunking_wbs.md).
+Supersedes the manual, merchant-triggered chain rescan this section used to describe —
+see [`docs/order_rescan_wbs.md`](order_rescan_wbs.md) for that historical design, kept
+for the record but no longer implemented. Summary for future readers of this file:
 
 **The problem.** §7.3's active watchlist drops a tenant the moment every one of its
 orders is terminal, and an `expired` order is terminal — so a customer who pays *after*
@@ -608,39 +610,26 @@ recovery.
    scanner-core change was needed to make a late match against an already-`expired`
    order settle correctly: `record_scan_match`'s `touched` set already gets unioned
    into every tick's recompute sweep regardless of status.
-2. **A manual, merchant-triggered rescan**, for after the grace window has genuinely
-   elapsed — a customer reports a payment days later. `scanner::rescan_order` walks a
-   bounded `[from_height, to_height]` block range for one order's one subaddress,
-   reusing the exact same `scan_transaction`/`record_scan_match` primitives live
-   scanning uses (a narrower caller, not a second implementation), then does one final
-   pass over the current mempool. The historical walk deliberately gets a fixed
-   safety cushion on its *start* height only (`RESCAN_START_HEIGHT_CUSHION_BLOCKS`,
-   guarding against `find_height_at_or_before`'s timestamp→height binary search
-   landing slightly late on Monero's non-strictly-monotonic block timestamps); the
-   *end* side gets no equivalent buffer, because §7.5's reorg/double-spend
-   reconciliation already re-examines every recorded payment within
-   `reorg_check_depth` of the tip regardless of the owning order's status — a payment
-   the rescan records, even one that immediately settles the order, inherits that
-   protection automatically.
+2. **A direct txid lookup**, for after the grace window has genuinely elapsed — a
+   customer reports a payment days later and can give its transaction ID.
+   `POST /api/v1/admin/tenant/payments/lookup` (`http/admin.rs::lookup_payment`) locates
+   that one transaction on chain (mempool or a specific block height), decodes it against
+   the tenant's own subaddress range, and records/recomputes a match if it belongs to one
+   of this tenant's orders — reusing the exact same `scan_transaction`/
+   `record_scan_match` primitives live scanning uses, applied to one transaction instead
+   of a block range. This replaced an earlier design that let a merchant re-walk an
+   arbitrary chain range on demand (`docs/order_rescan_wbs.md`): a single, bounded,
+   synchronous lookup needs no durable job state, no per-tenant concurrency guardrail, and
+   no daemon-connection isolation from live scanning, all of which the old design needed
+   and none of which a repeated chain re-scan is actually necessary to solve the "found a
+   late payment" problem.
 
-**Durability.** A triggered rescan is a real row in `order_rescans` (§8), not an
-in-memory task: `status = 'running'` survives a server restart as-is (no separate
-"interrupted" state), and the engine re-spawns `scanner::run_rescan_job` for every such
-row at boot (`Store::list_running_rescans`), resuming from the row's own
-`current_height` — never the original `from_height` again, and never a
-`to_height` recomputed against a newer tip. A partial unique index enforces one
-running rescan per tenant at a time.
-
-**Scanned-range bookkeeping and its own guardrail.** Every order accumulates
+**Scanned-range bookkeeping.** Every order still accumulates
 `first_scanned_height`/`last_scanned_height` (§8), bumped by ordinary live scanning
-(§7.3's watchlist) and by a manual rescan alike, via `MIN`/`MAX` — never replaced, so
-the range only ever grows. This makes the range's display trustworthy (a merchant can
-tell "was the block range around when my customer says they paid actually checked") only
-because of one guardrail: the trigger endpoint rejects an advanced-mode `to` that
-resolves earlier than the order's existing `last_scanned_height`. Without it, a narrow
-advanced-mode request could leave a real, silent gap between the old high-water mark
-and the new rescan's own end that the min/max range would then hide entirely, showing a
-continuous span with an actual hole in it.
+(§7.3's watchlist) via `MIN`/`MAX` — never replaced, so the range only ever grows. This
+remains meaningful ("has this order's address ever been checked, how recently") purely
+as a byproduct of live scanning now that there is no separate rescan mechanism also
+writing into it.
 
 ## 8. Data Model
 
@@ -772,7 +761,7 @@ scan range only grows over a tenant's lifetime — acceptable at realistic v1 vo
 given the `KeyCustody` cache (§6.2 point 4), and explicitly deferred rather than solved
 speculatively (§3).
 
-### 8.3 Order rescan additions (§7.8)
+### 8.3 Scanned-range tracking (§7.8)
 
 Two columns added to `orders` (migration 0008):
 
@@ -782,40 +771,11 @@ ALTER TABLE orders ADD COLUMN last_scanned_height INTEGER;
 ```
 
 Both `NULL` until an order is first examined by anything — never backfilled to
-`created_at`'s own height. Accumulated by `MIN`/`MAX`, never replaced, by two
-independent writers (ordinary live scanning and a manual rescan) sharing the same
-discipline — see §7.8 for why that, plus the gap-prevention guardrail, is what keeps
-the displayed range genuinely continuous rather than merely usually so.
-
-A new table, `order_rescans` (migration 0007), one row per triggered job:
-
-```sql
-CREATE TABLE order_rescans (
-    id             TEXT PRIMARY KEY,
-    order_id       TEXT NOT NULL REFERENCES orders(id),
-    tenant_id      TEXT NOT NULL REFERENCES tenants(id),
-    minor_index    INTEGER NOT NULL,
-    mode           TEXT NOT NULL CHECK (mode IN ('simple', 'advanced')),
-    status         TEXT NOT NULL CHECK (status IN ('running', 'completed', 'failed')),
-    from_height    INTEGER NOT NULL,
-    to_height      INTEGER NOT NULL,
-    current_height INTEGER NOT NULL,
-    error          TEXT,
-    started_at     INTEGER NOT NULL,
-    finished_at    INTEGER,
-    updated_at     INTEGER NOT NULL
-);
-CREATE UNIQUE INDEX order_rescans_one_running_per_tenant
-    ON order_rescans (tenant_id) WHERE status = 'running';
-CREATE INDEX order_rescans_order_id ON order_rescans (order_id);
-```
-
-`mode` is purely informational — what actually governs the walk is `from_height`/
-`to_height`, already resolved to concrete block heights at trigger time. `status` has
-no `interrupted` value: a row left `running` when the process stopped simply *is*
-still running as far as this table is concerned (§7.8's restart-resume). The partial
-unique index is the one-running-rescan-per-tenant guardrail, enforced atomically at
-the database level rather than by a separate check-then-insert.
+`created_at`'s own height. Accumulated by `MIN`/`MAX`, never replaced, by ordinary live
+scanning alone (§7.8) — a manual rescan feature used to write into this same range too
+(migration 0007's now-dropped `order_rescans` table, `docs/order_rescan_wbs.md`), but
+that mechanism is gone; migration 0012 drops the table, leaving these two columns as
+live-scanning-only bookkeeping.
 
 ## 9. Concurrency Model
 
@@ -895,9 +855,7 @@ every handler an already-scoped tenant context, not re-implemented per handler.
 | `DELETE` | `/api/v1/admin/tenant` | `sk_` | Soft-delete: `key_custody.remove_wallet()`, set `disabled_at`; orders keep a valid FK |
 | `GET` | `/api/v1/admin/tenant/orders?status=&cursor=` | `sk_` | Paginated; each row also carries `first_scanned_height`/`last_scanned_height`/`currently_scanning` (§7.8) |
 | `GET` | `/api/v1/admin/tenant/orders/{payment_id}` | `sk_` | Includes `order_payments` audit trail and the same three scanned-range fields |
-| `POST` | `/api/v1/admin/tenant/orders/{payment_id}/rescan` | `sk_` | `{mode: "simple"\|"advanced", from?, to?}` → the triggered job's state (§7.8) - `Expired` orders only |
-| `GET` | `/api/v1/admin/tenant/orders/{payment_id}/rescan` | `sk_` | The most recently triggered rescan for this order, `404` if none ever was (§7.8) |
-| `GET` | `/api/v1/admin/tenant/rescans` | `sk_` | Every currently-`running` rescan for this tenant; real HTTP caching (`ETag`/`Cache-Control`/`If-None-Match`, §7.8) |
+| `POST` | `/api/v1/admin/tenant/payments/lookup` | `sk_` | `{txid}` → looks up one transaction on chain and records/recomputes a match against this tenant's orders if it belongs to one (§7.8) |
 | `POST` | `/api/v1/admin/tenant/webhooks` | `sk_` | `{url, extra_headers?}` → `{webhook_id, signing_secret}` (shown once — an API convention here, not a hashing guarantee, since HMAC signing needs the real bytes on every delivery) |
 | `GET` | `/api/v1/admin/tenant/webhooks` | `sk_` | List (never re-shows `signing_secret`) |
 | `DELETE` | `/api/v1/admin/tenant/webhooks/{id}` | `sk_` | Rotation is delete+recreate in v1 |
@@ -1026,10 +984,12 @@ zero_conf_max_xmr = "0.25"    # XMR, not fiat: compared against the piconero tot
 order_expiry_minutes = 30
 reorg_check_depth = 20        # blocks; should exceed confirmations_required with margin
 mempool_poll_interval_ms = 1000
-# `docs/order_rescan_wbs.md` - merchant-triggered order rescan (§7.8 below).
-default_rescan_lookback_days = 7    # "simple" mode's own fixed window, measured back from now
-max_rescan_lookback_days = 90       # hard ceiling both simple and advanced modes share
 expired_order_grace_period_minutes = 360  # 6h - how long past expires_at ordinary live scanning keeps watching an order; 0 disables it
+# `docs/txid_lookup_and_scan_chunking_wbs.md` Part A - caps how much memory one scan
+# tick's in-flight `get_blocks.bin` batch may use; the live scanner sizes its own
+# chunk (block count) dynamically each tick via an EWMA of observed bytes/block
+# against this budget, rather than a fixed block-count constant.
+scan_chunk_memory_budget_mb = 8
 
 [server]
 bind = "0.0.0.0:8443"
@@ -1052,15 +1012,8 @@ delivery_timeout_ms = 5000
 max_attempts = 8
 ```
 
-Two rescan-related knobs live outside this file entirely:
+One more knob lives outside this file entirely:
 
-- **`RESCAN_START_HEIGHT_CUSHION_BLOCKS`** (`src/scanner.rs`) - the fixed safety margin
-  (720 blocks, ~24h) subtracted from a rescan's timestamp-derived start height (§7.8) -
-  covers both the timestamp binary search's own slop and the advanced-mode date
-  fields' inherent timezone ambiguity (monokulo labels them UTC; a plain
-  `<input type="date">` carries no timezone at all). A compile-time constant, not
-  configuration, for now - there has been no operational need yet to tune it per
-  deployment.
 - **`CONTROL_PLANE_HTTP_CACHE_MAX_MB`** - monokulo's own environment variable
   (default 16), not part of this engine's TOML at all. Sizes the byte-bounded HTTP
   response cache (`shared::http_cache`) monokulo uses for every outbound call to
