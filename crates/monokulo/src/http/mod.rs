@@ -142,7 +142,11 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/connections/new", axum::routing::get(home::new_store_picker))
         .route("/dashboard/connections/new/woocommerce", axum::routing::get(home::woocommerce_instructions))
         .route("/dashboard/connections/{id}", axum::routing::get(orders::store_detail))
-        .route("/dashboard/connections/{id}/orders/new", axum::routing::post(orders::create_order))
+        .route("/dashboard/connections/{id}/settings", axum::routing::get(orders::store_settings))
+        .route(
+            "/dashboard/connections/{id}/orders/new",
+            axum::routing::get(orders::create_order_page).post(orders::create_order),
+        )
         .route(
             "/dashboard/connections/{id}/settings/confirmations",
             axum::routing::post(orders::update_confirmations_required),
@@ -156,10 +160,6 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(orders::update_base_currency),
         )
         .route(
-            "/dashboard/connections/{id}/settings/zero-conf",
-            axum::routing::post(orders::update_zero_conf_max_piconero),
-        )
-        .route(
             "/dashboard/connections/{id}/settings/confirmation-thresholds",
             axum::routing::post(orders::create_confirmation_threshold),
         )
@@ -171,14 +171,20 @@ pub fn build_router(state: AppState) -> Router {
             "/dashboard/connections/{id}/settings/confirmation-thresholds/save",
             axum::routing::post(orders::save_confirmation_thresholds),
         )
+        .route(
+            "/dashboard/connections/{id}/settings/webhooks",
+            axum::routing::post(orders::webhooks_create),
+        )
+        .route(
+            "/dashboard/connections/{id}/settings/webhooks/{webhook_id}/delete",
+            axum::routing::post(orders::webhooks_delete),
+        )
         .route("/dashboard/connections/{id}/pos", axum::routing::get(pos::pos_page))
         .route("/dashboard/connections/{id}/pos/orders", axum::routing::post(pos::create_order))
         .route("/dashboard/connections/{id}/pos/orders/{payment_id}/status", axum::routing::get(pos::order_status))
         .route("/dashboard/connections/{id}/orders", axum::routing::get(orders::orders_list))
         .route("/dashboard/connections/{id}/orders/lookup", axum::routing::post(orders::lookup_payment))
         .route("/dashboard/connections/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
-        .route("/dashboard/connections/{id}/webhooks", axum::routing::get(orders::webhooks_list).post(orders::webhooks_create))
-        .route("/dashboard/connections/{id}/webhooks/{webhook_id}/delete", axum::routing::post(orders::webhooks_delete))
         .route("/connect/{platform}", axum::routing::get(connect::start).post(connect::confirm_submit))
         .route("/connect/{platform}/finish", post(connect::finish));
 

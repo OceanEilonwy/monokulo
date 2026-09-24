@@ -3,21 +3,8 @@
 
 use maud::{html, Markup};
 
-use super::orders::OrderRowViewModel;
+use super::orders::{lookup_payment_card, OrderRowViewModel};
 use super::{layout, PageChrome};
-
-/// One row of the FX-provider settings dropdown.
-pub struct FxProviderOption {
-    pub name: String,
-    pub selected: bool,
-}
-
-/// One custom confirmation threshold.
-pub struct ConfirmationThresholdView {
-    pub id: String,
-    pub unit_amount: String,
-    pub confirmations_required: u64,
-}
 
 pub struct StoreDetailData {
     pub connection_id: String,
@@ -32,36 +19,16 @@ pub struct StoreDetailData {
     pub recent_orders: Vec<OrderRowViewModel>,
     /// Drives which half of the integration-help fragment renders.
     pub is_woocommerce: bool,
-    /// Set only when the "create an order" form on this page was just
-    /// rejected - the engine's own validation error, surfaced verbatim.
-    /// `None` on a plain page load.
-    pub order_creation_error: Option<String>,
-    /// Every currency the "create an order" form's dropdown can offer right
-    /// now - always includes `"XMR"` first.
-    pub order_currency_options: Vec<String>,
-    /// `true` exactly when `order_currency_options` is `["XMR"]` alone (no
-    /// fiat provider enabled/configured for this store) - shows a plain
-    /// `readonly` "XMR" field instead of a one-option dropdown.
-    pub order_currency_is_locked_to_xmr: bool,
-    /// The tenant's current confirmation threshold - `0` when the engine is
-    /// currently unreachable.
-    pub confirmations_required: u64,
-    pub fx_provider: String,
-    pub fx_provider_options: Vec<FxProviderOption>,
-    pub base_currency: String,
-    pub base_currency_options: Vec<crate::currencies::CurrencyOptionView>,
-    pub confirmation_thresholds: Vec<ConfirmationThresholdView>,
-    /// `true` once this store already has 5 custom thresholds - the
-    /// add-threshold form hides itself rather than accepting a submission
-    /// the server would just reject anyway.
-    pub confirmation_thresholds_at_max: bool,
-    /// This store's current zero-conf ceiling, formatted as an XMR decimal
-    /// string - empty when disabled.
-    pub zero_conf_max_xmr: String,
-    /// Set only when the "update settings" form on this page was just
-    /// rejected - shared by every settings sub-form on this page, since
-    /// only one can ever be submitted at a time. `None` on a plain load.
-    pub settings_error: Option<String>,
+    /// `docs/txid_lookup_and_scan_chunking_wbs.md` Part B.3 - re-populates the
+    /// "look up a payment" card's own input after a submission, empty for a
+    /// plain page view.
+    pub lookup_txid_value: String,
+    /// The lookup's own plain-text result, `None` until a lookup has actually
+    /// been submitted.
+    pub lookup_message: Option<String>,
+    /// `Some(payment_id)` only when the lookup found a real match - a link to
+    /// the now-updated order, alongside `lookup_message`.
+    pub lookup_found_payment_id: Option<String>,
 }
 
 pub struct StoreDetailViewModel {
@@ -74,16 +41,19 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
             @if let Some(store) = &data.store {
                 h1 { (store.display_name) }
 
-                details class="help-disclosure" {
-                    summary {
-                        span {
-                            span class=(format!("tag tag-{}", store.health)) { (store.health_label) }
-                            "\u{a0}" span class="muted" { (store.platform) } "\u{a0}·\u{a0}"
-                            a href=(store.site_url) { (store.site_url) }
+                div class="store-header-row" {
+                    details class="help-disclosure" {
+                        summary {
+                            span {
+                                span class=(format!("tag tag-{}", store.health)) { (store.health_label) }
+                                "\u{a0}" span class="muted" { (store.platform) } "\u{a0}·\u{a0}"
+                                a href=(store.site_url) { (store.site_url) }
+                            }
+                            span class="hint" { "help" }
                         }
-                        span class="hint" { "help" }
+                        (super::integration_help::fragment(&store.public_key, &store.endpoint, store.is_woocommerce))
                     }
-                    (super::integration_help::fragment(&store.public_key, &store.endpoint, store.is_woocommerce))
+                    a class="btn-secondary settings-link" href=(format!("/dashboard/connections/{}/settings", store.connection_id)) { "Settings" }
                 }
 
                 table {
@@ -92,7 +62,25 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                     tr { th { "Connected" } td { (store.created_at) } }
                 }
 
+                div class="widget-links" {
+                    a class="btn widget-link" href=(format!("/dashboard/connections/{}/pos", store.connection_id)) {
+                        span class="widget-link-title" { "POS Terminal" }
+                        span class="widget-link-hint" { "Full-screen keypad for in-person sales" }
+                    }
+                    a class="btn widget-link" href=(format!("/dashboard/connections/{}/orders/new", store.connection_id)) {
+                        span class="widget-link-title" { "Create an order" }
+                        span class="widget-link-hint" { "Creates a real order and opens its payment page" }
+                    }
+                }
+
                 h2 { "Recent orders" }
+                (lookup_payment_card(
+                    &format!("/dashboard/connections/{}/orders/lookup", store.connection_id),
+                    &store.lookup_txid_value,
+                    &store.lookup_message,
+                    &store.lookup_found_payment_id,
+                    |payment_id| format!("/dashboard/connections/{}/orders/{}", store.connection_id, payment_id),
+                ))
                 @if store.recent_orders.is_empty() {
                     p class="muted" { "No orders yet." }
                 } @else {
@@ -116,154 +104,6 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 }
                 p {
                     a href=(format!("/dashboard/connections/{}/orders", store.connection_id)) { "all orders →" }
-                    "\u{a0}·\u{a0}"
-                    a href=(format!("/dashboard/connections/{}/webhooks", store.connection_id)) { "webhooks →" }
-                    "\u{a0}·\u{a0}"
-                    a href=(format!("/dashboard/connections/{}/pos", store.connection_id)) { "POS terminal →" }
-                }
-
-                h2 { "Create an order" }
-                p class="hint" { "Creates a real order on the engine and takes you straight to its payment page." }
-                @if let Some(error) = &store.order_creation_error {
-                    div class="error" { (error) }
-                }
-                form method="post" action=(format!("/dashboard/connections/{}/orders/new", store.connection_id)) {
-                    label for="amount" { "Amount" }
-                    input type="text" id="amount" name="amount" value="10.00" required;
-                    label for="currency" { "Currency" }
-                    @if store.order_currency_is_locked_to_xmr {
-                        input type="text" id="currency" name="currency" value="XMR" readonly;
-                        span class="field-help" {
-                            "\"XMR\" - the only currency this instance can price an order in right now. Enable an "
-                            "exchange rate provider (below) to offer others."
-                        }
-                    } @else {
-                        select id="currency" name="currency" {
-                            @for currency in &store.order_currency_options {
-                                option value=(currency) { (currency) }
-                            }
-                        }
-                        span class="field-help" {
-                            "\"XMR\" always works, with no provider needed. Any other currency here comes from this "
-                            "store's own exchange rate provider (below)."
-                        }
-                    }
-                    label for="merchant_order_id" { "Merchant order ID " span class="field-help" style="display:inline" { "(optional)" } }
-                    input type="text" id="merchant_order_id" name="merchant_order_id";
-                    span class="field-help" {
-                        "Your own order/cart id, if you have one - shown on this order's detail page so you can "
-                        "match it back to your own records."
-                    }
-                    button type="submit" { "Create order" }
-                }
-
-                h2 { "Settings" }
-                @if let Some(error) = &store.settings_error {
-                    div class="error" { (error) }
-                }
-
-                h2 { "Confirmation Thresholds" }
-                p class="hint" {
-                    "How many blocks a payment needs before this store's orders read as paid. The default "
-                    "below is the fallback used whenever no custom threshold applies; custom thresholds let a higher-value "
-                    "order require more confirmations (or a lower-value one fewer) based on its amount in this store's base "
-                    "currency."
-                }
-
-                h3 { "Base currency" }
-                form method="post" action=(format!("/dashboard/connections/{}/settings/base-currency", store.connection_id)) {
-                    label {
-                        "Base currency"
-                        select name="base_currency" {
-                            @for opt in &store.base_currency_options {
-                                option value=(opt.code) selected[opt.selected] { (opt.description) " (" (opt.code) ")" }
-                            }
-                        }
-                        span class="field-help" {
-                            "What custom threshold amounts below are denominated in. Changing this deletes every "
-                            "custom threshold this store currently has - an amount in a currency you're no longer using means nothing."
-                        }
-                    }
-                    button type="submit" { "Update" }
-                }
-
-                form method="post" action=(format!("/dashboard/connections/{}/settings/confirmation-thresholds/save", store.connection_id)) {
-                    table {
-                        thead { tr { th { "Amount (" (store.base_currency) ")" } th { "Confirmations required" } th { "Delete" } } }
-                        tbody {
-                            tr {
-                                td class="muted" { "Default (fallback)" }
-                                td { input type="text" name="confirmations_required" value=(store.confirmations_required) required; }
-                                td { "-" }
-                            }
-                            @for threshold in &store.confirmation_thresholds {
-                                tr {
-                                    td { (threshold.unit_amount) }
-                                    td { (threshold.confirmations_required) }
-                                    td { label { input type="checkbox" name=(format!("delete_{}", threshold.id)); " delete" } }
-                                }
-                            }
-                            @if !store.confirmation_thresholds_at_max {
-                                tr {
-                                    td { input type="text" name="new_unit_amount" placeholder="50.00"; }
-                                    td { input type="text" name="new_confirmations_required" placeholder="20"; }
-                                    td class="muted" { "new" }
-                                }
-                            }
-                        }
-                    }
-                    span class="field-help" {
-                        "\"Default (fallback)\" applies whenever an order's amount doesn't fall under any custom "
-                        "threshold above it (or there are none) - it always exists and can't be deleted. Each custom threshold makes a "
-                        "higher-value order (by amount in this store's base currency) require more confirmations, or a lower-value one "
-                        "fewer."
-                        @if store.confirmation_thresholds_at_max {
-                            " Maximum of 5 custom thresholds reached - delete one to add "
-                            "another."
-                        }
-                    }
-                    button type="submit" { "Save" }
-                }
-
-                h3 { "Zero-confirmation payments" }
-                form method="post" action=(format!("/dashboard/connections/{}/settings/zero-conf", store.connection_id)) {
-                    label {
-                        "Accept unconfirmed payments up to (XMR)"
-                        input type="text" name="zero_conf_max_xmr" value=(store.zero_conf_max_xmr) placeholder="0.00 (disabled)";
-                        span class="field-help" {
-                            "An order at or under this XMR amount can read as paid the moment its transaction "
-                            "reaches this store's node's mempool, before any block confirms it - useful for fast, low-value, in-person "
-                            "sales. This is a real double-spend risk for exactly that amount of XMR (an attacker who can out-race the "
-                            "transaction to a miner keeps both the goods and the coin) - keep this at the smallest amount you're actually "
-                            "willing to lose. Leave blank to require the confirmations above for every order, with no exception."
-                        }
-                    }
-                    button type="submit" { "Update" }
-                }
-
-                @if store.fx_provider_options.is_empty() {
-                    p { strong { "Exchange rate provider:" } " " span class="muted" { "none enabled on this instance" } }
-                    p class="hint" {
-                        "Only XMR-denominated orders can be created until an admin of this Monokulo instance "
-                        "enables a provider (e.g. Coingecko)."
-                    }
-                } @else {
-                    form method="post" action=(format!("/dashboard/connections/{}/settings/fx-provider", store.connection_id)) {
-                        label {
-                            "Exchange rate provider"
-                            select name="fx_provider" {
-                                @for opt in &store.fx_provider_options {
-                                    option value=(opt.name) selected[opt.selected] { (opt.name) }
-                                }
-                            }
-                            span class="field-help" {
-                                "Where this store's orders get their live market rate from, for any currency other than "
-                                "XMR (which always works, needing no provider at all - see \"create an order\" above). \"coingecko\" looks up a "
-                                "live market rate (cached briefly before the next lookup refreshes it)."
-                            }
-                        }
-                        button type="submit" { "Update" }
-                    }
                 }
             } @else {
                 h1 { "Store not found" }
@@ -328,18 +168,9 @@ mod tests {
             created_at: 1000,
             recent_orders: vec![],
             is_woocommerce,
-            order_creation_error: None,
-            confirmations_required: 10,
-            order_currency_options: vec!["XMR".to_string(), "USD".to_string()],
-            order_currency_is_locked_to_xmr: false,
-            fx_provider: "coingecko".to_string(),
-            fx_provider_options: vec![FxProviderOption { name: "coingecko".to_string(), selected: true }],
-            base_currency: "XMR".to_string(),
-            base_currency_options: vec![],
-            confirmation_thresholds: vec![],
-            confirmation_thresholds_at_max: false,
-            zero_conf_max_xmr: String::new(),
-            settings_error: None,
+            lookup_txid_value: String::new(),
+            lookup_message: None,
+            lookup_found_payment_id: None,
         }
     }
 
@@ -382,12 +213,23 @@ mod tests {
     }
 
     #[test]
-    fn shows_the_create_order_error_when_present() {
-        let store =
-            StoreDetailData { order_creation_error: Some("unsupported currency: XYZ".to_string()), ..base_store(false) };
+    fn links_to_the_settings_page_and_widget_pages() {
+        let html = page(&chrome(), &StoreDetailViewModel { store: Some(base_store(false)) }).into_string();
+        assert!(html.contains(r#"href="/dashboard/connections/conn_1/settings""#), "expected a Settings link, got: {html}");
+        assert!(html.contains(r#"href="/dashboard/connections/conn_1/pos""#));
+        assert!(html.contains(r#"href="/dashboard/connections/conn_1/orders/new""#));
+    }
+
+    #[test]
+    fn shows_the_lookup_message_when_present() {
+        let store = StoreDetailData {
+            lookup_txid_value: "abc123".to_string(),
+            lookup_message: Some("No transaction with that ID was found on the network.".to_string()),
+            ..base_store(false)
+        };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
-        assert!(html.contains("unsupported currency: XYZ"), "expected the real error surfaced, got: {html}");
-        assert!(html.contains("<form"), "the create-order form must still be present on error");
+        assert!(html.contains("No transaction with that ID was found on the network."));
+        assert!(html.contains(r#"value="abc123""#));
     }
 
     #[test]

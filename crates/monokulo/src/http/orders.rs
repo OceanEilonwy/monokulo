@@ -56,10 +56,8 @@ pub(super) fn decrypt_sk(state: &AppState, row: &StoreConnectionRow) -> Result<S
     crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).map_err(|_| ())
 }
 
-/// Shared by `orders_list` and `lookup_payment` below - both need the same
-/// "real orders, real fiat metadata" view model, just with a different
-/// `lookup_*` overlay (nothing, for a plain page view; a real result, after a
-/// lookup form submission).
+/// Shared by `orders_list` - the "real orders, real fiat metadata" view
+/// model for the plain orders list page.
 async fn build_orders_view_model(
     state: &AppState,
     row: &StoreConnectionRow,
@@ -84,9 +82,6 @@ async fn build_orders_view_model(
                 OrderRowViewModel { payment_id: o.payment_id, status: o.status, amount, currency, created_at: o.created_at }
             })
             .collect(),
-        lookup_txid_value: String::new(),
-        lookup_message: None,
-        lookup_found_payment_id: None,
     })
 }
 
@@ -119,11 +114,34 @@ pub struct LookupPaymentForm {
     txid: String,
 }
 
+/// The engine call shared by `lookup_payment`'s only caller
+/// (`views::store_detail`'s own "Look up a payment" card, folded there from
+/// the standalone orders list page it used to live on) - a plain,
+/// human-readable result message plus the matched order's id, if any.
+async fn perform_payment_lookup(state: &AppState, sk: &str, txid: &str) -> Result<(String, Option<String>), ()> {
+    match state.engine_client.lookup_payment(sk, txid).await {
+        Ok(PaymentLookupView::NotFoundOnChain) => {
+            Ok(("No transaction with that ID was found on the network.".to_string(), None))
+        }
+        Ok(PaymentLookupView::NoMatchingOrder) => {
+            Ok(("That transaction exists, but doesn't pay any of this store's orders.".to_string(), None))
+        }
+        Ok(PaymentLookupView::Matched { order_ids }) => {
+            Ok(("Match found and recorded.".to_string(), order_ids.into_iter().next()))
+        }
+        Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
+            Ok((format!("Couldn't look that up: {message}"), None))
+        }
+        Err(_) => Err(()),
+    }
+}
+
 /// `POST /dashboard/connections/{id}/orders/lookup` - `docs/txid_lookup_and_
 /// scan_chunking_wbs.md` Part B.3, the direct replacement for the old
-/// manual rescan feature. Re-renders the same orders list with the result
-/// shown inline (a plain message, plus a link to the matched order if any) -
-/// recompute and redisplay, never a redirect that would lose the result.
+/// manual rescan feature. Re-renders the store overview page with the
+/// result shown inline in its "Recent orders" section (a plain message,
+/// plus a link to the matched order if any) - recompute and redisplay,
+/// never a redirect that would lose the result.
 pub async fn lookup_payment(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -141,32 +159,12 @@ pub async fn lookup_payment(
     };
 
     let txid = form.txid.trim().to_string();
-    let (message, found_payment_id) = match state.engine_client.lookup_payment(&sk, &txid).await {
-        Ok(PaymentLookupView::NotFoundOnChain) => {
-            ("No transaction with that ID was found on the network.".to_string(), None)
-        }
-        Ok(PaymentLookupView::NoMatchingOrder) => {
-            ("That transaction exists, but doesn't pay any of this store's orders.".to_string(), None)
-        }
-        Ok(PaymentLookupView::Matched { order_ids }) => {
-            ("Match found and recorded.".to_string(), order_ids.into_iter().next())
-        }
-        Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            (format!("Couldn't look that up: {message}"), None)
-        }
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    let mut view_model = match build_orders_view_model(&state, &row, &sk).await {
-        Ok(vm) => vm,
+    let (message, found_payment_id) = match perform_payment_lookup(&state, &sk, &txid).await {
+        Ok(result) => result,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    view_model.lookup_txid_value = txid;
-    view_model.lookup_message = Some(message);
-    view_model.lookup_found_payment_id = found_payment_id;
 
-    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/connections/{id}/orders"));
-    views::orders::list_page(&chrome, &view_model).into_response()
+    render_store_detail_page(&state, row, &user, txid, Some(message), found_payment_id).await
 }
 
 /// `GET /dashboard/connections/{id}/orders/{payment_id}` - the order's full
@@ -299,61 +297,6 @@ pub async fn order_detail(
     }
 }
 
-/// `GET /dashboard/connections/{id}/webhooks` - a table of the connection's
-/// tenant's registered webhooks, plus (below) the create/delete actions
-/// this same page's forms post back to.
-pub async fn webhooks_list(
-    State(state): State<AppState>,
-    AuthedUser(user, _): AuthedUser,
-    Path(id): Path<String>,
-) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
-        Ok(Some(row)) => row,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    let sk = match decrypt_sk(&state, &row) {
-        Ok(sk) => sk,
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    render_webhooks_page(&state, &id, &sk, &user, None, None).await
-}
-
-/// Shared by `webhooks_list`/`webhooks_create`/`webhooks_delete` - every one
-/// of them ends by showing the same page (a fresh webhook list, optionally
-/// with an error or a just-created secret), so this is the one place that
-/// actually fetches the list and renders it.
-async fn render_webhooks_page(
-    state: &AppState,
-    connection_id: &str,
-    sk: &str,
-    user: &UserRow,
-    error: Option<String>,
-    created_webhook_signing_secret: Option<String>,
-) -> Response {
-    let webhooks = match state.engine_client.list_webhooks(sk).await {
-        Ok(webhooks) => webhooks,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/connections/{connection_id}/webhooks"));
-    let view_model = views::webhooks::WebhooksViewModel {
-        connection_id: connection_id.to_string(),
-        webhooks: webhooks
-            .into_iter()
-            .map(|w| views::webhooks::WebhookRowViewModel {
-                webhook_id: w.webhook_id,
-                url: w.url,
-                enabled: w.enabled,
-                created_at: w.created_at,
-            })
-            .collect(),
-        error,
-        created_webhook_signing_secret,
-    };
-    views::webhooks::page(&chrome, &view_model).into_response()
-}
-
 #[derive(Deserialize)]
 pub struct CreateWebhookForm {
     pub url: String,
@@ -422,30 +365,30 @@ pub async fn webhooks_create(
 
     let url = form.url.trim();
     if url.is_empty() {
-        return render_webhooks_page(&state, &id, &sk, &user, Some("Enter a webhook URL.".to_string()), None).await;
+        return render_store_settings_page(&state, row, &user, Some("Enter a webhook URL.".to_string()), None).await;
     }
     let extra_headers = match parse_extra_headers(&form.extra_headers) {
         Ok(headers) => headers,
-        Err(message) => return render_webhooks_page(&state, &id, &sk, &user, Some(message), None).await,
+        Err(message) => return render_store_settings_page(&state, row, &user, Some(message), None).await,
     };
 
     match state.engine_client.create_webhook(&sk, url, &extra_headers).await {
-        Ok((_webhook_id, signing_secret)) => render_webhooks_page(&state, &id, &sk, &user, None, Some(signing_secret)).await,
+        Ok((_webhook_id, signing_secret)) => render_store_settings_page(&state, row, &user, None, Some(signing_secret)).await,
         // The engine's own validation (a malformed URL, a non-http(s) scheme -
         // `src/http/admin.rs::create_webhook` at the repo root) - the
         // caller's mistake, surfaced verbatim, same convention
         // `connections::create_connection_for_user` already applies to the
         // engine's tenant-creation `400`s.
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_webhooks_page(&state, &id, &sk, &user, Some(message), None).await
+            render_store_settings_page(&state, row, &user, Some(message), None).await
         }
-        Err(_) => render_webhooks_page(&state, &id, &sk, &user, Some("Something went wrong. Please try again.".to_string()), None).await,
+        Err(_) => render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await,
     }
 }
 
-/// `POST /dashboard/connections/{id}/webhooks/{webhook_id}/delete` - a POST
-/// (not a real `DELETE`) because a plain HTML `<form>` can only submit
-/// `GET`/`POST`. Redirects back to the plain webhook list on success
+/// `POST /dashboard/connections/{id}/settings/webhooks/{webhook_id}/delete` -
+/// a POST (not a real `DELETE`) because a plain HTML `<form>` can only submit
+/// `GET`/`POST`. Redirects back to the settings page on success
 /// (POST-redirect-GET - refreshing the page after a delete must not risk
 /// resubmitting it) or on the engine's own `404` for an unknown/not-this-
 /// tenant's `webhook_id`; only a genuine internal error re-renders the page
@@ -466,11 +409,13 @@ pub async fn webhooks_delete(
     };
 
     match state.engine_client.delete_webhook(&sk, &webhook_id).await {
-        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}/webhooks")),
+        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}/settings")),
         Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
-            redirect_302(&format!("/dashboard/connections/{id}/webhooks"))
+            redirect_302(&format!("/dashboard/connections/{id}/settings"))
         }
-        Err(_) => render_webhooks_page(&state, &id, &sk, &user, Some("Could not delete that webhook. Please try again.".to_string()), None).await,
+        Err(_) => {
+            render_store_settings_page(&state, row, &user, Some("Could not delete that webhook. Please try again.".to_string()), None).await
+        }
     }
 }
 
@@ -517,21 +462,21 @@ pub async fn store_detail(
         }
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_store_detail_page(&state, row, &user, None, None).await
+    render_store_detail_page(&state, row, &user, String::new(), None, None).await
 }
 
-/// Shared by `store_detail`, `create_order`, and `update_confirmations_required`
-/// - all three end by showing the same page (a fresh store overview,
-/// optionally with a create-order or settings error), same pattern as
-/// `orders.rs`'s own `render_webhooks_page`. Takes an already
-/// ownership-checked row rather than re-checking it, since every caller has
-/// already done that.
+/// Shared by `store_detail` and `lookup_payment` - both end by showing the
+/// same store overview page, the latter with a real "look up a payment"
+/// result overlaid on it rather than a redirect that would lose it. Takes an
+/// already ownership-checked row rather than re-checking it, since every
+/// caller has already done that.
 async fn render_store_detail_page(
     state: &AppState,
     row: StoreConnectionRow,
     user: &UserRow,
-    order_creation_error: Option<String>,
-    settings_error: Option<String>,
+    lookup_txid_value: String,
+    lookup_message: Option<String>,
+    lookup_found_payment_id: Option<String>,
 ) -> Response {
     let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/connections/{}", row.id));
     let sk = match decrypt_sk(state, &row) {
@@ -541,14 +486,6 @@ async fn render_store_detail_page(
 
     let tenant_result = state.engine_client.get_tenant(&sk).await;
     let (health, health_label) = health_of_tenant_lookup(&tenant_result);
-    let confirmations_required = tenant_result.as_ref().map(|t| t.confirmations_required).unwrap_or(0);
-    let zero_conf_max_xmr = tenant_result
-        .as_ref()
-        .ok()
-        .and_then(|t| t.zero_conf_max_piconero)
-        .filter(|&piconero| piconero > 0)
-        .map(shared::xmr_amount::format_piconero_as_xmr)
-        .unwrap_or_default();
 
     // A store whose engine is currently unreachable still gets a real page -
     // just with no order data available, rather than a hard error. The
@@ -574,31 +511,6 @@ async fn render_store_detail_page(
     };
 
     let is_woocommerce = row.platform == "woocommerce";
-    let fx_provider_options = state
-        .exchange_rate
-        .available_providers()
-        .into_iter()
-        .map(|name| views::store_detail::FxProviderOption { selected: name == row.fx_provider, name: name.to_string() })
-        .collect();
-    // A live Coingecko failure here degrades to "XMR only" rather than
-    // failing this whole page - same "show something real-ish rather than
-    // fail outright" approach `health`/`recent_orders` above already take
-    // for their own engine-reachability failures.
-    let order_currency_options =
-        state.exchange_rate.supported_currencies_for(&row).await.unwrap_or_else(|_| vec!["XMR".to_string()]);
-    let order_currency_is_locked_to_xmr = order_currency_options.len() == 1 && order_currency_options[0] == "XMR";
-    let (base_currency_options, confirmation_thresholds) = {
-        let db = state.db.lock().unwrap();
-        let options = crate::currencies::currency_options(&db, &row.base_currency).unwrap_or_default();
-        let thresholds = db
-            .list_confirmation_thresholds(&row.id)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|t| views::store_detail::ConfirmationThresholdView { id: t.id, unit_amount: t.unit_amount, confirmations_required: t.confirmations_required })
-            .collect::<Vec<_>>();
-        (options, thresholds)
-    };
-    let confirmation_thresholds_at_max = confirmation_thresholds.len() >= 5;
     let view_model = views::store_detail::StoreDetailViewModel {
         store: Some(views::store_detail::StoreDetailData {
             connection_id: row.id,
@@ -612,9 +524,95 @@ async fn render_store_detail_page(
             created_at: row.created_at,
             recent_orders,
             is_woocommerce,
-            order_creation_error,
-            order_currency_options,
-            order_currency_is_locked_to_xmr,
+            lookup_txid_value,
+            lookup_message,
+            lookup_found_payment_id,
+        }),
+    };
+    views::store_detail::page(&chrome, &view_model).into_response()
+}
+
+/// `GET /dashboard/connections/{id}/settings` - base currency, confirmation
+/// thresholds (0-conf included), exchange rate provider, and webhooks, all
+/// split out from the store overview page onto their own settings page.
+pub async fn store_settings(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    render_store_settings_page(&state, row, &user, None, None).await
+}
+
+/// Shared by every settings mutation below (base currency, confirmation
+/// thresholds/0-conf, fx provider, webhooks) - all of them end by showing a
+/// fresh copy of this same page, optionally with a validation error or a
+/// just-created webhook signing secret. Takes an already ownership-checked
+/// row rather than re-checking it, since every caller has already done
+/// that.
+async fn render_store_settings_page(
+    state: &AppState,
+    row: StoreConnectionRow,
+    user: &UserRow,
+    settings_error: Option<String>,
+    created_webhook_signing_secret: Option<String>,
+) -> Response {
+    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/connections/{}/settings", row.id));
+    let sk = match decrypt_sk(state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let tenant_result = state.engine_client.get_tenant(&sk).await;
+    let confirmations_required = tenant_result.as_ref().map(|t| t.confirmations_required).unwrap_or(0);
+    let zero_conf_max_xmr = tenant_result
+        .as_ref()
+        .ok()
+        .and_then(|t| t.zero_conf_max_piconero)
+        .filter(|&piconero| piconero > 0)
+        .map(shared::xmr_amount::format_piconero_as_xmr)
+        .unwrap_or_default();
+
+    let fx_provider_options = state
+        .exchange_rate
+        .available_providers()
+        .into_iter()
+        .map(|name| views::store_settings::FxProviderOption { selected: name == row.fx_provider, name: name.to_string() })
+        .collect();
+    let (base_currency_options, confirmation_thresholds) = {
+        let db = state.db.lock().unwrap();
+        let options = crate::currencies::currency_options(&db, &row.base_currency).unwrap_or_default();
+        let thresholds = db
+            .list_confirmation_thresholds(&row.id)
+            .unwrap_or_default()
+            .into_iter()
+            .map(|t| views::store_settings::ConfirmationThresholdView { id: t.id, unit_amount: t.unit_amount, confirmations_required: t.confirmations_required })
+            .collect::<Vec<_>>();
+        (options, thresholds)
+    };
+    let confirmation_thresholds_at_max = confirmation_thresholds.len() >= 5;
+
+    let webhooks = match state.engine_client.list_webhooks(&sk).await {
+        Ok(webhooks) => webhooks
+            .into_iter()
+            .map(|w| views::store_settings::WebhookRowViewModel {
+                webhook_id: w.webhook_id,
+                url: w.url,
+                enabled: w.enabled,
+                created_at: w.created_at,
+            })
+            .collect(),
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let view_model = views::store_settings::StoreSettingsViewModel {
+        store: Some(views::store_settings::StoreSettingsData {
+            connection_id: row.id,
+            display_name: display_name_for(&row.site_url),
             confirmations_required,
             fx_provider: row.fx_provider,
             fx_provider_options,
@@ -623,10 +621,56 @@ async fn render_store_detail_page(
             confirmation_thresholds,
             confirmation_thresholds_at_max,
             zero_conf_max_xmr,
+            webhooks,
+            created_webhook_signing_secret,
             settings_error,
         }),
     };
-    views::store_detail::page(&chrome, &view_model).into_response()
+    views::store_settings::page(&chrome, &view_model).into_response()
+}
+
+/// Every currency this store's "create an order" form can offer right now -
+/// shared by `create_order_page` and `create_order`'s own validation-error
+/// re-render, so the two can never drift on what the dropdown looks like.
+async fn order_currency_options_for(state: &AppState, row: &StoreConnectionRow) -> (Vec<String>, bool) {
+    // A live Coingecko failure here degrades to "XMR only" rather than
+    // failing this whole page - same "show something real-ish rather than
+    // fail outright" approach the store overview page's own health check
+    // already takes for its own engine-reachability failures.
+    let order_currency_options = state.exchange_rate.supported_currencies_for(row).await.unwrap_or_else(|_| vec!["XMR".to_string()]);
+    let order_currency_is_locked_to_xmr = order_currency_options.len() == 1 && order_currency_options[0] == "XMR";
+    (order_currency_options, order_currency_is_locked_to_xmr)
+}
+
+/// `GET /dashboard/connections/{id}/orders/new` - the "create an order"
+/// widget page, reached from the store overview page's own widget tile (the
+/// same shape as the POS terminal's own tile/page).
+pub async fn create_order_page(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    render_create_order_page(&state, row, &user, None).await
+}
+
+/// Shared by `create_order_page` and `create_order`'s own validation-error
+/// branches - both end by showing a fresh copy of this same page.
+async fn render_create_order_page(state: &AppState, row: StoreConnectionRow, user: &UserRow, order_creation_error: Option<String>) -> Response {
+    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/connections/{}/orders/new", row.id));
+    let (order_currency_options, order_currency_is_locked_to_xmr) = order_currency_options_for(state, &row).await;
+    let data = views::create_order::CreateOrderData {
+        connection_id: row.id.clone(),
+        display_name: display_name_for(&row.site_url),
+        order_creation_error,
+        order_currency_options,
+        order_currency_is_locked_to_xmr,
+    };
+    views::create_order::page(&chrome, &data).into_response()
 }
 
 #[derive(Deserialize)]
@@ -648,8 +692,8 @@ pub struct CreateOrderForm {
 /// payment flow without wiring up a storefront first. Redirects straight to
 /// the new order's own detail page on success (POST-redirect-GET); a
 /// validation error (unsupported currency, unparseable amount) re-renders
-/// the store page with the engine's real message, same convention
-/// `webhooks_create` already applies.
+/// this same "create an order" page with the engine's real message, same
+/// convention `webhooks_create` already applies.
 pub async fn create_order(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -665,7 +709,7 @@ pub async fn create_order(
     let amount = form.amount.trim();
     let currency = form.currency.trim();
     if amount.is_empty() || currency.is_empty() {
-        return render_store_detail_page(&state, row, &user, Some("Enter an amount and a currency.".to_string()), None).await;
+        return render_create_order_page(&state, row, &user, Some("Enter an amount and a currency.".to_string())).await;
     }
 
     // Selection-time validation first, entirely independent of whether any
@@ -676,7 +720,7 @@ pub async fn create_order(
     let currency_known = crate::currencies::is_known_currency(&state.db.lock().unwrap(), currency);
     match currency_known {
         Ok(true) => {}
-        Ok(false) => return render_store_detail_page(&state, row, &user, Some(format!("unknown currency: {currency}")), None).await,
+        Ok(false) => return render_create_order_page(&state, row, &user, Some(format!("unknown currency: {currency}"))).await,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 
@@ -688,23 +732,23 @@ pub async fn create_order(
     let (piconero_per_unit, provider) = match state.exchange_rate.piconero_per_unit_for(&row, currency).await {
         Ok(Some(result)) => result,
         Ok(None) => {
-            return render_store_detail_page(&state, row, &user, Some(format!("unsupported currency: {currency}")), None).await
+            return render_create_order_page(&state, row, &user, Some(format!("unsupported currency: {currency}"))).await
         }
         Err(crate::exchange_rate_config::ExchangeRateLookupError::ProviderNotConfigured(_)) => {
             // Not a real failure - this store's provider (or no provider at
             // all) simply can't price this currency on this instance, same
             // user-facing meaning as `Ok(None)` above.
-            return render_store_detail_page(&state, row, &user, Some(format!("unsupported currency: {currency}")), None).await
+            return render_create_order_page(&state, row, &user, Some(format!("unsupported currency: {currency}"))).await
         }
         Err(e) => {
             eprintln!("exchange rate lookup failed for connection {} (currency {currency:?}): {e}", row.id);
-            return render_store_detail_page(&state, row, &user, Some("Something went wrong looking up the exchange rate. Please try again.".to_string()), None)
+            return render_create_order_page(&state, row, &user, Some("Something went wrong looking up the exchange rate. Please try again.".to_string()))
                 .await;
         }
     };
     let xmr_amount_piconero = match shared::exchange_rate::compute_order_amount(currency, amount, piconero_per_unit) {
         Ok(amount) => amount,
-        Err(e) => return render_store_detail_page(&state, row, &user, Some(e.to_string()), None).await,
+        Err(e) => return render_create_order_page(&state, row, &user, Some(e.to_string())).await,
     };
     let merchant_order_id = {
         let trimmed = form.merchant_order_id.trim();
@@ -717,7 +761,7 @@ pub async fn create_order(
     };
     let resolution = match crate::confirmation_thresholds::resolve_for_order(&state, &row, &sk, currency, piconero_per_unit, xmr_amount_piconero).await {
         Ok(resolution) => resolution,
-        Err(message) => return render_store_detail_page(&state, row, &user, Some(message), None).await,
+        Err(message) => return render_create_order_page(&state, row, &user, Some(message)).await,
     };
 
     match state
@@ -748,10 +792,10 @@ pub async fn create_order(
             redirect_302(&format!("/dashboard/connections/{id}/orders/{}", order.payment_id))
         }
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_store_detail_page(&state, row, &user, Some(message), None).await
+            render_create_order_page(&state, row, &user, Some(message)).await
         }
         Err(_) => {
-            render_store_detail_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
+            render_create_order_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string())).await
         }
     }
 }
@@ -785,7 +829,7 @@ pub async fn update_confirmations_required(
     let confirmations_required: u64 = match form.confirmations_required.trim().parse() {
         Ok(n) => n,
         Err(_) => {
-            return render_store_detail_page(&state, row, &user, None, Some("Enter a whole number of confirmations.".to_string()))
+            return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations.".to_string()), None)
                 .await;
         }
     };
@@ -796,12 +840,12 @@ pub async fn update_confirmations_required(
     };
 
     match state.engine_client.set_confirmations_required(&sk, confirmations_required).await {
-        Ok(_) => redirect_302(&format!("/dashboard/connections/{id}")),
+        Ok(_) => redirect_302(&format!("/dashboard/connections/{id}/settings")),
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_store_detail_page(&state, row, &user, None, Some(message)).await
+            render_store_settings_page(&state, row, &user, Some(message), None).await
         }
         Err(_) => {
-            render_store_detail_page(&state, row, &user, None, Some("Something went wrong. Please try again.".to_string())).await
+            render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
         }
     }
 }
@@ -836,12 +880,12 @@ pub async fn update_fx_provider(
     };
 
     if !state.exchange_rate.is_available(&form.fx_provider) {
-        return render_store_detail_page(
+        return render_store_settings_page(
             &state,
             row,
             &user,
-            None,
             Some(format!("{:?} is not an available exchange rate provider on this instance.", form.fx_provider)),
+            None,
         )
         .await;
     }
@@ -853,9 +897,9 @@ pub async fn update_fx_provider(
     // future `!Send` and fail to compile as an axum route at all.
     let update_result = state.db.lock().unwrap().update_store_connection_fx_provider(&row.id, &form.fx_provider);
     match update_result {
-        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}")),
+        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}/settings")),
         Err(_) => {
-            render_store_detail_page(&state, row, &user, None, Some("Something went wrong. Please try again.".to_string())).await
+            render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
         }
     }
 }
@@ -897,12 +941,12 @@ pub async fn update_base_currency(
     let base_currency = match resolved {
         Ok(Some(code)) => code,
         Ok(None) => {
-            return render_store_detail_page(
+            return render_store_settings_page(
                 &state,
                 row,
                 &user,
-                None,
                 Some(format!("{:?} is not a known currency.", form.base_currency)),
+                None,
             )
             .await;
         }
@@ -911,72 +955,29 @@ pub async fn update_base_currency(
 
     let update_result = state.db.lock().unwrap().update_store_connection_base_currency(&row.id, &base_currency);
     match update_result {
-        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}")),
+        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}/settings")),
         Err(_) => {
-            render_store_detail_page(&state, row, &user, None, Some("Something went wrong. Please try again.".to_string())).await
+            render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
         }
     }
 }
 
-#[derive(Deserialize)]
-pub struct UpdateZeroConfForm {
-    /// An XMR decimal amount (`shared::xmr_amount::parse_xmr_to_piconero`),
-    /// not a piconero integer - the same "human enters a real-world unit"
-    /// convention every other amount field on this page already follows.
-    /// Blank means "accept no 0-conf payments at all", not a validation
-    /// error - the field has no `required` attribute in the template, since
-    /// "off" is this setting's own valid, common value.
-    #[serde(default)]
-    pub zero_conf_max_xmr: String,
-}
-
-/// `POST /dashboard/connections/{id}/settings/zero-conf` - sets (or clears,
-/// via an empty submission) this store's `zero_conf_max_piconero`: orders at
-/// or under this XMR amount can read as `paid` off a mempool-only,
-/// zero-confirmation transaction (`EngineClient::set_zero_conf_max_piconero`'s
-/// own doc comment covers why `0` - what a blank field parses to here - is a
-/// real, safe "disabled" value rather than something this handler needs to
-/// special-case). This is a real double-spend exposure a merchant is opting
-/// into for low-value/in-person orders, not a free lunch - the field help
-/// text on this page says so; this handler only validates the amount itself.
-pub async fn update_zero_conf_max_piconero(
-    State(state): State<AppState>,
-    AuthedUser(user, _): AuthedUser,
-    Path(id): Path<String>,
-    Form(form): Form<UpdateZeroConfForm>,
-) -> Response {
-    let row = match load_owned_connection(&state, &user, &id) {
-        Ok(Some(row)) => row,
-        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    let trimmed = form.zero_conf_max_xmr.trim();
-    let zero_conf_max_piconero = if trimmed.is_empty() {
-        0
-    } else {
-        match shared::xmr_amount::parse_xmr_to_piconero(trimmed) {
-            Ok(piconero) => piconero,
-            Err(e) => {
-                return render_store_detail_page(&state, row, &user, None, Some(format!("Enter a valid XMR amount: {e}"))).await;
-            }
-        }
-    };
-
-    let sk = match decrypt_sk(&state, &row) {
-        Ok(sk) => sk,
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
-    match state.engine_client.set_zero_conf_max_piconero(&sk, zero_conf_max_piconero).await {
-        Ok(_) => redirect_302(&format!("/dashboard/connections/{id}")),
-        Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_store_detail_page(&state, row, &user, None, Some(message)).await
-        }
-        Err(_) => {
-            render_store_detail_page(&state, row, &user, None, Some("Something went wrong. Please try again.".to_string())).await
-        }
+/// Parses the confirmation-thresholds table's own 0-conf checkbox/amount
+/// pair (`save_confirmation_thresholds`'s own "Default (fallback)" row -
+/// see `views::store_settings`'s doc comment on why this replaced the old
+/// standalone "Zero-confirmation payments" section/route) into the
+/// piconero ceiling `EngineClient::set_zero_conf_max_piconero` wants.
+/// `Ok(None)` means the checkbox wasn't submitted at all - disabled,
+/// regardless of any leftover amount text.
+fn parse_zero_conf_checkbox(raw: &HashMap<String, String>) -> Result<Option<u64>, String> {
+    if !raw.contains_key("zero_conf_enabled") {
+        return Ok(None);
     }
+    let trimmed = raw.get("zero_conf_max_xmr").map(|s| s.trim()).unwrap_or("");
+    if trimmed.is_empty() {
+        return Err("Enter an XMR amount to accept 0-conf payments up to, or leave the checkbox unchecked.".to_string());
+    }
+    shared::xmr_amount::parse_xmr_to_piconero(trimmed).map(Some).map_err(|e| format!("Enter a valid XMR amount: {e}"))
 }
 
 #[derive(Deserialize)]
@@ -1009,7 +1010,7 @@ pub async fn create_confirmation_threshold(
     let confirmations_required: u64 = match form.confirmations_required.trim().parse() {
         Ok(n) => n,
         Err(_) => {
-            return render_store_detail_page(&state, row, &user, None, Some("Enter a whole number of confirmations.".to_string()))
+            return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations.".to_string()), None)
                 .await;
         }
     };
@@ -1018,18 +1019,18 @@ pub async fn create_confirmation_threshold(
     match unit_amount.parse::<f64>() {
         Ok(n) if n.is_finite() && n >= 0.0 => {}
         _ => {
-            return render_store_detail_page(&state, row, &user, None, Some("Enter a non-negative amount.".to_string())).await;
+            return render_store_settings_page(&state, row, &user, Some("Enter a non-negative amount.".to_string()), None).await;
         }
     }
 
     let count = state.db.lock().unwrap().count_confirmation_thresholds(&row.id).unwrap_or(0);
     if count >= 5 {
-        return render_store_detail_page(
+        return render_store_settings_page(
             &state,
             row,
             &user,
-            None,
             Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()),
+            None,
         )
         .await;
     }
@@ -1038,13 +1039,13 @@ pub async fn create_confirmation_threshold(
     let create_result =
         state.db.lock().unwrap().create_confirmation_threshold(&threshold_id, &row.id, unit_amount, confirmations_required, crate::now_unix());
     match create_result {
-        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}")),
+        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}/settings")),
         Err(e) if e.is_unique_violation() => {
-            render_store_detail_page(&state, row, &user, None, Some(format!("A threshold for {unit_amount} already exists.")))
+            render_store_settings_page(&state, row, &user, Some(format!("A threshold for {unit_amount} already exists.")), None)
                 .await
         }
         Err(_) => {
-            render_store_detail_page(&state, row, &user, None, Some("Something went wrong. Please try again.".to_string())).await
+            render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
         }
     }
 }
@@ -1065,23 +1066,27 @@ pub async fn delete_confirmation_threshold(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     state.db.lock().unwrap().delete_confirmation_threshold(&row.id, &threshold_id).ok();
-    redirect_302(&format!("/dashboard/connections/{id}"))
+    redirect_302(&format!("/dashboard/connections/{id}/settings"))
 }
 
 /// `POST /dashboard/connections/{id}/settings/confirmation-thresholds/save` -
-/// the dashboard's condensed "Confirmation Thresholds" table posts here as
+/// the dashboard's condensed "Confirmation thresholds" table posts here as
 /// one form with one Save button, rather than the default-update,
 /// add-threshold and per-row-delete forms each posting to their own route
 /// (those three still exist unchanged above, for API/e2e compatibility -
 /// `crates/mock-woocommerce/tests/e2e_stagenet_confirmation_threshold.rs`
-/// posts to `create_confirmation_threshold` directly). Fields arrive as a
-/// loose `HashMap` rather than a typed form because the delete checkboxes'
-/// field names are dynamic, one per existing threshold id
-/// (`delete_{threshold.id}`), which a fixed `#[derive(Deserialize)]` struct
-/// can't express. Order of operations: update the default, then delete
-/// checked rows, then (space permitting) add the new row - so deleting a
-/// row and immediately reusing its amount for the new row in the same Save
-/// works.
+/// posts to `create_confirmation_threshold` directly). This same form also
+/// carries the Default row's own 0-conf checkbox/amount pair
+/// (`parse_zero_conf_checkbox`) - the old standalone "Zero-confirmation
+/// payments" section merged into this table, rather than kept as its own
+/// section with its own Update button. Fields arrive as a loose `HashMap`
+/// rather than a typed form because the delete checkboxes' field names are
+/// dynamic, one per existing threshold id (`delete_{threshold.id}`), which a
+/// fixed `#[derive(Deserialize)]` struct can't express. Order of operations:
+/// update the default confirmations count, then the 0-conf ceiling, then
+/// delete checked rows, then (space permitting) add the new row - so
+/// deleting a row and immediately reusing its amount for the new row in the
+/// same Save works.
 pub async fn save_confirmation_thresholds(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -1098,10 +1103,14 @@ pub async fn save_confirmation_thresholds(
         match raw.get("confirmations_required").map(|s| s.trim()).unwrap_or("").parse() {
             Ok(n) => n,
             Err(_) => {
-                return render_store_detail_page(&state, row, &user, None, Some("Enter a whole number of confirmations.".to_string()))
+                return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations.".to_string()), None)
                     .await;
             }
         };
+    let zero_conf_max_piconero = match parse_zero_conf_checkbox(&raw) {
+        Ok(piconero) => piconero.unwrap_or(0),
+        Err(message) => return render_store_settings_page(&state, row, &user, Some(message), None).await,
+    };
 
     let sk = match decrypt_sk(&state, &row) {
         Ok(sk) => sk,
@@ -1112,7 +1121,14 @@ pub async fn save_confirmation_thresholds(
             EngineClientError::EngineError { status, message } if status == reqwest::StatusCode::BAD_REQUEST => message,
             _ => "Something went wrong. Please try again.".to_string(),
         };
-        return render_store_detail_page(&state, row, &user, None, Some(message)).await;
+        return render_store_settings_page(&state, row, &user, Some(message), None).await;
+    }
+    if let Err(e) = state.engine_client.set_zero_conf_max_piconero(&sk, zero_conf_max_piconero).await {
+        let message = match e {
+            EngineClientError::EngineError { status, message } if status == reqwest::StatusCode::BAD_REQUEST => message,
+            _ => "Something went wrong. Please try again.".to_string(),
+        };
+        return render_store_settings_page(&state, row, &user, Some(message), None).await;
     }
 
     let existing = state.db.lock().unwrap().list_confirmation_thresholds(&row.id).unwrap_or_default();
@@ -1128,12 +1144,12 @@ pub async fn save_confirmation_thresholds(
         let new_confirmations_required: u64 = match new_confirmations_required.parse() {
             Ok(n) => n,
             Err(_) => {
-                return render_store_detail_page(
+                return render_store_settings_page(
                     &state,
                     row,
                     &user,
-                    None,
                     Some("Enter a whole number of confirmations for the new threshold.".to_string()),
+                    None,
                 )
                 .await;
             }
@@ -1141,12 +1157,12 @@ pub async fn save_confirmation_thresholds(
         match new_unit_amount.parse::<f64>() {
             Ok(n) if n.is_finite() && n >= 0.0 => {}
             _ => {
-                return render_store_detail_page(
+                return render_store_settings_page(
                     &state,
                     row,
                     &user,
-                    None,
                     Some("Enter a non-negative amount for the new threshold.".to_string()),
+                    None,
                 )
                 .await;
             }
@@ -1154,12 +1170,12 @@ pub async fn save_confirmation_thresholds(
 
         let count = state.db.lock().unwrap().count_confirmation_thresholds(&row.id).unwrap_or(0);
         if count >= 5 {
-            return render_store_detail_page(
+            return render_store_settings_page(
                 &state,
                 row,
                 &user,
-                None,
                 Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()),
+                None,
             )
             .await;
         }
@@ -1178,11 +1194,11 @@ pub async fn save_confirmation_thresholds(
             } else {
                 "Something went wrong. Please try again.".to_string()
             };
-            return render_store_detail_page(&state, row, &user, None, Some(message)).await;
+            return render_store_settings_page(&state, row, &user, Some(message), None).await;
         }
     }
 
-    redirect_302(&format!("/dashboard/connections/{id}"))
+    redirect_302(&format!("/dashboard/connections/{id}/settings"))
 }
 
 #[cfg(test)]
@@ -1499,7 +1515,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/webhooks"))
+                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1508,7 +1524,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains("<table"), "expected a real, valid page even with no webhooks, got: {html}");
+        assert!(html.contains("No webhooks yet."), "expected a real, valid settings page even with no webhooks, got: {html}");
     }
 
     #[tokio::test]
@@ -1557,7 +1573,7 @@ mod tests {
         for uri in [
             format!("/dashboard/connections/{fake_id}/orders"),
             format!("/dashboard/connections/{fake_id}/orders/some-payment-id"),
-            format!("/dashboard/connections/{fake_id}/webhooks"),
+            format!("/dashboard/connections/{fake_id}/settings"),
         ] {
             let response = router
                 .clone()
@@ -1691,7 +1707,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/webhooks"),
+                &format!("/dashboard/connections/{connection_id}/settings/webhooks"),
                 &session_token,
                 &[
                     ("url", "https://merchant.example/moneropay-webhook"),
@@ -1721,7 +1737,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/webhooks"),
+                &format!("/dashboard/connections/{connection_id}/settings/webhooks"),
                 &session_token,
                 &[("url", "https://merchant.example/moneropay-webhook"), ("extra_headers", "not-a-valid-line")],
             ))
@@ -1736,7 +1752,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/webhooks"))
+                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1762,7 +1778,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/webhooks"),
+                &format!("/dashboard/connections/{connection_id}/settings/webhooks"),
                 &session_token,
                 &[("url", "https://merchant.example/moneropay-webhook")],
             ))
@@ -1780,7 +1796,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/webhooks"))
+                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1802,7 +1818,7 @@ mod tests {
         let (connection_id, _public_key) = create_connection(&router, &session_token).await;
 
         let response = router
-            .oneshot(form_post_request(&format!("/dashboard/connections/{connection_id}/webhooks"), &session_token, &[("url", "")]))
+            .oneshot(form_post_request(&format!("/dashboard/connections/{connection_id}/settings/webhooks"), &session_token, &[("url", "")]))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -1821,7 +1837,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/webhooks"),
+                &format!("/dashboard/connections/{connection_id}/settings/webhooks"),
                 &session_token,
                 &[("url", "not a url at all")],
             ))
@@ -1844,7 +1860,7 @@ mod tests {
         let create_response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/webhooks"),
+                &format!("/dashboard/connections/{connection_id}/settings/webhooks"),
                 &session_token,
                 &[("url", "https://merchant.example/to-be-deleted")],
             ))
@@ -1862,7 +1878,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/webhooks"))
+                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1877,7 +1893,7 @@ mod tests {
         let delete_response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/webhooks/{webhook_id}/delete"),
+                &format!("/dashboard/connections/{connection_id}/settings/webhooks/{webhook_id}/delete"),
                 &session_token,
                 &[],
             ))
@@ -1889,7 +1905,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/webhooks"))
+                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2054,24 +2070,24 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::FOUND, "expected a redirect back to the store page");
+        assert_eq!(response.status(), StatusCode::FOUND, "expected a redirect back to the settings page");
         assert_eq!(
             response.headers().get("location").unwrap(),
-            &format!("/dashboard/connections/{connection_id}"),
+            &format!("/dashboard/connections/{connection_id}/settings"),
         );
 
-        let store_page = router
+        let settings_page = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        let html = body_text(store_page).await;
+        let html = body_text(settings_page).await;
         assert!(html.contains(r#"value="3""#), "expected the real, updated confirmation threshold shown, got: {html}");
     }
 
@@ -2112,39 +2128,53 @@ mod tests {
                 .await;
         let (connection_id, _public_key) = create_connection(&router, &session_token).await;
 
-        let response = router
+        let settings_response = router
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
             )
             .await
             .unwrap();
-        let html = body_text(response).await;
+        let settings_html = body_text(settings_response).await;
         // Every new store is created with `fx_provider = "coingecko"` (the
         // only real provider left - see `Db::create_store_connection`), shown
         // as this store's current choice even though this test's instance
         // (`test_exchange_rate_provider()`, `xmr_only()`) never actually
         // enabled it - a store's own setting and what an instance currently
         // offers are two different things.
-        assert!(html.contains("Exchange rate provider"), "expected the settings section present, got: {html}");
+        assert!(settings_html.contains("Exchange rate provider"), "expected the settings section present, got: {settings_html}");
         // The dropdown itself must offer zero real `<option>`s - nothing is
         // enabled on this instance, and there is no "fixed" to fall back to
         // any more.
-        assert!(!html.contains(r#"<option value="coingecko""#), "expected no coingecko <option> since this instance never enabled it, got: {html}");
-        assert!(!html.contains(r#"<option value="fixed""#), "the removed \"fixed\" provider must never appear as a real option, got: {html}");
+        assert!(!settings_html.contains(r#"<option value="coingecko""#), "expected no coingecko <option> since this instance never enabled it, got: {settings_html}");
+        assert!(!settings_html.contains(r#"<option value="fixed""#), "the removed \"fixed\" provider must never appear as a real option, got: {settings_html}");
+
         // The real point of this follow-up: with no fiat provider available
         // at all, the "create an order" currency field must be a plain
         // readonly "XMR" field, not a one-option `<select>` (a dropdown with
         // nothing to actually choose between is misleading busywork).
+        let create_order_response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(format!("/dashboard/connections/{connection_id}/orders/new"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let create_order_html = body_text(create_order_response).await;
         assert!(
-            html.contains(r#"<input type="text" id="currency" name="currency" value="XMR" readonly>"#),
-            "expected a readonly XMR currency field, got: {html}"
+            create_order_html.contains(r#"<input type="text" id="currency" name="currency" value="XMR" readonly>"#),
+            "expected a readonly XMR currency field, got: {create_order_html}"
         );
-        assert!(!html.contains(r#"<select id="currency""#), "expected no currency dropdown when only XMR is available, got: {html}");
+        assert!(!create_order_html.contains(r#"<select id="currency""#), "expected no currency dropdown when only XMR is available, got: {create_order_html}");
     }
 
     /// A store with a real Coingecko-backed provider enabled must offer a
@@ -2180,7 +2210,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .uri(format!("/dashboard/connections/{connection_id}/orders/new"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2245,7 +2275,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2256,8 +2286,11 @@ mod tests {
         assert!(html.contains(r#"<option value="EUR" selected>"#), "expected EUR marked selected, got: {html}");
     }
 
+    /// The old standalone "Zero-confirmation payments" section/route is gone -
+    /// its ceiling is now the confirmation-thresholds table's own Default row
+    /// checkbox, submitted through `save_confirmation_thresholds`.
     #[tokio::test]
-    async fn setting_a_zero_conf_ceiling_persists_and_shows_on_the_store_page() {
+    async fn setting_a_zero_conf_ceiling_persists_and_shows_on_the_settings_page() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -2268,9 +2301,9 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/zero-conf"),
+                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds/save"),
                 &session_token,
-                &[("zero_conf_max_xmr", "0.5")],
+                &[("confirmations_required", "10"), ("zero_conf_enabled", "on"), ("zero_conf_max_xmr", "0.5")],
             ))
             .await
             .unwrap();
@@ -2280,7 +2313,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2291,6 +2324,10 @@ mod tests {
         assert!(
             html.contains(r#"name="zero_conf_max_xmr" value="0.500000000000""#),
             "expected the new ceiling's own value to round-trip, got: {html}"
+        );
+        assert!(
+            html.contains(r#"<input type="checkbox" name="zero_conf_enabled" checked>"#),
+            "expected the 0-conf checkbox to show as checked once enabled, got: {html}"
         );
     }
 
@@ -2305,9 +2342,9 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/zero-conf"),
+                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds/save"),
                 &session_token,
-                &[("zero_conf_max_xmr", "not-a-number")],
+                &[("confirmations_required", "10"), ("zero_conf_enabled", "on"), ("zero_conf_max_xmr", "not-a-number")],
             ))
             .await
             .unwrap();
@@ -2425,7 +2462,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2464,7 +2501,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2503,7 +2540,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2750,7 +2787,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2837,7 +2874,7 @@ mod tests {
         let create_response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/webhooks"),
+                &format!("/dashboard/connections/{connection_id}/settings/webhooks"),
                 &intruder_token,
                 &[("url", "https://attacker.example/steal")],
             ))
@@ -2847,7 +2884,7 @@ mod tests {
 
         let delete_response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/webhooks/some-webhook-id/delete"),
+                &format!("/dashboard/connections/{connection_id}/settings/webhooks/some-webhook-id/delete"),
                 &intruder_token,
                 &[],
             ))

@@ -289,8 +289,28 @@ tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparen
 @supports selector(:has(::target-text)) {
   tr:has(::target-text) { background: var(--tint-highlight); }
 }
-form label { display: block; margin: 0.9em 0 0.3em; font-weight: 700; }
+form label { display: block; margin: 0.9em 0 0.6em; font-weight: 700; }
 form .field-help { display: block; font-weight: 400; color: var(--muted); margin-top: 0.15em; font-size: 0.88em; }
+/* A small "?" affordance next to a checkbox/label needing a longer
+   explanation than fits inline - the native `title` attribute supplies the
+   actual tooltip text, so this needs no JS to be useful. */
+.help-icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.1em;
+  height: 1.1em;
+  margin-left: 0.35em;
+  border: 1px solid var(--muted);
+  border-radius: 50%;
+  color: var(--muted);
+  font-size: 0.78em;
+  font-weight: 700;
+  line-height: 1;
+  cursor: help;
+  vertical-align: middle;
+  user-select: none;
+}
 /* `.setting-source` (admin settings page): a caption naming where a field's
    current value came from. Left inline, it lets a submit `button` that
    immediately follows the last field in a form (e.g. "Save scanner
@@ -334,6 +354,27 @@ button, .btn {
 button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 .btn-secondary { background: var(--paper-raised); color: var(--ink); }
 .btn-secondary:hover { background: var(--accent); color: var(--accent-ink); }
+/* Store-detail "widget" launchers (POS terminal, create-order) - a row of
+   tappable tiles above the Recent orders table, each opening its own
+   full-screen tool page rather than an inline form on this page. */
+.widget-links { display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 1em 0 1.4em; }
+.widget-link {
+  display: flex;
+  flex-direction: column;
+  gap: 0.2em;
+  min-width: 11em;
+  margin: 0;
+  padding: var(--space-md) var(--space-lg);
+  text-align: left;
+}
+.widget-link-title { font-weight: 700; }
+.widget-link-hint { font-weight: 400; font-size: 0.82em; opacity: 0.85; }
+/* Confirmation-thresholds table, Default row: the 0-conf ceiling checkbox
+   and its amount field sit on their own line below the confirmations
+   count, rather than the whole "Zero-confirmation payments" section this
+   used to be. */
+.zero-conf-toggle { display: flex; align-items: center; flex-wrap: wrap; gap: 0.3em; font-weight: 400; margin-top: 0.5em; }
+.zero-conf-toggle input[type="text"] { width: 6em; }
 .tag {
   display: inline-block;
   border: 1px solid var(--line);
@@ -365,6 +406,12 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .pick-card h3 { margin-top: 0; }
 .steps { padding-left: 1.4em; }
 .steps li { margin: 0.5em 0; }
+/* Store overview page: the health/help disclosure and the "Settings" link
+   sit on the same row, the latter pinned to the right - the settings page
+   is reached "via a link next to the Help button" rather than a nav item. */
+.store-header-row { display: flex; align-items: flex-start; justify-content: space-between; gap: 1em; flex-wrap: wrap; }
+.store-header-row .help-disclosure { flex: 1 1 auto; min-width: 0; }
+.store-header-row .settings-link { flex: none; margin-top: 0.3em; }
 .help-disclosure { margin: 0.6em 0 1.2em; }
 .help-disclosure summary {
   display: flex;

@@ -66,7 +66,7 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
                     }
                 }
                 div class="note-input-row" {
-                    input type="text" id="note-input" placeholder="Note (optional) — e.g. a name" maxlength="120" autocomplete="off";
+                    input type="text" id="note-input" placeholder="Reference (optional) — e.g. a name" maxlength="120" autocomplete="off";
                 }
                 button type="button" class="charge-btn" id="charge-btn" disabled { "Charge" }
                 p id="pos-error" {}

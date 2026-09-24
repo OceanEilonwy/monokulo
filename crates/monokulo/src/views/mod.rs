@@ -23,6 +23,7 @@ pub mod admin;
 pub mod auth;
 pub mod checkout;
 pub mod connect;
+pub mod create_order;
 pub mod dashboard;
 pub mod integration_help;
 pub mod landing;
@@ -30,7 +31,7 @@ pub mod orders;
 pub mod pos;
 pub mod status;
 pub mod store_detail;
-pub mod webhooks;
+pub mod store_settings;
 
 /// The shared `<head>` content (fonts, the full color/spacing/radius token
 /// system, every component's CSS) - see that file's own header comment.
