@@ -107,7 +107,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                     p class="muted" { "No orders yet." }
                 } @else {
                     table {
-                        thead { tr { th { "Payment ID" } th { "Status" } th { "Amount" } th { "Created" } } }
+                        thead { tr { th { "Order ID" } th { "Status" } th { "Amount" } th { "Created" } } }
                         tbody {
                             @for order in &store.recent_orders {
                                 tr {

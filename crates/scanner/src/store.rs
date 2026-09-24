@@ -650,7 +650,7 @@ impl Store {
         if claimed == 0 {
             return Ok(None);
         }
-        let id = new_id("pay");
+        let id = new_id("order");
         Self::insert_order(&tx, &id, &new)?;
         tx.commit()?;
         Ok(Some(self.get_order_by_id(&id)?.ok_or(StoreError::NotFound)?))
@@ -684,7 +684,7 @@ impl Store {
     }
 
     pub fn create_order(&self, new: NewOrder) -> Result<Order> {
-        let id = new_id("pay");
+        let id = new_id("order");
         Self::insert_order(&self.conn, &id, &new)?;
         self.get_order_by_id(&id)?.ok_or(StoreError::NotFound)
     }

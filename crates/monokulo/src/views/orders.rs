@@ -69,7 +69,7 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
             h1 { "Orders" }
             table {
                 thead {
-                    tr { th { "Payment ID" } th { "Status" } th { "Amount" } th { "Created" } }
+                    tr { th { "Order ID" } th { "Status" } th { "Amount" } th { "Created" } }
                 }
                 tbody {
                     @for order in &data.orders {

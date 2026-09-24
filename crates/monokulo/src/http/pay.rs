@@ -404,7 +404,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK, "expected the real engine to accept and create the order");
         let body = body_json(response).await;
         let obj = body.as_object().unwrap();
-        assert!(obj.get("payment_id").unwrap().as_str().unwrap().starts_with("pay_"));
+        assert!(obj.get("payment_id").unwrap().as_str().unwrap().starts_with("order_"));
         assert!(!obj.get("address").unwrap().as_str().unwrap().is_empty());
         assert_eq!(obj.get("currency").unwrap().as_str().unwrap(), TEST_CURRENCY);
         assert_eq!(obj.get("amount").unwrap().as_str().unwrap(), "25.00");

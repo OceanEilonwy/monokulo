@@ -88,7 +88,7 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                 } @else {
                     table {
                         thead {
-                            tr { th { "Store" } th { "Payment ID" } th { "Status" } th { "Amount" } th { "Created" } }
+                            tr { th { "Store" } th { "Order ID" } th { "Status" } th { "Amount" } th { "Created" } }
                         }
                         tbody {
                             @for order in &data.recent_orders {

@@ -251,7 +251,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                     }
 
                     div class="meta" {
-                        "Payment ID: " (data.payment_id) br;
+                        "Order ID: " (data.payment_id) br;
                         @if !data.is_terminal {
                             "Expires in " (data.expires_in_display)
                         }
