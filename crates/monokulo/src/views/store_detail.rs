@@ -64,12 +64,41 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
 
                 div class="widget-links" {
                     a class="btn widget-link" href=(format!("/dashboard/connections/{}/pos", store.connection_id)) {
-                        span class="widget-link-title" { "POS Terminal" }
-                        span class="widget-link-hint" { "Full-screen keypad for in-person sales" }
+                        span class="widget-link-icon" {
+                            svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round" aria-hidden="true" focusable="false" {
+                                rect x="4" y="3" width="16" height="18" rx="2" {}
+                                circle cx="8.5" cy="8.5" r="0.6" fill="currentColor" stroke="none" {}
+                                circle cx="12" cy="8.5" r="0.6" fill="currentColor" stroke="none" {}
+                                circle cx="15.5" cy="8.5" r="0.6" fill="currentColor" stroke="none" {}
+                                circle cx="8.5" cy="12" r="0.6" fill="currentColor" stroke="none" {}
+                                circle cx="12" cy="12" r="0.6" fill="currentColor" stroke="none" {}
+                                circle cx="15.5" cy="12" r="0.6" fill="currentColor" stroke="none" {}
+                                circle cx="8.5" cy="15.5" r="0.6" fill="currentColor" stroke="none" {}
+                                circle cx="12" cy="15.5" r="0.6" fill="currentColor" stroke="none" {}
+                                circle cx="15.5" cy="15.5" r="0.6" fill="currentColor" stroke="none" {}
+                                line x1="8" y1="18.5" x2="16" y2="18.5" {}
+                            }
+                        }
+                        span class="widget-link-text" {
+                            span class="widget-link-title" { "POS Terminal" }
+                            span class="widget-link-hint" { "Full-screen keypad for in-person sales" }
+                        }
                     }
                     a class="btn widget-link" href=(format!("/dashboard/connections/{}/orders/new", store.connection_id)) {
-                        span class="widget-link-title" { "Create an order" }
-                        span class="widget-link-hint" { "Creates a real order and opens its payment page" }
+                        span class="widget-link-icon" {
+                            svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                                stroke-linejoin="round" aria-hidden="true" focusable="false" {
+                                path d="M6 3h9l3 3v15a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1z" {}
+                                path d="M15 3v3h3" {}
+                                line x1="12" y1="11" x2="12" y2="17" {}
+                                line x1="9" y1="14" x2="15" y2="14" {}
+                            }
+                        }
+                        span class="widget-link-text" {
+                            span class="widget-link-title" { "Create an order" }
+                            span class="widget-link-hint" { "Creates a real order and opens its payment page" }
+                        }
                     }
                 }
 

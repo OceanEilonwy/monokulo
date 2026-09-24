@@ -360,13 +360,17 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .widget-links { display: flex; flex-wrap: wrap; gap: var(--space-md); margin: 1em 0 1.4em; }
 .widget-link {
   display: flex;
-  flex-direction: column;
-  gap: 0.2em;
+  flex-direction: row;
+  align-items: center;
+  gap: 0.7em;
   min-width: 11em;
   margin: 0;
   padding: var(--space-md) var(--space-lg);
   text-align: left;
 }
+.widget-link-icon { flex: none; display: flex; }
+.widget-link-icon svg { width: 1.7em; height: 1.7em; }
+.widget-link-text { display: flex; flex-direction: column; gap: 0.2em; }
 .widget-link-title { font-weight: 700; }
 .widget-link-hint { font-weight: 400; font-size: 0.82em; opacity: 0.85; }
 /* Confirmation-thresholds table, Default row: the 0-conf ceiling checkbox
