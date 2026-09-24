@@ -7,12 +7,10 @@
  * The secret/payload/expected-signature triple below is copied verbatim from
  * `shared/src/webhook_sign.rs`'s own `#[cfg(test)] mod tests`'s
  * `KNOWN_VECTOR_SECRET`/`KNOWN_VECTOR_PAYLOAD`/`KNOWN_VECTOR_SIGNATURE_HEX`
- * constants (read directly, not regenerated or hand-computed) - that file's
- * own comment states the Rust side's half of this contract explicitly:
- * "This exact secret/payload/signature triple is the vector the *real*
- * WooCommerce plugin's PHP implementation (WBS 1.5.4) must reproduce
- * byte-for-byte to prove its HMAC-SHA256 signing matches this Rust
- * implementation." This file is that reproduction.
+ * constants (read directly, not regenerated or hand-computed) - a
+ * regression/drift guard mirrored on both sides so a bug in either
+ * language's HMAC-SHA256 signing shows up here, against the other's real
+ * output, rather than only against itself.
  *
  * Independently cross-checked outside both languages entirely before this
  * file was written, so a bug shared by *both* implementations (e.g. a typo

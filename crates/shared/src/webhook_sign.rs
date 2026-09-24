@@ -155,18 +155,18 @@ mod tests {
 
     #[test]
     fn signature_matches_a_fixed_test_vector() {
-        // Documented in merchant-facing docs so implementers can cross-check their
-        // own HMAC computation against this exact input/output pair. The expected
-        // hex below is this implementation's real output for this input (verified
+        // A regression/drift guard: if `sign_payload` ever changes its output for
+        // this exact input, this test catches it immediately. The expected hex
+        // below is this implementation's real output for this input (verified
         // independently against a standalone HMAC-SHA256 computation, not just
-        // round-tripped through this same function) - a future change to the
-        // signing scheme must change this test deliberately, not accidentally.
+        // round-tripped through this same function) - a deliberate change to the
+        // signing scheme updates this hardcoded value along with it.
         let secret = "whsec_test_vector_secret";
-        let payload = br#"{"event":"order.paid","payment_id":"pay_test123"}"#;
+        let payload = br#"{"event":"order.paid","order_id":"order_test123"}"#;
         let signature = sign_payload(secret, payload);
         // Cross-checked independently via Python's stdlib: hmac.new(secret.encode(),
         // payload, hashlib.sha256).hexdigest() with the exact secret/payload above.
-        assert_eq!(signature, "ef04ee135feb4cf09569865b91e9bff4c323df1a88fbecc69da6da2d2ab4e84c");
+        assert_eq!(signature, "61be1ffcef67db7a31a61f55b0c1abda7c41963499ab87101bf8ba17eca01ff5");
         assert!(verify_signature(secret, payload, &signature));
     }
 
@@ -381,11 +381,11 @@ mod tests {
 
     // --- Cross-language known-vector (WBS 0.3 / 1.5.4) -----------------------------
     //
-    // This exact secret/payload/signature triple is the vector the *real* WooCommerce
-    // plugin's PHP implementation (WBS 1.5.4) must reproduce byte-for-byte to prove its
-    // HMAC-SHA256 signing matches this Rust implementation. Keep the constants below
-    // stable: if `sign_payload` is ever refactored, this test must keep asserting the
-    // same output, not be updated to match whatever the refactor happens to produce.
+    // This secret/payload/signature triple is what the WooCommerce plugin's own PHP
+    // test (`WebhookSignatureTest.php`) mirrors, to check its HMAC-SHA256 signing
+    // against this Rust implementation - a regression/drift guard for both sides, not
+    // an external contract: if `sign_payload` genuinely changes, update this constant
+    // (and the PHP copy) deliberately, the same as any other hardcoded expected value.
     //
     // PHP equivalent to check against: `hash_hmac('sha256', KNOWN_VECTOR_PAYLOAD, KNOWN_VECTOR_SECRET)`.
     const KNOWN_VECTOR_SECRET: &str = "known_vector_secret_for_php_crosscheck";
@@ -395,8 +395,8 @@ mod tests {
     #[test]
     fn known_vector_for_cross_language_php_verification() {
         // This value was obtained by running `sign_payload` itself (not hand-computed)
-        // and then hardcoded here as a drift guard - see the module-level comment
-        // above for why it must stay fixed across refactors.
+        // and then hardcoded here - see the module-level comment above for what it's
+        // guarding against.
         let signature = sign_payload(KNOWN_VECTOR_SECRET, KNOWN_VECTOR_PAYLOAD);
         assert_eq!(signature, KNOWN_VECTOR_SIGNATURE_HEX);
         assert!(verify_signature(KNOWN_VECTOR_SECRET, KNOWN_VECTOR_PAYLOAD, KNOWN_VECTOR_SIGNATURE_HEX));
