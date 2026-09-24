@@ -569,13 +569,8 @@ async fn render_store_settings_page(
 
     let tenant_result = state.engine_client.get_tenant(&sk).await;
     let confirmations_required = tenant_result.as_ref().map(|t| t.confirmations_required).unwrap_or(0);
-    let zero_conf_max_xmr = tenant_result
-        .as_ref()
-        .ok()
-        .and_then(|t| t.zero_conf_max_piconero)
-        .filter(|&piconero| piconero > 0)
-        .map(shared::xmr_amount::format_piconero_as_xmr)
-        .unwrap_or_default();
+    let zero_conf_enabled =
+        tenant_result.as_ref().ok().and_then(|t| t.zero_conf_max_piconero).is_some_and(|piconero| piconero > 0);
 
     let fx_provider_options = state
         .exchange_rate
@@ -620,7 +615,7 @@ async fn render_store_settings_page(
             base_currency_options,
             confirmation_thresholds,
             confirmation_thresholds_at_max,
-            zero_conf_max_xmr,
+            zero_conf_enabled,
             webhooks,
             created_webhook_signing_secret,
             settings_error,
@@ -962,22 +957,25 @@ pub async fn update_base_currency(
     }
 }
 
-/// Parses the confirmation-thresholds table's own 0-conf checkbox/amount
-/// pair (`save_confirmation_thresholds`'s own "Default (fallback)" row -
-/// see `views::store_settings`'s doc comment on why this replaced the old
-/// standalone "Zero-confirmation payments" section/route) into the
-/// piconero ceiling `EngineClient::set_zero_conf_max_piconero` wants.
-/// `Ok(None)` means the checkbox wasn't submitted at all - disabled,
-/// regardless of any leftover amount text.
-fn parse_zero_conf_checkbox(raw: &HashMap<String, String>) -> Result<Option<u64>, String> {
-    if !raw.contains_key("zero_conf_enabled") {
-        return Ok(None);
-    }
-    let trimmed = raw.get("zero_conf_max_xmr").map(|s| s.trim()).unwrap_or("");
-    if trimmed.is_empty() {
-        return Err("Enter an XMR amount to accept 0-conf payments up to, or leave the checkbox unchecked.".to_string());
-    }
-    shared::xmr_amount::parse_xmr_to_piconero(trimmed).map(Some).map_err(|e| format!("Enter a valid XMR amount: {e}"))
+/// The engine's own `zero_conf_max_piconero` is an absolute XMR ceiling with
+/// no concept of this store's confirmation-threshold tiers - there is no
+/// literal "0 confirmations for the default tier only" switch to flip on the
+/// engine side (and a literal `confirmations_required = 0` is rejected
+/// outright by `EngineClient::create_order`'s own validation - see
+/// `scanner::http::admin::MAX_CONFIRMATIONS_REQUIRED`'s doc comment). Ticking
+/// the Default row's checkbox instead sets the ceiling to this - a value no
+/// real order will ever exceed - so the merchant never has to type a limit:
+/// the practical limit is "the smallest custom threshold, if any" (a
+/// higher-value order already needs more real confirmations to place at all
+/// unless the merchant separately widens or removes that threshold).
+const ZERO_CONF_EFFECTIVELY_UNLIMITED_PICONERO: u64 = 1_000_000 * 1_000_000_000_000; // 1,000,000 XMR
+
+/// `true` exactly when the confirmation-thresholds table's own "Default
+/// (fallback)" row had its 0-conf checkbox ticked - see
+/// [`ZERO_CONF_EFFECTIVELY_UNLIMITED_PICONERO`]'s own doc comment for what
+/// that turns into on the engine side.
+fn zero_conf_checkbox_checked(raw: &HashMap<String, String>) -> bool {
+    raw.contains_key("zero_conf_enabled")
 }
 
 #[derive(Deserialize)]
@@ -1107,10 +1105,8 @@ pub async fn save_confirmation_thresholds(
                     .await;
             }
         };
-    let zero_conf_max_piconero = match parse_zero_conf_checkbox(&raw) {
-        Ok(piconero) => piconero.unwrap_or(0),
-        Err(message) => return render_store_settings_page(&state, row, &user, Some(message), None).await,
-    };
+    let zero_conf_max_piconero =
+        if zero_conf_checkbox_checked(&raw) { ZERO_CONF_EFFECTIVELY_UNLIMITED_PICONERO } else { 0 };
 
     let sk = match decrypt_sk(&state, &row) {
         Ok(sk) => sk,
@@ -2287,10 +2283,11 @@ mod tests {
     }
 
     /// The old standalone "Zero-confirmation payments" section/route is gone -
-    /// its ceiling is now the confirmation-thresholds table's own Default row
-    /// checkbox, submitted through `save_confirmation_thresholds`.
+    /// it's now a plain checkbox on the confirmation-thresholds table's own
+    /// Default row, submitted through `save_confirmation_thresholds` with no
+    /// amount to type (see `zero_conf_checkbox_checked`'s own doc comment).
     #[tokio::test]
-    async fn setting_a_zero_conf_ceiling_persists_and_shows_on_the_settings_page() {
+    async fn ticking_the_zero_conf_checkbox_persists_and_shows_as_checked_on_the_settings_page() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -2303,7 +2300,7 @@ mod tests {
             .oneshot(form_post_request(
                 &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds/save"),
                 &session_token,
-                &[("confirmations_required", "10"), ("zero_conf_enabled", "on"), ("zero_conf_max_xmr", "0.5")],
+                &[("confirmations_required", "10"), ("zero_conf_enabled", "on")],
             ))
             .await
             .unwrap();
@@ -2322,35 +2319,9 @@ mod tests {
             .unwrap();
         let html = body_text(page).await;
         assert!(
-            html.contains(r#"name="zero_conf_max_xmr" value="0.500000000000""#),
-            "expected the new ceiling's own value to round-trip, got: {html}"
-        );
-        assert!(
             html.contains(r#"<input type="checkbox" name="zero_conf_enabled" checked>"#),
             "expected the 0-conf checkbox to show as checked once enabled, got: {html}"
         );
-    }
-
-    #[tokio::test]
-    async fn an_invalid_zero_conf_amount_is_rejected_with_a_clear_error() {
-        let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-
-        let session_token =
-            signed_up_and_logged_in_session_token(&router, "zero-conf-invalid@example.com", "correct horse battery staple").await;
-        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
-
-        let response = router
-            .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds/save"),
-                &session_token,
-                &[("confirmations_required", "10"), ("zero_conf_enabled", "on"), ("zero_conf_max_xmr", "not-a-number")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "a validation error re-renders the page, it doesn't redirect");
-        let html = body_text(response).await;
-        assert!(html.contains("Enter a valid XMR amount"), "expected a clear validation error, got: {html}");
     }
 
     #[tokio::test]

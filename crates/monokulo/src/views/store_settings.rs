@@ -50,11 +50,12 @@ pub struct StoreSettingsData {
     /// add-threshold form hides itself rather than accepting a submission
     /// the server would just reject anyway.
     pub confirmation_thresholds_at_max: bool,
-    /// This store's current zero-conf ceiling, formatted as an XMR decimal
-    /// string - empty when disabled. Doubles as the "0-conf enabled"
-    /// checkbox's own checked state (non-empty = enabled) on the Default
-    /// (fallback) row - see [`page`]'s own rendering of that row.
-    pub zero_conf_max_xmr: String,
+    /// Whether the Default (fallback) row's own "accept unconfirmed
+    /// payments" checkbox is currently on - no amount to enter: the engine
+    /// enforces the same tier boundaries every other threshold already does,
+    /// so this is implicit in whether a merchant has set a custom threshold
+    /// above whatever amount they don't want 0-conf applied to.
+    pub zero_conf_enabled: bool,
     pub webhooks: Vec<WebhookRowViewModel>,
     /// Set only immediately after a successful webhook creation - the
     /// engine hands back a real signing secret exactly once, at creation
@@ -110,20 +111,19 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                     "currency."
                 }
                 form method="post" action=(format!("/dashboard/connections/{}/settings/confirmation-thresholds/save", store.connection_id)) {
-                    table {
-                        thead { tr { th { "Amount (" (store.base_currency) ")" } th { "Confirmations required" } th { "Delete" } } }
+                    table class="thresholds-table" {
+                        thead { tr { th { "Amount (" (store.base_currency) ")" } th { "Confirmations required" } th { "Action" } } }
                         tbody {
                             tr {
                                 td class="muted" { "Default (fallback)" }
                                 td {
-                                    input type="text" name="confirmations_required" value=(store.confirmations_required) required;
+                                    input type="text" class="confirmations-input" name="confirmations_required"
+                                        value=(store.confirmations_required) size="3" maxlength="3" required;
                                     label class="zero-conf-toggle" {
-                                        input type="checkbox" name="zero_conf_enabled" checked[!store.zero_conf_max_xmr.is_empty()];
-                                        " Also accept unconfirmed (0-conf) payments up to "
-                                        input type="text" name="zero_conf_max_xmr" value=(store.zero_conf_max_xmr) placeholder="0.00" size="6";
-                                        " XMR"
-                                        span class="help-icon" tabindex="0" title="An order at or under this XMR amount can read as paid the moment its transaction reaches this store's node's mempool, before any block confirms it - useful for fast, low-value, in-person sales. This is a real double-spend risk for exactly that amount of XMR (an attacker who can out-race the transaction to a miner keeps both the goods and the coin) - keep this at the smallest amount you're actually willing to lose." { "?" }
+                                        input type="checkbox" name="zero_conf_enabled" checked[store.zero_conf_enabled];
+                                        " Accept unconfirmed (0-conf) payments"
                                     }
+                                    span class="help-icon" tabindex="0" title="An order that falls under this default tier can read as paid the moment its transaction reaches this store's node's mempool, before any block confirms it - useful for fast, low-value, in-person sales. This is a real double-spend risk (an attacker who can out-race the transaction to a miner keeps both the goods and the coin). No amount to set here - it's implicit in not creating a custom threshold above whatever you don't want treated this way; add one below to keep larger orders requiring real confirmations." { "?" }
                                 }
                                 td { "-" }
                             }
@@ -134,12 +134,17 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                                     td { label { input type="checkbox" name=(format!("delete_{}", threshold.id)); " delete" } }
                                 }
                             }
-                            @if !store.confirmation_thresholds_at_max {
-                                tr {
+                            tr class="new-threshold-row" {
+                                @if store.confirmation_thresholds_at_max {
+                                    td colspan="2" class="muted" { "Maximum of 5 custom thresholds reached - delete one to add another." }
+                                } @else {
                                     td { input type="text" name="new_unit_amount" placeholder="50.00"; }
-                                    td { input type="text" name="new_confirmations_required" placeholder="20"; }
-                                    td class="muted" { "new" }
+                                    td {
+                                        input type="text" class="confirmations-input" name="new_confirmations_required"
+                                            size="3" maxlength="3" placeholder="20";
+                                    }
                                 }
+                                td { button type="submit" { "Save" } }
                             }
                         }
                     }
@@ -148,12 +153,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                         "threshold above it (or there are none) - it always exists and can't be deleted. Each custom threshold makes a "
                         "higher-value order (by amount in this store's base currency) require more confirmations, or a lower-value one "
                         "fewer."
-                        @if store.confirmation_thresholds_at_max {
-                            " Maximum of 5 custom thresholds reached - delete one to add "
-                            "another."
-                        }
                     }
-                    button type="submit" { "Save" }
                 }
 
                 h2 { "Exchange rate provider" }
@@ -272,7 +272,7 @@ mod tests {
             base_currency_options: vec![],
             confirmation_thresholds: vec![],
             confirmation_thresholds_at_max: false,
-            zero_conf_max_xmr: String::new(),
+            zero_conf_enabled: false,
             webhooks: vec![],
             created_webhook_signing_secret: None,
             settings_error: None,
@@ -302,7 +302,7 @@ mod tests {
     }
 
     #[test]
-    fn zero_conf_checkbox_is_unchecked_and_amount_blank_when_disabled() {
+    fn zero_conf_checkbox_is_unchecked_when_disabled() {
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
         assert!(
             html.contains(r#"<input type="checkbox" name="zero_conf_enabled">"#),
@@ -311,11 +311,32 @@ mod tests {
     }
 
     #[test]
-    fn zero_conf_checkbox_is_checked_and_amount_shown_when_enabled() {
-        let store = StoreSettingsData { zero_conf_max_xmr: "0.05".to_string(), ..base_store() };
+    fn zero_conf_checkbox_is_checked_when_enabled() {
+        let store = StoreSettingsData { zero_conf_enabled: true, ..base_store() };
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
-        assert!(html.contains("checked"));
-        assert!(html.contains(r#"value="0.05""#));
+        assert!(html.contains(r#"<input type="checkbox" name="zero_conf_enabled" checked>"#), "got: {html}");
+    }
+
+    #[test]
+    fn confirmations_required_input_is_narrow_and_capped_at_three_digits() {
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        assert!(html.contains(r#"class="confirmations-input" name="confirmations_required" value="10" size="3" maxlength="3""#), "got: {html}");
+    }
+
+    #[test]
+    fn action_column_header_replaces_delete_and_carries_the_save_button() {
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        assert!(html.contains("<th>Action</th>"), "got: {html}");
+        assert!(!html.contains("<th>Delete</th>"));
+        assert!(html.contains(r#"class="new-threshold-row""#), "expected a visually-separated new-threshold row, got: {html}");
+    }
+
+    #[test]
+    fn at_the_threshold_max_the_new_row_still_carries_the_save_button() {
+        let store = StoreSettingsData { confirmation_thresholds_at_max: true, ..base_store() };
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
+        assert!(html.contains("Maximum of 5 custom thresholds reached"));
+        assert!(html.contains(r#"type="submit""#) && html.contains("Save"), "the Save button must still render even with no new-threshold inputs, got: {html}");
     }
 
     #[test]
