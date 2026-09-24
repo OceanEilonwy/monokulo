@@ -9,14 +9,19 @@
 # mid-request hangs/dropped connections against it (confirmed independently
 # against both this file's own e2e_stagenet.rs and the newer
 # e2e_dashboard_stagenet.rs, so not a fluke of one test). node2.monerodevs.org
-# is configured as an explicit fallback so a single node being briefly down
-# doesn't stall the whole e2e run.
+# and node3.monerodevs.org are configured as explicit fallbacks so a single
+# node being briefly down doesn't stall the whole e2e run.
 host = "node.monerodevs.org"
 port = 38089
 ssl = false
 
 [[monero_node.stagenet.fallbacks]]
 host = "node2.monerodevs.org"
+port = 38089
+ssl = false
+
+[[monero_node.stagenet.fallbacks]]
+host = "node3.monerodevs.org"
 port = 38089
 ssl = false
 
