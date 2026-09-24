@@ -119,17 +119,17 @@ impl EngineClient {
         parse_response(response).await
     }
 
-    /// `GET {base_url}/api/v1/admin/tenant/orders/{payment_id}` — fetches one
+    /// `GET {base_url}/api/v1/admin/tenant/orders/{order_id}` — fetches one
     /// order's full detail (WBS 1.3.3). The engine returns its own `404` for
-    /// an unknown `payment_id` or one belonging to a different tenant —
+    /// an unknown `order_id` or one belonging to a different tenant —
     /// surfaced here as `EngineClientError::EngineError { status: 404, .. }`,
     /// same as every other non-success status; callers distinguish it from a
     /// real internal error the same way `http/connections.rs` already
     /// distinguishes the engine's `400` from everything else.
-    pub async fn get_order_detail(&self, sk: &str, payment_id: &str) -> Result<OrderDetailResponse, EngineClientError> {
+    pub async fn get_order_detail(&self, sk: &str, order_id: &str) -> Result<OrderDetailResponse, EngineClientError> {
         let response = self
             .http
-            .get(format!("{}/api/v1/admin/tenant/orders/{payment_id}", self.base_url))
+            .get(format!("{}/api/v1/admin/tenant/orders/{order_id}", self.base_url))
             .bearer_auth(sk)
             .send()
             .await?;
@@ -326,7 +326,7 @@ impl EngineClient {
         parse_response(response).await
     }
 
-    /// `POST {base_url}/api/v1/t/{pk}/orders/{payment_id}/refund-address` -
+    /// `POST {base_url}/api/v1/t/{pk}/orders/{order_id}/refund-address` -
     /// the engine's own public endpoint for a customer (or their storefront,
     /// on their behalf) to record where a refund should go, called here the
     /// same server-to-server, no-auth way `create_order` above is. The
@@ -335,10 +335,10 @@ impl EngineClient {
     /// it's given verbatim, the same as every other stored free-text field
     /// in this system), so neither does this call; a human reviews it
     /// before ever sending anything back to it.
-    pub async fn set_refund_address(&self, pk: &str, payment_id: &str, refund_address: &str) -> Result<(), EngineClientError> {
+    pub async fn set_refund_address(&self, pk: &str, order_id: &str, refund_address: &str) -> Result<(), EngineClientError> {
         let response = self
             .http
-            .post(format!("{}/api/v1/t/{pk}/orders/{payment_id}/refund-address", self.base_url))
+            .post(format!("{}/api/v1/t/{pk}/orders/{order_id}/refund-address", self.base_url))
             .json(&SetRefundAddressRequest { refund_address: refund_address.to_string() })
             .send()
             .await?;
@@ -437,7 +437,7 @@ pub struct TenantView {
 /// `order_fiat_metadata` table (`db::Db::get_order_fiat_metadata`) instead.
 #[derive(Debug, Deserialize)]
 pub struct OrderView {
-    pub payment_id: String,
+    pub order_id: String,
     pub merchant_order_id: Option<String>,
     pub address: String,
     pub xmr_amount_piconero: u64,
@@ -547,7 +547,7 @@ struct CreateOrderRequest {
 /// Mirrors the engine's own `public::CreateOrderResponse`.
 #[derive(Debug, Deserialize)]
 pub struct CreateOrderResponse {
-    pub payment_id: String,
+    pub order_id: String,
     pub address: String,
     pub xmr_amount_piconero: u64,
     pub expires_at: i64,
@@ -746,7 +746,7 @@ mod tests {
 
         let store = engine.store().lock().unwrap();
         let tenant_id = store.find_tenant_by_public_key(&created.public_key).unwrap().unwrap().id;
-        let stored = store.get_order(&tenant_id, &order.payment_id).unwrap().unwrap();
+        let stored = store.get_order(&tenant_id, &order.order_id).unwrap().unwrap();
         assert_eq!(stored.confirmations_required_override, Some(3));
     }
 
@@ -760,7 +760,7 @@ mod tests {
 
         let store = engine.store().lock().unwrap();
         let tenant_id = store.find_tenant_by_public_key(&created.public_key).unwrap().unwrap().id;
-        let stored = store.get_order(&tenant_id, &order.payment_id).unwrap().unwrap();
+        let stored = store.get_order(&tenant_id, &order.order_id).unwrap().unwrap();
         assert_eq!(stored.confirmations_required_override, None);
     }
 
@@ -842,7 +842,7 @@ mod tests {
     #[tokio::test]
     async fn a_second_call_within_the_cache_window_never_reaches_the_server() {
         let order_body = serde_json::json!({
-            "payment_id": "pay_1", "merchant_order_id": null, "address": "addr",
+            "order_id": "pay_1", "merchant_order_id": null, "address": "addr",
             "xmr_amount_piconero": 1, "amount_received_piconero": 0, "status": "pending",
             "confirmations": 0, "double_spend_detected_at": null, "refund_address": null,
             "created_at": 1000, "expires_at": 2000, "updated_at": 1000,
@@ -850,7 +850,7 @@ mod tests {
             "payments": []
         });
         let (base_url, calls) =
-            spawn_counting_server("/api/v1/admin/tenant/orders/{payment_id}", Some("max-age=60"), order_body).await;
+            spawn_counting_server("/api/v1/admin/tenant/orders/{order_id}", Some("max-age=60"), order_body).await;
         let client = EngineClient::new(base_url);
 
         client.get_order_detail("sk_whatever", "pay_1").await.unwrap();
@@ -872,7 +872,7 @@ mod tests {
     #[tokio::test]
     async fn get_order_detail_is_never_cached() {
         let order_body = serde_json::json!({
-            "payment_id": "pay_1", "merchant_order_id": null, "address": "addr",
+            "order_id": "pay_1", "merchant_order_id": null, "address": "addr",
             "xmr_amount_piconero": 1, "amount_received_piconero": 0, "status": "pending",
             "confirmations": 0, "double_spend_detected_at": null, "refund_address": null,
             "created_at": 1000, "expires_at": 2000, "updated_at": 1000,
@@ -880,7 +880,7 @@ mod tests {
             "payments": []
         });
         let (base_url, calls) =
-            spawn_counting_server("/api/v1/admin/tenant/orders/{payment_id}", None, order_body).await;
+            spawn_counting_server("/api/v1/admin/tenant/orders/{order_id}", None, order_body).await;
         let client = EngineClient::new(base_url);
 
         client.get_order_detail("sk_whatever", "pay_1").await.unwrap();

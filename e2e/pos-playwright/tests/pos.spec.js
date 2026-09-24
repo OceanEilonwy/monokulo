@@ -126,7 +126,7 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     // Spec point 5: a POS-created order is a real order, visible on the
     // normal dashboard orders list, not something private to this screen.
     const ordersPage = await context.request.get(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/orders`);
-    expect(await ordersPage.text()).toContain(order.payment_id);
+    expect(await ordersPage.text()).toContain(order.order_id);
   });
 
   test('a confirming payment shows the progress ring, can be backgrounded, and completes in the stack', async ({ page, context }) => {

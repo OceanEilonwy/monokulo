@@ -458,8 +458,8 @@ const POS_SCRIPT: &str = r#"
     });
   })();
 
-  var foreground = null; // { paymentId, timer, failures, note }
-  var backgrounded = {}; // paymentId -> { el, timer, failures }
+  var foreground = null; // { orderId, timer, failures, note }
+  var backgrounded = {}; // orderId -> { el, timer, failures }
 
   function formatAmount(rawDigits) {
     var padded = rawDigits.padStart(decimals + 1, "0");
@@ -534,8 +534,8 @@ const POS_SCRIPT: &str = r#"
     el.classList.remove("pos-screen-hidden");
   }
 
-  function shortId(paymentId) {
-    return paymentId.length <= 14 ? paymentId : paymentId.slice(0, 6) + "…" + paymentId.slice(-4);
+  function shortId(orderId) {
+    return orderId.length <= 14 ? orderId : orderId.slice(0, 6) + "…" + orderId.slice(-4);
   }
 
   async function attemptNfcWrite(moneroUri) {
@@ -587,7 +587,7 @@ const POS_SCRIPT: &str = r#"
     nfcStatus.textContent = "";
     showScreen(paymentScreen);
     attemptNfcWrite(order.monero_uri);
-    startForegroundPoll(order.payment_id, note);
+    startForegroundPoll(order.order_id, note);
   }
 
   function resetToKeypad() {
@@ -626,10 +626,10 @@ const POS_SCRIPT: &str = r#"
     dismissBtn.classList.toggle("pos-screen-hidden", !(state.finished && state.isError));
   }
 
-  async function pollOnce(paymentId) {
+  async function pollOnce(orderId) {
     var response;
     try {
-      response = await fetch("/dashboard/stores/" + connectionId + "/pos/orders/" + paymentId + "/status");
+      response = await fetch("/dashboard/stores/" + connectionId + "/pos/orders/" + orderId + "/status");
     } catch (err) {
       return { networkError: true };
     }
@@ -637,13 +637,13 @@ const POS_SCRIPT: &str = r#"
     return await response.json();
   }
 
-  function startForegroundPoll(paymentId, note) {
-    foreground = { paymentId: paymentId, timer: null, failures: 0, note: note || "" };
+  function startForegroundPoll(orderId, note) {
+    foreground = { orderId: orderId, timer: null, failures: 0, note: note || "" };
     tickOverlay.classList.remove("is-error");
     var tick = async function () {
-      if (!foreground || foreground.paymentId !== paymentId) return;
-      var result = await pollOnce(paymentId);
-      if (!foreground || foreground.paymentId !== paymentId) return;
+      if (!foreground || foreground.orderId !== orderId) return;
+      var result = await pollOnce(orderId);
+      if (!foreground || foreground.orderId !== orderId) return;
 
       if (result.networkError) {
         foreground.failures += 1;
@@ -679,7 +679,7 @@ const POS_SCRIPT: &str = r#"
       if (result.is_terminal) {
         if (success) {
           setTimeout(function () {
-            if (foreground && foreground.paymentId === paymentId) {
+            if (foreground && foreground.orderId === orderId) {
               stopForegroundPoll();
               resetToKeypad();
             }
@@ -700,37 +700,37 @@ const POS_SCRIPT: &str = r#"
 
   backgroundBtn.addEventListener("click", function () {
     if (!foreground) return;
-    var paymentId = foreground.paymentId;
+    var orderId = foreground.orderId;
     stopForegroundPoll();
     resetToKeypad();
-    startBackgroundPoll(paymentId);
+    startBackgroundPoll(orderId);
   });
 
-  function startBackgroundPoll(paymentId) {
+  function startBackgroundPoll(orderId) {
     var el = document.createElement("div");
     el.className = "bg-item";
     el.innerHTML =
       '<span class="bg-id"></span>' +
       '<span class="bg-bar"><span class="bg-bar-fill"></span></span>' +
       '<button type="button" class="bg-dismiss pos-screen-hidden" aria-label="Dismiss">&times;</button>';
-    el.querySelector(".bg-id").textContent = shortId(paymentId);
+    el.querySelector(".bg-id").textContent = shortId(orderId);
     var fill = el.querySelector(".bg-bar-fill");
     var dismiss = el.querySelector(".bg-dismiss");
     bgStack.appendChild(el);
 
     var entry = { el: el, timer: null, failures: 0 };
-    backgrounded[paymentId] = entry;
+    backgrounded[orderId] = entry;
 
     dismiss.addEventListener("click", function () {
       if (entry.timer) clearTimeout(entry.timer);
-      delete backgrounded[paymentId];
+      delete backgrounded[orderId];
       el.remove();
     });
 
     var tick = async function () {
-      if (!backgrounded[paymentId]) return;
-      var result = await pollOnce(paymentId);
-      if (!backgrounded[paymentId]) return;
+      if (!backgrounded[orderId]) return;
+      var result = await pollOnce(orderId);
+      if (!backgrounded[orderId]) return;
 
       if (result.networkError) {
         entry.failures += 1;
@@ -753,10 +753,10 @@ const POS_SCRIPT: &str = r#"
       if (result.is_terminal) {
         if (!result.error) {
           el.classList.add("is-paid");
-          el.querySelector(".bg-id").textContent = shortId(paymentId) + " — paid";
+          el.querySelector(".bg-id").textContent = shortId(orderId) + " — paid";
           setTimeout(function () {
-            if (backgrounded[paymentId]) {
-              delete backgrounded[paymentId];
+            if (backgrounded[orderId]) {
+              delete backgrounded[orderId];
               el.remove();
             }
           }, 4000);

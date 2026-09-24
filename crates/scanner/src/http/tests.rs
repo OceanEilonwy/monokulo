@@ -135,19 +135,19 @@ async fn create_tenant_then_create_order_happy_path() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["xmr_amount_piconero"], 167_500_000_000u64);
-    let payment_id = body["payment_id"].as_str().unwrap().to_string();
+    let order_id = body["order_id"].as_str().unwrap().to_string();
     assert!(!body["address"].as_str().unwrap().is_empty());
 
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/t/{}/orders/{payment_id}", tenant.public_key))
+        .uri(format!("/api/v1/t/{}/orders/{order_id}", tenant.public_key))
         .body(Body::empty())
         .unwrap();
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["status"], "pending");
-    assert_eq!(body["payment_id"], payment_id);
+    assert_eq!(body["order_id"], order_id);
 }
 
 #[tokio::test]
@@ -166,11 +166,11 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
     );
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let payment_id = body_json(response).await["payment_id"].as_str().unwrap().to_string();
+    let order_id = body_json(response).await["order_id"].as_str().unwrap().to_string();
 
     let guard = store.lock().unwrap();
     let tenant_id = guard.find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
-    let order = guard.get_order(&tenant_id, &payment_id).unwrap().unwrap();
+    let order = guard.get_order(&tenant_id, &order_id).unwrap().unwrap();
     assert_eq!(order.confirmations_required_override, Some(3));
 }
 
@@ -190,11 +190,11 @@ async fn creating_an_order_with_no_confirmations_required_override_leaves_it_uns
     );
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let payment_id = body_json(response).await["payment_id"].as_str().unwrap().to_string();
+    let order_id = body_json(response).await["order_id"].as_str().unwrap().to_string();
 
     let guard = store.lock().unwrap();
     let tenant_id = guard.find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
-    let order = guard.get_order(&tenant_id, &payment_id).unwrap().unwrap();
+    let order = guard.get_order(&tenant_id, &order_id).unwrap().unwrap();
     assert_eq!(order.confirmations_required_override, None);
 }
 
@@ -363,7 +363,7 @@ async fn admin_route_with_no_authorization_header_is_rejected() {
 async fn tenant_a_cannot_read_tenant_bs_order_via_admin_api() {
     // The exact IDOR scenario from docs/DESIGN.md §10.1 and docs/TESTING.md §5,
     // exercised end to end through real HTTP requests: tenant A's valid sk_ plus
-    // tenant B's real payment_id must come back as 404, not tenant B's order.
+    // tenant B's real order_id must come back as 404, not tenant B's order.
     let router = test_router();
     let tenant_a = create_tenant(&router, 3, vec![]).await;
     let tenant_b = create_tenant(&router, 4, vec!["https://b.example"]).await;
@@ -377,11 +377,11 @@ async fn tenant_a_cannot_read_tenant_bs_order_via_admin_api() {
     );
     let response = router.clone().oneshot(req).await.unwrap();
     let body = body_json(response).await;
-    let order_b_payment_id = body["payment_id"].as_str().unwrap().to_string();
+    let order_b_order_id = body["order_id"].as_str().unwrap().to_string();
 
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/admin/tenant/orders/{order_b_payment_id}"))
+        .uri(format!("/api/v1/admin/tenant/orders/{order_b_order_id}"))
         .header("authorization", format!("Bearer {}", tenant_a.secret_token))
         .body(Body::empty())
         .unwrap();
@@ -392,7 +392,7 @@ async fn tenant_a_cannot_read_tenant_bs_order_via_admin_api() {
     // specifically about cross-tenant scoping and not a broken route.
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/admin/tenant/orders/{order_b_payment_id}"))
+        .uri(format!("/api/v1/admin/tenant/orders/{order_b_order_id}"))
         .header("authorization", format!("Bearer {}", tenant_b.secret_token))
         .body(Body::empty())
         .unwrap();
@@ -621,7 +621,7 @@ async fn rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info(
     // `into_make_service_with_connect_info` would actually provide it - proving the
     // wiring, not just `RateLimiter`'s standalone logic (already covered in
     // `rate_limit.rs`'s own unit tests). Uses a *public* route
-    // (`/api/v1/t/{pk}/orders/{payment_id}`) so this exercises `state.rate_limiter`
+    // (`/api/v1/t/{pk}/orders/{order_id}`) so this exercises `state.rate_limiter`
     // specifically - `/api/v1/admin/*` now has its own, separately-tested limiter
     // (`admin_rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info`
     // below).
@@ -895,7 +895,7 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
             .unwrap(),
     )
     .await;
-    let a_payment_id = order["payment_id"].as_str().unwrap().to_string();
+    let a_order_id = order["order_id"].as_str().unwrap().to_string();
     let a_webhook = body_json(
         router
             .clone()
@@ -918,7 +918,7 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/admin/tenant/orders/{a_payment_id}"))
+                .uri(format!("/api/v1/admin/tenant/orders/{a_order_id}"))
                 .header("authorization", format!("Bearer {}", b.secret_token))
                 .body(Body::empty())
                 .unwrap(),
@@ -949,7 +949,7 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
         .oneshot(
             Request::builder()
                 .method("GET")
-                .uri(format!("/api/v1/admin/tenant/orders/{a_payment_id}/rescan"))
+                .uri(format!("/api/v1/admin/tenant/orders/{a_order_id}/rescan"))
                 .header("authorization", format!("Bearer {}", b.secret_token))
                 .body(Body::empty())
                 .unwrap(),
@@ -961,7 +961,7 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/admin/tenant/orders/{a_payment_id}/rescan"),
+            &format!("/api/v1/admin/tenant/orders/{a_order_id}/rescan"),
             Some(&b.secret_token),
             None,
             serde_json::json!({ "mode": "simple" }),
@@ -1726,7 +1726,7 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
     );
     let response = router.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
-    let payment_id = body_json(response).await["payment_id"].as_str().unwrap().to_string();
+    let order_id = body_json(response).await["order_id"].as_str().unwrap().to_string();
 
     let tx = fixture_tx_for_lookup_tests();
     daemon.set_mempool(vec![tx.clone()]);
@@ -1737,9 +1737,9 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["outcome"], "matched");
-    assert_eq!(body["order_ids"].as_array().unwrap(), &[serde_json::Value::String(payment_id.clone())]);
+    assert_eq!(body["order_ids"].as_array().unwrap(), &[serde_json::Value::String(order_id.clone())]);
 
-    let payments = store.lock().unwrap().get_all_payments(&payment_id).unwrap();
+    let payments = store.lock().unwrap().get_all_payments(&order_id).unwrap();
     assert_eq!(payments.len(), 1, "the match must actually be recorded, not just reported");
 
     // A second lookup of the same, already-applied txid must be a safe no-op
@@ -1749,6 +1749,6 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["outcome"], "matched");
-    let payments = store.lock().unwrap().get_all_payments(&payment_id).unwrap();
+    let payments = store.lock().unwrap().get_all_payments(&order_id).unwrap();
     assert_eq!(payments.len(), 1, "looking the same txid up twice must not duplicate the recorded payment");
 }

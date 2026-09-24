@@ -307,11 +307,11 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
         .unwrap();
     assert!(order_response.status().is_success(), "creating the real order failed: {}", order_response.status());
     let order_body = body_json(order_response).await;
-    let payment_id = order_body["payment_id"].as_str().expect("expected a real payment_id").to_string();
+    let order_id = order_body["order_id"].as_str().expect("expected a real order_id").to_string();
     let address = order_body["address"].as_str().expect("expected a real derived address").to_string();
     let amount_piconero = order_body["xmr_amount_piconero"].as_u64().expect("expected a real xmr_amount_piconero");
     assert_eq!(amount_piconero, TEST_ORDER_AMOUNT_PICONERO);
-    println!("created order {payment_id}: {amount_piconero} piconero to {address}");
+    println!("created order {order_id}: {amount_piconero} piconero to {address}");
 
     // Point 1 (see this file's own module doc comment): the real engine's
     // own stored order must already show the threshold's value, not the
@@ -319,7 +319,7 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     {
         let store = engine.store().lock().unwrap();
         let tenant_id = store.find_tenant_by_public_key(&public_key).unwrap().unwrap().id;
-        let stored = store.get_order(&tenant_id, &payment_id).unwrap().unwrap();
+        let stored = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
         assert_eq!(
             stored.confirmations_required_override,
             Some(THRESHOLD_CONFIRMATIONS_REQUIRED),
@@ -333,7 +333,7 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // (WBS task: "makes it clear how the confirmation threshold was
     // decided", `templates::OrderDetailData::confirmations_required_display`).
     let detail_html = client
-        .get(format!("{monokulo_base_url}/dashboard/stores/{connection_id}/orders/{payment_id}"))
+        .get(format!("{monokulo_base_url}/dashboard/stores/{connection_id}/orders/{order_id}"))
         .header("authorization", &bearer)
         .send()
         .await
@@ -376,7 +376,7 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
             eprintln!("DIAG tick {tick}: scan tick failed, continuing: {e}");
         }
 
-        let order_status: Value = reqwest::get(format!("{}/api/v1/t/{public_key}/orders/{payment_id}", engine_base_url(&engine))).await.expect("order status request failed").json().await.expect("order status response was not valid JSON");
+        let order_status: Value = reqwest::get(format!("{}/api/v1/t/{public_key}/orders/{order_id}", engine_base_url(&engine))).await.expect("order status request failed").json().await.expect("order status response was not valid JSON");
         let status = order_status["status"].as_str().unwrap_or("?").to_string();
         eprintln!(
             "DIAG tick {tick}: status={status} amount_received={:?} confirmations={:?}",
@@ -394,9 +394,9 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     };
     assert!(
         matches!(last_status.as_str(), "paid" | "confirming" | "overpaid"),
-        "order {payment_id} (tx {tx_hash_hex}) never reached a paid/confirming/overpaid status within the deadline - last status: {last_status}"
+        "order {order_id} (tx {tx_hash_hex}) never reached a paid/confirming/overpaid status within the deadline - last status: {last_status}"
     );
-    println!("PASS: order {payment_id} (tx {tx_hash_hex}) reached status '{last_status}' once it had its first real confirmation, proving the resolved threshold value ({THRESHOLD_CONFIRMATIONS_REQUIRED}) - not the tenant's default ({TENANT_DEFAULT_CONFIRMATIONS_REQUIRED}) - genuinely drives the real engine's own status computation");
+    println!("PASS: order {order_id} (tx {tx_hash_hex}) reached status '{last_status}' once it had its first real confirmation, proving the resolved threshold value ({THRESHOLD_CONFIRMATIONS_REQUIRED}) - not the tenant's default ({TENANT_DEFAULT_CONFIRMATIONS_REQUIRED}) - genuinely drives the real engine's own status computation");
 }
 
 fn engine_base_url(engine: &scanner_test_support::TestEngineHandle) -> String {

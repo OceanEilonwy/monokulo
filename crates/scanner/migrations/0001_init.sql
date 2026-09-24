@@ -40,7 +40,7 @@ CREATE TABLE tenants (
 -- shouldn't be solved speculatively before it's an actual problem.
 
 CREATE TABLE orders (
-    id                       TEXT PRIMARY KEY,       -- "pay_" + uuid4, the payment_id handed to the client library, used in both the widget/payment-link URL and webhook payloads
+    id                       TEXT PRIMARY KEY,       -- "order_" + uuid4, the order_id handed to the client library, used in both the widget/payment-link URL and webhook payloads
     tenant_id                TEXT NOT NULL REFERENCES tenants(id),
     merchant_order_id        TEXT,                   -- opaque string from the merchant's own site; not unique across or even within a tenant, purely informational
     minor_index              INTEGER NOT NULL,

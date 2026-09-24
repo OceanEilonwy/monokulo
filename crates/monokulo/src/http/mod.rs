@@ -181,10 +181,10 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route("/dashboard/stores/{id}/pos", axum::routing::get(pos::pos_page))
         .route("/dashboard/stores/{id}/pos/orders", axum::routing::post(pos::create_order))
-        .route("/dashboard/stores/{id}/pos/orders/{payment_id}/status", axum::routing::get(pos::order_status))
+        .route("/dashboard/stores/{id}/pos/orders/{order_id}/status", axum::routing::get(pos::order_status))
         .route("/dashboard/stores/{id}/orders", axum::routing::get(orders::orders_list))
         .route("/dashboard/stores/{id}/orders/lookup", axum::routing::post(orders::lookup_payment))
-        .route("/dashboard/stores/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
+        .route("/dashboard/stores/{id}/orders/{order_id}", axum::routing::get(orders::order_detail))
         .route("/connect/{platform}", axum::routing::get(connect::start).post(connect::confirm_submit))
         .route("/connect/{platform}/finish", post(connect::finish));
 
@@ -197,16 +197,16 @@ pub fn build_router(state: AppState) -> Router {
     // IP-keyed limit - see `http::rate_limit`'s own module doc comment.
     let pay_router = Router::new()
         .route("/pay/{pk}/orders", post(pay::create_order))
-        .route("/pay/{pk}/orders/{payment_id}", axum::routing::get(checkout::checkout_page))
-        .route("/pay/{pk}/orders/{payment_id}/status", axum::routing::get(checkout::checkout_status))
+        .route("/pay/{pk}/orders/{order_id}", axum::routing::get(checkout::checkout_page))
+        .route("/pay/{pk}/orders/{order_id}/status", axum::routing::get(checkout::checkout_status))
         .route(
-            "/pay/{pk}/orders/{payment_id}/refund-address",
+            "/pay/{pk}/orders/{order_id}/refund-address",
             axum::routing::post(checkout::set_refund_address),
         )
         // A real follow-up to `docs/fx_refactor.md`: a nav-bearing,
         // shareable page wrapping the (nav-less) checkout page above in an
         // iframe - see `checkout::checkout_share_page`'s own doc comment.
-        .route("/pay/{pk}/orders/{payment_id}/share", axum::routing::get(checkout::checkout_share_page))
+        .route("/pay/{pk}/orders/{order_id}/share", axum::routing::get(checkout::checkout_share_page))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit::rate_limit_middleware));
 
     let router = router.merge(pay_router);

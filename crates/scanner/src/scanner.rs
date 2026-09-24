@@ -455,7 +455,7 @@ pub async fn check_vanished_mempool_payments(
 /// every retry of that delivery re-sends the identical id under the identical
 /// signature: that is what lets a receiver tell "the same notification again, my ack
 /// must have been lost" apart from "a genuine second transition to the same status",
-/// which the previous `{payment_id, status}` payload made indistinguishable. The
+/// which the previous `{order_id, status}` payload made indistinguishable. The
 /// timestamp being inside the signed body (rather than only an unsigned header) is
 /// what stops a captured delivery from being replayable against the merchant
 /// indefinitely.
@@ -510,7 +510,7 @@ pub(crate) fn recompute_and_notify(store: &Store, order_id: &str, current_height
 fn recompute_and_notify_in_tx(store: &Store, order_id: &str, current_height: u64, now: i64) -> Result<()> {
     let (old_status, new_status) = store.recompute_order_status(order_id, current_height, now)?;
     if old_status != new_status {
-        let payload = serde_json::json!({ "payment_id": order_id, "status": new_status.as_str() });
+        let payload = serde_json::json!({ "order_id": order_id, "status": new_status.as_str() });
         enqueue_webhook_event(store, order_id, &format!("order.{new_status}"), &payload, now)?;
     }
     Ok(())
@@ -586,7 +586,7 @@ fn void_and_notify(
             store,
             order_id,
             "order.double_spend_detected",
-            &serde_json::json!({ "payment_id": order_id }),
+            &serde_json::json!({ "order_id": order_id }),
             now,
         )
     })
@@ -630,7 +630,7 @@ fn unvoid_as_false_positive(
             store,
             order_id,
             "order.double_spend_reversed",
-            &serde_json::json!({ "payment_id": order_id, "txid": txid }),
+            &serde_json::json!({ "order_id": order_id, "txid": txid }),
             now,
         )?;
         Ok(true)
@@ -2659,7 +2659,7 @@ mod tests {
 
     #[tokio::test]
     async fn every_webhook_payload_carries_a_stable_event_id_and_a_timestamp() {
-        // The payload used to be just `{payment_id, status}`, which gives a receiver
+        // The payload used to be just `{order_id, status}`, which gives a receiver
         // nothing to dedupe on (a retry of a lost-ack delivery is byte-identical to a
         // genuine second transition to the same status) and nothing to bound a replay
         // with (a captured delivery stays valid forever). Both the id and the
@@ -2679,7 +2679,7 @@ mod tests {
             assert_eq!(due.len(), 1);
             serde_json::from_str(&due[0].payload_json).unwrap()
         };
-        assert_eq!(first_payload["payment_id"], serde_json::json!(order_id));
+        assert_eq!(first_payload["order_id"], serde_json::json!(order_id));
         assert_eq!(first_payload["status"], serde_json::json!("confirming"));
         assert_eq!(first_payload["event"], serde_json::json!("order.confirming"));
         assert!(

@@ -734,14 +734,14 @@ impl Store {
     }
 
     /// Scoped by `tenant_id` in the query itself - the IDOR-prevention rule from
-    /// `docs/DESIGN.md` §10.1 applied at the row level. A payment_id belonging to a
+    /// `docs/DESIGN.md` §10.1 applied at the row level. A order_id belonging to a
     /// different tenant must come back as `Ok(None)`, indistinguishable from a
     /// nonexistent one.
-    pub fn get_order(&self, tenant_id: &str, payment_id: &str) -> Result<Option<Order>> {
+    pub fn get_order(&self, tenant_id: &str, order_id: &str) -> Result<Option<Order>> {
         self.conn
             .query_row(
                 "SELECT * FROM orders WHERE id = ?1 AND tenant_id = ?2",
-                params![payment_id, tenant_id],
+                params![order_id, tenant_id],
                 Self::row_to_order,
             )
             .optional()
@@ -750,10 +750,10 @@ impl Store {
 
     /// Scoped by `tenant_id`, same IDOR-prevention rule as `get_order`. Records
     /// only - nothing in this system ever sends to a refund address (§DESIGN.md 3).
-    pub fn set_refund_address(&self, tenant_id: &str, payment_id: &str, refund_address: &str) -> Result<bool> {
+    pub fn set_refund_address(&self, tenant_id: &str, order_id: &str, refund_address: &str) -> Result<bool> {
         let changed = self.conn.execute(
             "UPDATE orders SET refund_address = ?3 WHERE id = ?1 AND tenant_id = ?2",
-            params![payment_id, tenant_id, refund_address],
+            params![order_id, tenant_id, refund_address],
         )?;
         Ok(changed > 0)
     }
@@ -1620,7 +1620,7 @@ mod tests {
 
     #[test]
     fn get_order_is_scoped_by_tenant_and_returns_none_across_tenants() {
-        // Row-level IDOR test: tenant A's id plus tenant B's real payment_id must
+        // Row-level IDOR test: tenant A's id plus tenant B's real order_id must
         // come back as None, not tenant B's order. See docs/DESIGN.md §10.1.
         let store = Store::open_in_memory().unwrap();
         let tenant_a = new_tenant(&store);

@@ -73,8 +73,8 @@ pub fn fragment(public_key: &str, endpoint: &str, is_woocommerce: bool) -> Marku
             p class="hint" { code { "merchant_order_id" } " is optional - your own order/cart id, if you have one." }
             p class="hint" {
                 "Send this request to wherever this dashboard is hosted (the same origin this page is on). The "
-                "response includes a " code { "payment_id" } " - send the buyer to "
-                code { "/pay/" (public_key) "/orders/<payment_id>" } " (same origin) to complete the payment. This endpoint "
+                "response includes a " code { "order_id" } " - send the buyer to "
+                code { "/pay/" (public_key) "/orders/<order_id>" } " (same origin) to complete the payment. This endpoint "
                 "needs no secret - it's safe to call directly from your storefront's backend."
             }
         }

@@ -296,10 +296,10 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         .unwrap();
     assert_eq!(order_response.status(), StatusCode::OK, "real order creation through monokulo must succeed");
     let order: Value = body_json(order_response).await;
-    let payment_id = order["payment_id"].as_str().unwrap().to_string();
+    let order_id = order["order_id"].as_str().unwrap().to_string();
     let address = order["address"].as_str().unwrap().to_string();
     let amount_piconero = order["xmr_amount_piconero"].as_u64().unwrap();
-    println!("created order {payment_id}: {amount_piconero} piconero to {address}");
+    println!("created order {order_id}: {amount_piconero} piconero to {address}");
 
     // ---- 4. pay it for real - genuine signed + broadcast stagenet transaction ----
     let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero, None)
@@ -327,18 +327,18 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         assert_eq!(dashboard_response.status(), StatusCode::OK);
         last_dashboard_html = body_text(dashboard_response).await;
 
-        let order_detected = last_dashboard_html.contains(&payment_id);
+        let order_detected = last_dashboard_html.contains(&order_id);
         let total_correct = last_dashboard_html.contains(&expected_total);
         println!("[{attempt}/30] order on dashboard: {order_detected}, total_received matches ({expected_total}): {total_correct}");
 
         if order_detected && total_correct {
-            println!("PASS: order {payment_id} appears on the real dashboard with total received {expected_total} XMR (tx {tx_hash_hex})");
+            println!("PASS: order {order_id} appears on the real dashboard with total received {expected_total} XMR (tx {tx_hash_hex})");
             return;
         }
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
     panic!(
-        "order {payment_id} (tx {tx_hash_hex}) never appeared on the dashboard with the correct total received \
+        "order {order_id} (tx {tx_hash_hex}) never appeared on the dashboard with the correct total received \
          ({expected_total} XMR expected) after 30 scan attempts. Last dashboard HTML:\n{last_dashboard_html}"
     );
 }

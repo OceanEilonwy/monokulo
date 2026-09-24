@@ -30,7 +30,7 @@ pub struct DashboardStoreRow {
 pub struct DashboardOrderRow {
     pub connection_id: String,
     pub display_name: String,
-    pub payment_id: String,
+    pub order_id: String,
     pub status: String,
     pub amount: String,
     pub currency: String,
@@ -95,8 +95,8 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                                 tr {
                                     td { (order.display_name) }
                                     td {
-                                        a href=(format!("/dashboard/stores/{}/orders/{}", order.connection_id, order.payment_id)) {
-                                            (order.payment_id)
+                                        a href=(format!("/dashboard/stores/{}/orders/{}", order.connection_id, order.order_id)) {
+                                            (order.order_id)
                                         }
                                     }
                                     td { (order.status) }
@@ -163,7 +163,7 @@ mod tests {
             recent_orders: vec![DashboardOrderRow {
                 connection_id: "conn_1".to_string(),
                 display_name: "shop.example.com".to_string(),
-                payment_id: "pay_xyz".to_string(),
+                order_id: "pay_xyz".to_string(),
                 status: "paid".to_string(),
                 amount: "25.00".to_string(),
                 currency: "USD".to_string(),

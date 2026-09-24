@@ -140,7 +140,7 @@
         });
       })
       .then(function (order) {
-        log("order created: " + order.paymentId + " (" + order.xmrAmountPiconero + " piconero to " + order.address + ")");
+        log("order created: " + order.orderId + " (" + order.xmrAmountPiconero + " piconero to " + order.address + ")");
         MoneroPay.mount("#checkout", order, {
           onStatusChange: function (status) {
             log("status changed: " + status);

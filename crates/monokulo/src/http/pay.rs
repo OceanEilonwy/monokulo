@@ -51,7 +51,7 @@ pub struct CreateOrderRequest {
 /// returned - the engine has no concept of fiat at all any more.
 #[derive(Debug, Serialize)]
 pub struct CreateOrderResponse {
-    pub payment_id: String,
+    pub order_id: String,
     pub address: String,
     pub xmr_amount_piconero: u64,
     pub amount: String,
@@ -137,7 +137,7 @@ pub async fn create_order(
             // failed when it didn't.
             if let Err(e) = state.db.lock().unwrap().create_order_currency_metadata(
                 &row.id,
-                &order.payment_id,
+                &order.order_id,
                 &req.currency,
                 &req.amount,
                 piconero_per_unit,
@@ -151,12 +151,12 @@ pub async fn create_order(
                     "failed to record local fiat metadata for order {} on connection {}: {e} - the real order \
                      still exists on the engine and this response is still correct, but its fiat display on \
                      monokulo's own dashboard/checkout page will be missing",
-                    order.payment_id, row.id
+                    order.order_id, row.id
                 );
             }
 
             Json(CreateOrderResponse {
-                payment_id: order.payment_id,
+                order_id: order.order_id,
                 address: order.address,
                 xmr_amount_piconero: order.xmr_amount_piconero,
                 amount: req.amount,
@@ -184,7 +184,7 @@ const CLIENT_LIBRARY_JS: &str = include_str!("../../static/monokulo-client.js");
 /// 4.3). Moved here from the engine, which no longer has any checkout UI or
 /// fiat concept for it to talk to - this version's `createOrder`/`mount`
 /// call monokulo's own `/pay/{pk}/orders` and
-/// `/pay/{pk}/orders/{payment_id}` instead. Served from this binary rather
+/// `/pay/{pk}/orders/{order_id}` instead. Served from this binary rather
 /// than a CDN so a self-hoster's static site has no third-party dependency
 /// in its payment path, same reasoning the engine's original had.
 pub async fn client_library() -> impl IntoResponse {
@@ -392,7 +392,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn creating_a_real_order_through_the_public_endpoint_returns_a_real_address_and_payment_id() {
+    async fn creating_a_real_order_through_the_public_endpoint_returns_a_real_address_and_order_id() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -404,7 +404,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK, "expected the real engine to accept and create the order");
         let body = body_json(response).await;
         let obj = body.as_object().unwrap();
-        assert!(obj.get("payment_id").unwrap().as_str().unwrap().starts_with("order_"));
+        assert!(obj.get("order_id").unwrap().as_str().unwrap().starts_with("order_"));
         assert!(!obj.get("address").unwrap().as_str().unwrap().is_empty());
         assert_eq!(obj.get("currency").unwrap().as_str().unwrap(), TEST_CURRENCY);
         assert_eq!(obj.get("amount").unwrap().as_str().unwrap(), "25.00");
@@ -475,14 +475,14 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
-        let payment_id = body["payment_id"].as_str().unwrap().to_string();
+        let order_id = body["order_id"].as_str().unwrap().to_string();
         assert_eq!(body["merchant_order_id"], "order-1234", "expected the real merchant_order_id echoed back, got: {body}");
 
         let detail_response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{connection_id}/orders/{payment_id}"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders/{order_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -513,11 +513,11 @@ mod tests {
         let response = router.oneshot(create_order_request(&pk, "10.00", TEST_CURRENCY)).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
-        let payment_id = body.as_object().unwrap().get("payment_id").unwrap().as_str().unwrap().to_string();
+        let order_id = body.as_object().unwrap().get("order_id").unwrap().as_str().unwrap().to_string();
 
         let connection_id =
             state.db.lock().unwrap().get_store_connection_by_public_key(&pk).unwrap().unwrap().id;
-        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&connection_id, &payment_id).unwrap();
+        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&connection_id, &order_id).unwrap();
         let metadata = metadata.expect("expected a real local fiat-metadata row for the order just created");
         assert_eq!(metadata.currency, TEST_CURRENCY);
         assert_eq!(metadata.amount, "10.00");
@@ -696,9 +696,9 @@ mod tests {
         // it must call monokulo's own `/pay/{pk}/orders` endpoint, not
         // the engine's old `/api/v1/t/{pk}/orders` - and the mounted iframe
         // must point at monokulo's own checkout page, not the engine's
-        // now-deleted `/pay/v1/{pk}/{payment_id}`.
+        // now-deleted `/pay/v1/{pk}/{order_id}`.
         assert!(js.contains("/pay/\" + encodeURIComponent(publicKey) + \"/orders"), "should call monokulo's own order-creation endpoint, got: {js}");
-        assert!(js.contains("/orders/\" + encodeURIComponent(paymentId)"), "should iframe monokulo's own checkout page, got: {js}");
+        assert!(js.contains("/orders/\" + encodeURIComponent(orderId)"), "should iframe monokulo's own checkout page, got: {js}");
         assert!(!js.contains("/api/v1/t/"), "must not reference the engine's own API directly: {js}");
         assert!(!js.contains("/pay/v1/"), "must not reference the engine's own (deleted) checkout route: {js}");
         // The real point of this follow-up: the iframed checkout page is

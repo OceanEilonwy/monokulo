@@ -346,7 +346,7 @@ mod tests {
 
         let mut delivery = due_delivery(&url, "whsec_test");
         delivery.payload_json =
-            r#"{"payment_id":"pay_1","status":"paid","event_id":"evt_abc123","event":"order.paid","created_at":1700000000}"#
+            r#"{"order_id":"pay_1","status":"paid","event_id":"evt_abc123","event":"order.paid","created_at":1700000000}"#
                 .into();
 
         let outcome = attempt_delivery(&test_client(), &delivery, true, Duration::from_secs(2)).await;

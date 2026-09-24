@@ -348,13 +348,13 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     .await
     .expect("order creation should succeed against the real stagenet-configured control plane");
 
-    // `create_order` only returns `payment_id`/`checkout_url` - fetch the real
+    // `create_order` only returns `order_id`/`checkout_url` - fetch the real
     // derived address and exact XMR amount directly from the engine's own public,
     // unauthenticated order-status endpoint, the same one a real customer's browser
     // would poll (and the same one `tests/e2e_stagenet.rs` reads at the repo root).
     let order_status: Value = reqwest::get(format!(
         "{}/api/v1/t/{}/orders/{}",
-        credentials.endpoint, credentials.public_key, order.payment_id
+        credentials.endpoint, credentials.public_key, order.order_id
     ))
     .await
     .expect("order status request failed")
@@ -370,7 +370,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         .expect("expected a real xmr_amount_piconero");
     println!(
         "created order {}: {amount_piconero} piconero to {address}",
-        order.payment_id
+        order.order_id
     );
 
     // Pay it for real: construct, sign, and broadcast the transaction ourselves (no
@@ -450,7 +450,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         let order_status: Result<Value, _> = async {
             reqwest::get(format!(
                 "{}/api/v1/t/{}/orders/{}",
-                credentials.endpoint, credentials.public_key, order.payment_id
+                credentials.endpoint, credentials.public_key, order.order_id
             ))
             .await?
             .json()
@@ -465,7 +465,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         );
 
         let found = credentials.webhook_receiver.events().into_iter().find(|e| {
-            e.payload.get("payment_id").and_then(|v| v.as_str()) == Some(order.payment_id.as_str())
+            e.payload.get("order_id").and_then(|v| v.as_str()) == Some(order.order_id.as_str())
                 && matches!(
                     e.event.as_str(),
                     "order.paid" | "order.confirming" | "order.overpaid"
@@ -483,12 +483,12 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     let event = matched.unwrap_or_else(|| {
         panic!(
             "order {} (tx {tx_hash_hex}) never produced a real paid/confirming/overpaid webhook delivery within the deadline",
-            order.payment_id
+            order.order_id
         )
     });
     println!(
         "PASS: received a real '{}' webhook delivery for order {} (tx {tx_hash_hex})",
-        event.event, order.payment_id
+        event.event, order.order_id
     );
     assert!(event.event_id.starts_with("evt_"));
 

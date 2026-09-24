@@ -1,7 +1,7 @@
 -- `docs/fx_refactor.md` Phase 3: the engine's public order-creation API becomes
 -- XMR-only. Fiat/FX is no longer this process's concern at all - the control-plane
 -- now owns the sole copy of a fiat order record (its own `order_fiat_metadata`
--- table), keyed by the same `payment_id` this table's `id` still is.
+-- table), keyed by the same `order_id` this table's `id` still is.
 -- `xmr_amount_piconero` remains here as it always was: the actual source of truth
 -- for what an order is worth, which the engine watches the chain against.
 --

@@ -262,24 +262,24 @@ async fn spawn_webhook_receiver() -> Result<WebhookReceiver, ConnectFlowError> {
 
 /// The result of [`create_order`]: a real order seeded through monokulo,
 /// plus the checkout URL a WooCommerce customer would be redirected to next
-/// (`GET /pay/{pk}/orders/{payment_id}` - monokulo's own checkout page,
+/// (`GET /pay/{pk}/orders/{order_id}` - monokulo's own checkout page,
 /// `monokulo/src/http/checkout.rs::checkout_page` - see [`create_order`]'s
 /// own doc comment for why this is monokulo's URL, not the engine's).
 #[derive(Debug)]
 pub struct CreatedOrder {
-    pub payment_id: String,
+    pub order_id: String,
     pub checkout_url: String,
 }
 
 /// Field-for-field mirror of monokulo's own
-/// `http::pay::CreateOrderResponse` - only `payment_id` is actually needed to
+/// `http::pay::CreateOrderResponse` - only `order_id` is actually needed to
 /// build [`CreatedOrder`], but the rest is deserialized too so a
 /// malformed/unexpected response body fails clearly via `serde_json` rather
 /// than silently ignoring extra fields no differently than a real caller
 /// would notice.
 #[derive(Debug, Deserialize)]
 struct CreateOrderResponseBody {
-    payment_id: String,
+    order_id: String,
 }
 
 /// Every way [`run_connect_flow`] (or the callback handler it waits on) can
@@ -607,9 +607,9 @@ async fn expect_ok(response: reqwest::Response, step: &str) -> Result<(), Connec
 /// `docs/fx_refactor.md` decisions 2/3: the engine has no concept of fiat or
 /// a checkout UI at all any more, so a real storefront integration talks to
 /// monokulo, not the engine directly, for both. Builds the checkout
-/// redirect target (`{monokulo_base_url}/pay/{public_key}/orders/{payment_id}`,
+/// redirect target (`{monokulo_base_url}/pay/{public_key}/orders/{order_id}`,
 /// matching monokulo's own route table for `checkout::checkout_page`)
-/// from the real `payment_id` monokulo handed back - not a
+/// from the real `order_id` monokulo handed back - not a
 /// plausibly-shaped guess.
 ///
 /// `monokulo_base_url` is monokulo's own externally-reachable
@@ -644,10 +644,10 @@ pub async fn create_order(
     let parsed: CreateOrderResponseBody = response.json().await?;
     let checkout_url = format!(
         "{monokulo_base_url}/pay/{public_key}/orders/{}",
-        parsed.payment_id
+        parsed.order_id
     );
     Ok(CreatedOrder {
-        payment_id: parsed.payment_id,
+        order_id: parsed.order_id,
         checkout_url,
     })
 }
@@ -1037,13 +1037,13 @@ mod tests {
         .expect("order creation should succeed against a real monokulo with a configured rate");
 
         assert!(
-            !order.payment_id.is_empty(),
-            "expected a non-empty payment_id"
+            !order.order_id.is_empty(),
+            "expected a non-empty order_id"
         );
         assert_eq!(
             order.checkout_url,
-            format!("{monokulo_base_url}/pay/{}/orders/{}", credentials.public_key, order.payment_id),
-            "checkout_url should be shaped exactly like monokulo's own /pay/{{pk}}/orders/{{payment_id}} route"
+            format!("{monokulo_base_url}/pay/{}/orders/{}", credentials.public_key, order.order_id),
+            "checkout_url should be shaped exactly like monokulo's own /pay/{{pk}}/orders/{{order_id}} route"
         );
 
         // Strong proof, not just a plausibly-shaped URL: actually fetch it,
@@ -1277,7 +1277,7 @@ mod tests {
             "event": "order.expired",
             "event_id": "evt_dedupe_test",
             "created_at": 1_700_000_000,
-            "payment_id": "pay_dedupe_test",
+            "order_id": "pay_dedupe_test",
             "status": "expired",
         });
         let body = payload.to_string();
@@ -1308,7 +1308,7 @@ mod tests {
         assert_eq!(events[0].event, "order.expired");
         assert_eq!(events[0].event_id, "evt_dedupe_test");
         assert_eq!(
-            events[0].payload["payment_id"],
+            events[0].payload["order_id"],
             serde_json::json!("pay_dedupe_test")
         );
     }
@@ -1431,8 +1431,8 @@ mod tests {
         let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
         let matched = loop {
             let found = credentials.webhook_receiver.events().into_iter().find(|e| {
-                e.payload.get("payment_id").and_then(|v| v.as_str())
-                    == Some(order.payment_id.as_str())
+                e.payload.get("order_id").and_then(|v| v.as_str())
+                    == Some(order.order_id.as_str())
             });
             if let Some(found) = found {
                 break Some(found);

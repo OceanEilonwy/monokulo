@@ -66,7 +66,7 @@ async fn build_orders_view_model(
     let orders = state.engine_client.list_orders(sk).await.map_err(|_| ())?;
     // The engine has no concept of fiat any more (`docs/fx_refactor.md` Phase
     // 3) - fiat display comes entirely from monokulo's own local
-    // `order_currency_metadata`, keyed by payment_id, fetched once for the whole
+    // `order_currency_metadata`, keyed by order_id, fetched once for the whole
     // list rather than per-row.
     let fiat_metadata = state.db.lock().unwrap().list_order_currency_metadata_for_connection(&row.id).unwrap_or_default();
 
@@ -75,11 +75,11 @@ async fn build_orders_view_model(
         orders: orders
             .into_iter()
             .map(|o| {
-                let (amount, currency) = match fiat_metadata.get(&o.payment_id) {
+                let (amount, currency) = match fiat_metadata.get(&o.order_id) {
                     Some(m) => (m.amount.clone(), m.currency.clone()),
                     None => ("—".to_string(), "".to_string()),
                 };
-                OrderRowViewModel { payment_id: o.payment_id, status: o.status, amount, currency, created_at: o.created_at }
+                OrderRowViewModel { order_id: o.order_id, status: o.status, amount, currency, created_at: o.created_at }
             })
             .collect(),
     })
@@ -159,17 +159,17 @@ pub async fn lookup_payment(
     };
 
     let txid = form.txid.trim().to_string();
-    let (message, found_payment_id) = match perform_payment_lookup(&state, &sk, &txid).await {
+    let (message, found_order_id) = match perform_payment_lookup(&state, &sk, &txid).await {
         Ok(result) => result,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    render_store_detail_page(&state, row, &user, txid, Some(message), found_payment_id).await
+    render_store_detail_page(&state, row, &user, txid, Some(message), found_order_id).await
 }
 
-/// `GET /dashboard/stores/{id}/orders/{payment_id}` - the order's full
+/// `GET /dashboard/stores/{id}/orders/{order_id}` - the order's full
 /// detail (every `OrderView` field plus its `payments` list). A
-/// `payment_id` the engine doesn't recognize for this tenant (unknown, or
+/// `order_id` the engine doesn't recognize for this tenant (unknown, or
 /// belonging to a different one) renders a clear "not found" state with a
 /// real `404`, not a raw `500` - the engine's own `404` is distinguished
 /// from every other non-success status the same way
@@ -178,7 +178,7 @@ pub async fn lookup_payment(
 pub async fn order_detail(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path((id, payment_id)): Path<(String, String)>,
+    Path((id, order_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id) {
@@ -190,7 +190,7 @@ pub async fn order_detail(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/stores/{id}/orders/{payment_id}"));
+    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/stores/{id}/orders/{order_id}"));
     // A real, absolute, copy-pasteable URL - not just the path - since the
     // whole point is something a merchant can paste into an email or chat
     // to someone who isn't already looking at this dashboard. This
@@ -203,15 +203,15 @@ pub async fn order_detail(
     // inward), falling back to plain `http` for local/dev use.
     let host = headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
     let scheme = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).unwrap_or("http");
-    let payment_link = format!("{scheme}://{host}/pay/{}/orders/{}/share", row.tenant_public_key, payment_id);
+    let payment_link = format!("{scheme}://{host}/pay/{}/orders/{}/share", row.tenant_public_key, order_id);
 
-    match state.engine_client.get_order_detail(&sk, &payment_id).await {
+    match state.engine_client.get_order_detail(&sk, &order_id).await {
         Ok(detail) => {
             // The engine has no concept of fiat any more (`docs/fx_refactor.md`
             // Phase 3) - fiat display comes entirely from monokulo's own
             // local `order_currency_metadata`, absent for any order that predates
             // this record (falls back to a dash rather than failing the page).
-            let metadata = state.db.lock().unwrap().get_order_currency_metadata(&row.id, &payment_id).ok().flatten();
+            let metadata = state.db.lock().unwrap().get_order_currency_metadata(&row.id, &order_id).ok().flatten();
             let (amount, currency) = match &metadata {
                 Some(m) => (m.amount.clone(), m.currency.clone()),
                 None => ("—".to_string(), "".to_string()),
@@ -246,7 +246,7 @@ pub async fn order_detail(
             let view_model = OrderDetailViewModel {
                 connection_id: id.to_string(),
                 order: Some(OrderDetailData {
-                    payment_id: detail.order.payment_id,
+                    order_id: detail.order.order_id,
                     merchant_order_id: detail.order.merchant_order_id,
                     address: detail.order.address,
                     currency,
@@ -476,7 +476,7 @@ async fn render_store_detail_page(
     user: &UserRow,
     lookup_txid_value: String,
     lookup_message: Option<String>,
-    lookup_found_payment_id: Option<String>,
+    lookup_found_order_id: Option<String>,
 ) -> Response {
     let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/stores/{}", row.id));
     let sk = match decrypt_sk(state, &row) {
@@ -499,11 +499,11 @@ async fn render_store_detail_page(
                 .into_iter()
                 .take(10)
                 .map(|o| {
-                    let (amount, currency) = match fiat_metadata.get(&o.payment_id) {
+                    let (amount, currency) = match fiat_metadata.get(&o.order_id) {
                         Some(m) => (m.amount.clone(), m.currency.clone()),
                         None => ("—".to_string(), "".to_string()),
                     };
-                    views::orders::OrderRowViewModel { payment_id: o.payment_id, status: o.status, amount, currency, created_at: o.created_at }
+                    views::orders::OrderRowViewModel { order_id: o.order_id, status: o.status, amount, currency, created_at: o.created_at }
                 })
                 .collect()
         }
@@ -526,7 +526,7 @@ async fn render_store_detail_page(
             is_woocommerce,
             lookup_txid_value,
             lookup_message,
-            lookup_found_payment_id,
+            lookup_found_order_id,
         }),
     };
     views::store_detail::page(&chrome, &view_model).into_response()
@@ -767,7 +767,7 @@ pub async fn create_order(
         Ok(order) => {
             if let Err(e) = state.db.lock().unwrap().create_order_currency_metadata(
                 &row.id,
-                &order.payment_id,
+                &order.order_id,
                 currency,
                 amount,
                 piconero_per_unit,
@@ -781,10 +781,10 @@ pub async fn create_order(
                     "failed to record local fiat metadata for order {} on connection {}: {e} - the real order \
                      still exists on the engine and this response is still correct, but its fiat display on \
                      monokulo's own dashboard will be missing",
-                    order.payment_id, row.id
+                    order.order_id, row.id
                 );
             }
-            redirect_302(&format!("/dashboard/stores/{id}/orders/{}", order.payment_id))
+            redirect_302(&format!("/dashboard/stores/{id}/orders/{}", order.order_id))
         }
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
             render_create_order_page(&state, row, &user, Some(message)).await
@@ -1366,7 +1366,7 @@ mod tests {
             .expect("seeding a real order against the engine's public API failed");
         assert_eq!(response.status(), reqwest::StatusCode::OK, "expected the engine to accept the seeded order");
         let body: serde_json::Value = response.json().await.unwrap();
-        body.as_object().unwrap().get("payment_id").unwrap().as_str().unwrap().to_string()
+        body.as_object().unwrap().get("order_id").unwrap().as_str().unwrap().to_string()
     }
 
     #[tokio::test]
@@ -1379,7 +1379,7 @@ mod tests {
                 .await;
         let (connection_id, public_key) = create_connection(&router, &session_token).await;
 
-        let payment_id = seed_real_order(engine.addr, &public_key).await;
+        let order_id = seed_real_order(engine.addr, &public_key).await;
 
         let response = router
             .oneshot(
@@ -1394,7 +1394,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains(&payment_id), "expected the seeded order's payment_id in the response, got: {html}");
+        assert!(html.contains(&order_id), "expected the seeded order's order_id in the response, got: {html}");
     }
 
     #[tokio::test]
@@ -1410,13 +1410,13 @@ mod tests {
         .await;
         let (connection_id, public_key) = create_connection(&router, &session_token).await;
 
-        let payment_id = seed_real_order(engine.addr, &public_key).await;
+        let order_id = seed_real_order(engine.addr, &public_key).await;
 
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{connection_id}/orders/{payment_id}"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders/{order_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .header("host", "test.example")
                     .body(Body::empty())
@@ -1426,7 +1426,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains(&payment_id), "expected the order's payment_id in its detail page, got: {html}");
+        assert!(html.contains(&order_id), "expected the order's order_id in its detail page, got: {html}");
         // Seeded directly against the engine's own public API, bypassing
         // monokulo's own `http::pay` endpoint - no local fiat metadata
         // was ever recorded for it, so the page must show a dash rather than
@@ -1447,7 +1447,7 @@ mod tests {
         // Host header (`test.example` here, set by `oneshot`'s default) -
         // not a placeholder or a bare relative path.
         assert!(
-            html.contains(&format!("http://test.example/pay/{public_key}/orders/{payment_id}/share")),
+            html.contains(&format!("http://test.example/pay/{public_key}/orders/{order_id}/share")),
             "expected a real absolute payment link, got: {html}"
         );
         // The real point of this follow-up: the link now lives as a share
@@ -1455,7 +1455,7 @@ mod tests {
         // and the title itself carries the real order id right alongside it.
         assert!(html.contains(r#"<h1 class="order-title">"#), "expected the title banner to carry the share button, got: {html}");
         assert!(
-            html.contains(&format!(r#"<span>Order {payment_id}</span>"#)),
+            html.contains(&format!(r#"<span>Order {order_id}</span>"#)),
             "expected the order id inside the title banner, got: {html}"
         );
         assert!(
@@ -1466,7 +1466,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn order_detail_for_an_unknown_payment_id_renders_a_clear_not_found_state() {
+    async fn order_detail_for_an_unknown_order_id_renders_a_clear_not_found_state() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -1587,7 +1587,7 @@ mod tests {
 
         let session_token = signed_up_and_logged_in_session_token(&router, "store-detail@example.com", "correct horse battery staple").await;
         let (connection_id, public_key) = create_connection(&router, &session_token).await;
-        let payment_id = seed_real_order(engine.addr, &public_key).await;
+        let order_id = seed_real_order(engine.addr, &public_key).await;
 
         let response = router
             .oneshot(
@@ -1606,7 +1606,7 @@ mod tests {
         assert!(html.contains(&public_key), "expected the store's public key, got: {html}");
         assert!(html.contains("shop.example.com"), "expected a display name derived from site_url, got: {html}");
         assert!(html.contains("tag-ok"), "the engine is genuinely reachable, so health must render as ok, got: {html}");
-        assert!(html.contains(&payment_id), "expected the seeded order in the recent-orders list, got: {html}");
+        assert!(html.contains(&order_id), "expected the seeded order in the recent-orders list, got: {html}");
         // The integration-help partial - the same content the WBS asked to
         // be "accessible from the store page for each connected store".
         assert!(html.contains("Integrate this store"), "expected the integration help section, got: {html}");
@@ -2653,11 +2653,11 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
         let location = response.headers().get("location").unwrap().to_str().unwrap().to_string();
-        let payment_id = location.rsplit('/').next().unwrap().to_string();
+        let order_id = location.rsplit('/').next().unwrap().to_string();
 
         let store = engine.store().lock().unwrap();
         let tenant_id = store.find_tenant_by_public_key(&public_key).unwrap().unwrap().id;
-        let stored = store.get_order(&tenant_id, &payment_id).unwrap().unwrap();
+        let stored = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
         assert_eq!(
             stored.confirmations_required_override,
             Some(20),
@@ -2665,7 +2665,7 @@ mod tests {
         );
         drop(store);
 
-        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&connection_id, &payment_id).unwrap().unwrap();
+        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&connection_id, &order_id).unwrap().unwrap();
         assert_eq!(metadata.store_base_currency, Some("XMR".to_string()));
         assert_eq!(
             metadata.base_currency_piconero_per_unit, None,
@@ -2680,7 +2680,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{connection_id}/orders/{payment_id}"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders/{order_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2729,11 +2729,11 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
         let location = response.headers().get("location").unwrap().to_str().unwrap().to_string();
-        let payment_id = location.rsplit('/').next().unwrap().to_string();
+        let order_id = location.rsplit('/').next().unwrap().to_string();
 
         let store = engine.store().lock().unwrap();
         let tenant_id = store.find_tenant_by_public_key(&public_key).unwrap().unwrap().id;
-        let stored = store.get_order(&tenant_id, &payment_id).unwrap().unwrap();
+        let stored = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
         assert_eq!(
             stored.confirmations_required_override,
             Some(10),
@@ -2741,7 +2741,7 @@ mod tests {
         );
         drop(store);
 
-        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&connection_id, &payment_id).unwrap().unwrap();
+        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&connection_id, &order_id).unwrap().unwrap();
         assert_eq!(metadata.confirmations_required_applied, Some(10));
     }
 
@@ -2908,7 +2908,7 @@ mod tests {
         )
         .await;
         let (connection_id, public_key) = create_connection(&router, &session_token).await;
-        let payment_id = seed_real_order(engine.addr, &public_key).await;
+        let order_id = seed_real_order(engine.addr, &public_key).await;
         // Deliberately no `bump_scanned_range_for_order` call - this harness runs
         // no background scan loop, so a freshly seeded order genuinely has never
         // been examined by anything yet.
@@ -2917,7 +2917,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{connection_id}/orders/{payment_id}"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders/{order_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .header("host", "test.example")
                     .body(Body::empty())
@@ -2942,7 +2942,7 @@ mod tests {
         )
         .await;
         let (connection_id, public_key) = create_connection(&router, &session_token).await;
-        let payment_id = seed_real_order(engine.addr, &public_key).await;
+        let order_id = seed_real_order(engine.addr, &public_key).await;
         // Still `pending` (non-terminal) - genuinely still in scope, so the range
         // must read as still growing ("N+"), not a closed span. Two calls to the
         // live scanner's own bulk bump (its only mover now that the manual rescan
@@ -2960,7 +2960,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{connection_id}/orders/{payment_id}"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders/{order_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .header("host", "test.example")
                     .body(Body::empty())
@@ -2987,7 +2987,7 @@ mod tests {
     #[test]
     fn scan_range_row_shows_a_closed_range_once_no_longer_being_watched() {
         let order = OrderDetailData {
-            payment_id: "pay_abc123".to_string(),
+            order_id: "pay_abc123".to_string(),
             merchant_order_id: None,
             address: "addr".to_string(),
             currency: "XMR".to_string(),

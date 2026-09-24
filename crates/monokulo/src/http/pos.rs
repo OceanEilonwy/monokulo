@@ -101,7 +101,7 @@ pub struct PosCreateOrderRequest {
 
 #[derive(Debug, Serialize)]
 pub struct PosCreateOrderResponse {
-    pub payment_id: String,
+    pub order_id: String,
     pub address: String,
     /// `monero:<address>?tx_amount=<xmr>` - the same URI shape a Monero
     /// wallet's own QR scanner or NFC tap reader expects. The QR code below
@@ -181,7 +181,7 @@ pub async fn create_order(
         Ok(order) => {
             if let Err(e) = state.db.lock().unwrap().create_order_currency_metadata(
                 &row.id,
-                &order.payment_id,
+                &order.order_id,
                 &currency,
                 amount,
                 piconero_per_unit,
@@ -195,7 +195,7 @@ pub async fn create_order(
                     "failed to record local fiat metadata for POS order {} on connection {}: {e} - the real \
                      order still exists on the engine and this response is still correct, but its fiat \
                      display on monokulo's own dashboard will be missing",
-                    order.payment_id, row.id
+                    order.order_id, row.id
                 );
             }
 
@@ -207,7 +207,7 @@ pub async fn create_order(
             let monero_uri = format!("monero:{}?tx_amount={xmr_amount}", order.address);
 
             Json(PosCreateOrderResponse {
-                payment_id: order.payment_id,
+                order_id: order.order_id,
                 address: order.address,
                 monero_uri,
                 qr_code_svg,
@@ -250,8 +250,8 @@ pub struct PosStatusResponse {
 /// created directly against the engine, or predating this field) - the same
 /// "a reasonable, safe-side default" posture `http::checkout::render_checkout_page`
 /// already applies to this exact fallback.
-async fn resolve_confirmations_required(state: &AppState, connection_id: &str, sk: &str, payment_id: &str) -> u64 {
-    let local = state.db.lock().unwrap().get_order_currency_metadata(connection_id, payment_id).unwrap_or_default();
+async fn resolve_confirmations_required(state: &AppState, connection_id: &str, sk: &str, order_id: &str) -> u64 {
+    let local = state.db.lock().unwrap().get_order_currency_metadata(connection_id, order_id).unwrap_or_default();
     if let Some(applied) = local.and_then(|m| m.confirmations_required_applied) {
         return applied;
     }
@@ -276,14 +276,14 @@ fn derive_payment_error(order: &OrderView) -> Option<String> {
     }
 }
 
-/// `GET /dashboard/stores/{id}/pos/orders/{payment_id}/status` - the
+/// `GET /dashboard/stores/{id}/pos/orders/{order_id}/status` - the
 /// small JSON the terminal screen's own poll loop reads, both for the
 /// payment currently on-screen and for every backgrounded one stacked at
 /// the bottom (spec points 7-12) simultaneously polling their own.
 pub async fn order_status(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
-    Path((id, payment_id)): Path<(String, String)>,
+    Path((id, order_id)): Path<(String, String)>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
@@ -295,9 +295,9 @@ pub async fn order_status(
         Err(()) => return ApiError::Internal.into_response(),
     };
 
-    match state.engine_client.get_order_detail(&sk, &payment_id).await {
+    match state.engine_client.get_order_detail(&sk, &order_id).await {
         Ok(detail) => {
-            let confirmations_required = resolve_confirmations_required(&state, &row.id, &sk, &payment_id).await;
+            let confirmations_required = resolve_confirmations_required(&state, &row.id, &sk, &order_id).await;
             // `status_label`'s own `is_terminal` already accounts for a
             // 0-conf-trusted order: the engine only ever reports `"paid"`
             // once *that order's own* `confirmations_required` (however it
@@ -539,7 +539,7 @@ mod tests {
         assert!(!address.is_empty());
         assert_eq!(body["monero_uri"], format!("monero:{address}?tx_amount=1.500000000000"));
         assert!(body["qr_code_svg"].as_str().unwrap().contains("<svg"), "expected a real rendered QR code");
-        let payment_id = body["payment_id"].as_str().unwrap().to_string();
+        let order_id = body["order_id"].as_str().unwrap().to_string();
 
         // Spec point 5: an order created through the POS screen is a real
         // order, visible on the normal orders list like any other.
@@ -556,7 +556,7 @@ mod tests {
             .unwrap();
         assert_eq!(orders_list.status(), StatusCode::OK);
         let html = body_text(orders_list).await;
-        assert!(html.contains(&payment_id), "expected the POS-created order to show up in the dashboard's own orders list");
+        assert!(html.contains(&order_id), "expected the POS-created order to show up in the dashboard's own orders list");
     }
 
     #[tokio::test]
@@ -588,13 +588,13 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let body = body_json(response).await;
         assert_eq!(body["merchant_order_id"], "Jane Doe");
-        let payment_id = body["payment_id"].as_str().unwrap().to_string();
+        let order_id = body["order_id"].as_str().unwrap().to_string();
 
         let detail_response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{id}/orders/{payment_id}"))
+                    .uri(format!("/dashboard/stores/{id}/orders/{order_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -728,13 +728,13 @@ mod tests {
             )
             .await
             .unwrap();
-        let payment_id = body_json(create).await["payment_id"].as_str().unwrap().to_string();
+        let order_id = body_json(create).await["order_id"].as_str().unwrap().to_string();
 
         let status = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders/{payment_id}/status"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders/{order_id}/status"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -750,7 +750,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn the_status_endpoint_404s_for_an_unknown_payment_id() {
+    async fn the_status_endpoint_404s_for_an_unknown_order_id() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -791,14 +791,14 @@ mod tests {
             )
             .await
             .unwrap();
-        let payment_id = body_json(create).await["payment_id"].as_str().unwrap().to_string();
+        let order_id = body_json(create).await["order_id"].as_str().unwrap().to_string();
 
         let other_token = signed_up_and_logged_in_session_token(&router, "pos-status-other@example.com", "correct horse battery staple").await;
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/stores/{id}/pos/orders/{payment_id}/status"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders/{order_id}/status"))
                     .header("authorization", format!("Bearer {other_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -853,7 +853,7 @@ mod pure_logic_tests {
 
     fn order_with_status(status: &str) -> OrderView {
         OrderView {
-            payment_id: "pay_test".to_string(),
+            order_id: "pay_test".to_string(),
             merchant_order_id: None,
             address: "addr".to_string(),
             xmr_amount_piconero: 1_000_000_000_000,

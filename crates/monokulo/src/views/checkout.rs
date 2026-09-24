@@ -1,5 +1,5 @@
 //! `http/checkout.rs` - the real, public checkout/payment page
-//! (`GET /pay/{pk}/orders/{payment_id}`), its "order not found" fallback,
+//! (`GET /pay/{pk}/orders/{order_id}`), its "order not found" fallback,
 //! and the nav-bearing `/share` wrapper around it.
 //!
 //! **`checkout_page`/`not_found_page` deliberately carry no site nav at
@@ -33,7 +33,7 @@ pub struct CheckoutPaymentViewModel {
 
 /// The view model [`checkout_page`] takes.
 pub struct CheckoutViewModel {
-    pub payment_id: String,
+    pub order_id: String,
     pub status_label: String,
     pub status_class: String,
     pub address: String,
@@ -216,7 +216,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                             span class="address-label" id="refund-address-label" { "Refund address on file" }
                             textarea class="address-text" id="refund-address" readonly aria-labelledby="refund-address-label" style="border: 1px solid var(--line); padding: 0.6em; height: 3.4em;" { (refund_address) }
                         } @else {
-                            form method="post" action=(format!("/pay/{}/orders/{}/refund-address", data.pk, data.payment_id)) {
+                            form method="post" action=(format!("/pay/{}/orders/{}/refund-address", data.pk, data.order_id)) {
                                 label for="refund_address" { "Refund address " span class="field-help" style="display:inline" { "(optional)" } }
                                 @if let Some(error) = &data.refund_address_error {
                                     div class="error" { (error) }
@@ -251,7 +251,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                     }
 
                     div class="meta" {
-                        "Order ID: " (data.payment_id) br;
+                        "Order ID: " (data.order_id) br;
                         @if !data.is_terminal {
                             "Expires in " (data.expires_in_display)
                         }
@@ -277,7 +277,7 @@ pub fn not_found_page(chrome: &PageChrome) -> Markup {
 /// page *does* carry the site nav (via [`super::layout`]).
 pub struct CheckoutShareViewModel {
     pub pk: String,
-    pub payment_id: String,
+    pub order_id: String,
     /// Whether the order actually exists - `false` renders a real
     /// not-found state (still with the site's own nav around it, unlike
     /// [`not_found_page`]'s bare equivalent), rather than a page whose only
@@ -329,7 +329,7 @@ pub fn share_page(chrome: &PageChrome, data: &CheckoutShareViewModel) -> Markup 
             @if data.found {
                 h1 { "Pay with Monero" }
                 p class="hint" { "Complete the payment below - this page stays up to date on its own, so it's safe to bookmark or come back to later." }
-                iframe class="share-frame" id="checkout-frame" src=(format!("/pay/{}/orders/{}", data.pk, data.payment_id)) title="Monero payment" {}
+                iframe class="share-frame" id="checkout-frame" src=(format!("/pay/{}/orders/{}", data.pk, data.order_id)) title="Monero payment" {}
                 script { (PreEscaped(SHARE_SCRIPT)) }
             } @else {
                 h1 { "Order not found" }
@@ -350,7 +350,7 @@ mod tests {
 
     fn test_checkout_view_model(is_terminal: bool) -> CheckoutViewModel {
         CheckoutViewModel {
-            payment_id: "pay_abc123".to_string(),
+            order_id: "pay_abc123".to_string(),
             status_label: if is_terminal { "Paid".to_string() } else { "Waiting for payment".to_string() },
             status_class: if is_terminal { "status-paid".to_string() } else { "status-pending".to_string() },
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
@@ -439,7 +439,7 @@ mod tests {
 
     #[test]
     fn share_page_wraps_the_iframe_with_the_site_nav_when_found() {
-        let data = CheckoutShareViewModel { pk: "pk_abc123".to_string(), payment_id: "pay_abc123".to_string(), found: true };
+        let data = CheckoutShareViewModel { pk: "pk_abc123".to_string(), order_id: "pay_abc123".to_string(), found: true };
         let html = share_page(&chrome(), &data).into_string();
         assert!(html.contains(r#"<nav class="site-nav""#));
         assert!(html.contains("Monokulo"));
@@ -449,7 +449,7 @@ mod tests {
 
     #[test]
     fn share_page_shows_a_not_found_state_with_the_site_nav_when_not_found() {
-        let data = CheckoutShareViewModel { pk: "pk_abc123".to_string(), payment_id: "pay_abc123".to_string(), found: false };
+        let data = CheckoutShareViewModel { pk: "pk_abc123".to_string(), order_id: "pay_abc123".to_string(), found: false };
         let html = share_page(&chrome(), &data).into_string();
         assert!(html.contains(r#"<nav class="site-nav""#));
         assert!(html.to_lowercase().contains("not found"));

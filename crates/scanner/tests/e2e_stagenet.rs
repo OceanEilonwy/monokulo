@@ -163,10 +163,10 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     )
     .await;
     assert_eq!(status, StatusCode::OK, "order creation failed: {order:?}");
-    let payment_id = order["payment_id"].as_str().unwrap().to_string();
+    let order_id = order["order_id"].as_str().unwrap().to_string();
     let address = order["address"].as_str().unwrap().to_string();
     let amount_piconero = order["xmr_amount_piconero"].as_u64().unwrap();
-    println!("created order {payment_id}: {amount_piconero} piconero to {address}");
+    println!("created order {order_id}: {amount_piconero} piconero to {address}");
 
     // -- pay it for real: construct, sign, and broadcast the transaction ourselves
     // (no wallet-rpc or any other external wallet process - see
@@ -189,17 +189,17 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
             .expect("scan tick failed");
 
         let (status, order_status) =
-            oneshot_json(&router, "GET", format!("/api/v1/t/{pk}/orders/{payment_id}"), None).await;
+            oneshot_json(&router, "GET", format!("/api/v1/t/{pk}/orders/{order_id}"), None).await;
         assert_eq!(status, StatusCode::OK);
         last_status = order_status["status"].as_str().unwrap().to_string();
         println!("[{attempt}/30] status={last_status}");
 
         if matches!(last_status.as_str(), "paid" | "confirming" | "overpaid") {
-            println!("PASS: order {payment_id} reached status '{last_status}' (tx {tx_hash_hex})");
+            println!("PASS: order {order_id} reached status '{last_status}' (tx {tx_hash_hex})");
             return;
         }
         assert_ne!(last_status, "expired", "order expired before the real payment was detected");
         tokio::time::sleep(Duration::from_secs(2)).await;
     }
-    panic!("order {payment_id} still '{last_status}' after 30 scan attempts - real stagenet payment (tx {tx_hash_hex}) was not detected");
+    panic!("order {order_id} still '{last_status}' after 30 scan attempts - real stagenet payment (tx {tx_hash_hex}) was not detected");
 }

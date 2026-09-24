@@ -110,14 +110,14 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
                 state.db.lock().unwrap().list_order_currency_metadata_for_connection(&row.id).unwrap_or_default();
             for o in orders {
                 total_received_piconero += o.amount_received_piconero as u128;
-                let (amount, currency) = match fiat_metadata.get(&o.payment_id) {
+                let (amount, currency) = match fiat_metadata.get(&o.order_id) {
                     Some(m) => (m.amount.clone(), m.currency.clone()),
                     None => ("—".to_string(), "".to_string()),
                 };
                 all_orders.push(DashboardOrderRow {
                     connection_id: row.id.clone(),
                     display_name: display_name.clone(),
-                    payment_id: o.payment_id,
+                    order_id: o.order_id,
                     status: o.status,
                     amount,
                     currency,
@@ -304,7 +304,7 @@ mod tests {
                 .expect("seeding a real order against the engine's public API failed");
             assert_eq!(response.status(), reqwest::StatusCode::OK);
             let body: serde_json::Value = response.json().await.unwrap();
-            body.as_object().unwrap().get("payment_id").unwrap().as_str().unwrap().to_string()
+            body.as_object().unwrap().get("order_id").unwrap().as_str().unwrap().to_string()
         }
 
         #[tokio::test]
@@ -356,7 +356,7 @@ mod tests {
             let session_token =
                 signed_up_and_logged_in_session_token(&router, "full-dashboard@example.com", "correct horse battery staple").await;
             let (connection_id, public_key) = create_connection(&router, &session_token).await;
-            let payment_id = seed_real_order(engine.addr, &public_key).await;
+            let order_id = seed_real_order(engine.addr, &public_key).await;
 
             let response = router
                 .oneshot(
@@ -374,7 +374,7 @@ mod tests {
 
             assert!(html.contains(&public_key), "expected the store's public key listed, got: {html}");
             assert!(html.contains(&format!("/dashboard/stores/{connection_id}")), "expected a link to the store, got: {html}");
-            assert!(html.contains(&payment_id), "expected the seeded order in the recent-orders feed, got: {html}");
+            assert!(html.contains(&order_id), "expected the seeded order in the recent-orders feed, got: {html}");
             assert!(html.contains("tag-ok"), "the engine is genuinely reachable, so health must render as ok, got: {html}");
             assert!(html.contains("Total received"), "expected the total-received summary, got: {html}");
         }

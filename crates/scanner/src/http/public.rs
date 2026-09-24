@@ -53,7 +53,7 @@ pub struct CreateOrderRequest {
 
 #[derive(Serialize)]
 pub struct CreateOrderResponse {
-    payment_id: String,
+    order_id: String,
     address: String,
     xmr_amount_piconero: u64,
     expires_at: i64,
@@ -133,7 +133,7 @@ pub async fn create_order(
     })?;
 
     Ok(Json(CreateOrderResponse {
-        payment_id: order.id,
+        order_id: order.id,
         address: order.address,
         xmr_amount_piconero: order.xmr_amount_piconero,
         expires_at: order.expires_at,
@@ -142,7 +142,7 @@ pub async fn create_order(
 
 #[derive(Serialize)]
 pub struct OrderStatusResponse {
-    payment_id: String,
+    order_id: String,
     status: String,
     address: String,
     confirmations: u64,
@@ -152,21 +152,21 @@ pub struct OrderStatusResponse {
     expires_at: i64,
 }
 
-/// Note: only `pk_` and `payment_id` scope this lookup - there is no `sk_` to check
-/// here by design, since a payment_id is an unguessable random identifier the
+/// Note: only `pk_` and `order_id` scope this lookup - there is no `sk_` to check
+/// here by design, since a order_id is an unguessable random identifier the
 /// customer already holds (from the order-creation response), not a secret this
 /// server needs to authenticate. The equivalent IDOR concern for the *admin* surface
 /// (see `docs/DESIGN.md` §10.1) doesn't apply the same way here: this route's whole
-/// job is to let anyone holding a payment_id check its status.
+/// job is to let anyone holding a order_id check its status.
 pub async fn get_order_status(
-    Path((pk, payment_id)): Path<(String, String)>,
+    Path((pk, order_id)): Path<(String, String)>,
     State(state): State<AppState>,
 ) -> Result<Json<OrderStatusResponse>, ApiError> {
     let store = state.store.lock().unwrap();
     let tenant = store.find_tenant_by_public_key(&pk)?.ok_or(ApiError::NotFound)?;
-    let order = store.get_order(&tenant.id, &payment_id)?.ok_or(ApiError::NotFound)?;
+    let order = store.get_order(&tenant.id, &order_id)?.ok_or(ApiError::NotFound)?;
     Ok(Json(OrderStatusResponse {
-        payment_id: order.id,
+        order_id: order.id,
         status: order.status.as_str().to_string(),
         address: order.address,
         confirmations: order.confirmations,
@@ -183,13 +183,13 @@ pub struct SetRefundAddressRequest {
 }
 
 pub async fn set_refund_address(
-    Path((pk, payment_id)): Path<(String, String)>,
+    Path((pk, order_id)): Path<(String, String)>,
     State(state): State<AppState>,
     Json(req): Json<SetRefundAddressRequest>,
 ) -> Result<(), ApiError> {
     let store = state.store.lock().unwrap();
     let tenant = store.find_tenant_by_public_key(&pk)?.ok_or(ApiError::NotFound)?;
-    let updated = store.set_refund_address(&tenant.id, &payment_id, &req.refund_address)?;
+    let updated = store.set_refund_address(&tenant.id, &order_id, &req.refund_address)?;
     if updated {
         Ok(())
     } else {

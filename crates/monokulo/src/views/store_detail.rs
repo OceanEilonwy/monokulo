@@ -26,9 +26,9 @@ pub struct StoreDetailData {
     /// The lookup's own plain-text result, `None` until a lookup has actually
     /// been submitted.
     pub lookup_message: Option<String>,
-    /// `Some(payment_id)` only when the lookup found a real match - a link to
+    /// `Some(order_id)` only when the lookup found a real match - a link to
     /// the now-updated order, alongside `lookup_message`.
-    pub lookup_found_payment_id: Option<String>,
+    pub lookup_found_order_id: Option<String>,
 }
 
 pub struct StoreDetailViewModel {
@@ -112,8 +112,8 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                             @for order in &store.recent_orders {
                                 tr {
                                     td {
-                                        a href=(format!("/dashboard/stores/{}/orders/{}", store.connection_id, order.payment_id)) {
-                                            (order.payment_id)
+                                        a href=(format!("/dashboard/stores/{}/orders/{}", store.connection_id, order.order_id)) {
+                                            (order.order_id)
                                         }
                                     }
                                     td { (order.status) }
@@ -132,8 +132,8 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                     &format!("/dashboard/stores/{}/orders/lookup", store.connection_id),
                     &store.lookup_txid_value,
                     &store.lookup_message,
-                    &store.lookup_found_payment_id,
-                    |payment_id| format!("/dashboard/stores/{}/orders/{}", store.connection_id, payment_id),
+                    &store.lookup_found_order_id,
+                    |order_id| format!("/dashboard/stores/{}/orders/{}", store.connection_id, order_id),
                 ))
             } @else {
                 h1 { "Store not found" }
@@ -200,7 +200,7 @@ mod tests {
             is_woocommerce,
             lookup_txid_value: String::new(),
             lookup_message: None,
-            lookup_found_payment_id: None,
+            lookup_found_order_id: None,
         }
     }
 

@@ -240,7 +240,7 @@ pub async fn delete_own_tenant(
 
 #[derive(Serialize)]
 pub struct OrderView {
-    payment_id: String,
+    order_id: String,
     merchant_order_id: Option<String>,
     address: String,
     xmr_amount_piconero: u64,
@@ -279,7 +279,7 @@ fn build_order_view(
 ) -> std::result::Result<OrderView, crate::store::StoreError> {
     let currently_scanning = store.is_order_currently_scanning(&order.id, now, grace_period_seconds)?;
     Ok(OrderView {
-        payment_id: order.id,
+        order_id: order.id,
         merchant_order_id: order.merchant_order_id,
         address: order.address,
         xmr_amount_piconero: order.xmr_amount_piconero,
@@ -353,11 +353,11 @@ pub struct OrderDetailResponse {
 
 pub async fn get_order_detail(
     AuthedTenant(tenant): AuthedTenant,
-    Path(payment_id): Path<String>,
+    Path(order_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<OrderDetailResponse>, ApiError> {
     let store = state.store.lock().unwrap();
-    let order = store.get_order(&tenant.id, &payment_id)?.ok_or(ApiError::NotFound)?;
+    let order = store.get_order(&tenant.id, &order_id)?.ok_or(ApiError::NotFound)?;
     let payments = store.get_all_payments(&order.id)?;
     let order_view = build_order_view(&store, order, now_unix(), state.expired_order_grace_period_seconds)?;
     Ok(Json(OrderDetailResponse {

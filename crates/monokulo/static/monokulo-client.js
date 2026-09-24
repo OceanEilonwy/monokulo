@@ -11,7 +11,7 @@
  * control the toolchain of.
  *
  * All payment logic and status rendering lives server-side in the
- * `/pay/{pk}/orders/{payment_id}` page this library iframes; this file only
+ * `/pay/{pk}/orders/{order_id}` page this library iframes; this file only
  * creates orders, mounts that iframe, and polls monokulo's own
  * `/status` endpoint directly to drive `onStatusChange`/`onPaid`/
  * `onExpired`. The iframed page itself is deliberately plain, script-free
@@ -25,9 +25,9 @@
   "use strict";
 
   // Orders remember the endpoint/publicKey they were created against, so
-  // `mount(selector, paymentId, options)` can be called with just the id
+  // `mount(selector, orderId, options)` can be called with just the id
   // without the caller re-stating both. A page that reloads and wants to
-  // remount a paymentId from a previous visit (no createOrder call this
+  // remount an orderId from a previous visit (no createOrder call this
   // pageload) can still pass `endpoint`/`publicKey` explicitly via `options`.
   var knownOrders = {};
 
@@ -105,7 +105,7 @@
       })
       .then(function (data) {
         var order = {
-          paymentId: data.payment_id,
+          orderId: data.order_id,
           address: data.address,
           xmrAmountPiconero: data.xmr_amount_piconero,
           amount: data.amount,
@@ -115,7 +115,7 @@
           endpoint: endpoint,
           publicKey: publicKey,
         };
-        knownOrders[order.paymentId] = { endpoint: endpoint, publicKey: publicKey };
+        knownOrders[order.orderId] = { endpoint: endpoint, publicKey: publicKey };
         return order;
       });
   }
@@ -125,28 +125,28 @@
     return selector || null;
   }
 
-  function mount(selector, paymentIdOrOrder, options) {
+  function mount(selector, orderIdOrOrder, options) {
     options = options || {};
     var el = resolveTarget(selector);
     if (!el) {
       throw new Error("Monokulo.mount: target element not found: " + selector);
     }
 
-    var paymentId, endpoint, publicKey;
-    if (paymentIdOrOrder && typeof paymentIdOrOrder === "object") {
-      paymentId = paymentIdOrOrder.paymentId;
-      endpoint = paymentIdOrOrder.endpoint;
-      publicKey = paymentIdOrOrder.publicKey;
+    var orderId, endpoint, publicKey;
+    if (orderIdOrOrder && typeof orderIdOrOrder === "object") {
+      orderId = orderIdOrOrder.orderId;
+      endpoint = orderIdOrOrder.endpoint;
+      publicKey = orderIdOrOrder.publicKey;
     } else {
-      paymentId = paymentIdOrOrder;
+      orderId = orderIdOrOrder;
     }
-    endpoint = options.endpoint || endpoint || (knownOrders[paymentId] || {}).endpoint || scriptOrigin();
-    publicKey = options.publicKey || publicKey || (knownOrders[paymentId] || {}).publicKey;
+    endpoint = options.endpoint || endpoint || (knownOrders[orderId] || {}).endpoint || scriptOrigin();
+    publicKey = options.publicKey || publicKey || (knownOrders[orderId] || {}).publicKey;
 
-    if (!paymentId || !endpoint || !publicKey) {
+    if (!orderId || !endpoint || !publicKey) {
       throw new Error(
-        "Monokulo.mount: could not resolve paymentId/endpoint/publicKey - pass an order object " +
-          "from createOrder(), or {endpoint, publicKey} in options for a paymentId from a previous visit"
+        "Monokulo.mount: could not resolve orderId/endpoint/publicKey - pass an order object " +
+          "from createOrder(), or {endpoint, publicKey} in options for an orderId from a previous visit"
       );
     }
 
@@ -157,7 +157,7 @@
       previous.destroy();
     }
 
-    var iframeSrc = endpoint + "/pay/" + encodeURIComponent(publicKey) + "/orders/" + encodeURIComponent(paymentId);
+    var iframeSrc = endpoint + "/pay/" + encodeURIComponent(publicKey) + "/orders/" + encodeURIComponent(orderId);
     var statusUrl = iframeSrc + "/status";
     try {
       new URL(iframeSrc, global.location.href);

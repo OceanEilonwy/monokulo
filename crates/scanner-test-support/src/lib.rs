@@ -732,7 +732,7 @@ mod tests {
             .json()
             .await
             .expect("create_order response was not valid JSON");
-        let payment_id = order["payment_id"].as_str().unwrap().to_string();
+        let order_id = order["order_id"].as_str().unwrap().to_string();
 
         // Poll rather than a fixed sleep: the background loop runs every
         // `BACKGROUND_LOOP_INTERVAL`, and this only needs to wait for the first tick
@@ -744,7 +744,7 @@ mod tests {
                 .unwrap()
                 .iter()
                 .find(|(_, body)| {
-                    body.get("payment_id").and_then(|v| v.as_str()) == Some(payment_id.as_str())
+                    body.get("order_id").and_then(|v| v.as_str()) == Some(order_id.as_str())
                 })
                 .cloned();
             if let Some(found) = found {
@@ -960,7 +960,7 @@ mod tests {
             .json()
             .await
             .expect("create_order response was not valid JSON");
-        let payment_id = order["payment_id"].as_str().unwrap().to_string();
+        let order_id = order["order_id"].as_str().unwrap().to_string();
 
         engine
             .run_scan_tick_now(&FixtureTxDaemonClient, Network::Mainnet, 20)
@@ -968,7 +968,7 @@ mod tests {
             .expect("real scan tick failed");
 
         let status: serde_json::Value = client
-            .get(format!("{base_url}/api/v1/t/{public_key}/orders/{payment_id}"))
+            .get(format!("{base_url}/api/v1/t/{public_key}/orders/{order_id}"))
             .send()
             .await
             .expect("get_order_status request failed")

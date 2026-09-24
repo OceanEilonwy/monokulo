@@ -139,9 +139,9 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     let public_router = Router::new()
         .route("/api/v1/admin/tenants", post(admin::create_tenant))
         .route("/api/v1/t/{pk}/orders", post(public::create_order))
-        .route("/api/v1/t/{pk}/orders/{payment_id}", get(public::get_order_status))
+        .route("/api/v1/t/{pk}/orders/{order_id}", get(public::get_order_status))
         .route(
-            "/api/v1/t/{pk}/orders/{payment_id}/refund-address",
+            "/api/v1/t/{pk}/orders/{order_id}/refund-address",
             post(public::set_refund_address),
         )
         // A JSON status *API*, not a page - the monokulo's own
@@ -165,7 +165,7 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         )
         .route("/api/v1/admin/tenant/rotate-secret", post(admin::rotate_secret))
         .route("/api/v1/admin/tenant/orders", get(admin::list_orders))
-        .route("/api/v1/admin/tenant/orders/{payment_id}", get(admin::get_order_detail))
+        .route("/api/v1/admin/tenant/orders/{order_id}", get(admin::get_order_detail))
         .route("/api/v1/admin/tenant/payments/lookup", post(admin::lookup_payment))
         .route(
             "/api/v1/admin/tenant/webhooks",

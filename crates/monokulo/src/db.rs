@@ -38,6 +38,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (15, include_str!("../migrations/0015_confirmation_thresholds.sql")),
     (16, include_str!("../migrations/0016_order_confirmation_snapshot.sql")),
     (17, include_str!("../migrations/0017_user_theme.sql")),
+    (18, include_str!("../migrations/0018_rename_payment_id_to_order_id.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -191,7 +192,7 @@ pub struct StoreConnectionRow {
 /// `docs/fx_refactor.md` decision 4).
 pub struct OrderCurrencyMetadataRow {
     pub connection_id: String,
-    pub payment_id: String,
+    pub order_id: String,
     pub currency: String,
     pub amount: String,
     pub piconero_per_unit: u64,
@@ -609,7 +610,7 @@ impl Db {
     pub fn create_order_currency_metadata(
         &self,
         connection_id: &str,
-        payment_id: &str,
+        order_id: &str,
         currency: &str,
         amount: &str,
         piconero_per_unit: u64,
@@ -623,12 +624,12 @@ impl Db {
             .expect("piconero_per_unit out of i64 range - not a plausible real exchange rate");
         self.conn.execute(
             "INSERT INTO order_currency_metadata
-                (connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at_utc,
+                (connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
                  store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied)
              VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
             params![
                 connection_id,
-                payment_id,
+                order_id,
                 currency,
                 amount,
                 piconero_per_unit,
@@ -643,23 +644,23 @@ impl Db {
     }
 
     /// Looks up one order's currency metadata - `None` when nothing was ever
-    /// recorded for this `(connection_id, payment_id)` pair (an order the
+    /// recorded for this `(connection_id, order_id)` pair (an order the
     /// engine reports that predates this table, or one created directly
     /// against the engine's own API rather than through monokulo).
-    pub fn get_order_currency_metadata(&self, connection_id: &str, payment_id: &str) -> Result<Option<OrderCurrencyMetadataRow>> {
+    pub fn get_order_currency_metadata(&self, connection_id: &str, order_id: &str) -> Result<Option<OrderCurrencyMetadataRow>> {
         self.conn
             .query_row(
-                "SELECT connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at_utc,
+                "SELECT connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
                         store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied
-                 FROM order_currency_metadata WHERE connection_id = ?1 AND payment_id = ?2",
-                params![connection_id, payment_id],
+                 FROM order_currency_metadata WHERE connection_id = ?1 AND order_id = ?2",
+                params![connection_id, order_id],
                 |row| {
                     let piconero_per_unit: i64 = row.get(4)?;
                     let base_currency_piconero_per_unit: Option<i64> = row.get(8)?;
                     let confirmations_required_applied: Option<i64> = row.get(9)?;
                     Ok(OrderCurrencyMetadataRow {
                         connection_id: row.get(0)?,
-                        payment_id: row.get(1)?,
+                        order_id: row.get(1)?,
                         currency: row.get(2)?,
                         amount: row.get(3)?,
                         piconero_per_unit: piconero_per_unit as u64,
@@ -678,7 +679,7 @@ impl Db {
     /// Looks up currency metadata for every order of one connection at once -
     /// the orders-list/dashboard pages need this per-row, not one at a
     /// time, to avoid an N+1 query pattern when rendering a whole list.
-    /// Returned as a map keyed by `payment_id` (already scoped to
+    /// Returned as a map keyed by `order_id` (already scoped to
     /// `connection_id` by the query) for callers to look up by, not a
     /// `Vec` they'd have to re-index themselves.
     pub fn list_order_currency_metadata_for_connection(
@@ -686,7 +687,7 @@ impl Db {
         connection_id: &str,
     ) -> Result<std::collections::HashMap<String, OrderCurrencyMetadataRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT connection_id, payment_id, currency, amount, piconero_per_unit, provider, created_at_utc,
+            "SELECT connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
                     store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied
              FROM order_currency_metadata WHERE connection_id = ?1",
         )?;
@@ -697,7 +698,7 @@ impl Db {
                 let confirmations_required_applied: Option<i64> = row.get(9)?;
                 Ok(OrderCurrencyMetadataRow {
                     connection_id: row.get(0)?,
-                    payment_id: row.get(1)?,
+                    order_id: row.get(1)?,
                     currency: row.get(2)?,
                     amount: row.get(3)?,
                     piconero_per_unit: piconero_per_unit as u64,
@@ -709,7 +710,7 @@ impl Db {
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows.into_iter().map(|row| (row.payment_id.clone(), row)).collect())
+        Ok(rows.into_iter().map(|row| (row.order_id.clone(), row)).collect())
     }
 
     /// Inserts a new single-use connect token (WBS 1.4.1) - `token_hash` is
@@ -1441,7 +1442,7 @@ mod tests {
 
         let row = db.get_order_currency_metadata(&connection_id, "pay_1").unwrap().unwrap();
         assert_eq!(row.connection_id, connection_id);
-        assert_eq!(row.payment_id, "pay_1");
+        assert_eq!(row.order_id, "pay_1");
         assert_eq!(row.currency, "USD");
         assert_eq!(row.amount, "25.00");
         assert_eq!(row.piconero_per_unit, 6_700_000_000);
@@ -1453,16 +1454,16 @@ mod tests {
     }
 
     #[test]
-    fn looking_up_fiat_metadata_for_an_unknown_payment_id_returns_none() {
+    fn looking_up_fiat_metadata_for_an_unknown_order_id_returns_none() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         assert!(db.get_order_currency_metadata(&connection_id, "nonexistent").unwrap().is_none());
     }
 
     #[test]
-    fn fiat_metadata_is_scoped_by_connection_id_even_for_the_same_payment_id() {
+    fn fiat_metadata_is_scoped_by_connection_id_even_for_the_same_order_id() {
         // Two different connections can each have their own order with the
-        // same payment_id (the engine's payment_id is only unique within one
+        // same order_id (the engine's order_id is only unique within one
         // tenant) - the composite primary key must keep them apart.
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
@@ -1492,7 +1493,7 @@ mod tests {
     }
 
     #[test]
-    fn listing_fiat_metadata_for_a_connection_returns_a_map_keyed_by_payment_id() {
+    fn listing_fiat_metadata_for_a_connection_returns_a_map_keyed_by_order_id() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
         db.create_order_currency_metadata(&connection_id, "pay_a", "USD", "10.00", 1_000_000, "fixed", 1000, "XMR", None, 10).unwrap();

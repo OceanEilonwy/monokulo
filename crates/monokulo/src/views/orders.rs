@@ -1,5 +1,5 @@
 //! `GET /dashboard/stores/{id}/orders` and
-//! `/dashboard/stores/{id}/orders/{payment_id}` -
+//! `/dashboard/stores/{id}/orders/{order_id}` -
 //! `http::orders::orders_list`/`order_detail`/`lookup_payment`.
 
 use maud::{html, Markup, PreEscaped};
@@ -9,7 +9,7 @@ use super::{layout, layout_with_head, PageChrome};
 /// One row of the orders list page - just the fields the table shows, not
 /// the full engine `OrderView`.
 pub struct OrderRowViewModel {
-    pub payment_id: String,
+    pub order_id: String,
     pub status: String,
     pub amount: String,
     pub currency: String,
@@ -31,7 +31,7 @@ pub fn lookup_payment_card(
     action: &str,
     txid_value: &str,
     message: &Option<String>,
-    found_payment_id: &Option<String>,
+    found_order_id: &Option<String>,
     order_href: impl Fn(&str) -> String,
 ) -> Markup {
     html! {
@@ -52,9 +52,9 @@ pub fn lookup_payment_card(
             @if let Some(message) = message {
                 p {
                     (message)
-                    @if let Some(payment_id) = found_payment_id {
+                    @if let Some(order_id) = found_order_id {
                         " "
-                        a href=(order_href(payment_id)) { "View order →" }
+                        a href=(order_href(order_id)) { "View order →" }
                     }
                 }
             }
@@ -75,8 +75,8 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
                     @for order in &data.orders {
                         tr {
                             td {
-                                a href=(format!("/dashboard/stores/{}/orders/{}", data.connection_id, order.payment_id)) {
-                                    (order.payment_id)
+                                a href=(format!("/dashboard/stores/{}/orders/{}", data.connection_id, order.order_id)) {
+                                    (order.order_id)
                                 }
                             }
                             td { (order.status) }
@@ -108,7 +108,7 @@ pub struct PaymentRowViewModel {
 }
 
 pub struct OrderDetailData {
-    pub payment_id: String,
+    pub order_id: String,
     /// Raw, *not* pre-rendered to a trusted-HTML display string like the
     /// timestamp fields below - a merchant order id is caller-supplied free
     /// text, so it must stay ordinary escaped output, never `PreEscaped`.
@@ -190,7 +190,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
             p { a href=(format!("/dashboard/stores/{}/orders", data.connection_id)) { "← back to orders" } }
             @if let Some(order) = &data.order {
                 h1 class="order-title" {
-                    span { "Order " (order.payment_id) }
+                    span { "Order " (order.order_id) }
                     a class="share-btn" id="share-payment-link" href=(order.payment_link) target="_blank" rel="noopener"
                        aria-label="Share payment link" title="Share payment link" {
                         svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -287,7 +287,7 @@ mod tests {
         let data = OrdersViewModel {
             connection_id: "conn_1".to_string(),
             orders: vec![OrderRowViewModel {
-                payment_id: "pay_xyz".to_string(),
+                order_id: "pay_xyz".to_string(),
                 status: "paid".to_string(),
                 amount: "25.00".to_string(),
                 currency: "USD".to_string(),
@@ -302,7 +302,7 @@ mod tests {
 
     fn test_order_detail_data(double_spend_detected_at: Option<i64>) -> OrderDetailData {
         OrderDetailData {
-            payment_id: "pay_abc123".to_string(),
+            order_id: "pay_abc123".to_string(),
             merchant_order_id: None,
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
             currency: "XMR".to_string(),

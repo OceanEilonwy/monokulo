@@ -2,7 +2,7 @@
 //! (`docs/fx_refactor.md` Phase 2) - moved here from the engine (whose own
 //! equivalent, `src/http/public.rs::payment_page` at the repo root, is
 //! scheduled for full removal in that same document's Phase 4). The
-//! engine's public status API (`GET /api/v1/t/{pk}/orders/{payment_id}`)
+//! engine's public status API (`GET /api/v1/t/{pk}/orders/{order_id}`)
 //! deliberately carries no `payments` list at all (confirmed by reading
 //! `OrderStatusResponse`), so this reuses the *admin* endpoint instead
 //! (`EngineClient::get_order_detail`, already built and already used by
@@ -91,14 +91,14 @@ enum LoadError {
 /// `get_tenant` call - handed back rather than re-decrypted), and fetches
 /// the order's full detail from the engine's admin API. An order belonging
 /// to a *different* tenant's `pk_` than the one in the URL is
-/// indistinguishable from an unknown `payment_id` - the engine's own
+/// indistinguishable from an unknown `order_id` - the engine's own
 /// `get_order_detail` already scopes lookups to the authenticated tenant,
 /// so this can never leak another tenant's order by construction, not by
 /// an extra check here.
 async fn load_order(
     state: &AppState,
     pk: &str,
-    payment_id: &str,
+    order_id: &str,
 ) -> Result<(StoreConnectionRow, String, OrderDetailResponse), LoadError> {
     let row = match state.db.lock().unwrap().get_store_connection_by_public_key(pk) {
         Ok(Some(row)) => row,
@@ -109,7 +109,7 @@ async fn load_order(
         Ok(sk) => sk,
         Err(_) => return Err(LoadError::Internal),
     };
-    match state.engine_client.get_order_detail(&sk, payment_id).await {
+    match state.engine_client.get_order_detail(&sk, order_id).await {
         Ok(detail) => Ok((row, sk, detail)),
         Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
             Err(LoadError::NotFound)
@@ -118,9 +118,9 @@ async fn load_order(
     }
 }
 
-/// `GET /pay/{pk}/orders/{payment_id}` - the full checkout page.
-pub async fn checkout_page(State(state): State<AppState>, Path((pk, payment_id)): Path<(String, String)>) -> Response {
-    let (row, sk, detail) = match load_order(&state, &pk, &payment_id).await {
+/// `GET /pay/{pk}/orders/{order_id}` - the full checkout page.
+pub async fn checkout_page(State(state): State<AppState>, Path((pk, order_id)): Path<(String, String)>) -> Response {
+    let (row, sk, detail) = match load_order(&state, &pk, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return not_found_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -154,7 +154,7 @@ async fn render_checkout_page(
     let confirmations_required = state.engine_client.get_tenant(&sk).await.map(|t| t.confirmations_required).unwrap_or(10);
 
     let (amount, currency) =
-        match state.db.lock().unwrap().get_order_currency_metadata(&row.id, &detail.order.payment_id) {
+        match state.db.lock().unwrap().get_order_currency_metadata(&row.id, &detail.order.order_id) {
             Ok(Some(metadata)) => (metadata.amount, metadata.currency),
             _ => ("—".to_string(), "".to_string()),
         };
@@ -193,7 +193,7 @@ async fn render_checkout_page(
         ((detail.order.confirmations as f64 / confirmations_required as f64) * 100.0).round().min(100.0) as u8
     };
     let view = CheckoutViewModel {
-        payment_id: detail.order.payment_id.clone(),
+        order_id: detail.order.order_id.clone(),
         status_label: status_text.to_string(),
         status_class: status_class.to_string(),
         address: detail.order.address.clone(),
@@ -228,7 +228,7 @@ async fn render_checkout_page(
             .collect(),
     };
 
-    let chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{}", detail.order.payment_id));
+    let chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{}", detail.order.order_id));
     views::checkout::checkout_page(&chrome, &view).into_response()
 }
 
@@ -237,7 +237,7 @@ pub struct SetRefundAddressForm {
     pub refund_address: String,
 }
 
-/// `POST /pay/{pk}/orders/{payment_id}/refund-address` - the checkout
+/// `POST /pay/{pk}/orders/{order_id}/refund-address` - the checkout
 /// page's own plain HTML form for a customer to record where a refund
 /// should go, forwarding to the engine's own real endpoint
 /// (`EngineClient::set_refund_address`) - monokulo stores nothing of
@@ -257,10 +257,10 @@ pub struct SetRefundAddressForm {
 /// typing the wrong thing here shouldn't lose their place mid-payment.
 pub async fn set_refund_address(
     State(state): State<AppState>,
-    Path((pk, payment_id)): Path<(String, String)>,
+    Path((pk, order_id)): Path<(String, String)>,
     Form(form): Form<SetRefundAddressForm>,
 ) -> Response {
-    let (row, sk, detail) = match load_order(&state, &pk, &payment_id).await {
+    let (row, sk, detail) = match load_order(&state, &pk, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return not_found_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -271,10 +271,10 @@ pub async fn set_refund_address(
         return render_checkout_page(&state, pk, row, sk, detail, Some("Enter a refund address.".to_string())).await;
     }
 
-    match state.engine_client.set_refund_address(&pk, &payment_id, refund_address).await {
-        Ok(()) => redirect_302(&format!("/pay/{pk}/orders/{payment_id}")),
+    match state.engine_client.set_refund_address(&pk, &order_id, refund_address).await {
+        Ok(()) => redirect_302(&format!("/pay/{pk}/orders/{order_id}")),
         Err(e) => {
-            eprintln!("failed to set refund address for order {payment_id} on connection {}: {e}", row.id);
+            eprintln!("failed to set refund address for order {order_id} on connection {}: {e}", row.id);
             render_checkout_page(&state, pk, row, sk, detail, Some("Something went wrong saving that. Please try again.".to_string())).await
         }
     }
@@ -286,12 +286,12 @@ pub struct CheckoutStatusResponse {
     pub confirmations: u64,
 }
 
-/// `GET /pay/{pk}/orders/{payment_id}/status` - the small JSON the checkout
+/// `GET /pay/{pk}/orders/{order_id}/status` - the small JSON the checkout
 /// page's own polling script reads (`status`/`confirmations` only - the
 /// same two fields the engine's old polling JS ever read from its
 /// equivalent response).
-pub async fn checkout_status(State(state): State<AppState>, Path((pk, payment_id)): Path<(String, String)>) -> Response {
-    match load_order(&state, &pk, &payment_id).await {
+pub async fn checkout_status(State(state): State<AppState>, Path((pk, order_id)): Path<(String, String)>) -> Response {
+    match load_order(&state, &pk, &order_id).await {
         Ok((_row, _sk, detail)) => {
             Json(CheckoutStatusResponse { status: detail.order.status, confirmations: detail.order.confirmations })
                 .into_response()
@@ -301,7 +301,7 @@ pub async fn checkout_status(State(state): State<AppState>, Path((pk, payment_id
     }
 }
 
-/// `GET /pay/{pk}/orders/{payment_id}/share` - a real follow-up to
+/// `GET /pay/{pk}/orders/{order_id}/share` - a real follow-up to
 /// `docs/fx_refactor.md`: "on the order details page you should be able to
 /// obtain a payment link which can be shared to someone who needs to pay
 /// for the order". `checkout_page` above is deliberately bare (no nav, no
@@ -322,19 +322,19 @@ pub async fn checkout_status(State(state): State<AppState>, Path((pk, payment_id
 /// content is a broken iframe.
 pub async fn checkout_share_page(
     State(state): State<AppState>,
-    Path((pk, payment_id)): Path<(String, String)>,
+    Path((pk, order_id)): Path<(String, String)>,
     headers: HeaderMap,
 ) -> Response {
-    let found = match load_order(&state, &pk, &payment_id).await {
+    let found = match load_order(&state, &pk, &order_id).await {
         Ok(_) => true,
         Err(LoadError::NotFound) => false,
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let status = if found { StatusCode::OK } else { StatusCode::NOT_FOUND };
     let authed = super::resolve_authed_user(&state, &headers);
-    let current_path = format!("/pay/{pk}/orders/{payment_id}/share");
+    let current_path = format!("/pay/{pk}/orders/{order_id}/share");
     let chrome = views::PageChrome::from_user(authed.as_ref().map(|(user, _)| user), current_path);
-    let view = CheckoutShareViewModel { pk, payment_id, found };
+    let view = CheckoutShareViewModel { pk, order_id, found };
     (status, views::checkout::share_page(&chrome, &view)).into_response()
 }
 
@@ -465,7 +465,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        body_json(response).await.as_object().unwrap().get("payment_id").unwrap().as_str().unwrap().to_string()
+        body_json(response).await.as_object().unwrap().get("order_id").unwrap().as_str().unwrap().to_string()
     }
 
     #[tokio::test]
@@ -476,13 +476,13 @@ mod tests {
         let session_token =
             signed_up_and_logged_in_session_token(&router, "checkout-page@example.com", "correct horse battery staple").await;
         let pk = create_connection(&router, &session_token).await;
-        let payment_id = create_order(&router, &pk, "25.00").await;
+        let order_id = create_order(&router, &pk, "25.00").await;
 
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/pay/{pk}/orders/{payment_id}"))
+                    .uri(format!("/pay/{pk}/orders/{order_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -490,7 +490,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
-        assert!(html.contains(&payment_id), "expected the real payment_id shown, got: {html}");
+        assert!(html.contains(&order_id), "expected the real order_id shown, got: {html}");
         assert!(html.contains("25.00"), "expected the real fiat amount shown, got: {html}");
         assert!(html.contains(TEST_CURRENCY), "expected the real fiat currency shown, got: {html}");
         assert!(html.contains("<svg"), "expected a real rendered QR code, got: {html}");
@@ -537,7 +537,7 @@ mod tests {
         )
         .await;
         let pk = create_connection(&router, &session_token).await;
-        let payment_id = create_order(&router, &pk, "25.00").await;
+        let order_id = create_order(&router, &pk, "25.00").await;
 
         // Before setting one, the checkout page must show the form, not a
         // refund address that was never set.
@@ -546,7 +546,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/pay/{pk}/orders/{payment_id}"))
+                    .uri(format!("/pay/{pk}/orders/{order_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -561,7 +561,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/pay/{pk}/orders/{payment_id}/refund-address"))
+                    .uri(format!("/pay/{pk}/orders/{order_id}/refund-address"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from(format!("refund_address={refund_address}")))
                     .unwrap(),
@@ -574,7 +574,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/pay/{pk}/orders/{payment_id}"))
+                    .uri(format!("/pay/{pk}/orders/{order_id}"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -597,13 +597,13 @@ mod tests {
         )
         .await;
         let pk = create_connection(&router, &session_token).await;
-        let payment_id = create_order(&router, &pk, "25.00").await;
+        let order_id = create_order(&router, &pk, "25.00").await;
 
         let response = router
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/pay/{pk}/orders/{payment_id}/refund-address"))
+                    .uri(format!("/pay/{pk}/orders/{order_id}/refund-address"))
                     .header("content-type", "application/x-www-form-urlencoded")
                     .body(Body::from("refund_address="))
                     .unwrap(),
@@ -613,7 +613,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK, "a rejected submission re-renders the page, it doesn't redirect");
         let html = body_text(response).await;
         assert!(html.contains("Enter a refund address."), "expected a clear inline error, got: {html}");
-        assert!(html.contains(&payment_id), "the real checkout page must still be shown, not a bare error, got: {html}");
+        assert!(html.contains(&order_id), "the real checkout page must still be shown, not a bare error, got: {html}");
     }
 
     #[tokio::test]
@@ -628,13 +628,13 @@ mod tests {
         )
         .await;
         let pk = create_connection(&router, &session_token).await;
-        let payment_id = create_order(&router, &pk, "10.00").await;
+        let order_id = create_order(&router, &pk, "10.00").await;
 
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/pay/{pk}/orders/{payment_id}/status"))
+                    .uri(format!("/pay/{pk}/orders/{order_id}/status"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -647,7 +647,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn an_unknown_payment_id_shows_a_real_not_found_page() {
+    async fn an_unknown_order_id_shows_a_real_not_found_page() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -700,13 +700,13 @@ mod tests {
         let session_token =
             signed_up_and_logged_in_session_token(&router, "checkout-share@example.com", "correct horse battery staple").await;
         let pk = create_connection(&router, &session_token).await;
-        let payment_id = create_order(&router, &pk, "25.00").await;
+        let order_id = create_order(&router, &pk, "25.00").await;
 
         let response = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/pay/{pk}/orders/{payment_id}/share"))
+                    .uri(format!("/pay/{pk}/orders/{order_id}/share"))
                     .body(Body::empty())
                     .unwrap(),
             )
@@ -721,7 +721,7 @@ mod tests {
         // The iframe must point at the real, unwrapped checkout page for
         // this exact order - not a second copy of the payment UI.
         assert!(
-            html.contains(&format!(r#"src="/pay/{pk}/orders/{payment_id}""#)),
+            html.contains(&format!(r#"src="/pay/{pk}/orders/{order_id}""#)),
             "expected an iframe pointing at the real checkout page, got: {html}"
         );
     }
