@@ -236,6 +236,9 @@ pub struct TestEngineConfig {
     /// `true` when [`TestEngineConfig::with_admin_rescan_daemon`] has been used -
     /// see that method's own doc comment.
     admin_rescan_daemon: bool,
+    /// `true` when [`TestEngineConfig::with_admin_lookup_daemon`] has been used -
+    /// see that method's own doc comment.
+    admin_lookup_daemon: bool,
 }
 
 impl TestEngineConfig {
@@ -268,6 +271,20 @@ impl TestEngineConfig {
     /// simulate a real scan - height 0 and empty blocks/mempool always.
     pub fn with_admin_rescan_daemon(mut self) -> Self {
         self.admin_rescan_daemon = true;
+        self
+    }
+
+    /// Wires an inert [`NoopDaemonClient`] into `AppState::daemons` (the live
+    /// scanner's own map, not `rescan_daemons` above) for every configured
+    /// network - the same opt-in shape as [`Self::with_admin_rescan_daemon`],
+    /// for a caller driving `POST /api/v1/admin/tenant/payments/lookup`
+    /// (`docs/txid_lookup_and_scan_chunking_wbs.md` Part B) through a genuine
+    /// HTTP round trip: that handler looks a daemon up from `daemons`
+    /// unconditionally too. Same ceiling as `with_admin_rescan_daemon`'s own
+    /// `NoopDaemonClient` - it can resolve request-shape logic (a malformed
+    /// txid, a genuinely-absent one) but never simulate a real match.
+    pub fn with_admin_lookup_daemon(mut self) -> Self {
+        self.admin_lookup_daemon = true;
         self
     }
 
@@ -434,9 +451,26 @@ impl TestEngineConfig {
             // This harness's own background scan loop (below) talks to a
             // bare `NoopDaemonClient` directly, never through
             // `AppState::daemons` - no caller of this crate exercises the
-            // engine's `/status` page by default, so an empty map here is
-            // honest, not a stub standing in for something real.
-            daemons: Arc::new(HashMap::new()),
+            // engine's `/status` page or its admin payment-lookup endpoint by
+            // default, so an empty map here is honest, not a stub standing in
+            // for something real. See [`TestEngineConfig::
+            // with_admin_lookup_daemon`] for the opt-in that wires one in.
+            daemons: Arc::new(if self.admin_lookup_daemon {
+                self.networks
+                    .iter()
+                    .map(|&network| {
+                        (
+                            network,
+                            Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+                                label: "noop-test-daemon".to_string(),
+                                client: Arc::new(NoopDaemonClient),
+                            }])),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>()
+            } else {
+                HashMap::new()
+            }),
             // `admin::trigger_rescan` reads `rescan_daemons`, not `daemons` -
             // see `AppState::rescan_daemons`'s own doc comment for why the two
             // are deliberately separate in production. No caller of this crate

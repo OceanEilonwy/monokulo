@@ -175,6 +175,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/connections/{id}/pos/orders", axum::routing::post(pos::create_order))
         .route("/dashboard/connections/{id}/pos/orders/{payment_id}/status", axum::routing::get(pos::order_status))
         .route("/dashboard/connections/{id}/orders", axum::routing::get(orders::orders_list))
+        .route("/dashboard/connections/{id}/orders/lookup", axum::routing::post(orders::lookup_payment))
         .route("/dashboard/connections/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
         .route(
             "/dashboard/connections/{id}/orders/{payment_id}/rescan",

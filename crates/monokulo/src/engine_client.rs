@@ -197,6 +197,24 @@ impl EngineClient {
         parse_response(response).await
     }
 
+    /// `POST {base_url}/api/v1/admin/tenant/payments/lookup` -
+    /// `docs/txid_lookup_and_scan_chunking_wbs.md` Part B, the direct
+    /// replacement for the rescan endpoints above. A malformed `txid` gets the
+    /// engine's own `400`, surfaced the same way every other bad-request
+    /// response already is (`EngineClientError::EngineError { status: 400,
+    /// .. }`) - this method does no client-side validation of its own, the
+    /// engine's is the one source of truth for what a valid txid looks like.
+    pub async fn lookup_payment(&self, sk: &str, txid: &str) -> Result<PaymentLookupView, EngineClientError> {
+        let response = self
+            .http
+            .post(format!("{}/api/v1/admin/tenant/payments/lookup", self.base_url))
+            .bearer_auth(sk)
+            .json(&LookupPaymentRequest { txid: txid.to_string() })
+            .send()
+            .await?;
+        parse_response(response).await
+    }
+
     /// `GET {base_url}/api/v1/admin/tenant/webhooks` — lists `sk`'s tenant's
     /// registered webhooks (WBS 1.3.3). Read-only: this task builds no
     /// create/delete client methods, per its own scope.
@@ -537,6 +555,22 @@ pub struct RescanStatusView {
     pub finished_at: Option<i64>,
 }
 
+#[derive(Serialize)]
+struct LookupPaymentRequest {
+    txid: String,
+}
+
+/// Mirrors the engine's own `PaymentLookupView` (`src/http/admin.rs` at the
+/// repo root) field-for-field, including its `#[serde(tag = "outcome", ...)]`
+/// shape.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "outcome", rename_all = "snake_case")]
+pub enum PaymentLookupView {
+    NotFoundOnChain,
+    NoMatchingOrder,
+    Matched { order_ids: Vec<String> },
+}
+
 /// Mirrors the engine's own `OrderDetailResponse` — a flattened `OrderView`
 /// plus its `payments` list, matching the engine's own
 /// `#[serde(flatten)] order: OrderView` wire shape exactly.
@@ -868,6 +902,39 @@ mod tests {
 
         let running = client.list_active_rescans(&created.secret_token).await.unwrap();
         assert!(running.is_empty());
+    }
+
+    #[tokio::test]
+    async fn lookup_payment_round_trips_against_a_real_engine() {
+        // Proves `EngineClient`'s own wire format (request shape, response
+        // deserialization) against a real engine over a genuine HTTP round
+        // trip - the underlying business logic (a real match, idempotency,
+        // validation) is already exhaustively covered at the engine's own
+        // `http/tests.rs` level (`docs/txid_lookup_and_scan_chunking_wbs.md`
+        // Part B.2); this only needs to prove the two sides agree on the
+        // shape. `with_admin_lookup_daemon` wires an inert `NoopDaemonClient`
+        // into the engine's live-scanner daemon map, which
+        // `admin::lookup_payment` reads unconditionally - the same reason
+        // `trigger_rescan`'s own real-engine tests need `with_admin_
+        // rescan_daemon`.
+        let engine = scanner_test_support::TestEngineConfig::new()
+            .with_networks(&[monero::Network::Mainnet])
+            .with_admin_lookup_daemon()
+            .spawn()
+            .await;
+        let client = EngineClient::new(format!("http://{}", engine.addr));
+        let created = client.create_tenant(test_create_tenant_request()).await.unwrap();
+
+        // `NoopDaemonClient::locate_transaction` always reports `NotFound` -
+        // real, deterministic behavior to assert against, not a guess.
+        let outcome = client.lookup_payment(&created.secret_token, &"a".repeat(64)).await.unwrap();
+        assert!(matches!(outcome, PaymentLookupView::NotFoundOnChain));
+
+        let err = client.lookup_payment(&created.secret_token, "not-a-real-txid").await.unwrap_err();
+        match err {
+            EngineClientError::EngineError { status, .. } => assert_eq!(status, reqwest::StatusCode::BAD_REQUEST),
+            other => panic!("expected a real 400 from the engine, got: {other}"),
+        }
     }
 
     /// A hand-rolled server standing in for the engine's own exact response

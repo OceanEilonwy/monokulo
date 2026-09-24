@@ -29,7 +29,7 @@ use serde::Deserialize;
 
 use crate::crypto;
 use crate::db::{StoreConnectionRow, UserRow};
-use crate::engine_client::{EngineClientError, RescanStatusView};
+use crate::engine_client::{EngineClientError, PaymentLookupView, RescanStatusView};
 use crate::templates::{display_or_dash, display_scan_range, display_timestamp, display_timestamp_or_dash, unix_to_date_string};
 use crate::views;
 use crate::views::orders::{
@@ -59,6 +59,40 @@ pub(super) fn decrypt_sk(state: &AppState, row: &StoreConnectionRow) -> Result<S
     crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).map_err(|_| ())
 }
 
+/// Shared by `orders_list` and `lookup_payment` below - both need the same
+/// "real orders, real fiat metadata" view model, just with a different
+/// `lookup_*` overlay (nothing, for a plain page view; a real result, after a
+/// lookup form submission).
+async fn build_orders_view_model(
+    state: &AppState,
+    row: &StoreConnectionRow,
+    sk: &str,
+) -> Result<OrdersViewModel, ()> {
+    let orders = state.engine_client.list_orders(sk).await.map_err(|_| ())?;
+    // The engine has no concept of fiat any more (`docs/fx_refactor.md` Phase
+    // 3) - fiat display comes entirely from monokulo's own local
+    // `order_currency_metadata`, keyed by payment_id, fetched once for the whole
+    // list rather than per-row.
+    let fiat_metadata = state.db.lock().unwrap().list_order_currency_metadata_for_connection(&row.id).unwrap_or_default();
+
+    Ok(OrdersViewModel {
+        connection_id: row.id.clone(),
+        orders: orders
+            .into_iter()
+            .map(|o| {
+                let (amount, currency) = match fiat_metadata.get(&o.payment_id) {
+                    Some(m) => (m.amount.clone(), m.currency.clone()),
+                    None => ("—".to_string(), "".to_string()),
+                };
+                OrderRowViewModel { payment_id: o.payment_id, status: o.status, amount, currency, created_at: o.created_at }
+            })
+            .collect(),
+        lookup_txid_value: String::new(),
+        lookup_message: None,
+        lookup_found_payment_id: None,
+    })
+}
+
 /// `GET /dashboard/connections/{id}/orders` - a simple table of the
 /// connection's tenant's orders on the engine.
 pub async fn orders_list(
@@ -75,29 +109,66 @@ pub async fn orders_list(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let orders = match state.engine_client.list_orders(&sk).await {
-        Ok(orders) => orders,
+    let view_model = match build_orders_view_model(&state, &row, &sk).await {
+        Ok(vm) => vm,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/connections/{id}/orders"));
+    views::orders::list_page(&chrome, &view_model).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct LookupPaymentForm {
+    txid: String,
+}
+
+/// `POST /dashboard/connections/{id}/orders/lookup` - `docs/txid_lookup_and_
+/// scan_chunking_wbs.md` Part B.3, the direct replacement for the rescan
+/// trigger form below. Re-renders the same orders list with the result
+/// shown inline (a plain message, plus a link to the matched order if any) -
+/// the same "recompute and redisplay, never a redirect that would lose the
+/// result" pattern `trigger_rescan`'s own error path below already uses.
+pub async fn lookup_payment(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Form(form): Form<LookupPaymentForm>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let txid = form.txid.trim().to_string();
+    let (message, found_payment_id) = match state.engine_client.lookup_payment(&sk, &txid).await {
+        Ok(PaymentLookupView::NotFoundOnChain) => {
+            ("No transaction with that ID was found on the network.".to_string(), None)
+        }
+        Ok(PaymentLookupView::NoMatchingOrder) => {
+            ("That transaction exists, but doesn't pay any of this store's orders.".to_string(), None)
+        }
+        Ok(PaymentLookupView::Matched { order_ids }) => {
+            ("Match found and recorded.".to_string(), order_ids.into_iter().next())
+        }
+        Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
+            (format!("Couldn't look that up: {message}"), None)
+        }
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    // The engine has no concept of fiat any more (`docs/fx_refactor.md` Phase
-    // 3) - fiat display comes entirely from monokulo's own local
-    // `order_currency_metadata`, keyed by payment_id, fetched once for the whole
-    // list rather than per-row.
-    let fiat_metadata = state.db.lock().unwrap().list_order_currency_metadata_for_connection(&row.id).unwrap_or_default();
 
-    let view_model = OrdersViewModel {
-        connection_id: id.clone(),
-        orders: orders
-            .into_iter()
-            .map(|o| {
-                let (amount, currency) = match fiat_metadata.get(&o.payment_id) {
-                    Some(m) => (m.amount.clone(), m.currency.clone()),
-                    None => ("—".to_string(), "".to_string()),
-                };
-                OrderRowViewModel { payment_id: o.payment_id, status: o.status, amount, currency, created_at: o.created_at }
-            })
-            .collect(),
+    let mut view_model = match build_orders_view_model(&state, &row, &sk).await {
+        Ok(vm) => vm,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    view_model.lookup_txid_value = txid;
+    view_model.lookup_message = Some(message);
+    view_model.lookup_found_payment_id = found_payment_id;
+
     let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/connections/{id}/orders"));
     views::orders::list_page(&chrome, &view_model).into_response()
 }
@@ -1394,6 +1465,28 @@ mod tests {
         let engine = scanner_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
             .with_admin_rescan_daemon()
+            .spawn()
+            .await;
+        let engine_client = EngineClient::new(format!("http://{}", engine.addr));
+        let state = AppState {
+            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
+            engine_client,
+            encryption_key: TEST_ENCRYPTION_KEY,
+            status_cache: crate::http::status_page::new_status_cache(),
+            exchange_rate: test_exchange_rate_provider(),
+            rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+        };
+        (state, engine)
+    }
+
+    /// Same shape as `test_state_with_real_engine_and_admin_rescan_daemon`,
+    /// for `lookup_payment` below - `admin::lookup_payment` reads the
+    /// engine's live-scanner daemon map unconditionally too.
+    async fn test_state_with_real_engine_and_admin_lookup_daemon() -> (AppState, scanner_test_support::TestEngineHandle)
+    {
+        let engine = scanner_test_support::TestEngineConfig::new()
+            .with_networks(&[monero::Network::Mainnet])
+            .with_admin_lookup_daemon()
             .spawn()
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
@@ -3074,6 +3167,37 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK, "a rejected trigger re-renders the page, it doesn't redirect");
         let html = body_text(response).await;
         assert!(html.contains("expired"), "expected the engine's real rejection reason surfaced, got: {html}");
+    }
+
+    /// `docs/txid_lookup_and_scan_chunking_wbs.md` Part B.3 - the direct
+    /// replacement for the rescan trigger form above. `with_admin_lookup_
+    /// daemon`'s inert `NoopDaemonClient` always reports a txid as not found,
+    /// which is real, deterministic behavior to assert against rather than a
+    /// guess - the real-match/no-match cases are already exhaustively covered
+    /// at the engine's own `http/tests.rs` level.
+    #[tokio::test]
+    async fn lookup_payment_reshows_the_orders_page_with_a_not_found_message() {
+        let (state, _engine) = test_state_with_real_engine_and_admin_lookup_daemon().await;
+        let router = build_router(state);
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "lookup-owner@example.com", "correct horse battery staple")
+                .await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+
+        let txid = "a".repeat(64);
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/connections/{connection_id}/orders/lookup"),
+                &session_token,
+                &[("txid", &txid)],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "a lookup re-renders the orders page, it doesn't redirect");
+        let html = body_text(response).await;
+        assert!(html.contains("No transaction with that ID was found"), "expected the not-found message, got: {html}");
+        assert!(html.contains(&txid), "the submitted txid must repopulate the form's own input");
     }
 
     /// The full, real path a browser actually drives: a merchant picks a plain

@@ -19,6 +19,15 @@ pub struct OrderRowViewModel {
 pub struct OrdersViewModel {
     pub connection_id: String,
     pub orders: Vec<OrderRowViewModel>,
+    /// `docs/txid_lookup_and_scan_chunking_wbs.md` Part B.3 - re-populates the
+    /// form's own input after a submission, empty for a plain page view.
+    pub lookup_txid_value: String,
+    /// The lookup's own plain-text result, `None` until a lookup has actually
+    /// been submitted.
+    pub lookup_message: Option<String>,
+    /// `Some(payment_id)` only when the lookup found a real match - a link to
+    /// the now-updated order, alongside `lookup_message`.
+    pub lookup_found_payment_id: Option<String>,
 }
 
 pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
@@ -26,6 +35,32 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
         div class="wrap" {
             p { a href=(format!("/dashboard/connections/{}", data.connection_id)) { "← back to store" } }
             h1 { "Orders" }
+            div class="card" {
+                h2 { "Look up a payment" }
+                p { "Have a customer's transaction ID? Look it up directly - no need to know which order it belongs to." }
+                form method="post" action=(format!("/dashboard/connections/{}/orders/lookup", data.connection_id)) {
+                    input
+                        type="text"
+                        name="txid"
+                        value=(data.lookup_txid_value)
+                        placeholder="Transaction ID (64 hex characters)"
+                        pattern="[0-9a-fA-F]{64}"
+                        maxlength="64"
+                        required;
+                    button type="submit" { "Look up" }
+                }
+                @if let Some(message) = &data.lookup_message {
+                    p {
+                        (message)
+                        @if let Some(payment_id) = &data.lookup_found_payment_id {
+                            " "
+                            a href=(format!("/dashboard/connections/{}/orders/{}", data.connection_id, payment_id)) {
+                                "View order →"
+                            }
+                        }
+                    }
+                }
+            }
             table {
                 thead {
                     tr { th { "Payment ID" } th { "Status" } th { "Amount" } th { "Created" } }
@@ -374,6 +409,9 @@ mod tests {
                 currency: "USD".to_string(),
                 created_at: 1000,
             }],
+            lookup_txid_value: String::new(),
+            lookup_message: None,
+            lookup_found_payment_id: None,
         };
         let html = list_page(&chrome(), &data).into_string();
         assert!(html.contains("pay_xyz"));
