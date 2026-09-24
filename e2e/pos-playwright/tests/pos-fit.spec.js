@@ -102,7 +102,7 @@ async function checkAllScreenStates(page, label) {
   // the whole navigation (confirmed directly: every "fits" test timed out
   // at the full 10-minute test timeout with `networkidle`, every one
   // passed once switched to the default `load` wait).
-  await page.goto(`${fixture.monokulo_base_url}/dashboard/connections/${fixture.connection_id}/pos`);
+  await page.goto(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/pos`);
   assertFits(await fitMetrics(page), `${label} / keypad`);
 
   for (const digit of ['1', '2', '3', '4', '5']) {
@@ -192,7 +192,7 @@ test('stays within bounds when the window is resized after the page has already 
     const context = await browser.newContext({ viewport: { width: 1440, height: 900 } });
     await context.addCookies([{ name: 'session', value: sessionTokenValue(), url: fixture.monokulo_base_url }]);
     const page = await context.newPage();
-    await page.goto(`${fixture.monokulo_base_url}/dashboard/connections/${fixture.connection_id}/pos`);
+    await page.goto(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/pos`);
 
     const resizeSteps = [
       { width: 1024, height: 768 },

@@ -482,7 +482,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders/{payment_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),

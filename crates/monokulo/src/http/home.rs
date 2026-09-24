@@ -39,16 +39,16 @@ pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Respo
     views::landing::page(&chrome, signup_public).into_response()
 }
 
-/// `GET /dashboard/connections/new` - the picker between the two connect
+/// `GET /dashboard/stores/new` - the picker between the two connect
 /// flows (WBS follow-up: "custom (advanced)" is the existing
 /// `/dashboard/connect` form; "simple -> woocommerce" is the guided page
 /// below). Behind [`AuthedUser`] like every other `/dashboard/*` route.
 pub async fn new_store_picker(AuthedUser(user, _): AuthedUser) -> Response {
-    let chrome = views::PageChrome::from_user(Some(&user), "/dashboard/connections/new");
+    let chrome = views::PageChrome::from_user(Some(&user), "/dashboard/stores/new");
     views::connect::new_store_picker_page(&chrome).into_response()
 }
 
-/// `GET /dashboard/connections/new/woocommerce` - a real live connect *form*
+/// `GET /dashboard/stores/new/woocommerce` - a real live connect *form*
 /// can't be rendered here: the generic `/connect/{platform}` flow needs a
 /// `site_url`/`return_url`/`nonce` that only the WooCommerce plugin itself
 /// can supply (see `http/connect.rs`'s own module doc comment) - the
@@ -56,7 +56,7 @@ pub async fn new_store_picker(AuthedUser(user, _): AuthedUser) -> Response {
 /// someone else's WordPress admin. So this is instructions, not a form; see
 /// this page's own template for the reasoning restated for the merchant.
 pub async fn woocommerce_instructions(AuthedUser(user, _): AuthedUser) -> Response {
-    let chrome = views::PageChrome::from_user(Some(&user), "/dashboard/connections/new/woocommerce");
+    let chrome = views::PageChrome::from_user(Some(&user), "/dashboard/stores/new/woocommerce");
     views::store_detail::woocommerce_instructions_page(&chrome).into_response()
 }
 
@@ -346,7 +346,7 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             let html = body_text(response).await;
-            assert!(html.contains(r#"href="/dashboard/connections/new""#), "expected the add-a-store CTA, got: {html}");
+            assert!(html.contains(r#"href="/dashboard/stores/new""#), "expected the add-a-store CTA, got: {html}");
         }
 
         #[tokio::test]
@@ -373,7 +373,7 @@ mod tests {
             let html = body_text(response).await;
 
             assert!(html.contains(&public_key), "expected the store's public key listed, got: {html}");
-            assert!(html.contains(&format!("/dashboard/connections/{connection_id}")), "expected a link to the store, got: {html}");
+            assert!(html.contains(&format!("/dashboard/stores/{connection_id}")), "expected a link to the store, got: {html}");
             assert!(html.contains(&payment_id), "expected the seeded order in the recent-orders feed, got: {html}");
             assert!(html.contains("tag-ok"), "the engine is genuinely reachable, so health must render as ok, got: {html}");
             assert!(html.contains("Total received"), "expected the total-received summary, got: {html}");
@@ -386,7 +386,7 @@ mod tests {
 
             let unauthed = router
                 .clone()
-                .oneshot(Request::builder().method("GET").uri("/dashboard/connections/new").body(Body::empty()).unwrap())
+                .oneshot(Request::builder().method("GET").uri("/dashboard/stores/new").body(Body::empty()).unwrap())
                 .await
                 .unwrap();
             assert_eq!(unauthed.status(), StatusCode::UNAUTHORIZED);
@@ -397,7 +397,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method("GET")
-                        .uri("/dashboard/connections/new")
+                        .uri("/dashboard/stores/new")
                         .header("authorization", format!("Bearer {session_token}"))
                         .body(Body::empty())
                         .unwrap(),
@@ -406,7 +406,7 @@ mod tests {
                 .unwrap();
             assert_eq!(response.status(), StatusCode::OK);
             let html = body_text(response).await;
-            assert!(html.contains(r#"href="/dashboard/connections/new/woocommerce""#));
+            assert!(html.contains(r#"href="/dashboard/stores/new/woocommerce""#));
             assert!(html.contains(r#"href="/dashboard/connect""#));
         }
 
@@ -417,7 +417,7 @@ mod tests {
 
             let unauthed = router
                 .clone()
-                .oneshot(Request::builder().method("GET").uri("/dashboard/connections/new/woocommerce").body(Body::empty()).unwrap())
+                .oneshot(Request::builder().method("GET").uri("/dashboard/stores/new/woocommerce").body(Body::empty()).unwrap())
                 .await
                 .unwrap();
             assert_eq!(unauthed.status(), StatusCode::UNAUTHORIZED);
@@ -428,7 +428,7 @@ mod tests {
                 .oneshot(
                     Request::builder()
                         .method("GET")
-                        .uri("/dashboard/connections/new/woocommerce")
+                        .uri("/dashboard/stores/new/woocommerce")
                         .header("authorization", format!("Bearer {session_token}"))
                         .body(Body::empty())
                         .unwrap(),

@@ -282,7 +282,7 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // 302 itself; checking the landing page actually shows the new row is a
     // stronger proof of success than a raw status code would be anyway.
     let threshold_response = client
-        .post(format!("{monokulo_base_url}/dashboard/connections/{connection_id}/settings/confirmation-thresholds"))
+        .post(format!("{monokulo_base_url}/dashboard/stores/{connection_id}/settings/confirmation-thresholds"))
         .header("authorization", &bearer)
         .form(&[("unit_amount", THRESHOLD_UNIT_AMOUNT), ("confirmations_required", &THRESHOLD_CONFIRMATIONS_REQUIRED.to_string())])
         .send()
@@ -333,7 +333,7 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     // (WBS task: "makes it clear how the confirmation threshold was
     // decided", `templates::OrderDetailData::confirmations_required_display`).
     let detail_html = client
-        .get(format!("{monokulo_base_url}/dashboard/connections/{connection_id}/orders/{payment_id}"))
+        .get(format!("{monokulo_base_url}/dashboard/stores/{connection_id}/orders/{payment_id}"))
         .header("authorization", &bearer)
         .send()
         .await

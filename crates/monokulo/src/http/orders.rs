@@ -85,7 +85,7 @@ async fn build_orders_view_model(
     })
 }
 
-/// `GET /dashboard/connections/{id}/orders` - a simple table of the
+/// `GET /dashboard/stores/{id}/orders` - a simple table of the
 /// connection's tenant's orders on the engine.
 pub async fn orders_list(
     State(state): State<AppState>,
@@ -105,7 +105,7 @@ pub async fn orders_list(
         Ok(vm) => vm,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/connections/{id}/orders"));
+    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/stores/{id}/orders"));
     views::orders::list_page(&chrome, &view_model).into_response()
 }
 
@@ -136,7 +136,7 @@ async fn perform_payment_lookup(state: &AppState, sk: &str, txid: &str) -> Resul
     }
 }
 
-/// `POST /dashboard/connections/{id}/orders/lookup` - `docs/txid_lookup_and_
+/// `POST /dashboard/stores/{id}/orders/lookup` - `docs/txid_lookup_and_
 /// scan_chunking_wbs.md` Part B.3, the direct replacement for the old
 /// manual rescan feature. Re-renders the store overview page with the
 /// result shown inline in its "Recent orders" section (a plain message,
@@ -167,7 +167,7 @@ pub async fn lookup_payment(
     render_store_detail_page(&state, row, &user, txid, Some(message), found_payment_id).await
 }
 
-/// `GET /dashboard/connections/{id}/orders/{payment_id}` - the order's full
+/// `GET /dashboard/stores/{id}/orders/{payment_id}` - the order's full
 /// detail (every `OrderView` field plus its `payments` list). A
 /// `payment_id` the engine doesn't recognize for this tenant (unknown, or
 /// belonging to a different one) renders a clear "not found" state with a
@@ -190,7 +190,7 @@ pub async fn order_detail(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/connections/{id}/orders/{payment_id}"));
+    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/stores/{id}/orders/{payment_id}"));
     // A real, absolute, copy-pasteable URL - not just the path - since the
     // whole point is something a merchant can paste into an email or chat
     // to someone who isn't already looking at this dashboard. This
@@ -337,7 +337,7 @@ fn parse_extra_headers(text: &str) -> Result<std::collections::BTreeMap<String, 
     Ok(headers)
 }
 
-/// `POST /dashboard/connections/{id}/webhooks` - registers a new webhook via
+/// `POST /dashboard/stores/{id}/webhooks` - registers a new webhook via
 /// the engine's own `POST /api/v1/admin/tenant/webhooks` (already built,
 /// nothing here proxies to previously; this is purely a UI gap closing).
 /// Deliberately re-renders the page directly rather than redirecting on
@@ -386,7 +386,7 @@ pub async fn webhooks_create(
     }
 }
 
-/// `POST /dashboard/connections/{id}/settings/webhooks/{webhook_id}/delete` -
+/// `POST /dashboard/stores/{id}/settings/webhooks/{webhook_id}/delete` -
 /// a POST (not a real `DELETE`) because a plain HTML `<form>` can only submit
 /// `GET`/`POST`. Redirects back to the settings page on success
 /// (POST-redirect-GET - refreshing the page after a delete must not risk
@@ -409,9 +409,9 @@ pub async fn webhooks_delete(
     };
 
     match state.engine_client.delete_webhook(&sk, &webhook_id).await {
-        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}/settings")),
+        Ok(()) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
         Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
-            redirect_302(&format!("/dashboard/connections/{id}/settings"))
+            redirect_302(&format!("/dashboard/stores/{id}/settings"))
         }
         Err(_) => {
             render_store_settings_page(&state, row, &user, Some("Could not delete that webhook. Please try again.".to_string()), None).await
@@ -444,7 +444,7 @@ pub(super) fn health_of_tenant_lookup<T>(result: &Result<T, EngineClientError>) 
     }
 }
 
-/// `GET /dashboard/connections/{id}` - the store overview page: identity,
+/// `GET /dashboard/stores/{id}` - the store overview page: identity,
 /// health, recent orders, and the same integration-help content
 /// (`_integration_help.html.hbs`) shown right after a successful connect, so
 /// a merchant can always find it again later without re-connecting.
@@ -456,7 +456,7 @@ pub async fn store_detail(
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => {
-            let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/connections/{id}"));
+            let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/stores/{id}"));
             let data = views::store_detail::StoreDetailViewModel { store: None };
             return (StatusCode::NOT_FOUND, views::store_detail::page(&chrome, &data)).into_response();
         }
@@ -478,7 +478,7 @@ async fn render_store_detail_page(
     lookup_message: Option<String>,
     lookup_found_payment_id: Option<String>,
 ) -> Response {
-    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/connections/{}", row.id));
+    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/stores/{}", row.id));
     let sk = match decrypt_sk(state, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -532,7 +532,7 @@ async fn render_store_detail_page(
     views::store_detail::page(&chrome, &view_model).into_response()
 }
 
-/// `GET /dashboard/connections/{id}/settings` - base currency, confirmation
+/// `GET /dashboard/stores/{id}/settings` - base currency, confirmation
 /// thresholds (0-conf included), exchange rate provider, and webhooks, all
 /// split out from the store overview page onto their own settings page.
 pub async fn store_settings(
@@ -561,7 +561,7 @@ async fn render_store_settings_page(
     settings_error: Option<String>,
     created_webhook_signing_secret: Option<String>,
 ) -> Response {
-    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/connections/{}/settings", row.id));
+    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/stores/{}/settings", row.id));
     let sk = match decrypt_sk(state, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -637,7 +637,7 @@ async fn order_currency_options_for(state: &AppState, row: &StoreConnectionRow) 
     (order_currency_options, order_currency_is_locked_to_xmr)
 }
 
-/// `GET /dashboard/connections/{id}/orders/new` - the "create an order"
+/// `GET /dashboard/stores/{id}/orders/new` - the "create an order"
 /// widget page, reached from the store overview page's own widget tile (the
 /// same shape as the POS terminal's own tile/page).
 pub async fn create_order_page(
@@ -656,7 +656,7 @@ pub async fn create_order_page(
 /// Shared by `create_order_page` and `create_order`'s own validation-error
 /// branches - both end by showing a fresh copy of this same page.
 async fn render_create_order_page(state: &AppState, row: StoreConnectionRow, user: &UserRow, order_creation_error: Option<String>) -> Response {
-    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/connections/{}/orders/new", row.id));
+    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/stores/{}/orders/new", row.id));
     let (order_currency_options, order_currency_is_locked_to_xmr) = order_currency_options_for(state, &row).await;
     let data = views::create_order::CreateOrderData {
         connection_id: row.id.clone(),
@@ -680,7 +680,7 @@ pub struct CreateOrderForm {
     pub merchant_order_id: String,
 }
 
-/// `POST /dashboard/connections/{id}/orders/new` - creates a real order
+/// `POST /dashboard/stores/{id}/orders/new` - creates a real order
 /// directly from the dashboard, via the engine's own *public*
 /// order-creation API (`EngineClient::create_order`, `pk_`-addressed, the
 /// same endpoint a real storefront would call) - lets a merchant try the
@@ -784,7 +784,7 @@ pub async fn create_order(
                     order.payment_id, row.id
                 );
             }
-            redirect_302(&format!("/dashboard/connections/{id}/orders/{}", order.payment_id))
+            redirect_302(&format!("/dashboard/stores/{id}/orders/{}", order.payment_id))
         }
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
             render_create_order_page(&state, row, &user, Some(message)).await
@@ -800,7 +800,7 @@ pub struct UpdateConfirmationsForm {
     pub confirmations_required: String,
 }
 
-/// `POST /dashboard/connections/{id}/settings/confirmations` - updates the
+/// `POST /dashboard/stores/{id}/settings/confirmations` - updates the
 /// tenant's `confirmations_required` via the engine's own `PATCH
 /// /api/v1/admin/tenant` (`EngineClient::set_confirmations_required`).
 /// `String`, not `u64`, on the form field: an unparseable value (empty,
@@ -835,7 +835,7 @@ pub async fn update_confirmations_required(
     };
 
     match state.engine_client.set_confirmations_required(&sk, confirmations_required).await {
-        Ok(_) => redirect_302(&format!("/dashboard/connections/{id}/settings")),
+        Ok(_) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
             render_store_settings_page(&state, row, &user, Some(message), None).await
         }
@@ -850,7 +850,7 @@ pub struct UpdateFxProviderForm {
     pub fx_provider: String,
 }
 
-/// `POST /dashboard/connections/{id}/settings/fx-provider` - a per-store
+/// `POST /dashboard/stores/{id}/settings/fx-provider` - a per-store
 /// choice of exchange-rate provider (a real follow-up to
 /// `docs/fx_refactor.md`: "the FX provider should be configurable on a
 /// per-store basis"). Unlike `update_confirmations_required`, this never
@@ -892,7 +892,7 @@ pub async fn update_fx_provider(
     // future `!Send` and fail to compile as an axum route at all.
     let update_result = state.db.lock().unwrap().update_store_connection_fx_provider(&row.id, &form.fx_provider);
     match update_result {
-        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}/settings")),
+        Ok(()) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
         Err(_) => {
             render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
         }
@@ -904,7 +904,7 @@ pub struct UpdateBaseCurrencyForm {
     pub base_currency: String,
 }
 
-/// `POST /dashboard/connections/{id}/settings/base-currency` - selection-time
+/// `POST /dashboard/stores/{id}/settings/base-currency` - selection-time
 /// validation only (`crate::currencies::resolve_currency`), the same
 /// two-stage split every currency selection in this crate follows - see that
 /// module's own doc comment. Never checks whether any exchange-rate provider
@@ -950,7 +950,7 @@ pub async fn update_base_currency(
 
     let update_result = state.db.lock().unwrap().update_store_connection_base_currency(&row.id, &base_currency);
     match update_result {
-        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}/settings")),
+        Ok(()) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
         Err(_) => {
             render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
         }
@@ -984,7 +984,7 @@ pub struct CreateConfirmationThresholdForm {
     pub confirmations_required: String,
 }
 
-/// `POST /dashboard/connections/{id}/settings/confirmation-thresholds` - adds
+/// `POST /dashboard/stores/{id}/settings/confirmation-thresholds` - adds
 /// one custom, amount-tiered confirmation threshold, one at a time (the same
 /// "add form, real POST, redirect back" shape webhooks already use). Three
 /// validated properties, in order: `confirmations_required` is a whole
@@ -1037,7 +1037,7 @@ pub async fn create_confirmation_threshold(
     let create_result =
         state.db.lock().unwrap().create_confirmation_threshold(&threshold_id, &row.id, unit_amount, confirmations_required, crate::now_unix());
     match create_result {
-        Ok(()) => redirect_302(&format!("/dashboard/connections/{id}/settings")),
+        Ok(()) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
         Err(e) if e.is_unique_violation() => {
             render_store_settings_page(&state, row, &user, Some(format!("A threshold for {unit_amount} already exists.")), None)
                 .await
@@ -1048,7 +1048,7 @@ pub async fn create_confirmation_threshold(
     }
 }
 
-/// `POST /dashboard/connections/{id}/settings/confirmation-thresholds/{threshold_id}/delete` -
+/// `POST /dashboard/stores/{id}/settings/confirmation-thresholds/{threshold_id}/delete` -
 /// the default/fallback threshold isn't one of these rows at all (it's
 /// `tenants.confirmations_required`, edited via `update_confirmations_required`
 /// instead), so there is no way to reach this handler for it - "cannot be
@@ -1064,10 +1064,10 @@ pub async fn delete_confirmation_threshold(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     state.db.lock().unwrap().delete_confirmation_threshold(&row.id, &threshold_id).ok();
-    redirect_302(&format!("/dashboard/connections/{id}/settings"))
+    redirect_302(&format!("/dashboard/stores/{id}/settings"))
 }
 
-/// `POST /dashboard/connections/{id}/settings/confirmation-thresholds/save` -
+/// `POST /dashboard/stores/{id}/settings/confirmation-thresholds/save` -
 /// the dashboard's condensed "Confirmation thresholds" table posts here as
 /// one form with one Save button, rather than the default-update,
 /// add-threshold and per-row-delete forms each posting to their own route
@@ -1194,7 +1194,7 @@ pub async fn save_confirmation_thresholds(
         }
     }
 
-    redirect_302(&format!("/dashboard/connections/{id}/settings"))
+    redirect_302(&format!("/dashboard/stores/{id}/settings"))
 }
 
 #[cfg(test)]
@@ -1385,7 +1385,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1416,7 +1416,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders/{payment_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .header("host", "test.example")
                     .body(Body::empty())
@@ -1482,7 +1482,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders/no-such-payment-id"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders/no-such-payment-id"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1511,7 +1511,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1545,7 +1545,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders"))
                     .header("authorization", format!("Bearer {other_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1567,9 +1567,9 @@ mod tests {
         let fake_id = "nonexistent-connection-id";
 
         for uri in [
-            format!("/dashboard/connections/{fake_id}/orders"),
-            format!("/dashboard/connections/{fake_id}/orders/some-payment-id"),
-            format!("/dashboard/connections/{fake_id}/settings"),
+            format!("/dashboard/stores/{fake_id}/orders"),
+            format!("/dashboard/stores/{fake_id}/orders/some-payment-id"),
+            format!("/dashboard/stores/{fake_id}/settings"),
         ] {
             let response = router
                 .clone()
@@ -1593,7 +1593,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}"))
+                    .uri(format!("/dashboard/stores/{connection_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1622,7 +1622,7 @@ mod tests {
 
         let other_token = signed_up_and_logged_in_session_token(&router, "store-detail-intruder@example.com", "correct horse battery staple").await;
 
-        for uri in [format!("/dashboard/connections/{connection_id}"), "/dashboard/connections/nonexistent".to_string()] {
+        for uri in [format!("/dashboard/stores/{connection_id}"), "/dashboard/stores/nonexistent".to_string()] {
             let response = router
                 .clone()
                 .oneshot(
@@ -1703,7 +1703,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/webhooks"),
+                &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
                 &session_token,
                 &[
                     ("url", "https://merchant.example/moneropay-webhook"),
@@ -1733,7 +1733,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/webhooks"),
+                &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
                 &session_token,
                 &[("url", "https://merchant.example/moneropay-webhook"), ("extra_headers", "not-a-valid-line")],
             ))
@@ -1748,7 +1748,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1774,7 +1774,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/webhooks"),
+                &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
                 &session_token,
                 &[("url", "https://merchant.example/moneropay-webhook")],
             ))
@@ -1792,7 +1792,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1814,7 +1814,7 @@ mod tests {
         let (connection_id, _public_key) = create_connection(&router, &session_token).await;
 
         let response = router
-            .oneshot(form_post_request(&format!("/dashboard/connections/{connection_id}/settings/webhooks"), &session_token, &[("url", "")]))
+            .oneshot(form_post_request(&format!("/dashboard/stores/{connection_id}/settings/webhooks"), &session_token, &[("url", "")]))
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -1833,7 +1833,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/webhooks"),
+                &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
                 &session_token,
                 &[("url", "not a url at all")],
             ))
@@ -1856,7 +1856,7 @@ mod tests {
         let create_response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/webhooks"),
+                &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
                 &session_token,
                 &[("url", "https://merchant.example/to-be-deleted")],
             ))
@@ -1874,7 +1874,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1889,7 +1889,7 @@ mod tests {
         let delete_response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/webhooks/{webhook_id}/delete"),
+                &format!("/dashboard/stores/{connection_id}/settings/webhooks/{webhook_id}/delete"),
                 &session_token,
                 &[],
             ))
@@ -1901,7 +1901,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -1927,7 +1927,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/orders/new"),
+                &format!("/dashboard/stores/{connection_id}/orders/new"),
                 &session_token,
                 &[("amount", "10.00"), ("currency", TEST_CURRENCY), ("merchant_order_id", "order-5678")],
             ))
@@ -1936,7 +1936,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FOUND, "expected a redirect to the new order's own detail page");
         let location = response.headers().get("location").unwrap().to_str().unwrap().to_string();
         assert!(
-            location.starts_with(&format!("/dashboard/connections/{connection_id}/orders/")),
+            location.starts_with(&format!("/dashboard/stores/{connection_id}/orders/")),
             "expected a redirect into this store's own orders, got: {location}"
         );
 
@@ -1982,7 +1982,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/orders/new"),
+                &format!("/dashboard/stores/{connection_id}/orders/new"),
                 &session_token,
                 &[("amount", "10.00"), ("currency", "NOTREAL")],
             ))
@@ -2013,7 +2013,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/orders/new"),
+                &format!("/dashboard/stores/{connection_id}/orders/new"),
                 &session_token,
                 &[("amount", "10.00"), ("currency", "USD")],
             ))
@@ -2038,7 +2038,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/orders/new"),
+                &format!("/dashboard/stores/{connection_id}/orders/new"),
                 &intruder_token,
                 &[("amount", "10.00"), ("currency", TEST_CURRENCY)],
             ))
@@ -2060,7 +2060,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmations"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmations"),
                 &session_token,
                 &[("confirmations_required", "3")],
             ))
@@ -2069,14 +2069,14 @@ mod tests {
         assert_eq!(response.status(), StatusCode::FOUND, "expected a redirect back to the settings page");
         assert_eq!(
             response.headers().get("location").unwrap(),
-            &format!("/dashboard/connections/{connection_id}/settings"),
+            &format!("/dashboard/stores/{connection_id}/settings"),
         );
 
         let settings_page = router
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2099,7 +2099,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmations"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmations"),
                 &session_token,
                 &[("confirmations_required", "0")],
             ))
@@ -2129,7 +2129,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2158,7 +2158,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders/new"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders/new"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2206,7 +2206,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders/new"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders/new"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2233,7 +2233,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/fx-provider"),
+                &format!("/dashboard/stores/{connection_id}/settings/fx-provider"),
                 &session_token,
                 &[("fx_provider", "coingecko")],
             ))
@@ -2259,7 +2259,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/base-currency"),
+                &format!("/dashboard/stores/{connection_id}/settings/base-currency"),
                 &session_token,
                 &[("base_currency", "EUR")],
             ))
@@ -2271,7 +2271,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2298,7 +2298,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds/save"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
                 &session_token,
                 &[("confirmations_required", "10"), ("zero_conf_enabled", "on")],
             ))
@@ -2310,7 +2310,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2335,7 +2335,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/base-currency"),
+                &format!("/dashboard/stores/{connection_id}/settings/base-currency"),
                 &session_token,
                 &[("base_currency", "NOTREAL")],
             ))
@@ -2362,7 +2362,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/base-currency"),
+                &format!("/dashboard/stores/{connection_id}/settings/base-currency"),
                 &session_token,
                 &[("base_currency", "GBP")],
             ))
@@ -2383,7 +2383,7 @@ mod tests {
         router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
                 &session_token,
                 &[("unit_amount", "50.00"), ("confirmations_required", "20")],
             ))
@@ -2393,7 +2393,7 @@ mod tests {
 
         router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/base-currency"),
+                &format!("/dashboard/stores/{connection_id}/settings/base-currency"),
                 &session_token,
                 &[("base_currency", "EUR")],
             ))
@@ -2418,7 +2418,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
                 &session_token,
                 &[("unit_amount", "50.00"), ("confirmations_required", "20")],
             ))
@@ -2433,7 +2433,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2455,7 +2455,7 @@ mod tests {
         let delete_response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds/save"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
                 &session_token,
                 &[("confirmations_required", "10"), (delete_field.as_str(), "on")],
             ))
@@ -2472,7 +2472,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2499,7 +2499,7 @@ mod tests {
             router
                 .clone()
                 .oneshot(form_post_request(
-                    &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                    &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
                     &session_token,
                     &[("unit_amount", amount), ("confirmations_required", "15")],
                 ))
@@ -2511,7 +2511,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2538,7 +2538,7 @@ mod tests {
             let response = router
                 .clone()
                 .oneshot(form_post_request(
-                    &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                    &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
                     &session_token,
                     &[("unit_amount", &format!("{i}.00")), ("confirmations_required", "15")],
                 ))
@@ -2549,7 +2549,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
                 &session_token,
                 &[("unit_amount", "999.00"), ("confirmations_required", "15")],
             ))
@@ -2572,7 +2572,7 @@ mod tests {
         router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
                 &session_token,
                 &[("unit_amount", "50.00"), ("confirmations_required", "20")],
             ))
@@ -2581,7 +2581,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
                 &session_token,
                 &[("unit_amount", "50.00"), ("confirmations_required", "5")],
             ))
@@ -2603,7 +2603,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
                 &session_token,
                 &[("unit_amount", "-5.00"), ("confirmations_required", "20")],
             ))
@@ -2635,7 +2635,7 @@ mod tests {
         router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
                 &session_token,
                 &[("unit_amount", "5.00"), ("confirmations_required", "20")],
             ))
@@ -2645,7 +2645,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/orders/new"),
+                &format!("/dashboard/stores/{connection_id}/orders/new"),
                 &session_token,
                 &[("amount", "10.00"), ("currency", TEST_CURRENCY)],
             ))
@@ -2680,7 +2680,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders/{payment_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2712,7 +2712,7 @@ mod tests {
         router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmation-thresholds"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
                 &session_token,
                 &[("unit_amount", "50.00"), ("confirmations_required", "99")],
             ))
@@ -2721,7 +2721,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/orders/new"),
+                &format!("/dashboard/stores/{connection_id}/orders/new"),
                 &session_token,
                 &[("amount", "10.00"), ("currency", TEST_CURRENCY)],
             ))
@@ -2758,7 +2758,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/settings"))
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -2788,7 +2788,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmations"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmations"),
                 &session_token,
                 &[("confirmations_required", "not-a-number")],
             ))
@@ -2821,7 +2821,7 @@ mod tests {
 
         let response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/confirmations"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmations"),
                 &intruder_token,
                 &[("confirmations_required", "3")],
             ))
@@ -2845,7 +2845,7 @@ mod tests {
         let create_response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/webhooks"),
+                &format!("/dashboard/stores/{connection_id}/settings/webhooks"),
                 &intruder_token,
                 &[("url", "https://attacker.example/steal")],
             ))
@@ -2855,7 +2855,7 @@ mod tests {
 
         let delete_response = router
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/settings/webhooks/some-webhook-id/delete"),
+                &format!("/dashboard/stores/{connection_id}/settings/webhooks/some-webhook-id/delete"),
                 &intruder_token,
                 &[],
             ))
@@ -2883,7 +2883,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/connections/{connection_id}/orders/lookup"),
+                &format!("/dashboard/stores/{connection_id}/orders/lookup"),
                 &session_token,
                 &[("txid", &txid)],
             ))
@@ -2917,7 +2917,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders/{payment_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .header("host", "test.example")
                     .body(Body::empty())
@@ -2960,7 +2960,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{connection_id}/orders/{payment_id}"))
+                    .uri(format!("/dashboard/stores/{connection_id}/orders/{payment_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .header("host", "test.example")
                     .body(Body::empty())

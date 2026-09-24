@@ -5,7 +5,7 @@
 //! to the payment appearing.
 //!
 //! Deliberately behind [`AuthedUser`] and connection-ownership-checked
-//! ([`load_owned_connection`]) exactly like every other `/dashboard/connections/{id}/*`
+//! ([`load_owned_connection`]) exactly like every other `/dashboard/stores/{id}/*`
 //! route (`http::orders`'s own module doc comment) - unlike `http::pay`'s
 //! public, unauthenticated storefront endpoint, a POS terminal is operated
 //! by the merchant themselves, logged in, standing at the register.
@@ -51,7 +51,7 @@ use super::checkout::{qr_svg_for_html, status_label};
 use super::orders::{decrypt_sk, display_name_for, load_owned_connection};
 use super::{ApiError, AppState, AuthedUser};
 
-/// `GET /dashboard/connections/{id}/pos` - the terminal screen itself.
+/// `GET /dashboard/stores/{id}/pos` - the terminal screen itself.
 pub async fn pos_page(State(state): State<AppState>, AuthedUser(user, _): AuthedUser, Path(id): Path<String>) -> Response {
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
@@ -73,7 +73,7 @@ pub async fn pos_page(State(state): State<AppState>, AuthedUser(user, _): Authed
         base_currency: row.base_currency,
         base_currency_decimals,
     };
-    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/connections/{}/pos", view.connection_id));
+    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/stores/{}/pos", view.connection_id));
     views::pos::page(&chrome, &view).into_response()
 }
 
@@ -122,7 +122,7 @@ pub struct PosCreateOrderResponse {
     pub merchant_order_id: Option<String>,
 }
 
-/// `POST /dashboard/connections/{id}/pos/orders` - creates a real order,
+/// `POST /dashboard/stores/{id}/pos/orders` - creates a real order,
 /// always priced in this store's own `base_currency` (spec point 2 - a POS
 /// terminal has no currency picker). Mirrors
 /// `http::orders::create_order`/`http::pay::create_order` field for field;
@@ -276,7 +276,7 @@ fn derive_payment_error(order: &OrderView) -> Option<String> {
     }
 }
 
-/// `GET /dashboard/connections/{id}/pos/orders/{payment_id}/status` - the
+/// `GET /dashboard/stores/{id}/pos/orders/{payment_id}/status` - the
 /// small JSON the terminal screen's own poll loop reads, both for the
 /// payment currently on-screen and for every backgrounded one stacked at
 /// the bottom (spec points 7-12) simultaneously polling their own.
@@ -436,7 +436,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{id}/pos"))
+                    .uri(format!("/dashboard/stores/{id}/pos"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -459,7 +459,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri("/dashboard/connections/nonexistent/pos")
+                    .uri("/dashboard/stores/nonexistent/pos")
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -483,7 +483,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{id}/pos"))
+                    .uri(format!("/dashboard/stores/{id}/pos"))
                     .header("authorization", format!("Bearer {other_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -502,7 +502,7 @@ mod tests {
         let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
 
         let response = router
-            .oneshot(Request::builder().method("GET").uri(format!("/dashboard/connections/{id}/pos")).body(Body::empty()).unwrap())
+            .oneshot(Request::builder().method("GET").uri(format!("/dashboard/stores/{id}/pos")).body(Body::empty()).unwrap())
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -522,7 +522,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::from(serde_json::json!({ "amount": "1.5" }).to_string()))
@@ -547,7 +547,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{id}/orders"))
+                    .uri(format!("/dashboard/stores/{id}/orders"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -577,7 +577,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::from(serde_json::json!({ "amount": "1.0", "merchant_order_id": "Jane Doe" }).to_string()))
@@ -594,7 +594,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{id}/orders/{payment_id}"))
+                    .uri(format!("/dashboard/stores/{id}/orders/{payment_id}"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -622,7 +622,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::from(serde_json::json!({ "amount": "1.0", "merchant_order_id": "   " }).to_string()))
@@ -648,7 +648,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::from(serde_json::json!({ "amount": "" }).to_string()))
@@ -672,7 +672,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::from(serde_json::json!({ "amount": "not-a-number" }).to_string()))
@@ -696,7 +696,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {other_token}"))
                     .body(Body::from(serde_json::json!({ "amount": "1.0" }).to_string()))
@@ -720,7 +720,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::from(serde_json::json!({ "amount": "2.0" }).to_string()))
@@ -734,7 +734,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{id}/pos/orders/{payment_id}/status"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders/{payment_id}/status"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -761,7 +761,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{id}/pos/orders/nonexistent/status"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders/nonexistent/status"))
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -783,7 +783,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {owner_token}"))
                     .body(Body::from(serde_json::json!({ "amount": "1.0" }).to_string()))
@@ -798,7 +798,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("GET")
-                    .uri(format!("/dashboard/connections/{id}/pos/orders/{payment_id}/status"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders/{payment_id}/status"))
                     .header("authorization", format!("Bearer {other_token}"))
                     .body(Body::empty())
                     .unwrap(),
@@ -826,7 +826,7 @@ mod tests {
             .oneshot(
                 Request::builder()
                     .method("POST")
-                    .uri(format!("/dashboard/connections/{id}/pos/orders"))
+                    .uri(format!("/dashboard/stores/{id}/pos/orders"))
                     .header("content-type", "application/json")
                     .header("authorization", format!("Bearer {session_token}"))
                     .body(Body::from(serde_json::json!({ "amount": "10.00" }).to_string()))

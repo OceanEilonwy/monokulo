@@ -43,7 +43,7 @@ async function loginAndOpenPos(page) {
   await page.click('button[type="submit"]');
   await expect(page).toHaveURL(/\/dashboard$/);
 
-  await page.goto(`${fixture.monokulo_base_url}/dashboard/connections/${fixture.connection_id}/pos`);
+  await page.goto(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/pos`);
   await expect(page.locator('#keypad-screen')).toBeVisible();
 }
 
@@ -55,7 +55,7 @@ async function loginAndOpenPos(page) {
  */
 async function setConfirmationsRequired(context, value) {
   const response = await context.request.post(
-    `${fixture.monokulo_base_url}/dashboard/connections/${fixture.connection_id}/settings/confirmations`,
+    `${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/settings/confirmations`,
     { form: { confirmations_required: String(value) } },
   );
   expect(response.ok()).toBeTruthy();
@@ -125,7 +125,7 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
 
     // Spec point 5: a POS-created order is a real order, visible on the
     // normal dashboard orders list, not something private to this screen.
-    const ordersPage = await context.request.get(`${fixture.monokulo_base_url}/dashboard/connections/${fixture.connection_id}/orders`);
+    const ordersPage = await context.request.get(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/orders`);
     expect(await ordersPage.text()).toContain(order.payment_id);
   });
 

@@ -1,5 +1,5 @@
 //! `GET`/`POST /dashboard/connect`, `/connect/{platform}`, and
-//! `/dashboard/connections/new` - `http::dashboard::render_connect_form`/
+//! `/dashboard/stores/new` - `http::dashboard::render_connect_form`/
 //! `render_connect_success`, `http::connect::render_confirm_form`,
 //! `http::home::new_store_picker`.
 
@@ -119,7 +119,7 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
                     "needed. Only a " strong { "view key" } " and a " strong { "public spend key" } " are ever "
                     "collected: this system can watch for incoming payments, but can never move funds, because it "
                     "never sees a spend " em { "key" } ", only the public spend address material. If you'd rather use a "
-                    "guided flow, see the " a href="/dashboard/connections/new" { "add-a-store picker" } "."
+                    "guided flow, see the " a href="/dashboard/stores/new" { "add-a-store picker" } "."
                 }
                 @if let Some(error) = &data.error {
                     p class="error" { (error) }
@@ -273,7 +273,7 @@ pub fn new_store_picker_page(chrome: &PageChrome) -> Markup {
                         "Running WordPress + WooCommerce? Install the plugin and click Connect - no keys to paste in "
                         "by hand."
                     }
-                    a class="btn" href="/dashboard/connections/new/woocommerce" { "Set up WooCommerce" }
+                    a class="btn" href="/dashboard/stores/new/woocommerce" { "Set up WooCommerce" }
                 }
                 div class="pick-card" {
                     h3 { "Custom (advanced)" }
@@ -433,7 +433,7 @@ mod tests {
     #[test]
     fn new_store_picker_links_to_both_flows() {
         let html = new_store_picker_page(&chrome()).into_string();
-        assert!(html.contains(r#"href="/dashboard/connections/new/woocommerce""#));
+        assert!(html.contains(r#"href="/dashboard/stores/new/woocommerce""#));
         assert!(html.contains(r#"href="/dashboard/connect""#));
     }
 }

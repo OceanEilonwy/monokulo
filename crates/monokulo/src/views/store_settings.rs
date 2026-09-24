@@ -1,4 +1,4 @@
-//! `GET /dashboard/connections/{id}/settings` -
+//! `GET /dashboard/stores/{id}/settings` -
 //! `http::orders::store_settings`/`render_store_settings_page`.
 //!
 //! Everything about a store that isn't day-to-day order activity: currency
@@ -77,7 +77,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
         div class="wrap" {
             @if let Some(store) = &data.store {
                 h1 class="breadcrumb-header" {
-                    a href=(format!("/dashboard/connections/{}", store.connection_id)) { (store.display_name) }
+                    a href=(format!("/dashboard/stores/{}", store.connection_id)) { (store.display_name) }
                     span class="breadcrumb-sep" { "›" }
                     "Settings"
                 }
@@ -87,7 +87,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                 }
 
                 h2 { "Base currency" }
-                form method="post" action=(format!("/dashboard/connections/{}/settings/base-currency", store.connection_id)) {
+                form method="post" action=(format!("/dashboard/stores/{}/settings/base-currency", store.connection_id)) {
                     label {
                         "Base currency"
                         select name="base_currency" {
@@ -110,7 +110,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                     "order require more confirmations (or a lower-value one fewer) based on its amount in this store's base "
                     "currency."
                 }
-                form method="post" action=(format!("/dashboard/connections/{}/settings/confirmation-thresholds/save", store.connection_id)) {
+                form method="post" action=(format!("/dashboard/stores/{}/settings/confirmation-thresholds/save", store.connection_id)) {
                     table class="thresholds-table" {
                         thead { tr { th { "Amount (" (store.base_currency) ")" } th { "Confirmations required" } th { "Action" } } }
                         tbody {
@@ -164,7 +164,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                         "enables a provider (e.g. Coingecko)."
                     }
                 } @else {
-                    form method="post" action=(format!("/dashboard/connections/{}/settings/fx-provider", store.connection_id)) {
+                    form method="post" action=(format!("/dashboard/stores/{}/settings/fx-provider", store.connection_id)) {
                         label {
                             "Exchange rate provider"
                             select name="fx_provider" {
@@ -209,7 +209,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                                 td { (webhook.created_at) }
                                 td {
                                     form method="post"
-                                        action=(format!("/dashboard/connections/{}/settings/webhooks/{}/delete", store.connection_id, webhook.webhook_id))
+                                        action=(format!("/dashboard/stores/{}/settings/webhooks/{}/delete", store.connection_id, webhook.webhook_id))
                                         onsubmit="return confirm('Delete this webhook? Anything relying on it will stop receiving events immediately.');" {
                                         button type="submit" class="btn-secondary" { "Delete" }
                                     }
@@ -223,7 +223,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                 }
                 div class="box" {
                     h3 { "Add a webhook" }
-                    form method="post" action=(format!("/dashboard/connections/{}/settings/webhooks", store.connection_id)) {
+                    form method="post" action=(format!("/dashboard/stores/{}/settings/webhooks", store.connection_id)) {
                         label {
                             "URL"
                             input type="url" name="url" placeholder="https://your-endpoint.example.com/monokulo-webhook" required;
@@ -258,7 +258,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/dashboard/connections/conn_1/settings")
+        PageChrome::from_user(None, "/dashboard/stores/conn_1/settings")
     }
 
     fn base_store() -> StoreSettingsData {
@@ -289,7 +289,7 @@ mod tests {
     fn shows_a_store_name_settings_breadcrumb_linking_back_to_the_store_page() {
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
         assert!(
-            html.contains(r#"<h1 class="breadcrumb-header"><a href="/dashboard/connections/conn_1">shop.example.com</a>"#),
+            html.contains(r#"<h1 class="breadcrumb-header"><a href="/dashboard/stores/conn_1">shop.example.com</a>"#),
             "expected a store-name -> Settings breadcrumb, got: {html}"
         );
     }
@@ -355,7 +355,7 @@ mod tests {
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
         assert!(html.contains("https://example.com/hook"));
         assert!(html.contains("tag-ok"));
-        assert!(html.contains(r#"action="/dashboard/connections/conn_1/settings/webhooks/wh_1/delete""#));
+        assert!(html.contains(r#"action="/dashboard/stores/conn_1/settings/webhooks/wh_1/delete""#));
     }
 
     #[test]

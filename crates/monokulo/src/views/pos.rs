@@ -33,7 +33,7 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(POS_STYLE)) } };
     let body = html! {
         div class="pos-topbar" {
-            a href=(format!("/dashboard/connections/{}", data.connection_id)) class="pos-back" aria-label="Back to dashboard" title="Back to dashboard" { "←" }
+            a href=(format!("/dashboard/stores/{}", data.connection_id)) class="pos-back" aria-label="Back to dashboard" title="Back to dashboard" { "←" }
             a href="/status" class="pos-status-link" id="pos-status-link" title="checking..." {
                 span id="pos-status-dot" class="status-dot status-dot-unknown" {}
             }
@@ -559,7 +559,7 @@ const POS_SCRIPT: &str = r#"
     chargeBtn.disabled = true;
     var response;
     try {
-      response = await fetch("/dashboard/connections/" + connectionId + "/pos/orders", {
+      response = await fetch("/dashboard/stores/" + connectionId + "/pos/orders", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({ amount: amount, merchant_order_id: note ? note : null }),
@@ -629,7 +629,7 @@ const POS_SCRIPT: &str = r#"
   async function pollOnce(paymentId) {
     var response;
     try {
-      response = await fetch("/dashboard/connections/" + connectionId + "/pos/orders/" + paymentId + "/status");
+      response = await fetch("/dashboard/stores/" + connectionId + "/pos/orders/" + paymentId + "/status");
     } catch (err) {
       return { networkError: true };
     }
@@ -777,7 +777,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/dashboard/connections/conn-1/pos")
+        PageChrome::from_user(None, "/dashboard/stores/conn-1/pos")
     }
 
     fn data() -> PosViewModel {
@@ -799,7 +799,7 @@ mod tests {
         assert!(html.contains(r#"data-connection-id="conn-1""#));
         assert!(html.contains(r#"data-decimals="12""#));
         assert!(
-            html.contains("/dashboard/connections/conn-1"),
+            html.contains("/dashboard/stores/conn-1"),
             "expected the back link to this connection's dashboard"
         );
         assert!(

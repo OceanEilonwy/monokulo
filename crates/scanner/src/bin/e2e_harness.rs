@@ -398,7 +398,7 @@ async fn main() {
         .await
         .unwrap();
     let dashboard_html = body_text(dashboard_response).await;
-    let link_marker = "/dashboard/connections/";
+    let link_marker = "/dashboard/stores/";
     let link_start = dashboard_html.find(link_marker).expect("expected a real store link on the dashboard") + link_marker.len();
     let connection_id: String = dashboard_html[link_start..].chars().take_while(|c| c.is_alphanumeric() || *c == '-').collect();
 

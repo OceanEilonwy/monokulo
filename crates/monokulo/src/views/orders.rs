@@ -1,5 +1,5 @@
-//! `GET /dashboard/connections/{id}/orders` and
-//! `/dashboard/connections/{id}/orders/{payment_id}` -
+//! `GET /dashboard/stores/{id}/orders` and
+//! `/dashboard/stores/{id}/orders/{payment_id}` -
 //! `http::orders::orders_list`/`order_detail`/`lookup_payment`.
 
 use maud::{html, Markup, PreEscaped};
@@ -65,7 +65,7 @@ pub fn lookup_payment_card(
 pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
-            p { a href=(format!("/dashboard/connections/{}", data.connection_id)) { "← back to store" } }
+            p { a href=(format!("/dashboard/stores/{}", data.connection_id)) { "← back to store" } }
             h1 { "Orders" }
             table {
                 thead {
@@ -75,7 +75,7 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
                     @for order in &data.orders {
                         tr {
                             td {
-                                a href=(format!("/dashboard/connections/{}/orders/{}", data.connection_id, order.payment_id)) {
+                                a href=(format!("/dashboard/stores/{}/orders/{}", data.connection_id, order.payment_id)) {
                                     (order.payment_id)
                                 }
                             }
@@ -187,7 +187,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
 
     let body = html! {
         div class="wrap" {
-            p { a href=(format!("/dashboard/connections/{}/orders", data.connection_id)) { "← back to orders" } }
+            p { a href=(format!("/dashboard/stores/{}/orders", data.connection_id)) { "← back to orders" } }
             @if let Some(order) = &data.order {
                 h1 class="order-title" {
                     span { "Order " (order.payment_id) }
@@ -279,7 +279,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/dashboard/connections/conn_1/orders")
+        PageChrome::from_user(None, "/dashboard/stores/conn_1/orders")
     }
 
     #[test]
@@ -296,8 +296,8 @@ mod tests {
         };
         let html = list_page(&chrome(), &data).into_string();
         assert!(html.contains("pay_xyz"));
-        assert!(html.contains(r#"href="/dashboard/connections/conn_1/orders/pay_xyz""#));
-        assert!(html.contains(r#"href="/dashboard/connections/conn_1""#), "expected a back-to-store link");
+        assert!(html.contains(r#"href="/dashboard/stores/conn_1/orders/pay_xyz""#));
+        assert!(html.contains(r#"href="/dashboard/stores/conn_1""#), "expected a back-to-store link");
     }
 
     fn test_order_detail_data(double_spend_detected_at: Option<i64>) -> OrderDetailData {

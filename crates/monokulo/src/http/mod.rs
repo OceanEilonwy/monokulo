@@ -139,52 +139,52 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/logout", axum::routing::post(dashboard::logout_submit))
         .route("/dashboard/theme", axum::routing::post(dashboard::theme_submit))
         .route("/dashboard/connect", axum::routing::get(dashboard::connect_form).post(dashboard::connect_submit))
-        .route("/dashboard/connections/new", axum::routing::get(home::new_store_picker))
-        .route("/dashboard/connections/new/woocommerce", axum::routing::get(home::woocommerce_instructions))
-        .route("/dashboard/connections/{id}", axum::routing::get(orders::store_detail))
-        .route("/dashboard/connections/{id}/settings", axum::routing::get(orders::store_settings))
+        .route("/dashboard/stores/new", axum::routing::get(home::new_store_picker))
+        .route("/dashboard/stores/new/woocommerce", axum::routing::get(home::woocommerce_instructions))
+        .route("/dashboard/stores/{id}", axum::routing::get(orders::store_detail))
+        .route("/dashboard/stores/{id}/settings", axum::routing::get(orders::store_settings))
         .route(
-            "/dashboard/connections/{id}/orders/new",
+            "/dashboard/stores/{id}/orders/new",
             axum::routing::get(orders::create_order_page).post(orders::create_order),
         )
         .route(
-            "/dashboard/connections/{id}/settings/confirmations",
+            "/dashboard/stores/{id}/settings/confirmations",
             axum::routing::post(orders::update_confirmations_required),
         )
         .route(
-            "/dashboard/connections/{id}/settings/fx-provider",
+            "/dashboard/stores/{id}/settings/fx-provider",
             axum::routing::post(orders::update_fx_provider),
         )
         .route(
-            "/dashboard/connections/{id}/settings/base-currency",
+            "/dashboard/stores/{id}/settings/base-currency",
             axum::routing::post(orders::update_base_currency),
         )
         .route(
-            "/dashboard/connections/{id}/settings/confirmation-thresholds",
+            "/dashboard/stores/{id}/settings/confirmation-thresholds",
             axum::routing::post(orders::create_confirmation_threshold),
         )
         .route(
-            "/dashboard/connections/{id}/settings/confirmation-thresholds/{threshold_id}/delete",
+            "/dashboard/stores/{id}/settings/confirmation-thresholds/{threshold_id}/delete",
             axum::routing::post(orders::delete_confirmation_threshold),
         )
         .route(
-            "/dashboard/connections/{id}/settings/confirmation-thresholds/save",
+            "/dashboard/stores/{id}/settings/confirmation-thresholds/save",
             axum::routing::post(orders::save_confirmation_thresholds),
         )
         .route(
-            "/dashboard/connections/{id}/settings/webhooks",
+            "/dashboard/stores/{id}/settings/webhooks",
             axum::routing::post(orders::webhooks_create),
         )
         .route(
-            "/dashboard/connections/{id}/settings/webhooks/{webhook_id}/delete",
+            "/dashboard/stores/{id}/settings/webhooks/{webhook_id}/delete",
             axum::routing::post(orders::webhooks_delete),
         )
-        .route("/dashboard/connections/{id}/pos", axum::routing::get(pos::pos_page))
-        .route("/dashboard/connections/{id}/pos/orders", axum::routing::post(pos::create_order))
-        .route("/dashboard/connections/{id}/pos/orders/{payment_id}/status", axum::routing::get(pos::order_status))
-        .route("/dashboard/connections/{id}/orders", axum::routing::get(orders::orders_list))
-        .route("/dashboard/connections/{id}/orders/lookup", axum::routing::post(orders::lookup_payment))
-        .route("/dashboard/connections/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
+        .route("/dashboard/stores/{id}/pos", axum::routing::get(pos::pos_page))
+        .route("/dashboard/stores/{id}/pos/orders", axum::routing::post(pos::create_order))
+        .route("/dashboard/stores/{id}/pos/orders/{payment_id}/status", axum::routing::get(pos::order_status))
+        .route("/dashboard/stores/{id}/orders", axum::routing::get(orders::orders_list))
+        .route("/dashboard/stores/{id}/orders/lookup", axum::routing::post(orders::lookup_payment))
+        .route("/dashboard/stores/{id}/orders/{payment_id}", axum::routing::get(orders::order_detail))
         .route("/connect/{platform}", axum::routing::get(connect::start).post(connect::confirm_submit))
         .route("/connect/{platform}/finish", post(connect::finish));
 

@@ -1,4 +1,4 @@
-//! `GET /dashboard/connections/{id}` - `http::orders::store_detail`/
+//! `GET /dashboard/stores/{id}` - `http::orders::store_detail`/
 //! `render_store_detail_page`.
 
 use maud::{html, Markup};
@@ -42,7 +42,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 h1 { (store.display_name) }
 
                 div class="store-header-row" {
-                    a class="btn-secondary settings-link" href=(format!("/dashboard/connections/{}/settings", store.connection_id)) { "Settings" }
+                    a class="btn-secondary settings-link" href=(format!("/dashboard/stores/{}/settings", store.connection_id)) { "Settings" }
                     details class="help-disclosure" {
                         summary {
                             span {
@@ -63,7 +63,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 }
 
                 div class="widget-links" {
-                    a class="btn widget-link" href=(format!("/dashboard/connections/{}/pos", store.connection_id)) {
+                    a class="btn widget-link" href=(format!("/dashboard/stores/{}/pos", store.connection_id)) {
                         span class="widget-link-icon" {
                             svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
                                 stroke-linejoin="round" aria-hidden="true" focusable="false" {
@@ -85,7 +85,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                             span class="widget-link-hint" { "Full-screen keypad for in-person sales" }
                         }
                     }
-                    a class="btn widget-link" href=(format!("/dashboard/connections/{}/orders/new", store.connection_id)) {
+                    a class="btn widget-link" href=(format!("/dashboard/stores/{}/orders/new", store.connection_id)) {
                         span class="widget-link-icon" {
                             svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
                                 stroke-linejoin="round" aria-hidden="true" focusable="false" {
@@ -112,7 +112,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                             @for order in &store.recent_orders {
                                 tr {
                                     td {
-                                        a href=(format!("/dashboard/connections/{}/orders/{}", store.connection_id, order.payment_id)) {
+                                        a href=(format!("/dashboard/stores/{}/orders/{}", store.connection_id, order.payment_id)) {
                                             (order.payment_id)
                                         }
                                     }
@@ -125,15 +125,15 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                     }
                 }
                 p {
-                    a href=(format!("/dashboard/connections/{}/orders", store.connection_id)) { "all orders →" }
+                    a href=(format!("/dashboard/stores/{}/orders", store.connection_id)) { "all orders →" }
                 }
 
                 (lookup_payment_card(
-                    &format!("/dashboard/connections/{}/orders/lookup", store.connection_id),
+                    &format!("/dashboard/stores/{}/orders/lookup", store.connection_id),
                     &store.lookup_txid_value,
                     &store.lookup_message,
                     &store.lookup_found_payment_id,
-                    |payment_id| format!("/dashboard/connections/{}/orders/{}", store.connection_id, payment_id),
+                    |payment_id| format!("/dashboard/stores/{}/orders/{}", store.connection_id, payment_id),
                 ))
             } @else {
                 h1 { "Store not found" }
@@ -182,7 +182,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/dashboard/connections/conn_1")
+        PageChrome::from_user(None, "/dashboard/stores/conn_1")
     }
 
     fn base_store(is_woocommerce: bool) -> StoreDetailData {
@@ -245,9 +245,9 @@ mod tests {
     #[test]
     fn links_to_the_settings_page_and_widget_pages() {
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(base_store(false)) }).into_string();
-        assert!(html.contains(r#"href="/dashboard/connections/conn_1/settings""#), "expected a Settings link, got: {html}");
-        assert!(html.contains(r#"href="/dashboard/connections/conn_1/pos""#));
-        assert!(html.contains(r#"href="/dashboard/connections/conn_1/orders/new""#));
+        assert!(html.contains(r#"href="/dashboard/stores/conn_1/settings""#), "expected a Settings link, got: {html}");
+        assert!(html.contains(r#"href="/dashboard/stores/conn_1/pos""#));
+        assert!(html.contains(r#"href="/dashboard/stores/conn_1/orders/new""#));
     }
 
     #[test]

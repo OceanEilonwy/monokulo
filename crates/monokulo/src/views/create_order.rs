@@ -1,4 +1,4 @@
-//! `GET/POST /dashboard/connections/{id}/orders/new` -
+//! `GET/POST /dashboard/stores/{id}/orders/new` -
 //! `http::orders::create_order_page`/`create_order`.
 //!
 //! A widget page, same shape as [`super::pos`]'s POS terminal: rather than a
@@ -29,13 +29,13 @@ pub struct CreateOrderData {
 pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
     let body = html! {
         div class="wrap" {
-            p { a href=(format!("/dashboard/connections/{}", data.connection_id)) { "← back to store" } }
+            p { a href=(format!("/dashboard/stores/{}", data.connection_id)) { "← back to store" } }
             h1 { "Create an order" }
             p class="hint" { "Creates a real order on the engine and takes you straight to its payment page." }
             @if let Some(error) = &data.order_creation_error {
                 div class="error" { (error) }
             }
-            form method="post" action=(format!("/dashboard/connections/{}/orders/new", data.connection_id)) {
+            form method="post" action=(format!("/dashboard/stores/{}/orders/new", data.connection_id)) {
                 label for="amount" { "Amount" }
                 input type="text" id="amount" name="amount" value="10.00" required;
                 label for="currency" { "Currency" }
@@ -74,7 +74,7 @@ mod tests {
     use super::*;
 
     fn chrome() -> PageChrome {
-        PageChrome::from_user(None, "/dashboard/connections/conn_1/orders/new")
+        PageChrome::from_user(None, "/dashboard/stores/conn_1/orders/new")
     }
 
     fn data() -> CreateOrderData {
@@ -92,7 +92,7 @@ mod tests {
         let html = page(&chrome(), &data()).into_string();
         assert!(html.contains("Merchant Reference"));
         assert!(html.contains(r#"name="merchant_order_id""#));
-        assert!(html.contains(r#"action="/dashboard/connections/conn_1/orders/new""#));
+        assert!(html.contains(r#"action="/dashboard/stores/conn_1/orders/new""#));
     }
 
     #[test]
