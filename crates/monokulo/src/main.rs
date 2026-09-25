@@ -80,14 +80,26 @@ async fn main() {
     // never needs one at all.
     let exchange_rate = Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::build(&exchange_rate_cfg));
     let rate_limiter = Arc::new(RateLimiter::new(settings::get(&db, &settings::RATE_LIMIT_PER_IP_PER_MIN)));
+    // Verified embed domains: the machine's own resolver. If it can't be set
+    // up, the dashboard still works and every check says why it failed.
+    let dns: Arc<dyn monokulo::embed_domains::TxtLookup> = match monokulo::embed_domains::SystemDns::new() {
+        Ok(dns) => Arc::new(dns),
+        Err(e) => {
+            eprintln!("DNS resolver unavailable, domain verification will fail: {e}");
+            Arc::new(monokulo::embed_domains::UnavailableDns(format!("this server's DNS resolver is unavailable ({e})")))
+        }
+    };
+    let db = db.into_shared();
+    monokulo::embed_domains::spawn_rechecks(db.clone(), dns.clone());
     let app_state = AppState {
-        db: db.into_shared(),
+        db,
         engine_client,
         encryption_key,
         status_cache: new_status_cache(),
         exchange_rate,
         rate_limiter,
         event_streams: Default::default(),
+        dns,
     };
     let router = build_router(app_state);
 

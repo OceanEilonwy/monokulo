@@ -60,6 +60,7 @@ mod pay;
 mod pos;
 pub mod rate_limit;
 mod signup;
+pub mod embed_domains;
 pub mod status_page;
 pub mod stream_limit;
 #[cfg(test)]
@@ -118,6 +119,9 @@ pub struct AppState {
     /// Open checkout live-update streams per `(source IP, store pk)` - see
     /// `http::stream_limit`.
     pub event_streams: Arc<stream_limit::StreamLimiter>,
+    /// TXT lookups for verified embed domains (`crate::embed_domains`) -
+    /// the machine's own resolver in the real binary, a fake in tests.
+    pub dns: Arc<dyn crate::embed_domains::TxtLookup>,
 }
 
 pub fn build_router(state: AppState) -> Router {
@@ -147,6 +151,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/stores/new/woocommerce", axum::routing::get(home::woocommerce_instructions))
         .route("/dashboard/stores/{id}", axum::routing::get(orders::store_detail))
         .route("/dashboard/stores/{id}/settings", axum::routing::get(orders::store_settings))
+        .route("/dashboard/stores/{id}/settings/domains", post(embed_domains::add_domain))
+        .route("/dashboard/stores/{id}/settings/domains/{domain_id}/check", post(embed_domains::check_domain))
+        .route("/dashboard/stores/{id}/settings/domains/{domain_id}/delete", post(embed_domains::delete_domain))
+        .route("/dashboard/stores/{id}/embed-warning/dismiss", post(embed_domains::dismiss_embed_warning))
         .route(
             "/dashboard/stores/{id}/orders/new",
             axum::routing::get(orders::create_order_page).post(orders::create_order),

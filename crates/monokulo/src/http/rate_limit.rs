@@ -65,6 +65,7 @@ mod tests {
             exchange_rate: std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             rate_limiter: std::sync::Arc::new(RateLimiter::new(limit_per_minute)),
             event_streams: Default::default(),
+            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
         }
     }
 

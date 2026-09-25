@@ -235,6 +235,25 @@ pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-br
   margin: 1em 0;
 }
 .hint { color: var(--muted); font-size: 0.9em; }
+/* Store page embed warnings (`views::store_detail::embed_warnings`). */
+.embed-warning {
+  display: grid;
+  gap: var(--space-xs);
+  justify-items: start;
+  border: 2px solid var(--warning);
+  border-radius: var(--radius-md);
+  background: var(--tint-warning);
+  padding: var(--space-sm) var(--space-md);
+  margin: 1em 0;
+}
+.embed-warning.is-error { border-color: var(--error); background: var(--tint-error); }
+.embed-warning.is-compact { display: block; padding-block: var(--space-xs); }
+.embed-warning form { margin: 0; }
+.dns-record { display: grid; grid-template-columns: max-content 1fr; gap: 2px var(--space-sm); margin: var(--space-sm) 0 0; }
+.dns-record dt { color: var(--muted); font-size: 0.85em; }
+.dns-record dd { margin: 0; overflow-wrap: anywhere; }
+.domain-actions { white-space: nowrap; }
+.domain-actions form { display: inline-block; margin: 0 var(--space-xs) var(--space-xs) 0; }
 /* The one-time "just deleted" row an admin table shows right after a real
    delete (`admin_invites.html.hbs`) - struck through and faded so it reads
    as gone-but-still-visible-for-confirmation, not a live row. */

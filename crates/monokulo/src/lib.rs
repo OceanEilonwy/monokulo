@@ -12,6 +12,7 @@ pub mod confirmation_thresholds;
 pub mod crypto;
 pub mod currencies;
 pub mod db;
+pub mod embed_domains;
 pub mod engine_client;
 pub mod exchange_rate_config;
 pub mod http;

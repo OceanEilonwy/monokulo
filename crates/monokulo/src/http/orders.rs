@@ -513,6 +513,7 @@ async fn render_store_detail_page(
     };
 
     let is_woocommerce = row.platform == "woocommerce";
+    let embed_warnings = super::embed_domains::store_page_warnings(state, &row.id, crate::now_unix());
     let view_model = views::store_detail::StoreDetailViewModel {
         store: Some(views::store_detail::StoreDetailData {
             connection_id: row.id,
@@ -530,6 +531,7 @@ async fn render_store_detail_page(
             lookup_txid_value,
             lookup_message,
             lookup_found_order_id,
+            embed_warnings,
         }),
     };
     views::store_detail::page(&chrome, &view_model).into_response()
@@ -557,7 +559,7 @@ pub async fn store_settings(
 /// just-created webhook signing secret. Takes an already ownership-checked
 /// row rather than re-checking it, since every caller has already done
 /// that.
-async fn render_store_settings_page(
+pub(super) async fn render_store_settings_page(
     state: &AppState,
     row: StoreConnectionRow,
     user: &UserRow,
@@ -595,6 +597,10 @@ async fn render_store_settings_page(
         (options, thresholds)
     };
     let confirmation_thresholds_at_max = confirmation_thresholds.len() >= 5;
+    let embed_domains = super::embed_domains::domain_views(
+        state.db.lock().unwrap().list_store_domains(&row.id).unwrap_or_default(),
+        crate::now_unix(),
+    );
 
     let webhooks = match state.engine_client.list_webhooks(&sk).await {
         Ok(webhooks) => webhooks
@@ -624,6 +630,7 @@ async fn render_store_settings_page(
             webhooks,
             created_webhook_signing_secret,
             settings_error,
+            embed_domains,
         }),
     };
     views::store_settings::page(&chrome, &view_model).into_response()
@@ -1193,6 +1200,7 @@ mod tests {
             exchange_rate: test_exchange_rate_provider(),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             event_streams: Default::default(),
+            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
         };
         (state, engine)
     }
@@ -1217,6 +1225,7 @@ mod tests {
             exchange_rate: test_exchange_rate_provider(),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             event_streams: Default::default(),
+            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
         };
         (state, engine)
     }

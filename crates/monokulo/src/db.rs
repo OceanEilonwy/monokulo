@@ -39,6 +39,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (16, include_str!("../migrations/0016_order_confirmation_snapshot.sql")),
     (17, include_str!("../migrations/0017_user_theme.sql")),
     (18, include_str!("../migrations/0018_rename_payment_id_to_order_id.sql")),
+    (19, include_str!("../migrations/0019_store_domains.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -157,6 +158,38 @@ pub struct SessionRow {
 /// `crate::crypto::encrypt`) - `Db` itself is crypto-unaware and just stores
 /// whatever string it's given; see `http/connections.rs` for where the real
 /// encrypt/decrypt calls happen.
+/// One `store_domains` row - see migration `0019_store_domains.sql` and
+/// `crate::embed_domains`.
+#[derive(Debug, Clone)]
+pub struct StoreDomainRow {
+    pub id: String,
+    pub connection_id: String,
+    pub domain: String,
+    pub token: String,
+    pub created_at: i64,
+    pub verified_at: Option<i64>,
+    pub failing_since: Option<i64>,
+    pub last_checked_at: Option<i64>,
+    pub last_error: Option<String>,
+}
+
+const STORE_DOMAIN_COLUMNS: &str =
+    "id, connection_id, domain, token, created_at_utc, verified_at_utc, failing_since_utc, last_checked_at_utc, last_error";
+
+fn store_domain_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<StoreDomainRow> {
+    Ok(StoreDomainRow {
+        id: row.get(0)?,
+        connection_id: row.get(1)?,
+        domain: row.get(2)?,
+        token: row.get(3)?,
+        created_at: row.get(4)?,
+        verified_at: row.get(5)?,
+        failing_since: row.get(6)?,
+        last_checked_at: row.get(7)?,
+        last_error: row.get(8)?,
+    })
+}
+
 pub struct StoreConnectionRow {
     pub id: String,
     pub user_id: String,
@@ -830,6 +863,98 @@ impl Db {
         tx.execute("UPDATE store_connections SET base_currency = ?2 WHERE id = ?1", params![id, base_currency])?;
         tx.execute("DELETE FROM confirmation_thresholds WHERE connection_id = ?1", params![id])?;
         tx.commit()?;
+        Ok(())
+    }
+
+    /// Every verified-embed domain of `connection_id`, alphabetically.
+    pub fn list_store_domains(&self, connection_id: &str) -> Result<Vec<StoreDomainRow>> {
+        let mut stmt = self
+            .conn
+            .prepare(&format!("SELECT {STORE_DOMAIN_COLUMNS} FROM store_domains WHERE connection_id = ?1 ORDER BY domain"))?;
+        let rows = stmt.query_map(params![connection_id], store_domain_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(DbError::from)
+    }
+
+    /// One domain, only if it belongs to `connection_id`.
+    pub fn get_store_domain(&self, connection_id: &str, id: &str) -> Result<Option<StoreDomainRow>> {
+        self.conn
+            .query_row(
+                &format!("SELECT {STORE_DOMAIN_COLUMNS} FROM store_domains WHERE id = ?1 AND connection_id = ?2"),
+                params![id, connection_id],
+                store_domain_from_row,
+            )
+            .optional()
+            .map_err(DbError::from)
+    }
+
+    /// Adds a domain waiting for its DNS record. `Ok(false)` when the store
+    /// already has `max` domains (checked in the same statement, so two
+    /// concurrent adds can't both take the last slot); a unique-violation
+    /// `DbError` when it already has this domain.
+    pub fn create_store_domain(&self, id: &str, connection_id: &str, domain: &str, token: &str, created_at: i64, max: usize) -> Result<bool> {
+        let changed = self.conn.execute(
+            "INSERT INTO store_domains (id, connection_id, domain, token, created_at_utc)
+             SELECT ?1, ?2, ?3, ?4, ?5
+             WHERE (SELECT COUNT(*) FROM store_domains WHERE connection_id = ?2) < ?6",
+            params![id, connection_id, domain, token, created_at, max as i64],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Removes a domain; `false` when `connection_id` has no such domain.
+    pub fn delete_store_domain(&self, connection_id: &str, id: &str) -> Result<bool> {
+        let changed = self.conn.execute("DELETE FROM store_domains WHERE id = ?1 AND connection_id = ?2", params![id, connection_id])?;
+        Ok(changed == 1)
+    }
+
+    /// Records one check of a domain. `error: None` means the record was
+    /// found: the domain is (still) verified and no longer failing. Any
+    /// error leaves a never-verified domain waiting, and starts the grace
+    /// period of a verified one (unless it had already started).
+    pub fn record_store_domain_check(&self, id: &str, checked_at: i64, error: Option<&str>) -> Result<()> {
+        match error {
+            None => self.conn.execute(
+                "UPDATE store_domains SET verified_at_utc = ?2, failing_since_utc = NULL, last_checked_at_utc = ?2, last_error = NULL
+                 WHERE id = ?1",
+                params![id, checked_at],
+            )?,
+            Some(error) => self.conn.execute(
+                "UPDATE store_domains SET last_checked_at_utc = ?2, last_error = ?3,
+                    failing_since_utc = CASE WHEN verified_at_utc IS NULL THEN NULL ELSE COALESCE(failing_since_utc, ?2) END
+                 WHERE id = ?1",
+                params![id, checked_at, error],
+            )?,
+        };
+        Ok(())
+    }
+
+    /// Verified domains whose next scheduled re-check is due: every
+    /// `every_secs`, or every `failing_every_secs` while failing. Domains
+    /// never verified are only checked when the merchant asks.
+    pub fn list_store_domains_due_for_recheck(&self, now: i64, every_secs: i64, failing_every_secs: i64) -> Result<Vec<StoreDomainRow>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT {STORE_DOMAIN_COLUMNS} FROM store_domains
+             WHERE verified_at_utc IS NOT NULL
+               AND (last_checked_at_utc IS NULL
+                    OR (failing_since_utc IS NULL AND last_checked_at_utc <= ?1 - ?2)
+                    OR (failing_since_utc IS NOT NULL AND last_checked_at_utc <= ?1 - ?3))
+             ORDER BY last_checked_at_utc"
+        ))?;
+        let rows = stmt.query_map(params![now, every_secs, failing_every_secs], store_domain_from_row)?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(DbError::from)
+    }
+
+    /// Whether the merchant has shrunk the store page's "any website can
+    /// show this checkout" warning to one line.
+    pub fn embed_warning_dismissed(&self, connection_id: &str) -> Result<bool> {
+        self.conn
+            .query_row("SELECT embed_warning_dismissed FROM store_connections WHERE id = ?1", params![connection_id], |row| row.get::<_, i64>(0))
+            .map(|value| value != 0)
+            .map_err(DbError::from)
+    }
+
+    pub fn dismiss_embed_warning(&self, connection_id: &str) -> Result<()> {
+        self.conn.execute("UPDATE store_connections SET embed_warning_dismissed = 1 WHERE id = ?1", params![connection_id])?;
         Ok(())
     }
 

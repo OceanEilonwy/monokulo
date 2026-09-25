@@ -35,6 +35,25 @@ pub struct WebhookRowViewModel {
     pub created_at: i64,
 }
 
+/// One verified-embed domain row (`http::embed_domains::domain_views`).
+pub struct EmbedDomainView {
+    pub id: String,
+    pub domain: String,
+    /// `tag-*` class suffix: `ok`, `error` or `unknown`.
+    pub state_tag: &'static str,
+    pub state_label: &'static str,
+    /// A line explaining a failing or lapsed domain's grace period.
+    pub detail: Option<String>,
+    /// The TXT record to publish - shown until the domain is verified, and
+    /// again while it's failing.
+    pub show_record: bool,
+    pub record_name: String,
+    pub record_value: String,
+    pub last_checked: String,
+    /// The latest failed check's reason; `None` once verified.
+    pub last_error: Option<String>,
+}
+
 pub struct StoreSettingsData {
     pub connection_id: String,
     pub display_name: String,
@@ -66,6 +85,7 @@ pub struct StoreSettingsData {
     /// every sub-form here, since only one can ever be submitted at a time.
     /// `None` on a plain load.
     pub settings_error: Option<String>,
+    pub embed_domains: Vec<EmbedDomainView>,
 }
 
 pub struct StoreSettingsViewModel {
@@ -189,6 +209,8 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                     }
                 }
 
+                (verified_domains(store))
+
                 h2 { "Webhooks" }
                 @if let Some(secret) = &store.created_webhook_signing_secret {
                     div class="box" {
@@ -264,6 +286,64 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
     layout(chrome, &title, body)
 }
 
+/// Adding, checking and removing the domains this store has proved it owns
+/// (`crate::embed_domains`).
+fn verified_domains(store: &StoreSettingsData) -> Markup {
+    html! {
+        h2 id="verified-domains" { "Verified domains" }
+        p class="hint" {
+            "Prove you own the websites that show this store's checkout. Add a domain, publish the TXT record shown here in "
+            "that domain's DNS settings, then check it. A verified domain covers all of its subdomains. Onion addresses can't "
+            "be verified, because they have no DNS."
+        }
+        p class="hint" { "Coming next: an option to let only these domains show your checkout." }
+        @if store.embed_domains.is_empty() {
+            p class="muted" { "No domains yet." }
+        } @else {
+            table class="domains-table" {
+                thead { tr { th { "Domain" } th { "Status" } th { "Last checked" } th {} } }
+                tbody {
+                    @for domain in &store.embed_domains {
+                        tr {
+                            td {
+                                strong { (domain.domain) }
+                                @if let Some(detail) = &domain.detail { div class="hint" { (detail) } }
+                                @if let Some(error) = &domain.last_error { div class="hint" { (error) } }
+                                @if domain.show_record {
+                                    dl class="dns-record" {
+                                        dt { "Type" } dd { code { "TXT" } }
+                                        dt { "Name" } dd { code { (domain.record_name) } }
+                                        dt { "Value" } dd { code { (domain.record_value) } }
+                                    }
+                                }
+                            }
+                            td { span class=(format!("tag tag-{}", domain.state_tag)) { (domain.state_label) } }
+                            td { (domain.last_checked) }
+                            td class="domain-actions" {
+                                form method="post" action=(format!("/dashboard/stores/{}/settings/domains/{}/check", store.connection_id, domain.id)) {
+                                    button type="submit" { "Check now" }
+                                }
+                                form method="post" action=(format!("/dashboard/stores/{}/settings/domains/{}/delete", store.connection_id, domain.id))
+                                    onsubmit="return confirm('Remove this domain? You would need a new DNS record to verify it again.');" {
+                                    button type="submit" class="btn-secondary" { "Remove" }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        form method="post" action=(format!("/dashboard/stores/{}/settings/domains", store.connection_id)) {
+            label {
+                "Domain"
+                input type="text" name="domain" placeholder="shop.example" required autocomplete="off" spellcheck="false";
+                span class="field-help" { "Just the domain, like shop.example. Its subdomains are covered too." }
+            }
+            button type="submit" { "Add domain" }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -287,7 +367,39 @@ mod tests {
             webhooks: vec![],
             created_webhook_signing_secret: None,
             settings_error: None,
+            embed_domains: vec![],
         }
+    }
+
+    #[test]
+    fn verified_domains_show_the_record_to_publish_until_verified() {
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        assert!(html.contains(r#"<h2 id="verified-domains">Verified domains</h2>"#));
+        assert!(html.contains("No domains yet."));
+        assert!(html.contains(r#"action="/dashboard/stores/conn_1/settings/domains""#));
+
+        let domain = |id: &str, name: &str, state_label: &'static str, show_record: bool| EmbedDomainView {
+            id: id.to_string(),
+            domain: name.to_string(),
+            state_tag: "unknown",
+            state_label,
+            detail: None,
+            show_record,
+            record_name: format!("_monokulo.{name}"),
+            record_value: format!("monokulo-verify=token-{id}"),
+            last_checked: "never".to_string(),
+            last_error: None,
+        };
+        let store = StoreSettingsData {
+            embed_domains: vec![domain("d1", "shop.example", "Verified", false), domain("d2", "new.example", "Waiting for DNS", true)],
+            ..base_store()
+        };
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
+        assert!(!html.contains("monokulo-verify=token-d1"), "a verified domain doesn't need its record shown");
+        assert!(html.contains("<code>_monokulo.new.example</code>"));
+        assert!(html.contains("<code>monokulo-verify=token-d2</code>"));
+        assert!(html.contains(r#"action="/dashboard/stores/conn_1/settings/domains/d2/check""#));
+        assert!(html.contains(r#"action="/dashboard/stores/conn_1/settings/domains/d1/delete""#));
     }
 
     #[test]

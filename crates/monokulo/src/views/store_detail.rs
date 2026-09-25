@@ -35,10 +35,72 @@ pub struct StoreDetailData {
     /// `Some(order_id)` only when the lookup found a real match - a link to
     /// the now-updated order, alongside `lookup_message`.
     pub lookup_found_order_id: Option<String>,
+    pub embed_warnings: EmbedWarnings,
+}
+
+/// A verified domain whose DNS record has gone missing
+/// (`http::embed_domains::store_page_warnings`).
+pub struct FailingDomainWarning {
+    pub domain: String,
+    pub record_name: String,
+    /// How long the record has been missing, e.g. "5h 20m".
+    pub missing_for: String,
+    /// Past the grace period, so it no longer counts as verified.
+    pub lapsed: bool,
+    /// How much longer it still counts as verified (when not lapsed).
+    pub counts_for: String,
+}
+
+/// The store page's embed warnings: "any website can show this checkout"
+/// (shrunk to one line once dismissed) and one that can't be dismissed per
+/// failing domain.
+pub struct EmbedWarnings {
+    pub any_site_dismissed: bool,
+    pub failing: Vec<FailingDomainWarning>,
 }
 
 pub struct StoreDetailViewModel {
     pub store: Option<StoreDetailData>,
+}
+
+fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
+    let settings = format!("/dashboard/stores/{connection_id}/settings#verified-domains");
+    html! {
+        @for failing in &warnings.failing {
+            div class="embed-warning is-error" role="alert" {
+                @if failing.lapsed {
+                    strong { (failing.domain) " is no longer verified" }
+                    span {
+                        "The TXT record at " code { (failing.record_name) } " has been missing for " (failing.missing_for) ". "
+                        "Publish it again, then " a href=(settings) { "check it in Settings" } "."
+                    }
+                } @else {
+                    strong { (failing.domain) " failed its DNS check" }
+                    span {
+                        "The TXT record at " code { (failing.record_name) } " has been missing for " (failing.missing_for) ". "
+                        "If it isn't back within " (failing.counts_for) ", " (failing.domain) " will stop counting as verified. "
+                        a href=(settings) { "Check it in Settings" } "."
+                    }
+                }
+            }
+        }
+        @if warnings.any_site_dismissed {
+            div class="embed-warning is-compact" {
+                strong { "Any website can show this store's checkout." } " " a href=(settings) { "Verify your domains" }
+            }
+        } @else {
+            div class="embed-warning" {
+                strong { "Any website can show this store's checkout" }
+                span {
+                    "If a scam site embeds it, that site's victims would pay you, and you'd be the one they come to. "
+                    a href=(settings) { "Verify your domains" } " in Settings; an option to let only those domains show your checkout is coming next."
+                }
+                form method="post" action=(format!("/dashboard/stores/{connection_id}/embed-warning/dismiss")) {
+                    button type="submit" class="btn-secondary" { "Dismiss" }
+                }
+            }
+        }
+    }
 }
 
 pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
@@ -64,6 +126,8 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                         }
                     }
                 }
+
+                (embed_warnings(&store.connection_id, &store.embed_warnings))
 
                 table {
                     tr { th { "Base currency" } td { (store.base_currency) } }
@@ -217,7 +281,46 @@ mod tests {
             lookup_txid_value: String::new(),
             lookup_message: None,
             lookup_found_order_id: None,
+            embed_warnings: EmbedWarnings { any_site_dismissed: false, failing: vec![] },
         }
+    }
+
+    #[test]
+    fn the_any_site_warning_can_be_dismissed_to_one_line_but_a_failing_domain_warning_cannot() {
+        let html = page(&chrome(), &StoreDetailViewModel { store: Some(base_store(false)) }).into_string();
+        assert!(html.contains(r#"<div class="embed-warning"><strong>Any website can show this store's checkout</strong>"#), "got: {html}");
+        assert!(html.contains(r#"action="/dashboard/stores/conn_1/embed-warning/dismiss""#));
+        assert!(html.contains(r#"href="/dashboard/stores/conn_1/settings#verified-domains""#));
+
+        let store = StoreDetailData {
+            embed_warnings: EmbedWarnings {
+                any_site_dismissed: true,
+                failing: vec![
+                    FailingDomainWarning {
+                        domain: "shop.example".to_string(),
+                        record_name: "_monokulo.shop.example".to_string(),
+                        missing_for: "5h".to_string(),
+                        lapsed: false,
+                        counts_for: "2d 19h".to_string(),
+                    },
+                    FailingDomainWarning {
+                        domain: "old.example".to_string(),
+                        record_name: "_monokulo.old.example".to_string(),
+                        missing_for: "4d".to_string(),
+                        lapsed: true,
+                        counts_for: "any moment".to_string(),
+                    },
+                ],
+            },
+            ..base_store(false)
+        };
+        let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
+        assert!(html.contains(r#"<div class="embed-warning is-compact"><strong>Any website can show this store's checkout.</strong>"#), "got: {html}");
+        assert!(!html.contains("embed-warning/dismiss"), "a dismissed warning offers nothing more to dismiss");
+        assert!(html.contains("shop.example failed its DNS check"));
+        assert!(html.contains("If it isn't back within 2d 19h, shop.example will stop counting as verified."));
+        assert!(html.contains("old.example is no longer verified"));
+        assert_eq!(html.matches(r#"class="embed-warning is-error" role="alert""#).count(), 2);
     }
 
     #[test]
