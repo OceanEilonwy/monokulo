@@ -148,14 +148,14 @@ pub struct ConnectForm {
 fn render_signup(state: &AppState, error: Option<&str>, invite_token: &str) -> Response {
     let invite_required =
         crate::settings::signup_mode(&state.db.lock().unwrap()) == crate::settings::SignupMode::InviteOnly && invite_token.trim().is_empty();
-    let chrome = views::PageChrome::from_user(None, "");
+    let chrome = super::page_chrome(state, None, "");
     let data = views::auth::SignupViewModel { error: error.map(str::to_string), invite_required, invite_token: invite_token.to_string() };
     views::auth::signup_page(&chrome, &data).into_response()
 }
 
 /// Same `chrome.logged_in == false` reasoning as `render_signup` above.
-fn render_login(error: Option<&str>, next: Option<&str>) -> Response {
-    let chrome = views::PageChrome::from_user(None, "");
+fn render_login(state: &AppState, error: Option<&str>, next: Option<&str>) -> Response {
+    let chrome = super::page_chrome(state, None, "");
     let data = views::auth::LoginViewModel { error: error.map(str::to_string), next: next.map(str::to_string) };
     views::auth::login_page(&chrome, &data).into_response()
 }
@@ -172,7 +172,7 @@ fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&
         network_selected_flags(resubmit.map(|f| f.network.as_str()).unwrap_or("mainnet"));
     let selected_currency = resubmit.map(|f| f.base_currency.as_str()).unwrap_or("XMR");
     let currency_options = crate::currencies::currency_options(&state.db.lock().unwrap(), selected_currency).unwrap_or_default();
-    let chrome = views::PageChrome::from_user(Some(user), "/dashboard/connect");
+    let chrome = super::page_chrome(state, Some(user), "/dashboard/connect");
     let data = views::connect::ConnectViewModel {
         error: error.map(str::to_string),
         public_key: None,
@@ -191,7 +191,7 @@ fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&
 }
 
 fn render_connect_success(state: &AppState, connection_id: &str, public_key: &str, user: &UserRow) -> Response {
-    let chrome = views::PageChrome::from_user(Some(user), "/dashboard/connect");
+    let chrome = super::page_chrome(state, Some(user), "/dashboard/connect");
     let data = views::connect::ConnectViewModel {
         error: None,
         public_key: Some(public_key.to_string()),
@@ -244,8 +244,8 @@ pub async fn signup_submit(State(state): State<AppState>, Form(form): Form<Signu
     }
 }
 
-pub async fn login_form(Query(query): Query<LoginQuery>) -> Response {
-    render_login(None, query.next.as_deref())
+pub async fn login_form(State(state): State<AppState>, Query(query): Query<LoginQuery>) -> Response {
+    render_login(&state, None, query.next.as_deref())
 }
 
 /// `POST /dashboard/logout` - the browser-facing nav's "log out" link (a
@@ -362,9 +362,9 @@ pub async fn login_submit(State(state): State<AppState>, Form(form): Form<LoginF
             // "you're logged in, here's your stuff" flow.
             (jar, redirect_302("/dashboard")).into_response()
         }
-        Err(LoginError::Unauthorized) => render_login(Some("Invalid email or password."), form.next.as_deref()),
+        Err(LoginError::Unauthorized) => render_login(&state, Some("Invalid email or password."), form.next.as_deref()),
         Err(LoginError::Internal) => {
-            render_login(Some("Something went wrong. Please try again."), form.next.as_deref())
+            render_login(&state, Some("Something went wrong. Please try again."), form.next.as_deref())
         }
     }
 }

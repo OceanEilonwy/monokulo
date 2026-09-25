@@ -87,6 +87,7 @@ async fn main() {
         status_cache: new_status_cache(),
         exchange_rate,
         rate_limiter,
+        event_streams: Default::default(),
     };
     let router = build_router(app_state);
 

@@ -34,7 +34,7 @@ pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Respo
         return redirect_302("/admin/setup");
     }
     let authed = resolve_authed_user(&state, &headers);
-    let chrome = views::PageChrome::from_user(authed.as_ref().map(|(user, _)| user), "/");
+    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/");
     let signup_public = { crate::settings::signup_mode(&state.db.lock().unwrap()) == crate::settings::SignupMode::Public };
     views::landing::page(&chrome, signup_public).into_response()
 }
@@ -43,8 +43,8 @@ pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Respo
 /// flows (WBS follow-up: "custom (advanced)" is the existing
 /// `/dashboard/connect` form; "simple -> woocommerce" is the guided page
 /// below). Behind [`AuthedUser`] like every other `/dashboard/*` route.
-pub async fn new_store_picker(AuthedUser(user, _): AuthedUser) -> Response {
-    let chrome = views::PageChrome::from_user(Some(&user), "/dashboard/stores/new");
+pub async fn new_store_picker(State(state): State<AppState>, AuthedUser(user, _): AuthedUser) -> Response {
+    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/stores/new");
     views::connect::new_store_picker_page(&chrome).into_response()
 }
 
@@ -55,8 +55,8 @@ pub async fn new_store_picker(AuthedUser(user, _): AuthedUser) -> Response {
 /// dashboard has no way to manufacture a legitimate `return_url` back into
 /// someone else's WordPress admin. So this is instructions, not a form; see
 /// this page's own template for the reasoning restated for the merchant.
-pub async fn woocommerce_instructions(AuthedUser(user, _): AuthedUser) -> Response {
-    let chrome = views::PageChrome::from_user(Some(&user), "/dashboard/stores/new/woocommerce");
+pub async fn woocommerce_instructions(State(state): State<AppState>, AuthedUser(user, _): AuthedUser) -> Response {
+    let chrome = super::page_chrome(&state, Some(&user), "/dashboard/stores/new/woocommerce");
     views::store_detail::woocommerce_instructions_page(&chrome).into_response()
 }
 
@@ -130,7 +130,7 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
     all_orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
     all_orders.truncate(10);
 
-    let chrome = views::PageChrome::from_user(Some(&user), "/dashboard");
+    let chrome = super::page_chrome(&state, Some(&user), "/dashboard");
     let view_model = DashboardViewModel {
         has_stores: !stores.is_empty(),
         stores,
@@ -214,6 +214,7 @@ mod tests {
                 status_cache: crate::http::status_page::new_status_cache(),
                 exchange_rate: test_exchange_rate_provider(),
                 rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+                event_streams: Default::default(),
             };
             (state, engine)
         }

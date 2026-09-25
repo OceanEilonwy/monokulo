@@ -335,40 +335,36 @@ test('manual refund entry remains available without JavaScript', async ({ browse
   } finally { await context.close(); }
 });
 
-test('POS status dot follows changing health while the terminal stays open', async ({ page }) => {
-  const posSource = fs.readFileSync(path.join(root, 'crates/monokulo/src/views/pos.rs'), 'utf8');
-  const script = posSource.match(/const POS_SCRIPT: &str = r#"\n([\s\S]*?)\n"#;/)[1];
-  let health = false;
+test('status indicator shows its rendered health, then follows changes by polling', async ({ page }) => {
+  const viewsSource = fs.readFileSync(path.join(root, 'crates/monokulo/src/views/mod.rs'), 'utf8');
+  const script = viewsSource.match(/const STATUS_INDICATOR_SCRIPT: &str = r#"([\s\S]*?)"#;/)[1];
+  let health = true;
+  let polls = 0;
   await page.clock.install();
   await page.route(`${host}/**`, async route => {
     const pathname = new URL(route.request().url()).pathname;
-    if (pathname === '/static/pos.js') return route.fulfill({ contentType: 'text/javascript', body: script });
+    if (pathname === '/static/status.js') return route.fulfill({ contentType: 'text/javascript', body: script });
     if (pathname === '/status/summary') {
+      polls++;
       return health === null
         ? route.fulfill({ status: 503, contentType: 'text/plain', body: 'Unavailable' })
         : route.fulfill({ contentType: 'application/json', body: JSON.stringify({ healthy: health }) });
     }
-    return route.fulfill({ contentType: 'text/html', body: `<!doctype html><style>.pos-screen-hidden,[hidden]{display:none!important}</style>
-      <div id="pos-config" data-connection-id="conn-1" data-public-key="pk-1" data-decimals="2"></div>
-      <a id="pos-status-link"><span id="pos-status-dot" class="status-dot status-dot-unknown"></span></a>
-      <button id="background-btn" class="pos-screen-hidden"></button>
-      <details id="background-disclosure" hidden><summary id="background-summary"></summary><div id="bg-stack"></div></details>
-      <div id="keypad-screen"><span id="amount-display"></span><button class="key" data-digit="1"></button>
-        <button id="key-backspace"></button><button id="key-clear"></button><input id="note-input">
-        <button id="charge-btn"></button><p id="pos-error"></p></div>
-      <div id="payment-screen" class="pos-screen-hidden"><iframe id="payment-frame"></iframe><p id="payment-error" hidden></p>
-        <button id="dismiss-btn"></button><button id="cancel-btn"></button></div>
-      <script src="/static/pos.js"></script>` });
+    return route.fulfill({ contentType: 'text/html', body: `<!doctype html>
+      <a href="/status" id="status-indicator" title="an issue was detected - see the status page"><span class="status-dot status-dot-error"></span></a>
+      <script src="/static/status.js"></script>` });
   });
   await page.goto(`${host}/dashboard/stores/conn-1/pos`);
-  await expect(page.locator('#pos-status-dot')).toHaveClass(/status-dot-error/);
-  health = true;
-  await page.clock.runFor(15000);
-  await expect(page.locator('#pos-status-dot')).toHaveClass(/status-dot-ok/);
+  const dot = page.locator('#status-indicator .status-dot');
+  // A known health is shown as rendered; the first poll waits a full interval.
+  await expect(dot).toHaveClass(/status-dot-error/);
+  expect(polls).toBe(0);
+  await page.clock.runFor(30000);
+  await expect(dot).toHaveClass(/status-dot-ok/);
   health = null;
-  await page.clock.runFor(15000);
-  await expect(page.locator('#pos-status-dot')).toHaveClass(/status-dot-unknown/);
-  await expect(page.locator('#pos-status-link')).toHaveAttribute('title', 'could not check status');
+  await page.clock.runFor(30000);
+  await expect(dot).toHaveClass(/status-dot-unknown/);
+  await expect(page.locator('#status-indicator')).toHaveAttribute('title', 'could not check status');
 });
 
 test('POS backgrounds a confirming order into the top list and reopens it', async ({ page }) => {
@@ -391,7 +387,6 @@ test('POS backgrounds a confirming order into the top list and reopens it', asyn
     if (pathname.startsWith('/pay/')) return route.fulfill({ contentType: 'text/html', body: '<h1>Shared payment view</h1>' });
     return route.fulfill({ contentType: 'text/html', body: `<!doctype html><style>.pos-screen-hidden,[hidden]{display:none!important}</style>
       <div id="pos-config" data-connection-id="conn-1" data-public-key="pk-1" data-decimals="2"></div>
-      <a id="pos-status-link"><span id="pos-status-dot"></span></a>
       <button id="background-btn" class="pos-screen-hidden">Confirm in background</button>
       <details id="background-disclosure" hidden><summary id="background-summary">Background orders (0)</summary><div id="bg-stack"></div></details>
       <div id="keypad-screen"><span id="amount-display"></span><button class="key" data-digit="1">1</button>

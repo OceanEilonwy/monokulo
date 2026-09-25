@@ -22,7 +22,7 @@ fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::
     std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
 }
 
-fn test_app_state() -> AppState {
+pub(super) fn test_app_state() -> AppState {
     AppState {
         db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
         engine_client: EngineClient::new("http://127.0.0.1:1"),
@@ -30,6 +30,7 @@ fn test_app_state() -> AppState {
         status_cache: crate::http::status_page::new_status_cache(),
         exchange_rate: test_exchange_rate_provider(),
         rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+        event_streams: Default::default(),
     }
 }
 
@@ -621,6 +622,7 @@ async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestE
         status_cache: crate::http::status_page::new_status_cache(),
         exchange_rate: test_exchange_rate_provider(),
         rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+        event_streams: Default::default(),
     };
     (state, engine)
 }
@@ -962,4 +964,52 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
     assert_eq!(second.status(), StatusCode::BAD_REQUEST);
     let body = body_json(second).await;
     assert!(body["error"].as_str().unwrap().contains("already been used"), "expected a clear already-used error, got: {body}");
+}
+
+/// An embed works on any site - clearnet or `.onion` - so the public
+/// `/pay/...` routes answer CORS for any origin, preflight included, and
+/// never allow credentials. The dashboard stays same-origin only.
+#[tokio::test]
+async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
+    let router = test_router();
+    let onion = "http://shopexampleabcdefghijklmnopqrstuvwxyz234567abcdefghijklm.onion";
+
+    let preflight = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .method("OPTIONS")
+                .uri("/pay/pk_test/orders")
+                .header("origin", onion)
+                .header("access-control-request-method", "POST")
+                .header("access-control-request-headers", "content-type")
+                .header("access-control-request-private-network", "true")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert!(preflight.status().is_success(), "got {}", preflight.status());
+    let headers = preflight.headers();
+    assert_eq!(headers["access-control-allow-origin"], "*");
+    assert!(headers["access-control-allow-methods"].to_str().unwrap().contains("POST"));
+    assert!(headers["access-control-allow-headers"].to_str().unwrap().contains("content-type"));
+    assert_eq!(headers["access-control-allow-private-network"], "true");
+    assert!(!headers.contains_key("access-control-allow-credentials"));
+
+    // Error responses carry it too, so a caller can read why it failed.
+    for uri in ["/pay/pk_test/orders/order_x/status", "/pay/pk_test/orders/order_x/events", "/static/monokulo-client.js"] {
+        let response = router
+            .clone()
+            .oneshot(Request::builder().uri(uri).header("origin", "https://shop.example").body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap()), Some("*"), "{uri}");
+    }
+
+    let dashboard = router
+        .oneshot(Request::builder().uri("/dashboard").header("origin", "https://shop.example").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert!(!dashboard.headers().contains_key("access-control-allow-origin"));
 }

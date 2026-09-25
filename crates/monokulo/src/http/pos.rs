@@ -73,7 +73,7 @@ pub async fn pos_page(State(state): State<AppState>, AuthedUser(user, _): Authed
         base_currency: row.base_currency,
         base_currency_decimals,
     };
-    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/stores/{}/pos", view.connection_id));
+    let chrome = super::page_chrome(&state, Some(&user), format!("/dashboard/stores/{}/pos", view.connection_id));
     views::pos::page(&chrome, &view).into_response()
 }
 
@@ -414,6 +414,7 @@ mod tests {
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+            event_streams: Default::default(),
         };
         (state, engine)
     }

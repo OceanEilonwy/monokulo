@@ -380,7 +380,7 @@ mod tests {
         let html = admin_invites_page(&chrome(), &data).into_string();
         assert!(html.contains(r#"class="row-deleted""#));
         assert!(html.contains("gone@example.com"));
-        assert!(html.contains("No pending invite requests.") == false);
+        assert!(!html.contains("No pending invite requests."));
     }
 
     #[test]

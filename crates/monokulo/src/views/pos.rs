@@ -44,9 +44,7 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
                 summary id="background-summary" { "Background orders (0)" }
                 div class="bg-stack" id="bg-stack" {}
             }
-            a href="/status" class="pos-status-link" id="pos-status-link" title="checking..." {
-                span id="pos-status-dot" class="status-dot status-dot-unknown" {}
-            }
+            (super::status_indicator(chrome.health, "pos-status-link", false))
         }
 
         div class="pos-wrap" {
@@ -377,29 +375,6 @@ const POS_SCRIPT: &str = r#"
   var bgStack = document.getElementById("bg-stack");
   var bgDisclosure = document.getElementById("background-disclosure");
   var bgSummary = document.getElementById("background-summary");
-  var statusDot = document.getElementById("pos-status-dot");
-  var statusLink = document.getElementById("pos-status-link");
-  var HEALTH_POLL_MS = 15000;
-
-  (function pollHealth() {
-    fetch("/status/summary", { cache: "no-store" }).then(function (r) {
-      if (!r.ok) throw new Error("status unavailable");
-      return r.json();
-    }).then(function (data) {
-      if (data && data.healthy) {
-        statusDot.className = "status-dot status-dot-ok";
-        statusLink.title = "all systems healthy";
-      } else {
-        statusDot.className = "status-dot status-dot-error";
-        statusLink.title = "an issue was detected - see the status page";
-      }
-    }).catch(function () {
-      statusDot.className = "status-dot status-dot-unknown";
-      statusLink.title = "could not check status";
-    }).finally(function () {
-      setTimeout(pollHealth, HEALTH_POLL_MS);
-    });
-  })();
 
   var foreground = null; // { orderId, note }
   var backgrounded = {}; // orderId -> { el, note, markLost }

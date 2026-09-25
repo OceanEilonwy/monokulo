@@ -64,6 +64,7 @@ mod tests {
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             rate_limiter: std::sync::Arc::new(RateLimiter::new(limit_per_minute)),
+            event_streams: Default::default(),
         }
     }
 

@@ -37,8 +37,8 @@ pub struct RequestInviteForm {
     pub message: String,
 }
 
-fn render_request_invite(_state: &AppState, error: Option<&str>, submitted: bool) -> Response {
-    let chrome = views::PageChrome::from_user(None, "/request-invite");
+fn render_request_invite(state: &AppState, error: Option<&str>, submitted: bool) -> Response {
+    let chrome = super::page_chrome(state, None, "/request-invite");
     let data = RequestInviteViewModel { error: error.map(str::to_string), submitted };
     views::admin::request_invite_page(&chrome, &data).into_response()
 }
@@ -210,7 +210,7 @@ fn render_invites_page(
         next_page: (page + 1).min(total_pages),
         created_link,
     };
-    let chrome = views::PageChrome::from_user(Some(admin_user), "/dashboard/admin/invites");
+    let chrome = super::page_chrome(state, Some(admin_user), "/dashboard/admin/invites");
     views::admin::admin_invites_page(&chrome, &view).into_response()
 }
 
@@ -307,6 +307,7 @@ mod tests {
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+            event_streams: Default::default(),
         }
     }
 

@@ -48,8 +48,8 @@ pub struct SetupForm {
     pub confirm_password: String,
 }
 
-fn render_setup_form(_state: &AppState, error: Option<&str>, email: &str) -> Response {
-    let chrome = views::PageChrome::from_user(None, "/admin/setup");
+fn render_setup_form(state: &AppState, error: Option<&str>, email: &str) -> Response {
+    let chrome = super::page_chrome(state, None, "/admin/setup");
     let data = SetupViewModel { error: error.map(str::to_string), email: email.to_string() };
     views::admin::setup_page(&chrome, &data).into_response()
 }
@@ -161,6 +161,7 @@ mod tests {
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+            event_streams: Default::default(),
         };
         build_router(state)
     }

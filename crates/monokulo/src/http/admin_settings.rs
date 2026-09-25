@@ -179,8 +179,8 @@ async fn build_view_model(
     view
 }
 
-fn render(admin_user: &UserRow, view: AdminSettingsViewModel) -> Response {
-    let chrome = views::PageChrome::from_user(Some(admin_user), "/dashboard/admin/settings");
+fn render(state: &AppState, admin_user: &UserRow, view: AdminSettingsViewModel) -> Response {
+    let chrome = super::page_chrome(state, Some(admin_user), "/dashboard/admin/settings");
     views::admin::admin_settings_page(&chrome, &view).into_response()
 }
 
@@ -191,7 +191,7 @@ pub async fn page(State(state): State<AppState>, AuthedAdmin(admin_user, _): Aut
         (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
     };
     let view = build_view_model(fields, engine_url, admin_token, None, None).await;
-    render(&admin_user, view)
+    render(&state, &admin_user, view)
 }
 
 /// Validates one monokulo scalar's submitted raw value against the type its
@@ -276,7 +276,7 @@ pub async fn save_monokulo(
         (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
     };
     let view = build_view_model(fields, engine_url, admin_token, None, Some("Monokulo settings saved.".to_string())).await;
-    render(&admin_user, view)
+    render(&state, &admin_user, view)
 }
 
 /// Re-reads the current state fresh and re-renders the page with `message`
@@ -288,7 +288,7 @@ async fn render_error(state: &AppState, admin_user: &UserRow, message: String) -
         (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
     };
     let view = build_view_model(fields, engine_url, admin_token, Some(message), None).await;
-    render(admin_user, view)
+    render(state, admin_user, view)
 }
 
 #[derive(Serialize, Default)]
@@ -353,7 +353,7 @@ pub async fn save_scanner(
         (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
     };
     let view = build_view_model(fields, engine_url, admin_token, error, success).await;
-    render(&admin_user, view)
+    render(&state, &admin_user, view)
 }
 
 #[cfg(test)]
@@ -408,6 +408,7 @@ mod tests {
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+            event_streams: Default::default(),
         }
     }
 
@@ -692,6 +693,7 @@ mod tests {
                 status_cache: crate::http::status_page::new_status_cache(),
                 exchange_rate: test_exchange_rate_provider(),
                 rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+                event_streams: Default::default(),
             }
         };
         let router = build_router(state);

@@ -317,6 +317,7 @@ mod tests {
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider().await,
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+            event_streams: Default::default(),
         };
         (state, engine)
     }

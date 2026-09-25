@@ -408,19 +408,34 @@ pub async fn checkout_status(State(state): State<AppState>, Path((pk, order_id))
 /// the page's own `view`/`refund` options so fragments match what the page
 /// rendered. Also re-checked every 30s, since the time left to pay moves
 /// with the clock rather than with the order.
+///
+/// One source IP may hold only so many of these open per store at once
+/// (`http::stream_limit`); past that the request gets `429`.
 pub async fn checkout_events(
     State(state): State<AppState>,
     Path((pk, order_id)): Path<(String, String)>,
     Query(options): Query<CheckoutOptions>,
+    extensions: axum::http::Extensions,
 ) -> Response {
     let (row, sk, _) = match load_order(&state, &pk, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return ApiError::NotFound.into_response(),
         Err(LoadError::Internal) => return ApiError::Internal.into_response(),
     };
+    // Same fail-open-without-a-peer-address rule as `rate_limit_middleware`
+    // (only tests drive the router without one).
+    let permit = match extensions.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>() {
+        Some(peer) => match state.event_streams.try_acquire(peer.0.ip(), &pk) {
+            Some(permit) => Some(permit),
+            None => return (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": "too many open update streams" }))).into_response(),
+        },
+        None => None,
+    };
     let subscription = state.engine_client.subscribe_order(&row.id, &sk, &order_id);
     let fragments = options.fragments == Some(true);
     crate::live::live_events(subscription, std::time::Duration::from_secs(30), move || {
+        // Held by the stream, so the slot frees when the stream ends.
+        let _permit = &permit;
         let (state, pk, order_id, options) = (state.clone(), pk.clone(), order_id.clone(), options.clone());
         async move {
             let (row, sk, detail) = load_order(&state, &pk, &order_id).await.ok()?;
@@ -480,7 +495,7 @@ pub async fn checkout_share_page(
     let status = if found { StatusCode::OK } else { StatusCode::NOT_FOUND };
     let authed = super::resolve_authed_user(&state, &headers);
     let current_path = format!("/pay/{pk}/orders/{order_id}/share");
-    let chrome = views::PageChrome::from_user(authed.as_ref().map(|(user, _)| user), current_path);
+    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), current_path);
     let view = CheckoutShareViewModel { pk, order_id, found };
     (status, views::checkout::share_page(&chrome, &view)).into_response()
 }
@@ -567,6 +582,7 @@ mod tests {
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+            event_streams: Default::default(),
         };
         (state, engine)
     }
@@ -917,6 +933,31 @@ mod tests {
 
         drop(body);
         assert_eq!(engine_client.live_upstream_count(), 0, "the engine stream closes with its last watcher");
+    }
+
+    #[tokio::test]
+    async fn one_source_may_hold_only_so_many_open_streams_per_store() {
+        let (mut state, _engine) = test_state_with_real_engine().await;
+        state.event_streams = std::sync::Arc::new(crate::http::stream_limit::StreamLimiter::new(1));
+        let router = build_router(state);
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "checkout-events-cap@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let order_id = create_order(&router, &pk, "10.00").await;
+        let open = |ip: [u8; 4]| {
+            let mut request = Request::builder().uri(format!("/pay/{pk}/orders/{order_id}/events")).body(Body::empty()).unwrap();
+            request.extensions_mut().insert(axum::extract::ConnectInfo(std::net::SocketAddr::from((ip, 40000))));
+            router.clone().oneshot(request)
+        };
+
+        let first = open([192, 0, 2, 1]).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        assert_eq!(open([192, 0, 2, 1]).await.unwrap().status(), StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(open([192, 0, 2, 2]).await.unwrap().status(), StatusCode::OK, "another source has its own allowance");
+
+        // Closing the stream frees its slot.
+        drop(first);
+        assert_eq!(open([192, 0, 2, 1]).await.unwrap().status(), StatusCode::OK);
     }
 
     #[tokio::test]

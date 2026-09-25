@@ -68,6 +68,10 @@ pub struct PageChrome {
     /// flow's own `next` - never trusted at face value just because it
     /// came from this struct.
     pub current_path: String,
+    /// The engine's last known health for the status indicator:
+    /// `Some(true)` healthy, `Some(false)` a problem, `None` not known yet.
+    /// See `crate::http::status_page::known_health`.
+    pub health: Option<bool>,
 }
 
 impl PageChrome {
@@ -79,9 +83,14 @@ impl PageChrome {
     /// `views::status`'s own callers).
     pub fn from_user(user: Option<&UserRow>, current_path: impl Into<String>) -> Self {
         match user {
-            Some(u) => PageChrome { logged_in: true, is_admin: u.is_admin, theme: u.theme, current_path: current_path.into() },
-            None => PageChrome { logged_in: false, is_admin: false, theme: Theme::System, current_path: current_path.into() },
+            Some(u) => PageChrome { logged_in: true, is_admin: u.is_admin, theme: u.theme, current_path: current_path.into(), health: None },
+            None => PageChrome { logged_in: false, is_admin: false, theme: Theme::System, current_path: current_path.into(), health: None },
         }
+    }
+
+    pub fn with_health(mut self, health: Option<bool>) -> Self {
+        self.health = health;
+        self
     }
 }
 
@@ -151,17 +160,51 @@ fn page_shell(chrome: &PageChrome, title: &str, viewport: &str, extra_head: Opti
     }
 }
 
-/// The status dot's own client-side poll (`GET /status/summary`) - the one
-/// piece of the nav that's genuinely dynamic after load, unchanged from the
-/// old `_nav.html.hbs`'s inline `<script>`.
-const NAV_STATUS_SCRIPT: &str = r#"(function () {
-  var dot = document.getElementById("nav-status-dot");
-  if (!dot) return;
-  fetch("/status/summary").then(function (r) { return r.json(); }).then(function (data) {
-    if (data && data.healthy) { dot.className = "status-dot status-dot-ok"; dot.title = "all systems healthy"; }
-    else { dot.className = "status-dot status-dot-error"; dot.title = "an issue was detected - see the status page"; }
-  }).catch(function () { dot.className = "status-dot status-dot-unknown"; dot.title = "could not check status"; });
+/// Polls `GET /status/summary` and updates the indicator in place. Starts
+/// straight away only when the page was rendered without a known health;
+/// skips polls while the tab is hidden.
+const STATUS_INDICATOR_SCRIPT: &str = r#"(function () {
+  var link = document.getElementById("status-indicator");
+  if (!link) return;
+  var dot = link.querySelector(".status-dot");
+  var POLL_MS = 30000;
+  function show(state, title) { dot.className = "status-dot status-dot-" + state; link.title = title; }
+  function poll() {
+    if (document.hidden) { setTimeout(poll, POLL_MS); return; }
+    fetch("/status/summary", { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error("status unavailable");
+      return r.json();
+    }).then(function (data) {
+      if (data && data.healthy) show("ok", "all systems healthy");
+      else show("error", "an issue was detected - see the status page");
+    }).catch(function () {
+      show("unknown", "could not check status");
+    }).finally(function () {
+      setTimeout(poll, POLL_MS);
+    });
+  }
+  setTimeout(poll, dot.classList.contains("status-dot-unknown") ? 0 : POLL_MS);
 })();"#;
+
+/// The status indicator: a dot linking to `/status`, rendered with the
+/// engine's last known health so it is right without JavaScript (every
+/// page load renders it afresh). Its script only adds live updates by
+/// polling. `class` is the link's own class, for where it sits (nav bar,
+/// POS top bar); `label` adds the visible "status" text.
+pub fn status_indicator(health: Option<bool>, class: &str, label: bool) -> Markup {
+    let (state, title) = match health {
+        Some(true) => ("ok", "all systems healthy"),
+        Some(false) => ("error", "an issue was detected - see the status page"),
+        None => ("unknown", "status not checked yet"),
+    };
+    html! {
+        a href="/status" class=(class) id="status-indicator" title=(title) {
+            @if label { span class="nav-status-text" { "status" } }
+            span class=(format!("status-dot status-dot-{state}")) {}
+        }
+        script { (PreEscaped(STATUS_INDICATOR_SCRIPT)) }
+    }
+}
 
 /// The site nav - brand, log-in-state links, the no-JS theme toggle (only
 /// shown once logged in: there's no account to persist a preference
@@ -192,17 +235,13 @@ fn nav(chrome: &PageChrome) -> Markup {
                         a href="/dashboard/login" { "log in" }
                         a href="/dashboard/signup" { "sign up" }
                     }
-                    a href="/status" class="nav-status-link" {
-                        span class="nav-status-text" { "status" }
-                        span id="nav-status-dot" class="status-dot status-dot-unknown" title="checking..." {}
-                    }
+                    (status_indicator(chrome.health, "nav-status-link", true))
                     @if chrome.logged_in {
                         (theme_toggle(chrome))
                     }
                 }
             }
         }
-        script { (PreEscaped(NAV_STATUS_SCRIPT)) }
     }
 }
 
@@ -254,8 +293,25 @@ mod tests {
     use super::*;
 
     #[test]
+    fn status_indicator_is_rendered_with_the_known_health_and_polls_only_as_an_enhancement() {
+        let healthy = status_indicator(Some(true), "nav-status-link", true).into_string();
+        assert!(healthy.contains(r#"<a href="/status" class="nav-status-link" id="status-indicator" title="all systems healthy"><span class="nav-status-text">status</span><span class="status-dot status-dot-ok"></span></a>"#), "got: {healthy}");
+        assert!(healthy.contains("/status/summary"));
+
+        let problem = status_indicator(Some(false), "pos-status-link", false).into_string();
+        assert!(problem.contains(r#"class="status-dot status-dot-error""#), "got: {problem}");
+        assert!(!problem.contains("nav-status-text"));
+
+        let unknown = status_indicator(None, "nav-status-link", true).into_string();
+        assert!(unknown.contains(r#"class="status-dot status-dot-unknown""#), "got: {unknown}");
+
+        let chrome = PageChrome::from_user(None, "/").with_health(Some(true));
+        assert!(nav(&chrome).into_string().contains("status-dot status-dot-ok"));
+    }
+
+    #[test]
     fn logged_in_admin_nav_order_is_dashboard_admin_invites_logout_status_theme() {
-        let chrome = PageChrome { logged_in: true, is_admin: true, theme: Theme::Dark, current_path: "/dashboard".to_string() };
+        let chrome = PageChrome { logged_in: true, is_admin: true, theme: Theme::Dark, current_path: "/dashboard".to_string(), health: None };
         let html = nav(&chrome).into_string();
 
         let dashboard = html.find(r#"href="/dashboard""#).expect("dashboard link");
@@ -286,7 +342,7 @@ mod tests {
     #[test]
     fn theme_toggle_renders_a_slider_with_a_thumb_positioned_for_the_current_theme() {
         for (theme, class) in [(Theme::Light, "theme-toggle-light"), (Theme::System, "theme-toggle-system"), (Theme::Dark, "theme-toggle-dark")] {
-            let chrome = PageChrome { logged_in: true, is_admin: false, theme, current_path: "/dashboard".to_string() };
+            let chrome = PageChrome { logged_in: true, is_admin: false, theme, current_path: "/dashboard".to_string(), health: None };
             let html = nav(&chrome).into_string();
             assert!(html.contains(&class.to_string()), "expected {class} on the toggle for {theme:?}, got: {html}");
             assert!(html.contains("theme-toggle-option-light") && html.contains("theme-toggle-option-dark"), "expected both sun and moon options, got: {html}");

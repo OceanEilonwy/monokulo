@@ -106,7 +106,7 @@ pub async fn orders_list(
         Ok(vm) => vm,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/stores/{id}/orders"));
+    let chrome = super::page_chrome(&state, Some(&user), format!("/dashboard/stores/{id}/orders"));
     views::orders::list_page(&chrome, &view_model).into_response()
 }
 
@@ -191,7 +191,7 @@ pub async fn order_detail(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/stores/{id}/orders/{order_id}"));
+    let chrome = super::page_chrome(&state, Some(&user), format!("/dashboard/stores/{id}/orders/{order_id}"));
     // A real, absolute, copy-pasteable URL - not just the path - since the
     // whole point is something a merchant can paste into an email or chat
     // to someone who isn't already looking at this dashboard. This
@@ -458,7 +458,7 @@ pub async fn store_detail(
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => {
-            let chrome = views::PageChrome::from_user(Some(&user), format!("/dashboard/stores/{id}"));
+            let chrome = super::page_chrome(&state, Some(&user), format!("/dashboard/stores/{id}"));
             let data = views::store_detail::StoreDetailViewModel { store: None };
             return (StatusCode::NOT_FOUND, views::store_detail::page(&chrome, &data)).into_response();
         }
@@ -480,7 +480,7 @@ async fn render_store_detail_page(
     lookup_message: Option<String>,
     lookup_found_order_id: Option<String>,
 ) -> Response {
-    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/stores/{}", row.id));
+    let chrome = super::page_chrome(state, Some(user), format!("/dashboard/stores/{}", row.id));
     let sk = match decrypt_sk(state, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -564,7 +564,7 @@ async fn render_store_settings_page(
     settings_error: Option<String>,
     created_webhook_signing_secret: Option<String>,
 ) -> Response {
-    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/stores/{}/settings", row.id));
+    let chrome = super::page_chrome(state, Some(user), format!("/dashboard/stores/{}/settings", row.id));
     let sk = match decrypt_sk(state, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -661,7 +661,7 @@ pub async fn create_order_page(
 /// Shared by `create_order_page` and `create_order`'s own validation-error
 /// branches - both end by showing a fresh copy of this same page.
 async fn render_create_order_page(state: &AppState, row: StoreConnectionRow, user: &UserRow, order_creation_error: Option<String>) -> Response {
-    let chrome = views::PageChrome::from_user(Some(user), format!("/dashboard/stores/{}/orders/new", row.id));
+    let chrome = super::page_chrome(state, Some(user), format!("/dashboard/stores/{}/orders/new", row.id));
     let (order_currency_options, order_currency_is_locked_to_xmr) = order_currency_options_for(state, &row).await;
     let data = views::create_order::CreateOrderData {
         connection_id: row.id.clone(),
@@ -1192,6 +1192,7 @@ mod tests {
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+            event_streams: Default::default(),
         };
         (state, engine)
     }
@@ -1215,6 +1216,7 @@ mod tests {
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+            event_streams: Default::default(),
         };
         (state, engine)
     }

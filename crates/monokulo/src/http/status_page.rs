@@ -58,10 +58,60 @@ pub struct CachedStatus {
     result: Result<EngineStatusResponse, String>,
 }
 
-pub type StatusCache = Arc<Mutex<Option<CachedStatus>>>;
+#[derive(Default)]
+pub struct StatusCacheState {
+    cached: Option<CachedStatus>,
+    /// A background refresh started by [`known_health`] is in flight, so a
+    /// burst of page loads starts one, not one each.
+    refreshing: bool,
+}
+
+pub type StatusCache = Arc<Mutex<StatusCacheState>>;
 
 pub fn new_status_cache() -> StatusCache {
-    Arc::new(Mutex::new(None))
+    Arc::new(Mutex::new(StatusCacheState::default()))
+}
+
+/// How old a cached status may be and still be rendered into a page as the
+/// status indicator's known state; anything older shows as unknown.
+const KNOWN_STATUS_MAX_AGE: Duration = Duration::from_secs(300);
+
+/// The health every page's status indicator is rendered with: whatever the
+/// cache last learned, without waiting on the engine. A page load that finds
+/// it stale starts a background refresh, so the next page (or the
+/// indicator's own poll) sees a fresh answer - which keeps it current for
+/// visitors without JavaScript too.
+pub fn known_health(state: &AppState) -> Option<bool> {
+    let mut cache = state.status_cache.lock().unwrap();
+    let age = cache.cached.as_ref().map(|cached| cached.fetched_at.elapsed());
+    if age.is_none_or(|age| age >= CACHE_TTL) && !cache.refreshing {
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            cache.refreshing = true;
+            let state = state.clone();
+            runtime.spawn(async move {
+                let _ = get_status_cached(&state).await;
+                state.status_cache.lock().unwrap().refreshing = false;
+            });
+        }
+    }
+    let cached = cache.cached.as_ref().filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)?;
+    Some(is_healthy(&cached.result))
+}
+
+/// `healthy: false` covers both "the engine is unreachable" and "the engine
+/// answered but reports a real problem" - the indicator only ever needs to
+/// distinguish "everything's fine" from "go look".
+fn is_healthy(result: &Result<EngineStatusResponse, String>) -> bool {
+    let Ok(status) = result else { return false };
+    // `Iterator::all` is vacuously true on an empty list - an engine
+    // reporting zero configured networks is not "everything's fine",
+    // it's nothing to be fine *about*, so that case is excluded
+    // explicitly rather than trusted to fall out of `all` on its own.
+    !status.networks.is_empty()
+        && status
+            .networks
+            .iter()
+            .all(|n| n.nodes.iter().any(|node| node.error.is_none()) && !n.scanner.is_stale && n.scanner.last_tick_ok)
 }
 
 /// Returns the cached engine status if it's still fresh, otherwise fetches a
@@ -72,13 +122,13 @@ pub fn new_status_cache() -> StatusCache {
 /// "occasionally two real fetches instead of one" is a fine outcome for what
 /// this exists to bound (typical page-view volume, not a flood).
 async fn get_status_cached(state: &AppState) -> Result<EngineStatusResponse, String> {
-    if let Some(cached) = state.status_cache.lock().unwrap().as_ref() {
+    if let Some(cached) = state.status_cache.lock().unwrap().cached.as_ref() {
         if cached.fetched_at.elapsed() < CACHE_TTL {
             return cached.result.clone();
         }
     }
     let result = state.engine_client.get_status().await.map_err(|e| describe_engine_error(&e));
-    *state.status_cache.lock().unwrap() = Some(CachedStatus { fetched_at: Instant::now(), result: result.clone() });
+    state.status_cache.lock().unwrap().cached = Some(CachedStatus { fetched_at: Instant::now(), result: result.clone() });
     result
 }
 
@@ -96,33 +146,17 @@ pub async fn status_page(State(state): State<AppState>, headers: axum::http::Hea
         },
     };
     let authed = super::resolve_authed_user(&state, &headers);
-    let chrome = views::PageChrome::from_user(authed.as_ref().map(|(user, _)| user), "/status");
+    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/status");
     views::status::page(&chrome, &view_model).into_response()
 }
 
-/// `GET /status/summary` - a small, cheap JSON endpoint the nav bar's status
-/// dot fetches on every page load to decide its color/glow, without every
-/// page having to pull in the full status page's own engine round trip.
-/// `healthy: false` covers both "the engine is unreachable" and "the engine
-/// answered but reports a real problem" - the nav dot only ever needs to
-/// distinguish "everything's fine" from "go look", the detail lives on the
-/// full page.
+/// `GET /status/summary` - a small, cheap JSON endpoint the status
+/// indicator polls to update its color/glow after the page has loaded (the
+/// page itself is rendered with [`known_health`]), without pulling in the
+/// full status page's own engine round trip. See [`is_healthy`].
 pub async fn status_summary(State(state): State<AppState>) -> Response {
-    match get_status_cached(&state).await {
-        Ok(status) => {
-            // `Iterator::all` is vacuously true on an empty list - an engine
-            // reporting zero configured networks is not "everything's fine",
-            // it's nothing to be fine *about*, so that case is excluded
-            // explicitly rather than trusted to fall out of `all` on its own.
-            let healthy = !status.networks.is_empty()
-                && status
-                    .networks
-                    .iter()
-                    .all(|n| n.nodes.iter().any(|node| node.error.is_none()) && !n.scanner.is_stale && n.scanner.last_tick_ok);
-            Json(json!({ "healthy": healthy })).into_response()
-        }
-        Err(_) => Json(json!({ "healthy": false })).into_response(),
-    }
+    let healthy = is_healthy(&get_status_cached(&state).await);
+    Json(json!({ "healthy": healthy })).into_response()
 }
 
 fn describe_engine_error(err: &EngineClientError) -> String {
@@ -225,6 +259,28 @@ mod tests {
         assert_eq!(relative_time(100, 200), "0s ago");
     }
 
+    #[tokio::test]
+    async fn known_health_renders_the_last_known_state_and_refreshes_it_in_the_background() {
+        let state = crate::http::tests::test_app_state();
+        // Nothing learned yet: unknown, and a background refresh starts.
+        assert_eq!(known_health(&state), None);
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while state.status_cache.lock().unwrap().refreshing {
+            assert!(Instant::now() < deadline, "the background refresh never finished");
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        // The test engine is unreachable, which is a known problem.
+        assert_eq!(known_health(&state), Some(false));
+
+        // Too old to show as known.
+        state.status_cache.lock().unwrap().cached = Some(CachedStatus {
+            fetched_at: Instant::now() - KNOWN_STATUS_MAX_AGE,
+            result: Err("stale".to_string()),
+        });
+        state.status_cache.lock().unwrap().refreshing = true;
+        assert_eq!(known_health(&state), None);
+    }
+
     mod http_tests {
         use axum::Router;
         use axum::body::Body;
@@ -257,10 +313,10 @@ mod tests {
             let state = state_with_engine(EngineClient::new(format!("http://{}", engine.addr)));
 
             let first = get_status_cached(&state).await.expect("first fetch should succeed");
-            let fetched_at_after_first = state.status_cache.lock().unwrap().as_ref().unwrap().fetched_at;
+            let fetched_at_after_first = state.status_cache.lock().unwrap().cached.as_ref().unwrap().fetched_at;
 
             let second = get_status_cached(&state).await.expect("second fetch should succeed");
-            let fetched_at_after_second = state.status_cache.lock().unwrap().as_ref().unwrap().fetched_at;
+            let fetched_at_after_second = state.status_cache.lock().unwrap().cached.as_ref().unwrap().fetched_at;
 
             assert_eq!(
                 fetched_at_after_first, fetched_at_after_second,
@@ -277,6 +333,7 @@ mod tests {
                 status_cache: new_status_cache(),
                 exchange_rate: test_exchange_rate_provider(),
                 rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+                event_streams: Default::default(),
             }
         }
 
