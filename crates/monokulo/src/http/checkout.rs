@@ -151,16 +151,26 @@ pub struct CheckoutOptions {
     /// `/events` only: also stream re-rendered page fragments, for the
     /// checkout page's own script (`checkout.js`).
     fragments: Option<bool>,
+    /// `refresh=false` turns off the no-JavaScript meta refresh, so a
+    /// customer can type a refund address without the page reloading under
+    /// them. Set by the page's own "Auto Refresh" toggle link.
+    refresh: Option<bool>,
 }
 
 impl CheckoutOptions {
-    fn is_pos(&self) -> bool { self.view.as_deref() == Some("pos") }
+    fn is_compact(&self) -> bool { self.view.as_deref() == Some("compact") }
     fn refund_enabled(&self) -> bool { self.refund != Some(false) }
+    fn auto_refresh(&self) -> bool { self.refresh != Some(false) }
     fn suffix(&self) -> String {
         let mut params = Vec::new();
-        if self.is_pos() { params.push("view=pos"); }
+        if self.is_compact() { params.push("view=compact"); }
         if !self.refund_enabled() { params.push("refund=false"); }
+        if !self.auto_refresh() { params.push("refresh=false"); }
         if params.is_empty() { String::new() } else { format!("?{}", params.join("&")) }
+    }
+    /// The same page's query string with auto refresh flipped.
+    fn toggled_refresh_suffix(&self) -> String {
+        CheckoutOptions { refresh: if self.auto_refresh() { Some(false) } else { None }, ..self.clone() }.suffix()
     }
 }
 
@@ -274,9 +284,11 @@ async fn build_checkout_view(
         expiry_urgency_class,
         refund_address: detail.order.refund_address.clone(),
         refund_address_error,
-        is_pos: options.is_pos(),
+        is_compact: options.is_compact(),
         refund_enabled: options.refund_enabled(),
         query_suffix: options.suffix(),
+        auto_refresh: options.auto_refresh(),
+        toggled_refresh_suffix: options.toggled_refresh_suffix(),
         payment_error: checkout_payment_message(&detail.order),
         pk: pk.to_string(),
         payments: detail
@@ -485,6 +497,19 @@ mod tests {
     use crate::engine_client::EngineClient;
 
     use super::super::{AppState, build_router};
+    use super::CheckoutOptions;
+
+    #[test]
+    fn the_auto_refresh_toggle_flips_only_the_refresh_parameter() {
+        let on = CheckoutOptions { view: Some("compact".to_string()), refund: Some(false), ..Default::default() };
+        assert_eq!(on.suffix(), "?view=compact&refund=false");
+        assert_eq!(on.toggled_refresh_suffix(), "?view=compact&refund=false&refresh=false");
+
+        let off = CheckoutOptions { refresh: Some(false), ..Default::default() };
+        assert!(!off.auto_refresh());
+        assert_eq!(off.suffix(), "?refresh=false");
+        assert_eq!(off.toggled_refresh_suffix(), "");
+    }
     use super::checkout_payment_message;
 
     #[test]
@@ -660,11 +685,11 @@ mod tests {
         assert!(html.contains(TEST_CURRENCY), "expected the real fiat currency shown, got: {html}");
         assert!(html.contains("<svg"), "expected a real rendered QR code, got: {html}");
         let pos_response = router.clone().oneshot(
-            Request::builder().uri(format!("/pay/{pk}/orders/{order_id}?view=pos&refund=false")).body(Body::empty()).unwrap()
+            Request::builder().uri(format!("/pay/{pk}/orders/{order_id}?view=compact&refund=false")).body(Body::empty()).unwrap()
         ).await.unwrap();
         assert_eq!(pos_response.status(), StatusCode::OK);
         let pos_html = body_text(pos_response).await;
-        assert!(pos_html.contains("pay-wrap checkout-pos"));
+        assert!(pos_html.contains("pay-wrap checkout-compact"));
         assert!(!pos_html.contains("id=\"refund_address\""));
         // `_styles.html.hbs` (included here for base typography/color)
         // mentions both `.site-nav` and even the literal text `<nav>` in
@@ -683,7 +708,7 @@ mod tests {
         assert!(!html.contains("data-timestamp"), "the checkout page must not depend on JS to format any timestamp, got: {html}");
         // The server-rendered page remains meaningful without JavaScript.
         assert!(html.contains("/static/checkout.js"));
-        assert!(html.contains("Refresh payment status"));
+        assert!(html.contains("Auto Refresh: ON"));
         assert!(html.contains(r#"<noscript><meta http-equiv="refresh" content="60""#));
         assert!(html.contains("style=\"width: 0%\""), "expected a real, already-computed progress-bar fill, got: {html}");
     }
@@ -724,14 +749,14 @@ mod tests {
         assert!(before_html.contains("id=\"refund_address\""), "expected the refund-address form present before one is set, got: {before_html}");
 
         let invalid = router.clone().oneshot(
-            Request::builder().method("POST").uri(format!("/pay/{pk}/orders/{order_id}/refund-address?view=pos"))
+            Request::builder().method("POST").uri(format!("/pay/{pk}/orders/{order_id}/refund-address?view=compact"))
                 .header("content-type", "application/x-www-form-urlencoded")
                 .body(Body::from("refund_address=not-an-address")).unwrap()
         ).await.unwrap();
         assert_eq!(invalid.status(), StatusCode::OK);
         let invalid_html = body_text(invalid).await;
         assert!(invalid_html.contains("Enter a valid Monero address"));
-        assert!(invalid_html.contains("refund-address?view=pos"));
+        assert!(invalid_html.contains("refund-address?view=compact"));
 
         let invalid_json = router.clone().oneshot(
             Request::builder().method("POST").uri(format!("/pay/{pk}/orders/{order_id}/refund-address"))

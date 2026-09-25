@@ -582,7 +582,7 @@ const POS_SCRIPT: &str = r#"
   }
 
   function openOrder(orderId, note) {
-    paymentFrame.src = "/pay/" + encodeURIComponent(publicKey) + "/orders/" + encodeURIComponent(orderId) + "?view=pos";
+    paymentFrame.src = "/pay/" + encodeURIComponent(publicKey) + "/orders/" + encodeURIComponent(orderId) + "?view=compact";
     paymentError.hidden = true;
     backgroundBtn.classList.add("pos-screen-hidden");
     dismissBtn.classList.add("pos-screen-hidden");
@@ -769,7 +769,7 @@ mod tests {
     fn pos_uses_shared_checkout_and_top_background_stack_without_nfc() {
         let html = page(&chrome(), &data()).into_string();
         assert!(html.contains("id=\"payment-frame\""));
-        assert!(html.contains("?view=pos"));
+        assert!(html.contains("?view=compact"));
         assert!(html.contains("id=\"background-disclosure\""));
         assert!(html.contains("id=\"background-btn\""));
         assert!(html.contains("POS requires JavaScript"));

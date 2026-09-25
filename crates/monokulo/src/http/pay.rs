@@ -774,5 +774,10 @@ mod tests {
             assert_eq!(response.status(), StatusCode::OK, "{asset}");
             assert_eq!(response.headers().get("content-type").unwrap(), "text/javascript; charset=utf-8");
         }
+        // The checkout page and whatever embeds it (the POS terminal, this
+        // library, a merchant's own page) stay independent: each follows the
+        // order itself, and neither talks to the other.
+        let checkout_js = include_str!("../../static/checkout.js");
+        assert!(!checkout_js.contains("postMessage") && !checkout_js.contains("window.parent") && !checkout_js.contains("window.top"), "checkout.js must not know about its embedder");
     }
 }

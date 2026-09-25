@@ -241,31 +241,46 @@
   // changing parts (`[data-live]` elements) whenever the order changes, and
   // each is swapped in by id. Nothing else is touched, so a refund address
   // mid-edit or a camera scan in progress carries on undisturbed. The
-  // stream ends once the order is final.
+  // stream ends once the order is final. The page knows nothing about
+  // whatever embeds it; an embedder follows the order on its own.
   var initialStatus = root.dataset.status;
   if (initialStatus === 'paid' || initialStatus === 'overpaid' || initialStatus === 'expired') return;
   if (typeof EventSource !== 'function') {
     setTimeout(function () { location.reload(); }, 60000);
     return;
   }
+  var STREAM_RETRY_MS = 5000;
   var params = new URLSearchParams(location.search);
   params.set('fragments', 'true');
-  var updates = new EventSource(location.pathname + '/events?' + params.toString());
-  updates.addEventListener('fragment', function (event) {
-    var template = document.createElement('template');
-    template.innerHTML = event.data;
-    Array.prototype.forEach.call(template.content.querySelectorAll('[data-live][id]'), function (fresh) {
-      var current = document.getElementById(fresh.id);
-      if (current && current.outerHTML !== fresh.outerHTML) current.replaceWith(fresh);
+  var eventsUrl = location.pathname + '/events?' + params.toString();
+  var updates = null;
+  var finished = false;
+  function connect() {
+    var source = new EventSource(eventsUrl);
+    updates = source;
+    source.addEventListener('fragment', function (event) {
+      var template = document.createElement('template');
+      template.innerHTML = event.data;
+      Array.prototype.forEach.call(template.content.querySelectorAll('[data-live][id]'), function (fresh) {
+        var current = document.getElementById(fresh.id);
+        if (current && current.outerHTML !== fresh.outerHTML) current.replaceWith(fresh);
+      });
     });
-  });
-  updates.addEventListener('status', function (event) {
-    var state;
-    try { state = JSON.parse(event.data); } catch (_) { return; }
-    root.dataset.status = state.status;
-    if (state.is_terminal) updates.close();
-  });
-  window.addEventListener('pagehide', function () { updates.close(); });
+    source.addEventListener('status', function (event) {
+      var state;
+      try { state = JSON.parse(event.data); } catch (_) { return; }
+      root.dataset.status = state.status;
+      if (state.is_terminal) { finished = true; source.close(); }
+    });
+    source.addEventListener('error', function () {
+      if (finished || updates !== source) return;
+      // EventSource reconnects by itself after a dropped connection, but
+      // not after a refused request (server error, restart mid-deploy).
+      if (source.readyState === EventSource.CLOSED) setTimeout(function () { if (updates === source) connect(); }, STREAM_RETRY_MS);
+    });
+  }
+  connect();
+  window.addEventListener('pagehide', function () { if (updates) updates.close(); updates = null; });
   // Restored from the back/forward cache with the stream closed.
   window.addEventListener('pageshow', function (event) { if (event.persisted) location.reload(); });
 })();

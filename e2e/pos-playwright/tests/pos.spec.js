@@ -111,7 +111,7 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
 
     // The POS displays the same payment page as public checkout.
     const checkout = page.frameLocator('#payment-frame');
-    await expect(page.locator('#payment-frame')).toHaveAttribute('src', new RegExp(`/pay/.*/orders/${order.order_id}\\?view=pos$`));
+    await expect(page.locator('#payment-frame')).toHaveAttribute('src', new RegExp(`/pay/.*/orders/${order.order_id}\\?view=compact$`));
     await expect(checkout.locator('.qr-wrap svg')).toBeVisible();
     await expect(checkout.locator('#address')).toHaveValue(order.address);
     // An image of the displayed QR can fill the refund address without typing.

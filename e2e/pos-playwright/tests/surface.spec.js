@@ -10,9 +10,9 @@ const host = 'http://localhost:8787';
 
 function pageHtml(initialSaved = false) {
   return `<!doctype html><html><head></head><body>
-    <div id="checkout-root" data-order-id="order-1" data-status="pending" data-confirmations="0" data-error="" data-pos="false">
+    <div id="checkout-root" data-order-id="order-1" data-status="pending" data-confirmations="0" data-error="">
       <div id="live-status" data-live><span id="status-badge">Waiting for payment</span></div>
-      <noscript><a href="/pay/pk/orders/order-1">Refresh payment status</a></noscript>
+      <noscript><p class="refresh-toggle"><a href="/pay/pk/orders/order-1?refresh=false">Auto Refresh: ON</a></p></noscript>
       <form id="refund-form" action="/refund-address" method="post">
         <div id="refund-field" class="refund-field${initialSaved ? ' is-saved' : ''}">
           <input id="refund_address" name="refund_address" value="${initialSaved ? address : ''}">
@@ -226,7 +226,7 @@ test('refund QR controls stay vertically centered within the input', async ({ pa
   const source = fs.readFileSync(path.join(root, 'crates/monokulo/src/views/checkout.rs'), 'utf8');
   const style = source.match(/const CHECKOUT_STYLE: &str = r#"([\s\S]*?)"#;/)[1];
   const head = fs.readFileSync(path.join(root, 'crates/monokulo/src/views/head.html'), 'utf8');
-  await page.setContent(`${head}<style>${style}</style><div class="checkout-pos"><div class="refund-field">
+  await page.setContent(`${head}<style>${style}</style><div class="checkout-compact"><div class="refund-field">
     <input type="text" id="refund_address" placeholder="Your Monero refund address">
     <span class="refund-tools"><button class="refund-icon-btn" id="scan-refund"><svg viewBox="0 0 24 24"></svg></button>
     <button class="refund-icon-btn" id="upload-refund"><svg viewBox="0 0 24 24"></svg></button></span>
@@ -331,7 +331,7 @@ test('manual refund entry remains available without JavaScript', async ({ browse
     await expect(page.locator('#scan-refund')).toBeHidden();
     await expect(page.locator('#upload-refund')).toBeHidden();
     await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();
-    await expect(page.getByRole('link', { name: 'Refresh payment status' })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Auto Refresh: ON' })).toBeVisible();
   } finally { await context.close(); }
 });
 
@@ -404,7 +404,7 @@ test('POS backgrounds a confirming order into the top list and reopens it', asyn
   await page.goto(`${host}/dashboard/stores/conn-1/pos`);
   await page.getByRole('button', { name: '1' }).click();
   await page.getByRole('button', { name: 'Charge' }).click();
-  await expect(page.locator('#payment-frame')).toHaveAttribute('src', '/pay/pk-1/orders/order-1?view=pos');
+  await expect(page.locator('#payment-frame')).toHaveAttribute('src', '/pay/pk-1/orders/order-1?view=compact');
   status = 'unconfirmed';
   await expect(page.locator('#background-btn')).toBeVisible({ timeout: 5000 });
   await page.locator('#background-btn').click();

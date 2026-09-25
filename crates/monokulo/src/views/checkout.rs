@@ -72,9 +72,17 @@ pub struct CheckoutViewModel {
     /// Set only when the refund-address form below was just rejected (empty
     /// submission, or a real engine failure) - `None` on a plain page load.
     pub refund_address_error: Option<String>,
-    pub is_pos: bool,
+    /// `?view=compact`: a single-column layout with a full-screen paid
+    /// state, for small frames. A generic presentation option - the page
+    /// knows nothing about who embeds it (the POS terminal is one user).
+    pub is_compact: bool,
     pub refund_enabled: bool,
     pub query_suffix: String,
+    /// Whether the no-JavaScript meta refresh is on (`?refresh=false` turns
+    /// it off), and the query string of the same page with it flipped, for
+    /// the no-JavaScript "Auto Refresh" toggle.
+    pub auto_refresh: bool,
+    pub toggled_refresh_suffix: String,
     pub payment_error: Option<String>,
     pub pk: String,
     pub payments: Vec<CheckoutPaymentViewModel>,
@@ -161,6 +169,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .payment-state.is-paid { border-color: var(--success); background: var(--tint-success); }
 .payment-state-title { margin: 0 0 .3em; font-size: 1.35em; }
 .payment-state p { margin: .3em 0; }
+.refresh-toggle { margin: 0 0 .5em; text-align: right; font-size: .85em; }
 .refund-field { display: grid; align-items: center; margin: .5em 0; }
 .refund-field input[type=text] { grid-area: 1 / 1; display: block; width: 100%; padding-right: 7.8em; margin: 0; }
 .refund-tools { grid-area: 1 / 1; justify-self: end; z-index: 1; display: flex; align-items: center; gap: .15em; margin-right: .35em; }
@@ -181,13 +190,13 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 @media (prefers-reduced-motion: reduce) { .refund-field.is-saving .refund-save-state::after { animation-duration: 1.5s; } }
 .refund-camera { width: 100%; max-height: 16em; background: var(--ink); }
 .scan-error { color: var(--error); }
-.checkout-pos { max-width: 100%; }
-.checkout-pos .pay-grid { grid-template-columns: 1fr; gap: 0; text-align: center; }
-.checkout-pos .pay-col-secondary { font-size: .9em; }
-.checkout-pos .qr-wrap { margin-bottom: .5em; }
-.checkout-pos .qr-wrap svg { width: min(42vh, 208px); height: auto; }
-.checkout-pos .section { margin-top: .7em; padding-top: .7em; }
-.checkout-pos .payment-state.is-paid { position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.checkout-compact { max-width: 100%; }
+.checkout-compact .pay-grid { grid-template-columns: 1fr; gap: 0; text-align: center; }
+.checkout-compact .pay-col-secondary { font-size: .9em; }
+.checkout-compact .qr-wrap { margin-bottom: .5em; }
+.checkout-compact .qr-wrap svg { width: min(42vh, 208px); height: auto; }
+.checkout-compact .section { margin-top: .7em; padding-top: .7em; }
+.checkout-compact .payment-state.is-paid { position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 "#;
 
 pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
@@ -195,17 +204,23 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
         // Without JavaScript this is the only update path; with it,
         // `checkout.js` streams changes in place instead (`noscript` content
         // is never parsed as markup when scripting is on).
-        @if !data.is_terminal {
+        @if !data.is_terminal && data.auto_refresh {
             noscript { meta http-equiv="refresh" content="60" id="checkout-refresh"; }
         }
         style { (PreEscaped(CHECKOUT_STYLE)) }
-        @if data.is_pos { style { (PreEscaped("body{padding:.4rem}")) } }
+        @if data.is_compact { style { (PreEscaped("body{padding:.4rem}")) } }
     };
     let body = html! {
-        div class=(if data.is_pos { "pay-wrap checkout-pos" } else { "pay-wrap" }) id="checkout-root" data-order-id=(data.order_id) data-status=(data.status) data-confirmations=(data.confirmations) data-error=(data.payment_error.as_deref().unwrap_or("")) data-pos=(data.is_pos) {
+        div class=(if data.is_compact { "pay-wrap checkout-compact" } else { "pay-wrap" }) id="checkout-root" data-order-id=(data.order_id) data-status=(data.status) data-confirmations=(data.confirmations) data-error=(data.payment_error.as_deref().unwrap_or("")) {
             h1 class="visually-hidden" { "Monero payment of " (data.xmr_amount) " XMR" }
-            @if !data.is_terminal && data.refund_enabled && data.refund_address.is_none() {
-                noscript { p { a href=(format!("/pay/{}/orders/{}{}", data.pk, data.order_id, data.query_suffix)) { "Refresh payment status" } } }
+            @if !data.is_terminal {
+                noscript {
+                    p class="refresh-toggle" {
+                        a href=(format!("/pay/{}/orders/{}{}", data.pk, data.order_id, data.toggled_refresh_suffix)) {
+                            "Auto Refresh: " (if data.auto_refresh { "ON" } else { "OFF" })
+                        }
+                    }
+                }
             }
 
             (live_status(data))
@@ -512,9 +527,11 @@ mod tests {
             expiry_urgency_class: String::new(),
             refund_address: None,
             refund_address_error: None,
-            is_pos: false,
+            is_compact: false,
             refund_enabled: true,
             query_suffix: String::new(),
+            auto_refresh: true,
+            toggled_refresh_suffix: "?refresh=false".to_string(),
             payment_error: None,
             pk: "pk_abc123".to_string(),
             payments: vec![],
@@ -528,7 +545,7 @@ mod tests {
         assert!(html.contains("id=\"scan-refund\""));
         assert!(html.contains("/static/jsQR.js"));
         assert!(html.contains(r#"<noscript><meta http-equiv="refresh" content="60" id="checkout-refresh"></noscript>"#));
-        assert!(html.contains("Refresh payment status"));
+        assert!(html.contains(r#"<noscript><p class="refresh-toggle"><a href="/pay/pk_abc123/orders/pay_abc123?refresh=false">Auto Refresh: ON</a></p></noscript>"#), "got: {html}");
         assert!(html.contains(r#"<noscript><button type="submit" class="btn-secondary">Save</button></noscript>"#));
         assert!(!html.contains(r#"<nav class="site-nav""#), "the checkout page must not carry the site nav, got: {html}");
         assert!(!html.contains("Monokulo"), "the checkout page must not carry the site brand/logo, got: {html}");
@@ -542,6 +559,21 @@ mod tests {
             !html.contains(r#"<meta http-equiv="refresh""#),
             "a paid/terminal order must not keep re-fetching itself, got: {html}"
         );
+    }
+
+    #[test]
+    fn checkout_page_auto_refresh_toggle_turns_the_meta_refresh_off_and_back_on() {
+        let mut data = test_checkout_view_model(false);
+        data.auto_refresh = false;
+        data.query_suffix = "?view=compact&refresh=false".to_string();
+        data.toggled_refresh_suffix = "?view=compact".to_string();
+        let html = checkout_page(&chrome(), &data).into_string();
+        assert!(!html.contains(r#"http-equiv="refresh""#), "auto refresh off must drop the meta refresh, got: {html}");
+        assert!(html.contains(r#"<a href="/pay/pk_abc123/orders/pay_abc123?view=compact">Auto Refresh: OFF</a>"#), "got: {html}");
+        assert!(html.contains(r#"action="/pay/pk_abc123/orders/pay_abc123/refund-address?view=compact&amp;refresh=false""#), "saving must keep auto refresh off, got: {html}");
+
+        let terminal = checkout_page(&chrome(), &test_checkout_view_model(true)).into_string();
+        assert!(!terminal.contains("Auto Refresh"), "a terminal order never refreshes, so it has nothing to toggle, got: {terminal}");
     }
 
     #[test]
@@ -579,15 +611,15 @@ mod tests {
     #[test]
     fn pos_view_uses_the_same_payment_markup_with_a_prominent_success_state() {
         let mut data = test_checkout_view_model(true);
-        data.is_pos = true;
-        data.query_suffix = "?view=pos".to_string();
+        data.is_compact = true;
+        data.query_suffix = "?view=compact".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains("pay-wrap checkout-pos"));
+        assert!(html.contains("pay-wrap checkout-compact"));
         assert!(html.contains("payment-state is-paid"));
         assert!(html.contains("id=\"copy-address\""));
         assert!(html.contains("class=\"address-block\""));
         assert!(html.contains("id=\"refund_address\""));
-        assert!(html.contains("refund-address?view=pos"));
+        assert!(html.contains("refund-address?view=compact"));
     }
 
     #[test]
