@@ -41,7 +41,6 @@ pub struct CreateConnectionRequest {
     pub network: Option<String>,
     pub allowed_origins: Vec<String>,
     pub confirmations_required: Option<u64>,
-    pub zero_conf_max_piconero: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
     /// The store's base currency (WBS: "Confirmation Thresholds") -
     /// validated against `crate::currencies` (a real, known currency by
@@ -70,7 +69,6 @@ pub(super) struct CreateConnectionFields {
     pub network: Option<String>,
     pub allowed_origins: Vec<String>,
     pub confirmations_required: Option<u64>,
-    pub zero_conf_max_piconero: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
     pub base_currency: String,
 }
@@ -123,7 +121,6 @@ pub(super) async fn create_connection_for_user(
             network: req.network,
             allowed_origins: req.allowed_origins,
             confirmations_required: req.confirmations_required,
-            zero_conf_max_piconero: req.zero_conf_max_piconero,
             order_expiry_seconds: req.order_expiry_seconds,
         })
         .await
@@ -175,7 +172,6 @@ pub async fn create_connection(
         network: req.network,
         allowed_origins: req.allowed_origins,
         confirmations_required: req.confirmations_required,
-        zero_conf_max_piconero: req.zero_conf_max_piconero,
         order_expiry_seconds: req.order_expiry_seconds,
         base_currency: req.base_currency,
     };

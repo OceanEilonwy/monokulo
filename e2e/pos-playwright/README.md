@@ -1,6 +1,6 @@
 # POS terminal - real stagenet + real browser e2e
 
-Full end-to-end coverage for the POS screen (`crates/monokulo/templates/pos.html.hbs`,
+Full end-to-end coverage for the POS screen (`crates/monokulo/src/views/pos.rs`,
 `crates/monokulo/src/http/pos.rs`): a real, network-bound `scanner` engine talking to
 the real public Monero **stagenet** node, a real, network-bound `monokulo`, one real
 account with one real store connected (the same reusable merchant watch-only wallet
@@ -11,11 +11,10 @@ real CLSAG + Bulletproofs+ signing, no external wallet-rpc process - see that cr
 own doc comment for why it exists as a separate, narrower wallet from the one
 `cargo test --test e2e_stagenet` uses).
 
-**Nothing here is mocked or simulated.** The keypad taps are real clicks on the real
-page, the QR/`monero:` URI come from a real order the real engine created, the payment
-is a real transaction the real stagenet chain confirms, and the tick/progress-ring/
-background-stacking behavior you see is the real page's own JS reacting to real,
-polled server state - not a scripted animation.
+**The stagenet suite uses real payments.** The keypad taps are real clicks, the QR
+comes from a real order, and the stagenet chain confirms the transactions. The
+shared checkout state and background-order list react to real polled server state.
+The separate `surface.config.js` suite uses mocked responses for fast browser checks.
 
 **Disabled by default, on purpose.** This is not part of `cargo test`, not part of
 `npm test` anywhere else in this repo, and not wired into any CI. It costs real
@@ -27,10 +26,10 @@ you actually want that level of confidence.
 ## What it proves (and what it doesn't)
 
 Covers, against the real chain: order creation in the store's own base currency, the
-real keypad's digit entry, the real QR code + amount-carrying `monero:` URI, the tick
-appearing at real 0-conf mempool detection, a 0-conf-trusted order auto-returning to
-the keypad with no merchant action, a confirming order's progress ring + "confirm in
-background" + stacked completion, and that a POS-created order is a real order visible
+real keypad's digit entry, the shared checkout iframe and QR code, the confirmation
+state appearing at real 0-conf mempool detection, a 0-conf-trusted order auto-returning to
+the keypad with no merchant action, a confirming order's progress display + "confirm in
+background" + top stacked completion, and that a POS-created order is a real order visible
 on the normal dashboard orders list.
 
 Does **not** attempt to reproduce a real error state (double-spend/under-paid/
@@ -42,11 +41,13 @@ module (`derive_payment_error`). Also only ever backgrounds one payment at a tim
 for and waiting on two independent confirmations) - each is independently polled by
 construction, so this generalizes without needing to prove it twice at real cost.
 
-Best-effort NFC (`NDEFReader`) is not exercised here either - it needs real Android
-Chrome + a real NFC reader, which a CI/dev machine's headless Chromium doesn't have.
-The page already degrades to "QR code only" when `NDEFReader` isn't present (see
-`pos.html.hbs`'s own `attemptNfcWrite`), which is exactly the code path this suite
-does exercise.
+The POS uses the shared checkout iframe and QR flow. Its refund scanner accepts
+an uploaded QR image; webcam access is browser-permission dependent. This suite
+exercises the upload path.
+
+For fast browser checks without a real node or wallet, run
+`npx playwright test -c surface.config.js`. Those tests cover QR image upload,
+manual refund entry without JavaScript, and the POS background-order list.
 
 ## One-time setup
 

@@ -6,6 +6,7 @@ const { defineConfig } = require('@playwright/test');
 // default `npm test`/CI invocation anywhere else in this repo.
 module.exports = defineConfig({
   testDir: './tests',
+  testIgnore: 'surface.spec.js',
   // Real stagenet confirmations take real wall-clock time (~2min/block) - see
   // tests/pos.spec.js's own per-test test.setTimeout calls for the exact
   // budget each scenario gets (8min each); this is just a generous outer

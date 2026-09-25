@@ -13,6 +13,7 @@
 //! order creation (the future HTTP handler / writer actor) — `Store` only persists the
 //! result.
 
+use std::cell::RefCell;
 use std::sync::{Arc, Mutex};
 
 use rusqlite::{Connection, OptionalExtension, params};
@@ -41,6 +42,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (10, include_str!("../migrations/0010_settings.sql")),
     (11, include_str!("../migrations/0011_order_confirmations_override.sql")),
     (12, include_str!("../migrations/0012_drop_order_rescans.sql")),
+    (13, include_str!("../migrations/0013_drop_zero_conf_max_piconero.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -87,7 +89,31 @@ pub type SharedStore = Arc<Mutex<Store>>;
 
 pub struct Store {
     conn: Connection,
+    /// Fan-out of "this order's visible state just changed" hints - see
+    /// [`OrderChange`]. Lives on the `Store` itself, not on the HTTP layer, because
+    /// the writes that cause a change happen in the scanner loop as often as in a
+    /// handler, and this is the one place both go through.
+    order_changes: tokio::sync::broadcast::Sender<OrderChange>,
+    /// `Some` only while [`Store::in_transaction`] is running: changes are held
+    /// here and published after the commit, so no subscriber can re-read an order
+    /// before the write that announced it is visible - and a rolled-back
+    /// transaction announces nothing at all.
+    pending_order_changes: RefCell<Option<Vec<OrderChange>>>,
 }
+
+/// A hint that one order's customer-visible state (status, confirmations,
+/// amount received, payments, double-spend flag or refund address) changed.
+/// Carries no state of its own on purpose: a subscriber re-reads the order, so a
+/// spurious hint costs one read and a coalesced burst loses nothing.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct OrderChange {
+    pub tenant_id: String,
+    pub order_id: String,
+}
+
+/// Enough for a burst of changes in one scan tick; a subscriber that falls
+/// further behind gets `RecvError::Lagged` and resyncs everything it watches.
+const ORDER_CHANGE_CAPACITY: usize = 256;
 
 #[derive(Debug, thiserror::Error)]
 pub enum StoreError {
@@ -113,7 +139,6 @@ pub struct Tenant {
     pub network: String,
     pub next_minor_index: u32,
     pub confirmations_required: u64,
-    pub zero_conf_max_piconero: Option<u64>,
     pub order_expiry_seconds: i64,
     pub allowed_origins: Vec<String>,
     pub created_at: i64,
@@ -127,22 +152,16 @@ pub struct NewTenant {
     pub network: String,
     pub allowed_origins: Vec<String>,
     pub confirmations_required: Option<u64>,
-    pub zero_conf_max_piconero: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
 }
 
 /// A partial update to a tenant's config. Fields are plain `Option<T>` for
 /// "unchanged vs. set to a value" (there's no way to clear `allowed_origins` etc.
 /// back to empty via this API, which is fine - it's never meant to be empty).
-/// `zero_conf_max_piconero` is the one field that legitimately needs to be
-/// *cleared* to `NULL`, so it gets an explicit `_set` flag alongside the
-/// `Option<T>` value to distinguish "leave alone" from "set to None".
 #[derive(Default)]
 pub struct TenantConfigPatch {
     pub allowed_origins: Option<Vec<String>>,
     pub confirmations_required: Option<u64>,
-    pub zero_conf_max_piconero_set: bool,
-    pub zero_conf_max_piconero: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
 }
 
@@ -246,18 +265,57 @@ fn new_id(prefix: &str) -> String {
 }
 
 impl Store {
+    fn from_connection(conn: Connection) -> Self {
+        let (order_changes, _) = tokio::sync::broadcast::channel(ORDER_CHANGE_CAPACITY);
+        Store { conn, order_changes, pending_order_changes: RefCell::new(None) }
+    }
+
     pub fn open_in_memory() -> Result<Self> {
         let conn = Connection::open_in_memory()?;
         configure_connection(&conn)?;
         apply_migrations(&conn)?;
-        Ok(Store { conn })
+        Ok(Store::from_connection(conn))
     }
 
     pub fn open_file(path: &str) -> Result<Self> {
         let conn = Connection::open(path)?;
         configure_connection(&conn)?;
         apply_migrations(&conn)?;
-        Ok(Store { conn })
+        Ok(Store::from_connection(conn))
+    }
+
+    /// Every [`OrderChange`] committed from now on, across all tenants - the
+    /// subscriber filters by tenant itself.
+    pub fn subscribe_order_changes(&self) -> tokio::sync::broadcast::Receiver<OrderChange> {
+        self.order_changes.subscribe()
+    }
+
+    fn publish_order_change(&self, tenant_id: &str, order_id: &str) {
+        if self.order_changes.receiver_count() == 0 {
+            return;
+        }
+        let change = OrderChange { tenant_id: tenant_id.to_string(), order_id: order_id.to_string() };
+        match self.pending_order_changes.borrow_mut().as_mut() {
+            Some(pending) => {
+                if !pending.contains(&change) {
+                    pending.push(change);
+                }
+            }
+            None => {
+                let _ = self.order_changes.send(change);
+            }
+        }
+    }
+
+    /// [`Self::publish_order_change`] for a caller holding only the order id.
+    fn publish_order_change_by_id(&self, order_id: &str) -> Result<()> {
+        if self.order_changes.receiver_count() == 0 {
+            return Ok(());
+        }
+        if let Some(tenant_id) = self.get_order_tenant_id(order_id)? {
+            self.publish_order_change(&tenant_id, order_id);
+        }
+        Ok(())
     }
 
     pub fn into_shared(self) -> SharedStore {
@@ -280,6 +338,22 @@ impl Store {
     /// raised by `f` itself, because the `Transaction` guard's default drop behaviour
     /// is rollback.
     pub fn in_transaction<T, E, F>(&self, f: F) -> std::result::Result<T, E>
+    where
+        F: FnOnce(&Store) -> std::result::Result<T, E>,
+        E: From<StoreError>,
+    {
+        *self.pending_order_changes.borrow_mut() = Some(Vec::new());
+        let result = self.run_transaction(f);
+        let pending = self.pending_order_changes.borrow_mut().take().unwrap_or_default();
+        if result.is_ok() {
+            for change in pending {
+                let _ = self.order_changes.send(change);
+            }
+        }
+        result
+    }
+
+    fn run_transaction<T, E, F>(&self, f: F) -> std::result::Result<T, E>
     where
         F: FnOnce(&Store) -> std::result::Result<T, E>,
         E: From<StoreError>,
@@ -312,9 +386,9 @@ impl Store {
         self.conn.execute(
             "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
                 sealed_key_material, primary_address, network, next_minor_index,
-                confirmations_required, zero_conf_max_piconero, order_expiry_seconds,
+                confirmations_required, order_expiry_seconds,
                 allowed_origins, created_at_utc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10, ?11, ?12)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10, ?11)",
             params![
                 id,
                 public_key,
@@ -324,7 +398,6 @@ impl Store {
                 new.primary_address,
                 new.network,
                 new.confirmations_required.unwrap_or(10) as i64,
-                new.zero_conf_max_piconero.map(|v| v as i64),
                 new.order_expiry_seconds.unwrap_or(1800),
                 allowed_origins_json,
                 now,
@@ -348,9 +421,6 @@ impl Store {
             network: row.get("network")?,
             next_minor_index: row.get::<_, i64>("next_minor_index")? as u32,
             confirmations_required: row.get::<_, i64>("confirmations_required")? as u64,
-            zero_conf_max_piconero: row
-                .get::<_, Option<i64>>("zero_conf_max_piconero")?
-                .map(|v| v as u64),
             order_expiry_seconds: row.get("order_expiry_seconds")?,
             allowed_origins,
             created_at: row.get("created_at_utc")?,
@@ -437,12 +507,6 @@ impl Store {
             self.conn.execute(
                 "UPDATE tenants SET confirmations_required = ?2 WHERE id = ?1",
                 params![tenant_id, v as i64],
-            )?;
-        }
-        if patch.zero_conf_max_piconero_set {
-            self.conn.execute(
-                "UPDATE tenants SET zero_conf_max_piconero = ?2 WHERE id = ?1",
-                params![tenant_id, patch.zero_conf_max_piconero.map(|v| v as i64)],
             )?;
         }
         if let Some(v) = patch.order_expiry_seconds {
@@ -755,6 +819,9 @@ impl Store {
             "UPDATE orders SET refund_address = ?3 WHERE id = ?1 AND tenant_id = ?2",
             params![order_id, tenant_id, refund_address],
         )?;
+        if changed > 0 {
+            self.publish_order_change(tenant_id, order_id);
+        }
         Ok(changed > 0)
     }
 
@@ -791,11 +858,15 @@ impl Store {
         // paths and can't distinguish them. A separate read is safe here because
         // every write to this database is already serialized through one writer
         // (see this module's header comment).
-        let already_present: bool = self.conn.query_row(
-            "SELECT EXISTS(SELECT 1 FROM order_payments WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3)",
-            params![order_id, txid, output_index],
-            |row| row.get(0),
-        )?;
+        let existing_height: Option<Option<i64>> = self
+            .conn
+            .query_row(
+                "SELECT block_height FROM order_payments WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3",
+                params![order_id, txid, output_index],
+                |row| row.get(0),
+            )
+            .optional()?;
+        let already_present = existing_height.is_some();
         self.conn.execute(
             "INSERT INTO order_payments (order_id, txid, output_index, amount_piconero,
                 key_images_json, first_seen_at_utc, block_height)
@@ -813,6 +884,11 @@ impl Store {
                 block_height
             ],
         )?;
+        // The mempool poll re-reports every unconfirmed payment about once a
+        // second; only a new row or a newly learned height is a real change.
+        if !already_present || (existing_height == Some(None) && block_height.is_some()) {
+            self.publish_order_change_by_id(order_id)?;
+        }
         Ok(!already_present)
     }
 
@@ -828,11 +904,14 @@ impl Store {
         output_index: i64,
         new_height: Option<i64>,
     ) -> Result<()> {
-        self.conn.execute(
+        let changed = self.conn.execute(
             "UPDATE order_payments SET block_height = ?4
              WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at_utc IS NULL",
             params![order_id, txid, output_index, new_height],
         )?;
+        if changed > 0 {
+            self.publish_order_change_by_id(order_id)?;
+        }
         Ok(())
     }
 
@@ -846,6 +925,9 @@ impl Store {
              WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at_utc IS NULL",
             params![order_id, txid, output_index, voided_at],
         )?;
+        if changed > 0 {
+            self.publish_order_change_by_id(order_id)?;
+        }
         Ok(changed > 0)
     }
 
@@ -862,6 +944,9 @@ impl Store {
              WHERE order_id = ?1 AND txid = ?2 AND output_index = ?3 AND voided_at_utc IS NOT NULL",
             params![order_id, txid, output_index],
         )?;
+        if changed > 0 {
+            self.publish_order_change_by_id(order_id)?;
+        }
         Ok(changed > 0)
     }
 
@@ -1014,6 +1099,11 @@ impl Store {
         Ok(rows)
     }
 
+    #[cfg(test)]
+    pub fn overwrite_payment_key_images_for_test(&self, order_id: &str, raw: &str) {
+        self.conn.execute("UPDATE order_payments SET key_images_json = ?2 WHERE order_id = ?1", params![order_id, raw]).unwrap();
+    }
+
     pub fn find_payment_by_key_image(&self, key_image_hex: &str) -> Result<Vec<OrderPaymentRow>> {
         // key_images_json is a small JSON array (typically 1-2 entries); a LIKE scan
         // is adequate at v1 scale and avoids a separate normalized table for what is
@@ -1072,7 +1162,6 @@ impl Store {
             StatusInputs {
                 xmr_amount_piconero: order.xmr_amount_piconero,
                 confirmations_required: order.confirmations_required_override.unwrap_or(tenant.confirmations_required),
-                zero_conf_max_piconero: tenant.zero_conf_max_piconero,
                 now,
                 expires_at: order.expires_at,
             },
@@ -1083,6 +1172,9 @@ impl Store {
              WHERE id = ?1",
             params![order_id, status_to_str(new_status), min_confirmations as i64, total as i64, now],
         )?;
+        if order.status != new_status || order.confirmations != min_confirmations || order.amount_received_piconero != total {
+            self.publish_order_change(&order.tenant_id, order_id);
+        }
 
         Ok((order.status, new_status))
     }
@@ -1093,6 +1185,9 @@ impl Store {
             "UPDATE orders SET double_spend_detected_at_utc = ?2 WHERE id = ?1 AND double_spend_detected_at_utc IS NULL",
             params![order_id, at],
         )?;
+        if changed > 0 {
+            self.publish_order_change_by_id(order_id)?;
+        }
         Ok(changed > 0)
     }
 
@@ -1110,6 +1205,9 @@ impl Store {
             "UPDATE orders SET double_spend_detected_at_utc = NULL WHERE id = ?1 AND double_spend_detected_at_utc IS NOT NULL",
             params![order_id],
         )?;
+        if changed > 0 {
+            self.publish_order_change_by_id(order_id)?;
+        }
         Ok(changed > 0)
     }
 
@@ -1455,7 +1553,6 @@ mod tests {
                     network: "mainnet".into(),
                     allowed_origins: vec!["https://merchant.example".into()],
                     confirmations_required: None,
-                    zero_conf_max_piconero: None,
                     order_expiry_seconds: None,
                 },
                 1000,
@@ -1778,6 +1875,77 @@ mod tests {
         assert!(refetched.double_spend_detected_at.is_some());
     }
 
+    fn drain_changes(receiver: &mut tokio::sync::broadcast::Receiver<OrderChange>) -> Vec<OrderChange> {
+        let mut changes = Vec::new();
+        while let Ok(change) = receiver.try_recv() {
+            changes.push(change);
+        }
+        changes
+    }
+
+    #[test]
+    fn order_changes_are_published_only_when_something_visible_changed() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, &tenant.tenant.id, 1);
+        let mut changes = store.subscribe_order_changes();
+        let expected = vec![OrderChange { tenant_id: tenant.tenant.id.clone(), order_id: order.id.clone() }];
+
+        // Nothing paid, nothing expired: a recompute that changes nothing is silent.
+        store.recompute_order_status(&order.id, 100, order.created_at).unwrap();
+        assert!(drain_changes(&mut changes).is_empty());
+
+        // First sighting in the mempool, then the same sighting again (the ~1s mempool poll).
+        store.record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None).unwrap();
+        assert_eq!(drain_changes(&mut changes), expected);
+        store.record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, None).unwrap();
+        assert!(drain_changes(&mut changes).is_empty());
+        // Mined: the height is new information.
+        store.record_payment_match(&order.id, "tx1", 0, 1, "[]", order.created_at, Some(90)).unwrap();
+        assert_eq!(drain_changes(&mut changes), expected);
+
+        store.recompute_order_status(&order.id, 100, order.created_at).unwrap();
+        assert_eq!(drain_changes(&mut changes), expected);
+        store.recompute_order_status(&order.id, 100, order.created_at).unwrap();
+        assert!(drain_changes(&mut changes).is_empty());
+
+        assert!(store.set_refund_address(&tenant.tenant.id, &order.id, "refund").unwrap());
+        assert_eq!(drain_changes(&mut changes), expected);
+        assert!(store.mark_double_spend_detected(&order.id, 1000).unwrap());
+        assert_eq!(drain_changes(&mut changes), expected);
+        assert!(!store.mark_double_spend_detected(&order.id, 2000).unwrap());
+        assert!(drain_changes(&mut changes).is_empty());
+    }
+
+    #[test]
+    fn order_changes_inside_a_transaction_publish_once_after_commit_and_never_on_rollback() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, &tenant.tenant.id, 1);
+        let mut changes = store.subscribe_order_changes();
+
+        let rolled_back: std::result::Result<(), StoreError> = store.in_transaction(|store| {
+            store.set_refund_address(&tenant.tenant.id, &order.id, "refund")?;
+            Err(StoreError::NotFound)
+        });
+        assert!(rolled_back.is_err());
+        assert!(drain_changes(&mut changes).is_empty(), "a rolled-back write must announce nothing");
+
+        store
+            .in_transaction(|store| -> Result<()> {
+                store.set_refund_address(&tenant.tenant.id, &order.id, "refund")?;
+                store.mark_double_spend_detected(&order.id, 1000)?;
+                assert!(drain_changes(&mut changes).is_empty(), "nothing is published before the commit");
+                Ok(())
+            })
+            .unwrap();
+        assert_eq!(
+            drain_changes(&mut changes),
+            vec![OrderChange { tenant_id: tenant.tenant.id.clone(), order_id: order.id.clone() }],
+            "one change per order per transaction"
+        );
+    }
+
     #[test]
     fn mark_double_spend_detected_is_sticky_first_occurrence_only() {
         let store = Store::open_in_memory().unwrap();
@@ -1809,32 +1977,12 @@ mod tests {
         assert_eq!(refetched.confirmations_required, 3);
         assert_eq!(refetched.allowed_origins, created.tenant.allowed_origins); // untouched
 
+        // Native 0-conf: a tenant's own default can be patched down to zero directly,
+        // no separate ceiling/`_set` flag machinery needed.
         store
-            .update_tenant_config(
-                &created.tenant.id,
-                TenantConfigPatch {
-                    zero_conf_max_piconero_set: true,
-                    zero_conf_max_piconero: Some(500),
-                    ..Default::default()
-                },
-            )
+            .update_tenant_config(&created.tenant.id, TenantConfigPatch { confirmations_required: Some(0), ..Default::default() })
             .unwrap();
-        assert_eq!(
-            store.get_tenant_by_id(&created.tenant.id).unwrap().unwrap().zero_conf_max_piconero,
-            Some(500)
-        );
-
-        // Explicitly clearing back to NULL requires the _set flag.
-        store
-            .update_tenant_config(
-                &created.tenant.id,
-                TenantConfigPatch { zero_conf_max_piconero_set: true, zero_conf_max_piconero: None, ..Default::default() },
-            )
-            .unwrap();
-        assert_eq!(
-            store.get_tenant_by_id(&created.tenant.id).unwrap().unwrap().zero_conf_max_piconero,
-            None
-        );
+        assert_eq!(store.get_tenant_by_id(&created.tenant.id).unwrap().unwrap().confirmations_required, 0);
     }
 
     #[test]
@@ -2132,7 +2280,6 @@ mod tests {
                     network: "stagenet".into(),
                     allowed_origins: vec![],
                     confirmations_required: None,
-                    zero_conf_max_piconero: None,
                     order_expiry_seconds: None,
                 },
                 1000,
@@ -2168,7 +2315,6 @@ mod tests {
                     network: "stagenet".into(),
                     allowed_origins: vec![],
                     confirmations_required: None,
-                    zero_conf_max_piconero: None,
                     order_expiry_seconds: None,
                 },
                 1000,
@@ -2212,7 +2358,6 @@ mod tests {
                     network: "stagenet".into(),
                     allowed_origins: vec![],
                     confirmations_required: None,
-                    zero_conf_max_piconero: None,
                     order_expiry_seconds: None,
                 },
                 1000,
@@ -2387,7 +2532,6 @@ mod tests {
                     network: "stagenet".into(),
                     allowed_origins: vec![],
                     confirmations_required: None,
-                    zero_conf_max_piconero: None,
                     order_expiry_seconds: None,
                 },
                 1000,
@@ -2525,7 +2669,7 @@ mod tests {
         let conn = Connection::open_in_memory().unwrap();
         configure_connection(&conn).unwrap();
         shared::migrations::apply(&conn, &MIGRATIONS[..3]).unwrap();
-        let store = Store { conn };
+        let store = Store::from_connection(conn);
 
         // Inserted directly via raw SQL, not `new_tenant`/`Store::create_tenant`:
         // those build against the *current* schema (as of migration 9,
@@ -2619,6 +2763,33 @@ mod tests {
             )
             .unwrap();
         assert!(has_unique_index, "the UNIQUE(order_id, txid, output_index) constraint must survive as a real index");
+    }
+
+    #[test]
+    fn migration_0013_preserves_orders_already_paid_by_the_old_ceiling() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        shared::migrations::apply(&conn, &MIGRATIONS[..12]).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
+                sealed_key_material, primary_address, allowed_origins, created_at_utc,
+                confirmations_required, zero_conf_max_piconero)
+             VALUES ('legacy', 'pk_legacy', 'hash_legacy', 'plain', x'00', '4addr', '[]', 1000, 10, 200);
+             INSERT INTO orders (id, tenant_id, minor_index, address, xmr_amount_piconero,
+                amount_received_piconero, status, confirmations, created_at_utc, expires_at_utc, updated_at_utc)
+             VALUES ('trusted', 'legacy', 1, 'sub_1', 100, 100, 'paid', 0, 1000, 2000, 1000),
+                    ('pending', 'legacy', 2, 'sub_2', 100, 0, 'pending', 0, 1000, 2000, 1000),
+                    ('confirmed', 'legacy', 3, 'sub_3', 100, 100, 'paid', 10, 1000, 2000, 1000);",
+        )
+        .unwrap();
+
+        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+        let override_for = |id: &str| -> Option<i64> {
+            conn.query_row("SELECT confirmations_required_override FROM orders WHERE id = ?1", [id], |row| row.get(0)).unwrap()
+        };
+        assert_eq!(override_for("trusted"), Some(0));
+        assert_eq!(override_for("pending"), None);
+        assert_eq!(override_for("confirmed"), None);
     }
 
     #[test]

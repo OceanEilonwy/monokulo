@@ -23,7 +23,7 @@ use axum_extra::extract::CookieJar;
 use axum_extra::extract::cookie::{Cookie, SameSite};
 use serde::Deserialize;
 
-use crate::db::UserRow;
+use crate::db::{Theme, UserRow};
 use crate::templates::network_selected_flags;
 use crate::views;
 
@@ -117,14 +117,13 @@ fn is_safe_redirect_path(next: &str) -> bool {
 /// to `"woocommerce"` below - a real "choose a platform" UI is a later, fuller
 /// dashboard concern) and `order_expiry_seconds` (left `None` here so the
 /// engine's own default applies - no UI field for it yet).
-/// `confirmations_required`/`zero_conf_max_piconero` *are* carried (same
-/// `#[serde(default)]`-to-`None`, no-UI-field-yet treatment
-/// `connect.rs::ConfirmForm` already gives both, for the identical reason:
-/// a caller that needs a non-default value - most concretely, a real
-/// stagenet e2e test that wants a permissive zero-conf ceiling and a low
-/// confirmations_required rather than waiting on real block times - has a
-/// real way to set either through this flow instead of only the JSON `POST
-/// /connections` surface. `allowed_origins` arrives as one comma-separated
+/// `confirmations_required` *is* carried (same `#[serde(default)]`-to-`None`,
+/// no-UI-field-yet treatment `connect.rs::ConfirmForm` already gives it, for
+/// the identical reason: a caller that needs a non-default value - most
+/// concretely, a real stagenet e2e test that wants `0` (native 0-conf)
+/// rather than waiting on real block times - has a real way to set it
+/// through this flow instead of only the JSON `POST /connections` surface.
+/// `allowed_origins` arrives as one comma-separated
 /// text input rather than a JSON array, since an HTML form has no native
 /// array field - split into a `Vec<String>` in `connect_submit` below.
 #[derive(Deserialize)]
@@ -140,8 +139,6 @@ pub struct ConnectForm {
     pub base_currency: String,
     #[serde(default)]
     pub confirmations_required: Option<u64>,
-    #[serde(default)]
-    pub zero_conf_max_piconero: Option<u64>,
 }
 
 /// `chrome.logged_in` is always `false` here, not a real per-request
@@ -179,6 +176,7 @@ fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&
     let data = views::connect::ConnectViewModel {
         error: error.map(str::to_string),
         public_key: None,
+        connection_id: None,
         endpoint: String::new(),
         site_url: resubmit.map(|f| f.site_url.clone()).unwrap_or_default(),
         view_key_hex: resubmit.map(|f| f.view_key_hex.clone()).unwrap_or_default(),
@@ -192,11 +190,12 @@ fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&
     views::connect::page(&chrome, &data).into_response()
 }
 
-fn render_connect_success(state: &AppState, public_key: &str, user: &UserRow) -> Response {
+fn render_connect_success(state: &AppState, connection_id: &str, public_key: &str, user: &UserRow) -> Response {
     let chrome = views::PageChrome::from_user(Some(user), "/dashboard/connect");
     let data = views::connect::ConnectViewModel {
         error: None,
         public_key: Some(public_key.to_string()),
+        connection_id: Some(connection_id.to_string()),
         endpoint: state.engine_client.base_url().to_string(),
         site_url: String::new(),
         view_key_hex: String::new(),
@@ -273,9 +272,9 @@ pub async fn logout_submit(State(state): State<AppState>, AuthedUser(_user, toke
     (jar, redirect_302("/")).into_response()
 }
 
-/// `POST /dashboard/theme` - the nav's own no-JS theme toggle
-/// (`views::nav`). Cycles System -> Light -> Dark -> System
-/// ([`crate::db::Theme::next`]) and persists the result against the
+/// `POST /dashboard/theme` - the nav's no-JS theme selector. Named submit
+/// buttons select a theme directly; older forms without a choice still cycle.
+/// Persists the result against the
 /// authenticated user (not a cookie - see the design-language rollout's own
 /// migration comment, `migrations/0017_user_theme.sql`, for why this is
 /// server-side per-user state rather than client storage), then redirects
@@ -287,13 +286,38 @@ pub async fn logout_submit(State(state): State<AppState>, AuthedUser(_user, toke
 #[derive(Deserialize)]
 pub struct ThemeForm {
     pub next: Option<String>,
+    pub theme: Option<String>,
+}
+
+fn selected_theme(current: Theme, submitted: Option<&str>) -> Theme {
+    match submitted {
+        Some("light") => Theme::Light,
+        Some("system") => Theme::System,
+        Some("dark") => Theme::Dark,
+        _ => current.next(),
+    }
 }
 
 pub async fn theme_submit(State(state): State<AppState>, AuthedUser(user, _): AuthedUser, Form(form): Form<ThemeForm>) -> Response {
-    let next_theme = user.theme.next();
+    let next_theme = selected_theme(user.theme, form.theme.as_deref());
     state.db.lock().unwrap().update_user_theme(&user.id, next_theme).ok();
     let target = form.next.as_deref().filter(|next| is_safe_redirect_path(next)).unwrap_or("/dashboard");
     redirect_302(target)
+}
+
+#[cfg(test)]
+mod theme_selector_tests {
+    use super::*;
+
+    #[test]
+    fn named_theme_options_select_directly() {
+        for current in [Theme::Light, Theme::System, Theme::Dark] {
+            assert_eq!(selected_theme(current, Some("light")), Theme::Light);
+            assert_eq!(selected_theme(current, Some("system")), Theme::System);
+            assert_eq!(selected_theme(current, Some("dark")), Theme::Dark);
+            assert_eq!(selected_theme(current, None), current.next());
+        }
+    }
 }
 
 /// `POST /dashboard/login`. WBS 1.4.1 adds `next`-redirect support on top of
@@ -361,9 +385,9 @@ pub async fn connect_form(State(state): State<AppState>, AuthedUser(user, _token
 /// `platform` isn't a visible field yet (hardcoded to `"woocommerce"` below -
 /// a real "choose a platform" UI is a later, fuller dashboard concern per the
 /// WBS's own Stage 4/dashboard notes); `confirmations_required`/
-/// `zero_conf_max_piconero`/`order_expiry_seconds` aren't visible fields
-/// either and are left `None` so the engine's own defaults apply, consistent
-/// with the JSON API already treating them as optional.
+/// `order_expiry_seconds` aren't visible fields either and are left `None` so
+/// the engine's own defaults apply, consistent with the JSON API already
+/// treating them as optional.
 pub async fn connect_submit(
     State(state): State<AppState>,
     AuthedUser(user, _token_hash): AuthedUser,
@@ -392,13 +416,12 @@ pub async fn connect_submit(
         network: Some(form.network.clone()),
         allowed_origins,
         confirmations_required: form.confirmations_required,
-        zero_conf_max_piconero: form.zero_conf_max_piconero,
         order_expiry_seconds: None,
         base_currency: form.base_currency.clone(),
     };
 
     match connections::create_connection_for_user(&state, &user, fields).await {
-        Ok(outcome) => render_connect_success(&state, &outcome.public_key, &user),
+        Ok(outcome) => render_connect_success(&state, &outcome.connection_id, &outcome.public_key, &user),
         Err(CreateConnectionError::BadRequest(message)) => {
             render_connect_form(&state, Some(&message), Some(&form), &user)
         }

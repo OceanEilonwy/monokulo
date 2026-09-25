@@ -29,8 +29,8 @@ pub struct CreateOrderData {
 pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
     let body = html! {
         div class="wrap" {
-            p { a href=(format!("/dashboard/stores/{}", data.connection_id)) { "← back to store" } }
-            h1 { "Create an order" }
+            (super::store_breadcrumb(&data.connection_id, &data.display_name, true))
+            h1 { "Create order" }
             p class="hint" { "Creates a real order on the engine and takes you straight to its payment page." }
             @if let Some(error) = &data.order_creation_error {
                 div class="error" { (error) }
@@ -66,7 +66,7 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
             }
         }
     };
-    layout(chrome, &format!("Create an order - {} - Monokulo", data.display_name), body)
+    layout(chrome, &format!("Create order - {} - Monokulo", data.display_name), body)
 }
 
 #[cfg(test)]

@@ -36,7 +36,6 @@ pub struct CreateTenantRequest {
     network: Option<String>,
     allowed_origins: Vec<String>,
     confirmations_required: Option<u64>,
-    zero_conf_max_piconero: Option<u64>,
     order_expiry_seconds: Option<i64>,
 }
 
@@ -84,7 +83,6 @@ pub async fn create_tenant(
             network: network_str(network).to_string(),
             allowed_origins: req.allowed_origins,
             confirmations_required: req.confirmations_required,
-            zero_conf_max_piconero: req.zero_conf_max_piconero,
             order_expiry_seconds: req.order_expiry_seconds,
         },
         now_unix(),
@@ -119,31 +117,38 @@ const MAX_ORDER_EXPIRY_SECONDS: i64 = 30 * 24 * 60 * 60;
 
 /// Upper bound on tenant-chosen confirmations. ~24 hours of blocks; anything beyond
 /// this is indistinguishable from "never settles". `pub(crate)` so
-/// `http::public::create_order`'s own per-order override can validate against
-/// the exact same bound rather than a duplicated magic number.
+/// `http::public::create_order_for_admin`'s per-order override can validate against
+/// the exact same bound rather than a duplicated magic number. `0` is a legal
+/// lower bound - native 0-conf, see `status::derive_status`'s own doc comment for
+/// why a `confirmations_required = 0` tier needs no special handling to be safe.
 pub(crate) const MAX_CONFIRMATIONS_REQUIRED: u64 = 720;
+
+/// Shared by the tenant-level default (here) and `http::public::create_order_for_admin`'s
+/// per-order override - the exact same bound, so it's enforced in exactly one place
+/// rather than as two copies that could drift.
+pub(crate) fn validate_confirmations_required(confirmations_required: Option<u64>) -> Result<(), ApiError> {
+    if let Some(confirmations) = confirmations_required {
+        if confirmations > MAX_CONFIRMATIONS_REQUIRED {
+            return Err(ApiError::BadRequest(format!(
+                "confirmations_required must be at most {MAX_CONFIRMATIONS_REQUIRED}"
+            )));
+        }
+    }
+    Ok(())
+}
 
 /// Shared by tenant creation and tenant patching, because both write the same two
 /// columns and a bound enforced on only one of them is not a bound.
 ///
 /// Neither value is dangerous to *us* - a tenant can only misconfigure their own
-/// orders - but both have silent failure modes rather than loud ones, which is what
-/// makes them worth rejecting at the edge. `confirmations_required = 0` marks an
-/// order `Paid` off a transaction still sitting in the mempool, bypassing the
-/// `zero_conf_max_piconero` ceiling that exists precisely to bound that risk;
-/// `order_expiry_seconds <= 0` produces orders that are already expired when the
-/// customer first loads the payment page.
+/// orders - but `order_expiry_seconds <= 0` has a silent failure mode rather than a
+/// loud one (orders that are already expired when the customer first loads the
+/// payment page), which is what makes it worth rejecting at the edge.
 fn validate_tenant_settings(
     confirmations_required: Option<u64>,
     order_expiry_seconds: Option<i64>,
 ) -> Result<(), ApiError> {
-    if let Some(confirmations) = confirmations_required {
-        if confirmations == 0 || confirmations > MAX_CONFIRMATIONS_REQUIRED {
-            return Err(ApiError::BadRequest(format!(
-                "confirmations_required must be between 1 and {MAX_CONFIRMATIONS_REQUIRED}; 0 would treat an unconfirmed transaction as final"
-            )));
-        }
-    }
+    validate_confirmations_required(confirmations_required)?;
     if let Some(seconds) = order_expiry_seconds {
         if seconds <= 0 || seconds > MAX_ORDER_EXPIRY_SECONDS {
             return Err(ApiError::BadRequest(format!(
@@ -161,7 +166,6 @@ pub struct TenantView {
     primary_address: String,
     network: String,
     confirmations_required: u64,
-    zero_conf_max_piconero: Option<u64>,
     order_expiry_seconds: i64,
     allowed_origins: Vec<String>,
 }
@@ -174,7 +178,6 @@ impl From<crate::store::Tenant> for TenantView {
             primary_address: t.primary_address,
             network: t.network,
             confirmations_required: t.confirmations_required,
-            zero_conf_max_piconero: t.zero_conf_max_piconero,
             order_expiry_seconds: t.order_expiry_seconds,
             allowed_origins: t.allowed_origins,
         }
@@ -189,7 +192,6 @@ pub async fn get_own_tenant(AuthedTenant(tenant): AuthedTenant) -> Json<TenantVi
 pub struct PatchTenantRequest {
     allowed_origins: Option<Vec<String>>,
     confirmations_required: Option<u64>,
-    zero_conf_max_piconero: Option<u64>,
     order_expiry_seconds: Option<i64>,
 }
 
@@ -202,8 +204,6 @@ pub async fn patch_own_tenant(
     let patch = TenantConfigPatch {
         allowed_origins: req.allowed_origins,
         confirmations_required: req.confirmations_required,
-        zero_conf_max_piconero_set: req.zero_conf_max_piconero.is_some(),
-        zero_conf_max_piconero: req.zero_conf_max_piconero,
         order_expiry_seconds: req.order_expiry_seconds,
     };
     let store = state.store.lock().unwrap();
@@ -541,3 +541,42 @@ pub async fn lookup_payment(
     Ok(Json(PaymentLookupView::Matched { order_ids: touched.into_iter().collect() }))
 }
 
+/// `GET /api/v1/admin/tenant/events` - a Server-Sent Events stream of this
+/// tenant's order changes, so a client that shows live order state (monokulo's
+/// checkout and POS pages) can re-read an order when it actually changes
+/// instead of polling it.
+///
+/// Events:
+/// - `ready` once, as soon as the stream is subscribed. Anything that changed
+///   before this was missed, so a client re-reads everything it watches here.
+/// - `order` with `{"order_id": "..."}` - that order changed; re-read it.
+/// - `resync` - this stream fell behind and dropped changes; re-read
+///   everything, exactly as on `ready`.
+///
+/// Carries no order state itself - see [`crate::store::OrderChange`].
+pub async fn order_events(
+    AuthedTenant(tenant): AuthedTenant,
+    State(state): State<AppState>,
+) -> axum::response::sse::Sse<impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>> {
+    use axum::response::sse::{Event, KeepAlive, Sse};
+    use tokio::sync::broadcast::error::RecvError;
+
+    let receiver = state.store.lock().unwrap().subscribe_order_changes();
+    let ready = futures_util::stream::once(async { Ok(Event::default().event("ready").data("{}")) });
+    let changes = futures_util::stream::unfold((receiver, tenant.id), |(mut receiver, tenant_id)| async move {
+        loop {
+            match receiver.recv().await {
+                Ok(change) if change.tenant_id == tenant_id => {
+                    let data = serde_json::json!({ "order_id": change.order_id }).to_string();
+                    return Some((Ok(Event::default().event("order").data(data)), (receiver, tenant_id)));
+                }
+                Ok(_) => continue,
+                Err(RecvError::Lagged(_)) => {
+                    return Some((Ok(Event::default().event("resync").data("{}")), (receiver, tenant_id)));
+                }
+                Err(RecvError::Closed) => return None,
+            }
+        }
+    });
+    Sse::new(futures_util::StreamExt::chain(ready, changes)).keep_alive(KeepAlive::new().interval(std::time::Duration::from_secs(15)))
+}

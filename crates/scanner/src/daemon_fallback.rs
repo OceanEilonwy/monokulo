@@ -287,8 +287,10 @@ impl MoneroDaemonClient for FallbackDaemonClient {
     /// always has been. Genuine disagreement among two or more nodes is not
     /// resolved by majority vote: refusing to affirm a double-spend is the safe
     /// direction to be wrong in (a missed double-spend is merely re-checked again
-    /// next time; a false one permanently voids real money), and the disagreement
-    /// itself is logged, since it means one of the configured nodes is either
+    /// next time; a false one can retract a real payment and notify the merchant).
+    /// Disagreement is
+    /// returned as `Disputed`, so revalidation cannot mistake it for affirmative
+    /// unspent evidence. It is also logged, since one configured node is either
     /// lying or badly wrong about something checkable - worth an operator's
     /// attention regardless of which way this particular call resolves.
     ///
@@ -325,20 +327,15 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         let mut result = Vec::with_capacity(key_images.len());
         for i in 0..key_images.len() {
             let votes: Vec<KeyImageStatus> = responses.iter().map(|r| r[i]).collect();
-            let status = if votes.len() < 2 {
+            let status = if votes.iter().all(|vote| *vote == votes[0]) {
                 votes[0]
-            } else if votes.iter().all(|v| *v == KeyImageStatus::SpentInBlockchain) {
-                KeyImageStatus::SpentInBlockchain
-            } else if votes.contains(&KeyImageStatus::SpentInBlockchain) {
+            } else {
                 eprintln!(
-                    "monero daemon fallback: nodes disagree on whether key image {} is spent in the blockchain - \
-                     refusing to affirm a double-spend on a disagreement, but one of the configured nodes is \
-                     wrong (or lying) about it and is worth investigating",
+                    "monero daemon fallback: nodes disagree on key image {} - \
+                     treating the status as disputed until they agree",
                     key_images.get(i).map(String::as_str).unwrap_or("?")
                 );
-                KeyImageStatus::Unspent
-            } else {
-                votes[0]
+                KeyImageStatus::Disputed
             };
             result.push(status);
         }
@@ -574,7 +571,16 @@ mod tests {
             ki_node("b", KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent])),
         ]);
         let result = client.is_key_image_spent_corroborated(&["ki1".to_string()]).await.unwrap();
-        assert_eq!(result, vec![KeyImageStatus::Unspent], "a disagreement must never affirm SpentInBlockchain");
+        assert_eq!(result, vec![KeyImageStatus::Disputed], "a disagreement must remain inconclusive");
+    }
+
+    #[tokio::test]
+    async fn pool_and_unspent_disagreement_is_also_inconclusive() {
+        let client = FallbackDaemonClient::new(vec![
+            ki_node("a", KeyImageDaemonClient::answering(vec![KeyImageStatus::Unspent])),
+            ki_node("b", KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInPool])),
+        ]);
+        assert_eq!(client.is_key_image_spent_corroborated(&["ki1".to_string()]).await.unwrap(), vec![KeyImageStatus::Disputed]);
     }
 
     #[tokio::test]
@@ -635,6 +641,6 @@ mod tests {
             ki_node("b", KeyImageDaemonClient::answering(vec![KeyImageStatus::SpentInBlockchain, KeyImageStatus::Unspent])),
         ]);
         let result = client.is_key_image_spent_corroborated(&["ki1".to_string(), "ki2".to_string()]).await.unwrap();
-        assert_eq!(result, vec![KeyImageStatus::SpentInBlockchain, KeyImageStatus::Unspent]);
+        assert_eq!(result, vec![KeyImageStatus::SpentInBlockchain, KeyImageStatus::Disputed]);
     }
 }

@@ -24,15 +24,16 @@
 //! engine rather than through monokulo's own `http::pay` endpoint)
 //! simply shows a dash rather than a fabricated amount.
 
-use axum::extract::{Form, Path, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::response::{IntoResponse, Json, Response};
 use axum::http::{HeaderMap, StatusCode};
 use qrcode::render::svg;
 use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
+use std::str::FromStr;
 
 use crate::db::StoreConnectionRow;
-use crate::engine_client::{EngineClientError, OrderDetailResponse};
+use crate::engine_client::{EngineClientError, OrderDetailResponse, OrderView};
 use crate::views;
 use crate::views::checkout::{CheckoutPaymentViewModel, CheckoutShareViewModel, CheckoutViewModel};
 
@@ -41,7 +42,7 @@ use super::{ApiError, AppState};
 
 /// `pending`/`unconfirmed`/`confirming`/`partial` are still "in progress";
 /// `paid`/`overpaid`/`expired` are terminal - used to decide whether the
-/// page should keep polling. Mirrors the engine's own (soon-removed)
+/// page should keep updating. Mirrors the engine's own (soon-removed)
 /// `templates::status_label` - presentation logic, duplicated once rather
 /// than shared, since it's a 10-line match statement used in exactly one
 /// place per crate, not obviously worth a `shared` module of its own.
@@ -52,7 +53,7 @@ pub(super) fn status_label(status: &str) -> (&'static str, &'static str, bool) {
         "confirming" => ("Confirming", "status-confirming", false),
         "partial" => ("Partial payment received", "status-partial", false),
         "paid" => ("Paid", "status-paid", true),
-        "overpaid" => ("Overpaid", "status-paid", true),
+        "overpaid" => ("Overpaid", "status-overpaid", true),
         "expired" => ("Expired", "status-expired", true),
         _ => ("Unknown", "status-unknown", true),
     }
@@ -63,6 +64,30 @@ fn short_txid(txid: &str) -> String {
         return txid.to_string();
     }
     format!("{}…{}", &txid[..8], &txid[txid.len() - 6..])
+}
+
+/// Customer-facing amount guidance; POS keeps its own merchant-facing alerts.
+fn checkout_payment_message(order: &OrderView) -> Option<String> {
+    if order.double_spend_detected_at.is_some() {
+        return super::pos::derive_payment_error(order);
+    }
+    let requested = shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero);
+    let received = shared::exchange_rate::format_piconero_as_xmr(order.amount_received_piconero);
+    match order.status.as_str() {
+        "partial" => {
+            let remaining = shared::exchange_rate::format_piconero_as_xmr(
+                order.xmr_amount_piconero.saturating_sub(order.amount_received_piconero),
+            );
+            Some(format!("{received} XMR received of {requested} XMR. Send the remaining {remaining} XMR to the address below."))
+        }
+        "overpaid" => {
+            let extra = shared::exchange_rate::format_piconero_as_xmr(
+                order.amount_received_piconero.saturating_sub(order.xmr_amount_piconero),
+            );
+            Some(format!("{received} XMR received for a {requested} XMR order ({extra} XMR extra). Do not send more. Contact the merchant about the extra amount."))
+        }
+        _ => super::pos::derive_payment_error(order),
+    }
 }
 
 /// Same SVG-trimming/accessibility treatment as the engine's own (soon-
@@ -119,13 +144,33 @@ async fn load_order(
 }
 
 /// `GET /pay/{pk}/orders/{order_id}` - the full checkout page.
-pub async fn checkout_page(State(state): State<AppState>, Path((pk, order_id)): Path<(String, String)>) -> Response {
+#[derive(Clone, Default, Deserialize)]
+pub struct CheckoutOptions {
+    view: Option<String>,
+    refund: Option<bool>,
+    /// `/events` only: also stream re-rendered page fragments, for the
+    /// checkout page's own script (`checkout.js`).
+    fragments: Option<bool>,
+}
+
+impl CheckoutOptions {
+    fn is_pos(&self) -> bool { self.view.as_deref() == Some("pos") }
+    fn refund_enabled(&self) -> bool { self.refund != Some(false) }
+    fn suffix(&self) -> String {
+        let mut params = Vec::new();
+        if self.is_pos() { params.push("view=pos"); }
+        if !self.refund_enabled() { params.push("refund=false"); }
+        if params.is_empty() { String::new() } else { format!("?{}", params.join("&")) }
+    }
+}
+
+pub async fn checkout_page(State(state): State<AppState>, Path((pk, order_id)): Path<(String, String)>, Query(options): Query<CheckoutOptions>) -> Response {
     let (row, sk, detail) = match load_order(&state, &pk, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return not_found_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_checkout_page(&state, pk, row, sk, detail, None).await
+    render_checkout_page(&state, pk, row, sk, detail, None, &options).await
 }
 
 fn not_found_response() -> Response {
@@ -145,13 +190,37 @@ async fn render_checkout_page(
     sk: String,
     detail: OrderDetailResponse,
     refund_address_error: Option<String>,
+    options: &CheckoutOptions,
 ) -> Response {
+    let qr_code_svg = match qr_svg_for_html(&detail.order.address) {
+        Ok(svg) => svg,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let order_id = detail.order.order_id.clone();
+    let mut view = build_checkout_view(state, &pk, &row, &sk, detail, refund_address_error, options).await;
+    view.qr_code_svg = qr_code_svg;
+    let chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{order_id}"));
+    views::checkout::checkout_page(&chrome, &view).into_response()
+}
+
+/// Everything the checkout page shows except its QR code, which never
+/// changes and is left empty here - the live-update stream re-renders only
+/// the parts that do (`views::checkout::live_fragment`).
+async fn build_checkout_view(
+    state: &AppState,
+    pk: &str,
+    row: &StoreConnectionRow,
+    sk: &str,
+    detail: OrderDetailResponse,
+    refund_address_error: Option<String>,
+    options: &CheckoutOptions,
+) -> CheckoutViewModel {
     // A reasonable, safe-side default if the engine is briefly unreachable
     // for this one extra call - the order data itself already loaded fine
     // above, so this page still shows something real rather than failing
     // outright over a field that only affects the confirmation-progress
     // display.
-    let confirmations_required = state.engine_client.get_tenant(&sk).await.map(|t| t.confirmations_required).unwrap_or(10);
+    let confirmations_required = super::pos::resolve_confirmations_required(state, &row.id, sk, &detail.order.order_id).await;
 
     let (amount, currency) =
         match state.db.lock().unwrap().get_order_currency_metadata(&row.id, &detail.order.order_id) {
@@ -159,19 +228,13 @@ async fn render_checkout_page(
             _ => ("—".to_string(), "".to_string()),
         };
 
-    let qr_code_svg = match qr_svg_for_html(&detail.order.address) {
-        Ok(svg) => svg,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-
     let (status_text, status_class, is_terminal) = status_label(&detail.order.status);
     // A subtle, progressive color shift as expiry nears (research on real
     // crypto-checkout UIs: a big alarming red countdown creates anxiety: a
     // quiet color change at 5 minutes, then 2, communicates urgency without
     // it) - computed here, server-side, same reasoning as `progress_percent`
-    // above: this page has no `<script>` at all, so anything time-sensitive
-    // has to already be correct in the HTML this handler returns, refreshed
-    // by the meta-refresh tag rather than a client-side timer.
+    // above: values are correct in the initial HTML, including when
+    // JavaScript is disabled.
     let seconds_until_expiry = detail.order.expires_at - crate::now_unix();
     let expiry_urgency_class = if is_terminal {
         String::new()
@@ -182,22 +245,21 @@ async fn render_checkout_page(
     } else {
         String::new()
     };
-    // Computed here, server-side, not by client JS from a live poll - this
-    // page has no `<script>` at all any more (a meta-refresh re-fetches the
-    // whole page instead), so the progress bar's fill has to already be
-    // correct in the HTML this handler returns. `confirmations_required ==
+    // Computed server-side so the progress bar is correct in the initial
+    // HTML and after a status refresh. `confirmations_required ==
     // 0` (zero-conf trusted) means any receipt already counts as done.
     let progress_percent: u8 = if confirmations_required == 0 {
-        100
+        if matches!(detail.order.status.as_str(), "paid" | "overpaid") { 100 } else { 0 }
     } else {
         ((detail.order.confirmations as f64 / confirmations_required as f64) * 100.0).round().min(100.0) as u8
     };
-    let view = CheckoutViewModel {
+    CheckoutViewModel {
         order_id: detail.order.order_id.clone(),
         status_label: status_text.to_string(),
+        status: detail.order.status.clone(),
         status_class: status_class.to_string(),
         address: detail.order.address.clone(),
-        qr_code_svg,
+        qr_code_svg: String::new(),
         xmr_amount: shared::exchange_rate::format_piconero_as_xmr(detail.order.xmr_amount_piconero),
         amount_received_xmr: shared::exchange_rate::format_piconero_as_xmr(detail.order.amount_received_piconero),
         amount,
@@ -212,7 +274,11 @@ async fn render_checkout_page(
         expiry_urgency_class,
         refund_address: detail.order.refund_address.clone(),
         refund_address_error,
-        pk: pk.clone(),
+        is_pos: options.is_pos(),
+        refund_enabled: options.refund_enabled(),
+        query_suffix: options.suffix(),
+        payment_error: checkout_payment_message(&detail.order),
+        pk: pk.to_string(),
         payments: detail
             .payments
             .iter()
@@ -226,10 +292,7 @@ async fn render_checkout_page(
                 is_zero_conf: p.block_height.is_none(),
             })
             .collect(),
-    };
-
-    let chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{}", detail.order.order_id));
-    views::checkout::checkout_page(&chrome, &view).into_response()
+    }
 }
 
 #[derive(Deserialize)]
@@ -249,17 +312,17 @@ pub struct SetRefundAddressForm {
 /// a customer paying through the checkout widget had no path to set one at
 /// all.
 ///
-/// Plain form POST, not `fetch`/JSON - this page carries no JavaScript at
-/// all (see its own doc comment). Redirects back to the plain checkout page
-/// on success (POST-redirect-GET, same convention the dashboard's own forms
-/// use); an empty submission or a real engine failure re-renders the same
-/// page with an inline error instead of a bare error response - a customer
-/// typing the wrong thing here shouldn't lose their place mid-payment.
+/// Browser-side auto-save requests JSON so it can show saving, saved, and
+/// invalid states without leaving the page. A plain form POST still works
+/// without JavaScript: it redirects on success and re-renders inline errors.
 pub async fn set_refund_address(
     State(state): State<AppState>,
     Path((pk, order_id)): Path<(String, String)>,
+    Query(options): Query<CheckoutOptions>,
+    headers: HeaderMap,
     Form(form): Form<SetRefundAddressForm>,
 ) -> Response {
+    let wants_json = headers.get(axum::http::header::ACCEPT).and_then(|value| value.to_str().ok()).is_some_and(|value| value.contains("application/json"));
     let (row, sk, detail) = match load_order(&state, &pk, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return not_found_response(),
@@ -268,14 +331,24 @@ pub async fn set_refund_address(
 
     let refund_address = form.refund_address.trim();
     if refund_address.is_empty() {
-        return render_checkout_page(&state, pk, row, sk, detail, Some("Enter a refund address.".to_string())).await;
+        if wants_json { return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Enter a refund address."}))).into_response(); }
+        return render_checkout_page(&state, pk, row, sk, detail, Some("Enter a refund address.".to_string()), &options).await;
+    }
+
+    let parsed = monero::Address::from_str(refund_address);
+    let payment_address = monero::Address::from_str(&detail.order.address);
+    if !matches!((&parsed, &payment_address), (Ok(refund), Ok(payment)) if refund.network == payment.network) {
+        if wants_json { return (StatusCode::BAD_REQUEST, Json(serde_json::json!({"error": "Enter a valid Monero address for this store's network."}))).into_response(); }
+        return render_checkout_page(&state, pk, row, sk, detail, Some("Enter a valid Monero address for this store's network.".to_string()), &options).await;
     }
 
     match state.engine_client.set_refund_address(&pk, &order_id, refund_address).await {
-        Ok(()) => redirect_302(&format!("/pay/{pk}/orders/{order_id}")),
+        Ok(()) if wants_json => Json(serde_json::json!({"ok": true})).into_response(),
+        Ok(()) => redirect_302(&format!("/pay/{pk}/orders/{order_id}{}", options.suffix())),
         Err(e) => {
             eprintln!("failed to set refund address for order {order_id} on connection {}: {e}", row.id);
-            render_checkout_page(&state, pk, row, sk, detail, Some("Something went wrong saving that. Please try again.".to_string())).await
+            if wants_json { return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "Something went wrong saving that. Please try again."}))).into_response(); }
+            render_checkout_page(&state, pk, row, sk, detail, Some("Something went wrong saving that. Please try again.".to_string()), &options).await
         }
     }
 }
@@ -284,6 +357,9 @@ pub async fn set_refund_address(
 pub struct CheckoutStatusResponse {
     pub status: String,
     pub confirmations: u64,
+    pub confirmations_required: u64,
+    pub is_terminal: bool,
+    pub error: Option<String>,
 }
 
 /// `GET /pay/{pk}/orders/{order_id}/status` - the small JSON the checkout
@@ -292,13 +368,72 @@ pub struct CheckoutStatusResponse {
 /// equivalent response).
 pub async fn checkout_status(State(state): State<AppState>, Path((pk, order_id)): Path<(String, String)>) -> Response {
     match load_order(&state, &pk, &order_id).await {
-        Ok((_row, _sk, detail)) => {
-            Json(CheckoutStatusResponse { status: detail.order.status, confirmations: detail.order.confirmations })
-                .into_response()
+        Ok((row, sk, detail)) => {
+            let confirmations_required = super::pos::resolve_confirmations_required(&state, &row.id, &sk, &detail.order.order_id).await;
+            let error = checkout_payment_message(&detail.order);
+            let (_, _, is_terminal) = status_label(&detail.order.status);
+            Json(CheckoutStatusResponse {
+                status: detail.order.status,
+                confirmations: detail.order.confirmations,
+                confirmations_required,
+                is_terminal,
+                error,
+            })
+            .into_response()
         }
         Err(LoadError::NotFound) => ApiError::NotFound.into_response(),
         Err(LoadError::Internal) => ApiError::Internal.into_response(),
     }
+}
+
+/// `GET /pay/{pk}/orders/{order_id}/events` - the same status as
+/// [`checkout_status`], as a Server-Sent Events stream that sends it again
+/// only when it changes (`crate::live`) and ends once the order is terminal.
+///
+/// Events: `status` - [`CheckoutStatusResponse`] JSON, always; `fragment` -
+/// with `?fragments=true`, the checkout page's live regions re-rendered
+/// (`views::checkout::live_fragment`) for `checkout.js` to swap in. Takes
+/// the page's own `view`/`refund` options so fragments match what the page
+/// rendered. Also re-checked every 30s, since the time left to pay moves
+/// with the clock rather than with the order.
+pub async fn checkout_events(
+    State(state): State<AppState>,
+    Path((pk, order_id)): Path<(String, String)>,
+    Query(options): Query<CheckoutOptions>,
+) -> Response {
+    let (row, sk, _) = match load_order(&state, &pk, &order_id).await {
+        Ok(loaded) => loaded,
+        Err(LoadError::NotFound) => return ApiError::NotFound.into_response(),
+        Err(LoadError::Internal) => return ApiError::Internal.into_response(),
+    };
+    let subscription = state.engine_client.subscribe_order(&row.id, &sk, &order_id);
+    let fragments = options.fragments == Some(true);
+    crate::live::live_events(subscription, std::time::Duration::from_secs(30), move || {
+        let (state, pk, order_id, options) = (state.clone(), pk.clone(), order_id.clone(), options.clone());
+        async move {
+            let (row, sk, detail) = load_order(&state, &pk, &order_id).await.ok()?;
+            let view = build_checkout_view(&state, &pk, &row, &sk, detail, None, &options).await;
+            let status = CheckoutStatusResponse {
+                status: view.status.clone(),
+                confirmations: view.confirmations,
+                confirmations_required: view.confirmations_required,
+                is_terminal: view.is_terminal,
+                error: view.payment_error.clone(),
+            };
+            let status_json = serde_json::to_string(&status).ok()?;
+            let mut fingerprint = status_json.clone();
+            let mut events = Vec::new();
+            // Fragment first: a client may close the stream on seeing a
+            // terminal `status`, and must have the final page state by then.
+            if fragments {
+                let html = views::checkout::live_fragment(&view).into_string();
+                fingerprint.push_str(&html);
+                events.push(axum::response::sse::Event::default().event("fragment").data(html));
+            }
+            events.push(axum::response::sse::Event::default().event("status").data(status_json));
+            Some(crate::live::LiveSnapshot { events, fingerprint, terminal: view.is_terminal })
+        }
+    })
 }
 
 /// `GET /pay/{pk}/orders/{order_id}/share` - a real follow-up to
@@ -312,9 +447,9 @@ pub async fn checkout_status(State(state): State<AppState>, Path((pk, order_id))
 /// same checkout page in an iframe, inside a real, nav-bearing
 /// monokulo page, so a link shared over chat/email lands somewhere
 /// that visibly is Monokulo - "cohesive" per the same follow-up's
-/// own wording, not a second copy of the payment logic (all of it - status
-/// polling, the QR code, the copy button - still lives in the one iframed
-/// page).
+/// own wording, not a second copy of the payment logic (all of it - live
+/// status updates, the QR code, the copy button - still lives in the one
+/// iframed page).
 ///
 /// Confirms the order actually exists first (the same `load_order` every
 /// other route on this page uses) purely to render an honest not-found
@@ -350,6 +485,36 @@ mod tests {
     use crate::engine_client::EngineClient;
 
     use super::super::{AppState, build_router};
+    use super::checkout_payment_message;
+
+    #[test]
+    fn checkout_amount_messages_use_exact_received_remaining_and_extra_xmr() {
+        let mut order = crate::engine_client::OrderView {
+            order_id: "pay_test".to_string(),
+            merchant_order_id: None,
+            address: "address".to_string(),
+            xmr_amount_piconero: 500_000_000_000,
+            amount_received_piconero: 200_000_000_000,
+            status: "partial".to_string(),
+            confirmations: 0,
+            double_spend_detected_at: None,
+            refund_address: None,
+            created_at: 0,
+            expires_at: 1800,
+            updated_at: 0,
+            first_scanned_height: None,
+            last_scanned_height: None,
+            currently_scanning: true,
+        };
+        assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.200000000000 XMR received of 0.500000000000 XMR. Send the remaining 0.300000000000 XMR to the address below."));
+
+        order.status = "overpaid".to_string();
+        order.amount_received_piconero = 600_000_000_000;
+        assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.600000000000 XMR received for a 0.500000000000 XMR order (0.100000000000 XMR extra). Do not send more. Contact the merchant about the extra amount."));
+
+        order.double_spend_detected_at = Some(123);
+        assert!(checkout_payment_message(&order).unwrap().contains("Double-spend"));
+    }
 
     const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
     const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
@@ -432,7 +597,7 @@ mod tests {
             "allowed_origins": [],
             "base_currency": "XMR",
         });
-        let response = router
+        let response = router.clone()
             .clone()
             .oneshot(
                 Request::builder()
@@ -478,7 +643,7 @@ mod tests {
         let pk = create_connection(&router, &session_token).await;
         let order_id = create_order(&router, &pk, "25.00").await;
 
-        let response = router
+        let response = router.clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -494,6 +659,13 @@ mod tests {
         assert!(html.contains("25.00"), "expected the real fiat amount shown, got: {html}");
         assert!(html.contains(TEST_CURRENCY), "expected the real fiat currency shown, got: {html}");
         assert!(html.contains("<svg"), "expected a real rendered QR code, got: {html}");
+        let pos_response = router.clone().oneshot(
+            Request::builder().uri(format!("/pay/{pk}/orders/{order_id}?view=pos&refund=false")).body(Body::empty()).unwrap()
+        ).await.unwrap();
+        assert_eq!(pos_response.status(), StatusCode::OK);
+        let pos_html = body_text(pos_response).await;
+        assert!(pos_html.contains("pay-wrap checkout-pos"));
+        assert!(!pos_html.contains("id=\"refund_address\""));
         // `_styles.html.hbs` (included here for base typography/color)
         // mentions both `.site-nav` and even the literal text `<nav>` in
         // its own CSS *comments* - a plain substring check for either would
@@ -502,21 +674,17 @@ mod tests {
         // string that can only appear if `{{> nav}}` genuinely ran.
         assert!(!html.contains(r#"<nav class="site-nav">"#), "the checkout page must not carry the site nav, got: {html}");
         assert!(!html.contains("Monokulo"), "the checkout page must not carry the site brand/logo, got: {html}");
-        // The real point of this follow-up: "Expires in" must be a real,
+        // The payment deadline must be a real,
         // already-formatted relative duration baked into the server
         // response - this page must stay meaningful with JavaScript
         // disabled, so nothing on it may rely on `data-timestamp` +
         // client-side formatting any more.
-        assert!(html.contains("Expires in"), "expected a server-rendered expiry duration, got: {html}");
+        assert!(html.contains("Send payment within"), "expected a server-rendered payment deadline, got: {html}");
         assert!(!html.contains("data-timestamp"), "the checkout page must not depend on JS to format any timestamp, got: {html}");
-        // The real point of this follow-up: no JavaScript at all on this
-        // page - a meta-refresh re-fetches it instead of a poll loop, and
-        // the progress bar's fill is a real inline style already baked in.
-        assert!(!html.contains("<script"), "the checkout page must carry no JavaScript at all, got: {html}");
-        assert!(
-            html.contains(r#"<meta http-equiv="refresh" content="10">"#),
-            "expected a meta-refresh directive on a still-in-progress order, got: {html}"
-        );
+        // The server-rendered page remains meaningful without JavaScript.
+        assert!(html.contains("/static/checkout.js"));
+        assert!(html.contains("Refresh payment status"));
+        assert!(html.contains(r#"<noscript><meta http-equiv="refresh" content="60""#));
         assert!(html.contains("style=\"width: 0%\""), "expected a real, already-computed progress-bar fill, got: {html}");
     }
 
@@ -555,7 +723,34 @@ mod tests {
         let before_html = body_text(before).await;
         assert!(before_html.contains("id=\"refund_address\""), "expected the refund-address form present before one is set, got: {before_html}");
 
+        let invalid = router.clone().oneshot(
+            Request::builder().method("POST").uri(format!("/pay/{pk}/orders/{order_id}/refund-address?view=pos"))
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("refund_address=not-an-address")).unwrap()
+        ).await.unwrap();
+        assert_eq!(invalid.status(), StatusCode::OK);
+        let invalid_html = body_text(invalid).await;
+        assert!(invalid_html.contains("Enter a valid Monero address"));
+        assert!(invalid_html.contains("refund-address?view=pos"));
+
+        let invalid_json = router.clone().oneshot(
+            Request::builder().method("POST").uri(format!("/pay/{pk}/orders/{order_id}/refund-address"))
+                .header("accept", "application/json")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from("refund_address=not-an-address")).unwrap()
+        ).await.unwrap();
+        assert_eq!(invalid_json.status(), StatusCode::BAD_REQUEST);
+        assert!(body_text(invalid_json).await.contains("valid Monero address"));
+
         let refund_address = "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC";
+        let valid_json = router.clone().oneshot(
+            Request::builder().method("POST").uri(format!("/pay/{pk}/orders/{order_id}/refund-address"))
+                .header("accept", "application/json")
+                .header("content-type", "application/x-www-form-urlencoded")
+                .body(Body::from(format!("refund_address={refund_address}"))).unwrap()
+        ).await.unwrap();
+        assert_eq!(valid_json.status(), StatusCode::OK);
+        assert!(body_text(valid_json).await.contains("\"ok\":true"));
         let submit = router
             .clone()
             .oneshot(
@@ -582,7 +777,8 @@ mod tests {
             .unwrap();
         let after_html = body_text(after).await;
         assert!(after_html.contains(refund_address), "expected the real, just-saved refund address shown, got: {after_html}");
-        assert!(!after_html.contains("id=\"refund_address\""), "expected the form gone once a refund address is set, got: {after_html}");
+        assert!(after_html.contains("id=\"refund_address\""), "expected the saved address to remain editable, got: {after_html}");
+        assert!(after_html.contains("refund-field is-saved"));
     }
 
     #[tokio::test]
@@ -644,6 +840,72 @@ mod tests {
         let body = body_json(response).await;
         assert_eq!(body["status"], "pending");
         assert_eq!(body["confirmations"], 0);
+        assert!(body["confirmations_required"].is_number());
+        assert!(body["error"].is_null());
+    }
+
+    #[tokio::test]
+    async fn the_checkout_events_stream_pushes_a_change_made_on_the_engine() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let engine_client = state.engine_client.clone();
+        let router = build_router(state);
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "checkout-events@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let order_id = create_order(&router, &pk, "10.00").await;
+
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/pay/{pk}/orders/{order_id}/events?fragments=true"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(response.headers()["content-type"], "text/event-stream");
+        let mut body = response.into_body();
+        let (mut pending, mut parser) = (Vec::new(), crate::live::SseTestParser::default());
+
+        let (event, fragment) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+        assert_eq!(event, "fragment");
+        assert!(fragment.contains(r#"id="live-status""#), "got: {fragment}");
+        assert!(!fragment.contains("double-spend-banner"));
+        let (event, status) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+        assert_eq!(event, "status");
+        let status: serde_json::Value = serde_json::from_str(&status).unwrap();
+        assert_eq!(status["status"], "pending");
+        assert_eq!(status["is_terminal"], false);
+        assert_eq!(engine_client.live_upstream_count(), 1, "one engine stream for this store");
+
+        // A change the engine makes on its own, not through monokulo.
+        assert!(engine.store().lock().unwrap().mark_double_spend_detected(&order_id, crate::now_unix()).unwrap());
+
+        let (event, fragment) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+        assert_eq!(event, "fragment");
+        assert!(fragment.contains("double-spend-banner"), "got: {fragment}");
+        let (event, status) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+        assert_eq!(event, "status");
+        assert!(status.contains("Double-spend"), "got: {status}");
+
+        drop(body);
+        assert_eq!(engine_client.live_upstream_count(), 0, "the engine stream closes with its last watcher");
+    }
+
+    #[tokio::test]
+    async fn the_checkout_events_stream_404s_for_an_unknown_order() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "checkout-events-404@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let response = router
+            .oneshot(Request::builder().uri(format!("/pay/{pk}/orders/pay_missing/events")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND);
     }
 
     #[tokio::test]

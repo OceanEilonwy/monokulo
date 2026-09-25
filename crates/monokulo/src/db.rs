@@ -826,16 +826,14 @@ impl Db {
     /// threshold (`tenants.confirmations_required`, on the engine) is
     /// untouched - it has no currency dimension to invalidate.
     pub fn update_store_connection_base_currency(&self, id: &str, base_currency: &str) -> Result<()> {
-        self.conn.execute("UPDATE store_connections SET base_currency = ?2 WHERE id = ?1", params![id, base_currency])?;
-        self.conn.execute("DELETE FROM confirmation_thresholds WHERE connection_id = ?1", params![id])?;
+        let tx = self.conn.unchecked_transaction()?;
+        tx.execute("UPDATE store_connections SET base_currency = ?2 WHERE id = ?1", params![id, base_currency])?;
+        tx.execute("DELETE FROM confirmation_thresholds WHERE connection_id = ?1", params![id])?;
+        tx.commit()?;
         Ok(())
     }
 
-    /// How many custom thresholds `connection_id` already has - the "at
-    /// most 5 custom thresholds" cap is enforced by the caller
-    /// (`http::orders::create_confirmation_threshold`) checking this before
-    /// ever calling [`Db::create_confirmation_threshold`], not by this
-    /// table's own schema.
+    /// How many custom thresholds `connection_id` already has.
     pub fn count_confirmation_thresholds(&self, connection_id: &str) -> Result<i64> {
         self.conn
             .query_row("SELECT COUNT(*) FROM confirmation_thresholds WHERE connection_id = ?1", params![connection_id], |row| row.get(0))
@@ -845,16 +843,12 @@ impl Db {
     /// Every custom threshold for `connection_id`, ordered ascending by
     /// amount - "custom thresholds should be displayed in ascending order
     /// of the unit amount" (the default/fallback always renders first, but
-    /// separately - it isn't a row in this table at all). `CAST(... AS
-    /// REAL)` for a real numeric sort: `unit_amount` is stored as a decimal
-    /// string (same reasoning `order_currency_metadata.amount` already
-    /// has), which would sort lexicographically ("10" before "9") without
-    /// this.
+    /// separately - it isn't a row in this table at all). Exact decimal
+    /// sorting avoids float ties at neighboring piconero-sized boundaries.
     pub fn list_confirmation_thresholds(&self, connection_id: &str) -> Result<Vec<ConfirmationThresholdRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT id, connection_id, unit_amount, confirmations_required, created_at_utc
-             FROM confirmation_thresholds WHERE connection_id = ?1
-             ORDER BY CAST(unit_amount AS REAL) ASC",
+             FROM confirmation_thresholds WHERE connection_id = ?1",
         )?;
         let rows = stmt.query_map(params![connection_id], |row| {
             Ok(ConfirmationThresholdRow {
@@ -865,7 +859,14 @@ impl Db {
                 created_at: row.get(4)?,
             })
         })?;
-        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(DbError::from)
+        let mut rows = rows.collect::<rusqlite::Result<Vec<_>>>()?;
+        rows.sort_by_key(|row| crate::confirmation_thresholds::ThresholdAmount::parse(&row.unit_amount).ok());
+        Ok(rows)
+    }
+
+    #[cfg(test)]
+    pub fn break_confirmation_thresholds_for_test(&self) {
+        self.conn.execute("DROP TABLE confirmation_thresholds", []).unwrap();
     }
 
     /// Inserts one custom threshold. Fails with a unique-violation
@@ -873,10 +874,8 @@ impl Db {
     /// already has a row at this exact `unit_amount` - "you cannot enter
     /// two thresholds for the same unit amount" - the real, friendlier
     /// rejection message is the caller's job (`http::orders::create_confirmation_threshold`);
-    /// this is just the backstop. Negative-amount rejection and the
-    /// max-5-per-connection cap are also the caller's job, checked before
-    /// this is ever called - neither has a natural SQL constraint shape
-    /// this table's schema can cheaply express on its own.
+    /// this is just the backstop. This lower-level method is also used by
+    /// test fixtures; HTTP handlers use the capped insertion instead.
     pub fn create_confirmation_threshold(
         &self,
         id: &str,
@@ -891,6 +890,42 @@ impl Db {
             params![id, connection_id, unit_amount, confirmations_required as i64, created_at],
         )?;
         Ok(())
+    }
+
+    /// The count predicate and insert run in one SQLite write statement, so
+    /// concurrent requests cannot both claim the last available slot.
+    pub fn create_confirmation_threshold_with_limit(
+        &self, id: &str, connection_id: &str, unit_amount: &str, confirmations_required: u64, created_at: i64,
+    ) -> Result<bool> {
+        let changed = self.conn.execute(
+            "INSERT INTO confirmation_thresholds (id, connection_id, unit_amount, confirmations_required, created_at_utc)
+             SELECT ?1, ?2, ?3, ?4, ?5
+             WHERE (SELECT COUNT(*) FROM confirmation_thresholds WHERE connection_id = ?2) < 5",
+            params![id, connection_id, unit_amount, confirmations_required as i64, created_at],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Applies a dashboard Save as a single local transaction. A failed
+    /// insertion rolls back its deletes as well.
+    pub fn replace_confirmation_thresholds(
+        &self, connection_id: &str, deleted_ids: &[String], new: Option<(&str, &str, u64, i64)>,
+    ) -> Result<bool> {
+        let tx = self.conn.unchecked_transaction()?;
+        for id in deleted_ids {
+            tx.execute("DELETE FROM confirmation_thresholds WHERE id = ?1 AND connection_id = ?2", params![id, connection_id])?;
+        }
+        if let Some((id, unit_amount, confirmations_required, created_at)) = new {
+            let changed = tx.execute(
+                "INSERT INTO confirmation_thresholds (id, connection_id, unit_amount, confirmations_required, created_at_utc)
+                 SELECT ?1, ?2, ?3, ?4, ?5
+                 WHERE (SELECT COUNT(*) FROM confirmation_thresholds WHERE connection_id = ?2) < 5",
+                params![id, connection_id, unit_amount, confirmations_required as i64, created_at],
+            )?;
+            if changed == 0 { return Ok(false); }
+        }
+        tx.commit()?;
+        Ok(true)
     }
 
     /// Deletes one custom threshold, scoped to `connection_id` so one
@@ -1538,6 +1573,48 @@ mod tests {
     }
 
     #[test]
+    fn concurrent_threshold_adds_never_exceed_five() {
+        let db = Arc::new(Mutex::new(Db::open_in_memory().unwrap()));
+        let connection_id = seed_connection_for_connect_token_tests(&db.lock().unwrap());
+        let threads: Vec<_> = (0..16).map(|i| {
+            let db = db.clone();
+            let connection_id = connection_id.clone();
+            std::thread::spawn(move || {
+                db.lock().unwrap().create_confirmation_threshold_with_limit(&format!("id-{i}"), &connection_id, &i.to_string(), 10, 1000).unwrap()
+            })
+        }).collect();
+        assert_eq!(threads.into_iter().map(|thread| thread.join().unwrap()).filter(|inserted| *inserted).count(), 5);
+        assert_eq!(db.lock().unwrap().count_confirmation_thresholds(&connection_id).unwrap(), 5);
+    }
+
+    #[test]
+    fn a_failed_threshold_replacement_rolls_back_deletions() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        db.create_confirmation_threshold("original", &connection_id, "50", 20, 1000).unwrap();
+        db.create_confirmation_threshold("taken", &connection_id, "100", 20, 1000).unwrap();
+        let result = db.replace_confirmation_thresholds(&connection_id, &["original".to_string()], Some(("taken", "200", 10, 1000)));
+        assert!(result.is_err());
+        assert!(db.list_confirmation_thresholds(&connection_id).unwrap().iter().any(|row| row.id == "original"));
+    }
+
+    #[test]
+    fn replacing_confirmation_thresholds_at_the_cap_is_atomic() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        for i in 0..5 {
+            db.create_confirmation_threshold(&format!("id-{i}"), &connection_id, &i.to_string(), 10, 1000).unwrap();
+        }
+        assert!(!db.replace_confirmation_thresholds(&connection_id, &[], Some(("sixth", "50", 20, 1000))).unwrap());
+        assert_eq!(db.count_confirmation_thresholds(&connection_id).unwrap(), 5);
+        assert!(db.replace_confirmation_thresholds(&connection_id, &["id-0".to_string()], Some(("replacement", "50", 20, 1000))).unwrap());
+        let rows = db.list_confirmation_thresholds(&connection_id).unwrap();
+        assert_eq!(rows.len(), 5);
+        assert!(!rows.iter().any(|row| row.id == "id-0"));
+        assert!(rows.iter().any(|row| row.id == "replacement"));
+    }
+
+    #[test]
     fn confirmation_thresholds_list_in_ascending_numeric_order_not_lexicographic() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
@@ -1549,6 +1626,16 @@ mod tests {
         let rows = db.list_confirmation_thresholds(&connection_id).unwrap();
         let amounts: Vec<&str> = rows.iter().map(|r| r.unit_amount.as_str()).collect();
         assert_eq!(amounts, vec!["2.5", "9", "10"]);
+    }
+
+    #[test]
+    fn confirmation_thresholds_preserve_adjacent_twelve_decimal_order() {
+        let db = Db::open_in_memory().unwrap();
+        let connection_id = seed_connection_for_connect_token_tests(&db);
+        db.create_confirmation_threshold("upper", &connection_id, "9007.199254740981", 20, 1000).unwrap();
+        db.create_confirmation_threshold("lower", &connection_id, "9007.199254740980", 10, 1000).unwrap();
+        let rows = db.list_confirmation_thresholds(&connection_id).unwrap();
+        assert_eq!(rows.iter().map(|row| row.id.as_str()).collect::<Vec<_>>(), vec!["lower", "upper"]);
     }
 
     #[test]

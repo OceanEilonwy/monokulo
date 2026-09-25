@@ -9,6 +9,7 @@ axum = "0.8.9"
 axum-extra = { version = "0.12.6", features = ["cookie"] }
 hex = "0.4.3"
 maud = { version = "0.27.0", features = ["axum"] }
+monero = "0.22.0"
 # `http::checkout`'s QR code rendering (`docs/fx_refactor.md` Phase 2.1) -
 # same version/feature set the scanner's own (soon-removed) equivalent uses.
 qrcode = { version = "0.14.1", default-features = false, features = ["svg"] }
@@ -20,6 +21,7 @@ serde_json = "1.0.151"
 shared = { path = "../shared" }
 thiserror = "2.0.20"
 time = "0.3.55"
+futures-util = { version = "0.3.34", default-features = false, features = ["std"] }
 tokio = { version = "1.53.1", features = ["full"] }
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
@@ -27,6 +29,5 @@ uuid = { version = "1.26.0", features = ["v4"] }
 [dev-dependencies]
 scanner-test-support = { path = "../scanner-test-support" }
 http-body-util = "0.1.5"
-monero = "0.22.0"
 scanner = { path = "../scanner" }
 tower = { version = "0.5.3", features = ["util"] }

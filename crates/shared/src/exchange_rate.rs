@@ -289,7 +289,7 @@ impl CoingeckoRateProvider {
 /// `AmountError`, `parse_xmr_to_piconero`, and `format_piconero_as_xmr` are pure XMR
 /// decimal<->piconero conversions with no fiat concept - they live in
 /// `crate::xmr_amount` so the engine can depend on that module alone (e.g. for
-/// `payment.zero_conf_max_xmr`) without pulling in anything fiat-shaped. Re-exported
+/// XMR-denominated amounts) without pulling in anything fiat-shaped. Re-exported
 /// here unchanged so every existing `exchange_rate::{AmountError, parse_xmr_to_piconero,
 /// format_piconero_as_xmr}` caller keeps compiling.
 pub use crate::xmr_amount::{format_piconero_as_xmr, parse_xmr_to_piconero, AmountError};

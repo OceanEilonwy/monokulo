@@ -202,7 +202,8 @@ body { padding-bottom: 4rem; }
 a { color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; }
 a:hover { color: var(--accent); }
 h1, h2, h3 { font-weight: 700; letter-spacing: -0.01em; margin: 1.4em 0 0.6em; }
-h1 { font-size: 1.6rem; border-bottom: 3px solid var(--line); padding-bottom: 0.3em; }
+h1 { font-size: 1.6rem; border-bottom: 3px solid var(--line); padding-bottom: 0.3em; margin: var(--space-lg) 0 var(--space-sm); }
+.context-nav + h1 { margin-top: var(--space-xs); }
 h2 { font-size: 1.15rem; border-bottom: 1px solid var(--line); padding-bottom: 0.2em; }
 p { margin: 0.6em 0; }
 /* Code/addresses/txids stay monospace regardless of the UI font choice -
@@ -373,6 +374,7 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .widget-link-text { display: flex; flex-direction: column; gap: 0.2em; }
 .widget-link-title { font-weight: 700; }
 .widget-link-hint { font-weight: 400; font-size: 0.82em; opacity: 0.85; }
+.pos-launch-disabled, .pos-launch-disabled:hover { opacity: 0.45; cursor: not-allowed; background: var(--chrome-bg); color: var(--chrome-ink); }
 /* Confirmation-thresholds table, Default row: the 0-conf checkbox sits on
    its own line below the confirmations count, rather than the whole
    "Zero-confirmation payments" section this used to be. */
@@ -382,9 +384,13 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
    the site-wide `input[type=text] { width: 100% }` default, which would
    otherwise stretch it to the full cell. */
 .thresholds-table .confirmations-input { width: 4.5em; }
-/* A visible gap + rule between the existing rows and the add-a-threshold
-   row, whose own last cell also carries this form's one Save button. */
-.thresholds-table .new-threshold-row td { padding-top: 1.2em; border-top: 2px solid var(--line); }
+/* Highlight the entry row while keeping it in the same table. */
+.thresholds-table .new-threshold-row td {
+  background: var(--tint-highlight);
+  border-top: 3px solid var(--accent);
+  padding-block: var(--space-sm);
+}
+.thresholds-table .new-threshold-row .confirmations-input { width: min(100%, 11em); }
 .thresholds-table .new-threshold-row button { margin: 0; }
 .tag {
   display: inline-block;
@@ -417,35 +423,29 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .pick-card h3 { margin-top: 0; }
 .steps { padding-left: 1.4em; }
 .steps li { margin: 0.5em 0; }
-/* Store overview page: the health/help disclosure and the "Settings" link
-   sit on the same row, the latter pinned to the right - the settings page
-   is reached "via a link next to the Help button" rather than a nav item. */
-/* `.settings-link` comes first in both DOM order and visual order (flex
-   row, no wrap) - `flex: none` keeps it a fixed-size box entirely
-   independent of `.help-disclosure`'s own height, so it stays put exactly
-   where it is whether that `<details>` is open or closed. */
-/* A "store name › Settings" breadcrumb heading (settings page only) - the
-   first segment is a real link back to the store page. */
-.breadcrumb-header { display: flex; align-items: baseline; gap: 0.5em; flex-wrap: wrap; }
-.breadcrumb-header a { color: inherit; }
+/* Store overview: status stays left, with Settings then Help at the right.
+   The disclosure spans the container so its content matches other panels. */
+/* Compact page context stays above a short heading. Long store names can
+   shrink visually without removing their full accessible text. */
+.context-nav { display: flex; align-items: center; gap: 0.5em; min-width: 0; margin: 0.8em 0 0.25em; color: var(--muted); font-size: 0.9em; }
+.context-nav a { color: inherit; max-width: min(45vw, 22em); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* Point left to the immediate parent; point up to a higher ancestor when
+   the trail also includes a closer parent. */
+.context-nav a::before { content: "←"; display: inline-block; margin-right: 0.35em; text-decoration: none; }
+.context-nav a:not(:last-child)::before { content: "↑"; }
+.context-nav .breadcrumb-sep { flex: none; }
 .breadcrumb-sep { color: var(--muted); font-weight: 400; }
-.store-header-row { display: flex; align-items: flex-start; gap: 1em; flex-wrap: nowrap; }
-.store-header-row .settings-link { flex: none; margin-top: 0.3em; }
-.store-header-row .help-disclosure { flex: 1 1 auto; min-width: 0; }
-.help-disclosure { margin: 0.6em 0 1.2em; }
-.help-disclosure summary {
-  display: flex;
-  justify-content: space-between;
-  align-items: center;
-  gap: 1em;
-  cursor: pointer;
-  list-style: none;
-  padding: 0.3em 0;
-}
+.store-header-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto 5.5em; align-items: center; column-gap: var(--space-sm); margin-bottom: 1.2em; }
+.store-header-status { min-width: 0; overflow-wrap: anywhere; }
+.store-header-row .settings-link { margin: 0; white-space: nowrap; }
+/* The details element spans the content width; its summary is positioned in
+   the header's reserved Help slot, away from status and Settings. */
+.help-disclosure { grid-column: 1 / -1; grid-row: 2; width: 100%; }
+.help-disclosure summary { position: absolute; top: 0; right: 0; list-style: none; cursor: pointer; }
 .help-disclosure summary::-webkit-details-marker { display: none; }
-.help-disclosure summary .hint { text-decoration: underline; white-space: nowrap; }
-.help-disclosure[open] summary .hint::after { content: " \25B4"; }
-.help-disclosure:not([open]) summary .hint::after { content: " \25BE"; }
+.help-disclosure .help-control { margin: 0; white-space: nowrap; }
+.help-disclosure[open] .help-control::after { content: " \25B4"; }
+.help-disclosure:not([open]) .help-control::after { content: " \25BE"; }
 /* Nav bar - a semantic <nav>/<label>/checkbox structure rather than pure
    inline styles, so the small-screen hamburger below (a plain CSS checkbox
    toggle - no JS involved in showing/hiding the menu itself) has real
@@ -491,46 +491,87 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
   white-space: nowrap;
   border: 0;
 }
-/* The theme control - a day/night slider, not the plain text button every
-   other nav item is. Still just a `<button type="submit">` in a `<form>`
-   (see `views::theme_toggle`'s own doc comment) - three real states
-   (System/Light/Dark) don't fit a literal on/off switch, so the thumb
-   parks left/center/right per `.theme-toggle-{state}` below, sun at the
-   light end and moon at the dark end. */
+/* Three form buttons make each theme a direct target. Their sibling hover
+   rules preview the indicator position without JavaScript. */
 .theme-toggle {
   margin: 0 0 0 1.2em;
-  padding: 0;
   border: 2px solid var(--line);
   border-radius: 999px;
   background: var(--paper-raised);
-  cursor: pointer;
-  line-height: 0;
 }
 .theme-toggle:hover { border-color: var(--accent); }
 .theme-toggle-track {
   position: relative;
   display: flex;
   align-items: center;
-  justify-content: space-between;
   box-sizing: border-box;
-  width: 3.4em;
-  height: 1.7em;
-  padding: 0 0.32em;
+  width: 5em;
+  height: 2em;
+  padding-inline: 0.25em;
 }
-.theme-toggle-icon { position: relative; z-index: 1; display: flex; align-items: center; justify-content: center; width: 1em; height: 1em; color: var(--muted); }
-.theme-toggle-icon svg { width: 100%; height: 100%; display: block; }
+.theme-toggle-option, .theme-toggle-option:hover {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  box-sizing: border-box;
+  width: 33.333%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--muted);
+}
+.theme-toggle-option svg { width: 1em; height: 1em; display: block; }
+.theme-toggle-option:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 999px; }
+.theme-toggle-system .theme-toggle-option-system,
+.theme-toggle-light .theme-toggle-option-light,
+.theme-toggle-dark .theme-toggle-option-dark,
+.theme-toggle-option-system:hover,
+.theme-toggle-option-light:hover,
+.theme-toggle-option-dark:hover,
+.theme-toggle-option-system:focus-visible,
+.theme-toggle-option-light:focus-visible,
+.theme-toggle-option-dark:focus-visible { color: var(--accent-ink); }
+.theme-toggle:has(.theme-toggle-option:is(:hover, :focus-visible)) .theme-toggle-option { color: var(--muted); }
+.theme-toggle:has(.theme-toggle-option:is(:hover, :focus-visible)) .theme-toggle-option:is(:hover, :focus-visible) { color: var(--accent-ink); }
 .theme-toggle-thumb {
   position: absolute;
-  top: 0.18em;
-  left: 0.18em;
-  width: 1.24em;
-  height: 1.24em;
+  top: 0.25em;
+  width: 1.5em;
+  height: 1.5em;
+  transform: translateX(-50%);
   border-radius: 50%;
   background: var(--accent);
-  transition: left 0.15s ease;
+  transition: left 0.28s ease;
 }
-.theme-toggle-system .theme-toggle-thumb { left: calc(50% - 0.62em); }
-.theme-toggle-dark .theme-toggle-thumb { left: calc(100% - 1.24em - 0.18em); }
+/* Match the visible System, Light, Dark order and center on each icon. */
+.theme-toggle-system .theme-toggle-thumb,
+.theme-toggle-option-system:is(:hover, :focus-visible) ~ .theme-toggle-thumb {
+  left: 1em;
+}
+.theme-toggle-light .theme-toggle-thumb,
+.theme-toggle-option-light:is(:hover, :focus-visible) ~ .theme-toggle-thumb {
+  left: 50%;
+}
+.theme-toggle-dark .theme-toggle-thumb,
+.theme-toggle-option-dark:is(:hover, :focus-visible) ~ .theme-toggle-thumb {
+  left: calc(100% - 1em);
+}
+/* The theme form navigates to a freshly rendered page. A named cross-document
+   view transition carries the old indicator to its new position,
+   with no script or delay before form submission. */
+@view-transition { navigation: auto; }
+:root { view-transition-name: none; }
+.theme-toggle-thumb { view-transition-name: theme-indicator; }
+::view-transition-group(theme-indicator) { animation-duration: 0.28s; }
+@media (prefers-reduced-motion: reduce) {
+  .theme-toggle-thumb { transition: none; }
+  ::view-transition-group(theme-indicator) { animation-duration: 0.01ms; }
+}
 .nav-toggle-checkbox { position: absolute; opacity: 0; pointer-events: none; }
 .nav-toggle-label { display: none; color: var(--chrome-ink); font-size: 1.4rem; line-height: 1; cursor: pointer; user-select: none; }
 /* No-JS-required small-screen menu: below the breakpoint, the link group

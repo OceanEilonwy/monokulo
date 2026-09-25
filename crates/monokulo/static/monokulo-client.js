@@ -12,13 +12,12 @@
  *
  * All payment logic and status rendering lives server-side in the
  * `/pay/{pk}/orders/{order_id}` page this library iframes; this file only
- * creates orders, mounts that iframe, and polls monokulo's own
- * `/status` endpoint directly to drive `onStatusChange`/`onPaid`/
- * `onExpired`. The iframed page itself is deliberately plain, script-free
- * HTML (a `<meta http-equiv="refresh">` re-fetches it on its own) - a real
- * customer paying real money must be able to trust and use it with
- * JavaScript disabled, so it never posts a message back to this library;
- * this file's own polling (running here, in the merchant's page, not
+ * creates orders, mounts that iframe, and follows monokulo's own
+ * `/events` stream (Server-Sent Events, falling back to polling `/status`
+ * where EventSource is unavailable or refused) to drive `onStatusChange`/
+ * `onPaid`/`onExpired`. The iframed page keeps itself up to date and has a
+ * no-JavaScript fallback. It does not post messages back to this library;
+ * this file's own subscription (running here, in the merchant's page, not
  * inside the frame) is what makes the callbacks below fire.
  */
 (function (global) {
@@ -157,8 +156,9 @@
       previous.destroy();
     }
 
-    var iframeSrc = endpoint + "/pay/" + encodeURIComponent(publicKey) + "/orders/" + encodeURIComponent(orderId);
-    var statusUrl = iframeSrc + "/status";
+    var checkoutUrl = endpoint + "/pay/" + encodeURIComponent(publicKey) + "/orders/" + encodeURIComponent(orderId);
+    var iframeSrc = checkoutUrl + (options.refund === false ? "?refund=false" : "");
+    var statusUrl = checkoutUrl + "/status";
     try {
       new URL(iframeSrc, global.location.href);
     } catch (e) {
@@ -178,18 +178,14 @@
     // real content height, the way checkout_share.html.hbs's own same-origin
     // script does) isn't available here - this iframe's origin is the
     // caller's own site, not monokulo's, so cross-origin restrictions block
-    // reading its content height directly, and the framed page itself
-    // carries no script of its own to report it out (see the no-script
-    // note just below - a deliberate rule for a real-money payment page, not
-    // an oversight this could route around). A caller who wants a
+    // reading its content height directly. A caller who wants a
     // specifically sized/no-scroll embed should still pass an explicit
     // `height` in `options`.
     iframe.style.height = options.height || "900px";
-    // No "allow-scripts" - the page this iframes carries none by design
-    // (see this file's own doc comment above); this mount()'s own polling
-    // below, running in the merchant's page rather than inside the frame,
-    // is what drives the callbacks now.
-    iframe.setAttribute("sandbox", "allow-same-origin allow-popups");
+    // The checkout script and refund form need these sandbox capabilities;
+    // this mount() still follows status independently for merchant callbacks.
+    iframe.setAttribute("sandbox", "allow-same-origin allow-scripts allow-forms allow-popups");
+    iframe.setAttribute("allow", "camera");
 
     el.innerHTML = "";
     el.appendChild(iframe);
@@ -197,7 +193,28 @@
     var TERMINAL_STATUSES = { paid: true, overpaid: true, expired: true };
     var destroyed = false;
     var pollTimer = null;
+    var updates = null;
     var lastStatus = null;
+
+    function stopUpdates() {
+      if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+      if (updates) { updates.close(); updates = null; }
+    }
+
+    function onStatus(data) {
+      if (destroyed) return;
+      if (data.status !== lastStatus) {
+        lastStatus = data.status;
+        if (typeof options.onStatusChange === "function") options.onStatusChange(data.status, data);
+        if ((data.status === "paid" || data.status === "overpaid") && typeof options.onPaid === "function") {
+          options.onPaid(data);
+        }
+        if (data.status === "expired" && typeof options.onExpired === "function") {
+          options.onExpired(data);
+        }
+      }
+      if (TERMINAL_STATUSES[data.status]) stopUpdates();
+    }
 
     function poll() {
       if (destroyed) return;
@@ -211,38 +228,39 @@
           return r.json();
         })
         .then(function (data) {
-          if (destroyed) return;
-          if (data.status !== lastStatus) {
-            lastStatus = data.status;
-            if (typeof options.onStatusChange === "function") options.onStatusChange(data.status, data);
-            if ((data.status === "paid" || data.status === "overpaid") && typeof options.onPaid === "function") {
-              options.onPaid(data);
-            }
-            if (data.status === "expired" && typeof options.onExpired === "function") {
-              options.onExpired(data);
-            }
-            // The mounted iframe only refreshes itself on its own
-            // meta-refresh timer - reload it here too so what the customer
-            // *sees* catches up with the status change this poll just
-            // detected, rather than waiting for the frame's own next tick.
-            iframe.src = iframeSrc;
-          }
-          if (!TERMINAL_STATUSES[data.status]) {
-            pollTimer = setTimeout(poll, 3000);
-          }
+          onStatus(data);
+          if (!destroyed && !TERMINAL_STATUSES[data.status]) pollTimer = setTimeout(poll, 3000);
         })
         .catch(function () {
           if (!destroyed) pollTimer = setTimeout(poll, 5000);
         });
     }
-    pollTimer = setTimeout(poll, 3000);
+
+    if (typeof EventSource === "function") {
+      updates = new EventSource(checkoutUrl + "/events");
+      updates.addEventListener("status", function (event) {
+        var data;
+        try { data = JSON.parse(event.data); } catch (e) { return; }
+        onStatus(data);
+      });
+      // EventSource reconnects by itself after a dropped connection; only a
+      // request refused outright (CLOSED) falls back to polling.
+      updates.addEventListener("error", function () {
+        if (updates && updates.readyState === EventSource.CLOSED) {
+          updates = null;
+          if (!destroyed) pollTimer = setTimeout(poll, 3000);
+        }
+      });
+    } else {
+      pollTimer = setTimeout(poll, 3000);
+    }
 
     var handle = {
       iframe: iframe,
       destroy: function () {
         if (destroyed) return;
         destroyed = true;
-        if (pollTimer) { clearTimeout(pollTimer); pollTimer = null; }
+        stopUpdates();
         if (activeMounts.get(el) === handle) activeMounts["delete"](el);
         if (iframe.parentNode) iframe.parentNode.removeChild(iframe);
       },

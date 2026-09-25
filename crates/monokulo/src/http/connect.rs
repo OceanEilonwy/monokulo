@@ -206,20 +206,12 @@ pub struct ConfirmForm {
     pub order_expiry_seconds: Option<i64>,
     /// Same reasoning as `order_expiry_seconds` immediately above: not shown on the
     /// confirm screen (no UI field for it yet), carried purely so a caller who needs a
-    /// non-default zero-conf ceiling (WBS 1.4.5's real stagenet connect-flow test,
-    /// which wants a permissive one so a genuinely tiny real payment reads as paid
-    /// without waiting on stagenet's ~2-minute block time) has a real way to set it
-    /// through this flow. `#[serde(default)]` keeps every existing form submission
-    /// parsing exactly as before, defaulting to the engine's own default (no zero-conf
-    /// ceiling).
-    #[serde(default)]
-    pub zero_conf_max_piconero: Option<u64>,
-    /// Same reasoning as `zero_conf_max_piconero` immediately above - WBS 1.4.5's real
-    /// stagenet connect-flow test also wants a low `confirmations_required` (real
-    /// stagenet blocks land roughly every ~2 minutes, so the engine's own default of
-    /// 10 would make a test wait ~20 minutes for the non-zero-conf fallback path
-    /// alone). `#[serde(default)]` keeps every existing form submission parsing
-    /// exactly as before, defaulting to the engine's own default (10).
+    /// non-default `confirmations_required` (WBS 1.4.5's real stagenet connect-flow
+    /// test wants `0` - native 0-conf, since real stagenet blocks land roughly every
+    /// ~2 minutes and the engine's own default of 10 would make a test wait ~20
+    /// minutes) has a real way to set it through this flow. `#[serde(default)]` keeps
+    /// every existing form submission parsing exactly as before, defaulting to the
+    /// engine's own default (10).
     #[serde(default)]
     pub confirmations_required: Option<u64>,
     /// Required when `mode == "new"`, ignored for `"existing"` (an existing
@@ -273,7 +265,6 @@ async fn confirm_new_store(state: &AppState, user: &UserRow, platform: &str, for
         network: form.network.clone(),
         allowed_origins,
         confirmations_required: form.confirmations_required,
-        zero_conf_max_piconero: form.zero_conf_max_piconero,
         order_expiry_seconds: form.order_expiry_seconds,
         base_currency: form.base_currency.clone().unwrap_or_default(),
     };

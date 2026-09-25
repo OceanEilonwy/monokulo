@@ -40,21 +40,14 @@
 //! cargo test -p mock-woocommerce --features e2e -- --ignored --nocapture
 //! ```
 //!
-//! ## Why a permissive zero-conf ceiling and `confirmations_required = 1`
+//! ## Why `confirmations_required = 0`
 //!
 //! Real stagenet blocks land roughly every ~2 minutes; waiting for the
 //! engine's own default `confirmations_required` (10) would make this test
 //! spend ~20 minutes waiting on the chain rather than exercising the actual
 //! connect-flow/scanning/webhook-delivery logic this task is meant to prove.
-//! The test payment is tiny by design (well under the zero-conf ceiling set
-//! below via `ConnectFlowWallet::zero_conf_max_piconero`, now that the connect
-//! flow's `ConfirmForm` carries it - WBS 1.4.5's own monokulo addition),
-//! so it resolves via 0-conf detection in seconds once broadcast and detected
-//! in the node's mempool, exactly like `e2e/moneropay-stagenet.toml`'s own
-//! config-file-driven test is tuned for the same reason (see its comments and
-//! `e2e/README.md`). `confirmations_required = 1` is also set, purely as cheap
-//! insurance for the (should-be-unreachable, given the zero-conf ceiling)
-//! fallback path.
+//! Native 0-conf resolves the test payment as soon as the scanner sees it in
+//! the node's mempool, without waiting for a real block.
 //!
 //! Success is any of `paid`/`confirming`/`overpaid` - the same non-strict
 //! "payment genuinely detected" criterion `tests/e2e_stagenet.rs` already uses -
@@ -99,10 +92,6 @@ mod node_fixture {
 /// precision (0.01 XMR granularity would round it to zero).
 const TEST_ORDER_AMOUNT: &str = "0.000335";
 const TEST_CURRENCY: &str = "XMR";
-
-/// 0.01 XMR - the same zero-conf ceiling `e2e/moneropay-stagenet.toml` uses, comfortably
-/// (~30x) covering this test's ~0.000335 XMR payment.
-const ZERO_CONF_MAX_PICONERO: u64 = 10_000_000_000;
 
 /// Confirms the configured stagenet node is actually reachable before doing anything
 /// else with it - same reasoning as `tests/e2e_stagenet.rs`'s own
@@ -180,7 +169,6 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
     use monokulo::db::Db;
     use monokulo::engine_client::EngineClient;
     use monokulo::http::{build_router, AppState};
-    use monokulo::templates::TemplateEngine;
 
     let db = Db::open_in_memory().expect("failed to open in-memory monokulo db for test");
     // Same "signup defaults to invite-only" fix `mock_woocommerce::spawn_test_monokulo`
@@ -190,9 +178,6 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
         db: db.into_shared(),
         engine_client: EngineClient::new(format!("http://{engine_addr}")),
         encryption_key: TEST_ENCRYPTION_KEY,
-        templates: Arc::new(
-            TemplateEngine::new().expect("built-in monokulo templates must parse"),
-        ),
         status_cache: monokulo::http::status_page::new_status_cache(),
         // `TEST_CURRENCY` is `"XMR"` - needs no provider at all, so this
         // stays genuinely unconfigured, same as everything else in this
@@ -326,8 +311,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
             view_key_hex: merchant.private_view_key_hex.clone(),
             spend_pubkey_hex: merchant.spend_public_key_hex(),
             network: "stagenet".to_string(),
-            zero_conf_max_piconero: Some(ZERO_CONF_MAX_PICONERO),
-            confirmations_required: Some(1),
+            confirmations_required: Some(0),
             base_currency: "XMR".to_string(),
         },
     )

@@ -47,6 +47,10 @@ pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
     let extra_head = html! { meta http-equiv="refresh" content="30"; };
     let body = html! {
         div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" {
+                @if chrome.logged_in { a href="/dashboard" { "Dashboard" } }
+                @else { a href="/" { "Home" } }
+            }
             h1 { "Engine status" }
             p class="hint" {
                 "Live, on every request - not cached. Generated " (data.generated_at_display) ", node heights refreshed at that "

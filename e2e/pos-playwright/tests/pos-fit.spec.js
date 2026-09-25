@@ -2,9 +2,8 @@
 // Regression guard for the POS terminal screen's own "never needs to
 // scroll" requirement: on no phone/tablet size, in either orientation, on
 // any screen state (the keypad, a filled amount + note, the charge/QR
-// screen, or the paid/error confirmation overlay) should the page ever
-// need scrolling. This was violated for real, twice over, while building
-// this screen - see `templates/pos.html.hbs`'s own `updateKeypadSize`/
+// screen) should the outer POS page need scrolling. This was violated for
+// real, twice over, while building this screen - see `views/pos.rs`'s `updateKeypadSize`/
 // `@media (max-height: 480px)` comments for the two distinct bugs found
 // and fixed (a circular size measurement, and a CSS cascade-order bug that
 // silently discarded the fix for the charge screen).
@@ -92,8 +91,7 @@ function assertFits(metrics, label) {
 // Drives one browser context through every screen state the real terminal
 // has, asserting the fit requirement at each - the keypad on its own,
 // after a real amount + note are entered (the tallest the keypad screen's
-// own content gets), the charge/QR screen, and both the success and error
-// confirmation overlay states (which carry the same note).
+// own content gets), and the shared checkout iframe.
 async function checkAllScreenStates(page, label) {
   // Deliberately no `waitUntil: 'networkidle'` - `pos.spec.js`'s own
   // proven-working navigation doesn't use it either, and this page's own
@@ -113,25 +111,8 @@ async function checkAllScreenStates(page, label) {
 
   await page.click('#charge-btn');
   await page.waitForSelector('#payment-screen:not(.pos-screen-hidden)', { timeout: 15_000 });
+  await page.frameLocator('#payment-frame').locator('.qr-wrap svg').waitFor();
   assertFits(await fitMetrics(page), `${label} / charge screen`);
-
-  // The tick overlay only ever appears once a real payment is detected -
-  // forced open directly here (this suite deliberately never sends a real
-  // payment; `pos.spec.js` already proves that path for real) purely to
-  // check its own layout fits, in both the plain-success and error visual
-  // states, each carrying the same note (spec: shown on both).
-  await page.evaluate(() => {
-    document.getElementById('tick-overlay').classList.remove('pos-screen-hidden');
-    document.getElementById('tick-note').textContent = 'A Fairly Long Customer Name Here';
-  });
-  assertFits(await fitMetrics(page), `${label} / confirmation overlay (success)`);
-
-  await page.evaluate(() => {
-    document.getElementById('tick-overlay').classList.add('is-error');
-    document.getElementById('tick-error').textContent = 'Underpaid - the customer sent less than the requested amount.';
-    document.getElementById('dismiss-btn').classList.remove('pos-screen-hidden');
-  });
-  assertFits(await fitMetrics(page), `${label} / confirmation overlay (error)`);
 }
 
 for (const size of withOrientations(DEVICE_SIZES)) {

@@ -2,7 +2,7 @@
 //! module, separate from `exchange_rate` (which is about fiat pricing): a decimal
 //! string like `"0.25"` XMR has nothing to do with fiat or an `ExchangeRateProvider`,
 //! so code that only needs to parse or display an XMR amount - the engine's own
-//! `payment.zero_conf_max_xmr` config knob, for instance - can depend on this module
+//! XMR-denominated amounts in API requests, for instance - can depend on this module
 //! without pulling in any fiat/FX concept at all (`docs/fx_refactor.md` decision 2).
 //!
 //! `exchange_rate::compute_xmr_amount` (fiat amount + rate -> piconero) is the one

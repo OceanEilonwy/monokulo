@@ -14,6 +14,7 @@ use super::{layout, PageChrome};
 pub struct ConnectViewModel {
     pub error: Option<String>,
     pub public_key: Option<String>,
+    pub connection_id: Option<String>,
     /// The engine's real base URL - only ever populated (and only ever
     /// rendered) alongside `public_key`.
     pub endpoint: String,
@@ -104,8 +105,11 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
             @if let Some(public_key) = &data.public_key {
-                a class="btn" href="/dashboard" { "← back to dashboard" }
+                nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
                 h1 { "Store connected" }
+                @if let Some(connection_id) = &data.connection_id {
+                    p { a class="btn" href=(format!("/dashboard/stores/{connection_id}")) { "View store →" } }
+                }
                 p { "Your public key: " code { (public_key) } }
                 p class="hint" {
                     "Keep this value handy. Your secret token is stored securely and is never shown "
@@ -113,7 +117,10 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
                 }
                 (super::integration_help::fragment(public_key, &data.endpoint, false))
             } @else {
-                h1 { "Connect your store (advanced)" }
+                nav class="context-nav" aria-label="Breadcrumb" {
+                    a href="/dashboard/stores/new" { "Add a store" }
+                }
+                h1 { "Advanced setup" }
                 p class="hint" {
                     "This form provisions your store directly from a watch-only key pair - no plugin "
                     "needed. Only a " strong { "view key" } " and a " strong { "public spend key" } " are ever "
@@ -186,7 +193,8 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
 pub fn platform_page(chrome: &PageChrome, data: &PlatformConnectViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
-            h1 { "Connect Monero payments for " (data.site_url) }
+            h1 { "Connect store" }
+            p class="hint" { "Shop: " (data.site_url) }
             p class="hint" {
                 "Your platform sent you here to finish connecting - only a watch-only view key and "
                 "public spend key are collected below, never a spend key. Once confirmed you'll be sent straight "
@@ -264,6 +272,7 @@ pub fn platform_page(chrome: &PageChrome, data: &PlatformConnectViewModel) -> Ma
 pub fn new_store_picker_page(chrome: &PageChrome) -> Markup {
     let body = html! {
         div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
             h1 { "Add a store" }
             p { "Choose the setup that matches your storefront." }
             div class="pick-grid" {
@@ -301,6 +310,7 @@ mod tests {
         ConnectViewModel {
             error: None,
             public_key: None,
+            connection_id: None,
             endpoint: String::new(),
             site_url: String::new(),
             view_key_hex: String::new(),
@@ -362,12 +372,14 @@ mod tests {
     fn connect_page_shows_the_public_key_instead_of_the_form_on_success() {
         let data = ConnectViewModel {
             public_key: Some("pk_deadbeef".to_string()),
+            connection_id: Some("conn_1".to_string()),
             endpoint: "http://127.0.0.1:8080".to_string(),
             ..default_connect_data()
         };
         let html = page(&chrome(), &data).into_string();
+        assert!(html.contains(r#"href="/dashboard/stores/conn_1""#));
         assert!(html.contains("pk_deadbeef"));
-        assert!(!html.contains("<form"), "the confirmation view should not still show the form");
+        assert!(!html.contains("id=\"connect-form\""), "the confirmation view should not still show the connect form");
     }
 
     fn default_platform_data() -> PlatformConnectViewModel {

@@ -24,9 +24,22 @@ pub enum ScannerError {
     Store(#[from] StoreError),
     #[error(transparent)]
     KeyCustody(#[from] KeyCustodyError),
+    #[error("invalid stored payment key images: {0}")]
+    InvalidPaymentEvidence(String),
 }
 
 type Result<T> = std::result::Result<T, ScannerError>;
+
+fn parse_payment_key_images(raw: &str) -> Result<Vec<String>> {
+    let images: Vec<String> = serde_json::from_str(raw).map_err(|e| ScannerError::InvalidPaymentEvidence(e.to_string()))?;
+    if images.is_empty() {
+        return Err(ScannerError::InvalidPaymentEvidence("empty key-image list".to_string()));
+    }
+    if images.iter().any(|image| image.len() != 64 || !image.bytes().all(|byte| byte.is_ascii_hexdigit())) {
+        return Err(ScannerError::InvalidPaymentEvidence("malformed key image".to_string()));
+    }
+    Ok(images)
+}
 
 pub fn tx_id_hex(tx: &Transaction) -> String {
     hex::encode(tx.hash().to_bytes())
@@ -365,8 +378,8 @@ pub struct VanishedPoolReport {
 /// payments when a *stored block hash stops matching*, which is a reorg and nothing
 /// else. But the textbook attack on a merchant watching the mempool involves no
 /// reorg at all: broadcast transaction A to the merchant's node (the order is
-/// matched at zero confirmations, and under a `zero_conf_max_piconero` ceiling
-/// immediately reads as `paid`), then get transaction B, spending the same inputs,
+/// matched at zero confirmations, and on a tier whose own `confirmations_required`
+/// is 0 immediately reads as `paid`), then get transaction B, spending the same inputs,
 /// mined instead. A is never mined, so no block the scanner recorded ever changes,
 /// so nothing ever looked at that payment again: it sat at `block_height IS NULL`
 /// forever, counting in full towards an order the customer never actually paid, with
@@ -537,7 +550,7 @@ async fn void_if_double_spend_proven(
     current_height: u64,
     now: i64,
 ) -> Result<bool> {
-    let key_images: Vec<String> = serde_json::from_str(&payment.key_images_json).unwrap_or_default();
+    let key_images = parse_payment_key_images(&payment.key_images_json)?;
     // Corroborated, not the bare call: this is the one place a false accusation
     // permanently voids real money, so a `daemon` that knows about more than one
     // node (`daemon_fallback::FallbackDaemonClient`) cross-checks them here rather
@@ -682,7 +695,13 @@ pub async fn revalidate_recent_double_spend_voids(
 
     let mut recovered_orders = Vec::new();
     for payment in candidates {
-        let key_images: Vec<String> = serde_json::from_str(&payment.key_images_json).unwrap_or_default();
+        let key_images = match parse_payment_key_images(&payment.key_images_json) {
+            Ok(images) => images,
+            Err(e) => {
+                eprintln!("double-spend revalidation: leaving order {} voided because its stored evidence is invalid: {e}", payment.order_id);
+                continue;
+            }
+        };
         let statuses = match daemon.is_key_image_spent_corroborated(&key_images).await {
             Ok(statuses) => statuses,
             Err(e) => {
@@ -694,11 +713,13 @@ pub async fn revalidate_recent_double_spend_voids(
                 continue;
             }
         };
-        if !statuses.contains(&KeyImageStatus::SpentInBlockchain) {
-            let s = store.lock().unwrap();
-            if unvoid_as_false_positive(&s, &payment.order_id, &payment.txid, payment.output_index, current_height, now)? {
-                recovered_orders.push(payment.order_id.clone());
-            }
+        if statuses.len() != key_images.len() || !statuses.iter().all(|status| *status == KeyImageStatus::Unspent) {
+            eprintln!("double-spend revalidation: inconclusive key-image statuses for order {}; leaving it voided", payment.order_id);
+            continue;
+        }
+        let s = store.lock().unwrap();
+        if unvoid_as_false_positive(&s, &payment.order_id, &payment.txid, payment.output_index, current_height, now)? {
+            recovered_orders.push(payment.order_id.clone());
         }
     }
     Ok(recovered_orders)
@@ -1099,7 +1120,7 @@ pub async fn run_scan_tick(
     if let Ok(report) = &vanished {
         // Unioned into `touched` rather than recomputed here: an order whose only
         // payment was just voided may well be terminal (`paid` off the zero-conf
-        // ceiling is exactly the case this sweep exists for), so it is absent from
+        // native 0-conf threshold is exactly the case this sweep exists for), so it is absent from
         // the non-terminal set the sweep below iterates and would otherwise never be
         // recomputed at all.
         touched.extend(report.dirty_orders.iter().cloned());
@@ -1207,7 +1228,7 @@ mod tests {
     //!    `a_voided_payment_is_restored_when_its_transaction_returns_to_the_chain` and
     //!    `a_third_transaction_claiming_the_same_inputs_keeps_the_original_voided`
     //!    (un-voiding, and the chained case where a *third* transaction takes the inputs);
-    //!    `a_zero_conf_payment_double_spent_out_of_the_mempool_is_voided_with_no_reorg_involved`
+    //!    `a_zero_conf_order_double_spent_out_of_the_mempool_is_voided_with_no_reorg_involved`
     //!    (the reorg-free mempool double-spend - see `check_vanished_mempool_payments`);
     //!    `a_mempool_payment_that_merely_disappears_is_never_voided_on_that_evidence_alone`
     //!    (dropped/evicted transactions, which Monero produces without any attacker).
@@ -1274,6 +1295,15 @@ mod tests {
     //! §DESIGN.md 7.7).
 
     use super::*;
+
+    #[test]
+    fn stored_key_image_evidence_must_be_parseable_and_nonempty() {
+        assert!(parse_payment_key_images("not json").is_err());
+        assert!(parse_payment_key_images("[]").is_err());
+        assert!(parse_payment_key_images("[\"image\"]").is_err());
+        let image = "a".repeat(64);
+        assert_eq!(parse_payment_key_images(&serde_json::json!([image.clone()]).to_string()).unwrap(), vec![image]);
+    }
     use crate::daemon::fake::FakeDaemonClient;
     use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
     use crate::key_custody::{KeyCustodyError, MatchedOutput, Network, PlainKeyCustody, SubaddressIndex, WalletMaterial};
@@ -1575,15 +1605,15 @@ mod tests {
     }
 
     async fn setup() -> (Store, PlainKeyCustody, WalletHandle, String, String) {
-        setup_with_zero_conf_ceiling(None).await
+        setup_with_confirmations_override(None).await
     }
 
-    /// `setup()` with a merchant-configured zero-conf trust ceiling, for the
-    /// scenarios where an order settles off a mempool sighting alone - the case a
-    /// plain double-spend actually costs a merchant something, since they may have
-    /// shipped against it.
-    async fn setup_with_zero_conf_ceiling(
-        zero_conf_max_piconero: Option<u64>,
+    /// `setup()` with a per-order `confirmations_required_override`, for the
+    /// scenarios where an order settles off a mempool sighting alone (native
+    /// 0-conf: `Some(0)`) - the case a plain double-spend actually costs a merchant
+    /// something, since they may have shipped against it.
+    async fn setup_with_confirmations_override(
+        confirmations_required_override: Option<u64>,
     ) -> (Store, PlainKeyCustody, WalletHandle, String, String) {
         let store = Store::open_in_memory().unwrap();
         let key_custody = PlainKeyCustody::default();
@@ -1601,7 +1631,6 @@ mod tests {
                     network: "mainnet".into(),
                     allowed_origins: vec![],
                     confirmations_required: Some(10),
-                    zero_conf_max_piconero,
                     order_expiry_seconds: None,
                 },
                 1000,
@@ -1622,7 +1651,7 @@ mod tests {
 
         let order = store
             .create_order(NewOrder {
-                confirmations_required_override: None,
+                confirmations_required_override,
                 tenant_id: tenant_id.clone(),
                 merchant_order_id: None,
                 minor_index: index,
@@ -1659,7 +1688,6 @@ mod tests {
                     network: "mainnet".into(),
                     allowed_origins: vec![],
                     confirmations_required: Some(10),
-                    zero_conf_max_piconero: None,
                     order_expiry_seconds: None,
                 },
                 1000,
@@ -1716,7 +1744,7 @@ mod tests {
             "a late payment within the grace period must still be matched by ordinary live scanning"
         );
         let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
-        // No zero-conf ceiling configured (`setup_with_expiry`), so a mempool-only
+        // No native 0-conf threshold configured (`setup_with_expiry`), so a mempool-only
         // sighting correctly settles at `Unconfirmed`, not `Paid` - the real point
         // here is that the order came alive again at all (it must not still read
         // `Expired` with the payment silently uncounted).
@@ -1982,7 +2010,7 @@ mod tests {
         // End-to-end proof of the composed orchestration, not just its pieces: a
         // real transaction sitting in a fake daemon's mempool gets matched, the
         // owning order's status transitions (pending -> unconfirmed, since this is
-        // a 0-conf-only match with no zero-conf trust ceiling configured), and
+        // a 0-conf-only match with a nonzero confirmation requirement), and
         // exactly one webhook delivery is enqueued for that transition.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let webhook = store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
@@ -2025,7 +2053,6 @@ mod tests {
                     network: "mainnet".into(),
                     allowed_origins: vec![],
                     confirmations_required: Some(10),
-                    zero_conf_max_piconero: None,
                     order_expiry_seconds: None,
                 },
                 1000,
@@ -2088,7 +2115,6 @@ mod tests {
                     network: "mainnet".into(),
                     allowed_origins: vec![],
                     confirmations_required: None,
-                    zero_conf_max_piconero: None,
                     order_expiry_seconds: None,
                 },
                 1000,
@@ -2137,7 +2163,6 @@ mod tests {
                     network: "stagenet".into(),
                     allowed_origins: vec![],
                     confirmations_required: Some(10),
-                    zero_conf_max_piconero: None,
                     order_expiry_seconds: None,
                 },
                 1000,
@@ -3587,18 +3612,19 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_zero_conf_payment_double_spent_out_of_the_mempool_is_voided_with_no_reorg_involved() {
+    async fn a_zero_conf_order_double_spent_out_of_the_mempool_is_voided_with_no_reorg_involved() {
         // The gap this sweep was added to close, and the most consequential one in
         // this file: the textbook attack on a merchant watching the mempool involves
         // no reorg at all. Broadcast transaction A so the merchant's node sees it
-        // (with a zero-conf ceiling configured, the order reads `paid` immediately -
-        // that is what the setting is for), then get transaction B, spending the same
-        // inputs, mined instead. A is never mined, so no block hash the scanner
-        // recorded ever changes, so reorg reconciliation - the only thing that ever
-        // re-examined an existing payment - never runs. The payment sat at
-        // `block_height IS NULL` forever, counting in full towards an order that was
-        // never paid, and no `order.double_spend_detected` webhook ever fired.
-        let (store, key_custody, handle, tenant_id, order_id) = setup_with_zero_conf_ceiling(Some(u64::MAX)).await;
+        // (with `confirmations_required = 0` on this order, it reads `paid` -
+        // native 0-conf, no confirmations needed at all - immediately), then get
+        // transaction B, spending the same inputs, mined instead. A is never mined,
+        // so no block hash the scanner recorded ever changes, so reorg
+        // reconciliation - the only thing that ever re-examined an existing payment
+        // - never runs. The payment sat at `block_height IS NULL` forever, counting
+        // in full towards an order that was never paid, and no
+        // `order.double_spend_detected` webhook ever fired.
+        let (store, key_custody, handle, tenant_id, order_id) = setup_with_confirmations_override(Some(0)).await;
         store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
         let tx = fixture_tx();
         let store = store.into_shared();
@@ -3642,12 +3668,12 @@ mod tests {
 
     /// Builds a store with one order whose single zero-conf payment has already been
     /// voided as a proven double-spend, via the exact same real path
-    /// `a_zero_conf_payment_double_spent_out_of_the_mempool_is_voided_with_no_reorg_involved`
+    /// `a_zero_conf_order_double_spent_out_of_the_mempool_is_voided_with_no_reorg_involved`
     /// proves is reachable. For `revalidate_recent_double_spend_voids`'s own tests
     /// below, which start from an already-voided payment and exercise only the
     /// *recheck*, not how it got voided in the first place.
     async fn setup_with_one_voided_double_spend() -> (crate::store::SharedStore, String, String) {
-        let (store, key_custody, handle, tenant_id, order_id) = setup_with_zero_conf_ceiling(Some(u64::MAX)).await;
+        let (store, key_custody, handle, tenant_id, order_id) = setup_with_confirmations_override(Some(0)).await;
         store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
         let tx = fixture_tx();
         let store = store.into_shared();
@@ -3698,6 +3724,38 @@ mod tests {
             events.contains(&"order.double_spend_reversed".to_string()),
             "the merchant told about the original accusation deserves to be told it was wrong too: {events:?}"
         );
+    }
+
+    #[tokio::test]
+    async fn malformed_or_empty_stored_key_images_never_restore_a_void() {
+        for raw in ["not json", "[]"] {
+            let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
+            store.lock().unwrap().overwrite_payment_key_images_for_test(&order_id, raw);
+            let daemon = FakeDaemonClient::new();
+            let recovered = revalidate_recent_double_spend_voids(&store, &daemon, "mainnet", crate::now_unix()).await.unwrap();
+            assert!(recovered.is_empty());
+            assert!(store.lock().unwrap().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
+        }
+    }
+
+    #[tokio::test]
+    async fn node_disagreement_never_restores_a_void() {
+        let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
+        let payment = store.lock().unwrap().get_all_payments(&order_id).unwrap()[0].clone();
+        let images: Vec<String> = serde_json::from_str(&payment.key_images_json).unwrap();
+        let spent = FakeDaemonClient::new();
+        let unspent = FakeDaemonClient::new();
+        for image in &images {
+            spent.set_key_image_status(image, KeyImageStatus::SpentInBlockchain);
+            unspent.set_key_image_status(image, KeyImageStatus::Unspent);
+        }
+        let daemon = FallbackDaemonClient::new(vec![
+            FallbackNode { label: "spent".to_string(), client: std::sync::Arc::new(spent) },
+            FallbackNode { label: "unspent".to_string(), client: std::sync::Arc::new(unspent) },
+        ]);
+        let recovered = revalidate_recent_double_spend_voids(&store, &daemon, "mainnet", crate::now_unix()).await.unwrap();
+        assert!(recovered.is_empty());
+        assert!(store.lock().unwrap().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
     }
 
     #[tokio::test]
@@ -3878,13 +3936,13 @@ mod tests {
     async fn a_fallback_daemon_that_disagrees_with_the_primary_prevents_the_wrongful_void_a_single_lying_node_would_cause() {
         // The prevention half of the fix for `is_key_image_spent`'s single-node trust
         // boundary (docs/DESIGN.md §7.7): the exact same attack shape as
-        // `a_zero_conf_payment_double_spent_out_of_the_mempool_is_voided_with_no_reorg_involved`
+        // `a_zero_conf_order_double_spent_out_of_the_mempool_is_voided_with_no_reorg_involved`
         // above, except the *accusation itself* is false - only one of two configured
         // nodes claims the key image is spent in the blockchain. Routed through a
         // real `FallbackDaemonClient` (not a bare `FakeDaemonClient`), this must NOT
         // void the payment - a single node's say-so is no longer enough once a second
         // one is configured to disagree with it.
-        let (store, key_custody, handle, tenant_id, order_id) = setup_with_zero_conf_ceiling(Some(u64::MAX)).await;
+        let (store, key_custody, handle, tenant_id, order_id) = setup_with_confirmations_override(Some(0)).await;
         store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
         let tx = fixture_tx();
         let store = store.into_shared();
@@ -3955,7 +4013,7 @@ mod tests {
         // make genuine double-spend detection any less reliable when every
         // configured node honestly agrees, which is the overwhelmingly common case
         // even with a fallback configured.
-        let (store, key_custody, handle, tenant_id, order_id) = setup_with_zero_conf_ceiling(Some(u64::MAX)).await;
+        let (store, key_custody, handle, tenant_id, order_id) = setup_with_confirmations_override(Some(0)).await;
         let tx = fixture_tx();
         let store = store.into_shared();
 
@@ -4003,7 +4061,7 @@ mod tests {
         // The customer's money may be perfectly fine and the transaction may be
         // remined or rebroadcast at any point, so absence proves nothing and must
         // never void: the same evidence rule reorg reconciliation follows.
-        let (store, key_custody, handle, tenant_id, order_id) = setup_with_zero_conf_ceiling(Some(u64::MAX)).await;
+        let (store, key_custody, handle, tenant_id, order_id) = setup_with_confirmations_override(Some(0)).await;
         let tx = fixture_tx();
         let store = store.into_shared();
 
@@ -5187,7 +5245,7 @@ mod tests {
         // payment), and an order sitting in a terminal status is excluded from the
         // per-tick recompute too. The merchant is left looking at `paid` for an
         // order whose money was double-spent, permanently, with no event ever sent.
-        let (store, key_custody, handle, tenant_id, order_id) = setup_with_zero_conf_ceiling(Some(u64::MAX)).await;
+        let (store, key_custody, handle, tenant_id, order_id) = setup_with_confirmations_override(Some(0)).await;
         store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
         let first = fixture_tx();
         let second = independent_payment_tx(8);

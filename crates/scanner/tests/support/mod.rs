@@ -36,15 +36,12 @@ pub mod e2e_fixture {
     pub const WALLET_NETWORK: &str = "stagenet";
     pub const WALLET_ALLOWED_ORIGIN: &str = "http://127.0.0.1:8190";
 
-    // Real stagenet blocks land roughly every ~2 minutes; requiring several
-    // confirmations would make these tests spend most of their time waiting on
-    // the chain rather than exercising the scanner's own detection logic. The
-    // real test payment is tiny by design, so it's covered entirely by
-    // PAYMENT_ZERO_CONF_MAX_XMR below.
-    pub const PAYMENT_CONFIRMATIONS_REQUIRED: u64 = 1;
-    // XMR-denominated - 0.01 XMR comfortably covers a ~0.000335 XMR test
-    // payment with a wide margin.
-    pub const PAYMENT_ZERO_CONF_MAX_XMR: &str = "0.01";
+    // Real stagenet blocks land roughly every ~2 minutes; requiring any
+    // confirmations at all would make these tests spend most of their time
+    // waiting on the chain rather than exercising the scanner's own detection
+    // logic - native 0-conf (see `status::derive_status`'s own doc comment)
+    // settles the tiny test payment the instant it's seen in the mempool.
+    pub const PAYMENT_CONFIRMATIONS_REQUIRED: u64 = 0;
     pub const PAYMENT_ORDER_EXPIRY_MINUTES: i64 = 30;
     pub const PAYMENT_REORG_CHECK_DEPTH: u64 = 20;
     pub const PAYMENT_MEMPOOL_POLL_INTERVAL_MS: u64 = 2000;

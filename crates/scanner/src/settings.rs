@@ -106,7 +106,6 @@ scalar_settings! {
     KEY_CUSTODY_BACKEND => { key: "key_custody.backend", env: "SCANNER_KEY_CUSTODY_BACKEND", default: "plain" },
     KEY_CUSTODY_SOCKET_PATH => { key: "key_custody.socket_path", env: "SCANNER_KEY_CUSTODY_SOCKET_PATH", default: "" },
     PAYMENT_CONFIRMATIONS_REQUIRED => { key: "payment.confirmations_required", env: "SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED", default: "10" },
-    PAYMENT_ZERO_CONF_MAX_XMR => { key: "payment.zero_conf_max_xmr", env: "SCANNER_PAYMENT_ZERO_CONF_MAX_XMR", default: "" },
     PAYMENT_ORDER_EXPIRY_MINUTES => { key: "payment.order_expiry_minutes", env: "SCANNER_PAYMENT_ORDER_EXPIRY_MINUTES", default: "30" },
     PAYMENT_REORG_CHECK_DEPTH => { key: "payment.reorg_check_depth", env: "SCANNER_PAYMENT_REORG_CHECK_DEPTH", default: "20" },
     PAYMENT_MEMPOOL_POLL_INTERVAL_MS => { key: "payment.mempool_poll_interval_ms", env: "SCANNER_PAYMENT_MEMPOOL_POLL_INTERVAL_MS", default: "1000" },

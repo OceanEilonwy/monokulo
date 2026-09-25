@@ -88,8 +88,7 @@ STAGENET_NODE_HOST="node.monerodevs.org"
 STAGENET_NODE_PORT=38089
 STAGENET_NODE_FALLBACK_HOST="node2.monerodevs.org"
 STAGENET_NODE_FALLBACK_PORT=38089
-PAYMENT_CONFIRMATIONS_REQUIRED=1
-PAYMENT_ZERO_CONF_MAX_XMR="0.01"
+PAYMENT_CONFIRMATIONS_REQUIRED=0
 PAYMENT_ORDER_EXPIRY_MINUTES=30
 PAYMENT_REORG_CHECK_DEPTH=20
 PAYMENT_MEMPOOL_POLL_INTERVAL_MS=2000
@@ -163,7 +162,6 @@ ensure_engine_settings() {
 {
   "scalars": {
     "payment.confirmations_required": "$PAYMENT_CONFIRMATIONS_REQUIRED",
-    "payment.zero_conf_max_xmr": "$PAYMENT_ZERO_CONF_MAX_XMR",
     "payment.order_expiry_minutes": "$PAYMENT_ORDER_EXPIRY_MINUTES",
     "payment.reorg_check_depth": "$PAYMENT_REORG_CHECK_DEPTH",
     "payment.mempool_poll_interval_ms": "$PAYMENT_MEMPOOL_POLL_INTERVAL_MS"
@@ -203,7 +201,7 @@ EOF
 # tenant already exists), so this only ever does real work on the very
 # first `start` against a fresh database. Deliberately called *after*
 # ensure_engine_settings, not before: `--bootstrap-wallet` bakes the
-# tenant's own confirmations_required/zero_conf_max_xmr/order_expiry_minutes
+# tenant's own confirmations_required/order_expiry_minutes
 # in from whatever this instance's *current* settings are at the moment it
 # runs (`local_admin::bootstrap_wallet`'s own doc comment) - running it
 # first would bootstrap against the engine's hardcoded defaults instead of

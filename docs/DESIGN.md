@@ -374,9 +374,9 @@ double-spent, with no event ever sent.
 **Double-spends that involve no reorg at all**: reorg detection is triggered by a
 stored block hash ceasing to match, which by construction only ever fires for a
 payment that was *mined*. The textbook attack on a merchant watching the mempool
-never gets that far: broadcast transaction A so the merchant's node sees it (with a
-`zero_conf_max_xmr` ceiling configured, the order reads `paid` immediately — that is
-what the setting is for), then get transaction B, spending the same inputs, mined
+never gets that far: broadcast transaction A so the merchant's node sees it (with
+`confirmations_required = 0`, the order reads `paid` immediately), then get
+transaction B, spending the same inputs, mined
 instead. A is never mined, no recorded block hash ever changes, and the payment would
 otherwise sit at `block_height IS NULL` forever, counting in full towards an order
 nobody paid.
@@ -424,19 +424,6 @@ all_zero_conf = every row in valid has block_height IS NULL
 if total >= xmr_amount_piconero:
     if min_conf >= confirmations_required:
         return total > xmr_amount_piconero ? overpaid : paid
-    elif zero_conf_max_piconero is not null
-         and total <= zero_conf_max_piconero:
-        return total > xmr_amount_piconero ? overpaid : paid   # merchant-configured 0-conf trust
-        # Deliberately NOT also gated on all_zero_conf. The ceiling waives the
-        # confirmation requirement for small totals; adding `and all_zero_conf`
-        # withdrew that waiver the moment the tx was mined, so an order under the
-        # ceiling went paid -> confirming -> paid as an ordinary block arrived, with
-        # no reorg involved. That both retracts an order.paid the merchant may have
-        # shipped against and re-announces the later `paid` under a fresh event_id
-        # (i.e. as a genuine second transition, not a redelivery). A mined payment
-        # strictly dominates the mempool sighting already being trusted, so the
-        # ceiling alone is the correct condition and keeps the ladder monotone in
-        # evidence.
     elif all_zero_conf:
         return unconfirmed   # full amount seen, mempool only, not (yet) trusted
     else:
@@ -663,7 +650,6 @@ CREATE TABLE tenants (
     network                 TEXT NOT NULL DEFAULT 'mainnet',
     next_minor_index        INTEGER NOT NULL DEFAULT 1,
     confirmations_required  INTEGER NOT NULL DEFAULT 10,
-    zero_conf_max_piconero  INTEGER,
     order_expiry_seconds    INTEGER NOT NULL DEFAULT 1800,
     allowed_origins         TEXT NOT NULL,
     created_at              INTEGER NOT NULL,
@@ -848,13 +834,15 @@ every handler an already-scoped tenant context, not re-implemented per handler.
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| `POST` | `/api/v1/admin/tenants` | none (DDoS layer only, §12) | `{view_key_hex, spend_pubkey_hex, network, allowed_origins[], confirmations_required?, zero_conf_max_xmr?, order_expiry_seconds?}` → `{tenant_id, public_key, secret_token}` (secret shown once) |
+| `POST` | `/api/v1/admin/tenants` | none (DDoS layer only, §12) | `{view_key_hex, spend_pubkey_hex, network, allowed_origins[], confirmations_required?, order_expiry_seconds?}` → `{tenant_id, public_key, secret_token}` (secret shown once) |
 | `GET` | `/api/v1/admin/tenant` | `sk_` | Own config; never returns `sealed_key_material` or the token hash |
-| `PATCH` | `/api/v1/admin/tenant` | `sk_` | Mutable fields only: `allowed_origins`, `confirmations_required`, `zero_conf_max_xmr`, `order_expiry_seconds`. Key material and `public_key` are immutable — rotate by creating a new tenant |
+| `PATCH` | `/api/v1/admin/tenant` | `sk_` | Mutable fields only: `allowed_origins`, `confirmations_required`, `order_expiry_seconds`. Key material and `public_key` are immutable — rotate by creating a new tenant |
 | `POST` | `/api/v1/admin/tenant/rotate-secret` | `sk_` | Invalidates the old secret, returns a new one once |
 | `DELETE` | `/api/v1/admin/tenant` | `sk_` | Soft-delete: `key_custody.remove_wallet()`, set `disabled_at`; orders keep a valid FK |
 | `GET` | `/api/v1/admin/tenant/orders?status=&cursor=` | `sk_` | Paginated; each row also carries `first_scanned_height`/`last_scanned_height`/`currently_scanning` (§7.8) |
+| `POST` | `/api/v1/admin/tenant/orders` | `sk_` | Creates an order with an optional per-order `confirmations_required` override, including 0-conf |
 | `GET` | `/api/v1/admin/tenant/orders/{payment_id}` | `sk_` | Includes `order_payments` audit trail and the same three scanned-range fields |
+| `GET` | `/api/v1/admin/tenant/events` | `sk_` | Server-Sent Events: `ready` on connect, `order` `{order_id}` whenever one of this tenant's orders visibly changes (status, confirmations, amount, payments, double-spend flag, refund address), `resync` if the subscriber fell behind. Hints only - the client re-reads the order. Published after the write commits |
 | `POST` | `/api/v1/admin/tenant/payments/lookup` | `sk_` | `{txid}` → looks up one transaction on chain and records/recomputes a match against this tenant's orders if it belongs to one (§7.8) |
 | `POST` | `/api/v1/admin/tenant/webhooks` | `sk_` | `{url, extra_headers?}` → `{webhook_id, signing_secret}` (shown once — an API convention here, not a hashing guarantee, since HMAC signing needs the real bytes on every delivery) |
 | `GET` | `/api/v1/admin/tenant/webhooks` | `sk_` | List (never re-shows `signing_secret`) |
@@ -867,7 +855,7 @@ No bearer auth — scoped by `pk_` in the path plus an `allowed_origins` check o
 
 | Method | Path | Notes |
 |---|---|---|
-| `POST` | `/api/v1/t/{pk}/orders` | `{merchant_order_id?, xmr_amount_piconero, description?}` → `{payment_id, address, xmr_amount_piconero, expires_at}` — the caller (in practice, monokulo's own order-creation endpoint) supplies the exact piconero amount an order is worth; the engine does no fiat lookup of any kind (`docs/fx_refactor.md` Phase 3) |
+| `POST` | `/api/v1/t/{pk}/orders` | `{merchant_order_id?, xmr_amount_piconero, description?}` → `{order_id, address, xmr_amount_piconero, expires_at}`. Public callers cannot set per-order confirmation overrides; the engine does no fiat lookup (`docs/fx_refactor.md` Phase 3) |
 | `GET` | `/api/v1/t/{pk}/orders/{payment_id}` | Status poll |
 | `POST` | `/api/v1/t/{pk}/orders/{payment_id}/refund-address` | Records only; nothing ever sends it |
 
@@ -980,7 +968,6 @@ private_view_key = "..."
 
 [payment]
 confirmations_required = 10
-zero_conf_max_xmr = "0.25"    # XMR, not fiat: compared against the piconero total received
 order_expiry_minutes = 30
 reorg_check_depth = 20        # blocks; should exceed confirmations_required with margin
 mempool_poll_interval_ms = 1000

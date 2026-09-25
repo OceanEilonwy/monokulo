@@ -47,7 +47,6 @@ use scanner::key_custody::{KeyCustody, PlainKeyCustody, WalletMaterial};
 use scanner::network::network_str;
 use scanner::scanner::run_scan_tick;
 use scanner::store::{NewTenant, Store};
-use shared::xmr_amount::parse_xmr_to_piconero;
 
 /// Confirms the configured stagenet node is actually reachable before doing
 /// anything else with it - a misconfigured host/port, or a node that's temporarily
@@ -116,7 +115,6 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
                 network: e2e_fixture::WALLET_NETWORK.to_string(),
                 allowed_origins: vec![e2e_fixture::WALLET_ALLOWED_ORIGIN.to_string()],
                 confirmations_required: Some(e2e_fixture::PAYMENT_CONFIRMATIONS_REQUIRED),
-                zero_conf_max_piconero: parse_xmr_to_piconero(e2e_fixture::PAYMENT_ZERO_CONF_MAX_XMR).ok(),
                 order_expiry_seconds: Some(e2e_fixture::PAYMENT_ORDER_EXPIRY_MINUTES * 60),
             },
             now_unix(),

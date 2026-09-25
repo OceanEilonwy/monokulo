@@ -15,6 +15,8 @@ pub enum KeyImageStatus {
     Unspent,
     SpentInBlockchain,
     SpentInPool,
+    /// Configured nodes disagree; neither "spent" nor "unspent" is established.
+    Disputed,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -6,7 +6,7 @@ use serde::{Deserialize, Serialize};
 use crate::key_custody::SubaddressIndex;
 use crate::store::{NewOrder, Tenant};
 
-use super::{parse_network, AppState, ApiError, now_unix, resolve_wallet_handle};
+use super::{parse_network, AppState, ApiError, AuthedTenant, now_unix, resolve_wallet_handle};
 
 /// Resolves a tenant by its public key (not a secret - safe to look up directly
 /// from a path parameter) and enforces the origin allowlist independently of
@@ -27,9 +27,8 @@ async fn resolve_public_tenant(state: &AppState, pk: &str, origin: Option<&str>)
 }
 
 /// XMR-only, per `docs/fx_refactor.md` Phase 3: this process has no concept of fiat
-/// or exchange rates at all any more. A caller (in practice, only the monokulo's
-/// own `POST /pay/{pk}/orders`, which looks up its own rate and computes this amount
-/// before ever calling here) supplies the exact `xmr_amount_piconero` an order is
+/// or exchange rates at all any more. A public integration supplies the exact
+/// `xmr_amount_piconero` an order is
 /// worth; this engine only ever watches the chain for that amount arriving. Any fiat
 /// display a customer sees is entirely the monokulo's responsibility, backed by
 /// its own local `order_fiat_metadata` record - this engine's `orders` table no
@@ -39,9 +38,8 @@ pub struct CreateOrderRequest {
     merchant_order_id: Option<String>,
     xmr_amount_piconero: u64,
     description: Option<String>,
-    /// A per-order confirmation-count override - `None` for every caller
-    /// that doesn't need one (this engine's tenant-level
-    /// `confirmations_required` still applies). Set by monokulo's own
+    /// A per-order confirmation-count override. The public route rejects
+    /// this field; the authenticated tenant route accepts it. Set by monokulo's
     /// amount-tiered "Confirmation Thresholds" feature, which resolves the
     /// right value itself before ever calling here - this engine has no
     /// concept of currency or amount tiers, it only ever locks in the
@@ -67,18 +65,25 @@ pub async fn create_order(
 ) -> Result<Json<CreateOrderResponse>, ApiError> {
     let origin = headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok());
     let tenant = resolve_public_tenant(&state, &pk, origin).await?;
+    if req.confirmations_required.is_some() {
+        return Err(ApiError::Forbidden("per-order confirmations require tenant authentication".into()));
+    }
+    create_order_for_tenant(state, tenant, req).await
+}
 
+pub async fn create_order_for_admin(
+    AuthedTenant(tenant): AuthedTenant,
+    State(state): State<AppState>,
+    Json(req): Json<CreateOrderRequest>,
+) -> Result<Json<CreateOrderResponse>, ApiError> {
+    create_order_for_tenant(state, tenant, req).await
+}
+
+async fn create_order_for_tenant(state: AppState, tenant: Tenant, req: CreateOrderRequest) -> Result<Json<CreateOrderResponse>, ApiError> {
     if req.xmr_amount_piconero == 0 {
         return Err(ApiError::BadRequest("xmr_amount_piconero must be greater than zero".into()));
     }
-    if let Some(confirmations) = req.confirmations_required {
-        if confirmations == 0 || confirmations > super::admin::MAX_CONFIRMATIONS_REQUIRED {
-            return Err(ApiError::BadRequest(format!(
-                "confirmations_required must be between 1 and {}; 0 would treat an unconfirmed transaction as final",
-                super::admin::MAX_CONFIRMATIONS_REQUIRED
-            )));
-        }
-    }
+    super::admin::validate_confirmations_required(req.confirmations_required)?;
 
     let handle = resolve_wallet_handle(&state, &tenant).await?;
     // tenant.network was validated against a configured node at tenant-creation

@@ -159,9 +159,9 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
 
     let req = json_request(
         "POST",
-        &format!("/api/v1/t/{}/orders", tenant.public_key),
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
         None,
-        Some("https://merchant.example"),
         serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 3 }),
     );
     let response = router.oneshot(req).await.unwrap();
@@ -200,20 +200,64 @@ async fn creating_an_order_with_no_confirmations_required_override_leaves_it_uns
 
 #[tokio::test]
 async fn creating_an_order_with_an_out_of_range_confirmations_required_is_rejected() {
+    // `0` is no longer out of range - native 0-conf, see `status::derive_status`'s
+    // own doc comment - so the only remaining bad value is over the 720 cap.
     let router = test_router();
     let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
 
-    for bad in [0u64, 721u64] {
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
+        None,
+        serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 721u64 }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "confirmations_required=721 must be rejected");
+}
+
+#[tokio::test]
+async fn creating_an_order_with_confirmations_required_zero_is_accepted() {
+    let state = test_app_state();
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+
+    let req = json_request(
+        "POST",
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
+        None,
+        serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": 0u64 }),
+    );
+    let response = router.oneshot(req).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let order_id = body_json(response).await["order_id"].as_str().unwrap().to_string();
+
+    let guard = store.lock().unwrap();
+    let tenant_id = guard.find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
+    let order = guard.get_order(&tenant_id, &order_id).unwrap().unwrap();
+    assert_eq!(order.confirmations_required_override, Some(0));
+}
+
+#[tokio::test]
+async fn public_order_creation_cannot_override_confirmation_policy() {
+    let state = test_app_state();
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    for confirmations in [0, 3] {
         let req = json_request(
             "POST",
             &format!("/api/v1/t/{}/orders", tenant.public_key),
             None,
             Some("https://merchant.example"),
-            serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": bad }),
+            serde_json::json!({"xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": confirmations}),
         );
-        let response = router.clone().oneshot(req).await.unwrap();
-        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "confirmations_required={bad} must be rejected");
+        assert_eq!(router.clone().oneshot(req).await.unwrap().status(), StatusCode::FORBIDDEN);
     }
+    let tenant_id = store.lock().unwrap().find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
+    assert!(store.lock().unwrap().list_orders(&tenant_id, None, 10, None).unwrap().is_empty());
 }
 
 /// Regression test: a `spend_pubkey_hex` that's the right length and valid hex
@@ -806,15 +850,15 @@ async fn a_tenants_reported_primary_address_is_a_standard_address_a_payment_coul
 #[tokio::test]
 async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and_on_patch() {
     // Both write the same two columns, so a bound enforced on only one of them is
-    // no bound at all. `confirmations_required = 0` would settle an order off a
-    // still-unconfirmed transaction; a non-positive `order_expiry_seconds` expires
-    // every order at the moment it is created; and an `order_expiry_seconds` near
-    // `i64::MAX` overflows the `created_at + expiry` addition, wrapping the deadline
-    // into the past.
+    // no bound at all. `confirmations_required` over 720 is indistinguishable from
+    // "never settles" (`0` is fine now - native 0-conf, see `status::derive_status`'s
+    // own doc comment); a non-positive `order_expiry_seconds` expires every order at
+    // the moment it is created; and an `order_expiry_seconds` near `i64::MAX`
+    // overflows the `created_at + expiry` addition, wrapping the deadline into the
+    // past.
     let router = test_router();
 
     for bad in [
-        serde_json::json!({ "confirmations_required": 0 }),
         serde_json::json!({ "confirmations_required": 100_000 }),
         serde_json::json!({ "order_expiry_seconds": 0 }),
         serde_json::json!({ "order_expiry_seconds": -60 }),
@@ -838,7 +882,7 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
 
     let tenant = create_tenant(&router, 42, vec![]).await;
     for bad in [
-        serde_json::json!({ "confirmations_required": 0 }),
+        serde_json::json!({ "confirmations_required": 100_000 }),
         serde_json::json!({ "order_expiry_seconds": 0 }),
         serde_json::json!({ "order_expiry_seconds": -1 }),
         serde_json::json!({ "order_expiry_seconds": i64::MAX }),
@@ -868,6 +912,32 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
     let body = body_json(response).await;
     assert_eq!(body["confirmations_required"], 3);
     assert_eq!(body["order_expiry_seconds"], 900);
+
+    // `0` is a real, deliberate, accepted value on both paths - native 0-conf as
+    // the tenant's own default, not just as a per-order override.
+    let response = router
+        .clone()
+        .oneshot(json_request(
+            "PATCH",
+            "/api/v1/admin/tenant",
+            Some(&tenant.secret_token),
+            None,
+            serde_json::json!({ "confirmations_required": 0 }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "confirmations_required=0 must be accepted on patch");
+    assert_eq!(body_json(response).await["confirmations_required"], 0);
+
+    let create_body = serde_json::json!({
+        "view_key_hex": valid_view_key_hex(43),
+        "spend_pubkey_hex": valid_spend_pubkey_hex(44),
+        "allowed_origins": [],
+        "confirmations_required": 0,
+    });
+    let response =
+        router.clone().oneshot(json_request("POST", "/api/v1/admin/tenants", None, None, create_body)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "confirmations_required=0 must be accepted on creation");
 }
 
 #[tokio::test]
@@ -1398,12 +1468,14 @@ async fn saving_an_out_of_range_scalar_is_rejected_and_nothing_changes() {
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
+    // `0` is a legal value now (native 0-conf) - `1000` (over the 720 cap) is the
+    // out-of-range example instead.
     let post = router
         .clone()
         .oneshot(settings_request(
             "POST",
             Some("admin_test_token"),
-            Some(serde_json::json!({ "scalars": { "payment.confirmations_required": "0" } })),
+            Some(serde_json::json!({ "scalars": { "payment.confirmations_required": "1000" } })),
         ))
         .await
         .unwrap();
@@ -1428,7 +1500,7 @@ async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
             Some(serde_json::json!({
                 "scalars": {
                     "payment.reorg_check_depth": "50",
-                    "payment.confirmations_required": "0"
+                    "payment.confirmations_required": "1000"
                 }
             })),
         ))
@@ -1751,4 +1823,103 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
     assert_eq!(body["outcome"], "matched");
     let payments = store.lock().unwrap().get_all_payments(&order_id).unwrap();
     assert_eq!(payments.len(), 1, "looking the same txid up twice must not duplicate the recorded payment");
+}
+
+/// Reads SSE frames from `body` until one full event has arrived, returning
+/// its `(event, data)`.
+async fn next_sse_event(body: &mut Body, buffer: &mut String) -> (String, String) {
+    loop {
+        if let Some(end) = buffer.find("\n\n") {
+            let block: String = buffer.drain(..end + 2).collect();
+            let mut event = String::new();
+            let mut data = String::new();
+            for line in block.lines() {
+                if let Some(value) = line.strip_prefix("event: ") {
+                    event = value.to_string();
+                } else if let Some(value) = line.strip_prefix("data: ") {
+                    data = value.to_string();
+                }
+            }
+            if !event.is_empty() {
+                return (event, data);
+            }
+            continue;
+        }
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(5), body.frame())
+            .await
+            .expect("timed out waiting for an SSE event")
+            .expect("stream ended")
+            .unwrap();
+        if let Ok(bytes) = frame.into_data() {
+            buffer.push_str(std::str::from_utf8(&bytes).unwrap());
+        }
+    }
+}
+
+async fn create_public_order(router: &Router, public_key: &str) -> String {
+    let response = router
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            &format!("/api/v1/t/{public_key}/orders"),
+            None,
+            None,
+            serde_json::json!({ "xmr_amount_piconero": 1_000_000_000_000u64 }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await["order_id"].as_str().unwrap().to_string()
+}
+
+#[tokio::test]
+async fn order_events_stream_reports_only_the_authenticated_tenants_changes() {
+    let router = test_router();
+    let tenant = create_tenant(&router, 11, vec![]).await;
+    let other = create_tenant(&router, 21, vec![]).await;
+    let order_id = create_public_order(&router, &tenant.public_key).await;
+    let other_order_id = create_public_order(&router, &other.public_key).await;
+
+    let unauthenticated = router
+        .clone()
+        .oneshot(Request::builder().uri("/api/v1/admin/tenant/events").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+
+    let response = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri("/api/v1/admin/tenant/events")
+                .header("authorization", format!("Bearer {}", tenant.secret_token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let mut body = response.into_body();
+    let mut buffer = String::new();
+    assert_eq!(next_sse_event(&mut body, &mut buffer).await.0, "ready");
+
+    for (public_key, id) in [(&other.public_key, &other_order_id), (&tenant.public_key, &order_id)] {
+        let response = router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                &format!("/api/v1/t/{public_key}/orders/{id}/refund-address"),
+                None,
+                None,
+                serde_json::json!({ "refund_address": "refund" }),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    let (event, data) = next_sse_event(&mut body, &mut buffer).await;
+    assert_eq!(event, "order");
+    assert_eq!(serde_json::from_str::<serde_json::Value>(&data).unwrap()["order_id"], order_id.as_str());
 }

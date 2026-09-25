@@ -330,17 +330,13 @@ pub struct ConnectFlowWallet {
     pub view_key_hex: String,
     pub spend_pubkey_hex: String,
     pub network: String,
-    /// Not part of the confirm form's fixed test defaults (the engine's own default
-    /// applies when `None`) - see `monokulo/src/http/connect.rs`'s
-    /// `ConfirmForm::zero_conf_max_piconero` for why this field exists on the form at
-    /// all and what motivated it.
-    pub zero_conf_max_piconero: Option<u64>,
-    /// Same reasoning as `zero_conf_max_piconero` - see `ConfirmForm::confirmations_required`.
+    /// The engine's own default applies when `None`; `Some(0)` enables native
+    /// 0-conf for orders using this tenant's default tier.
     pub confirmations_required: Option<u64>,
     /// The tenant's base currency (`ConfirmForm::base_currency`, WBS "Confirmation
     /// Thresholds") - required by the real confirm form as of that feature (an empty
     /// submission is rejected as an unknown currency), so unlike the two `Option`
-    /// fields above this one is always submitted, never conditionally. `"XMR"` by
+    /// optional field above this one is always submitted. `"XMR"` by
     /// default, matching every existing caller's own XMR-denominated test order.
     pub base_currency: String,
 }
@@ -351,7 +347,6 @@ impl Default for ConnectFlowWallet {
             view_key_hex: TEST_VIEW_KEY_HEX.to_string(),
             spend_pubkey_hex: TEST_SPEND_PUBKEY_HEX.to_string(),
             network: "mainnet".to_string(),
-            zero_conf_max_piconero: None,
             confirmations_required: None,
             base_currency: "XMR".to_string(),
         }
@@ -557,7 +552,6 @@ async fn run_connect_flow_inner(
     // this driver's own callback server, whose handler (`callback_handler`) does the
     // rest and reports back over the oneshot channel awaited below.
     let order_expiry_seconds_string = order_expiry_seconds.map(|s| s.to_string());
-    let zero_conf_max_piconero_string = wallet.zero_conf_max_piconero.map(|v| v.to_string());
     let confirmations_required_string = wallet.confirmations_required.map(|v| v.to_string());
     let mut confirm_fields: Vec<(&str, &str)> = vec![
         ("site_url", site_url),
@@ -571,9 +565,6 @@ async fn run_connect_flow_inner(
     ];
     if let Some(s) = &order_expiry_seconds_string {
         confirm_fields.push(("order_expiry_seconds", s.as_str()));
-    }
-    if let Some(s) = &zero_conf_max_piconero_string {
-        confirm_fields.push(("zero_conf_max_piconero", s.as_str()));
     }
     if let Some(s) = &confirmations_required_string {
         confirm_fields.push(("confirmations_required", s.as_str()));

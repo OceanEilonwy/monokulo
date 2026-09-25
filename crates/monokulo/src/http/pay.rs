@@ -66,6 +66,8 @@ pub async fn create_order(
     Path(pk): Path<String>,
     Json(req): Json<CreateOrderRequest>,
 ) -> Response {
+    let policy_lock = crate::confirmation_thresholds::policy_lock(&pk);
+    let _policy_guard = policy_lock.lock().await;
     let row = match state.db.lock().unwrap().get_store_connection_by_public_key(&pk) {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
@@ -124,7 +126,7 @@ pub async fn create_order(
 
     match state
         .engine_client
-        .create_order(&pk, xmr_amount_piconero, req.merchant_order_id.clone(), Some(resolution.confirmations_required))
+        .create_order(&sk, xmr_amount_piconero, req.merchant_order_id.clone(), Some(resolution.confirmations_required))
         .await
     {
         Ok(order) => {
@@ -189,6 +191,14 @@ const CLIENT_LIBRARY_JS: &str = include_str!("../../static/monokulo-client.js");
 /// in its payment path, same reasoning the engine's original had.
 pub async fn client_library() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], CLIENT_LIBRARY_JS)
+}
+
+pub async fn checkout_script() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/checkout.js"))
+}
+
+pub async fn qr_decoder_script() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/jsQR.js"))
 }
 
 const LOGO_SVG: &str = include_str!("../../static/logo.svg");
@@ -408,6 +418,56 @@ mod tests {
         assert!(!obj.get("address").unwrap().as_str().unwrap().is_empty());
         assert_eq!(obj.get("currency").unwrap().as_str().unwrap(), TEST_CURRENCY);
         assert_eq!(obj.get("amount").unwrap().as_str().unwrap(), "25.00");
+    }
+
+    #[tokio::test]
+    async fn threshold_database_failure_rejects_order_even_with_zero_conf_default() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(&router, "threshold-db-failure@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let row = state.db.lock().unwrap().get_store_connection_by_public_key(&pk).unwrap().unwrap();
+        let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
+        state.engine_client.set_confirmations_required(&sk, 0).await.unwrap();
+        state.db.lock().unwrap().break_confirmation_thresholds_for_test();
+
+        let response = router.oneshot(create_order_request(&pk, "25.00", TEST_CURRENCY)).await.unwrap();
+        assert_ne!(response.status(), StatusCode::OK);
+        let tenant_id = engine.store().lock().unwrap().find_tenant_by_public_key(&pk).unwrap().unwrap().id;
+        assert!(engine.store().lock().unwrap().list_orders(&tenant_id, None, 10, None).unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn an_order_waits_for_its_stores_policy_edit() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(&router, "policy-edit-race@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let policy_lock = crate::confirmation_thresholds::policy_lock(&pk);
+        let guard = policy_lock.lock().await;
+        let request = create_order_request(&pk, "25.00", TEST_CURRENCY);
+        let mut task = tokio::spawn(async move { router.oneshot(request).await.unwrap() });
+        assert!(tokio::time::timeout(std::time::Duration::from_millis(100), &mut task).await.is_err());
+        let tenant_id = engine.store().lock().unwrap().find_tenant_by_public_key(&pk).unwrap().unwrap().id;
+        assert!(engine.store().lock().unwrap().list_orders(&tenant_id, None, 10, None).unwrap().is_empty());
+        drop(guard);
+        assert_eq!(task.await.unwrap().status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn malformed_stored_threshold_cannot_fall_back_to_zero_conf() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(&router, "malformed-threshold@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let row = state.db.lock().unwrap().get_store_connection_by_public_key(&pk).unwrap().unwrap();
+        let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
+        state.engine_client.set_confirmations_required(&sk, 0).await.unwrap();
+        state.db.lock().unwrap().create_confirmation_threshold("corrupt", &row.id, "not-an-amount", 20, crate::now_unix()).unwrap();
+        let response = router.oneshot(create_order_request(&pk, "25.00", TEST_CURRENCY)).await.unwrap();
+        assert_ne!(response.status(), StatusCode::OK);
+        let tenant_id = engine.store().lock().unwrap().find_tenant_by_public_key(&pk).unwrap().unwrap().id;
+        assert!(engine.store().lock().unwrap().list_orders(&tenant_id, None, 10, None).unwrap().is_empty());
     }
 
     /// A real, previously-missing capability: `EngineClient::create_order`
@@ -684,7 +744,7 @@ mod tests {
         let router = build_router(state);
 
         let req = Request::builder().method("GET").uri("/static/monokulo-client.js").body(Body::empty()).unwrap();
-        let response = router.oneshot(req).await.unwrap();
+        let response = router.clone().oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert_eq!(response.headers().get("content-type").unwrap(), "text/javascript; charset=utf-8");
         let bytes = response.into_body().collect().await.unwrap().to_bytes();
@@ -701,11 +761,18 @@ mod tests {
         assert!(js.contains("/orders/\" + encodeURIComponent(orderId)"), "should iframe monokulo's own checkout page, got: {js}");
         assert!(!js.contains("/api/v1/t/"), "must not reference the engine's own API directly: {js}");
         assert!(!js.contains("/pay/v1/"), "must not reference the engine's own (deleted) checkout route: {js}");
-        // The real point of this follow-up: the iframed checkout page is
-        // now plain, script-free HTML (a meta-refresh, not a poll loop) -
-        // it never posts a message back, so `mount()` must drive its own
-        // callbacks by polling the status endpoint directly instead.
+        // The iframe does not post messages back, so mount() drives
+        // callbacks through its own status request even when presentation
+        // query parameters are present on the iframe URL.
         assert!(!js.contains("postMessage"), "the embed library must not depend on the iframe posting a message any more, got: {js}");
-        assert!(js.contains(r#"var statusUrl = iframeSrc + "/status";"#), "expected mount() to poll the status endpoint directly, got: {js}");
+        assert!(js.contains(r#"var statusUrl = checkoutUrl + "/status";"#), "expected mount() to poll the status endpoint directly, got: {js}");
+        assert!(js.contains("options.refund === false"));
+        for asset in ["/static/checkout.js", "/static/jsQR.js"] {
+            let response = router.clone().oneshot(
+                Request::builder().uri(asset).body(Body::empty()).unwrap()
+            ).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{asset}");
+            assert_eq!(response.headers().get("content-type").unwrap(), "text/javascript; charset=utf-8");
+        }
     }
 }

@@ -22,10 +22,11 @@ use std::sync::Arc;
 use scanner::store::{NewOrder, NewTenant, Store};
 use uuid::Uuid;
 
-/// Path to a script in this repo's `scripts/` directory, resolved relative to
-/// the crate root (`cargo test`'s working directory is the package root).
+/// Path to a script in the workspace's `scripts/` directory. Cargo runs this
+/// test with the scanner crate as its working directory.
 fn script(name: &str) -> PathBuf {
     PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../..")
         .join("scripts")
         .join(name)
 }
@@ -49,7 +50,6 @@ fn seed_tenant_and_orders(store: &Store, n: u32) -> String {
                 network: "mainnet".into(),
                 allowed_origins: vec!["https://merchant.example".into()],
                 confirmations_required: None,
-                zero_conf_max_piconero: None,
                 order_expiry_seconds: None,
             },
             1_000,

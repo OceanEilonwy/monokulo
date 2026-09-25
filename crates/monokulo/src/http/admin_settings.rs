@@ -570,7 +570,7 @@ mod tests {
     }
 
     /// The scanner half of the same requirement - every one of
-    /// `scanner::settings::ALL_SCALAR`'s 17 keys, saved together through the
+    /// `scanner::settings::ALL_SCALAR`'s 16 keys, saved together through the
     /// real proxy `POST` and confirmed to round-trip via a real, separately
     /// spawned scanner instance (this monokulo page holds none of this state
     /// itself - see this module's own doc comment).
@@ -585,7 +585,6 @@ mod tests {
             ("key_custody.backend", "plain"),
             ("key_custody.socket_path", ""),
             ("payment.confirmations_required", "5"),
-            ("payment.zero_conf_max_xmr", "0.5"),
             ("payment.order_expiry_minutes", "45"),
             ("payment.reorg_check_depth", "15"),
             ("payment.mempool_poll_interval_ms", "2000"),
@@ -600,7 +599,7 @@ mod tests {
             ("webhooks.delivery_timeout_ms", "10000"),
             ("webhooks.max_attempts", "12"),
         ];
-        assert_eq!(new_values.len(), 17, "this test must cover every known scanner setting (scanner::settings::ALL_SCALAR has 17 entries)");
+        assert_eq!(new_values.len(), 16, "this test must cover every known scanner setting (scanner::settings::ALL_SCALAR has 16 entries)");
 
         let save = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/scanner-settings", &cookie, new_values)).await.unwrap();
         assert_eq!(save.status(), StatusCode::OK);

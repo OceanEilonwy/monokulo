@@ -39,6 +39,19 @@ pub mod store_settings;
 /// (confirmed - zero `{{` in it), so there was nothing to convert.
 const HEAD_PARTIAL: &str = include_str!("head.html");
 
+/// Shared back links for store pages and pages nested under Orders.
+pub fn store_breadcrumb(connection_id: &str, display_name: &str, include_orders: bool) -> Markup {
+    html! {
+        nav class="context-nav" aria-label="Breadcrumb" {
+            a href=(format!("/dashboard/stores/{connection_id}")) title=(display_name) { (display_name) }
+            @if include_orders {
+                span class="breadcrumb-sep" aria-hidden="true" { "›" }
+                a href=(format!("/dashboard/stores/{connection_id}/orders")) { "Orders" }
+            }
+        }
+    }
+}
+
 /// Every value a page needs to render the parts every page shares (the
 /// `<html data-theme>` attribute and the nav bar) - built once per request,
 /// almost always via [`PageChrome::from_user`], and threaded through to
@@ -193,24 +206,24 @@ fn nav(chrome: &PageChrome) -> Markup {
     }
 }
 
-/// The no-JS theme control - a day/night slider/switch, same "plain `<form>`,
-/// one `<button type="submit">`" mechanism the old text button used (still
-/// posts to `/dashboard/theme`, still cycles System -> Light -> Dark ->
-/// System server-side via `Theme::next`, see `http::dashboard::theme_submit`)
-/// - only the visual changed. Three states don't map onto a literal on/off
-/// switch, so the thumb sits at the left/center/right of the track for
-/// Light/System/Dark respectively (`.theme-toggle-{state}` in `head.html`
-/// positions it), with a sun at the light end and a moon at the dark end.
+/// Three submit buttons select Light, System, or Dark directly without JS.
+/// CSS previews each option on hover/focus and animates the indicator across
+/// the form navigation in browsers that support view transitions.
 fn theme_toggle(chrome: &PageChrome) -> Markup {
     html! {
         form method="post" action="/dashboard/theme" class="nav-theme-form" {
             input type="hidden" name="next" value=(chrome.current_path);
-            button
-                type="submit"
-                class=(format!("theme-toggle theme-toggle-{}", chrome.theme.as_str()))
-                title=(format!("Theme: {} - click to cycle light / dark / system", chrome.theme.as_str())) {
+            div class=(format!("theme-toggle theme-toggle-{}", chrome.theme.as_str())) role="group" aria-label="Theme" {
                 span class="theme-toggle-track" {
-                    span class="theme-toggle-icon theme-toggle-icon-sun" {
+                    button type="submit" name="theme" value="system" class="theme-toggle-option theme-toggle-option-system" aria-label="System theme" aria-pressed=(chrome.theme == Theme::System) title="System theme" {
+                        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
+                            stroke-linejoin="round" aria-hidden="true" focusable="false" {
+                            rect x="3" y="3" width="18" height="13" rx="2" {}
+                            line x1="12" y1="16" x2="12" y2="21" {}
+                            line x1="8" y1="21" x2="16" y2="21" {}
+                        }
+                    }
+                    button type="submit" name="theme" value="light" class="theme-toggle-option theme-toggle-option-light" aria-label="Light theme" aria-pressed=(chrome.theme == Theme::Light) title="Light theme" {
                         svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
                             stroke-linejoin="round" aria-hidden="true" focusable="false" {
                             circle cx="12" cy="12" r="4" {}
@@ -224,14 +237,13 @@ fn theme_toggle(chrome: &PageChrome) -> Markup {
                             line x1="18.4" y1="5.6" x2="19.8" y2="4.2" {}
                         }
                     }
-                    span class="theme-toggle-icon theme-toggle-icon-moon" {
+                    button type="submit" name="theme" value="dark" class="theme-toggle-option theme-toggle-option-dark" aria-label="Dark theme" aria-pressed=(chrome.theme == Theme::Dark) title="Dark theme" {
                         svg viewBox="0 0 24 24" fill="currentColor" stroke="none" aria-hidden="true" focusable="false" {
                             path d="M21 12.5A9 9 0 1 1 11.5 3 7 7 0 0 0 21 12.5Z" {}
                         }
                     }
                     span class="theme-toggle-thumb" {}
                 }
-                span class="sr-only" { "Theme: " (chrome.theme.as_str()) }
             }
         }
     }
@@ -277,11 +289,25 @@ mod tests {
             let chrome = PageChrome { logged_in: true, is_admin: false, theme, current_path: "/dashboard".to_string() };
             let html = nav(&chrome).into_string();
             assert!(html.contains(&class.to_string()), "expected {class} on the toggle for {theme:?}, got: {html}");
-            assert!(html.contains("theme-toggle-icon-sun") && html.contains("theme-toggle-icon-moon"), "expected both sun and moon icons, got: {html}");
+            assert!(html.contains("theme-toggle-option-light") && html.contains("theme-toggle-option-dark"), "expected both sun and moon options, got: {html}");
             assert!(html.contains("theme-toggle-thumb"), "expected a thumb element, got: {html}");
-            // Still the exact same no-JS mechanism: one POST form, one submit button.
+            // Each option submits its theme through the same no-JS form.
             assert!(html.contains(r#"<form method="post" action="/dashboard/theme""#));
             assert!(html.contains(r#"<input type="hidden" name="next" value="/dashboard">"#));
+            for value in ["light", "system", "dark"] {
+                assert!(html.contains(&format!(r#"name="theme" value="{value}""#)));
+            }
+            assert_eq!(html.matches("aria-pressed=\"true\"").count(), 1, "only the current theme should be pressed");
         }
+    }
+
+    #[test]
+    fn theme_hover_moves_the_thumb_and_recolors_only_the_hovered_icon() {
+        let css = include_str!("head.html");
+        for option in ["light", "system", "dark"] {
+            assert!(css.contains(&format!(".theme-toggle-option-{option}:is(:hover, :focus-visible) ~ .theme-toggle-thumb")));
+        }
+        assert!(css.contains(".theme-toggle:has(.theme-toggle-option:is(:hover, :focus-visible)) .theme-toggle-option { color: var(--muted); }"));
+        assert!(css.contains(".theme-toggle:has(.theme-toggle-option:is(:hover, :focus-visible)) .theme-toggle-option:is(:hover, :focus-visible) { color: var(--accent-ink); }"));
     }
 }

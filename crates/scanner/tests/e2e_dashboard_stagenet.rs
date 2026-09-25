@@ -62,7 +62,6 @@ use scanner::store::Store;
 use monokulo::db::Db;
 use monokulo::engine_client::EngineClient;
 use monokulo::http::{build_router as build_monokulo_router, AppState as ControlPlaneAppState};
-use monokulo::templates::TemplateEngine;
 
 /// Same check `e2e_stagenet.rs` opens with, and for the same reason: fail
 /// with a clear, actionable message before spending anything, rather than
@@ -194,7 +193,6 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         db: cp_db,
         engine_client: EngineClient::new(engine_base_url.clone()),
         encryption_key: [7u8; 32],
-        templates: Arc::new(TemplateEngine::new().unwrap()),
         status_cache: monokulo::http::status_page::new_status_cache(),
         // `docs/fx_refactor.md` Phase 5: order creation now goes through
         // monokulo's own `/pay/{pk}/orders`, the real path a production

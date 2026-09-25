@@ -18,6 +18,7 @@ pub struct OrderRowViewModel {
 
 pub struct OrdersViewModel {
     pub connection_id: String,
+    pub display_name: String,
     pub orders: Vec<OrderRowViewModel>,
 }
 
@@ -65,7 +66,7 @@ pub fn lookup_payment_card(
 pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
-            p { a href=(format!("/dashboard/stores/{}", data.connection_id)) { "← back to store" } }
+            (super::store_breadcrumb(&data.connection_id, &data.display_name, false))
             h1 { "Orders" }
             table {
                 thead {
@@ -88,7 +89,7 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
             }
         }
     };
-    layout(chrome, "Orders - Monokulo", body)
+    layout(chrome, &format!("Orders - {} - Monokulo", data.display_name), body)
 }
 
 /// One payment row inside the order detail page's `payments` table - mirrors
@@ -139,6 +140,7 @@ pub struct OrderDetailData {
 
 pub struct OrderDetailViewModel {
     pub connection_id: String,
+    pub display_name: String,
     pub order: Option<OrderDetailData>,
     pub meta_refresh_secs: u32,
 }
@@ -147,7 +149,10 @@ const PAGE_STYLE: &str = r#"
 .kv-table th { width: 14em; }
 .kv-table td, .payments-table td { word-break: break-all; overflow-wrap: anywhere; }
 .payments-table th { min-width: 8em; }
-.order-title { display: flex; align-items: center; justify-content: space-between; gap: 0.8em; }
+.order-title { display: flex; align-items: center; gap: 0.5em; min-width: 0; }
+.order-title > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.order-title-id { font-size: 0.9em; }
+.order-title .share-btn { margin-left: auto; }
 .share-btn {
   flex-shrink: 0;
   display: inline-flex;
@@ -187,10 +192,10 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
 
     let body = html! {
         div class="wrap" {
-            p { a href=(format!("/dashboard/stores/{}/orders", data.connection_id)) { "← back to orders" } }
+            (super::store_breadcrumb(&data.connection_id, &data.display_name, true))
             @if let Some(order) = &data.order {
                 h1 class="order-title" {
-                    span { "Order " (order.order_id) }
+                    span { "Order · " code class="order-title-id" title=(order.order_id) { (order.order_id) } }
                     a class="share-btn" id="share-payment-link" href=(order.payment_link) target="_blank" rel="noopener"
                        aria-label="Share payment link" title="Share payment link" {
                         svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -208,6 +213,7 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                     "needs to pay this order."
                 }
                 table class="kv-table" {
+                    tr { th { "Order ID" } td { code { (order.order_id) } } }
                     tr {
                         th { "Merchant Reference" }
                         td {
@@ -271,7 +277,11 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
         }
     };
 
-    layout_with_head(chrome, "Order detail - Monokulo", extra_head, body)
+    let title = match &data.order {
+        Some(order) => format!("Order {} - {} - Monokulo", order.order_id, data.display_name),
+        None => format!("Order not found - {} - Monokulo", data.display_name),
+    };
+    layout_with_head(chrome, &title, extra_head, body)
 }
 
 #[cfg(test)]
@@ -286,6 +296,7 @@ mod tests {
     fn list_page_links_to_each_order_detail_page() {
         let data = OrdersViewModel {
             connection_id: "conn_1".to_string(),
+            display_name: "shop.example.com".to_string(),
             orders: vec![OrderRowViewModel {
                 order_id: "pay_xyz".to_string(),
                 status: "paid".to_string(),
@@ -330,7 +341,7 @@ mod tests {
 
     #[test]
     fn detail_page_hides_the_double_spend_row_entirely_when_none_was_detected() {
-        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), order: Some(test_order_detail_data(None)), meta_refresh_secs: 15 };
+        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(None)), meta_refresh_secs: 15 };
         let html = detail_page(&chrome(), &data).into_string();
         // The real point of this follow-up: no dash, no row at all - a
         // permanently-visible "Double-spend detected at" label reads as a
@@ -339,9 +350,17 @@ mod tests {
     }
 
     #[test]
+    fn detail_page_uses_order_breadcrumb() {
+        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(None)), meta_refresh_secs: 15 };
+        let html = detail_page(&chrome(), &data).into_string();
+        assert!(html.contains(r#"<nav class="context-nav" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a><span class="breadcrumb-sep" aria-hidden="true">›</span><a href="/dashboard/stores/conn_1/orders">Orders</a></nav>"#));
+        assert!(html.contains("Order · <code class=\"order-title-id\" title=\"pay_abc123\">pay_abc123</code>"));
+    }
+
+    #[test]
     fn detail_page_shows_the_double_spend_row_when_one_was_detected() {
         let data =
-            OrderDetailViewModel { connection_id: "conn_1".to_string(), order: Some(test_order_detail_data(Some(1_700_000_000))), meta_refresh_secs: 15 };
+            OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(Some(1_700_000_000))), meta_refresh_secs: 15 };
         let html = detail_page(&chrome(), &data).into_string();
         assert!(html.contains("Double-spend detected at"), "expected the row present when a double-spend was detected, got: {html}");
         assert!(html.contains("1700000000"), "expected the real detected-at timestamp shown, got: {html}");
@@ -349,7 +368,7 @@ mod tests {
 
     #[test]
     fn detail_page_shows_a_not_found_state_when_order_is_none() {
-        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), order: None, meta_refresh_secs: 15 };
+        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: None, meta_refresh_secs: 15 };
         let html = detail_page(&chrome(), &data).into_string();
         assert!(html.to_lowercase().contains("not found"));
         // The nav's own status-dot poll script always renders regardless -

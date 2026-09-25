@@ -47,7 +47,7 @@ pub struct BootstrapWalletArgs {
 /// exists yet, the same idempotency-by-checking-first discipline the former
 /// `main.rs::bootstrap_self_hosted_tenant` used (this replaces that function
 /// entirely: provisioning is now an explicit one-time command an operator runs,
-/// not something every boot re-checks). Confirmations/zero-conf/expiry all come
+/// not something every boot re-checks). Confirmations/expiry all come
 /// from whatever this instance's *current* settings resolve to
 /// (`crate::settings`), not a value baked into this command - a bootstrap tenant
 /// should start out consistent with the instance it's being created on.
@@ -64,7 +64,6 @@ pub async fn bootstrap_wallet(
     let sealed = key_custody.seal(&material).await.map_err(LocalAdminError::KeyMaterial)?;
 
     let confirmations_required: u64 = crate::settings::get(store, &crate::settings::PAYMENT_CONFIRMATIONS_REQUIRED);
-    let zero_conf_max_xmr: String = crate::settings::get(store, &crate::settings::PAYMENT_ZERO_CONF_MAX_XMR);
     let order_expiry_minutes: i64 = crate::settings::get(store, &crate::settings::PAYMENT_ORDER_EXPIRY_MINUTES);
 
     let created = store.create_tenant(
@@ -75,11 +74,6 @@ pub async fn bootstrap_wallet(
             network: args.network,
             allowed_origins: args.allowed_origins,
             confirmations_required: Some(confirmations_required),
-            zero_conf_max_piconero: if zero_conf_max_xmr.is_empty() {
-                None
-            } else {
-                shared::xmr_amount::parse_xmr_to_piconero(&zero_conf_max_xmr).ok()
-            },
             order_expiry_seconds: Some(order_expiry_minutes * 60),
         },
         crate::now_unix(),
@@ -128,7 +122,6 @@ pub struct TenantSummary {
     pub primary_address: String,
     pub allowed_origins: Vec<String>,
     pub confirmations_required: u64,
-    pub zero_conf_max_piconero: Option<u64>,
     pub order_expiry_seconds: i64,
 }
 
@@ -140,7 +133,6 @@ pub fn show_tenant(store: &Store, pk: Option<&str>) -> Result<TenantSummary, Loc
         primary_address: tenant.primary_address,
         allowed_origins: tenant.allowed_origins,
         confirmations_required: tenant.confirmations_required,
-        zero_conf_max_piconero: tenant.zero_conf_max_piconero,
         order_expiry_seconds: tenant.order_expiry_seconds,
     })
 }
@@ -165,7 +157,6 @@ mod tests {
                     network: "mainnet".to_string(),
                     allowed_origins,
                     confirmations_required: None,
-                    zero_conf_max_piconero: None,
                     order_expiry_seconds: None,
                 },
                 1_700_000_000,
@@ -204,7 +195,6 @@ mod tests {
                         network: "mainnet".to_string(),
                         allowed_origins: vec![],
                         confirmations_required: None,
-                        zero_conf_max_piconero: None,
                         order_expiry_seconds: None,
                     },
                     1_700_000_000,
@@ -229,7 +219,6 @@ mod tests {
                     network: "mainnet".to_string(),
                     allowed_origins: vec![],
                     confirmations_required: None,
-                    zero_conf_max_piconero: None,
                     order_expiry_seconds: None,
                 },
                 1_700_000_000,
@@ -262,7 +251,6 @@ mod tests {
                     network: "mainnet".to_string(),
                     allowed_origins: vec![],
                     confirmations_required: None,
-                    zero_conf_max_piconero: None,
                     order_expiry_seconds: None,
                 },
                 1_700_000_000,

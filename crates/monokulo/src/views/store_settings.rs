@@ -38,7 +38,7 @@ pub struct WebhookRowViewModel {
 pub struct StoreSettingsData {
     pub connection_id: String,
     pub display_name: String,
-    /// The tenant's current confirmation threshold - `0` when the engine is
+    /// The tenant's current confirmation threshold - `10` when the engine is
     /// currently unreachable.
     pub confirmations_required: u64,
     pub fx_provider: String,
@@ -76,11 +76,8 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
             @if let Some(store) = &data.store {
-                h1 class="breadcrumb-header" {
-                    a href=(format!("/dashboard/stores/{}", store.connection_id)) { (store.display_name) }
-                    span class="breadcrumb-sep" { "›" }
-                    "Settings"
-                }
+                (super::store_breadcrumb(&store.connection_id, &store.display_name, false))
+                h1 { "Settings" }
 
                 @if let Some(error) = &store.settings_error {
                     div class="error" { (error) }
@@ -110,6 +107,9 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                     "order require more confirmations (or a lower-value one fewer) based on its amount in this store's base "
                     "currency."
                 }
+                form id="default-confirmations" method="post" action=(format!("/dashboard/stores/{}/settings/confirmations", store.connection_id)) {
+                    input type="hidden" name="zero_conf_checkbox_present" value="true";
+                }
                 form method="post" action=(format!("/dashboard/stores/{}/settings/confirmation-thresholds/save", store.connection_id)) {
                     table class="thresholds-table" {
                         thead { tr { th { "Amount (" (store.base_currency) ")" } th { "Confirmations required" } th { "Action" } } }
@@ -118,33 +118,40 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                                 td class="muted" { "Default (fallback)" }
                                 td {
                                     input type="text" class="confirmations-input" name="confirmations_required"
-                                        value=(store.confirmations_required) size="3" maxlength="3" required;
+                                        value=(store.confirmations_required) size="3" maxlength="3" required form="default-confirmations";
                                     label class="zero-conf-toggle" {
-                                        input type="checkbox" name="zero_conf_enabled" checked[store.zero_conf_enabled];
+                                        input type="checkbox" name="zero_conf_enabled" checked[store.zero_conf_enabled] form="default-confirmations";
                                         " Accept unconfirmed (0-conf) payments"
                                     }
                                     span class="help-icon" tabindex="0" title="An order that falls under this default tier can read as paid the moment its transaction reaches this store's node's mempool, before any block confirms it - useful for fast, low-value, in-person sales. This is a real double-spend risk (an attacker who can out-race the transaction to a miner keeps both the goods and the coin). No amount to set here - it's implicit in not creating a custom threshold above whatever you don't want treated this way; add one below to keep larger orders requiring real confirmations." { "?" }
                                 }
-                                td { "-" }
+                                td { button type="submit" form="default-confirmations" { "Save" } }
                             }
                             @for threshold in &store.confirmation_thresholds {
                                 tr {
                                     td { (threshold.unit_amount) }
                                     td { (threshold.confirmations_required) }
-                                    td { label { input type="checkbox" name=(format!("delete_{}", threshold.id)); " delete" } }
+                                    td {
+                                        label { input type="checkbox" name=(format!("delete_{}", threshold.id)); " delete" }
+                                        button type="submit" { "Save" }
+                                    }
                                 }
                             }
                             tr class="new-threshold-row" {
                                 @if store.confirmation_thresholds_at_max {
                                     td colspan="2" class="muted" { "Maximum of 5 custom thresholds reached - delete one to add another." }
                                 } @else {
-                                    td { input type="text" name="new_unit_amount" placeholder="50.00"; }
+                                    td { input type="text" name="new_unit_amount" placeholder=(format!("Minimum Amount ({})", store.base_currency)); }
                                     td {
                                         input type="text" class="confirmations-input" name="new_confirmations_required"
-                                            size="3" maxlength="3" placeholder="20";
+                                            size="3" maxlength="3" placeholder="# Confirmations";
                                     }
                                 }
-                                td { button type="submit" { "Save" } }
+                                td {
+                                    @if !store.confirmation_thresholds_at_max {
+                                        button type="submit" { "Add" }
+                                    }
+                                }
                             }
                         }
                     }
@@ -250,7 +257,11 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
             }
         }
     };
-    layout(chrome, "Settings - Monokulo", body)
+    let title = match &data.store {
+        Some(store) => format!("Settings - {} - Monokulo", store.display_name),
+        None => "Store not found - Monokulo".to_string(),
+    };
+    layout(chrome, &title, body)
 }
 
 #[cfg(test)]
@@ -286,11 +297,11 @@ mod tests {
     }
 
     #[test]
-    fn shows_a_store_name_settings_breadcrumb_linking_back_to_the_store_page() {
+    fn shows_store_context_above_the_settings_heading() {
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
         assert!(
-            html.contains(r#"<h1 class="breadcrumb-header"><a href="/dashboard/stores/conn_1">shop.example.com</a>"#),
-            "expected a store-name -> Settings breadcrumb, got: {html}"
+            html.contains(r#"<nav class="context-nav" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a></nav><h1>Settings</h1>"#),
+            "expected a store link above the Settings heading, got: {html}"
         );
     }
 
@@ -302,10 +313,21 @@ mod tests {
     }
 
     #[test]
+    fn default_and_custom_confirmation_controls_submit_to_separate_forms() {
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        assert!(html.contains(r#"<form id="default-confirmations" method="post" action="/dashboard/stores/conn_1/settings/confirmations">"#));
+        assert!(html.contains(r#"name="zero_conf_checkbox_present" value="true""#));
+        assert!(html.contains(r#"maxlength="3" required form="default-confirmations""#));
+        assert!(html.contains(r#"<button type="submit" form="default-confirmations">Save</button>"#));
+        assert!(html.contains(r#"<form method="post" action="/dashboard/stores/conn_1/settings/confirmation-thresholds/save">"#));
+        assert!(html.contains(r#"<button type="submit">Add</button>"#));
+    }
+
+    #[test]
     fn zero_conf_checkbox_is_unchecked_when_disabled() {
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
         assert!(
-            html.contains(r#"<input type="checkbox" name="zero_conf_enabled">"#),
+            html.contains(r#"<input type="checkbox" name="zero_conf_enabled" form="default-confirmations">"#),
             "expected the 0-conf checkbox unchecked when no ceiling is set, got: {html}"
         );
     }
@@ -314,7 +336,7 @@ mod tests {
     fn zero_conf_checkbox_is_checked_when_enabled() {
         let store = StoreSettingsData { zero_conf_enabled: true, ..base_store() };
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
-        assert!(html.contains(r#"<input type="checkbox" name="zero_conf_enabled" checked>"#), "got: {html}");
+        assert!(html.contains(r#"<input type="checkbox" name="zero_conf_enabled" checked form="default-confirmations">"#), "got: {html}");
     }
 
     #[test]
@@ -324,19 +346,28 @@ mod tests {
     }
 
     #[test]
-    fn action_column_header_replaces_delete_and_carries_the_save_button() {
+    fn add_row_is_part_of_the_table_and_uses_descriptive_placeholders() {
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
         assert!(html.contains("<th>Action</th>"), "got: {html}");
         assert!(!html.contains("<th>Delete</th>"));
-        assert!(html.contains(r#"class="new-threshold-row""#), "expected a visually-separated new-threshold row, got: {html}");
+        assert!(!html.contains("threshold-gap-row"));
+        assert!(html.contains(r#"<tr class="new-threshold-row"><td><input type="text" name="new_unit_amount" placeholder="Minimum Amount (XMR)">"#), "got: {html}");
+        assert!(html.contains(r##"placeholder="# Confirmations""##), "got: {html}");
+        assert!(html.contains(r#"<button type="submit">Add</button>"#));
     }
 
     #[test]
-    fn at_the_threshold_max_the_new_row_still_carries_the_save_button() {
-        let store = StoreSettingsData { confirmation_thresholds_at_max: true, ..base_store() };
+    fn existing_threshold_rows_have_save_buttons_even_at_the_limit() {
+        let store = StoreSettingsData {
+            confirmation_thresholds: vec![ConfirmationThresholdView { id: "threshold_1".to_string(), unit_amount: "50.00".to_string(), confirmations_required: 20 }],
+            confirmation_thresholds_at_max: true,
+            ..base_store()
+        };
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
         assert!(html.contains("Maximum of 5 custom thresholds reached"));
-        assert!(html.contains(r#"type="submit""#) && html.contains("Save"), "the Save button must still render even with no new-threshold inputs, got: {html}");
+        assert!(html.contains(r#"name="delete_threshold_1""#), "got: {html}");
+        assert!(html.contains(r#"<button type="submit">Save</button>"#), "existing thresholds need a Save button, got: {html}");
+        assert!(!html.contains(r#"<button type="submit">Add</button>"#));
     }
 
     #[test]

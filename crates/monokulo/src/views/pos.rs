@@ -1,20 +1,21 @@
 //! `http/pos.rs::pos_page` - the terminal screen's own static shell. Every
-//! live value (the entered amount, the QR/URI/NFC payment view, the
-//! tick/progress overlay, backgrounded payments stacked at the bottom) is
+//! live value (the entered amount, the shared checkout iframe, and
+//! backgrounded payments stacked at the top) is
 //! driven client-side by JS talking to `http::pos`'s JSON endpoints - see
 //! `http::pos`'s own module doc comment for why this screen, unlike the
 //! public checkout page, leans on JS rather than working around it.
 //!
-//! Deliberately full-screen (no nav bar, no store title) via
+//! Deliberately full-screen (no nav bar, with a compact store title) via
 //! [`super::layout_bare_with_head`] - meant to be left open on a
 //! merchant's device at the counter all day, not navigated away from.
 
 use maud::{html, Markup, PreEscaped};
 
-use super::{layout_bare_with_head, PageChrome};
+use super::{layout_bare_with_head, store_breadcrumb, PageChrome};
 
 pub struct PosViewModel {
     pub connection_id: String,
+    pub public_key: String,
     pub display_name: String,
     pub base_currency: String,
     /// How many decimal places the keypad's digit-shift should keep before
@@ -33,7 +34,16 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(POS_STYLE)) } };
     let body = html! {
         div class="pos-topbar" {
-            a href=(format!("/dashboard/stores/{}", data.connection_id)) class="pos-back" aria-label="Back to dashboard" title="Back to dashboard" { "←" }
+            div class="pos-topbar-start" {
+                (store_breadcrumb(&data.connection_id, &data.display_name, false))
+                span class="breadcrumb-sep" aria-hidden="true" { "›" }
+                span class="pos-title" { "POS" }
+            }
+            button type="button" class="secondary-btn pos-topbar-action pos-screen-hidden" id="background-btn" { "Confirm in background" }
+            details class="background-disclosure" id="background-disclosure" hidden {
+                summary id="background-summary" { "Background orders (0)" }
+                div class="bg-stack" id="bg-stack" {}
+            }
             a href="/status" class="pos-status-link" id="pos-status-link" title="checking..." {
                 span id="pos-status-dot" class="status-dot status-dot-unknown" {}
             }
@@ -42,6 +52,7 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
         div class="pos-wrap" {
             div id="pos-config"
                 data-connection-id=(data.connection_id)
+                data-public-key=(data.public_key)
                 data-base-currency=(data.base_currency)
                 data-decimals=(data.base_currency_decimals)
                 style="display:none" {}
@@ -74,36 +85,17 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
 
             div id="payment-screen" class="pos-screen pos-screen-hidden" {
                 div class="payment-panel" {
-                    div class="payment-amount" id="payment-amount" {}
-                    div class="qr-holder" id="qr-holder" {}
-                    div class="address-row" { code id="payment-address" {} }
-                    p class="nfc-status" id="nfc-status" {}
+                    iframe id="payment-frame" title="Monero payment" {}
+                    p id="payment-error" class="error" hidden {}
+                    button type="button" class="secondary-btn pos-screen-hidden" id="dismiss-btn" { "Dismiss" }
                     button type="button" class="secondary-btn" id="cancel-btn" { "Cancel" }
                 }
             }
         }
 
-        div class="tick-overlay pos-screen-hidden" id="tick-overlay" {
-            div class="tick-ring" {
-                svg viewBox="0 0 120 120" class="ring-svg" aria-hidden="true" focusable="false" {
-                    circle class="ring-track" cx="60" cy="60" r="54" {}
-                    circle class="ring-progress" id="ring-progress" cx="60" cy="60" r="54" {}
-                }
-                div class="tick-mark" id="tick-mark" { "✓" }
-            }
-            p class="tick-label" id="tick-label" { "Paid" }
-            p class="tick-note" id="tick-note" {}
-            p class="tick-error" id="tick-error" {}
-            div class="tick-actions" {
-                button type="button" class="secondary-btn pos-screen-hidden" id="background-btn" { "Confirm in background" }
-                button type="button" class="secondary-btn pos-screen-hidden" id="dismiss-btn" { "Dismiss" }
-            }
-        }
-
-        div class="bg-stack" id="bg-stack" {}
-
         noscript {
-            div class="wrap" { p class="error" { "This screen needs JavaScript for the live keypad, payment status and NFC tap payments. Use the plain \"create an order\" form on this store's own page instead." } }
+            style { (PreEscaped(".pos-wrap{display:none}.pos-no-js{padding-top:4rem}")) }
+            div class="wrap pos-no-js" { p class="error" { "POS requires JavaScript. Use Create an order on the store page instead." } }
         }
 
         script { (PreEscaped(POS_SCRIPT)) }
@@ -116,7 +108,7 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
 /// here - see `http::pos`'s module doc comment). Square-Terminal-like: one
 /// big amount readout, a numeric keypad with no decimal key (digits shift
 /// in from the right, the decimal point is fixed by the store's own
-/// currency), and a full-bleed payment/tick overlay once a sale is charged.
+/// currency), and the shared checkout view once a sale is charged.
 ///
 /// Unchanged, verbatim, from the old `pos.html.hbs`'s own `<style>` block -
 /// it carried no handlebars syntax to begin with (confirmed - zero `{{` in
@@ -125,34 +117,24 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
 /// any other page.
 const POS_STYLE: &str = r#"
 html, body { height: 100%; }
-body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: contain; }
+body { margin: 0; padding: 0; height: 100vh; height: 100dvh; display: flex; flex-direction: column; background: var(--paper); overscroll-behavior-y: contain; }
 
 .pos-topbar {
-  position: fixed;
-  top: 0;
-  left: 0;
-  right: 0;
+  position: relative;
+  flex: none;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  padding: calc(env(safe-area-inset-top, 0px) + 0.5rem) calc(env(safe-area-inset-right, 0px) + 0.7rem) 0.3rem calc(env(safe-area-inset-left, 0px) + 0.7rem);
+  padding: calc(env(safe-area-inset-top, 0px) + 0.3rem) calc(env(safe-area-inset-right, 0px) + 0.7rem) 0.5rem calc(env(safe-area-inset-left, 0px) + 0.7rem);
   z-index: 20;
   pointer-events: none;
 }
 .pos-topbar > * { pointer-events: auto; }
-.pos-back {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 2em;
-  height: 2em;
-  font-size: 1.3rem;
-  line-height: 1;
-  color: var(--muted);
-  text-decoration: none;
-  opacity: 0.6;
-}
-.pos-back:hover, .pos-back:active { opacity: 1; color: var(--ink); }
+.pos-topbar-start { display: flex; align-items: center; gap: 0.5em; min-width: 0; }
+.pos-topbar-start .context-nav { margin: 0; min-width: 0; }
+.pos-topbar-start .context-nav a { max-width: min(45vw, 18rem); }
+.pos-title { color: var(--ink); font-size: 0.85rem; font-weight: 700; white-space: nowrap; }
+.pos-topbar-action { flex: none; font-size: .72rem; padding: .4em .55em; margin-left: auto; }
 .pos-status-link {
   display: inline-flex;
   align-items: center;
@@ -162,15 +144,20 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 }
 .pos-status-link:hover, .pos-status-link:active { opacity: 1; }
 .pos-status-link .status-dot { margin-left: 0; }
+.background-disclosure { position: relative; margin-left: .35em; font-size: .8rem; }
+.background-disclosure summary { cursor: pointer; border: 1px solid var(--line); background: var(--paper-raised); padding: .35em .6em; }
+.background-disclosure.has-error summary { border-color: var(--error); color: var(--error); }
+.background-disclosure .bg-item { width: 100%; max-width: none; cursor: pointer; box-shadow: none; }
 
 .pos-wrap {
   margin: 0 auto;
-  height: 100vh;
-  height: 100dvh;
+  width: 100%;
+  flex: 1;
+  min-height: 0;
   box-sizing: border-box;
   display: flex;
   flex-direction: column;
-  padding: calc(env(safe-area-inset-top, 0px) + 2.6rem) calc(env(safe-area-inset-right, 0px) + 0.9rem) calc(env(safe-area-inset-bottom, 0px) + 0.9rem) calc(env(safe-area-inset-left, 0px) + 0.9rem);
+  padding: 0.3rem calc(env(safe-area-inset-right, 0px) + 0.9rem) calc(env(safe-area-inset-bottom, 0px) + 0.9rem) calc(env(safe-area-inset-left, 0px) + 0.9rem);
 }
 .pos-screen { flex: 1; min-height: 0; }
 .pos-screen-hidden { display: none !important; }
@@ -296,66 +283,24 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
   text-align: center;
   box-shadow: 0 0.4em 1em rgba(var(--shadow-rgb), 0.1);
 }
-.payment-amount { font-size: 1.8rem; font-weight: 700; margin-bottom: 0.5em; }
-.qr-holder { max-width: 260px; margin: 0 auto; }
-.qr-holder svg { width: 100%; height: auto; display: block; }
-.address-row { margin: 0.6em 0; word-break: break-all; font-size: 0.8rem; }
-.nfc-status { color: var(--muted); font-size: 0.85rem; min-height: 1.2em; }
-
-.tick-overlay {
-  position: fixed;
-  inset: 0;
+.payment-panel iframe { width: 100%; flex: 1; min-height: 0; border: 0; background: var(--paper-raised); }
+.payment-panel > button { flex: none; }
+#payment-error { flex: none; margin: .3em 0; }
+.bg-stack {
+  position: absolute;
+  top: 100%;
+  right: 0;
+  width: min(90vw, 360px);
+  max-height: min(60vh, 28em);
+  overflow-y: auto;
   background: var(--paper);
+  border: 1px solid var(--line);
   display: flex;
   flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 0.6em;
-  padding: 1.5em;
-  text-align: center;
-  z-index: 10;
-}
-.tick-ring { position: relative; width: 160px; height: 160px; }
-.ring-svg { width: 100%; height: 100%; transform: rotate(-90deg); }
-.ring-track { fill: none; stroke: var(--line); stroke-width: 6; opacity: 0.25; }
-.ring-progress {
-  fill: none;
-  stroke: var(--success);
-  stroke-width: 6;
-  stroke-linecap: round;
-  transition: stroke-dashoffset 0.4s linear;
-}
-.tick-overlay.is-error .ring-progress { stroke: var(--error); }
-.tick-mark {
-  position: absolute;
-  inset: 0;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  font-size: 4rem;
-  font-weight: 700;
-  color: var(--success);
-}
-.tick-overlay.is-error .tick-mark { color: var(--error); }
-.tick-label { font-size: 1.3rem; font-weight: 700; margin: 0; }
-.tick-note { font-size: 1rem; color: var(--muted); margin: 0; max-width: 22em; }
-.tick-note:empty { display: none; }
-.tick-error { color: var(--error); font-weight: 700; max-width: 22em; margin: 0; }
-.tick-error:empty { display: none; }
-.tick-actions { display: flex; flex-direction: column; gap: 0.5em; width: 100%; max-width: 20em; }
-
-.bg-stack {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  display: flex;
-  flex-direction: column-reverse;
   gap: 0.4em;
-  padding: 0.6em;
+  padding: 0.4em;
   align-items: center;
-  z-index: 5;
-  pointer-events: none;
+  z-index: 20;
 }
 .bg-item {
   pointer-events: auto;
@@ -387,35 +332,34 @@ body { margin: 0; padding: 0; background: var(--paper); overscroll-behavior-y: c
 .bg-item .bg-dismiss { border: none; background: none; cursor: pointer; font-weight: 700; color: inherit; }
 
 @media (max-height: 480px) {
-  .pos-wrap { padding-top: calc(env(safe-area-inset-top, 0px) + 1.1rem); }
+  .pos-wrap { padding-top: 0.3rem; }
   .amount-display { font-size: clamp(1.1rem, 6vw, 1.9rem); }
   .note-input-row input { padding: 0.3em 0.5em; font-size: 0.9rem; }
   .charge-btn, .secondary-btn { padding: 0.3em 0; margin-top: 0.25em; font-size: 1rem; }
   .key-face { font-size: clamp(1rem, 5vw, 1.6rem); }
   .payment-panel { padding: 0.6em; }
-  .payment-amount { font-size: 1.2rem; margin-bottom: 0.25em; }
-  .qr-holder { max-width: min(260px, 30vh); }
-  .address-row { margin: 0.3em 0; font-size: 0.7rem; }
-  .nfc-status { font-size: 0.75rem; min-height: 0; }
 }
 "#;
 
-/// Unchanged, verbatim, from the old `pos.html.hbs`'s own `<script>` block,
-/// except reading its three config values from `#pos-config`'s own
-/// `data-*` attributes rather than `<body>`'s - a plain, invisible element
-/// is a cleaner seam for this than special-casing `<body>`'s own attributes
-/// through the shared [`super::page_shell`] every other page also renders
-/// through.
+/// Ported from the old `pos.html.hbs`'s own `<script>` block, reading its
+/// three config values from `#pos-config`'s own `data-*` attributes rather
+/// than `<body>`'s - a plain, invisible element is a cleaner seam for this
+/// than special-casing `<body>`'s own attributes through the shared
+/// [`super::page_shell`] every other page also renders through. Payment
+/// status comes from one EventSource on `/pos/events` covering every
+/// watched order, not a poll per order.
 const POS_SCRIPT: &str = r#"
 (function () {
   "use strict";
   var config = document.getElementById("pos-config");
   var connectionId = config.getAttribute("data-connection-id");
+  var publicKey = config.getAttribute("data-public-key");
   var decimals = parseInt(config.getAttribute("data-decimals"), 10) || 2;
   var MAX_DIGITS = decimals + 9;
-  var POLL_INTERVAL_MS = 2000;
-  var POLL_FAILURE_LIMIT = 3;
-  var RING_CIRCUMFERENCE = 2 * Math.PI * 54;
+  // How long the status stream may be down before the screen says so -
+  // EventSource reconnects on its own, so a brief blip shouldn't alarm.
+  var CONNECTION_GRACE_MS = 6000;
+  var STREAM_RETRY_MS = 5000;
   var MAX_NOTE_LENGTH = 120;
 
   var digits = "0";
@@ -425,26 +369,23 @@ const POS_SCRIPT: &str = r#"
   var noteInput = document.getElementById("note-input");
   var keypadScreen = document.getElementById("keypad-screen");
   var paymentScreen = document.getElementById("payment-screen");
-  var paymentAmount = document.getElementById("payment-amount");
-  var qrHolder = document.getElementById("qr-holder");
-  var paymentAddress = document.getElementById("payment-address");
-  var nfcStatus = document.getElementById("nfc-status");
+  var paymentFrame = document.getElementById("payment-frame");
+  var paymentError = document.getElementById("payment-error");
   var cancelBtn = document.getElementById("cancel-btn");
-  var tickOverlay = document.getElementById("tick-overlay");
-  var tickLabel = document.getElementById("tick-label");
-  var tickNote = document.getElementById("tick-note");
-  var tickError = document.getElementById("tick-error");
-  var ringProgress = document.getElementById("ring-progress");
   var backgroundBtn = document.getElementById("background-btn");
   var dismissBtn = document.getElementById("dismiss-btn");
   var bgStack = document.getElementById("bg-stack");
+  var bgDisclosure = document.getElementById("background-disclosure");
+  var bgSummary = document.getElementById("background-summary");
   var statusDot = document.getElementById("pos-status-dot");
   var statusLink = document.getElementById("pos-status-link");
-
-  ringProgress.style.strokeDasharray = String(RING_CIRCUMFERENCE);
+  var HEALTH_POLL_MS = 15000;
 
   (function pollHealth() {
-    fetch("/status/summary").then(function (r) { return r.json(); }).then(function (data) {
+    fetch("/status/summary", { cache: "no-store" }).then(function (r) {
+      if (!r.ok) throw new Error("status unavailable");
+      return r.json();
+    }).then(function (data) {
       if (data && data.healthy) {
         statusDot.className = "status-dot status-dot-ok";
         statusLink.title = "all systems healthy";
@@ -455,11 +396,81 @@ const POS_SCRIPT: &str = r#"
     }).catch(function () {
       statusDot.className = "status-dot status-dot-unknown";
       statusLink.title = "could not check status";
+    }).finally(function () {
+      setTimeout(pollHealth, HEALTH_POLL_MS);
     });
   })();
 
-  var foreground = null; // { orderId, timer, failures, note }
-  var backgrounded = {}; // orderId -> { el, timer, failures }
+  var foreground = null; // { orderId, note }
+  var backgrounded = {}; // orderId -> { el, note, markLost }
+
+  // One EventSource carries status for every order being watched - the
+  // one on screen and every backgrounded one. The server sends each order's
+  // status on connect and again only when it changes; the stream is
+  // reopened with the new id list whenever that set changes.
+  var watched = {}; // orderId -> function (status)
+  var stream = null;
+  var reopenTimer = null;
+  var lostTimer = null;
+  var connectionLost = false;
+
+  function watch(orderId, handler) {
+    watched[orderId] = handler;
+    reopenStream();
+  }
+
+  function unwatch(orderId) {
+    if (!watched[orderId]) return;
+    delete watched[orderId];
+    reopenStream();
+  }
+
+  function reopenStream(delay) {
+    if (reopenTimer) return;
+    reopenTimer = setTimeout(function () {
+      reopenTimer = null;
+      if (stream) { stream.close(); stream = null; }
+      var ids = Object.keys(watched);
+      if (!ids.length) { setConnectionLost(false); return; }
+      var source = new EventSource("/dashboard/stores/" + connectionId + "/pos/events?orders=" + ids.map(encodeURIComponent).join(","));
+      stream = source;
+      source.addEventListener("open", function () { setConnectionLost(false); });
+      source.addEventListener("status", function (event) {
+        var result;
+        try { result = JSON.parse(event.data); } catch (err) { return; }
+        setConnectionLost(false);
+        var handler = watched[result.order_id];
+        if (!handler) return;
+        if (result.is_terminal) unwatch(result.order_id);
+        handler(result);
+      });
+      source.addEventListener("error", function () {
+        if (stream !== source) return;
+        // A rejected request (signed out, server error) is not retried by
+        // EventSource itself.
+        if (source.readyState === EventSource.CLOSED) reopenStream(STREAM_RETRY_MS);
+        if (!lostTimer) {
+          lostTimer = setTimeout(function () {
+            lostTimer = null;
+            if (stream && stream.readyState !== EventSource.OPEN) setConnectionLost(true);
+          }, CONNECTION_GRACE_MS);
+        }
+      });
+    }, delay || 0);
+  }
+
+  function setConnectionLost(lost) {
+    if (lost === connectionLost) return;
+    connectionLost = lost;
+    if (lost) {
+      paymentError.textContent = "Lost connection to payment status. Retrying...";
+      paymentError.hidden = !foreground;
+      Object.keys(backgrounded).forEach(function (id) { backgrounded[id].markLost(); });
+      updateBackgroundSummary();
+    } else {
+      paymentError.hidden = true;
+    }
+  }
 
   function formatAmount(rawDigits) {
     var padded = rawDigits.padStart(decimals + 1, "0");
@@ -538,20 +549,6 @@ const POS_SCRIPT: &str = r#"
     return orderId.length <= 14 ? orderId : orderId.slice(0, 6) + "…" + orderId.slice(-4);
   }
 
-  async function attemptNfcWrite(moneroUri) {
-    if (!("NDEFReader" in window)) {
-      nfcStatus.textContent = "Tap-to-pay (NFC) isn't available on this device - use the QR code.";
-      return;
-    }
-    try {
-      var reader = new NDEFReader();
-      await reader.write({ records: [{ recordType: "url", data: moneroUri }] });
-      nfcStatus.textContent = "Ready for tap-to-pay, or scan the QR code.";
-    } catch (err) {
-      nfcStatus.textContent = "Tap-to-pay unavailable - use the QR code.";
-    }
-  }
-
   async function chargeAmount() {
     setPosError("");
     var amount = formatAmount(digits);
@@ -581,16 +578,20 @@ const POS_SCRIPT: &str = r#"
   chargeBtn.addEventListener("click", chargeAmount);
 
   function openPaymentScreen(order, note) {
-    paymentAmount.textContent = order.amount + " " + order.currency;
-    qrHolder.innerHTML = order.qr_code_svg;
-    paymentAddress.textContent = order.address;
-    nfcStatus.textContent = "";
+    openOrder(order.order_id, note);
+  }
+
+  function openOrder(orderId, note) {
+    paymentFrame.src = "/pay/" + encodeURIComponent(publicKey) + "/orders/" + encodeURIComponent(orderId) + "?view=pos";
+    paymentError.hidden = true;
+    backgroundBtn.classList.add("pos-screen-hidden");
+    dismissBtn.classList.add("pos-screen-hidden");
     showScreen(paymentScreen);
-    attemptNfcWrite(order.monero_uri);
-    startForegroundPoll(order.order_id, note);
+    startForegroundPoll(orderId, note);
   }
 
   function resetToKeypad() {
+    paymentFrame.removeAttribute("src");
     digits = "0";
     renderAmount();
     setPosError("");
@@ -604,93 +605,37 @@ const POS_SCRIPT: &str = r#"
   });
 
   function stopForegroundPoll() {
-    if (foreground && foreground.timer) clearTimeout(foreground.timer);
+    if (foreground) unwatch(foreground.orderId);
     foreground = null;
-    tickOverlay.classList.add("pos-screen-hidden");
-    tickOverlay.classList.remove("is-error");
-  }
-
-  function setRingProgress(percent) {
-    var clamped = Math.max(0, Math.min(100, percent));
-    ringProgress.style.strokeDashoffset = String(RING_CIRCUMFERENCE * (1 - clamped / 100));
-  }
-
-  function showTick(state) {
-    tickOverlay.classList.remove("pos-screen-hidden");
-    tickOverlay.classList.toggle("is-error", state.isError);
-    setRingProgress(state.percent);
-    tickLabel.textContent = state.isError ? "Needs attention" : "Paid";
-    tickNote.textContent = state.note || "";
-    tickError.textContent = state.isError ? state.message : "";
-    backgroundBtn.classList.toggle("pos-screen-hidden", !state.canBackground);
-    dismissBtn.classList.toggle("pos-screen-hidden", !(state.finished && state.isError));
-  }
-
-  async function pollOnce(orderId) {
-    var response;
-    try {
-      response = await fetch("/dashboard/stores/" + connectionId + "/pos/orders/" + orderId + "/status");
-    } catch (err) {
-      return { networkError: true };
-    }
-    if (!response.ok) return { networkError: true };
-    return await response.json();
+    backgroundBtn.classList.add("pos-screen-hidden");
+    dismissBtn.classList.add("pos-screen-hidden");
   }
 
   function startForegroundPoll(orderId, note) {
-    foreground = { orderId: orderId, timer: null, failures: 0, note: note || "" };
-    tickOverlay.classList.remove("is-error");
-    var tick = async function () {
+    foreground = { orderId: orderId, note: note || "" };
+    watch(orderId, function (result) {
       if (!foreground || foreground.orderId !== orderId) return;
-      var result = await pollOnce(orderId);
-      if (!foreground || foreground.orderId !== orderId) return;
-
-      if (result.networkError) {
-        foreground.failures += 1;
-        if (foreground.failures >= POLL_FAILURE_LIMIT) {
-          showTick({ percent: 100, isError: true, message: "Lost connection to the payment status - the order itself is unaffected. Retrying...", canBackground: false, finished: false, note: foreground.note });
-        }
-        foreground.timer = setTimeout(tick, POLL_INTERVAL_MS);
-        return;
-      }
-      foreground.failures = 0;
 
       if (result.status === "pending") {
-        tickOverlay.classList.add("pos-screen-hidden");
-        foreground.timer = setTimeout(tick, POLL_INTERVAL_MS);
+        backgroundBtn.classList.add("pos-screen-hidden");
+        dismissBtn.classList.add("pos-screen-hidden");
         return;
       }
 
-      var percent = result.confirmations_required > 0
-        ? Math.min(100, Math.round((result.confirmations / result.confirmations_required) * 100))
-        : 100;
       var success = !result.error && (result.status === "paid" || (result.status === "overpaid" && !result.error));
       var canBackground = !result.is_terminal && result.confirmations_required > 0 && !result.error;
+      backgroundBtn.classList.toggle("pos-screen-hidden", !canBackground);
+      dismissBtn.classList.toggle("pos-screen-hidden", !(result.is_terminal && !!result.error));
 
-      showTick({
-        percent: percent,
-        isError: !!result.error,
-        message: result.error || "",
-        canBackground: canBackground,
-        finished: result.is_terminal,
-        note: foreground.note,
-      });
-
-      if (result.is_terminal) {
-        if (success) {
-          setTimeout(function () {
-            if (foreground && foreground.orderId === orderId) {
-              stopForegroundPoll();
-              resetToKeypad();
-            }
-          }, 2500);
-        }
-        return;
+      if (result.is_terminal && success) {
+        setTimeout(function () {
+          if (foreground && foreground.orderId === orderId) {
+            stopForegroundPoll();
+            resetToKeypad();
+          }
+        }, 3500);
       }
-
-      foreground.timer = setTimeout(tick, POLL_INTERVAL_MS);
-    };
-    tick();
+    });
   }
 
   dismissBtn.addEventListener("click", function () {
@@ -701,71 +646,76 @@ const POS_SCRIPT: &str = r#"
   backgroundBtn.addEventListener("click", function () {
     if (!foreground) return;
     var orderId = foreground.orderId;
+    var note = foreground.note;
     stopForegroundPoll();
     resetToKeypad();
-    startBackgroundPoll(orderId);
+    startBackgroundPoll(orderId, note);
   });
 
-  function startBackgroundPoll(orderId) {
-    var el = document.createElement("div");
+  function updateBackgroundSummary() {
+    var entries = Object.keys(backgrounded);
+    bgDisclosure.hidden = entries.length === 0;
+    bgSummary.textContent = "Background orders (" + entries.length + ")";
+    bgDisclosure.classList.toggle("has-error", entries.some(function (id) { return backgrounded[id].el.classList.contains("is-error"); }));
+    if (!entries.length) bgDisclosure.open = false;
+  }
+
+  function startBackgroundPoll(orderId, note) {
+    var el = document.createElement("button");
+    el.type = "button";
     el.className = "bg-item";
     el.innerHTML =
       '<span class="bg-id"></span>' +
       '<span class="bg-bar"><span class="bg-bar-fill"></span></span>' +
-      '<button type="button" class="bg-dismiss pos-screen-hidden" aria-label="Dismiss">&times;</button>';
+      '<span class="bg-dismiss pos-screen-hidden" aria-label="Dismiss">&times;</span>';
     el.querySelector(".bg-id").textContent = shortId(orderId);
     var fill = el.querySelector(".bg-bar-fill");
     var dismiss = el.querySelector(".bg-dismiss");
     bgStack.appendChild(el);
 
-    var entry = { el: el, timer: null, failures: 0 };
+    var entry = {
+      el: el,
+      note: note || "",
+      markLost: function () {
+        el.classList.add("is-error");
+        dismiss.classList.remove("pos-screen-hidden");
+      },
+    };
     backgrounded[orderId] = entry;
+    updateBackgroundSummary();
 
-    dismiss.addEventListener("click", function () {
-      if (entry.timer) clearTimeout(entry.timer);
+    el.addEventListener("click", function () {
+      unwatch(orderId);
       delete backgrounded[orderId];
       el.remove();
+      updateBackgroundSummary();
+      if (foreground) stopForegroundPoll();
+      openOrder(orderId, entry.note);
+      bgDisclosure.open = false;
     });
 
-    var tick = async function () {
+    watch(orderId, function (result) {
       if (!backgrounded[orderId]) return;
-      var result = await pollOnce(orderId);
-      if (!backgrounded[orderId]) return;
-
-      if (result.networkError) {
-        entry.failures += 1;
-        if (entry.failures >= POLL_FAILURE_LIMIT) {
-          el.classList.add("is-error");
-          dismiss.classList.remove("pos-screen-hidden");
-        }
-        entry.timer = setTimeout(tick, POLL_INTERVAL_MS);
-        return;
-      }
-      entry.failures = 0;
-
       var percent = result.confirmations_required > 0
         ? Math.min(100, Math.round((result.confirmations / result.confirmations_required) * 100))
         : 100;
       fill.style.width = percent + "%";
       el.classList.toggle("is-error", !!result.error);
+      updateBackgroundSummary();
       if (result.error) dismiss.classList.remove("pos-screen-hidden");
 
-      if (result.is_terminal) {
-        if (!result.error) {
-          el.classList.add("is-paid");
-          el.querySelector(".bg-id").textContent = shortId(orderId) + " — paid";
-          setTimeout(function () {
-            if (backgrounded[orderId]) {
-              delete backgrounded[orderId];
-              el.remove();
-            }
-          }, 4000);
-        }
-        return;
+      if (result.is_terminal && !result.error) {
+        el.classList.add("is-paid");
+        el.querySelector(".bg-id").textContent = shortId(orderId) + " — paid";
+        setTimeout(function () {
+          if (backgrounded[orderId]) {
+            delete backgrounded[orderId];
+            el.remove();
+            updateBackgroundSummary();
+          }
+        }, 4000);
       }
-      entry.timer = setTimeout(tick, POLL_INTERVAL_MS);
-    };
-    tick();
+    });
   }
 
   renderAmount();
@@ -783,6 +733,7 @@ mod tests {
     fn data() -> PosViewModel {
         PosViewModel {
             connection_id: "conn-1".to_string(),
+            public_key: "pk_test".to_string(),
             display_name: "example.com".to_string(),
             base_currency: "XMR".to_string(),
             base_currency_decimals: 12,
@@ -799,8 +750,8 @@ mod tests {
         assert!(html.contains(r#"data-connection-id="conn-1""#));
         assert!(html.contains(r#"data-decimals="12""#));
         assert!(
-            html.contains("/dashboard/stores/conn-1"),
-            "expected the back link to this connection's dashboard"
+            html.contains(r#"<nav class="context-nav" aria-label="Breadcrumb"><a href="/dashboard/stores/conn-1" title="example.com">example.com</a></nav><span class="breadcrumb-sep" aria-hidden="true">›</span><span class="pos-title">POS</span>"#),
+            "expected the shared labeled store breadcrumb in the POS top bar"
         );
         assert!(
             !html.contains("<nav class=\"site-nav\""),
@@ -812,5 +763,17 @@ mod tests {
     fn title_includes_the_display_name() {
         let html = page(&chrome(), &data()).into_string();
         assert!(html.contains("<title>POS - example.com - Monokulo</title>"));
+    }
+
+    #[test]
+    fn pos_uses_shared_checkout_and_top_background_stack_without_nfc() {
+        let html = page(&chrome(), &data()).into_string();
+        assert!(html.contains("id=\"payment-frame\""));
+        assert!(html.contains("?view=pos"));
+        assert!(html.contains("id=\"background-disclosure\""));
+        assert!(html.contains("id=\"background-btn\""));
+        assert!(html.contains("POS requires JavaScript"));
+        assert!(!html.contains("NDEFReader"));
+        assert!(!html.contains("id=\"tick-overlay\""));
     }
 }

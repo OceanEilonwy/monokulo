@@ -1204,7 +1204,6 @@ mod live_node_tests {
                     network: "mainnet".into(),
                     allowed_origins: vec![],
                     confirmations_required: None,
-                    zero_conf_max_piconero: None,
                     order_expiry_seconds: None,
                 },
                 0,

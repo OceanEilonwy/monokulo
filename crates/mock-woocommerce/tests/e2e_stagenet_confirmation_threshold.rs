@@ -13,8 +13,7 @@
 //!    stored order is the *threshold's* value (1), not the tenant's default
 //!    (99) - checked immediately after order creation, no waiting required.
 //! 2. That resolved value is what actually drives the real order's status:
-//!    with 0-conf detection left disabled (no `zero_conf_max_piconero`
-//!    configured), the order only reaches `paid`/`confirming`/`overpaid`
+//!    with a nonzero confirmation requirement, the order only reaches `paid`/`confirming`/`overpaid`
 //!    once a real block gives it its first confirmation - proving
 //!    `confirmations_required_override` isn't just recorded but genuinely
 //!    enforced by the real engine's own status computation
@@ -145,7 +144,6 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
     use monokulo::db::Db;
     use monokulo::engine_client::EngineClient;
     use monokulo::http::{build_router, AppState};
-    use monokulo::templates::TemplateEngine;
 
     let db = Db::open_in_memory().expect("failed to open in-memory monokulo db for test");
     // Signup defaults to invite-only (`monokulo::settings::SIGNUP_MODE`) -
@@ -160,7 +158,6 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
         db: db.into_shared(),
         engine_client: EngineClient::new(format!("http://{engine_addr}")),
         encryption_key: TEST_ENCRYPTION_KEY,
-        templates: Arc::new(TemplateEngine::new().expect("built-in monokulo templates must parse")),
         status_cache: monokulo::http::status_page::new_status_cache(),
         // Every currency this test touches is XMR - needs no real provider.
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
@@ -347,8 +344,8 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
     println!("PASS: the real order detail dashboard page shows the resolved threshold snapshot");
 
     // Point 2: pay it for real and prove the resolved value actually drives
-    // the real order's status - no zero-conf ceiling was configured above
-    // (`zero_conf_max_piconero` omitted from the `/connections` request), so
+    // the real order's status - the order requires one real confirmation
+    // (the order's own confirmation requirement is nonzero), so
     // this can only succeed once the payment has a real confirmation.
     let tx_hash = cli_wallet::send_payment(spender, &address, amount_piconero, None)
     .await

@@ -50,6 +50,7 @@ pub struct LoginViewModel {
 pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Home" } }
             h1 { "Sign up" }
             @if let Some(error) = &data.error {
                 p class="error" { (error) }
@@ -77,6 +78,7 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
 pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Home" } }
             h1 { "Log in" }
             @if let Some(error) = &data.error {
                 p class="error" { (error) }
@@ -128,7 +130,7 @@ mod tests {
     fn signup_page_shows_the_invite_required_message_and_hides_the_form() {
         let html =
             signup_page(&chrome(), &SignupViewModel { error: None, invite_required: true, invite_token: String::new() }).into_string();
-        assert!(!html.contains("<form"), "an invite-only instance with no token must not show the signup form");
+        assert!(!html.contains("<form method=\"post\" action=\"/dashboard/signup\""), "an invite-only instance with no token must not show the signup form");
         assert!(html.contains("/request-invite"));
     }
 

@@ -182,6 +182,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/stores/{id}/pos", axum::routing::get(pos::pos_page))
         .route("/dashboard/stores/{id}/pos/orders", axum::routing::post(pos::create_order))
         .route("/dashboard/stores/{id}/pos/orders/{order_id}/status", axum::routing::get(pos::order_status))
+        .route("/dashboard/stores/{id}/pos/events", axum::routing::get(pos::order_events))
         .route("/dashboard/stores/{id}/orders", axum::routing::get(orders::orders_list))
         .route("/dashboard/stores/{id}/orders/lookup", axum::routing::post(orders::lookup_payment))
         .route("/dashboard/stores/{id}/orders/{order_id}", axum::routing::get(orders::order_detail))
@@ -199,6 +200,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/pay/{pk}/orders", post(pay::create_order))
         .route("/pay/{pk}/orders/{order_id}", axum::routing::get(checkout::checkout_page))
         .route("/pay/{pk}/orders/{order_id}/status", axum::routing::get(checkout::checkout_status))
+        .route("/pay/{pk}/orders/{order_id}/events", axum::routing::get(checkout::checkout_events))
         .route(
             "/pay/{pk}/orders/{order_id}/refund-address",
             axum::routing::post(checkout::set_refund_address),
@@ -214,6 +216,8 @@ pub fn build_router(state: AppState) -> Router {
     // A plain static file, not state-changing - no rate limiter needed
     // (`docs/fx_refactor.md` Phase 4.3), same as the engine's original.
     let router = router.route("/static/monokulo-client.js", axum::routing::get(pay::client_library));
+    let router = router.route("/static/checkout.js", axum::routing::get(pay::checkout_script));
+    let router = router.route("/static/jsQR.js", axum::routing::get(pay::qr_decoder_script));
     let router = router.route("/static/logo.svg", axum::routing::get(pay::logo_svg));
     let router = router.route("/static/logo-inverted.svg", axum::routing::get(pay::logo_inverted_svg));
     let router = router.route("/static/favicon.svg", axum::routing::get(pay::favicon_svg));

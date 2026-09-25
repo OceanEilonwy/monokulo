@@ -72,6 +72,7 @@ async fn build_orders_view_model(
 
     Ok(OrdersViewModel {
         connection_id: row.id.clone(),
+        display_name: display_name_for(&row.site_url),
         orders: orders
             .into_iter()
             .map(|o| {
@@ -245,6 +246,7 @@ pub async fn order_detail(
             };
             let view_model = OrderDetailViewModel {
                 connection_id: id.to_string(),
+                display_name: display_name_for(&row.site_url),
                 order: Some(OrderDetailData {
                     order_id: detail.order.order_id,
                     merchant_order_id: detail.order.merchant_order_id,
@@ -290,7 +292,7 @@ pub async fn order_detail(
             views::orders::detail_page(&chrome, &view_model).into_response()
         }
         Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
-            let view_model = OrderDetailViewModel { connection_id: id.to_string(), order: None, meta_refresh_secs: 15 };
+            let view_model = OrderDetailViewModel { connection_id: id.to_string(), display_name: display_name_for(&row.site_url), order: None, meta_refresh_secs: 15 };
             (StatusCode::NOT_FOUND, views::orders::detail_page(&chrome, &view_model)).into_response()
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -569,9 +571,11 @@ async fn render_store_settings_page(
     };
 
     let tenant_result = state.engine_client.get_tenant(&sk).await;
-    let confirmations_required = tenant_result.as_ref().map(|t| t.confirmations_required).unwrap_or(0);
-    let zero_conf_enabled =
-        tenant_result.as_ref().ok().and_then(|t| t.zero_conf_max_piconero).is_some_and(|piconero| piconero > 0);
+    let confirmations_required = tenant_result.as_ref().map(|t| t.confirmations_required).unwrap_or(10);
+    // Native 0-conf: the Default row's own checkbox is checked exactly when the
+    // tenant's default confirmations count already is 0 - no separate engine
+    // field to read.
+    let zero_conf_enabled = tenant_result.as_ref().is_ok_and(|t| t.confirmations_required == 0);
 
     let fx_provider_options = state
         .exchange_rate
@@ -682,9 +686,8 @@ pub struct CreateOrderForm {
 }
 
 /// `POST /dashboard/stores/{id}/orders/new` - creates a real order
-/// directly from the dashboard, via the engine's own *public*
-/// order-creation API (`EngineClient::create_order`, `pk_`-addressed, the
-/// same endpoint a real storefront would call) - lets a merchant try the
+/// directly from the dashboard, via the engine's authenticated
+/// order-creation API (`EngineClient::create_order`) - lets a merchant try the
 /// payment flow without wiring up a storefront first. Redirects straight to
 /// the new order's own detail page on success (POST-redirect-GET); a
 /// validation error (unsupported currency, unparseable amount) re-renders
@@ -696,6 +699,14 @@ pub async fn create_order(
     Path(id): Path<String>,
     Form(form): Form<CreateOrderForm>,
 ) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+
+    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
+    let _policy_guard = policy_lock.lock().await;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -762,7 +773,7 @@ pub async fn create_order(
 
     match state
         .engine_client
-        .create_order(&row.tenant_public_key, xmr_amount_piconero, merchant_order_id, Some(resolution.confirmations_required))
+        .create_order(&sk, xmr_amount_piconero, merchant_order_id, Some(resolution.confirmations_required))
         .await
     {
         Ok(order) => {
@@ -799,6 +810,10 @@ pub async fn create_order(
 #[derive(Deserialize)]
 pub struct UpdateConfirmationsForm {
     pub confirmations_required: String,
+    pub zero_conf_enabled: Option<String>,
+    /// Distinguishes an unchecked dashboard checkbox from a numeric API update.
+    #[serde(default)]
+    pub zero_conf_checkbox_present: bool,
 }
 
 /// `POST /dashboard/stores/{id}/settings/confirmations` - updates the
@@ -822,11 +837,17 @@ pub async fn update_confirmations_required(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    let confirmations_required: u64 = match form.confirmations_required.trim().parse() {
-        Ok(n) => n,
-        Err(_) => {
-            return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations.".to_string()), None)
-                .await;
+    let confirmations_required: u64 = if form.zero_conf_enabled.is_some() {
+        0
+    } else {
+        match form.confirmations_required.trim().parse() {
+            // An unchecked dashboard checkbox restores the ordinary default.
+            Ok(0) if form.zero_conf_checkbox_present => 10,
+            Ok(n) if n <= 720 => n,
+            Ok(_) => {
+                return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations from 0 to 720.".to_string()), None).await;
+            }
+            Err(_) => return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations.".to_string()), None).await,
         }
     };
 
@@ -835,6 +856,8 @@ pub async fn update_confirmations_required(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
+    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
+    let _policy_guard = policy_lock.lock().await;
     match state.engine_client.set_confirmations_required(&sk, confirmations_required).await {
         Ok(_) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
@@ -949,6 +972,8 @@ pub async fn update_base_currency(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
+    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
+    let _policy_guard = policy_lock.lock().await;
     let update_result = state.db.lock().unwrap().update_store_connection_base_currency(&row.id, &base_currency);
     match update_result {
         Ok(()) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
@@ -956,27 +981,6 @@ pub async fn update_base_currency(
             render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
         }
     }
-}
-
-/// The engine's own `zero_conf_max_piconero` is an absolute XMR ceiling with
-/// no concept of this store's confirmation-threshold tiers - there is no
-/// literal "0 confirmations for the default tier only" switch to flip on the
-/// engine side (and a literal `confirmations_required = 0` is rejected
-/// outright by `EngineClient::create_order`'s own validation - see
-/// `scanner::http::admin::MAX_CONFIRMATIONS_REQUIRED`'s doc comment). Ticking
-/// the Default row's checkbox instead sets the ceiling to this - a value no
-/// real order will ever exceed - so the merchant never has to type a limit:
-/// the practical limit is "the smallest custom threshold, if any" (a
-/// higher-value order already needs more real confirmations to place at all
-/// unless the merchant separately widens or removes that threshold).
-const ZERO_CONF_EFFECTIVELY_UNLIMITED_PICONERO: u64 = 1_000_000 * 1_000_000_000_000; // 1,000,000 XMR
-
-/// `true` exactly when the confirmation-thresholds table's own "Default
-/// (fallback)" row had its 0-conf checkbox ticked - see
-/// [`ZERO_CONF_EFFECTIVELY_UNLIMITED_PICONERO`]'s own doc comment for what
-/// that turns into on the engine side.
-fn zero_conf_checkbox_checked(raw: &HashMap<String, String>) -> bool {
-    raw.contains_key("zero_conf_enabled")
 }
 
 #[derive(Deserialize)]
@@ -1007,40 +1011,41 @@ pub async fn create_confirmation_threshold(
     };
 
     let confirmations_required: u64 = match form.confirmations_required.trim().parse() {
-        Ok(n) => n,
-        Err(_) => {
-            return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations.".to_string()), None)
+        Ok(n) if n <= 720 => n,
+        Ok(_) => {
+            return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations from 0 to 720.".to_string()), None)
                 .await;
         }
+        Err(_) => return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations.".to_string()), None).await,
     };
 
-    let unit_amount = form.unit_amount.trim();
-    match unit_amount.parse::<f64>() {
-        Ok(n) if n.is_finite() && n >= 0.0 => {}
-        _ => {
+    let unit_amount = match crate::confirmation_thresholds::ThresholdAmount::parse(&form.unit_amount) {
+        Ok(amount) => amount,
+        Err(_) => {
             return render_store_settings_page(&state, row, &user, Some("Enter a non-negative amount.".to_string()), None).await;
         }
-    }
+    };
+    let canonical_amount = unit_amount.canonical();
 
-    let count = state.db.lock().unwrap().count_confirmation_thresholds(&row.id).unwrap_or(0);
-    if count >= 5 {
-        return render_store_settings_page(
-            &state,
-            row,
-            &user,
-            Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()),
-            None,
-        )
-        .await;
+    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
+    let _policy_guard = policy_lock.lock().await;
+    let existing = match state.db.lock().unwrap().list_confirmation_thresholds(&row.id) {
+        Ok(rows) => rows,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    if existing.iter().any(|threshold| crate::confirmation_thresholds::ThresholdAmount::parse(&threshold.unit_amount).is_err()) {
+        return render_store_settings_page(&state, row, &user, Some("An existing threshold amount is invalid. Delete it before adding another.".to_string()), None).await;
     }
-
+    if existing.iter().any(|threshold| crate::confirmation_thresholds::ThresholdAmount::parse(&threshold.unit_amount).is_ok_and(|amount| amount == unit_amount)) {
+        return render_store_settings_page(&state, row, &user, Some(format!("A threshold for {canonical_amount} already exists.")), None).await;
+    }
     let threshold_id = uuid::Uuid::new_v4().to_string();
-    let create_result =
-        state.db.lock().unwrap().create_confirmation_threshold(&threshold_id, &row.id, unit_amount, confirmations_required, crate::now_unix());
+    let create_result = state.db.lock().unwrap().create_confirmation_threshold_with_limit(&threshold_id, &row.id, &canonical_amount, confirmations_required, crate::now_unix());
     match create_result {
-        Ok(()) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
+        Ok(true) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
+        Ok(false) => render_store_settings_page(&state, row, &user, Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()), None).await,
         Err(e) if e.is_unique_violation() => {
-            render_store_settings_page(&state, row, &user, Some(format!("A threshold for {unit_amount} already exists.")), None)
+            render_store_settings_page(&state, row, &user, Some(format!("A threshold for {canonical_amount} already exists.")), None)
                 .await
         }
         Err(_) => {
@@ -1064,28 +1069,18 @@ pub async fn delete_confirmation_threshold(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    state.db.lock().unwrap().delete_confirmation_threshold(&row.id, &threshold_id).ok();
+    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
+    let _policy_guard = policy_lock.lock().await;
+    if state.db.lock().unwrap().delete_confirmation_threshold(&row.id, &threshold_id).is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
     redirect_302(&format!("/dashboard/stores/{id}/settings"))
 }
 
-/// `POST /dashboard/stores/{id}/settings/confirmation-thresholds/save` -
-/// the dashboard's condensed "Confirmation thresholds" table posts here as
-/// one form with one Save button, rather than the default-update,
-/// add-threshold and per-row-delete forms each posting to their own route
-/// (those three still exist unchanged above, for API/e2e compatibility -
-/// `crates/mock-woocommerce/tests/e2e_stagenet_confirmation_threshold.rs`
-/// posts to `create_confirmation_threshold` directly). This same form also
-/// carries the Default row's own 0-conf checkbox/amount pair
-/// (`parse_zero_conf_checkbox`) - the old standalone "Zero-confirmation
-/// payments" section merged into this table, rather than kept as its own
-/// section with its own Update button. Fields arrive as a loose `HashMap`
-/// rather than a typed form because the delete checkboxes' field names are
-/// dynamic, one per existing threshold id (`delete_{threshold.id}`), which a
-/// fixed `#[derive(Deserialize)]` struct can't express. Order of operations:
-/// update the default confirmations count, then the 0-conf ceiling, then
-/// delete checked rows, then (space permitting) add the new row - so
-/// deleting a row and immediately reusing its amount for the new row in the
-/// same Save works.
+/// Saves custom threshold additions and deletions in one SQLite transaction.
+/// The default has its own form and engine update, so neither save needs to
+/// coordinate writes across the control-plane and engine databases.
+/// Dynamic `delete_{id}` checkbox names require a map rather than a fixed form.
 pub async fn save_confirmation_thresholds(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -1098,101 +1093,50 @@ pub async fn save_confirmation_thresholds(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    let confirmations_required: u64 =
-        match raw.get("confirmations_required").map(|s| s.trim()).unwrap_or("").parse() {
-            Ok(n) => n,
-            Err(_) => {
-                return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations.".to_string()), None)
-                    .await;
-            }
-        };
-    let zero_conf_max_piconero =
-        if zero_conf_checkbox_checked(&raw) { ZERO_CONF_EFFECTIVELY_UNLIMITED_PICONERO } else { 0 };
-
-    let sk = match decrypt_sk(&state, &row) {
-        Ok(sk) => sk,
-        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
-    if let Err(e) = state.engine_client.set_confirmations_required(&sk, confirmations_required).await {
-        let message = match e {
-            EngineClientError::EngineError { status, message } if status == reqwest::StatusCode::BAD_REQUEST => message,
-            _ => "Something went wrong. Please try again.".to_string(),
-        };
-        return render_store_settings_page(&state, row, &user, Some(message), None).await;
-    }
-    if let Err(e) = state.engine_client.set_zero_conf_max_piconero(&sk, zero_conf_max_piconero).await {
-        let message = match e {
-            EngineClientError::EngineError { status, message } if status == reqwest::StatusCode::BAD_REQUEST => message,
-            _ => "Something went wrong. Please try again.".to_string(),
-        };
-        return render_store_settings_page(&state, row, &user, Some(message), None).await;
-    }
-
-    let existing = state.db.lock().unwrap().list_confirmation_thresholds(&row.id).unwrap_or_default();
-    for threshold in &existing {
-        if raw.contains_key(&format!("delete_{}", threshold.id)) {
-            state.db.lock().unwrap().delete_confirmation_threshold(&row.id, &threshold.id).ok();
-        }
-    }
-
     let new_unit_amount = raw.get("new_unit_amount").map(|s| s.trim()).unwrap_or("");
-    let new_confirmations_required = raw.get("new_confirmations_required").map(|s| s.trim()).unwrap_or("");
-    if !new_unit_amount.is_empty() || !new_confirmations_required.is_empty() {
-        let new_confirmations_required: u64 = match new_confirmations_required.parse() {
-            Ok(n) => n,
-            Err(_) => {
-                return render_store_settings_page(
-                    &state,
-                    row,
-                    &user,
-                    Some("Enter a whole number of confirmations for the new threshold.".to_string()),
-                    None,
-                )
-                .await;
-            }
+    let new_confirmations_text = raw.get("new_confirmations_required").map(|s| s.trim()).unwrap_or("");
+    let new_confirmations = if new_unit_amount.is_empty() && new_confirmations_text.is_empty() {
+        None
+    } else {
+        let confirmations: u64 = match new_confirmations_text.parse() {
+            Ok(n) if n <= 720 => n,
+            _ => return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations from 0 to 720 for the new threshold.".to_string()), None).await,
         };
-        match new_unit_amount.parse::<f64>() {
-            Ok(n) if n.is_finite() && n >= 0.0 => {}
-            _ => {
-                return render_store_settings_page(
-                    &state,
-                    row,
-                    &user,
-                    Some("Enter a non-negative amount for the new threshold.".to_string()),
-                    None,
-                )
-                .await;
-            }
+        match crate::confirmation_thresholds::ThresholdAmount::parse(new_unit_amount) {
+            Ok(_) => Some(confirmations),
+            Err(_) => return render_store_settings_page(&state, row, &user, Some("Enter a non-negative amount for the new threshold.".to_string()), None).await,
         }
+    };
+    let canonical_new_amount = new_confirmations.map(|_| crate::confirmation_thresholds::ThresholdAmount::parse(new_unit_amount).unwrap().canonical());
+    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
+    let _policy_guard = policy_lock.lock().await;
+    let existing = match state.db.lock().unwrap().list_confirmation_thresholds(&row.id) {
+        Ok(rows) => rows,
+        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let deleted_ids: Vec<String> = existing.iter().filter(|threshold| raw.contains_key(&format!("delete_{}", threshold.id))).map(|threshold| threshold.id.clone()).collect();
+    if existing.iter().any(|threshold| !deleted_ids.contains(&threshold.id) && crate::confirmation_thresholds::ThresholdAmount::parse(&threshold.unit_amount).is_err()) {
+        return render_store_settings_page(&state, row, &user, Some("An existing threshold amount is invalid. Delete it before saving.".to_string()), None).await;
+    }
+    if new_confirmations.is_some() {
+        if existing.len() - deleted_ids.len() >= 5 {
+            return render_store_settings_page(&state, row, &user, Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()), None).await;
+        }
+        if existing.iter().any(|threshold| !deleted_ids.contains(&threshold.id) && crate::confirmation_thresholds::ThresholdAmount::parse(&threshold.unit_amount).is_ok_and(|amount| Some(amount.canonical()) == canonical_new_amount)) {
+            return render_store_settings_page(&state, row, &user, Some(format!("A threshold for {} already exists.", canonical_new_amount.as_deref().unwrap())), None).await;
+        }
+    }
 
-        let count = state.db.lock().unwrap().count_confirmation_thresholds(&row.id).unwrap_or(0);
-        if count >= 5 {
-            return render_store_settings_page(
-                &state,
-                row,
-                &user,
-                Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()),
-                None,
-            )
-            .await;
-        }
-
-        let threshold_id = uuid::Uuid::new_v4().to_string();
-        let create_result = state.db.lock().unwrap().create_confirmation_threshold(
-            &threshold_id,
-            &row.id,
-            new_unit_amount,
-            new_confirmations_required,
-            crate::now_unix(),
-        );
-        if let Err(e) = create_result {
-            let message = if e.is_unique_violation() {
-                format!("A threshold for {new_unit_amount} already exists.")
-            } else {
-                "Something went wrong. Please try again.".to_string()
-            };
-            return render_store_settings_page(&state, row, &user, Some(message), None).await;
-        }
+    let threshold_id = uuid::Uuid::new_v4().to_string();
+    let new_threshold = new_confirmations.map(|n| (threshold_id.as_str(), canonical_new_amount.as_deref().unwrap(), n, crate::now_unix()));
+    let update_result = state.db.lock().unwrap().replace_confirmation_thresholds(&row.id, &deleted_ids, new_threshold);
+    if !matches!(update_result, Ok(true)) {
+        let message = match update_result {
+            Ok(false) => "You can define at most 5 custom thresholds. Delete one to add another.".to_string(),
+            Err(ref e) if e.is_unique_violation() => format!("A threshold for {} already exists.", canonical_new_amount.as_deref().unwrap_or(new_unit_amount)),
+            _ => "Something went wrong. Please try again.".to_string(),
+        };
+        return render_store_settings_page(&state, row, &user, Some(message), None).await;
     }
 
     redirect_302(&format!("/dashboard/stores/{id}/settings"))
@@ -1451,12 +1395,10 @@ mod tests {
             html.contains(&format!("http://test.example/pay/{public_key}/orders/{order_id}/share")),
             "expected a real absolute payment link, got: {html}"
         );
-        // The real point of this follow-up: the link now lives as a share
-        // icon in the title banner, not its own row in the details table -
-        // and the title itself carries the real order id right alongside it.
+        // The share icon and order id live in the order title.
         assert!(html.contains(r#"<h1 class="order-title">"#), "expected the title banner to carry the share button, got: {html}");
         assert!(
-            html.contains(&format!(r#"<span>Order {order_id}</span>"#)),
+            html.contains(&format!(r#"<code class="order-title-id" title="{order_id}">{order_id}</code>"#)),
             "expected the order id inside the title banner, got: {html}"
         );
         assert!(
@@ -2089,7 +2031,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn updating_the_confirmation_threshold_to_zero_shows_the_engines_real_validation_error() {
+    async fn updating_the_confirmation_threshold_to_zero_is_accepted() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -2098,7 +2040,7 @@ mod tests {
                 .await;
         let (connection_id, _public_key) = create_connection(&router, &session_token).await;
 
-        let response = router
+        let response = router.clone()
             .oneshot(form_post_request(
                 &format!("/dashboard/stores/{connection_id}/settings/confirmations"),
                 &session_token,
@@ -2106,13 +2048,11 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "a validation error re-renders the page, it doesn't redirect");
-        let html = body_text(response).await;
-        assert!(
-            html.to_lowercase().contains("0 would treat an unconfirmed transaction as final")
-                || html.contains("class=\"error\""),
-            "expected the engine's real validation error surfaced, got: {html}"
-        );
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let settings = router.oneshot(Request::builder().uri(format!("/dashboard/stores/{connection_id}/settings")).header("cookie", format!("session={session_token}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(settings.status(), StatusCode::OK);
+        let html = body_text(settings).await;
+        assert!(html.contains("name=\"zero_conf_enabled\" checked"), "expected native 0-conf to be enabled: {html}");
     }
 
     #[tokio::test]
@@ -2268,7 +2208,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
 
-        let page = router
+        let page = router.clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -2283,10 +2223,7 @@ mod tests {
         assert!(html.contains(r#"<option value="EUR" selected>"#), "expected EUR marked selected, got: {html}");
     }
 
-    /// The old standalone "Zero-confirmation payments" section/route is gone -
-    /// it's now a plain checkbox on the confirmation-thresholds table's own
-    /// Default row, submitted through `save_confirmation_thresholds` with no
-    /// amount to type (see `zero_conf_checkbox_checked`'s own doc comment).
+    /// The default form owns the zero-conf checkbox; custom tiers save separately.
     #[tokio::test]
     async fn ticking_the_zero_conf_checkbox_persists_and_shows_as_checked_on_the_settings_page() {
         let (state, _engine) = test_state_with_real_engine().await;
@@ -2299,7 +2236,7 @@ mod tests {
         let response = router
             .clone()
             .oneshot(form_post_request(
-                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
+                &format!("/dashboard/stores/{connection_id}/settings/confirmations"),
                 &session_token,
                 &[("confirmations_required", "10"), ("zero_conf_enabled", "on")],
             ))
@@ -2307,7 +2244,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
 
-        let page = router
+        let page = router.clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -2320,9 +2257,117 @@ mod tests {
             .unwrap();
         let html = body_text(page).await;
         assert!(
-            html.contains(r#"<input type="checkbox" name="zero_conf_enabled" checked>"#),
+            html.contains(r#"<input type="checkbox" name="zero_conf_enabled" checked form="default-confirmations">"#),
             "expected the 0-conf checkbox to show as checked once enabled, got: {html}"
         );
+
+        // The browser still submits the visible numeric value (0) when the
+        // merchant unchecks the box. That action must restore confirmations.
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("/dashboard/stores/{connection_id}/settings/confirmations"),
+                &session_token,
+                &[("confirmations_required", "0"), ("zero_conf_checkbox_present", "true")],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let page = router
+            .oneshot(
+                Request::builder()
+                    .uri(format!("/dashboard/stores/{connection_id}/settings"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(page).await;
+        assert!(html.contains(r#"name="confirmations_required" value="10""#), "expected the ordinary default after unchecking: {html}");
+        assert!(html.contains(r#"<input type="checkbox" name="zero_conf_enabled" form="default-confirmations">"#), "expected 0-conf to be disabled: {html}");
+    }
+
+    #[tokio::test]
+    async fn custom_confirmation_thresholds_save_without_contacting_the_engine() {
+        let (mut state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let token = signed_up_and_logged_in_session_token(&router, "local-policy-save@example.com", "correct horse battery staple").await;
+        let (connection_id, _) = create_connection(&router, &token).await;
+        state.db.lock().unwrap().create_confirmation_threshold("old", &connection_id, "50", 20, crate::now_unix()).unwrap();
+        // A custom-tier save must not depend on engine availability.
+        state.engine_client = EngineClient::new("http://127.0.0.1:0");
+        let response = build_router(state.clone()).oneshot(form_post_request(
+            &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
+            &token,
+            &[("delete_old", "on"), ("new_unit_amount", "100"), ("new_confirmations_required", "30")],
+        )).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let thresholds = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap();
+        assert_eq!(thresholds.len(), 1);
+        assert_eq!(thresholds[0].unit_amount, "100");
+        assert_eq!(thresholds[0].confirmations_required, 30);
+    }
+
+    #[tokio::test]
+    async fn default_confirmation_save_leaves_custom_thresholds_unchanged() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let token = signed_up_and_logged_in_session_token(&router, "default-policy-save@example.com", "correct horse battery staple").await;
+        let (connection_id, _) = create_connection(&router, &token).await;
+        state.db.lock().unwrap().create_confirmation_threshold("keep", &connection_id, "50", 20, crate::now_unix()).unwrap();
+        let response = router.oneshot(form_post_request(
+            &format!("/dashboard/stores/{connection_id}/settings/confirmations"),
+            &token,
+            &[("confirmations_required", "10"), ("zero_conf_enabled", "on"), ("zero_conf_checkbox_present", "true")],
+        )).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
+        assert_eq!(state.engine_client.get_tenant(&sk).await.unwrap().confirmations_required, 0);
+        let thresholds = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap();
+        assert_eq!(thresholds.len(), 1);
+        assert_eq!(thresholds[0].id, "keep");
+        assert_eq!(thresholds[0].confirmations_required, 20);
+    }
+
+    #[tokio::test]
+    async fn custom_confirmation_save_fails_closed_when_thresholds_cannot_be_read() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let token = signed_up_and_logged_in_session_token(&router, "broken-policy-save@example.com", "correct horse battery staple").await;
+        let (connection_id, _) = create_connection(&router, &token).await;
+        state.db.lock().unwrap().break_confirmation_thresholds_for_test();
+        let response = router.oneshot(form_post_request(
+            &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"), &token, &[],
+        )).await.unwrap();
+        assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
+        assert_eq!(state.engine_client.get_tenant(&sk).await.unwrap().confirmations_required, 10);
+    }
+
+    #[tokio::test]
+    async fn invalid_new_threshold_does_not_publish_zero_conf_or_delete_existing_rows() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(&router, "invalid-threshold-save@example.com", "correct horse battery staple").await;
+        let (connection_id, _) = create_connection(&router, &session_token).await;
+        let existing_id = "existing-threshold";
+        state.db.lock().unwrap().create_confirmation_threshold(existing_id, &connection_id, "50", 20, crate::now_unix()).unwrap();
+        let delete_field = format!("delete_{existing_id}");
+        let response = router.oneshot(form_post_request(
+            &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
+            &session_token,
+            &[("confirmations_required", "10"), ("zero_conf_enabled", "on"), (delete_field.as_str(), "on"), ("new_unit_amount", "100"), ("new_confirmations_required", "oops")],
+        )).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
+        assert_eq!(state.engine_client.get_tenant(&sk).await.unwrap().confirmations_required, 10);
+        let thresholds = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap();
+        assert_eq!(thresholds.len(), 1);
+        assert_eq!(thresholds[0].id, existing_id);
     }
 
     #[tokio::test]
@@ -2442,7 +2487,7 @@ mod tests {
             .await
             .unwrap();
         let html = body_text(page).await;
-        assert!(html.contains("50.00"), "expected the new threshold's amount shown, got: {html}");
+        assert!(html.contains("<td>50</td>"), "expected the canonical threshold amount shown, got: {html}");
         assert!(
             html.contains(&format!("name=\"delete_{threshold_id}\"")),
             "expected a real delete checkbox for the new threshold in the condensed table, got: {html}"
@@ -2488,6 +2533,33 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn equivalent_decimal_thresholds_are_rejected_by_both_forms() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(&router, "threshold-decimal-alias@example.com", "correct horse battery staple").await;
+        let (connection_id, _) = create_connection(&router, &session_token).await;
+        let direct_path = format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds");
+        let response = router.clone().oneshot(form_post_request(&direct_path, &session_token, &[("unit_amount", "50"), ("confirmations_required", "20")])).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let response = router.clone().oneshot(form_post_request(&direct_path, &session_token, &[("unit_amount", "50.0"), ("confirmations_required", "0")])).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(body_text(response).await.contains("already exists"));
+        let response = router.clone().oneshot(form_post_request(&direct_path, &session_token, &[("unit_amount", "5e1"), ("confirmations_required", "0")])).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let response = router.oneshot(form_post_request(
+            &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
+            &session_token,
+            &[("new_unit_amount", "50.00"), ("new_confirmations_required", "0")],
+        )).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(body_text(response).await.contains("already exists"));
+        let rows = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].unit_amount, "50");
+        assert_eq!(rows[0].confirmations_required, 20);
+    }
+
+    #[tokio::test]
     async fn custom_thresholds_are_displayed_in_ascending_order_of_amount() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
@@ -2520,9 +2592,9 @@ mod tests {
             .await
             .unwrap();
         let html = body_text(page).await;
-        let pos_10 = html.find("10.00").expect("10.00 shown");
-        let pos_50 = html.find("50.00").expect("50.00 shown");
-        let pos_100 = html.find("100.00").expect("100.00 shown");
+        let pos_10 = html.find("<td>10</td>").expect("canonical 10 shown");
+        let pos_50 = html.find("<td>50</td>").expect("canonical 50 shown");
+        let pos_100 = html.find("<td>100</td>").expect("canonical 100 shown");
         assert!(pos_10 < pos_50 && pos_50 < pos_100, "expected ascending amount order, got: {html}");
     }
 
@@ -3012,7 +3084,7 @@ mod tests {
             payment_link: "http://127.0.0.1:8081/pay/pk_abc123/orders/pay_abc123/share".to_string(),
             scan_range_display: crate::templates::display_scan_range(Some(100), Some(250), false),
         };
-        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), order: Some(order), meta_refresh_secs: 15 };
+        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(order), meta_refresh_secs: 15 };
         let chrome = crate::views::PageChrome::from_user(None, "");
         let html = crate::views::orders::detail_page(&chrome, &data).into_string();
         assert!(html.contains("100 - 250"), "expected the closed range display, got: {html}");

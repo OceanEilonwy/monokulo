@@ -22,6 +22,7 @@ pub struct SetupViewModel {
 pub fn setup_page(chrome: &PageChrome, data: &SetupViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Home" } }
             h1 { "Set up your admin account" }
             p {
                 "This is a one-time step. The account created here is this instance's single administrator, "
@@ -52,6 +53,7 @@ pub struct RequestInviteViewModel {
 pub fn request_invite_page(chrome: &PageChrome, data: &RequestInviteViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/" { "Home" } }
             h1 { "Request an invite" }
             @if data.submitted {
                 p { "Thanks - we'll be in touch if there's a spot for you." }
@@ -66,7 +68,6 @@ pub fn request_invite_page(chrome: &PageChrome, data: &RequestInviteViewModel) -
                     button type="submit" { "Request an invite" }
                 }
             }
-            p { a href="/" { "Back to home" } }
         }
     };
     layout(chrome, "Request an invite - Monokulo", body)
@@ -129,6 +130,7 @@ fn invite_row(row: &AdminInviteRequestRow, page: u32) -> Markup {
 pub fn admin_invites_page(chrome: &PageChrome, data: &AdminInvitesViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
             h1 { "Invites" }
             @if let Some(error) = &data.error {
                 p class="error" { (error) }
@@ -230,6 +232,7 @@ fn scalar_field(field: &AdminScalarFieldView) -> Markup {
 pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
             h1 { "Admin settings" }
             @if let Some(error) = &data.error {
                 p class="error" { (error) }
@@ -301,7 +304,7 @@ mod tests {
         let thanks = RequestInviteViewModel { error: None, submitted: true };
         let html = request_invite_page(&chrome(), &thanks).into_string();
         assert!(html.to_lowercase().contains("thanks"));
-        assert!(!html.contains("<form"), "a submitted confirmation must not still show the form");
+        assert!(!html.contains("<form method=\"post\" action=\"/request-invite\""), "a submitted confirmation must not still show the request form");
     }
 
     fn row(id: &str, email: &str) -> AdminInviteRequestRow {

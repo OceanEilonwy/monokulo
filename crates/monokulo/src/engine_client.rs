@@ -48,6 +48,10 @@ use serde::{Deserialize, Serialize};
 pub struct EngineClient {
     base_url: String,
     http: reqwest_middleware::ClientWithMiddleware,
+    /// Live order updates from this engine - see `crate::live`. Shared by
+    /// every clone, so all handlers watching one store share one upstream
+    /// connection.
+    live: std::sync::Arc<crate::live::LiveHub>,
 }
 
 impl EngineClient {
@@ -69,7 +73,34 @@ impl EngineClient {
         EngineClient {
             base_url: base_url.into(),
             http: shared::http_cache::build_client(concat!("monokulo/", env!("CARGO_PKG_VERSION")), max_cache_bytes),
+            live: Default::default(),
         }
+    }
+
+    /// Watches one order for changes - see `crate::live::LiveHub::subscribe`.
+    /// `connection_id` keys the shared upstream stream; `sk` must be that
+    /// connection's own secret.
+    pub fn subscribe_order(&self, connection_id: &str, sk: &str, order_id: &str) -> crate::live::OrderSubscription {
+        self.live.subscribe(self, connection_id, sk, order_id)
+    }
+
+    /// How many stores currently hold an open engine event stream.
+    pub fn live_upstream_count(&self) -> usize {
+        self.live.upstream_count()
+    }
+
+    /// `GET {base_url}/api/v1/admin/tenant/events` — opens `sk`'s tenant's
+    /// order-change event stream. The returned response's body is the
+    /// never-ending SSE stream itself; the caller reads it chunk by chunk.
+    pub async fn open_order_events(&self, sk: &str) -> Result<reqwest::Response, EngineClientError> {
+        let response = self
+            .http
+            .get(format!("{}/api/v1/admin/tenant/events", self.base_url))
+            .bearer_auth(sk)
+            .header(reqwest::header::ACCEPT, "text/event-stream")
+            .send()
+            .await?;
+        check_status(response).await
     }
 
     /// The engine base URL this client was constructed with — e.g. so a
@@ -239,11 +270,7 @@ impl EngineClient {
             .http
             .patch(format!("{}/api/v1/admin/tenant", self.base_url))
             .bearer_auth(sk)
-            .json(&PatchTenantRequest {
-                allowed_origins: Some(allowed_origins),
-                confirmations_required: None,
-                zero_conf_max_piconero: None,
-            })
+            .json(&PatchTenantRequest { allowed_origins: Some(allowed_origins), confirmations_required: None })
             .send()
             .await?;
         parse_response(response).await
@@ -251,60 +278,27 @@ impl EngineClient {
 
     /// `PATCH {base_url}/api/v1/admin/tenant` — sets `sk`'s tenant's
     /// `confirmations_required` (how many block confirmations an on-chain
-    /// payment needs before an order reads as `paid`). The engine's own
-    /// `validate_tenant_settings` (`src/http/admin.rs` at the repo root)
-    /// rejects `0` (would mark an order paid off an unconfirmed transaction
-    /// that can still be replaced) and anything above its own configured
-    /// ceiling - surfaced here as an ordinary `EngineClientError::EngineError`
-    /// with status `400`, same as every other caller-facing engine
-    /// validation error in this client.
+    /// payment needs before an order reads as `paid`). `0` is a legal,
+    /// deliberate value - native 0-conf, see the engine's own
+    /// `status::derive_status` doc comment for why it needs no special
+    /// handling to be safe. The engine's own `validate_tenant_settings`
+    /// (`src/http/admin.rs` at the repo root) still rejects anything above
+    /// its own configured ceiling - surfaced here as an ordinary
+    /// `EngineClientError::EngineError` with status `400`, same as every
+    /// other caller-facing engine validation error in this client.
     pub async fn set_confirmations_required(&self, sk: &str, confirmations_required: u64) -> Result<TenantView, EngineClientError> {
         let response = self
             .http
             .patch(format!("{}/api/v1/admin/tenant", self.base_url))
             .bearer_auth(sk)
-            .json(&PatchTenantRequest {
-                allowed_origins: None,
-                confirmations_required: Some(confirmations_required),
-                zero_conf_max_piconero: None,
-            })
+            .json(&PatchTenantRequest { allowed_origins: None, confirmations_required: Some(confirmations_required) })
             .send()
             .await?;
         parse_response(response).await
     }
 
-    /// `PATCH {base_url}/api/v1/admin/tenant` — sets `sk`'s tenant's
-    /// `zero_conf_max_piconero`: the ceiling (in piconero) under which an
-    /// order can read as `paid` off a mempool-only, zero-confirmation
-    /// transaction (`status.rs`'s own `zero_conf_trusted` check at the repo
-    /// root - `total <= ceiling`). `0` is this method's own "disabled"
-    /// value - see `PatchTenantRequest`'s own doc comment for why that's
-    /// safe and preferred over trying to send a `null` the engine can't
-    /// actually distinguish from "leave unchanged" at this HTTP layer.
-    pub async fn set_zero_conf_max_piconero(&self, sk: &str, zero_conf_max_piconero: u64) -> Result<TenantView, EngineClientError> {
-        let response = self
-            .http
-            .patch(format!("{}/api/v1/admin/tenant", self.base_url))
-            .bearer_auth(sk)
-            .json(&PatchTenantRequest {
-                allowed_origins: None,
-                confirmations_required: None,
-                zero_conf_max_piconero: Some(zero_conf_max_piconero),
-            })
-            .send()
-            .await?;
-        parse_response(response).await
-    }
-
-    /// `POST {base_url}/api/v1/t/{pk}/orders` — the engine's own *public*
-    /// order-creation endpoint, called here server-to-server on the
-    /// merchant's own behalf (no `Origin` header, same as a plugin/backend
-    /// caller - see `src/http/public.rs::resolve_public_tenant` at the repo
-    /// root for why an absent `Origin` skips the allowed-origins check
-    /// entirely). Lets a merchant create a real test order directly from
-    /// their dashboard without needing their own storefront wired up yet.
-    /// No auth header - this is `pk_` addressed, the same public surface a
-    /// real checkout would call.
+    /// `POST {base_url}/api/v1/admin/tenant/orders` creates an order for
+    /// the authenticated tenant, including its resolved confirmation count.
     ///
     /// XMR-only (`docs/fx_refactor.md` Phase 3): the engine has no concept
     /// of fiat at all any more, so `xmr_amount_piconero` here is the exact
@@ -312,14 +306,15 @@ impl EngineClient {
     /// this is the only rate computation left in the whole system.
     pub async fn create_order(
         &self,
-        pk: &str,
+        sk: &str,
         xmr_amount_piconero: u64,
         merchant_order_id: Option<String>,
         confirmations_required: Option<u64>,
     ) -> Result<CreateOrderResponse, EngineClientError> {
         let response = self
             .http
-            .post(format!("{}/api/v1/t/{pk}/orders", self.base_url))
+            .post(format!("{}/api/v1/admin/tenant/orders", self.base_url))
+            .bearer_auth(sk)
             .json(&CreateOrderRequest { xmr_amount_piconero, merchant_order_id, confirmations_required })
             .send()
             .await?;
@@ -328,8 +323,7 @@ impl EngineClient {
 
     /// `POST {base_url}/api/v1/t/{pk}/orders/{order_id}/refund-address` -
     /// the engine's own public endpoint for a customer (or their storefront,
-    /// on their behalf) to record where a refund should go, called here the
-    /// same server-to-server, no-auth way `create_order` above is. The
+    /// on their behalf) to record where a refund should go. The
     /// engine does no format validation of its own (confirmed by reading
     /// `src/http/public.rs::set_refund_address` - it stores whatever string
     /// it's given verbatim, the same as every other stored free-text field
@@ -406,7 +400,6 @@ pub struct CreateTenantRequest {
     pub network: Option<String>,
     pub allowed_origins: Vec<String>,
     pub confirmations_required: Option<u64>,
-    pub zero_conf_max_piconero: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
 }
 
@@ -426,7 +419,6 @@ pub struct TenantView {
     pub primary_address: String,
     pub network: String,
     pub confirmations_required: u64,
-    pub zero_conf_max_piconero: Option<u64>,
     pub order_expiry_seconds: i64,
     pub allowed_origins: Vec<String>,
 }
@@ -502,24 +494,12 @@ pub struct OrderDetailResponse {
 /// needed), so the engine sees exactly "leave everything not set here
 /// unchanged" - the same "unchanged vs. set to a value" contract
 /// `TenantConfigPatch`'s own doc comment (`src/store.rs` at the repo
-/// root) describes. `set_allowed_origins`, `set_confirmations_required`
-/// and `set_zero_conf_max_piconero` below each construct this with every
-/// other field `None`.
-///
-/// Note the engine's own `PatchTenantRequest::zero_conf_max_piconero` is
-/// `Option<u64>` at the JSON layer too, so an explicit JSON `null` and an
-/// omitted key are indistinguishable there - `TenantConfigPatch`'s real
-/// "clear it back to unset" ability (`zero_conf_max_piconero_set: bool`)
-/// isn't reachable through this HTTP surface. `set_zero_conf_max_piconero`
-/// below sidesteps that rather than needing it: a ceiling of `0` piconero
-/// is itself a real, always-safe "disabled" value (`status.rs`'s own
-/// `zero_conf_trusted` check is `total <= ceiling`, and a real order's
-/// `total` is never `0`), so this client never needs to send `null`.
+/// root) describes. `set_allowed_origins` and `set_confirmations_required`
+/// below each construct this with the other field `None`.
 #[derive(Serialize)]
 struct PatchTenantRequest {
     allowed_origins: Option<Vec<String>>,
     confirmations_required: Option<u64>,
-    zero_conf_max_piconero: Option<u64>,
 }
 
 /// Mirrors the engine's own `public::CreateOrderRequest` - `description` is
@@ -649,7 +629,6 @@ mod tests {
             network: Some("mainnet".to_string()),
             allowed_origins: vec![],
             confirmations_required: None,
-            zero_conf_max_piconero: None,
             order_expiry_seconds: None,
         }
     }
@@ -742,7 +721,7 @@ mod tests {
         let client = EngineClient::new(format!("http://{}", engine.addr));
         let created = client.create_tenant(test_create_tenant_request()).await.unwrap();
 
-        let order = client.create_order(&created.public_key, 100_000_000_000, None, Some(3)).await.unwrap();
+        let order = client.create_order(&created.secret_token, 100_000_000_000, None, Some(3)).await.unwrap();
 
         let store = engine.store().lock().unwrap();
         let tenant_id = store.find_tenant_by_public_key(&created.public_key).unwrap().unwrap().id;
@@ -756,7 +735,7 @@ mod tests {
         let client = EngineClient::new(format!("http://{}", engine.addr));
         let created = client.create_tenant(test_create_tenant_request()).await.unwrap();
 
-        let order = client.create_order(&created.public_key, 100_000_000_000, None, None).await.unwrap();
+        let order = client.create_order(&created.secret_token, 100_000_000_000, None, None).await.unwrap();
 
         let store = engine.store().lock().unwrap();
         let tenant_id = store.find_tenant_by_public_key(&created.public_key).unwrap().unwrap().id;

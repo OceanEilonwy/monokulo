@@ -1,7 +1,7 @@
 //! In-person Point-of-Sale terminal - a Square-Terminal-like screen a
 //! merchant runs on a device at the counter: enter an amount in the store's
-//! own `base_currency`, show a QR code + `monero:` URI (plus a best-effort
-//! NFC tap write, done client-side) for the customer to pay, then react live
+//! own `base_currency`, show the shared checkout iframe for the customer to
+//! pay, then react live
 //! to the payment appearing.
 //!
 //! Deliberately behind [`AuthedUser`] and connection-ownership-checked
@@ -18,27 +18,26 @@
 //! caller-chosen one (there's no currency picker on a terminal screen, see
 //! this task's own spec point 2).
 //!
-//! Unlike the public checkout page (`http::checkout`, JS-free by hard
-//! requirement - a real customer must be able to pay with JavaScript
-//! disabled), this screen is a merchant-operated dashboard tool in the same
+//! Unlike the public checkout page (`http::checkout`, which must stay
+//! usable with JavaScript disabled), this screen is a merchant-operated dashboard tool in the same
 //! bucket as the rest of `/dashboard/*`, which already uses JS as
 //! progressive enhancement elsewhere (`order_detail.html.hbs`'s share
 //! button/local-time script). A live Square-Terminal-style keypad, stacked
-//! backgrounded payments, and NFC tap writes (`NDEFReader` is JS-only by
-//! construction) have no meaningful no-JS fallback, so this screen leans on
-//! JS for its real interaction loop rather than a meta-refresh.
+//! backgrounded payments have no meaningful no-JS fallback, so this screen leans on
+//! JS for its real interaction loop rather than a meta-refresh. Payment
+//! status arrives over one Server-Sent Events stream per terminal
+//! ([`order_events`]); [`order_status`] remains for one-off reads.
 //!
 //! **Error surfacing** (spec point 12): [`derive_payment_error`] flags
 //! exactly the cases where the merchant, not just the customer's wallet,
 //! needs to step in - a double-spend, an amount that doesn't match what was
 //! asked for (under- or over-paid), or the order expiring before it ever
-//! got there. A poll request itself failing (the engine unreachable) is
-//! surfaced by the HTTP-level failure of [`order_status`], not a field on
-//! its success response - the client already has to handle "the fetch
-//! itself failed" separately from "the fetch succeeded and says there's a
-//! problem".
+//! got there. The status stream itself dropping (the server unreachable) is
+//! surfaced by the connection failing, not a field on a status event - the
+//! client already has to handle "the connection failed" separately from
+//! "the status says there's a problem".
 
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
@@ -47,7 +46,7 @@ use crate::engine_client::{EngineClientError, OrderView};
 use crate::views;
 use crate::views::pos::PosViewModel;
 
-use super::checkout::{qr_svg_for_html, status_label};
+use super::checkout::status_label;
 use super::orders::{decrypt_sk, display_name_for, load_owned_connection};
 use super::{ApiError, AppState, AuthedUser};
 
@@ -69,6 +68,7 @@ pub async fn pos_page(State(state): State<AppState>, AuthedUser(user, _): Authed
 
     let view = PosViewModel {
         connection_id: id,
+        public_key: row.tenant_public_key,
         display_name: display_name_for(&row.site_url),
         base_currency: row.base_currency,
         base_currency_decimals,
@@ -103,17 +103,6 @@ pub struct PosCreateOrderRequest {
 pub struct PosCreateOrderResponse {
     pub order_id: String,
     pub address: String,
-    /// `monero:<address>?tx_amount=<xmr>` - the same URI shape a Monero
-    /// wallet's own QR scanner or NFC tap reader expects. The QR code below
-    /// encodes the bare address only (matching every other QR this crate
-    /// renders, `http::checkout::qr_svg_for_html`'s own callers) since a
-    /// wallet scanning a QR with no amount still works fine and a merchant
-    /// may want to under/overpay deliberately (a tip, a partial refund
-    /// offset); the amount-carrying URI is specifically for the NFC tap
-    /// write, where there's no second "type the amount in yourself" step
-    /// once the customer's already tapped.
-    pub monero_uri: String,
-    pub qr_code_svg: String,
     pub xmr_amount: String,
     pub amount: String,
     pub currency: String,
@@ -134,6 +123,14 @@ pub async fn create_order(
     Path(id): Path<String>,
     Json(req): Json<PosCreateOrderRequest>,
 ) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return ApiError::NotFound.into_response(),
+        Err(()) => return ApiError::Internal.into_response(),
+    };
+
+    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
+    let _policy_guard = policy_lock.lock().await;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
@@ -175,7 +172,7 @@ pub async fn create_order(
 
     match state
         .engine_client
-        .create_order(&row.tenant_public_key, xmr_amount_piconero, merchant_order_id.clone(), Some(resolution.confirmations_required))
+        .create_order(&sk, xmr_amount_piconero, merchant_order_id.clone(), Some(resolution.confirmations_required))
         .await
     {
         Ok(order) => {
@@ -199,18 +196,11 @@ pub async fn create_order(
                 );
             }
 
-            let qr_code_svg = match qr_svg_for_html(&order.address) {
-                Ok(svg) => svg,
-                Err(_) => return ApiError::Internal.into_response(),
-            };
             let xmr_amount = shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero);
-            let monero_uri = format!("monero:{}?tx_amount={xmr_amount}", order.address);
 
             Json(PosCreateOrderResponse {
                 order_id: order.order_id,
                 address: order.address,
-                monero_uri,
-                qr_code_svg,
                 xmr_amount,
                 amount: amount.to_string(),
                 currency,
@@ -250,7 +240,7 @@ pub struct PosStatusResponse {
 /// created directly against the engine, or predating this field) - the same
 /// "a reasonable, safe-side default" posture `http::checkout::render_checkout_page`
 /// already applies to this exact fallback.
-async fn resolve_confirmations_required(state: &AppState, connection_id: &str, sk: &str, order_id: &str) -> u64 {
+pub(super) async fn resolve_confirmations_required(state: &AppState, connection_id: &str, sk: &str, order_id: &str) -> u64 {
     let local = state.db.lock().unwrap().get_order_currency_metadata(connection_id, order_id).unwrap_or_default();
     if let Some(applied) = local.and_then(|m| m.confirmations_required_applied) {
         return applied;
@@ -264,9 +254,9 @@ async fn resolve_confirmations_required(state: &AppState, connection_id: &str, s
 /// are all normal, expected, no-action-needed states on the way to a real
 /// payment). See this module's own doc comment for the full reasoning
 /// behind each case picked.
-fn derive_payment_error(order: &OrderView) -> Option<String> {
+pub(super) fn derive_payment_error(order: &OrderView) -> Option<String> {
     if order.double_spend_detected_at.is_some() {
-        return Some("Double-spend detected on this payment - do not release goods or change.".to_string());
+        return Some("Double-spend detected on this payment. Do not treat it as paid.".to_string());
     }
     match order.status.as_str() {
         "partial" => Some("Underpaid - the customer sent less than the requested amount.".to_string()),
@@ -277,9 +267,8 @@ fn derive_payment_error(order: &OrderView) -> Option<String> {
 }
 
 /// `GET /dashboard/stores/{id}/pos/orders/{order_id}/status` - the
-/// small JSON the terminal screen's own poll loop reads, both for the
-/// payment currently on-screen and for every backgrounded one stacked at
-/// the bottom (spec points 7-12) simultaneously polling their own.
+/// small JSON status of one POS order. The terminal screen itself follows
+/// the same data live via [`order_events`].
 pub async fn order_status(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -295,30 +284,103 @@ pub async fn order_status(
         Err(()) => return ApiError::Internal.into_response(),
     };
 
-    match state.engine_client.get_order_detail(&sk, &order_id).await {
-        Ok(detail) => {
-            let confirmations_required = resolve_confirmations_required(&state, &row.id, &sk, &order_id).await;
-            // `status_label`'s own `is_terminal` already accounts for a
-            // 0-conf-trusted order: the engine only ever reports `"paid"`
-            // once *that order's own* `confirmations_required` (however it
-            // was resolved at creation - possibly `0`) has actually been
-            // met, so there's no separate threshold check to fold in here.
-            let (_, _, is_terminal) = status_label(&detail.order.status);
-            let error = derive_payment_error(&detail.order);
-            Json(PosStatusResponse {
-                status: detail.order.status,
-                confirmations: detail.order.confirmations,
-                confirmations_required,
-                is_terminal,
-                error,
-            })
-            .into_response()
-        }
+    match load_pos_status(&state, &row.id, &sk, &order_id).await {
+        Ok(status) => Json(status).into_response(),
         Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
             ApiError::NotFound.into_response()
         }
         Err(_) => ApiError::Internal.into_response(),
     }
+}
+
+async fn load_pos_status(state: &AppState, connection_id: &str, sk: &str, order_id: &str) -> Result<PosStatusResponse, EngineClientError> {
+    let detail = state.engine_client.get_order_detail(sk, order_id).await?;
+    let confirmations_required = resolve_confirmations_required(state, connection_id, sk, order_id).await;
+    // `status_label`'s own `is_terminal` already accounts for a
+    // 0-conf-trusted order: the engine only ever reports `"paid"`
+    // once *that order's own* `confirmations_required` (however it
+    // was resolved at creation - possibly `0`) has actually been
+    // met, so there's no separate threshold check to fold in here.
+    let (_, _, is_terminal) = status_label(&detail.order.status);
+    let error = derive_payment_error(&detail.order);
+    Ok(PosStatusResponse {
+        status: detail.order.status,
+        confirmations: detail.order.confirmations,
+        confirmations_required,
+        is_terminal,
+        error,
+    })
+}
+
+/// More than any real counter has in flight at once; bounds how many
+/// upstream reads one request can fan out to.
+const MAX_WATCHED_ORDERS: usize = 32;
+
+#[derive(Deserialize)]
+pub struct PosEventsQuery {
+    /// Comma-separated order ids - the one on screen plus every backgrounded one.
+    orders: String,
+}
+
+/// `GET /dashboard/stores/{id}/pos/events?orders=a,b,...` - one
+/// Server-Sent Events stream for every order the terminal is watching,
+/// replacing a poll loop per order. Each `status` event is
+/// [`PosStatusResponse`] plus its `order_id`, sent on connect and again
+/// only when that order changes (`crate::live`). An order stops being
+/// reported once terminal (or unknown to this store); the terminal reopens
+/// the stream with a new id list whenever the set it watches changes.
+pub async fn order_events(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Query(query): Query<PosEventsQuery>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return ApiError::NotFound.into_response(),
+        Err(()) => return ApiError::Internal.into_response(),
+    };
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return ApiError::Internal.into_response(),
+    };
+    let mut order_ids: Vec<String> = Vec::new();
+    for order_id in query.orders.split(',').map(str::trim).filter(|id| !id.is_empty()) {
+        if !order_ids.iter().any(|seen| seen == order_id) {
+            order_ids.push(order_id.to_string());
+        }
+    }
+    if order_ids.is_empty() || order_ids.len() > MAX_WATCHED_ORDERS {
+        return ApiError::BadRequest(format!("orders must list between 1 and {MAX_WATCHED_ORDERS} order ids")).into_response();
+    }
+
+    let streams = order_ids.into_iter().map(|order_id| {
+        let subscription = state.engine_client.subscribe_order(&row.id, &sk, &order_id);
+        let (state, connection_id, sk) = (state.clone(), row.id.clone(), sk.clone());
+        Box::pin(crate::live::snapshot_stream(subscription, std::time::Duration::from_secs(60), move || {
+            let (state, connection_id, sk, order_id) = (state.clone(), connection_id.clone(), sk.clone(), order_id.clone());
+            async move {
+                match load_pos_status(&state, &connection_id, &sk, &order_id).await {
+                    Ok(status) => {
+                        let mut json = serde_json::to_value(&status).ok()?;
+                        json["order_id"] = serde_json::Value::String(order_id);
+                        let data = json.to_string();
+                        Some(crate::live::LiveSnapshot {
+                            events: vec![axum::response::sse::Event::default().event("status").data(data.clone())],
+                            fingerprint: data,
+                            terminal: status.is_terminal,
+                        })
+                    }
+                    // Not this store's order: nothing to watch.
+                    Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
+                        Some(crate::live::LiveSnapshot { events: Vec::new(), fingerprint: String::new(), terminal: true })
+                    }
+                    Err(_) => None,
+                }
+            }
+        }))
+    });
+    crate::live::sse(futures_util::stream::select_all(streams))
 }
 
 #[cfg(test)]
@@ -537,8 +599,8 @@ mod tests {
         assert_eq!(body["xmr_amount"], "1.500000000000");
         let address = body["address"].as_str().unwrap();
         assert!(!address.is_empty());
-        assert_eq!(body["monero_uri"], format!("monero:{address}?tx_amount=1.500000000000"));
-        assert!(body["qr_code_svg"].as_str().unwrap().contains("<svg"), "expected a real rendered QR code");
+        assert!(body.get("monero_uri").is_none());
+        assert!(body.get("qr_code_svg").is_none());
         let order_id = body["order_id"].as_str().unwrap().to_string();
 
         // Spec point 5: an order created through the POS screen is a real
@@ -747,6 +809,71 @@ mod tests {
         assert_eq!(body["confirmations"], 0);
         assert_eq!(body["is_terminal"], false);
         assert!(body["error"].is_null(), "a plain pending order must carry no error, got: {body}");
+    }
+
+    #[tokio::test]
+    async fn the_events_stream_reports_every_watched_order_and_pushes_changes() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(&router, "pos-events@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let mut order_ids = Vec::new();
+        for _ in 0..2 {
+            let create = router
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .method("POST")
+                        .uri(format!("/dashboard/stores/{id}/pos/orders"))
+                        .header("content-type", "application/json")
+                        .header("authorization", format!("Bearer {session_token}"))
+                        .body(Body::from(serde_json::json!({ "amount": "2.0" }).to_string()))
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            order_ids.push(body_json(create).await["order_id"].as_str().unwrap().to_string());
+        }
+
+        let events_request = |query: String, token: Option<&str>| {
+            let mut builder = Request::builder().uri(format!("/dashboard/stores/{id}/pos/events?orders={query}"));
+            if let Some(token) = token {
+                builder = builder.header("authorization", format!("Bearer {token}"));
+            }
+            builder.body(Body::empty()).unwrap()
+        };
+        let unauthenticated = router.clone().oneshot(events_request(order_ids[0].clone(), None)).await.unwrap();
+        assert_eq!(unauthenticated.status(), StatusCode::UNAUTHORIZED);
+        let empty = router.clone().oneshot(events_request(String::new(), Some(&session_token))).await.unwrap();
+        assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+
+        // An id that isn't this store's is simply never reported.
+        let query = format!("{},{},pay_not_ours", order_ids[0], order_ids[1]);
+        let response = router.clone().oneshot(events_request(query, Some(&session_token))).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let mut body = response.into_body();
+        let (mut pending, mut parser) = (Vec::new(), crate::live::SseTestParser::default());
+
+        let mut seen = Vec::new();
+        for _ in 0..2 {
+            let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+            assert_eq!(event, "status");
+            let data: serde_json::Value = serde_json::from_str(&data).unwrap();
+            assert_eq!(data["status"], "pending");
+            assert!(data["error"].is_null());
+            seen.push(data["order_id"].as_str().unwrap().to_string());
+        }
+        seen.sort();
+        let mut expected = order_ids.clone();
+        expected.sort();
+        assert_eq!(seen, expected);
+
+        assert!(engine.store().lock().unwrap().mark_double_spend_detected(&order_ids[1], crate::now_unix()).unwrap());
+        let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+        assert_eq!(event, "status");
+        let data: serde_json::Value = serde_json::from_str(&data).unwrap();
+        assert_eq!(data["order_id"], order_ids[1].as_str());
+        assert!(data["error"].as_str().unwrap().to_lowercase().contains("double-spend"), "got: {data}");
     }
 
     #[tokio::test]

@@ -36,15 +36,8 @@ allowed_origins = ["http://127.0.0.1:8190"]
 # Real stagenet blocks land roughly every ~2 minutes; requiring several
 # confirmations would make the E2E test spend most of its time waiting on the
 # chain rather than exercising moneropay's own detection logic. Since the test
-# payment is tiny by design, it's covered entirely by zero_conf_max_xmr below.
-confirmations_required = 1
-# XMR-denominated, not fiat (payment.zero_conf_max_fiat was renamed after a real
-# production config.rs fix - it was silently being read as XMR while named
-# "fiat", which meant an operator who genuinely meant a fiat ceiling configured
-# ~300x the zero-conf exposure they intended). 0.01 XMR comfortably covers this
-# test's 0.000335 XMR payment with the same ~20-30x margin the old $1.00-vs-$0.05
-# figures had.
-zero_conf_max_xmr = "0.01"
+# payment is tiny by design; native 0-conf settles it at the mempool sighting.
+confirmations_required = 0
 order_expiry_minutes = 30
 reorg_check_depth = 20
 mempool_poll_interval_ms = 2000

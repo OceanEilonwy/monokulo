@@ -182,7 +182,7 @@ fn validate_scalar(key: &str, value: &str) -> Result<(), String> {
     }
     match key {
         "payment.confirmations_required" => {
-            require_range::<u64>(key, value, 1, 720, "at least 1 (0 would treat an unconfirmed transaction as final) and at most 720 (~24h)")
+            require_range::<u64>(key, value, 0, 720, "at least 0 (native 0-conf: paid off a mempool sighting alone) and at most 720 (~24h)")
         }
         "payment.order_expiry_minutes" => {
             require_range::<i64>(key, value, 1, 60 * 24 * 365, "at least 1 minute and at most a year")
@@ -199,14 +199,6 @@ fn validate_scalar(key: &str, value: &str) -> Result<(), String> {
         }
         "payment.expired_order_grace_period_minutes" => {
             require_range::<i64>(key, value, 0, 60 * 24 * 365, "at least 0 and at most a year")
-        }
-        "payment.zero_conf_max_xmr" => {
-            if value.is_empty() {
-                return Ok(());
-            }
-            shared::xmr_amount::parse_xmr_to_piconero(value)
-                .map(|_| ())
-                .map_err(|e| format!("payment.zero_conf_max_xmr {value:?} is not a valid XMR amount: {e}"))
         }
         "server.bind" => value
             .parse::<std::net::SocketAddr>()

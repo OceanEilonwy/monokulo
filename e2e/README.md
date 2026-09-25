@@ -162,14 +162,11 @@ database; delete it to start over with a fresh bootstrap.
 
 ## Why the config is tuned the way it is
 
-- `confirmations_required = 1` and `zero_conf_max_xmr = "0.01"`: stagenet
+- `confirmations_required = 0`: stagenet
   blocks land roughly every ~2 minutes, so requiring several confirmations
   would make the test spend most of its wall-clock time waiting on the chain
-  instead of exercising moneropay's own detection logic. Every test payment
-  here is well under 0.01 XMR, so it's covered entirely by 0-conf detection and
-  resolves in seconds once broadcast. (This field is XMR-denominated, not
-  fiat, despite the name it used to have - a real bug caught in the production
-  config, see `docs/DESIGN.md` §13.)
+  instead of exercising moneropay's own detection logic. Native 0-conf
+  resolves the payment as soon as it is seen in the mempool.
 - The test order's `xmr_amount_piconero` (335_000_000, i.e. 0.000335 XMR) is
   chosen to be a genuinely tiny real payment, per the project's own constraint
   of only moving trivial amounts on this shared faucet-funded wallet. The

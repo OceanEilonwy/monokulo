@@ -82,10 +82,6 @@ async fn main() {
                         if s.allowed_origins.is_empty() { "(none configured)".to_string() } else { s.allowed_origins.join(", ") }
                     );
                     println!("Confirmations required: {}", s.confirmations_required);
-                    println!(
-                        "Zero-conf ceiling:     {}",
-                        s.zero_conf_max_piconero.map(|p| format!("{p} piconero")).unwrap_or_else(|| "(disabled)".to_string())
-                    );
                     println!("Order expiry:          {} minutes", s.order_expiry_seconds / 60);
                     std::process::exit(0);
                 }

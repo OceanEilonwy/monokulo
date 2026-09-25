@@ -266,7 +266,7 @@ this up later, same convention `docs/fx_refactor.md` already established.
   - what (the mempool check's own loose end - decision 6, resolved): if
     that final mempool check finds a payment that still needs
     confirmations before the order can move to `Paid` (not covered by
-    `zero_conf_max_xmr`), the rescan has already finished (decision 1:
+    a native 0-conf threshold), the rescan has already finished (decision 1:
     one-shot) and the order stays outside ongoing live scanning - nothing
     continues watching this specific sighting toward confirmation on its
     own. **Resolved**: record what was seen (an unconfirmed match, same as

@@ -1,6 +1,6 @@
 // @ts-check
 // Real stagenet + real browser e2e for the POS terminal screen
-// (templates/pos.html.hbs). See ../README.md for what this needs and how to
+// (views/pos.rs + views/checkout.rs). See ../README.md for what this needs and how to
 // run it - deliberately never wired into any default `npm test`/CI.
 //
 // The backend (a real, network-bound engine against the real public
@@ -75,7 +75,23 @@ async function chargeAndGetOrder(page, digits) {
 }
 
 test.describe.serial('POS terminal - real stagenet payments', () => {
-  test('a 0-conf-trusted payment shows the tick then auto-returns to the keypad', async ({ page, context }) => {
+  test('the store disables POS without JavaScript and a direct visit explains why', async ({ browser }) => {
+    const context = await browser.newContext({ javaScriptEnabled: false });
+    try {
+      await context.addCookies([{ name: 'session', value: fixture.session_cookie.slice(fixture.session_cookie.indexOf('=') + 1), url: fixture.monokulo_base_url }]);
+      const page = await context.newPage();
+      await page.goto(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}`);
+      const launcher = page.locator('#pos-launch');
+      await expect(launcher).toHaveAttribute('aria-disabled', 'true');
+      await expect(launcher).not.toHaveAttribute('href', /./);
+      await expect(page.locator('#pos-launch-hint')).toHaveText('Requires JS');
+      await page.goto(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/pos`);
+      await expect(page.getByText('POS requires JavaScript.')).toBeVisible();
+      await expect(page.locator('#keypad-screen')).toBeHidden();
+    } finally { await context.close(); }
+  });
+
+  test('a 0-conf-trusted payment shows shared success then auto-returns to the keypad', async ({ page, context }) => {
     // Each connect+send attempt is bounded by StagenetTestWallet's own 60s
     // reqwest client timeout (decoy selection is served from a cached
     // snapshot now, not a live fetch - see that crate's own doc comment for
@@ -86,42 +102,43 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     test.setTimeout(8 * 60 * 1000);
 
     await loginAndOpenPos(page);
-    // No confirmations_required=0 here - the engine hard-rejects that value
-    // outright ("0 would treat an unconfirmed transaction as final"; see
-    // e2e_harness.rs's own connect-call comment). 0-conf trust is real,
-    // engine-supported behavior, just through a different setting: this
-    // store's own zero_conf_max_piconero ceiling (set once at connect time,
-    // in e2e_harness.rs - no dashboard UI to change it after the fact
-    // yet) already covers this test's own 335_000_000-piconero amount but
-    // not the next test's 336_000_000, on purpose.
+    // The harness connects this store with confirmations_required=0. The
+    // next test switches to 1 before creating its own order.
 
     const order = await chargeAndGetOrder(page, '335000000'); // 0.000335 XMR
     const piconero = piconeroFromXmrDisplay(order.xmr_amount);
     expect(piconero).toBe(335_000_000n);
 
-    // Spec point 6: a real QR code and a real, amount-carrying monero: URI.
-    await expect(page.locator('#qr-holder svg')).toBeVisible();
-    expect(order.monero_uri).toBe(`monero:${order.address}?tx_amount=${order.xmr_amount}`);
+    // The POS displays the same payment page as public checkout.
+    const checkout = page.frameLocator('#payment-frame');
+    await expect(page.locator('#payment-frame')).toHaveAttribute('src', new RegExp(`/pay/.*/orders/${order.order_id}\\?view=pos$`));
+    await expect(checkout.locator('.qr-wrap svg')).toBeVisible();
+    await expect(checkout.locator('#address')).toHaveValue(order.address);
+    // An image of the displayed QR can fill the refund address without typing.
+    const qrImage = await checkout.locator('.qr-wrap svg').screenshot();
+    await checkout.locator('#refund-image').setInputFiles({ name: 'refund.png', mimeType: 'image/png', buffer: qrImage });
+    await expect(checkout.locator('#refund_address')).toHaveValue(order.address);
+    await expect(checkout.locator('#refund-field')).toHaveClass(/is-saved/);
+    await expect(checkout.locator('#refund-save-state')).toHaveAttribute('aria-label', 'Refund address saved');
 
     console.log(`sending real stagenet payment: ${piconero} piconero to ${order.address}`);
     const txHash = await sendStagenetPayment(fixture.send_payment_url, order.address, piconero);
     console.log(`sent - tx ${txHash}`);
 
-    // Spec point 7: the tick appears the moment a real tx is seen in the
+    // The shared confirmation state appears when a real tx is seen in the
     // mempool - 0-conf, before any confirmations at all.
-    await expect(page.locator('#tick-overlay')).toBeVisible({ timeout: 90_000 });
-    await expect(page.locator('#tick-overlay')).not.toHaveClass(/is-error/);
+    await expect(checkout.locator('#payment-state')).toBeVisible({ timeout: 90_000 });
+    await expect(checkout.locator('#payment-state')).not.toHaveClass(/is-error/);
 
-    // Spec point 8: this order's total is under the store's own
-    // zero_conf_max_piconero ceiling, so it settles to "paid" with no real
-    // confirmations needed at all - the overlay closes and the keypad
+    // This order's native 0-conf threshold settles it to "paid" with no real
+    // confirmations needed - the checkout closes and the keypad
     // returns on its own, no merchant action needed. Not necessarily on the
     // very same scan tick that first saw it in the mempool (status can take
     // one more tick to settle from "unconfirmed" to "paid"), so this gets
     // real margin, not just the ~3s scan interval plus the client's own
-    // 2.5s auto-dismiss delay.
+    // 3.5s auto-dismiss delay.
     await expect(page.locator('#keypad-screen')).toBeVisible({ timeout: 60_000 });
-    await expect(page.locator('#tick-overlay')).toBeHidden();
+    await expect(page.locator('#payment-screen')).toBeHidden();
 
     // Spec point 5: a POS-created order is a real order, visible on the
     // normal dashboard orders list, not something private to this screen.
@@ -129,7 +146,7 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     expect(await ordersPage.text()).toContain(order.order_id);
   });
 
-  test('a confirming payment shows the progress ring, can be backgrounded, and completes in the stack', async ({ page, context }) => {
+  test('a confirming payment can be backgrounded and completes in the top stack', async ({ page, context }) => {
     // The send itself is fast now (see the first test's own comment on why),
     // but this one *also* waits for one real stagenet confirmation
     // (~2min average, up to ~5min budgeted below) - the one genuinely slow
@@ -146,18 +163,18 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     const txHash = await sendStagenetPayment(fixture.send_payment_url, order.address, piconero);
     console.log(`sent - tx ${txHash}`);
 
-    // Spec point 7 again, then point 9: not yet fully confirmed (this
-    // store's threshold is now 1), so a progress ring around the tick and a
-    // "confirm in background" option must be offered rather than
-    // auto-dismissing like the first test's 0-conf order did.
-    await expect(page.locator('#tick-overlay')).toBeVisible({ timeout: 90_000 });
+    // While confirming, the shared state and wrapper's background action appear.
+    const checkout = page.frameLocator('#payment-frame');
+    await expect(checkout.locator('#payment-state')).toBeVisible({ timeout: 90_000 });
     await expect(page.locator('#background-btn')).toBeVisible({ timeout: 30_000 });
 
-    // Spec point 10: backgrounding closes the overlay and returns to the keypad.
+    // Backgrounding closes the payment view and returns to the keypad.
     await page.click('#background-btn');
     await expect(page.locator('#keypad-screen')).toBeVisible();
-    await expect(page.locator('#tick-overlay')).toBeHidden();
+    await expect(page.locator('#payment-screen')).toBeHidden();
 
+    await expect(page.locator('#background-disclosure')).toBeVisible();
+    await page.locator('#background-summary').click();
     const bgItem = page.locator('.bg-item').first();
     await expect(bgItem).toBeVisible();
 

@@ -45,20 +45,23 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
             @if let Some(store) = &data.store {
+                nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
                 h1 { (store.display_name) }
 
                 div class="store-header-row" {
-                    a class="btn-secondary settings-link" href=(format!("/dashboard/stores/{}/settings", store.connection_id)) { "Settings" }
+                    span class="store-header-status" {
+                        span class=(format!("tag tag-{}", store.health)) { (store.health_label) }
+                        "\u{a0}" span class="muted" { (store.platform) } "\u{a0}·\u{a0}"
+                        a href=(store.site_url) { (store.site_url) }
+                    }
+                    a class="btn btn-secondary settings-link" href=(format!("/dashboard/stores/{}/settings", store.connection_id)) {
+                        "Settings " span aria-hidden="true" { "→" }
+                    }
                     details class="help-disclosure" {
-                        summary {
-                            span {
-                                span class=(format!("tag tag-{}", store.health)) { (store.health_label) }
-                                "\u{a0}" span class="muted" { (store.platform) } "\u{a0}·\u{a0}"
-                                a href=(store.site_url) { (store.site_url) }
-                            }
-                            span class="hint" { "help" }
+                        summary class="btn btn-secondary help-control" { "Help" }
+                        div class="store-help-content" {
+                            (super::integration_help::fragment(&store.public_key, &store.endpoint, store.is_woocommerce))
                         }
-                        (super::integration_help::fragment(&store.public_key, &store.endpoint, store.is_woocommerce))
                     }
                 }
 
@@ -69,7 +72,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 }
 
                 div class="widget-links" {
-                    a class="btn widget-link" href=(format!("/dashboard/stores/{}/pos", store.connection_id)) {
+                    a class="btn widget-link pos-launch-disabled" id="pos-launch" data-href=(format!("/dashboard/stores/{}/pos", store.connection_id)) aria-disabled="true" tabindex="-1" {
                         span class="widget-link-icon" {
                             svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
                                 stroke-linejoin="round" aria-hidden="true" focusable="false" {
@@ -88,9 +91,10 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                         }
                         span class="widget-link-text" {
                             span class="widget-link-title" { "POS Terminal" }
-                            span class="widget-link-hint" { "Full-screen keypad for in-person sales" }
+                            span class="widget-link-hint" id="pos-launch-hint" { "Requires JS" }
                         }
                     }
+                    script { (maud::PreEscaped("(function(){var link=document.getElementById('pos-launch');if(!link)return;link.href=link.dataset.href;link.removeAttribute('aria-disabled');link.removeAttribute('tabindex');link.classList.remove('pos-launch-disabled');document.getElementById('pos-launch-hint').textContent='Full-screen keypad for in-person sales';})();")) }
                     a class="btn widget-link" href=(format!("/dashboard/stores/{}/orders/new", store.connection_id)) {
                         span class="widget-link-icon" {
                             svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"
@@ -103,7 +107,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                         }
                         span class="widget-link-text" {
                             span class="widget-link-title" { "Create an order" }
-                            span class="widget-link-hint" { "Creates a real order and opens its payment page" }
+                            span class="widget-link-hint" { "For one-off custom payments" }
                         }
                     }
                 }
@@ -147,13 +151,18 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
             }
         }
     };
-    layout(chrome, "Store - Monokulo", body)
+    let title = match &data.store {
+        Some(store) => format!("{} - Monokulo", store.display_name),
+        None => "Store not found - Monokulo".to_string(),
+    };
+    layout(chrome, &title, body)
 }
 
 pub fn woocommerce_instructions_page(chrome: &PageChrome) -> Markup {
     let body = html! {
         div class="wrap" {
-            h1 { "Connect a WooCommerce store" }
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard/stores/new" { "Add a store" } }
+            h1 { "Set up WooCommerce" }
             p class="hint" {
                 "This flow runs from inside WordPress, not from here - it needs your store's own "
                 "URL and a plugin-issued token to hand back to it, which only WordPress itself can provide. Follow "
@@ -266,7 +275,17 @@ mod tests {
     fn links_to_the_settings_page_and_widget_pages() {
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(base_store(false)) }).into_string();
         assert!(html.contains(r#"href="/dashboard/stores/conn_1/settings""#), "expected a Settings link, got: {html}");
-        assert!(html.contains(r#"href="/dashboard/stores/conn_1/pos""#));
+        let help = html.find("class=\"btn btn-secondary help-control\"").unwrap();
+        let settings = html.find("class=\"btn btn-secondary settings-link\"").unwrap();
+        assert!(settings < help, "Help should be the rightmost control in the store header: {html}");
+        assert!(html.contains(r#"<summary class="btn btn-secondary help-control">Help</summary>"#), "expected Help to be the disclosure's only summary content: {html}");
+        let summary_start = html.find("<summary").unwrap();
+        assert!(html.find("class=\"store-header-status\"").unwrap() < summary_start);
+        assert!(settings < summary_start, "Settings must sit outside the Help summary: {html}");
+        assert!(html.contains("Settings <span aria-hidden=\"true\">→</span>"), "expected the Settings arrow: {html}");
+        assert!(html.contains(r#"data-href="/dashboard/stores/conn_1/pos""#));
+        assert!(html.contains("Requires JS"));
+        assert!(html.contains(r#"aria-disabled="true""#));
         assert!(html.contains(r#"href="/dashboard/stores/conn_1/orders/new""#));
     }
 
