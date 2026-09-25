@@ -91,6 +91,10 @@ async fn main() {
     };
     let db = db.into_shared();
     monokulo::embed_domains::spawn_rechecks(db.clone(), dns.clone());
+    {
+        let (db, engine_client) = (db.clone(), engine_client.clone());
+        tokio::spawn(async move { monokulo::embed_domains::import_existing_domains(&db, &engine_client, &encryption_key).await });
+    }
     let app_state = AppState {
         db,
         engine_client,

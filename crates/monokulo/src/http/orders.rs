@@ -597,10 +597,13 @@ pub(super) async fn render_store_settings_page(
         (options, thresholds)
     };
     let confirmation_thresholds_at_max = confirmation_thresholds.len() >= 5;
-    let embed_domains = super::embed_domains::domain_views(
-        state.db.lock().unwrap().list_store_domains(&row.id).unwrap_or_default(),
-        crate::now_unix(),
-    );
+    let (embed_restricted, embed_domain_rows) = {
+        let db = state.db.lock().unwrap();
+        (db.embed_restricted(&row.id).unwrap_or(false), db.list_store_domains(&row.id).unwrap_or_default())
+    };
+    let now = crate::now_unix();
+    let embed_can_restrict = embed_domain_rows.iter().any(|domain| crate::embed_domains::DomainState::of(domain, now).counts());
+    let embed_domains = super::embed_domains::domain_views(embed_domain_rows, now);
 
     let webhooks = match state.engine_client.list_webhooks(&sk).await {
         Ok(webhooks) => webhooks
@@ -631,6 +634,8 @@ pub(super) async fn render_store_settings_page(
             created_webhook_signing_secret,
             settings_error,
             embed_domains,
+            embed_restricted,
+            embed_can_restrict,
         }),
     };
     views::store_settings::page(&chrome, &view_model).into_response()

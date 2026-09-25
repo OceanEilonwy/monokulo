@@ -123,16 +123,15 @@ fn is_safe_redirect_path(next: &str) -> bool {
 /// concretely, a real stagenet e2e test that wants `0` (native 0-conf)
 /// rather than waiting on real block times - has a real way to set it
 /// through this flow instead of only the JSON `POST /connections` surface.
-/// `allowed_origins` arrives as one comma-separated
-/// text input rather than a JSON array, since an HTML form has no native
-/// array field - split into a `Vec<String>` in `connect_submit` below.
+/// There's no allowed-origins field: which websites may show a store's
+/// checkout is now the store's verified domains (`crate::embed_domains`),
+/// and the site URL's domain is added there for the merchant to verify.
 #[derive(Deserialize)]
 pub struct ConnectForm {
     pub site_url: String,
     pub view_key_hex: String,
     pub spend_pubkey_hex: String,
     pub network: String,
-    pub allowed_origins: String,
     /// Validated against `crate::currencies` in `connect_submit` - see
     /// that module's own doc comment.
     #[serde(default)]
@@ -181,7 +180,6 @@ fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&
         site_url: resubmit.map(|f| f.site_url.clone()).unwrap_or_default(),
         view_key_hex: resubmit.map(|f| f.view_key_hex.clone()).unwrap_or_default(),
         spend_pubkey_hex: resubmit.map(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
-        allowed_origins: resubmit.map(|f| f.allowed_origins.clone()).unwrap_or_default(),
         network_mainnet_selected,
         network_stagenet_selected,
         network_testnet_selected,
@@ -200,7 +198,6 @@ fn render_connect_success(state: &AppState, connection_id: &str, public_key: &st
         site_url: String::new(),
         view_key_hex: String::new(),
         spend_pubkey_hex: String::new(),
-        allowed_origins: String::new(),
         network_mainnet_selected: false,
         network_stagenet_selected: false,
         network_testnet_selected: false,
@@ -393,12 +390,6 @@ pub async fn connect_submit(
     AuthedUser(user, _token_hash): AuthedUser,
     Form(form): Form<ConnectForm>,
 ) -> Response {
-    // Same split an admin-API/CLI caller would do for a comma-separated
-    // list: trim whitespace around each entry, drop empty entries (so a
-    // blank field submits an empty list rather than `[""]`).
-    let allowed_origins: Vec<String> =
-        form.allowed_origins.split(',').map(str::trim).filter(|s| !s.is_empty()).map(str::to_string).collect();
-
     let fields = CreateConnectionFields {
         // "custom", not "woocommerce" - this is the advanced/direct-API
         // form (WBS follow-up UI work's own "custom (advanced)" picker
@@ -414,7 +405,7 @@ pub async fn connect_submit(
         view_key_hex: form.view_key_hex.clone(),
         spend_pubkey_hex: form.spend_pubkey_hex.clone(),
         network: Some(form.network.clone()),
-        allowed_origins,
+        allowed_origins: Vec::new(),
         confirmations_required: form.confirmations_required,
         order_expiry_seconds: None,
         base_currency: form.base_currency.clone(),

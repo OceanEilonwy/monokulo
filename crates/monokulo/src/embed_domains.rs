@@ -16,8 +16,11 @@
 //!
 //! `.onion` addresses have no DNS, so they can't be added at all.
 //!
-//! This module only records what's verified; nothing restricts embedding on
-//! it yet.
+//! A store can then turn on "Only my verified domains can show this
+//! checkout" ([`EmbedPolicy`]): its checkout pages tell browsers only its
+//! verified domains may frame them (`frame-ancestors`), CORS answers only
+//! those domains, and order creation refuses a browser request from anywhere
+//! else. Off (the default), any website can.
 
 use std::future::Future;
 use std::pin::Pin;
@@ -133,6 +136,115 @@ impl DomainState {
     /// Whether the domain currently counts as verified.
     pub fn counts(self) -> bool {
         matches!(self, DomainState::Verified | DomainState::Failing { .. })
+    }
+}
+
+/// Whether verifying `domain` covers `host`: the domain itself, or any
+/// subdomain of it. `evilshop.example` is not covered by `shop.example`.
+pub fn covers(domain: &str, host: &str) -> bool {
+    host == domain || host.strip_suffix(domain).is_some_and(|prefix| prefix.ends_with('.'))
+}
+
+/// A store's embed policy, looked up per request by public key.
+pub struct EmbedPolicy {
+    /// "Only my verified domains can show this checkout".
+    pub restricted: bool,
+    pub domains: Vec<StoreDomainRow>,
+}
+
+impl EmbedPolicy {
+    /// The domains that currently count as verified.
+    pub fn counting_domains(&self, now: i64) -> impl Iterator<Item = &str> {
+        self.domains.iter().filter(move |row| DomainState::of(row, now).counts()).map(|row| row.domain.as_str())
+    }
+
+    /// Whether a browser page on `origin` (an `Origin` header value) may use
+    /// this store's checkout: always when unrestricted, otherwise only an
+    /// `https://` page on a counting domain or one of its subdomains.
+    pub fn allows_origin(&self, origin: &str, now: i64) -> bool {
+        if !self.restricted {
+            return true;
+        }
+        let Some(authority) = origin.strip_prefix("https://") else { return false };
+        let host = authority.split(':').next().unwrap_or("").trim_end_matches('.').to_ascii_lowercase();
+        self.counting_domains(now).any(|domain| covers(domain, &host))
+    }
+
+    /// The `Content-Security-Policy` a restricted store's pages are sent
+    /// with: only monokulo itself and the counting domains (with their
+    /// subdomains) may frame them. `None` when unrestricted.
+    pub fn frame_ancestors(&self, now: i64) -> Option<String> {
+        if !self.restricted {
+            return None;
+        }
+        let mut policy = "frame-ancestors 'self'".to_string();
+        for domain in self.counting_domains(now) {
+            policy.push_str(&format!(" https://{domain} https://*.{domain}"));
+        }
+        Some(policy)
+    }
+}
+
+/// The policy of the store with this public key, or `None` for an unknown
+/// key. A database error reads as unrestricted, so a fault never takes every
+/// store's checkout offline.
+pub fn policy_for_public_key(db: &SharedDb, public_key: &str) -> Option<EmbedPolicy> {
+    match db.lock().unwrap().embed_policy_for_public_key(public_key) {
+        Ok(policy) => policy.map(|(restricted, domains)| EmbedPolicy { restricted, domains }),
+        Err(e) => {
+            eprintln!("could not read the embed policy for {public_key}: {e}");
+            None
+        }
+    }
+}
+
+/// The domain of a store's site URL, when it's one that can be verified.
+pub fn domain_of_site(site_url: &str) -> Option<String> {
+    let host = url::Url::parse(site_url).ok()?.host_str()?.to_string();
+    normalize_domain(&host).ok()
+}
+
+/// Adds the site's domain to a store as a domain waiting for DNS, so the
+/// merchant only has to publish the record. Skipped quietly when the site
+/// has no verifiable domain, or the store already has it or is full.
+pub fn suggest_site_domain(db: &SharedDb, connection_id: &str, site_url: &str, now: i64) {
+    if let Some(domain) = domain_of_site(site_url) {
+        if let Err(e) = db.lock().unwrap().suggest_store_domain(connection_id, &domain, now, MAX_DOMAINS_PER_STORE) {
+            eprintln!("could not add {domain} to store {connection_id}: {e}");
+        }
+    }
+}
+
+/// Copies each existing store's site domain, and the allowed origins the
+/// engine holds for it (which monokulo used to ask for), into its domains,
+/// waiting for DNS - once per store. A store whose engine tenant can't be
+/// read right now is left for the next start.
+pub async fn import_existing_domains(db: &SharedDb, engine: &crate::engine_client::EngineClient, encryption_key: &[u8; 32]) {
+    let stores = match db.lock().unwrap().list_store_connections_awaiting_domain_import() {
+        Ok(stores) => stores,
+        Err(e) => {
+            eprintln!("could not list stores to import domains for: {e}");
+            return;
+        }
+    };
+    for store in stores {
+        let now = crate::now_unix();
+        suggest_site_domain(db, &store.id, &store.site_url, now);
+        let Ok(sk) = crate::crypto::decrypt(encryption_key, &store.tenant_secret_token_encrypted) else {
+            eprintln!("could not decrypt the secret of store {}; its allowed origins were not imported", store.id);
+            continue;
+        };
+        match engine.get_tenant(&sk).await {
+            Ok(tenant) => {
+                for origin in &tenant.allowed_origins {
+                    suggest_site_domain(db, &store.id, origin, now);
+                }
+                if let Err(e) = db.lock().unwrap().mark_store_domains_imported(&store.id) {
+                    eprintln!("could not mark store {}'s domains imported: {e}", store.id);
+                }
+            }
+            Err(e) => eprintln!("could not read store {}'s allowed origins, will retry next start: {e}", store.id),
+        }
     }
 }
 
@@ -306,6 +418,60 @@ pub mod test_support {
 mod tests {
     use super::test_support::FakeDns;
     use super::*;
+
+    #[test]
+    fn a_domain_covers_itself_and_its_subdomains_only() {
+        assert!(covers("shop.example", "shop.example"));
+        assert!(covers("shop.example", "www.shop.example"));
+        assert!(covers("shop.example", "a.b.shop.example"));
+        assert!(!covers("shop.example", "evilshop.example"));
+        assert!(!covers("shop.example", "shop.example.evil.example"));
+        assert!(!covers("www.shop.example", "shop.example"));
+    }
+
+    #[test]
+    fn a_restricted_policy_allows_only_https_pages_on_counting_domains() {
+        let now = 1_000_000;
+        let domain = |name: &str, verified_at: Option<i64>, failing_since: Option<i64>| StoreDomainRow {
+            domain: name.to_string(),
+            verified_at,
+            failing_since,
+            ..row(None, None)
+        };
+        let mut policy = EmbedPolicy {
+            restricted: false,
+            domains: vec![
+                domain("shop.example", Some(1), None),
+                domain("pending.example", None, None),
+                domain("failing.example", Some(1), Some(now - 60)),
+                domain("lapsed.example", Some(1), Some(now - GRACE_SECS)),
+            ],
+        };
+        assert!(policy.allows_origin("https://anything.example", now), "unrestricted allows any site");
+        assert_eq!(policy.frame_ancestors(now), None);
+
+        policy.restricted = true;
+        assert!(policy.allows_origin("https://shop.example", now));
+        assert!(policy.allows_origin("https://www.shop.example:8443", now));
+        assert!(policy.allows_origin("https://failing.example", now), "still inside its grace period");
+        assert!(!policy.allows_origin("http://shop.example", now), "only https pages count");
+        assert!(!policy.allows_origin("https://evilshop.example", now));
+        assert!(!policy.allows_origin("https://pending.example", now));
+        assert!(!policy.allows_origin("https://lapsed.example", now));
+        assert!(!policy.allows_origin("null", now));
+        assert_eq!(
+            policy.frame_ancestors(now).unwrap(),
+            "frame-ancestors 'self' https://shop.example https://*.shop.example https://failing.example https://*.failing.example"
+        );
+    }
+
+    #[test]
+    fn a_site_url_suggests_its_domain_when_it_can_be_verified() {
+        assert_eq!(domain_of_site("https://Shop.Example/wp"), Some("shop.example".to_string()));
+        assert_eq!(domain_of_site("http://abcdefghijklmnop.onion"), None);
+        assert_eq!(domain_of_site("http://192.0.2.1:8080"), None);
+        assert_eq!(domain_of_site("not a url"), None);
+    }
 
     #[test]
     fn normalize_domain_accepts_urls_and_rejects_what_cannot_be_verified() {

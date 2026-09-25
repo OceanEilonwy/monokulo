@@ -3,7 +3,7 @@
 //! `render_connect_success`, `http::connect::render_confirm_form`,
 //! `http::home::new_store_picker`.
 
-use maud::{html, Markup, PreEscaped};
+use maud::{html, Markup};
 
 use super::{layout, PageChrome};
 
@@ -25,7 +25,6 @@ pub struct ConnectViewModel {
     pub site_url: String,
     pub view_key_hex: String,
     pub spend_pubkey_hex: String,
-    pub allowed_origins: String,
     pub network_mainnet_selected: bool,
     pub network_stagenet_selected: bool,
     pub network_testnet_selected: bool,
@@ -45,7 +44,6 @@ pub struct PlatformConnectViewModel {
     pub error: Option<String>,
     pub view_key_hex: String,
     pub spend_pubkey_hex: String,
-    pub allowed_origins: String,
     pub network_mainnet_selected: bool,
     pub network_stagenet_selected: bool,
     pub network_testnet_selected: bool,
@@ -83,24 +81,6 @@ fn currency_select(options: &[crate::currencies::CurrencyOptionView]) -> Markup 
     }
 }
 
-/// Sensible default: mirror `site_url`'s own origin into `allowed_origins`,
-/// but only while the merchant hasn't typed anything there themselves - a
-/// small, optional convenience, not a requirement (the field stays a plain
-/// text input either way).
-const AUTOFILL_ORIGIN_SCRIPT: &str = r#"(function () {
-  var siteUrl = document.getElementById("site_url");
-  var allowedOrigins = document.getElementById("allowed_origins");
-  var touched = false;
-  allowedOrigins.addEventListener("input", function () { touched = true; });
-  siteUrl.addEventListener("blur", function () {
-    if (touched || allowedOrigins.value) return;
-    try {
-      var origin = new URL(siteUrl.value).origin;
-      allowedOrigins.value = origin;
-    } catch (e) { /* not a valid URL yet - leave it alone */ }
-  });
-})();"#;
-
 pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
@@ -136,8 +116,8 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
                         "Site URL"
                         input type="url" name="site_url" id="site_url" value=(data.site_url) placeholder="https://shop.example.com" required;
                         span class="field-help" {
-                            "Your storefront's own URL - shown on your dashboard, and used below to "
-                            "suggest a default allowed origin."
+                            "Your storefront's own URL - shown on your dashboard. Its domain is added to "
+                            "your store's domains, ready for you to verify in Settings."
                         }
                     }
                     label {
@@ -172,18 +152,8 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
                             "price something."
                         }
                     }
-                    label {
-                        "Allowed origins (comma-separated)"
-                        input type="text" name="allowed_origins" id="allowed_origins" value=(data.allowed_origins) placeholder="https://shop.example.com";
-                        span class="field-help" {
-                            "Which browser origins may create orders directly against your store's "
-                            "public API. Defaults to your site URL above if left blank - only change this if orders will be "
-                            "created from a different origin (e.g. a headless frontend)."
-                        }
-                    }
                     button type="submit" { "Connect" }
                 }
-                script { (PreEscaped(AUTOFILL_ORIGIN_SCRIPT)) }
             }
         }
     };
@@ -253,11 +223,6 @@ pub fn platform_page(chrome: &PageChrome, data: &PlatformConnectViewModel) -> Ma
                     (network_select(data.network_mainnet_selected, data.network_stagenet_selected, data.network_testnet_selected))
                 }
                 label {
-                    "Allowed origins (comma-separated)"
-                    input type="text" name="allowed_origins" value=(data.allowed_origins);
-                    span class="field-help" { "Leave blank to default to your site's own origin." }
-                }
-                label {
                     "Base currency"
                     (currency_select(&data.currency_options))
                     span class="field-help" { "What custom confirmation thresholds are denominated in." }
@@ -315,7 +280,6 @@ mod tests {
             site_url: String::new(),
             view_key_hex: String::new(),
             spend_pubkey_hex: String::new(),
-            allowed_origins: String::new(),
             network_mainnet_selected: true,
             network_stagenet_selected: false,
             network_testnet_selected: false,
@@ -348,7 +312,6 @@ mod tests {
             site_url: "https://shop.example.com".to_string(),
             view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707".to_string(),
             spend_pubkey_hex: "deadbeef".to_string(),
-            allowed_origins: "https://shop.example.com, https://admin.example.com".to_string(),
             network_mainnet_selected: false,
             network_stagenet_selected: true,
             ..default_connect_data()
@@ -360,10 +323,7 @@ mod tests {
             "expected view_key_hex echoed back, got: {html}"
         );
         assert!(html.contains(r#"value="deadbeef""#), "expected spend_pubkey_hex echoed back, got: {html}");
-        assert!(
-            html.contains(r#"value="https://shop.example.com, https://admin.example.com""#),
-            "expected allowed_origins echoed back, got: {html}"
-        );
+        assert!(!html.contains("allowed_origins"), "allowed origins are no longer asked for, got: {html}");
         assert!(html.contains(r#"value="stagenet" selected"#), "expected the stagenet option marked selected, got: {html}");
         assert!(!html.contains(r#"value="mainnet" selected"#), "mainnet must not stay marked selected once stagenet was actually submitted, got: {html}");
     }
@@ -391,7 +351,6 @@ mod tests {
             error: None,
             view_key_hex: String::new(),
             spend_pubkey_hex: String::new(),
-            allowed_origins: String::new(),
             network_mainnet_selected: true,
             network_stagenet_selected: false,
             network_testnet_selected: false,
@@ -424,7 +383,6 @@ mod tests {
             error: Some("bad view key hex".to_string()),
             view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707".to_string(),
             spend_pubkey_hex: "deadbeef".to_string(),
-            allowed_origins: "https://shop.example.com".to_string(),
             network_stagenet_selected: true,
             network_mainnet_selected: false,
             ..default_platform_data()
@@ -435,10 +393,7 @@ mod tests {
             "expected view_key_hex echoed back, got: {html}"
         );
         assert!(html.contains(r#"value="deadbeef""#), "expected spend_pubkey_hex echoed back, got: {html}");
-        assert!(
-            html.contains(r#"name="allowed_origins" value="https://shop.example.com""#),
-            "expected allowed_origins echoed back, got: {html}"
-        );
+        assert!(!html.contains("allowed_origins"), "allowed origins are no longer asked for, got: {html}");
         assert!(html.contains(r#"value="stagenet" selected"#), "expected the stagenet option marked selected, got: {html}");
     }
 

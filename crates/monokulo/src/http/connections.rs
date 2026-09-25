@@ -113,13 +113,14 @@ pub(super) async fn create_connection_for_user(
         .map_err(|_| CreateConnectionError::Internal)?
         .ok_or_else(|| CreateConnectionError::BadRequest(format!("{:?} is not a known currency", req.base_currency)))?;
 
+    let allowed_origins = req.allowed_origins;
     let created = state
         .engine_client
         .create_tenant(CreateTenantRequest {
             view_key_hex: req.view_key_hex,
             spend_pubkey_hex: req.spend_pubkey_hex,
             network: req.network,
-            allowed_origins: req.allowed_origins,
+            allowed_origins: allowed_origins.clone(),
             confirmations_required: req.confirmations_required,
             order_expiry_seconds: req.order_expiry_seconds,
         })
@@ -155,6 +156,14 @@ pub(super) async fn create_connection_for_user(
             &base_currency,
         )
         .map_err(|_| CreateConnectionError::Internal)?;
+
+    // The site's domain, and any allowed origins an API caller passed, join
+    // the store's domains waiting for DNS (`crate::embed_domains`).
+    crate::embed_domains::suggest_site_domain(&state.db, &id, &req.site_url, now_unix());
+    for origin in &allowed_origins {
+        crate::embed_domains::suggest_site_domain(&state.db, &id, origin, now_unix());
+    }
+    let _ = state.db.lock().unwrap().mark_store_domains_imported(&id);
 
     Ok(CreateConnectionOutcome { connection_id: id, public_key: created.public_key })
 }

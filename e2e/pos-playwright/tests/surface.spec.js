@@ -431,3 +431,28 @@ test('embed refund option changes the iframe URL without changing status updates
   await expect(page.locator('#mount iframe')).toHaveAttribute('src', `${host}/pay/pk/orders/order-1?refund=false`);
   await expect.poll(() => statusRequests, { timeout: 5000 }).toBeGreaterThan(0);
 });
+
+test('a restricted store\'s framing header keeps its checkout off other websites', async ({ page }) => {
+  // The header `EmbedPolicy::frame_ancestors` sends, for a store whose only
+  // verified domain is the shop's (allowed) or another one (blocked).
+  const header = domain => `frame-ancestors 'self' ${domain} ${domain.replace('://', '://*.')}`;
+  await page.route('**/*', async route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/verified-here') {
+      return route.fulfill({ contentType: 'text/html', headers: { 'content-security-policy': header('http://shop.localhost:8787') }, body: '<h1>Checkout</h1>' });
+    }
+    if (url.pathname === '/verified-elsewhere') {
+      return route.fulfill({ contentType: 'text/html', headers: { 'content-security-policy': header('https://store-home.example') }, body: '<h1>Checkout</h1>' });
+    }
+    return route.fulfill({
+      contentType: 'text/html',
+      body: '<iframe id="here" src="http://checkout.localhost:8787/verified-here"></iframe>' +
+        '<iframe id="elsewhere" src="http://checkout.localhost:8787/verified-elsewhere"></iframe>',
+    });
+  });
+  await page.goto('http://shop.localhost:8787/');
+  await expect(page.frameLocator('#here').locator('h1')).toHaveText('Checkout');
+  // The browser refuses the other one outright and shows its error page instead.
+  await expect.poll(() => page.frames().map(frame => frame.url())).toContain('chrome-error://chromewebdata/');
+  await expect(page.frameLocator('#elsewhere').locator('h1')).toHaveCount(0);
+});

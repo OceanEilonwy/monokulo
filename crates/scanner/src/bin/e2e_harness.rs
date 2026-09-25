@@ -226,6 +226,8 @@ async fn main() {
         status_cache: monokulo::http::status_page::new_status_cache(),
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(1_000_000)),
+        event_streams: Default::default(),
+        dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
     };
     let cp_router = build_monokulo_router(cp_state);
     let cp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("failed to bind an ephemeral monokulo port");

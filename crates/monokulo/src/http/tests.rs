@@ -829,10 +829,7 @@ async fn a_rejected_connect_submission_re_fills_every_field_the_merchant_typed()
         html.contains(&format!(r#"value="{}""#, "ff".repeat(32))),
         "expected the rejected spend key re-filled too, so the merchant can see and fix exactly it, got: {html}"
     );
-    assert!(
-        html.contains(r#"value="https://my-real-shop.example.com, https://admin.example.com""#),
-        "expected allowed_origins re-filled, got: {html}"
-    );
+    assert!(!html.contains("allowed_origins"), "allowed origins are no longer asked for, got: {html}");
     assert!(html.contains(r#"value="stagenet" selected"#), "expected stagenet to stay selected, got: {html}");
     assert!(!html.contains(r#"value="mainnet" selected"#), "mainnet must not silently reappear as selected, got: {html}");
 }
@@ -969,8 +966,9 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
 }
 
 /// An embed works on any site - clearnet or `.onion` - so the public
-/// `/pay/...` routes answer CORS for any origin, preflight included, and
-/// never allow credentials. The dashboard stays same-origin only.
+/// `/pay/...` routes of a store that hasn't restricted embedding answer
+/// CORS for any origin (echoing it back), preflight included, and never
+/// allow credentials. The dashboard stays same-origin only.
 #[tokio::test]
 async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
     let router = test_router();
@@ -993,20 +991,24 @@ async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
         .unwrap();
     assert!(preflight.status().is_success(), "got {}", preflight.status());
     let headers = preflight.headers();
-    assert_eq!(headers["access-control-allow-origin"], "*");
+    assert_eq!(headers["access-control-allow-origin"], onion);
     assert!(headers["access-control-allow-methods"].to_str().unwrap().contains("POST"));
     assert!(headers["access-control-allow-headers"].to_str().unwrap().contains("content-type"));
     assert_eq!(headers["access-control-allow-private-network"], "true");
     assert!(!headers.contains_key("access-control-allow-credentials"));
 
     // Error responses carry it too, so a caller can read why it failed.
-    for uri in ["/pay/pk_test/orders/order_x/status", "/pay/pk_test/orders/order_x/events", "/static/monokulo-client.js"] {
+    for (uri, allowed) in [
+        ("/pay/pk_test/orders/order_x/status", "https://shop.example"),
+        ("/pay/pk_test/orders/order_x/events", "https://shop.example"),
+        ("/static/monokulo-client.js", "*"),
+    ] {
         let response = router
             .clone()
             .oneshot(Request::builder().uri(uri).header("origin", "https://shop.example").body(Body::empty()).unwrap())
             .await
             .unwrap();
-        assert_eq!(response.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap()), Some("*"), "{uri}");
+        assert_eq!(response.headers().get("access-control-allow-origin").map(|v| v.to_str().unwrap()), Some(allowed), "{uri}");
     }
 
     let dashboard = router

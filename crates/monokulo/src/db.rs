@@ -40,6 +40,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (17, include_str!("../migrations/0017_user_theme.sql")),
     (18, include_str!("../migrations/0018_rename_payment_id_to_order_id.sql")),
     (19, include_str!("../migrations/0019_store_domains.sql")),
+    (20, include_str!("../migrations/0020_embed_restriction.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -942,6 +943,89 @@ impl Db {
         ))?;
         let rows = stmt.query_map(params![now, every_secs, failing_every_secs], store_domain_from_row)?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(DbError::from)
+    }
+
+    /// Adds a domain waiting for DNS unless the store already has it or is
+    /// at `max` domains - for domains monokulo suggests on the merchant's
+    /// behalf (their site's own domain), where either is fine to skip.
+    pub fn suggest_store_domain(&self, connection_id: &str, domain: &str, created_at: i64, max: usize) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO store_domains (id, connection_id, domain, token, created_at_utc)
+             SELECT ?1, ?2, ?3, ?4, ?5
+             WHERE (SELECT COUNT(*) FROM store_domains WHERE connection_id = ?2) < ?6",
+            params![
+                uuid::Uuid::new_v4().to_string(),
+                connection_id,
+                domain,
+                crate::embed_domains::new_token(),
+                created_at,
+                max as i64
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// The embed policy of the store with this public key: whether it's
+    /// restricted to its verified domains, and its domains. `None` for an
+    /// unknown key.
+    pub fn embed_policy_for_public_key(&self, public_key: &str) -> Result<Option<(bool, Vec<StoreDomainRow>)>> {
+        let store: Option<(String, i64)> = self
+            .conn
+            .query_row(
+                "SELECT id, embed_restricted FROM store_connections WHERE tenant_public_key = ?1",
+                params![public_key],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()?;
+        let Some((connection_id, restricted)) = store else { return Ok(None) };
+        Ok(Some((restricted != 0, self.list_store_domains(&connection_id)?)))
+    }
+
+    pub fn embed_restricted(&self, connection_id: &str) -> Result<bool> {
+        self.conn
+            .query_row("SELECT embed_restricted FROM store_connections WHERE id = ?1", params![connection_id], |row| row.get::<_, i64>(0))
+            .map(|value| value != 0)
+            .map_err(DbError::from)
+    }
+
+    pub fn set_embed_restricted(&self, connection_id: &str, restricted: bool) -> Result<()> {
+        self.conn.execute("UPDATE store_connections SET embed_restricted = ?2 WHERE id = ?1", params![connection_id, restricted as i64])?;
+        Ok(())
+    }
+
+    /// Stores whose existing site and allowed origins haven't been copied
+    /// into `store_domains` yet (see migration `0020_embed_restriction.sql`).
+    pub fn list_store_connections_awaiting_domain_import(&self) -> Result<Vec<StoreConnectionRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_provider, base_currency
+             FROM store_connections WHERE domains_imported = 0",
+        )?;
+        let rows = stmt.query_map([], |row| {
+            Ok(StoreConnectionRow {
+                id: row.get(0)?,
+                user_id: row.get(1)?,
+                platform: row.get(2)?,
+                site_url: row.get(3)?,
+                tenant_public_key: row.get(4)?,
+                tenant_secret_token_encrypted: row.get(5)?,
+                moneropay_endpoint: row.get(6)?,
+                created_at: row.get(7)?,
+                fx_provider: row.get(8)?,
+                base_currency: row.get(9)?,
+            })
+        })?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(DbError::from)
+    }
+
+    #[cfg(test)]
+    pub fn reset_store_domains_imported_for_test(&self, connection_id: &str) {
+        self.conn.execute("UPDATE store_connections SET domains_imported = 0 WHERE id = ?1", params![connection_id]).unwrap();
+        self.conn.execute("DELETE FROM store_domains WHERE connection_id = ?1", params![connection_id]).unwrap();
+    }
+
+    pub fn mark_store_domains_imported(&self, connection_id: &str) -> Result<()> {
+        self.conn.execute("UPDATE store_connections SET domains_imported = 1 WHERE id = ?1", params![connection_id])?;
+        Ok(())
     }
 
     /// Whether the merchant has shrunk the store page's "any website can

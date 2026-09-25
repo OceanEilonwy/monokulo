@@ -560,7 +560,6 @@ async fn run_connect_flow_inner(
         ("view_key_hex", wallet.view_key_hex.as_str()),
         ("spend_pubkey_hex", wallet.spend_pubkey_hex.as_str()),
         ("network", wallet.network.as_str()),
-        ("allowed_origins", ""),
         ("base_currency", wallet.base_currency.as_str()),
     ];
     if let Some(s) = &order_expiry_seconds_string {
@@ -904,6 +903,8 @@ mod tests {
             status_cache: monokulo::http::status_page::new_status_cache(),
             exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+            event_streams: Default::default(),
+            dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
         };
         let router = build_router(state);
 
@@ -1127,7 +1128,6 @@ mod tests {
                 ("view_key_hex", TEST_VIEW_KEY_HEX),
                 ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
                 ("network", "mainnet"),
-                ("allowed_origins", ""),
                 ("base_currency", "XMR"),
             ])
             .send()

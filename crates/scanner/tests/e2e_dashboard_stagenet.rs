@@ -256,7 +256,6 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
                     ("spend_pubkey_hex", e2e_fixture::WALLET_PUBLIC_SPEND_KEY),
                     ("network", "stagenet"),
                     ("base_currency", "XMR"),
-                    ("allowed_origins", ""),
                 ])))
                 .unwrap(),
         )

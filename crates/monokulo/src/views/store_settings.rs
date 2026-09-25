@@ -86,6 +86,10 @@ pub struct StoreSettingsData {
     /// `None` on a plain load.
     pub settings_error: Option<String>,
     pub embed_domains: Vec<EmbedDomainView>,
+    /// "Only my verified domains can show this checkout" is on.
+    pub embed_restricted: bool,
+    /// At least one domain counts as verified, so it can be turned on.
+    pub embed_can_restrict: bool,
 }
 
 pub struct StoreSettingsViewModel {
@@ -296,7 +300,31 @@ fn verified_domains(store: &StoreSettingsData) -> Markup {
             "that domain's DNS settings, then check it. A verified domain covers all of its subdomains. Onion addresses can't "
             "be verified, because they have no DNS."
         }
-        p class="hint" { "Coming next: an option to let only these domains show your checkout." }
+        form class="embed-restriction" method="post" action=(format!("/dashboard/stores/{}/settings/embed-restriction", store.connection_id)) {
+            @if store.embed_restricted {
+                p {
+                    span class="tag tag-ok" { "On" } " "
+                    strong { "Only my verified domains can show this checkout." }
+                    " Browsers won't show it on any other website, and orders from other websites are refused. Pages on "
+                    "this server (the POS, the payment link) always work."
+                }
+                input type="hidden" name="restricted" value="off";
+                button type="submit" class="btn-secondary" { "Turn off" }
+            } @else {
+                p {
+                    span class="tag tag-unknown" { "Off" } " "
+                    strong { "Any website can show this checkout." }
+                    " Turn this on to allow only the verified domains below, and their subdomains."
+                }
+                input type="hidden" name="restricted" value="on";
+                @if store.embed_can_restrict {
+                    button type="submit" { "Only allow my verified domains" }
+                } @else {
+                    button type="submit" disabled { "Only allow my verified domains" }
+                    span class="field-help" { "Verify a domain first." }
+                }
+            }
+        }
         @if store.embed_domains.is_empty() {
             p class="muted" { "No domains yet." }
         } @else {
@@ -368,7 +396,24 @@ mod tests {
             created_webhook_signing_secret: None,
             settings_error: None,
             embed_domains: vec![],
+            embed_restricted: false,
+            embed_can_restrict: false,
         }
+    }
+
+    #[test]
+    fn the_restriction_switch_needs_a_verified_domain_to_turn_on() {
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        assert!(html.contains(r#"<input type="hidden" name="restricted" value="on"><button type="submit" disabled>Only allow my verified domains</button>"#), "got: {html}");
+
+        let store = StoreSettingsData { embed_can_restrict: true, ..base_store() };
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
+        assert!(html.contains(r#"<button type="submit">Only allow my verified domains</button>"#));
+
+        let store = StoreSettingsData { embed_can_restrict: true, embed_restricted: true, ..base_store() };
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
+        assert!(html.contains("Only my verified domains can show this checkout."));
+        assert!(html.contains(r#"<input type="hidden" name="restricted" value="off">"#));
     }
 
     #[test]

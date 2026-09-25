@@ -52,10 +52,15 @@ pub struct FailingDomainWarning {
 }
 
 /// The store page's embed warnings: "any website can show this checkout"
-/// (shrunk to one line once dismissed) and one that can't be dismissed per
-/// failing domain.
+/// while embedding isn't restricted (shrunk to one line once dismissed), and,
+/// never dismissable, one per failing domain plus one when the restriction
+/// is on but no domain counts any more.
 pub struct EmbedWarnings {
+    pub restricted: bool,
     pub any_site_dismissed: bool,
+    /// Restricted, with no domain counting as verified: no website can show
+    /// the checkout.
+    pub shown_nowhere: bool,
     pub failing: Vec<FailingDomainWarning>,
 }
 
@@ -66,6 +71,15 @@ pub struct StoreDetailViewModel {
 fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
     let settings = format!("/dashboard/stores/{connection_id}/settings#verified-domains");
     html! {
+        @if warnings.shown_nowhere {
+            div class="embed-warning is-error" role="alert" {
+                strong { "No website can show this store's checkout" }
+                span {
+                    "Only verified domains are allowed, and none is verified right now. "
+                    a href=(settings) { "Check your domains in Settings" } ", or turn the restriction off there."
+                }
+            }
+        }
         @for failing in &warnings.failing {
             div class="embed-warning is-error" role="alert" {
                 @if failing.lapsed {
@@ -78,13 +92,15 @@ fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
                     strong { (failing.domain) " failed its DNS check" }
                     span {
                         "The TXT record at " code { (failing.record_name) } " has been missing for " (failing.missing_for) ". "
-                        "If it isn't back within " (failing.counts_for) ", " (failing.domain) " will stop counting as verified. "
-                        a href=(settings) { "Check it in Settings" } "."
+                        "If it isn't back within " (failing.counts_for) ", " (failing.domain) " will stop counting as verified"
+                        @if warnings.restricted { " and stop being able to show this checkout" }
+                        ". " a href=(settings) { "Check it in Settings" } "."
                     }
                 }
             }
         }
-        @if warnings.any_site_dismissed {
+        @if warnings.restricted {
+        } @else if warnings.any_site_dismissed {
             div class="embed-warning is-compact" {
                 strong { "Any website can show this store's checkout." } " " a href=(settings) { "Verify your domains" }
             }
@@ -93,7 +109,7 @@ fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
                 strong { "Any website can show this store's checkout" }
                 span {
                     "If a scam site embeds it, that site's victims would pay you, and you'd be the one they come to. "
-                    a href=(settings) { "Verify your domains" } " in Settings; an option to let only those domains show your checkout is coming next."
+                    a href=(settings) { "Verify your domains" } " in Settings and allow only them."
                 }
                 form method="post" action=(format!("/dashboard/stores/{connection_id}/embed-warning/dismiss")) {
                     button type="submit" class="btn-secondary" { "Dismiss" }
@@ -281,7 +297,7 @@ mod tests {
             lookup_txid_value: String::new(),
             lookup_message: None,
             lookup_found_order_id: None,
-            embed_warnings: EmbedWarnings { any_site_dismissed: false, failing: vec![] },
+            embed_warnings: EmbedWarnings { restricted: false, any_site_dismissed: false, shown_nowhere: false, failing: vec![] },
         }
     }
 
@@ -294,7 +310,9 @@ mod tests {
 
         let store = StoreDetailData {
             embed_warnings: EmbedWarnings {
+                restricted: false,
                 any_site_dismissed: true,
+                shown_nowhere: false,
                 failing: vec![
                     FailingDomainWarning {
                         domain: "shop.example".to_string(),
@@ -321,6 +339,18 @@ mod tests {
         assert!(html.contains("If it isn't back within 2d 19h, shop.example will stop counting as verified."));
         assert!(html.contains("old.example is no longer verified"));
         assert_eq!(html.matches(r#"class="embed-warning is-error" role="alert""#).count(), 2);
+    }
+
+    #[test]
+    fn a_restricted_store_drops_the_any_site_warning_but_warns_when_no_domain_counts() {
+        let warnings = |shown_nowhere| EmbedWarnings { restricted: true, any_site_dismissed: false, shown_nowhere, failing: vec![] };
+        let store = StoreDetailData { embed_warnings: warnings(false), ..base_store(false) };
+        let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
+        assert!(!html.contains(r#"class="embed-warning"#), "got: {html}");
+
+        let store = StoreDetailData { embed_warnings: warnings(true), ..base_store(false) };
+        let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
+        assert!(html.contains("No website can show this store's checkout"));
     }
 
     #[test]

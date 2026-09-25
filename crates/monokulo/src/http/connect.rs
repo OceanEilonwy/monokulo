@@ -111,7 +111,6 @@ fn render_confirm_form(
         error: error.map(str::to_string),
         view_key_hex: resubmit.and_then(|f| f.view_key_hex.clone()).unwrap_or_default(),
         spend_pubkey_hex: resubmit.and_then(|f| f.spend_pubkey_hex.clone()).unwrap_or_default(),
-        allowed_origins: resubmit.and_then(|f| f.allowed_origins.clone()).unwrap_or_default(),
         network_mainnet_selected,
         network_stagenet_selected,
         network_testnet_selected,
@@ -194,8 +193,6 @@ pub struct ConfirmForm {
     pub spend_pubkey_hex: Option<String>,
     #[serde(default)]
     pub network: Option<String>,
-    #[serde(default)]
-    pub allowed_origins: Option<String>,
     /// Not shown on the confirm screen (no UI field for it yet) — carried purely so
     /// a caller who needs a non-default tenant `order_expiry_seconds` (e.g. WBS
     /// 1.4.4's forced-expiry test) has a real way to set it through this flow rather
@@ -244,26 +241,13 @@ pub async fn confirm_submit(
 /// an engine rejection or internal error, re-renders the confirm form with a
 /// visible error - same pattern as `dashboard::connect_submit`.
 async fn confirm_new_store(state: &AppState, user: &UserRow, platform: &str, form: &ConfirmForm) -> Response {
-    // Same comma-separated-list split every other wallet-connection form in
-    // this crate uses (`dashboard::connect_submit`'s own comment explains
-    // the reasoning).
-    let allowed_origins: Vec<String> = form
-        .allowed_origins
-        .as_deref()
-        .unwrap_or("")
-        .split(',')
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-        .map(str::to_string)
-        .collect();
-
     let fields = CreateConnectionFields {
         platform: platform.to_string(),
         site_url: form.site_url.clone(),
         view_key_hex: form.view_key_hex.clone().unwrap_or_default(),
         spend_pubkey_hex: form.spend_pubkey_hex.clone().unwrap_or_default(),
         network: form.network.clone(),
-        allowed_origins,
+        allowed_origins: Vec::new(),
         confirmations_required: form.confirmations_required,
         order_expiry_seconds: form.order_expiry_seconds,
         base_currency: form.base_currency.clone().unwrap_or_default(),
@@ -369,35 +353,11 @@ async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str
         Err(_) => return internal_error(),
     };
 
-    // Attaching this WordPress site to an already-existing store means the
-    // plugin's own storefront needs to be able to call this store's public
-    // order-creation API from *its* origin too - per the user's own request,
-    // add it to the tenant's real `allowed_origins` (merged in, never
-    // replacing what was already there) rather than leaving the merchant to
-    // discover a silent CORS failure on their new site later. The row's
-    // `site_url` is updated the same way, so the dashboard reflects the most
-    // recent site this store is actually serving. Any failure in this
-    // sequence (decrypting the stored secret, reaching the engine, or the
-    // database write) is treated as a real error, not silently swallowed -
-    // a half-applied CORS update would be a worse, quieter failure mode
-    // than just telling the merchant to try again.
-    let sk = match crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted) {
-        Ok(sk) => sk,
-        Err(_) => return internal_error(),
-    };
-    if let Some(new_origin) = url::Url::parse(&form.site_url).ok().map(|u| u.origin().ascii_serialization()) {
-        let tenant = match state.engine_client.get_tenant(&sk).await {
-            Ok(tenant) => tenant,
-            Err(_) => return internal_error(),
-        };
-        if !tenant.allowed_origins.contains(&new_origin) {
-            let mut updated_origins = tenant.allowed_origins;
-            updated_origins.push(new_origin);
-            if state.engine_client.set_allowed_origins(&sk, updated_origins).await.is_err() {
-                return internal_error();
-            }
-        }
-    }
+    // Attaching this WordPress site to an already-existing store: its domain
+    // joins the store's domains, waiting for the merchant to verify it
+    // (`crate::embed_domains`), and the row's `site_url` is updated so the
+    // dashboard reflects the most recent site this store is actually serving.
+    crate::embed_domains::suggest_site_domain(&state.db, &row.id, &form.site_url, now_unix());
     if state.db.lock().unwrap().update_store_connection_site_url(&row.id, &form.site_url).is_err() {
         return internal_error();
     }
@@ -1049,10 +1009,7 @@ mod tests {
             html.contains(&format!(r#"value="{}""#, "ff".repeat(32))),
             "expected the rejected spend key re-filled, got: {html}"
         );
-        assert!(
-            html.contains(r#"name="allowed_origins" value="https://shop.example.com""#),
-            "expected allowed_origins re-filled, got: {html}"
-        );
+        assert!(!html.contains("allowed_origins"), "allowed origins are no longer asked for, got: {html}");
         assert!(html.contains(r#"value="stagenet" selected"#), "expected stagenet to stay selected, got: {html}");
         // The hidden site_url/return_url/nonce fields were already always
         // preserved (they're passed straight through, not part of this
@@ -1243,24 +1200,21 @@ mod tests {
         let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
         assert_eq!(row.site_url, "https://new-wp-site.example.com", "expected the row's site_url to move to the newly-attached site");
 
-        // ...and the new site's origin is *merged* into the tenant's real
-        // allowed_origins on the engine, not replacing anything already
-        // there (this store had none set, so this proves the origin was
-        // genuinely added, not just left alone).
-        let sk = crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
-        let tenant = state.engine_client.get_tenant(&sk).await.unwrap();
+        // ...and the new site's domain joins the store's domains, waiting
+        // for the merchant to verify it.
+        let domains = state.db.lock().unwrap().list_store_domains(&connection_id).unwrap();
         assert!(
-            tenant.allowed_origins.contains(&"https://new-wp-site.example.com".to_string()),
-            "expected the new site's origin added to allowed_origins, got: {:?}",
-            tenant.allowed_origins
+            domains.iter().any(|d| d.domain == "new-wp-site.example.com" && d.verified_at.is_none()),
+            "expected the new site's domain added, got: {domains:?}"
         );
     }
 
-    /// The "merged in, not replaced" half of the same behavior, made
-    /// explicit: a store that already has a real, different allowed origin
-    /// keeps it after a second site attaches.
+    /// The "added alongside, not replacing" half of the same behavior: a
+    /// store whose first site's domain (and an allowed origin passed at
+    /// creation) is already on its list keeps it after a second site
+    /// attaches. The engine's own allowed-origins list is left as it was.
     #[tokio::test]
-    async fn attaching_a_second_site_preserves_the_stores_original_allowed_origin() {
+    async fn attaching_a_second_site_adds_its_domain_alongside_the_first() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state.clone());
 
@@ -1314,19 +1268,14 @@ mod tests {
             .unwrap();
         assert_eq!(post_response.status(), StatusCode::FOUND);
 
+        let domains: Vec<String> =
+            state.db.lock().unwrap().list_store_domains(&connection_id).unwrap().into_iter().map(|d| d.domain).collect();
+        assert_eq!(domains, vec!["original-site.example.com".to_string(), "second-site.example.com".to_string()]);
+
         let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
         let sk = crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
         let tenant = state.engine_client.get_tenant(&sk).await.unwrap();
-        assert!(
-            tenant.allowed_origins.contains(&"https://original-site.example.com".to_string()),
-            "the original origin must survive, got: {:?}",
-            tenant.allowed_origins
-        );
-        assert!(
-            tenant.allowed_origins.contains(&"https://second-site.example.com".to_string()),
-            "the new origin must be added too, got: {:?}",
-            tenant.allowed_origins
-        );
+        assert_eq!(tenant.allowed_origins, vec!["https://original-site.example.com".to_string()], "the engine's list is left as it was");
     }
 
     /// The real security boundary: a signed-in user must not be able to

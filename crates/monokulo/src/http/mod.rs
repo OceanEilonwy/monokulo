@@ -154,6 +154,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/stores/{id}/settings/domains", post(embed_domains::add_domain))
         .route("/dashboard/stores/{id}/settings/domains/{domain_id}/check", post(embed_domains::check_domain))
         .route("/dashboard/stores/{id}/settings/domains/{domain_id}/delete", post(embed_domains::delete_domain))
+        .route("/dashboard/stores/{id}/settings/embed-restriction", post(embed_domains::set_embed_restriction))
         .route("/dashboard/stores/{id}/embed-warning/dismiss", post(embed_domains::dismiss_embed_warning))
         .route(
             "/dashboard/stores/{id}/orders/new",
@@ -221,16 +222,17 @@ pub fn build_router(state: AppState) -> Router {
         // shareable page wrapping the (nav-less) checkout page above in an
         // iframe - see `checkout::checkout_share_page`'s own doc comment.
         .route("/pay/{pk}/orders/{order_id}/share", axum::routing::get(checkout::checkout_share_page))
+        .layer(middleware::from_fn_with_state(state.clone(), embed_domains::embed_policy_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit::rate_limit_middleware))
         // Outside the rate limit, so a preflight never spends budget and a
         // `429` still carries the headers a cross-origin caller needs to read it.
-        .layer(embed_cors_layer());
+        .layer(embed_cors_layer(&state));
 
     let router = router.merge(pay_router);
 
     // A plain static file, not state-changing - no rate limiter needed
     // (`docs/fx_refactor.md` Phase 4.3), same as the engine's original.
-    let router = router.route("/static/monokulo-client.js", axum::routing::get(pay::client_library).layer(embed_cors_layer()));
+    let router = router.route("/static/monokulo-client.js", axum::routing::get(pay::client_library).layer(any_origin_cors_layer()));
     let router = router.route("/static/checkout.js", axum::routing::get(pay::checkout_script));
     let router = router.route("/static/jsQR.js", axum::routing::get(pay::qr_decoder_script));
     let router = router.route("/static/logo.svg", axum::routing::get(pay::logo_svg));
@@ -298,6 +300,52 @@ impl FromRequestParts<AppState> for AuthedAdmin {
     }
 }
 
+/// CORS for the public `/pay/{pk}/...` routes a merchant's page uses to
+/// embed checkout (order creation from `monokulo-client.js`, order status
+/// and its live stream). A store that hasn't restricted embedding answers
+/// any origin - a clearnet shop, a `.onion` one, a sandboxed frame whose
+/// origin is `null` - and one that has answers only its verified domains
+/// (`embed_domains::EmbedPolicy::allows_origin`). Safe to open this wide by
+/// default because none of these routes use cookies or any other ambient
+/// credential (credentials are never allowed), and anything they do is
+/// equally possible from a script outside a browser. Private-network
+/// preflights are answered too, so a public page can embed a monokulo that
+/// runs on a local network address.
+fn embed_cors_layer(state: &AppState) -> tower_http::cors::CorsLayer {
+    use tower_http::cors::AllowOrigin;
+    let db = state.db.clone();
+    cors_layer_base().allow_origin(AllowOrigin::predicate(move |origin, parts| {
+        let Some(public_key) = embed_domains::public_key_of_pay_path(parts.uri.path()) else { return true };
+        let Ok(origin) = origin.to_str() else { return false };
+        match crate::embed_domains::policy_for_public_key(&db, public_key) {
+            Some(policy) => policy.allows_origin(origin, crate::now_unix()),
+            None => true,
+        }
+    }))
+}
+
+/// CORS for the client library itself, for a page that loads it with
+/// `crossorigin` or as a module: any origin, since loading the library
+/// alone does nothing for any store.
+fn any_origin_cors_layer() -> tower_http::cors::CorsLayer {
+    cors_layer_base().allow_origin(tower_http::cors::Any)
+}
+
+fn cors_layer_base() -> tower_http::cors::CorsLayer {
+    tower_http::cors::CorsLayer::new()
+        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
+        .allow_headers([header::CONTENT_TYPE, header::ACCEPT])
+        .allow_private_network(true)
+        .max_age(std::time::Duration::from_secs(24 * 60 * 60))
+}
+
+/// Page chrome for a page with the site nav (or another status
+/// indicator): `views::PageChrome::from_user` plus the engine's last known
+/// health (`status_page::known_health`).
+pub(crate) fn page_chrome(state: &AppState, user: Option<&crate::db::UserRow>, current_path: impl Into<String>) -> crate::views::PageChrome {
+    crate::views::PageChrome::from_user(user, current_path).with_health(status_page::known_health(state))
+}
+
 /// The actual "resolve a session to its user" logic [`AuthedUser`]'s
 /// extractor uses - factored out so a handler that needs to know *whether*
 /// the caller has a valid session, without failing the request outright when
@@ -313,34 +361,6 @@ impl FromRequestParts<AppState> for AuthedAdmin {
 /// `None` covers every reason a session doesn't resolve (missing/malformed
 /// header, missing cookie, unknown/invalid token, a database error looking
 /// either up) - never distinguished further, same as [`AuthedUser`] itself.
-/// CORS for everything a merchant's page uses to embed checkout: the
-/// public `/pay/...` routes (order creation from `monokulo-client.js`, order
-/// status and its live stream) and the client library itself (for a page
-/// that loads it with `crossorigin` or as a module). Any origin, so an
-/// embed works on any site - a clearnet shop, a `.onion` one, a sandboxed
-/// frame whose origin is `null` - with no per-store origin list to keep in
-/// step. Safe to open this wide because none of these routes use cookies
-/// or any other ambient credential (credentials are never allowed), and
-/// anything they do is equally possible from a script outside a browser.
-/// Private-network preflights are answered too, so a public page can embed
-/// a monokulo that runs on a local network address.
-fn embed_cors_layer() -> tower_http::cors::CorsLayer {
-    use tower_http::cors::{Any, CorsLayer};
-    CorsLayer::new()
-        .allow_origin(Any)
-        .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-        .allow_headers([header::CONTENT_TYPE, header::ACCEPT])
-        .allow_private_network(true)
-        .max_age(std::time::Duration::from_secs(24 * 60 * 60))
-}
-
-/// Page chrome for a page with the site nav (or another status
-/// indicator): `views::PageChrome::from_user` plus the engine's last known
-/// health (`status_page::known_health`).
-pub(crate) fn page_chrome(state: &AppState, user: Option<&crate::db::UserRow>, current_path: impl Into<String>) -> crate::views::PageChrome {
-    crate::views::PageChrome::from_user(user, current_path).with_health(status_page::known_health(state))
-}
-
 pub(crate) fn resolve_authed_user(state: &AppState, headers: &HeaderMap) -> Option<(UserRow, String)> {
     let token = if let Some(header_value) = headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()) {
         header_value.strip_prefix("Bearer ")?.to_string()
