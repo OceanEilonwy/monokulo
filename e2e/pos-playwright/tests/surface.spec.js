@@ -192,37 +192,33 @@ test('payment address is unboxed, copies with its button, and selects fully on d
 });
 
 test('POS top bar reserves its full height above the payment iframe', async ({ page }) => {
-  const source = fs.readFileSync(path.join(root, 'crates/monokulo/src/views/pos.rs'), 'utf8');
-  const style = source.match(/const POS_STYLE: &str = r#"([\s\S]*?)"#;/)[1];
+  const style = fs.readFileSync(path.join(root, 'crates/monokulo/static/pos-app.css'), 'utf8');
   const head = fs.readFileSync(path.join(root, 'crates/monokulo/src/views/head.html'), 'utf8');
   await page.setContent(`${head}<style>${style}</style>
-    <div class="pos-topbar">
-      <div class="pos-topbar-start"><a class="pos-back" href="#">←</a><span class="pos-title">POS · rachelshandicrafts.com</span></div>
-      <button class="secondary-btn pos-topbar-action pos-screen-hidden" id="background-btn">Confirm in background</button>
-      <a class="pos-status-link" href="#"><span class="status-dot"></span></a>
-    </div>
-    <div class="pos-wrap"><div id="payment-screen" class="pos-screen">
-      <div class="payment-panel"><iframe title="Monero payment"></iframe><button class="secondary-btn">Cancel</button></div>
-    </div></div>`);
+    <div id="pos-root"><header class="pos-top"><span class="pos-store">rachelshandicrafts.com</span><strong>POS</strong><span class="pos-health"></span></header>
+      <main class="pos-payment"><div class="pos-order-heading"><h1>Coffee</h1></div><div class="pos-checkout-card"><iframe title="Monero payment"></iframe></div><button class="pos-primary">Background order</button><button class="pos-cancel">Cancel order</button></main>
+    </div>`);
 
   for (const { width, height } of [{ width: 1126, height: 700 }, { width: 667, height: 375 }, { width: 360, height: 740 }]) {
     await page.setViewportSize({ width, height });
-    for (const showAction of [false, true]) {
-      await page.locator('#background-btn').evaluate((button, show) => button.classList.toggle('pos-screen-hidden', !show), showAction);
-      const bounds = await page.evaluate(() => {
-        const bar = document.querySelector('.pos-topbar').getBoundingClientRect();
-        const panel = document.querySelector('.payment-panel').getBoundingClientRect();
-        const frame = document.querySelector('.payment-panel iframe').getBoundingClientRect();
-        return { barBottom: bar.bottom, panelTop: panel.top, frameTop: frame.top, frameBottom: frame.bottom, viewportHeight: innerHeight };
-      });
-      expect(bounds.panelTop).toBeGreaterThanOrEqual(bounds.barBottom);
-      expect(bounds.frameTop).toBeGreaterThanOrEqual(bounds.barBottom);
+    const bounds = await page.evaluate(() => {
+      const bar = document.querySelector('.pos-top').getBoundingClientRect();
+      const panel = document.querySelector('.pos-checkout-card').getBoundingClientRect();
+      const frame = document.querySelector('.pos-checkout-card iframe').getBoundingClientRect();
+      return { barBottom: bar.bottom, panelTop: panel.top, frameTop: frame.top, frameBottom: frame.bottom, viewportHeight: innerHeight };
+    });
+    expect(bounds.panelTop).toBeGreaterThanOrEqual(bounds.barBottom);
+    expect(bounds.frameTop).toBeGreaterThanOrEqual(bounds.barBottom);
+    if (height >= 620) {
       expect(bounds.frameBottom).toBeLessThanOrEqual(bounds.viewportHeight);
+    } else {
+      await page.locator('.pos-cancel').scrollIntoViewIfNeeded();
+      await expect(page.locator('.pos-cancel')).toBeInViewport();
     }
   }
 });
 
-test('refund QR controls stay vertically centered within the input', async ({ page }) => {
+test('compact refund QR controls sit below the full-width input', async ({ page }) => {
   const source = fs.readFileSync(path.join(root, 'crates/monokulo/src/views/checkout.rs'), 'utf8');
   const style = source.match(/const CHECKOUT_STYLE: &str = r#"([\s\S]*?)"#;/)[1];
   const head = fs.readFileSync(path.join(root, 'crates/monokulo/src/views/head.html'), 'utf8');
@@ -237,12 +233,12 @@ test('refund QR controls stay vertically centered within the input', async ({ pa
       const input = document.querySelector('#refund_address').getBoundingClientRect();
       return ['#scan-refund', '#upload-refund'].map(selector => {
         const button = document.querySelector(selector).getBoundingClientRect();
-        return { offset: button.top + button.height / 2 - (input.top + input.height / 2), inside: button.top >= input.top && button.bottom <= input.bottom };
+        return { gap: button.top - input.bottom, width: button.width, inputWidth: input.width };
       });
     });
     for (const position of positions) {
-      expect(Math.abs(position.offset)).toBeLessThan(1);
-      expect(position.inside).toBe(true);
+      expect(position.gap).toBeGreaterThanOrEqual(0);
+      expect(position.width).toBeLessThan(position.inputWidth);
     }
   }
 });
@@ -367,49 +363,52 @@ test('status indicator shows its rendered health, then follows changes by pollin
   await expect(page.locator('#status-indicator')).toHaveAttribute('title', 'could not check status');
 });
 
-test('POS backgrounds a confirming order into the top list and reopens it', async ({ page }) => {
-  const posSource = fs.readFileSync(path.join(root, 'crates/monokulo/src/views/pos.rs'), 'utf8');
-  const script = posSource.match(/const POS_SCRIPT: &str = r#"\n([\s\S]*?)\n"#;/)[1];
-  let status = 'pending';
+test('POS backgrounds a pending order, restores it after reload, and reopens it', async ({ page }) => {
+  let backgrounded = false;
+  let cancelled = false;
+  const order = {
+    order_id: 'order-1', merchant_order_id: 'Mia coffee', amount: '1.00', currency: 'XMR',
+    xmr_amount: '1.000000000000', address, status: 'pending', confirmations: 0,
+    confirmations_required: 1, error: null, cancelled_at: null,
+    created_at: 1000, expires_at: 9999999999,
+  };
+  await page.addInitScript(() => { window.EventSource = class { addEventListener() {} close() {} }; });
   await page.route(`${host}/**`, async route => {
     const request = route.request();
     const pathname = new URL(request.url()).pathname;
-    if (pathname === '/static/pos.js') return route.fulfill({ contentType: 'text/javascript', body: script });
-    if (pathname === '/status/summary') return route.fulfill({ contentType: 'application/json', body: '{"healthy":true}' });
-    if (pathname.endsWith('/pos/orders') && request.method() === 'POST') {
-      return route.fulfill({ contentType: 'application/json', body: JSON.stringify({ order_id: 'order-1', amount: '1', currency: 'XMR', xmr_amount: '1.000000000000', address }) });
+    if (pathname === '/static/pos-app.js' || pathname === '/static/pos-app.css') {
+      const name = path.basename(pathname);
+      return route.fulfill({ contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css', body: fs.readFileSync(path.join(root, 'crates/monokulo/static', name)) });
     }
-    if (pathname.endsWith('/pos/events')) {
-      expect(new URL(request.url()).searchParams.get('orders')).toBe('order-1');
-      const data = JSON.stringify({ order_id: 'order-1', status, confirmations: 0, confirmations_required: 1, is_terminal: false, error: null });
-      return route.fulfill({ contentType: 'text/event-stream', body: `retry: 200\n\nevent: status\ndata: ${data}\n\n` });
-    }
+    if (pathname.endsWith('/pos/orders') && request.method() === 'POST') return route.fulfill({ json: order });
+    if (pathname.endsWith('/pos/orders') && request.method() === 'GET') return route.fulfill({ json: { orders: backgrounded ? [{ ...order, backgrounded, cancelled_at: cancelled ? 2000 : null }] : [], total: backgrounded ? 1 : 0 } });
+    if (pathname.endsWith('/pos/orders/order-1') && request.method() === 'GET') return route.fulfill({ json: { ...order, backgrounded, cancelled_at: cancelled ? 2000 : null } });
+    if (pathname.endsWith('/pos/orders/order-1/background')) { backgrounded = true; return route.fulfill({ status: 204 }); }
+    if (pathname.endsWith('/pos/orders/order-1/cancel')) { cancelled = true; return route.fulfill({ status: 204 }); }
     if (pathname.startsWith('/pay/')) return route.fulfill({ contentType: 'text/html', body: '<h1>Shared payment view</h1>' });
-    return route.fulfill({ contentType: 'text/html', body: `<!doctype html><style>.pos-screen-hidden,[hidden]{display:none!important}</style>
-      <div id="pos-config" data-connection-id="conn-1" data-public-key="pk-1" data-decimals="2"></div>
-      <button id="background-btn" class="pos-screen-hidden">Confirm in background</button>
-      <details id="background-disclosure" hidden><summary id="background-summary">Background orders (0)</summary><div id="bg-stack"></div></details>
-      <div id="keypad-screen"><span id="amount-display"></span><button class="key" data-digit="1">1</button>
-        <button id="key-backspace">Back</button><button id="key-clear">Clear</button>
-        <input id="note-input"><button id="charge-btn" disabled>Charge</button><p id="pos-error"></p></div>
-      <div id="payment-screen" class="pos-screen-hidden"><iframe id="payment-frame"></iframe><p id="payment-error" hidden></p>
-        <button id="dismiss-btn" class="pos-screen-hidden">Dismiss</button><button id="cancel-btn">Cancel</button></div>
-      <script src="/static/pos.js"></script>` });
+    return route.fulfill({ contentType: 'text/html', body: `<!doctype html><html><head><link rel="stylesheet" href="/static/pos-app.css"></head><body>
+      <div id="pos-root" data-connection-id="conn-1" data-public-key="pk-1" data-currency="XMR" data-decimals="12" data-store-name="example.com"></div>
+      <script type="module" src="/static/pos-app.js"></script></body></html>` });
   });
   await page.goto(`${host}/dashboard/stores/conn-1/pos`);
-  await page.getByRole('button', { name: '1' }).click();
+  await page.getByRole('button', { name: '1', exact: true }).click();
+  await page.locator('#pos-reference').fill('Mia coffee');
   await page.getByRole('button', { name: 'Charge' }).click();
-  await expect(page.locator('#payment-frame')).toHaveAttribute('src', '/pay/pk-1/orders/order-1?view=compact');
-  status = 'unconfirmed';
-  await expect(page.locator('#background-btn')).toBeVisible({ timeout: 5000 });
-  await page.locator('#background-btn').click();
-  await expect(page.locator('#keypad-screen')).toBeVisible();
-  await expect(page.locator('#background-summary')).toHaveText('Background orders (1)');
-  await page.locator('#background-summary').click();
-  await expect(page.locator('.bg-item')).toBeVisible();
-  await page.locator('.bg-item').click();
-  await expect(page.locator('#payment-screen')).toBeVisible();
-  await expect(page.locator('#background-disclosure')).toBeHidden();
+  await expect(page.locator('.pos-checkout-card iframe')).toHaveAttribute('src', '/pay/pk-1/orders/order-1?view=compact');
+  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  await expect(page.locator('.pos-stack-card')).toContainText('Mia coffee');
+  await page.reload();
+  await expect(page.locator('.pos-stack-card')).toBeVisible();
+  await page.locator('.pos-stack-card').click();
+  await expect(page.locator('.pos-checkout-card iframe')).toHaveAttribute('src', '/pay/pk-1/orders/order-1?view=compact');
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Cancel order' }).click();
+  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Cancelled');
+  await expect(page.locator('.pos-checkout-card iframe')).toBeHidden();
+  await page.getByRole('button', { name: 'New order' }).click();
+  await page.getByRole('button', { name: 'View all →' }).click();
+  await page.getByRole('tab', { name: /Finished/ }).click();
+  await expect(page.locator('.pos-order-card .pos-badge')).toContainText('Cancelled');
 });
 
 test('embed refund option changes the iframe URL without changing status updates', async ({ page }) => {

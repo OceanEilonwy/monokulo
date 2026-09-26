@@ -44,7 +44,7 @@ async function loginAndOpenPos(page) {
   await expect(page).toHaveURL(/\/dashboard$/);
 
   await page.goto(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/pos`);
-  await expect(page.locator('#keypad-screen')).toBeVisible();
+  await expect(page.locator('.pos-keypad')).toBeVisible();
 }
 
 /**
@@ -66,11 +66,11 @@ async function chargeAndGetOrder(page, digits) {
   await enterAmount(page, digits);
   const [response] = await Promise.all([
     page.waitForResponse((r) => r.url().includes('/pos/orders') && r.request().method() === 'POST'),
-    page.click('#charge-btn'),
+    page.getByRole('button', { name: 'Charge' }).click(),
   ]);
   expect(response.ok()).toBeTruthy();
   const order = await response.json();
-  await expect(page.locator('#payment-screen')).toBeVisible();
+  await expect(page.locator('.pos-payment')).toBeVisible();
   return order;
 }
 
@@ -87,11 +87,11 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
       await expect(page.locator('#pos-launch-hint')).toHaveText('Requires JS');
       await page.goto(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/pos`);
       await expect(page.getByText('POS requires JavaScript.')).toBeVisible();
-      await expect(page.locator('#keypad-screen')).toBeHidden();
+      await expect(page.locator('.pos-keypad')).toBeHidden();
     } finally { await context.close(); }
   });
 
-  test('a 0-conf-trusted payment shows shared success then auto-returns to the keypad', async ({ page, context }) => {
+  test('a 0-conf-trusted payment shows shared success and stays reviewable', async ({ page, context }) => {
     // Each connect+send attempt is bounded by StagenetTestWallet's own 60s
     // reqwest client timeout (decoy selection is served from a cached
     // snapshot now, not a live fetch - see that crate's own doc comment for
@@ -110,8 +110,8 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     expect(piconero).toBe(335_000_000n);
 
     // The POS displays the same payment page as public checkout.
-    const checkout = page.frameLocator('#payment-frame');
-    await expect(page.locator('#payment-frame')).toHaveAttribute('src', new RegExp(`/pay/.*/orders/${order.order_id}\\?view=compact$`));
+    const checkout = page.frameLocator('.pos-checkout-card iframe');
+    await expect(page.locator('.pos-checkout-card iframe')).toHaveAttribute('src', new RegExp(`/pay/.*/orders/${order.order_id}\\?view=compact$`));
     await expect(checkout.locator('.qr-wrap svg')).toBeVisible();
     await expect(checkout.locator('#address')).toHaveValue(order.address);
     // An image of the displayed QR can fill the refund address without typing.
@@ -130,15 +130,9 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     await expect(checkout.locator('#payment-state')).toBeVisible({ timeout: 90_000 });
     await expect(checkout.locator('#payment-state')).not.toHaveClass(/is-error/);
 
-    // This order's native 0-conf threshold settles it to "paid" with no real
-    // confirmations needed - the checkout closes and the keypad
-    // returns on its own, no merchant action needed. Not necessarily on the
-    // very same scan tick that first saw it in the mempool (status can take
-    // one more tick to settle from "unconfirmed" to "paid"), so this gets
-    // real margin, not just the ~3s scan interval plus the client's own
-    // 3.5s auto-dismiss delay.
-    await expect(page.locator('#keypad-screen')).toBeVisible({ timeout: 60_000 });
-    await expect(page.locator('#payment-screen')).toBeHidden();
+    await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Paid', { timeout: 60_000 });
+    await page.getByRole('button', { name: 'New order' }).click();
+    await expect(page.locator('.pos-keypad')).toBeVisible();
 
     // Spec point 5: a POS-created order is a real order, visible on the
     // normal dashboard orders list, not something private to this screen.
@@ -164,27 +158,23 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     console.log(`sent - tx ${txHash}`);
 
     // While confirming, the shared state and wrapper's background action appear.
-    const checkout = page.frameLocator('#payment-frame');
+    const checkout = page.frameLocator('.pos-checkout-card iframe');
     await expect(checkout.locator('#payment-state')).toBeVisible({ timeout: 90_000 });
-    await expect(page.locator('#background-btn')).toBeVisible({ timeout: 30_000 });
+    await expect(page.getByRole('button', { name: 'Background order', exact: true })).toBeVisible({ timeout: 30_000 });
 
     // Backgrounding closes the payment view and returns to the keypad.
-    await page.click('#background-btn');
-    await expect(page.locator('#keypad-screen')).toBeVisible();
-    await expect(page.locator('#payment-screen')).toBeHidden();
+    await page.getByRole('button', { name: 'Background order', exact: true }).click();
+    await expect(page.locator('.pos-keypad')).toBeVisible();
+    await expect(page.locator('.pos-payment')).toBeHidden();
 
-    await expect(page.locator('#background-disclosure')).toBeVisible();
-    await page.locator('#background-summary').click();
-    const bgItem = page.locator('.bg-item').first();
+    const bgItem = page.locator('.pos-stack-card').first();
     await expect(bgItem).toBeVisible();
 
     // The one genuinely slow step in this whole suite - real stagenet blocks
     // land roughly every ~2 minutes.
-    await expect(bgItem).toHaveClass(/is-paid/, { timeout: 5 * 60 * 1000 });
-    await expect(bgItem).not.toHaveClass(/is-error/);
-
-    // Spec point 11's own lifecycle: the stacked box clears itself a few
-    // seconds after showing paid, rather than lingering forever.
-    await expect(bgItem).toBeHidden({ timeout: 15_000 });
+    await expect(bgItem).toBeHidden({ timeout: 5 * 60 * 1000 });
+    await page.getByRole('button', { name: 'View all →' }).click();
+    await page.getByRole('tab', { name: /Finished/ }).click();
+    await expect(page.locator('.pos-order-card').filter({ hasText: order.order_id.slice(0, 6) })).toContainText('Paid');
   });
 });

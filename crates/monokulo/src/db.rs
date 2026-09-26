@@ -42,6 +42,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (19, include_str!("../migrations/0019_store_domains.sql")),
     (20, include_str!("../migrations/0020_embed_restriction.sql")),
     (21, include_str!("../migrations/0021_order_created_with_key.sql")),
+    (22, include_str!("../migrations/0022_pos_orders.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -56,6 +57,64 @@ pub const TEST_ADMIN_PASSWORD: &str = "correct horse battery staple admin";
 
 pub struct Db {
     conn: Connection,
+}
+
+#[derive(Debug, Clone)]
+pub struct PosOrderRow {
+    pub order_id: String,
+    pub backgrounded: bool,
+    pub cancelled_at: Option<i64>,
+    pub created_at: i64,
+}
+
+impl Db {
+    pub fn insert_pos_order(&self, connection_id: &str, order_id: &str, request_key: Option<&str>, reference: Option<&str>, created_at: i64) -> Result<()> {
+        self.conn.execute(
+            "INSERT INTO pos_orders (connection_id, order_id, request_key, reference, created_at_utc) VALUES (?1, ?2, ?3, ?4, ?5)",
+            params![connection_id, order_id, request_key, reference, created_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn pos_order_by_request_key(&self, connection_id: &str, request_key: &str) -> Result<Option<String>> {
+        self.conn.query_row(
+            "SELECT order_id FROM pos_orders WHERE connection_id = ?1 AND request_key = ?2",
+            params![connection_id, request_key], |row| row.get(0),
+        ).optional().map_err(DbError::from)
+    }
+
+    pub fn get_pos_order(&self, connection_id: &str, order_id: &str) -> Result<Option<PosOrderRow>> {
+        self.conn.query_row(
+            "SELECT order_id, backgrounded, cancelled_at_utc, created_at_utc FROM pos_orders WHERE connection_id = ?1 AND order_id = ?2",
+            params![connection_id, order_id], |row| Ok(PosOrderRow {
+                order_id: row.get(0)?, backgrounded: row.get(1)?, cancelled_at: row.get(2)?, created_at: row.get(3)?,
+            }),
+        ).optional().map_err(DbError::from)
+    }
+
+    pub fn list_pos_orders(&self, connection_id: &str, limit: i64, offset: i64, search: Option<&str>) -> Result<Vec<PosOrderRow>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT order_id, backgrounded, cancelled_at_utc, created_at_utc FROM pos_orders
+             WHERE connection_id = ?1 AND (?4 IS NULL OR instr(lower(order_id), lower(?4)) > 0 OR instr(lower(coalesce(reference, '')), lower(?4)) > 0)
+             ORDER BY created_at_utc DESC, order_id DESC LIMIT ?2 OFFSET ?3",
+        )?;
+        let rows = stmt.query_map(params![connection_id, limit, offset, search], |row| Ok(PosOrderRow {
+            order_id: row.get(0)?, backgrounded: row.get(1)?, cancelled_at: row.get(2)?, created_at: row.get(3)?,
+        }))?;
+        rows.collect::<rusqlite::Result<Vec<_>>>().map_err(DbError::from)
+    }
+
+    pub fn count_pos_orders(&self, connection_id: &str, search: Option<&str>) -> Result<i64> {
+        self.conn.query_row("SELECT count(*) FROM pos_orders WHERE connection_id = ?1 AND (?2 IS NULL OR instr(lower(order_id), lower(?2)) > 0 OR instr(lower(coalesce(reference, '')), lower(?2)) > 0)", params![connection_id, search], |row| row.get(0)).map_err(DbError::from)
+    }
+
+    pub fn background_pos_order(&self, connection_id: &str, order_id: &str) -> Result<bool> {
+        Ok(self.conn.execute("UPDATE pos_orders SET backgrounded = 1 WHERE connection_id = ?1 AND order_id = ?2 AND cancelled_at_utc IS NULL", params![connection_id, order_id])? > 0)
+    }
+
+    pub fn cancel_pos_order(&self, connection_id: &str, order_id: &str, cancelled_at: i64) -> Result<bool> {
+        Ok(self.conn.execute("UPDATE pos_orders SET cancelled_at_utc = ?3, backgrounded = 1 WHERE connection_id = ?1 AND order_id = ?2 AND cancelled_at_utc IS NULL", params![connection_id, order_id, cancelled_at])? > 0)
+    }
 }
 
 pub type SharedDb = Arc<Mutex<Db>>;
@@ -1350,6 +1409,37 @@ impl Db {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn pos_orders_are_store_scoped_persist_background_and_cancel_state() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user("merchant", "merchant@example.com", "hash", false, 1).unwrap();
+        for (id, pk) in [("store-a", "pk_a"), ("store-b", "pk_b")] {
+            db.create_store_connection(id, "merchant", "custom", "https://example.com", pk, "encrypted", "http://engine", 1, "XMR").unwrap();
+        }
+        db.insert_pos_order("store-a", "order-1", Some("key-1"), Some("Mia coffee"), 10).unwrap();
+        assert!(db.get_pos_order("store-b", "order-1").unwrap().is_none());
+        assert_eq!(db.pos_order_by_request_key("store-a", "key-1").unwrap().as_deref(), Some("order-1"));
+        assert!(db.pos_order_by_request_key("store-b", "key-1").unwrap().is_none());
+        assert!(db.insert_pos_order("store-a", "order-2", Some("key-1"), None, 11).is_err());
+        assert!(!db.background_pos_order("store-b", "order-1").unwrap());
+        assert!(db.background_pos_order("store-a", "order-1").unwrap());
+        assert!(db.get_pos_order("store-a", "order-1").unwrap().unwrap().backgrounded);
+        assert!(db.cancel_pos_order("store-a", "order-1", 20).unwrap());
+        assert_eq!(db.get_pos_order("store-a", "order-1").unwrap().unwrap().cancelled_at, Some(20));
+        assert!(!db.cancel_pos_order("store-a", "order-1", 21).unwrap());
+        assert_eq!(db.list_pos_orders("store-a", 1, 0, None).unwrap().len(), 1);
+        assert_eq!(db.count_pos_orders("store-b", None).unwrap(), 0);
+        for i in 0..45 {
+            db.insert_pos_order("store-a", &format!("order-{i:02}"), None, None, 100 + i).unwrap();
+        }
+        assert_eq!(db.count_pos_orders("store-a", None).unwrap(), 46);
+        assert_eq!(db.list_pos_orders("store-a", 40, 0, None).unwrap().len(), 40);
+        assert_eq!(db.list_pos_orders("store-a", 40, 40, None).unwrap().len(), 6);
+        assert_eq!(db.list_pos_orders("store-a", 40, 0, None).unwrap()[0].order_id, "order-44");
+        assert_eq!(db.count_pos_orders("store-a", Some("mia")).unwrap(), 1);
+        assert_eq!(db.list_pos_orders("store-a", 40, 0, Some("MIA")).unwrap()[0].order_id, "order-1");
+    }
 
     #[test]
     fn creating_a_user_then_reading_it_back_round_trips() {

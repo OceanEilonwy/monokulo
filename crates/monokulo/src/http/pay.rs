@@ -205,6 +205,14 @@ pub async fn checkout_script() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/checkout.js"))
 }
 
+pub async fn pos_script() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/pos-app.js"))
+}
+
+pub async fn pos_style() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../../static/pos-app.css"))
+}
+
 pub async fn qr_decoder_script() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/jsQR.js"))
 }

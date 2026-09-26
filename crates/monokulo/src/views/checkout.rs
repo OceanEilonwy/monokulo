@@ -197,6 +197,23 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact .qr-wrap svg { width: min(42vh, 208px); height: auto; }
 .checkout-compact .section { margin-top: .7em; padding-top: .7em; }
 .checkout-compact .payment-state.is-paid { position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.checkout-compact .meta, .checkout-compact .payments-table { display: none; }
+.checkout-compact .pay-header { margin-bottom: .4em; }
+.checkout-compact .amount { font-size: 1.8rem; font-weight: 800; margin: .1em 0; }
+.checkout-compact .fiat-amount { font-size: .8em; margin-bottom: .4em; }
+.checkout-compact .qr-wrap { margin-bottom: .3em; }
+.checkout-compact .qr-wrap svg { width: min(29vh, 158px); height: auto; }
+.checkout-compact .address-block { margin-bottom: .5em; }
+.checkout-compact .address-row { border: 1px solid #999; border-radius: 4px; padding: .3em; }
+.checkout-compact .address-text { font-size: .7em; }
+.checkout-compact .refund-field { display: flex; flex-wrap: wrap; gap: .3em; }
+.checkout-compact .refund-field input[type=text] { padding-right: .6em; flex: 1 1 100%; }
+.checkout-compact .refund-tools { justify-self: auto; margin: 0; gap: .4em; }
+.checkout-compact .refund-icon-btn { width: auto; height: 2.3em; gap: .3em; padding: .25em .5em; border: 1px solid var(--line); border-radius: 4px; background: var(--paper); color: var(--ink); font-size: .75em; font-weight: 700; }
+.checkout-compact .refund-icon-btn[hidden] { display: none; }
+.refund-icon-btn span { display: none; }
+.checkout-compact .refund-icon-btn span { display: inline; }
+.checkout-compact .field-help { font-size: .7em; }
 "#;
 
 pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
@@ -263,9 +280,11 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                                     }
                                     button type="button" id="scan-refund" class="refund-icon-btn" aria-label="Scan refund QR" title="Scan refund QR" hidden {
                                         svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true" { path d="M3 9V3h6M15 3h6v6M21 15v6h-6M9 21H3v-6M6 6h2v2H6zM16 6h2v2h-2zM6 16h2v2H6zM12 11h2v2h-2zM16 16h2v2h-2z" {} }
+                                        span { "Scan refund QR" }
                                     }
                                     button type="button" id="upload-refund" class="refund-icon-btn" aria-label="Choose QR image" title="Choose QR image" hidden {
                                         svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" { rect x="2" y="3" width="20" height="18" rx="2" {} circle cx="8.5" cy="8.5" r="1.5" {} path d="m2 17 6-6 4 4 3-3 7 7" {} }
+                                        span { "Choose QR image" }
                                     }
                                     }
                                     input type="file" id="refund-image" accept="image/*" hidden;

@@ -40,6 +40,7 @@
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
+use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::engine_client::{EngineClientError, OrderView};
@@ -97,6 +98,8 @@ pub struct PosCreateOrderRequest {
     /// `http::orders::create_order`'s own form field already follows.
     #[serde(default)]
     pub merchant_order_id: Option<String>,
+    #[serde(default)]
+    pub request_key: Option<String>,
 }
 
 #[derive(Debug, Serialize)]
@@ -129,6 +132,12 @@ pub async fn create_order(
         Err(()) => return ApiError::Internal.into_response(),
     };
 
+    if let Some(key) = req.request_key.as_deref() {
+        if key.len() > 100 || key.is_empty() {
+            return ApiError::BadRequest("Invalid request key.".to_string()).into_response();
+        }
+    }
+
     let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
     let _policy_guard = policy_lock.lock().await;
     let row = match load_owned_connection(&state, &user, &id) {
@@ -137,12 +146,47 @@ pub async fn create_order(
         Err(()) => return ApiError::Internal.into_response(),
     };
 
+    if let Some(key) = req.request_key.as_deref() {
+        let existing = { state.db.lock().unwrap().pos_order_by_request_key(&row.id, key) };
+        match existing {
+            Ok(Some(existing)) => {
+                let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
+                let detail = match state.engine_client.get_order_detail(&sk, &existing).await { Ok(detail) => detail, Err(_) => return ApiError::Internal.into_response() };
+                let metadata_result = { state.db.lock().unwrap().get_order_currency_metadata(&row.id, &existing) };
+                let metadata = match metadata_result {
+                    Ok(Some(metadata)) => metadata,
+                    _ => return ApiError::Internal.into_response(),
+                };
+                if metadata.amount != req.amount.trim()
+                    || detail.order.merchant_order_id.as_deref().unwrap_or("") != req.merchant_order_id.as_deref().unwrap_or("").trim()
+                {
+                    return ApiError::BadRequest("Request key was already used for a different order.".to_string()).into_response();
+                }
+                return Json(PosCreateOrderResponse {
+                    order_id: existing,
+                    address: detail.order.address,
+                    xmr_amount: shared::exchange_rate::format_piconero_as_xmr(detail.order.xmr_amount_piconero),
+                    amount: metadata.amount,
+                    currency: metadata.currency,
+                    confirmations_required: metadata.confirmations_required_applied.unwrap_or(10),
+                    expires_at: detail.order.expires_at,
+                    merchant_order_id: detail.order.merchant_order_id,
+                }).into_response();
+            }
+            Ok(None) => {}
+            Err(_) => return ApiError::Internal.into_response(),
+        }
+    }
+
     let amount = req.amount.trim();
     if amount.is_empty() {
         return ApiError::BadRequest("Enter an amount.".to_string()).into_response();
     }
     let currency = row.base_currency.clone();
     let merchant_order_id = req.merchant_order_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    if merchant_order_id.as_ref().is_some_and(|reference| reference.chars().count() > 120) {
+        return ApiError::BadRequest("Reference must be 120 characters or fewer.".to_string()).into_response();
+    }
 
     let (piconero_per_unit, provider) = match state.exchange_rate.piconero_per_unit_for(&row, &currency).await {
         Ok(Some(result)) => result,
@@ -176,6 +220,10 @@ pub async fn create_order(
         .await
     {
         Ok(order) => {
+            if let Err(e) = state.db.lock().unwrap().insert_pos_order(&row.id, &order.order_id, req.request_key.as_deref(), merchant_order_id.as_deref(), crate::now_unix()) {
+                eprintln!("failed to record POS order {}: {e}", order.order_id);
+                return ApiError::Internal.into_response();
+            }
             if let Err(e) = state.db.lock().unwrap().create_order_currency_metadata(
                 &row.id,
                 &order.order_id,
@@ -222,6 +270,7 @@ pub async fn create_order(
 #[derive(Debug, Serialize)]
 pub struct PosStatusResponse {
     pub status: String,
+    pub updated_at: i64,
     pub confirmations: u64,
     pub confirmations_required: u64,
     pub is_terminal: bool,
@@ -231,6 +280,138 @@ pub struct PosStatusResponse {
     /// a real, error-free success is not an error just because it's also
     /// terminal.
     pub error: Option<String>,
+}
+
+#[derive(Serialize)]
+pub struct PosOrderData {
+    order_id: String,
+    merchant_order_id: Option<String>,
+    address: String,
+    xmr_amount: String,
+    amount: String,
+    currency: String,
+    status: String,
+    updated_at: i64,
+    confirmations: u64,
+    confirmations_required: u64,
+    error: Option<String>,
+    backgrounded: bool,
+    cancelled_at: Option<i64>,
+    created_at: i64,
+    expires_at: i64,
+}
+
+async fn pos_order_data(state: &AppState, connection_id: &str, sk: &str, row: crate::db::PosOrderRow) -> Result<PosOrderData, EngineClientError> {
+    let detail = state.engine_client.get_order_detail(sk, &row.order_id).await?;
+    let metadata = state.db.lock().unwrap().get_order_currency_metadata(connection_id, &row.order_id).ok().flatten();
+    let confirmations_required = metadata.as_ref().and_then(|m| m.confirmations_required_applied).unwrap_or(10);
+    Ok(PosOrderData {
+        order_id: row.order_id,
+        merchant_order_id: detail.order.merchant_order_id.clone(),
+        address: detail.order.address.clone(),
+        xmr_amount: shared::exchange_rate::format_piconero_as_xmr(detail.order.xmr_amount_piconero),
+        amount: metadata.as_ref().map(|m| m.amount.clone()).unwrap_or_else(|| shared::exchange_rate::format_piconero_as_xmr(detail.order.xmr_amount_piconero)),
+        currency: metadata.as_ref().map(|m| m.currency.clone()).unwrap_or_else(|| "XMR".to_string()),
+        status: detail.order.status.clone(),
+        updated_at: detail.order.updated_at,
+        confirmations: detail.order.confirmations,
+        confirmations_required,
+        error: derive_payment_error(&detail.order),
+        backgrounded: row.backgrounded,
+        cancelled_at: row.cancelled_at,
+        created_at: row.created_at,
+        expires_at: detail.order.expires_at,
+    })
+}
+
+#[derive(Deserialize)]
+pub struct PosListQuery { offset: Option<i64>, limit: Option<i64>, search: Option<String> }
+
+pub async fn list_orders(
+    State(state): State<AppState>, AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>, Query(query): Query<PosListQuery>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(()) => return ApiError::Internal.into_response(),
+    };
+    let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
+    let offset = query.offset.unwrap_or(0).max(0);
+    let limit = query.limit.unwrap_or(40).clamp(1, 100);
+    let search = query.search.as_deref().map(str::trim).filter(|term| !term.is_empty());
+    if search.is_some_and(|term| term.chars().count() > 120) {
+        return ApiError::BadRequest("Search is too long.".to_string()).into_response();
+    }
+    let (rows, total) = match state.db.lock().unwrap() {
+        db => match (db.list_pos_orders(&id, limit, offset, search), db.count_pos_orders(&id, search)) {
+            (Ok(rows), Ok(total)) => (rows, total), _ => return ApiError::Internal.into_response(),
+        },
+    };
+    let snapshots = futures_util::stream::iter(rows.into_iter().map(|pos_row| pos_order_data(&state, &id, &sk, pos_row)))
+        .buffered(8).collect::<Vec<_>>().await;
+    let mut orders = Vec::with_capacity(snapshots.len());
+    for snapshot in snapshots {
+        match snapshot {
+            Ok(order) => orders.push(order),
+            Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {},
+            Err(_) => return ApiError::Internal.into_response(),
+        }
+    }
+    Json(serde_json::json!({"orders": orders, "total": total, "offset": offset, "limit": limit})).into_response()
+}
+
+pub async fn order_detail(
+    State(state): State<AppState>, AuthedUser(user, _): AuthedUser,
+    Path((id, order_id)): Path<(String, String)>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(()) => return ApiError::Internal.into_response(),
+    };
+    let pos_row = match state.db.lock().unwrap().get_pos_order(&id, &order_id) {
+        Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(_) => return ApiError::Internal.into_response(),
+    };
+    let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
+    match pos_order_data(&state, &id, &sk, pos_row).await {
+        Ok(data) => Json(data).into_response(),
+        Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => ApiError::NotFound.into_response(),
+        Err(_) => ApiError::Internal.into_response(),
+    }
+}
+
+pub async fn background_order(
+    State(state): State<AppState>, AuthedUser(user, _): AuthedUser,
+    Path((id, order_id)): Path<(String, String)>,
+) -> Response {
+    if !matches!(load_owned_connection(&state, &user, &id), Ok(Some(_))) { return ApiError::NotFound.into_response(); }
+    match state.db.lock().unwrap().background_pos_order(&id, &order_id) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => ApiError::NotFound.into_response(),
+        Err(_) => ApiError::Internal.into_response(),
+    }
+}
+
+pub async fn cancel_order(
+    State(state): State<AppState>, AuthedUser(user, _): AuthedUser,
+    Path((id, order_id)): Path<(String, String)>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(()) => return ApiError::Internal.into_response(),
+    };
+    let pos_row = match state.db.lock().unwrap().get_pos_order(&id, &order_id) {
+        Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(_) => return ApiError::Internal.into_response(),
+    };
+    if pos_row.cancelled_at.is_some() { return StatusCode::NO_CONTENT.into_response(); }
+    let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
+    let detail = match state.engine_client.get_order_detail(&sk, &order_id).await {
+        Ok(detail) => detail, Err(_) => return ApiError::Internal.into_response(),
+    };
+    if detail.order.amount_received_piconero > 0 || detail.order.status != "pending" {
+        return ApiError::BadRequest("This order has payment activity and cannot be cancelled. Background it for review instead.".to_string()).into_response();
+    }
+    match state.db.lock().unwrap().cancel_pos_order(&id, &order_id, crate::now_unix()) {
+        Ok(true) => StatusCode::NO_CONTENT.into_response(),
+        Ok(false) => ApiError::NotFound.into_response(),
+        Err(_) => ApiError::Internal.into_response(),
+    }
 }
 
 /// The confirmations_required this *specific* order was actually created
@@ -307,6 +488,7 @@ async fn load_pos_status(state: &AppState, connection_id: &str, sk: &str, order_
     let error = derive_payment_error(&detail.order);
     Ok(PosStatusResponse {
         status: detail.order.status,
+        updated_at: detail.order.updated_at,
         confirmations: detail.order.confirmations,
         confirmations_required,
         is_terminal,
@@ -489,6 +671,63 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::CREATED);
         body_json(response).await.as_object().unwrap().get("connection_id").unwrap().as_str().unwrap().to_string()
+    }
+
+    #[tokio::test]
+    async fn pending_order_can_be_backgrounded_listed_reopened_and_cancelled() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let owner = signed_up_and_logged_in_session_token(&router, "pos-flow@example.com", "correct horse battery staple").await;
+        let other = signed_up_and_logged_in_session_token(&router, "pos-flow-other@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &owner, "XMR").await;
+        let base = format!("/dashboard/stores/{id}/pos/orders");
+        let create_body = serde_json::json!({"amount":"0.010000000000","merchant_order_id":"Mia coffee","request_key":"retry-key"}).to_string();
+        let create = |token: &str, body: String| Request::builder().method("POST").uri(&base)
+            .header("content-type", "application/json").header("authorization", format!("Bearer {token}"))
+            .body(Body::from(body)).unwrap();
+        let first = router.clone().oneshot(create(&owner, create_body.clone())).await.unwrap();
+        assert_eq!(first.status(), StatusCode::OK);
+        let first_id = body_json(first).await["order_id"].as_str().unwrap().to_string();
+        let retry = router.clone().oneshot(create(&owner, create_body)).await.unwrap();
+        assert_eq!(body_json(retry).await["order_id"], first_id);
+        let changed = router.clone().oneshot(create(&owner, serde_json::json!({"amount":"0.020000000000","merchant_order_id":"Mia coffee","request_key":"retry-key"}).to_string())).await.unwrap();
+        assert_eq!(changed.status(), StatusCode::BAD_REQUEST);
+        let order_url = format!("{base}/{first_id}");
+        let other_list = router.clone().oneshot(Request::builder().uri(&base).header("authorization", format!("Bearer {other}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(other_list.status(), StatusCode::NOT_FOUND);
+        let background = router.clone().oneshot(Request::builder().method("POST").uri(format!("{order_url}/background")).header("authorization", format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(background.status(), StatusCode::NO_CONTENT);
+        let list = router.clone().oneshot(Request::builder().uri(format!("{base}?limit=1&offset=0")).header("authorization", format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();
+        let list = body_json(list).await;
+        assert_eq!(list["total"], 1);
+        assert_eq!(list["orders"][0]["order_id"], first_id);
+        assert_eq!(list["orders"][0]["backgrounded"], true);
+        assert_eq!(list["orders"][0]["status"], "pending");
+        let other_detail = router.clone().oneshot(Request::builder().uri(&order_url).header("authorization", format!("Bearer {other}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(other_detail.status(), StatusCode::NOT_FOUND);
+        let cancel = router.clone().oneshot(Request::builder().method("POST").uri(format!("{order_url}/cancel")).header("authorization", format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(cancel.status(), StatusCode::NO_CONTENT);
+        let detail = router.clone().oneshot(Request::builder().uri(&order_url).header("authorization", format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();
+        let detail = body_json(detail).await;
+        assert!(detail["cancelled_at"].as_i64().is_some());
+        assert_eq!(detail["merchant_order_id"], "Mia coffee");
+        let repeated = router.oneshot(Request::builder().method("POST").uri(format!("{order_url}/cancel")).header("authorization", format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(repeated.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn production_pos_assets_are_served_with_browser_mime_types() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        for (path, mime, marker) in [
+            ("/static/pos-app.js", "text/javascript; charset=utf-8", "pos-root"),
+            ("/static/pos-app.css", "text/css; charset=utf-8", ".pos-stack-card"),
+        ] {
+            let response = router.clone().oneshot(Request::builder().uri(path).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            assert_eq!(response.headers()[axum::http::header::CONTENT_TYPE], mime);
+            assert!(body_text(response).await.contains(marker));
+        }
     }
 
     #[tokio::test]

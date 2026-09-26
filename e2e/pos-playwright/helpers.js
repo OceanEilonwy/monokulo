@@ -56,7 +56,7 @@ async function sendStagenetPayment(sendPaymentUrl, address, piconero) {
 // real digit-shift-from-the-right UI (`templates/pos.html.hbs`).
 async function enterAmount(page, digits) {
   for (const digit of digits) {
-    await page.click(`.key[data-digit="${digit}"]`);
+    await page.getByRole('button', { name: digit, exact: true }).click();
   }
 }
 

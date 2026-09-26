@@ -1,0 +1,361 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>POS background orders — design sketches</title>
+  <style>
+    @font-face { font-family: Manrope; src: url('../crates/monokulo/static/manrope-500.woff2'); font-weight: 500; }
+    @font-face { font-family: Manrope; src: url('../crates/monokulo/static/manrope-700.woff2'); font-weight: 700; }
+    @font-face { font-family: Manrope; src: url('../crates/monokulo/static/manrope-800.woff2'); font-weight: 800; }
+    :root { --ink:#111; --paper:#f4f1ea; --raised:#fff; --orange:#ff6600; --muted:#5a564c; --green:#1a7f37; --line:#111; }
+    * { box-sizing:border-box; }
+    body { margin:0; background:#ded8ca; color:var(--ink); font:500 15px/1.4 Manrope,Arial,sans-serif; }
+    .board { max-width:1848px; margin:auto; padding:30px 24px 36px; }
+    .intro { margin:0 0 25px; display:flex; align-items:end; justify-content:space-between; gap:24px; }
+    h1 { font-size:27px; line-height:1.15; margin:0 0 4px; letter-spacing:-.03em; }
+    .intro p { margin:0; color:#514d46; font-size:13px; }
+    .design-tag { font-size:12px; font-weight:800; text-transform:uppercase; letter-spacing:.1em; border:1px solid #625d53; padding:7px 10px; white-space:nowrap; }
+    .screens { display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:20px; }
+    .panel { min-width:0; }
+    .panel-title { height:51px; display:flex; align-items:center; gap:10px; font-weight:800; font-size:15px; }
+    .step { display:grid; place-items:center; width:25px; height:25px; border-radius:50%; background:var(--ink); color:#fff; font-size:12px; }
+    .phone { position:relative; width:100%; height:770px; overflow:hidden; background:var(--paper); border:2px solid var(--ink); border-radius:20px; box-shadow:0 12px 22px #2420191c; }
+    .screen { display:flex; flex-direction:column; height:100%; min-height:0; }
+    .top { min-height:52px; flex:none; display:flex; align-items:center; gap:7px; padding:7px 15px; border-bottom:1px solid #ddd5c8; background:var(--paper); }
+    .crumb { color:var(--muted); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px; }
+    .chevron { color:var(--muted); font-size:14px; }
+    .top strong { font-size:13px; }
+    .status-dot { width:9px; height:9px; border-radius:50%; background:var(--green); margin-left:auto; flex:none; }
+    .top-back { font-size:23px; line-height:1; margin-right:4px; }
+    .keypad-body { flex:1; min-height:0; display:flex; flex-direction:column; padding:17px 18px 16px; gap:13px; }
+    .amount { text-align:center; font-size:48px; font-weight:800; line-height:1.2; letter-spacing:-.035em; }
+    .currency { font-size:13px; color:var(--muted); font-weight:700; margin-left:6px; letter-spacing:0; }
+    .keys { flex:1; min-height:0; display:grid; grid-template-columns:repeat(3,1fr); grid-template-rows:repeat(4,1fr); gap:9px; max-height:440px; }
+    .key { display:grid; place-items:center; background:#fff; border:2px solid #111; border-radius:17px; font-size:29px; font-weight:800; }
+    .key.clear { color:#b00020; }
+    .key.delete { color:#7d5e00; font-size:28px; }
+    .note-field { flex:none; }
+    .note-label { display:block; font-size:11px; font-weight:700; margin-bottom:4px; }
+    .note { height:40px; display:flex; align-items:center; border:2px solid #111; border-radius:5px; background:#fff; padding:0 12px; font-size:13px; color:#797369; }
+    .note.filled { color:var(--ink); }
+    .primary { height:48px; flex:none; display:grid; place-items:center; border:2px solid #111; border-radius:5px; background:var(--orange); font-weight:800; font-size:17px; }
+    .primary.disabled { background:#fff; color:#817d74; border-color:#aaa59d; }
+    .bottom-safe { height:5px; flex:none; }
+    .payment { padding:15px 16px 13px; gap:8px; }
+    .payment .order-heading { display:flex; align-items:flex-start; justify-content:space-between; gap:8px; }
+    .payment h2 { font-size:23px; line-height:1.1; margin:0 0 4px; letter-spacing:-.025em; }
+    .payment .order-heading p { margin:0; color:var(--muted); font-size:12px; }
+    .badge { display:inline-flex; align-items:center; gap:5px; border:1px solid #ad8625; color:#624900; background:#fff1c9; border-radius:4px; padding:4px 6px; font-size:10px; line-height:1.1; font-weight:800; white-space:nowrap; }
+    .badge::before { content:""; height:7px; width:7px; background:#ad8625; border-radius:50%; }
+    .badge.confirm { border-color:#5556a4; color:#353683; background:#e7e8ff; }
+    .badge.confirm::before { background:#5556a4; }
+    .badge.partial { border-color:#c05e00; color:#8a3900; background:#fff0df; }
+    .badge.partial::before { background:#c05e00; }
+    .badge.paid { border-color:#1a7f37; background:#e3f4e7; color:#165f2e; }
+    .badge.paid::before { background:#1a7f37; }
+    .badge.with-icon { --state-ink:#624900; --state-border:#ad8625; gap:4px; padding:3px 6px; }
+    .badge.with-icon::before { display:none; }
+    .badge.confirm.with-icon { --state-ink:#353683; --state-border:#5556a4; }
+    .badge.partial.with-icon { --state-ink:#8a3900; --state-border:#c05e00; }
+    .badge-icon { display:grid; place-items:center; flex:none; width:16px; height:16px; color:var(--state-ink); }
+    .badge-icon .pending-spinner { width:13px; height:13px; border-width:1.6px; }
+    .badge-icon .confirm-disc { width:14px; height:14px; }
+    .badge-icon svg { display:block; width:18px; height:18px; }
+    .payment-card { flex:1; min-height:0; background:#fff; border:2px solid #111; border-radius:9px; display:flex; flex-direction:column; align-items:center; padding:10px 13px; text-align:center; }
+    .deadline { align-self:stretch; border:1px solid #a9842b; background:#fff7dc; border-radius:5px; font-size:11px; font-weight:700; padding:6px 4px; }
+    .payment-label { margin-top:7px; color:var(--muted); font-size:11px; }
+    .xmr { font-size:29px; font-weight:800; line-height:1.25; letter-spacing:-.03em; }
+    .fiat { color:var(--muted); font-size:12px; }
+    .qr { width:143px; height:143px; margin:6px 0 4px; padding:7px; background:white; border:1px solid #bbb; display:grid; grid-template-columns:repeat(17,1fr); grid-template-rows:repeat(17,1fr); gap:1px; }
+    .qr i { background:#111; }
+    .address-label { width:100%; text-align:left; color:var(--muted); font-size:11px; margin-top:1px; }
+    .address { width:100%; border:1px solid #999; border-radius:4px; padding:7px; font:500 10px/1.35 monospace; text-align:left; overflow-wrap:anywhere; }
+    .address span { float:right; font:700 11px Manrope,Arial,sans-serif; text-decoration:underline; margin-left:5px; }
+    .refund-section { width:100%; text-align:left; border-top:1px solid #c7c1b5; margin-top:10px; padding-top:8px; }
+    .refund-title { font-size:12px; font-weight:800; }
+    .refund-title span { color:var(--muted); font-weight:500; }
+    .refund-input { height:32px; display:flex; align-items:center; border:1.5px solid #111; border-radius:4px; margin-top:5px; padding:0 8px; color:#80796e; font-size:11px; }
+    .refund-tools { display:flex; gap:7px; margin-top:6px; }
+    .refund-tool { display:grid; place-items:center; height:29px; padding:0 8px; border:1px solid #111; border-radius:4px; background:var(--paper); font-size:10px; font-weight:800; white-space:nowrap; }
+    .refund-help { color:var(--muted); font-size:9px; line-height:1.25; margin:6px 0 0; }
+    .payment .secondary { height:39px; flex:none; border:2px solid #b00020; color:#b00020; border-radius:5px; background:#fff; display:grid; place-items:center; font-weight:800; font-size:14px; }
+    .payment .action-hint { text-align:center; color:var(--muted); font-size:9px; line-height:1.3; }
+    .payment .primary { height:43px; }
+    .stack-strip { flex:none; padding:7px 13px 8px; background:#fff; border-bottom:2px solid #111; }
+    .strip-heading { display:flex; align-items:baseline; justify-content:space-between; margin-bottom:5px; }
+    .strip-heading strong { font-size:12px; }
+    .strip-heading span { text-decoration:underline; font-size:11px; font-weight:800; }
+    .stack-cards { display:flex; gap:7px; overflow-x:auto; scrollbar-width:none; -ms-overflow-style:none; overscroll-behavior-x:contain; scroll-snap-type:x proximity; -webkit-overflow-scrolling:touch; }
+    .stack-cards::-webkit-scrollbar { display:none; }
+    .state-pending { --state-bg:#fff6d8; --state-border:#ac7600; --state-ink:#634800; }
+    .state-unconfirmed { --state-bg:#f0f0ff; --state-border:#7779bb; --state-ink:#353683; }
+    .state-confirming { --state-bg:#e7e8ff; --state-border:#5556a4; --state-ink:#353683; }
+    .state-partial { --state-bg:#fff0df; --state-border:#c05e00; --state-ink:#8a3900; }
+    .state-paid { --state-bg:#e3f4e7; --state-border:#1a7f37; --state-ink:#165f2e; }
+    .state-overpaid { --state-bg:#ffe6d9; --state-border:#b54016; --state-ink:#912e0c; }
+    .state-expired { --state-bg:#ece9e3; --state-border:#625b52; --state-ink:#4e4943; }
+    .state-double-spend { --state-bg:#ffe6e9; --state-border:#b00020; --state-ink:#870019; }
+    .state-offline { --state-bg:#f1f0ed; --state-border:#625b52; --state-ink:#4e4943; }
+    .state-cancelled { --state-bg:#e7e7e7; --state-border:#616161; --state-ink:#404040; }
+    .stack-card { flex:0 0 auto; display:inline-flex; align-items:center; gap:5px; width:max-content; max-width:182px; height:31px; padding:3px 7px; background:var(--state-bg); border:1.5px solid var(--state-border); border-radius:5px; color:var(--state-ink); box-shadow:2px 2px 0 var(--state-border); white-space:nowrap; scroll-snap-align:start; }
+    .card-symbol { display:grid; place-items:center; flex:none; width:21px; height:21px; color:var(--state-ink); font-size:18px; line-height:1; font-weight:800; }
+    .card-symbol svg { display:block; width:21px; height:21px; overflow:visible; }
+    .card-symbol.coin { width:24px; height:24px; }
+    .card-symbol.coin svg { width:24px; height:24px; }
+    .card-symbol.coin-duo { width:29px; height:23px; }
+    .card-symbol.coin-duo svg { width:29px; height:23px; }
+    .pending-spinner { width:18px; height:18px; border:2px solid color-mix(in srgb, var(--state-ink) 22%, transparent); border-top-color:var(--state-ink); border-right-color:var(--state-ink); border-radius:50%; animation:pending-turn 1.6s linear infinite; }
+    @keyframes pending-turn { to { transform:rotate(360deg); } }
+    @media (prefers-reduced-motion:reduce) { .pending-spinner { animation:none; transform:rotate(-35deg); } }
+    .confirm-disc { width:19px; height:19px; border-radius:50%; background:conic-gradient(from -90deg, var(--state-ink) 0 var(--progress, 20%), #c5c7ef var(--progress, 20%) 100%); box-shadow:inset 0 0 0 1px var(--state-border); }
+    .confirm-disc.no-wedge { background:#c5c7ef; }
+    .stack-card .card-reference { display:block; min-width:0; max-width:12ch; overflow:hidden; text-overflow:ellipsis; font-size:11px; font-weight:800; }
+    .stack-card .card-sum { flex:none; font-size:10px; font-weight:700; }
+    .stack-card.state-offline { border-style:dashed; box-shadow:none; }
+    .stack-keypad { padding-top:12px; gap:8px; }
+    .stack-keypad .amount { font-size:39px; }
+    .stack-keypad .keys { max-height:370px; gap:7px; }
+    .stack-keypad .key { border-radius:14px; font-size:25px; }
+    .stack-keypad .note { height:36px; }
+    .stack-keypad .primary { height:44px; }
+    .list { padding:16px; gap:12px; }
+    .list h2 { margin:0; font-size:24px; line-height:1.15; letter-spacing:-.03em; }
+    .list-subtitle { color:var(--muted); margin:0; font-size:11px; }
+    .search { height:42px; display:flex; align-items:center; gap:8px; border:2px solid #111; border-radius:5px; padding:0 11px; background:#fff; color:#777; font-size:13px; }
+    .tabs { display:flex; border-bottom:2px solid #111; gap:20px; font-size:12px; font-weight:800; }
+    .tabs span { padding:0 0 8px; }
+    .tabs .active { border-bottom:4px solid var(--orange); margin-bottom:-3px; }
+    .order-list { display:flex; flex-direction:column; gap:10px; overflow:hidden; }
+    .order-card { border:1.5px solid #111; border-radius:6px; padding:10px 11px; background:#fff; }
+    .order-card-top { display:flex; align-items:flex-start; justify-content:space-between; gap:5px; }
+    .order-card-top > div { min-width:0; }
+    .order-card h3 { margin:0; font-size:15px; line-height:1.2; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .order-card .sub { font-size:10px; color:var(--muted); margin:2px 0 0; }
+    .order-card .order-sum { font-size:22px; font-weight:800; line-height:1.25; margin-top:8px; }
+    .order-card .order-sum span { font-size:12px; font-weight:700; }
+    .order-card .order-meta { display:flex; align-items:center; justify-content:space-between; gap:5px; margin-top:7px; }
+    .order-card .order-meta small { color:var(--muted); font-size:10px; }
+    .order-card .resume { font-size:12px; font-weight:800; text-decoration:underline; white-space:nowrap; }
+    .flow-note { min-height:54px; margin:13px 2px 0; color:#403c35; font-size:12px; line-height:1.45; }
+    .flow-note strong { color:#111; }
+    .status-key { margin-top:12px; padding:14px 15px 16px; background:#f4f1ea; border:1px solid #9b9488; border-radius:8px; }
+    .status-key h2 { margin:0 0 3px; font-size:17px; }
+    .status-key > p { margin:0 0 12px; color:#514d46; font-size:11px; }
+    .state-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:8px; }
+    .state-example { min-width:0; display:flex; align-items:center; gap:7px; background:var(--state-bg); color:var(--state-ink); border:1.5px solid var(--state-border); border-radius:5px; padding:6px 8px; }
+    .state-example.state-offline { border-style:dashed; }
+    .state-example .card-symbol { width:23px; height:23px; }
+    .state-example .card-symbol.coin { width:26px; height:25px; }
+    .state-example .card-symbol.coin svg { width:26px; height:25px; }
+    .state-example .card-symbol.coin-duo { width:31px; height:25px; }
+    .state-example .card-symbol.coin-duo svg { width:31px; height:25px; }
+    .state-example strong { display:block; font-size:11px; line-height:1.15; }
+    .state-example small { display:block; font-size:9px; line-height:1.25; }
+    .partial-study { margin-top:15px; padding-top:13px; border-top:1px solid #bcb4a7; }
+    .partial-study h3 { margin:0 0 3px; font-size:15px; }
+    .partial-study > p { margin:0 0 10px; color:#514d46; font-size:11px; }
+    .variant-grid { display:grid; grid-template-columns:repeat(5,minmax(0,1fr)); gap:9px; }
+    .variant { min-width:0; text-align:left; cursor:pointer; font:inherit; border:1.5px solid #8f877b; border-radius:6px; background:#fff; padding:9px; color:var(--ink); }
+    .variant[aria-pressed="true"] { border:2px solid var(--orange); padding:8.5px; box-shadow:0 0 0 2px #ff660044; }
+    .variant:focus-visible { outline:3px solid var(--orange); outline-offset:2px; }
+    .variant-preview { display:flex; align-items:center; justify-content:center; gap:16px; height:68px; margin-bottom:7px; border:1px solid var(--state-border); border-radius:4px; background:var(--state-bg); color:var(--state-ink); }
+    .variant-preview .large-coin { width:58px; height:58px; }
+    .variant-preview .stack-coin { width:24px; height:24px; }
+    .variant strong { display:block; font-size:12px; }
+    .variant small { display:block; color:#514d46; font-size:10px; line-height:1.35; }
+    .key-note { margin:10px 0 0 !important; }
+    .board-notes { margin-top:18px; padding-top:13px; border-top:1px solid #9b9488; display:flex; justify-content:space-between; gap:20px; color:#4e4941; font-size:11px; }
+    @media (max-width:1300px) { .screens { grid-template-columns:repeat(2,minmax(0,1fr)); } .phone { max-width:420px; } .state-grid { grid-template-columns:repeat(3,minmax(0,1fr)); } .variant-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+    @media (max-width:750px) { .screens { grid-template-columns:1fr; } .panel { max-width:420px; margin:auto; width:100%; } .board { padding:16px; } .intro { align-items:start; } .design-tag { display:none; } .phone { height:740px; } .state-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } .board-notes { display:block; } }
+  </style>
+</head>
+<body>
+  <svg aria-hidden="true" style="position:absolute;width:0;height:0;overflow:hidden" xmlns="http://www.w3.org/2000/svg">
+    <defs>
+      <clipPath id="pos-coin-left-fragment"><path d="M0 0h17.3l-4.1 9.5 4.1 5.9L12.8 32H0Z"/></clipPath>
+      <clipPath id="pos-coin-large-fragment"><path d="M0 0h21.5l-3.5 9.5 3.5 5.9L17.8 32H0Z"/></clipPath>
+      <clipPath id="pos-coin-right-fragment"><path d="M17.3 0H32v32H12.8l4.5-16.6-4.1-5.9Z"/></clipPath>
+      <symbol id="pos-coin" viewBox="0 0 32 32">
+        <path d="M4 12.5v6c0 5 5.4 9 12 9s12-4 12-9v-6" fill="currentColor" fill-opacity=".24" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
+        <path d="M8 22.5v3M16 24.5v3M24 22.5v3" fill="none" stroke="currentColor" stroke-opacity=".55" stroke-width="1"/>
+        <ellipse cx="16" cy="12.5" rx="12" ry="9" fill="#fff" stroke="currentColor" stroke-width="1.6"/>
+        <path d="M9.5 15.7V9.4l6.5 5 6.5-5v6.3" fill="none" stroke="#ff6600" stroke-width="2.5" stroke-linecap="square" stroke-linejoin="miter"/>
+        <path d="M9.5 15.7v1.2h13v-1.2" fill="none" stroke="currentColor" stroke-width="1"/>
+      </symbol>
+      <symbol id="pos-coin-split" viewBox="0 0 32 32">
+        <use href="#pos-coin"/>
+        <path d="M17.3 2.8 13.2 9.5 17.3 15.4 12.8 29" fill="none" stroke="#fff" stroke-width="5" stroke-linejoin="round"/>
+      </symbol>
+      <symbol id="pos-coin-dashed" viewBox="0 0 32 32">
+        <use href="#pos-coin"/>
+        <path d="M17 4 13.4 10 17 15 13.2 27" fill="none" stroke="#fff" stroke-width="2.5" stroke-linejoin="round"/>
+        <path d="M17 4 13.4 10 17 15 13.2 27" fill="none" stroke="currentColor" stroke-width="1.3" stroke-dasharray="2 2.6" stroke-linejoin="round"/>
+      </symbol>
+      <symbol id="pos-coin-half" viewBox="0 0 32 32">
+        <use href="#pos-coin" clip-path="url(#pos-coin-large-fragment)"/>
+        <path d="M21.5 4 18 9.5 21.5 15.4 17.8 27" fill="none" stroke="currentColor" stroke-width="1.2" stroke-linejoin="round"/>
+      </symbol>
+      <symbol id="pos-coin-ghost" viewBox="0 0 32 32">
+        <use href="#pos-coin-half"/>
+        <path d="M21.5 4.2C25.6 6 28 8.9 28 12.5v6c0 4.7-4.2 8.1-10.2 8.5" fill="none" stroke="currentColor" stroke-width="1.4" stroke-dasharray="2.2 2.2" stroke-linecap="round"/>
+      </symbol>
+      <symbol id="pos-coin-separated" viewBox="0 0 36 32">
+        <g transform="translate(-1.5 0)"><use href="#pos-coin" clip-path="url(#pos-coin-left-fragment)"/><path d="M17.3 4 13.2 9.5 17.3 15.4 12.8 27" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></g>
+        <g transform="translate(3.5 0)"><use href="#pos-coin" clip-path="url(#pos-coin-right-fragment)"/><path d="M17.3 4 13.2 9.5 17.3 15.4 12.8 27" fill="none" stroke="currentColor" stroke-width="1.3" stroke-linejoin="round"/></g>
+      </symbol>
+      <symbol id="pos-coins-overpaid" viewBox="0 0 45 32">
+        <use href="#pos-coin" x="0" y="3" width="31" height="29"/>
+        <use href="#pos-coin" x="13" y="0" width="31" height="29"/>
+      </symbol>
+    </defs>
+  </svg>
+  <main class="board">
+    <div class="intro">
+      <div><h1>Background orders on POS</h1><p>Four mobile sketches · proposed flow · Monokulo light theme</p></div>
+      <div class="design-tag">Design review · no live payments</div>
+    </div>
+    <div class="screens">
+      <section class="panel" aria-label="Initial keypad state">
+        <div class="panel-title"><span class="step">1</span>Initial keypad</div>
+        <div class="phone"><div class="screen">
+          <div class="top"><span class="crumb">rachelshandicrafts.com</span><span class="chevron">›</span><strong>POS</strong><span class="status-dot"></span></div>
+          <div class="keypad-body">
+            <div class="amount">12.50<span class="currency">AUD</span></div>
+            <div class="keys"><div class="key">1</div><div class="key">2</div><div class="key">3</div><div class="key">4</div><div class="key">5</div><div class="key">6</div><div class="key">7</div><div class="key">8</div><div class="key">9</div><div class="key clear">C</div><div class="key">0</div><div class="key delete">⌫</div></div>
+            <div class="note-field"><span class="note-label">Reference (optional)</span><div class="note filled">Alex</div></div>
+            <div class="primary">Charge</div><div class="bottom-safe"></div>
+          </div>
+        </div></div>
+        <p class="flow-note"><strong>Before charging:</strong> 12.50 AUD and “Alex” are entered; Reference is the only descriptive field.</p>
+      </section>
+      <section class="panel" aria-label="Payment awaiting state">
+        <div class="panel-title"><span class="step">2</span>Awaiting payment</div>
+        <div class="phone"><div class="screen payment">
+          <div class="top" style="margin:-15px -16px 0"><span class="crumb">rachelshandicrafts.com</span><span class="chevron">›</span><strong>POS</strong><span class="status-dot"></span></div>
+          <div class="order-heading"><div><h2>Alex</h2><p>Reference · Order #8f42…a91c</p></div><span class="badge with-icon"><span class="badge-icon" aria-hidden="true"><span class="pending-spinner"></span></span>Awaiting payment</span></div>
+          <div class="payment-card">
+            <div class="deadline">Send payment within 28m</div>
+            <div class="payment-label">Send exactly this amount</div><div class="xmr">0.052431 XMR</div><div class="fiat">≈ 12.50 AUD</div>
+            <div class="qr" aria-label="Illustrative QR code, not scannable"></div>
+            <div class="address-label">Payment address</div><div class="address">8BG5t...wr91R7eR8mK4bB2qN9...P1wf<span>Copy</span></div>
+            <div class="refund-section"><div class="refund-title">Refund address <span>(optional)</span></div><div class="refund-input">Your Monero refund address</div><div class="refund-tools"><div class="refund-tool">▣ &nbsp;Scan refund QR</div><div class="refund-tool">▧ &nbsp;Choose QR image</div></div><p class="refund-help">Recorded for the merchant if a refund is needed. Refunds are not sent automatically.</p></div>
+          </div>
+          <div class="primary">Background order</div>
+          <div class="secondary">Cancel order</div>
+          <div class="action-hint">Background keeps this payment open · Cancel asks for confirmation</div>
+          <div class="bottom-safe"></div>
+        </div></div>
+        <p class="flow-note"><strong>While awaiting:</strong> background the payment, enter a refund address by typing or QR, or cancel the order after confirmation.</p>
+      </section>
+      <section class="panel" aria-label="Keypad with background order stack">
+        <div class="panel-title"><span class="step">3</span>Keypad with order stack</div>
+        <div class="phone"><div class="screen">
+          <div class="top"><span class="crumb">rachelshandicrafts.com</span><span class="chevron">›</span><strong>POS</strong><span class="status-dot"></span></div>
+          <div class="stack-strip">
+            <div class="strip-heading"><strong>Background orders · 4</strong><span>View all →</span></div>
+            <div class="stack-cards" role="region" aria-label="Background orders; scroll sideways" tabindex="0">
+              <div class="stack-card state-pending" title="Alex · Awaiting payment"><span class="card-symbol" aria-hidden="true"><span class="pending-spinner"></span></span><strong class="card-reference">Alex</strong><span class="card-sum">12.50</span></div>
+              <div class="stack-card state-confirming" title="Northbridge office catering · Confirming · 2 of 10 confirmations"><span class="card-symbol" aria-hidden="true"><span class="confirm-disc" data-confirmations="2" data-required="10"></span></span><strong class="card-reference">Northbridge office catering</strong><span class="card-sum">8.00</span></div>
+              <div class="stack-card state-paid" title="Order #91a4 · Paid · No reference"><span class="card-symbol coin" aria-hidden="true"><svg viewBox="0 0 32 32"><use href="#pos-coin"/></svg></span><strong class="card-reference">#91a4</strong><span class="card-sum">5.00</span></div>
+              <div class="stack-card state-partial" title="Mia · Partially paid"><span class="card-symbol coin" aria-hidden="true"><svg viewBox="0 0 36 32"><use class="partial-live" href="#pos-coin-split"/></svg></span><strong class="card-reference">Mia</strong><span class="card-sum">9.00</span></div>
+            </div>
+          </div>
+          <div class="keypad-body stack-keypad">
+            <div class="amount">0.00<span class="currency">AUD</span></div>
+            <div class="keys"><div class="key">1</div><div class="key">2</div><div class="key">3</div><div class="key">4</div><div class="key">5</div><div class="key">6</div><div class="key">7</div><div class="key">8</div><div class="key">9</div><div class="key clear">C</div><div class="key">0</div><div class="key delete">⌫</div></div>
+            <div class="note-field"><span class="note-label">Reference (optional)</span><div class="note">E.g. customer name or note</div></div><div class="primary disabled">Charge</div><div class="bottom-safe"></div>
+          </div>
+        </div></div>
+        <p class="flow-note"><strong>At the counter:</strong> swipe or scroll the compact cards. Long references truncate; an empty reference uses the short order ID.</p>
+      </section>
+      <section class="panel" aria-label="Full page list of background orders">
+        <div class="panel-title"><span class="step">4</span>Background orders list</div>
+        <div class="phone"><div class="screen">
+          <div class="top"><span class="top-back">‹</span><strong>POS</strong><span class="status-dot"></span></div>
+          <div class="screen list">
+            <div><h2>Background orders</h2><p class="list-subtitle">Choose an order to open.</p></div>
+            <div class="search">⌕ &nbsp;Search reference or order ID</div>
+            <div class="tabs"><span class="active">Active · 3</span><span>Finished · 1</span></div>
+            <div class="order-list">
+              <div class="order-card"><div class="order-card-top"><div><h3>Alex</h3><p class="sub">Reference · #8f42…a91c · created 10:42</p></div><span class="badge with-icon"><span class="badge-icon" aria-hidden="true"><span class="pending-spinner"></span></span>Awaiting payment</span></div><div class="order-sum">12.50 <span>AUD</span></div><div class="order-meta"><small>Expires in 28m</small><span class="resume">Open →</span></div></div>
+              <div class="order-card"><div class="order-card-top"><div><h3>Northbridge office catering</h3><p class="sub">Reference · #57dc…b804 · created 10:35</p></div><span class="badge confirm with-icon"><span class="badge-icon" aria-hidden="true"><span class="confirm-disc" data-confirmations="2" data-required="10"></span></span>Confirming</span></div><div class="order-sum">8.00 <span>AUD</span></div><div class="order-meta"><small>2 of 10 confirmations</small><span class="resume">Open →</span></div></div>
+              <div class="order-card"><div class="order-card-top"><div><h3>Mia</h3><p class="sub">Reference · #5e82…ce29 · created 10:29</p></div><span class="badge partial with-icon"><span class="badge-icon" aria-hidden="true"><svg viewBox="0 0 36 32"><use class="partial-live" href="#pos-coin-split"/></svg></span>Partially paid</span></div><div class="order-sum">9.00 <span>AUD</span></div><div class="order-meta"><small>Waiting for remaining amount</small><span class="resume">Open →</span></div></div>
+            </div>
+          </div>
+        </div></div>
+        <p class="flow-note"><strong>Find it later:</strong> search by the entered reference or order ID; active and finished orders are separate.</p>
+      </section>
+    </div>
+    <section class="status-key" aria-label="Background order status colors and symbols">
+      <h2>Background order status language</h2>
+      <p>The stack scrolls sideways without a scrollbar. Color and shape identify each state; the full list and payment screen retain status words.</p>
+      <div class="state-grid">
+        <div class="state-example state-pending"><span class="card-symbol" aria-hidden="true"><span class="pending-spinner"></span></span><span><strong>Pending</strong><small>Waiting for payment</small></span></div>
+        <div class="state-example state-unconfirmed"><span class="card-symbol" aria-hidden="true"><span class="confirm-disc no-wedge"></span></span><span><strong>Unconfirmed</strong><small>Payment seen; no wedge yet</small></span></div>
+        <div class="state-example state-confirming"><span class="card-symbol" aria-hidden="true"><span class="confirm-disc" data-confirmations="2" data-required="10"></span></span><span><strong>Confirming</strong><small>2 of 10 shown = 20% wedge</small></span></div>
+        <div class="state-example state-partial"><span class="card-symbol coin" aria-hidden="true"><svg viewBox="0 0 36 32"><use class="partial-live" href="#pos-coin-split"/></svg></span><span><strong>Partial</strong><small>Choose a coin treatment below</small></span></div>
+        <div class="state-example state-paid"><span class="card-symbol coin" aria-hidden="true"><svg viewBox="0 0 32 32"><use href="#pos-coin"/></svg></span><span><strong>Paid</strong><small>One full coin · settled</small></span></div>
+        <div class="state-example state-overpaid"><span class="card-symbol coin-duo" aria-hidden="true"><svg viewBox="0 0 45 32"><use href="#pos-coins-overpaid"/></svg></span><span><strong>Overpaid</strong><small>Two full coins · review</small></span></div>
+        <div class="state-example state-expired"><span class="card-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 2.5h14M5 21.5h14M7 3c0 4.5 2.5 6.5 5 9-2.5 2.5-5 4.5-5 9M17 3c0 4.5-2.5 6.5-5 9 2.5 2.5 5 4.5 5 9"/><path d="M8.5 19.5 12 15l3.5 4.5Z" fill="currentColor" stroke="none"/></svg></span><span><strong>Expired</strong><small>Hourglass · sand at bottom</small></span></div>
+        <div class="state-example state-double-spend"><span class="card-symbol" aria-hidden="true">!</span><span><strong>Double spend</strong><small>Urgent payment warning</small></span></div>
+        <div class="state-example state-offline"><span class="card-symbol" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><path d="M3 8.5a14 14 0 0 1 17.8-.3M6 12a9.5 9.5 0 0 1 10.8-.7M9.5 15.5a4 4 0 0 1 3.8-.2"/><circle cx="12" cy="19" r="1.1" fill="currentColor" stroke="none"/><path d="M3 3 21 21" stroke-width="2.2"/></svg></span><span><strong>Connection lost</strong><small>Wi-Fi disconnected</small></span></div>
+        <div class="state-example state-cancelled"><span class="card-symbol" aria-hidden="true">×</span><span><strong>Cancelled*</strong><small>Proposed; finished list only</small></span></div>
+      </div>
+      <section class="partial-study" aria-label="Partial payment coin alternatives">
+        <h3>Partial coin alternatives</h3>
+        <p>Choose A–E to preview it in the status key, Mia’s list badge, and her order card above. Each tile shows the larger artwork and its size in the stack.</p>
+        <div class="variant-grid">
+          <button type="button" class="variant state-partial" data-symbol="#pos-coin-dashed" aria-pressed="false"><span class="variant-preview"><svg class="large-coin" viewBox="0 0 36 32" aria-hidden="true"><use href="#pos-coin-dashed"/></svg><svg class="stack-coin" viewBox="0 0 36 32" aria-hidden="true"><use href="#pos-coin-dashed"/></svg></span><strong>A · Dashed fracture</strong><small>The coin stays whole; a broken seam hints that payment is incomplete.</small></button>
+          <button type="button" class="variant state-partial" data-symbol="#pos-coin-split" aria-pressed="true"><span class="variant-preview"><svg class="large-coin" viewBox="0 0 36 32" aria-hidden="true"><use href="#pos-coin-split"/></svg><svg class="stack-coin" viewBox="0 0 36 32" aria-hidden="true"><use href="#pos-coin-split"/></svg></span><strong>B · Open split</strong><small>The current design, with a clear jagged gap through one coin.</small></button>
+          <button type="button" class="variant state-partial" data-symbol="#pos-coin-half" aria-pressed="false"><span class="variant-preview"><svg class="large-coin" viewBox="0 0 36 32" aria-hidden="true"><use href="#pos-coin-half"/></svg><svg class="stack-coin" viewBox="0 0 36 32" aria-hidden="true"><use href="#pos-coin-half"/></svg></span><strong>C · Larger fragment</strong><small>Most of one coin remains, with one piece missing.</small></button>
+          <button type="button" class="variant state-partial" data-symbol="#pos-coin-separated" aria-pressed="false"><span class="variant-preview"><svg class="large-coin" viewBox="0 0 36 32" aria-hidden="true"><use href="#pos-coin-separated"/></svg><svg class="stack-coin" viewBox="0 0 36 32" aria-hidden="true"><use href="#pos-coin-separated"/></svg></span><strong>D · Separated halves</strong><small>Two outlined broken edges make the gap easier to see.</small></button>
+          <button type="button" class="variant state-partial" data-symbol="#pos-coin-ghost" aria-pressed="false"><span class="variant-preview"><svg class="large-coin" viewBox="0 0 36 32" aria-hidden="true"><use href="#pos-coin-ghost"/></svg><svg class="stack-coin" viewBox="0 0 36 32" aria-hidden="true"><use href="#pos-coin-ghost"/></svg></span><strong>E · Dashed missing piece</strong><small>The larger fragment stays solid; a dashed outline completes the coin.</small></button>
+        </div>
+      </section>
+      <p class="key-note">Confirming wedge = max(20%, confirmation progress rounded up to the next 10%), capped at 100%. * Cancellation is proposed, not a current engine payment status. Connection loss overlays the last known status.</p>
+    </section>
+    <div class="board-notes"><span>Illustrative amounts, order IDs and QR pattern. The QR cannot be used to pay.</span><span>Flow: charge → await → background → resume from stack or list.</span></div>
+  </main>
+  <script>
+    // A deterministic visual placeholder. It deliberately does not encode a payment address.
+    document.querySelectorAll('.qr').forEach(function (qr) {
+      function finder(x, y) {
+        return (x < 5 && y < 5) || (x > 11 && y < 5) || (x < 5 && y > 11);
+      }
+      function finderCell(x, y) {
+        var localX = x > 11 ? x - 12 : x;
+        var localY = y > 11 ? y - 12 : y;
+        return localX === 0 || localX === 4 || localY === 0 || localY === 4 || (localX >= 2 && localX <= 2 && localY >= 2 && localY <= 2);
+      }
+      for (var y = 0; y < 17; y++) for (var x = 0; x < 17; x++) {
+        var cell = document.createElement('span');
+        if (finder(x, y) ? finderCell(x, y) : ((x * 13 + y * 7 + x * y * 3) % 11 < 5)) cell.style.background = '#111';
+        qr.appendChild(cell);
+      }
+    });
+    document.querySelectorAll('.confirm-disc[data-confirmations][data-required]').forEach(function (disc) {
+      var confirmations = Number(disc.dataset.confirmations);
+      var required = Number(disc.dataset.required);
+      var percent = required > 0 ? Math.min(100, Math.max(20, Math.ceil((confirmations / required) * 10) * 10)) : 100;
+      disc.style.setProperty('--progress', percent + '%');
+    });
+    document.querySelectorAll('.stack-cards').forEach(function (stack) {
+      stack.addEventListener('wheel', function (event) {
+        if (stack.scrollWidth <= stack.clientWidth || Math.abs(event.deltaX) >= Math.abs(event.deltaY)) return;
+        stack.scrollLeft += event.deltaY;
+        event.preventDefault();
+      }, { passive: false });
+    });
+    document.querySelectorAll('.variant[data-symbol]').forEach(function (button) {
+      button.addEventListener('click', function () {
+        var symbol = button.dataset.symbol;
+        document.querySelectorAll('.partial-live').forEach(function (icon) { icon.setAttribute('href', symbol); });
+        document.querySelectorAll('.variant[data-symbol]').forEach(function (option) {
+          option.setAttribute('aria-pressed', option === button ? 'true' : 'false');
+        });
+      });
+    });
+  </script>
+</body>
+</html>

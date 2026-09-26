@@ -198,7 +198,10 @@ pub fn build_router(state: AppState) -> Router {
             axum::routing::post(orders::webhooks_delete),
         )
         .route("/dashboard/stores/{id}/pos", axum::routing::get(pos::pos_page))
-        .route("/dashboard/stores/{id}/pos/orders", axum::routing::post(pos::create_order))
+        .route("/dashboard/stores/{id}/pos/orders", axum::routing::get(pos::list_orders).post(pos::create_order))
+        .route("/dashboard/stores/{id}/pos/orders/{order_id}", axum::routing::get(pos::order_detail))
+        .route("/dashboard/stores/{id}/pos/orders/{order_id}/background", axum::routing::post(pos::background_order))
+        .route("/dashboard/stores/{id}/pos/orders/{order_id}/cancel", axum::routing::post(pos::cancel_order))
         .route("/dashboard/stores/{id}/pos/orders/{order_id}/status", axum::routing::get(pos::order_status))
         .route("/dashboard/stores/{id}/pos/events", axum::routing::get(pos::order_events))
         .route("/dashboard/stores/{id}/orders", axum::routing::get(orders::orders_list))
@@ -242,6 +245,8 @@ pub fn build_router(state: AppState) -> Router {
     // (`docs/fx_refactor.md` Phase 4.3), same as the engine's original.
     let router = router.route("/static/monokulo-client.js", axum::routing::get(pay::client_library).layer(any_origin_cors_layer()));
     let router = router.route("/static/checkout.js", axum::routing::get(pay::checkout_script));
+    let router = router.route("/static/pos-app.js", axum::routing::get(pay::pos_script));
+    let router = router.route("/static/pos-app.css", axum::routing::get(pay::pos_style));
     let router = router.route("/static/jsQR.js", axum::routing::get(pay::qr_decoder_script));
     let router = router.route("/static/logo.svg", axum::routing::get(pay::logo_svg));
     let router = router.route("/static/logo-inverted.svg", axum::routing::get(pay::logo_inverted_svg));
