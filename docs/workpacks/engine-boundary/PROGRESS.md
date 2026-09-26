@@ -7,8 +7,8 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 | Step | Title | Status | Commits |
 |---|---|---|---|
 | 1 | Make the engine private by default | done | `f4495b8` |
-| 2 | Stop monokulo using the engine's public routes | done | (this commit) |
-| 3 | Stop monokulo reading or writing the engine's allowed origins | not started | |
+| 2 | Stop monokulo using the engine's public routes | done | `11838f0` |
+| 3 | Stop monokulo reading or writing the engine's allowed origins | done | (this commit) |
 | 4 | Let a shop's server create orders with its secret key | not started | |
 | 5 | Give plugins monokulo's address, not the engine's | not started | |
 | 6 | Fix the WooCommerce plugin | not started | |
@@ -25,7 +25,9 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 
 ## Resume here
 
-Steps 1-2 done. Next: step 3 (stop monokulo reading or writing the engine's allowed origins: `connections::create_connection_for_user`, `EngineClient::set_allowed_origins`, `embed_domains::import_existing_domains`; rename the JSON `/connections` field `allowed_origins` to `domains`).
+Steps 1-3 done. Next: step 4 (secret-key auth on `POST /pay/{pk}/orders` in `crates/monokulo/src/http/pay.rs`; restricted stores need a verified `Origin` or the key; new monokulo migration `0021` adding a created-with-key column to `order_currency_metadata`; per-store limiter for key-authenticated requests).
+
+Gotcha: never hold `state.db.lock()` in a `for` loop header (`for x in db.lock().unwrap().list(..)`) and lock again inside: the guard lives for the whole loop and the test deadlocks. Also never `pkill -f` a pattern that appears in your own command line.
 
 Note: the reviewer committed `a0abcca` (README only) mid-step 2: step 9g's Tor test must now be a real end-to-end test against the installed tor 0.4.9.12 (`#[ignore]`d, real tor process, SOCKS isolation per visitor). Re-read README 9g before step 9.
 
@@ -33,8 +35,8 @@ Commit SHAs: each step's commit records its own SHA in the *next* step's PROGRES
 
 ## Test status at last commit
 
-After step 2:
-- `cargo test --workspace`: 858 passed, 0 failed, 18 ignored.
+After step 3:
+- `cargo test --workspace`: 859 passed, 0 failed, 18 ignored.
 - clippy: per-file warning counts identical to baseline (checked with a per-file count diff).
 - Playwright surface: not re-run (no JS/HTML/CSS touched).
 - PHP suite: not run.
@@ -60,3 +62,10 @@ Baseline (before step 1), at `e4d83da`:
 - Guard: `engine_client::tests::every_engine_call_uses_the_admin_api_or_status` scans `engine_client.rs`'s own source: every `format!("{}/...` URL must start with `/api/v1/admin/` or be `/status`, and the string `/api/v1/t/` must not appear.
 - `docs/DESIGN.md` §10.2 lists the new route.
 - Not yet moved (later steps): `scanner-test-support`, the stagenet tests and `mock-woocommerce` tests still call `/api/v1/t/...` (steps 6 and 8).
+
+### Step 3: monokulo no longer touches the engine's allowed origins
+- `crates/monokulo/src/http/connections.rs`: `CreateConnectionRequest.allowed_origins` renamed `domains` (optional; `allowed_origins` accepted as alias, decision 2). `create_connection_for_user` always sends `allowed_origins: []` to the engine (decision 4) and puts `domains` into `store_domains` via the new `embed_domains::suggest_domain` (bare domain or URL).
+- `crates/monokulo/src/engine_client.rs`: `set_allowed_origins` deleted; `TenantView` and `PatchTenantRequest` no longer carry `allowed_origins`.
+- `crates/monokulo/src/embed_domains.rs`: `import_existing_domains(db)` imports only each store's own site domain, once (`domains_imported`), no engine client or key (decision 3). `main.rs` calls it synchronously.
+- Tests: `api_domains_join_the_store_and_existing_stores_get_their_site_imported_once`, `the_old_allowed_origins_field_is_accepted_as_an_alias_for_domains` (in `http/embed_domains.rs`); `connect.rs`'s second-site test no longer reads the engine's list. Test JSON bodies across monokulo now send `domains`.
+- Verified "no monokulo code path reads or writes the engine's allowed origins" by grep: the only remaining `allowed_origins` in `crates/monokulo/src` are the always-empty create field, the alias, and form-field names in tests proving the old form field is ignored.

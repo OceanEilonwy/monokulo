@@ -405,7 +405,7 @@ pub async fn connect_submit(
         view_key_hex: form.view_key_hex.clone(),
         spend_pubkey_hex: form.spend_pubkey_hex.clone(),
         network: Some(form.network.clone()),
-        allowed_origins: Vec::new(),
+        domains: Vec::new(),
         confirmations_required: form.confirmations_required,
         order_expiry_seconds: None,
         base_currency: form.base_currency.clone(),

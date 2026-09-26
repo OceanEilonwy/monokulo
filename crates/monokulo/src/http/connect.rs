@@ -247,7 +247,7 @@ async fn confirm_new_store(state: &AppState, user: &UserRow, platform: &str, for
         view_key_hex: form.view_key_hex.clone().unwrap_or_default(),
         spend_pubkey_hex: form.spend_pubkey_hex.clone().unwrap_or_default(),
         network: form.network.clone(),
-        allowed_origins: Vec::new(),
+        domains: Vec::new(),
         confirmations_required: form.confirmations_required,
         order_expiry_seconds: form.order_expiry_seconds,
         base_currency: form.base_currency.clone().unwrap_or_default(),
@@ -531,7 +531,6 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::crypto;
     use crate::db::Db;
     use crate::engine_client::EngineClient;
 
@@ -1069,7 +1068,7 @@ mod tests {
                             "view_key_hex": TEST_VIEW_KEY_HEX,
                             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
                             "network": "mainnet",
-                            "allowed_origins": [],
+                            "domains": [],
                             "base_currency": "XMR",
                         })
                         .to_string(),
@@ -1210,9 +1209,8 @@ mod tests {
     }
 
     /// The "added alongside, not replacing" half of the same behavior: a
-    /// store whose first site's domain (and an allowed origin passed at
-    /// creation) is already on its list keeps it after a second site
-    /// attaches. The engine's own allowed-origins list is left as it was.
+    /// store whose first site's domain is already on its list keeps it
+    /// after a second site attaches.
     #[tokio::test]
     async fn attaching_a_second_site_adds_its_domain_alongside_the_first() {
         let (state, _engine) = test_state_with_real_engine().await;
@@ -1220,9 +1218,8 @@ mod tests {
 
         let cookie = signed_up_and_logged_in_session_cookie(&router, "preserve-origin@example.com", "correct horse battery staple").await;
 
-        // Create the store directly with a real starting allowed_origins
-        // entry - `create_a_store` always starts with none, and this test
-        // needs one already present to prove it survives.
+        // Create the store directly through the JSON API, so it starts with
+        // its first site's domain already present.
         let create_response = router
             .clone()
             .oneshot(
@@ -1238,7 +1235,7 @@ mod tests {
                             "view_key_hex": TEST_VIEW_KEY_HEX,
                             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
                             "network": "mainnet",
-                            "allowed_origins": ["https://original-site.example.com"],
+                            "domains": ["https://original-site.example.com"],
                             "base_currency": "XMR",
                         })
                         .to_string(),
@@ -1272,10 +1269,6 @@ mod tests {
             state.db.lock().unwrap().list_store_domains(&connection_id).unwrap().into_iter().map(|d| d.domain).collect();
         assert_eq!(domains, vec!["original-site.example.com".to_string(), "second-site.example.com".to_string()]);
 
-        let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
-        let sk = crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
-        let tenant = state.engine_client.get_tenant(&sk).await.unwrap();
-        assert_eq!(tenant.allowed_origins, vec!["https://original-site.example.com".to_string()], "the engine's list is left as it was");
     }
 
     /// The real security boundary: a signed-in user must not be able to

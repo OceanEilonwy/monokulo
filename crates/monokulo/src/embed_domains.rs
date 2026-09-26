@@ -209,17 +209,32 @@ pub fn domain_of_site(site_url: &str) -> Option<String> {
 /// has no verifiable domain, or the store already has it or is full.
 pub fn suggest_site_domain(db: &SharedDb, connection_id: &str, site_url: &str, now: i64) {
     if let Some(domain) = domain_of_site(site_url) {
-        if let Err(e) = db.lock().unwrap().suggest_store_domain(connection_id, &domain, now, MAX_DOMAINS_PER_STORE) {
-            eprintln!("could not add {domain} to store {connection_id}: {e}");
-        }
+        suggest(db, connection_id, &domain, now);
     }
 }
 
-/// Copies each existing store's site domain, and the allowed origins the
-/// engine holds for it (which monokulo used to ask for), into its domains,
-/// waiting for DNS - once per store. A store whose engine tenant can't be
-/// read right now is left for the next start.
-pub async fn import_existing_domains(db: &SharedDb, engine: &crate::engine_client::EngineClient, encryption_key: &[u8; 32]) {
+/// Adds a domain an API caller named (`POST /connections`' `domains`) to a
+/// store, waiting for DNS. Takes either a bare domain (`shop.example`) or an
+/// origin/URL (`https://shop.example`), since the field used to hold
+/// origins. Skipped quietly, like [`suggest_site_domain`], when it isn't a
+/// verifiable domain (an onion address, an IP) or the store is full.
+pub fn suggest_domain(db: &SharedDb, connection_id: &str, input: &str, now: i64) {
+    if let Some(domain) = domain_of_site(input).or_else(|| normalize_domain(input).ok()) {
+        suggest(db, connection_id, &domain, now);
+    }
+}
+
+fn suggest(db: &SharedDb, connection_id: &str, domain: &str, now: i64) {
+    if let Err(e) = db.lock().unwrap().suggest_store_domain(connection_id, domain, now, MAX_DOMAINS_PER_STORE) {
+        eprintln!("could not add {domain} to store {connection_id}: {e}");
+    }
+}
+
+/// Copies each existing store's own site domain into its domains, waiting
+/// for DNS - once per store (`store_connections.domains_imported`), so a
+/// domain the merchant removes afterwards stays removed. Local to monokulo:
+/// the engine holds no embedding policy, so nothing is read from it.
+pub fn import_existing_domains(db: &SharedDb) {
     let stores = match db.lock().unwrap().list_store_connections_awaiting_domain_import() {
         Ok(stores) => stores,
         Err(e) => {
@@ -228,22 +243,9 @@ pub async fn import_existing_domains(db: &SharedDb, engine: &crate::engine_clien
         }
     };
     for store in stores {
-        let now = crate::now_unix();
-        suggest_site_domain(db, &store.id, &store.site_url, now);
-        let Ok(sk) = crate::crypto::decrypt(encryption_key, &store.tenant_secret_token_encrypted) else {
-            eprintln!("could not decrypt the secret of store {}; its allowed origins were not imported", store.id);
-            continue;
-        };
-        match engine.get_tenant(&sk).await {
-            Ok(tenant) => {
-                for origin in &tenant.allowed_origins {
-                    suggest_site_domain(db, &store.id, origin, now);
-                }
-                if let Err(e) = db.lock().unwrap().mark_store_domains_imported(&store.id) {
-                    eprintln!("could not mark store {}'s domains imported: {e}", store.id);
-                }
-            }
-            Err(e) => eprintln!("could not read store {}'s allowed origins, will retry next start: {e}", store.id),
+        suggest_site_domain(db, &store.id, &store.site_url, crate::now_unix());
+        if let Err(e) = db.lock().unwrap().mark_store_domains_imported(&store.id) {
+            eprintln!("could not mark store {}'s domains imported: {e}", store.id);
         }
     }
 }

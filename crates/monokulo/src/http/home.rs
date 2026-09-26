@@ -268,7 +268,7 @@ mod tests {
                 "view_key_hex": TEST_VIEW_KEY_HEX,
                 "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
                 "network": "mainnet",
-                "allowed_origins": [],
+                "domains": [],
                 "base_currency": "XMR",
             });
             let response = router

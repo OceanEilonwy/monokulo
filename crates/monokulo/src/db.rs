@@ -993,7 +993,7 @@ impl Db {
         Ok(())
     }
 
-    /// Stores whose existing site and allowed origins haven't been copied
+    /// Stores whose own site domain hasn't been copied
     /// into `store_domains` yet (see migration `0020_embed_restriction.sql`).
     pub fn list_store_connections_awaiting_domain_import(&self) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(

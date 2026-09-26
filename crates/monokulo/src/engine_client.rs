@@ -258,24 +258,6 @@ impl EngineClient {
         }
     }
 
-    /// `PATCH {base_url}/api/v1/admin/tenant` — replaces `sk`'s tenant's
-    /// `allowed_origins` list wholesale (the engine's own `PatchTenantRequest`
-    /// treats `allowed_origins: Some(v)` as "set to exactly `v`", not "append" -
-    /// merging a new origin into the existing list is this method's caller's
-    /// job, e.g. `connect::confirm_existing_store`). Every other patchable
-    /// field is left `None` (unchanged) - this method exists for exactly the
-    /// one field callers need today.
-    pub async fn set_allowed_origins(&self, sk: &str, allowed_origins: Vec<String>) -> Result<TenantView, EngineClientError> {
-        let response = self
-            .http
-            .patch(format!("{}/api/v1/admin/tenant", self.base_url))
-            .bearer_auth(sk)
-            .json(&PatchTenantRequest { allowed_origins: Some(allowed_origins), confirmations_required: None })
-            .send()
-            .await?;
-        parse_response(response).await
-    }
-
     /// `PATCH {base_url}/api/v1/admin/tenant` — sets `sk`'s tenant's
     /// `confirmations_required` (how many block confirmations an on-chain
     /// payment needs before an order reads as `paid`). `0` is a legal,
@@ -291,7 +273,7 @@ impl EngineClient {
             .http
             .patch(format!("{}/api/v1/admin/tenant", self.base_url))
             .bearer_auth(sk)
-            .json(&PatchTenantRequest { allowed_origins: None, confirmations_required: Some(confirmations_required) })
+            .json(&PatchTenantRequest { confirmations_required: Some(confirmations_required) })
             .send()
             .await?;
         parse_response(response).await
@@ -391,7 +373,8 @@ pub enum EngineClientError {
 }
 
 /// Mirrors the engine's own `CreateTenantRequest` (`src/http/admin.rs` at the
-/// repo root) field-for-field.
+/// repo root) field-for-field. `allowed_origins` is always sent empty:
+/// monokulo keeps embedding policy to itself (`crate::embed_domains`).
 #[derive(Serialize)]
 pub struct CreateTenantRequest {
     pub view_key_hex: String,
@@ -419,7 +402,6 @@ pub struct TenantView {
     pub network: String,
     pub confirmations_required: u64,
     pub order_expiry_seconds: i64,
-    pub allowed_origins: Vec<String>,
 }
 
 /// Mirrors the engine's own `OrderView` (`src/http/admin.rs` at the repo
@@ -493,11 +475,11 @@ pub struct OrderDetailResponse {
 /// needed), so the engine sees exactly "leave everything not set here
 /// unchanged" - the same "unchanged vs. set to a value" contract
 /// `TenantConfigPatch`'s own doc comment (`src/store.rs` at the repo
-/// root) describes. `set_allowed_origins` and `set_confirmations_required`
-/// below each construct this with the other field `None`.
+/// root) describes. Deliberately has no `allowed_origins`: monokulo never
+/// reads or writes the engine's origin list (embedding policy lives in
+/// `crate::embed_domains`).
 #[derive(Serialize)]
 struct PatchTenantRequest {
-    allowed_origins: Option<Vec<String>>,
     confirmations_required: Option<u64>,
 }
 

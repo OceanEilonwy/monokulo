@@ -384,7 +384,7 @@ mod tests {
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
             "network": "mainnet",
-            "allowed_origins": [],
+            "domains": [],
             "base_currency": "XMR",
         });
         let response = router
@@ -416,20 +416,18 @@ mod tests {
         router.clone().oneshot(builder.body(Body::from(body)).unwrap()).await.unwrap()
     }
 
-    #[tokio::test]
-    async fn existing_stores_get_their_site_and_engine_allowed_origins_imported_once() {
-        let (state, _engine) = test_state(Arc::new(FakeDns::default())).await;
-        let router = build_router(state.clone());
-        let session = session_for(&router, "import@example.com").await;
-        let body = serde_json::json!({
+    async fn create_store_via_api(router: &Router, session: &str, extra: serde_json::Value) -> (StatusCode, String) {
+        let mut body = serde_json::json!({
             "platform": "custom",
             "site_url": "https://store-home.example",
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
             "network": "mainnet",
-            "allowed_origins": ["https://headless.example", "http://abcdefghijklmnop.onion"],
             "base_currency": "XMR",
         });
+        for (key, value) in extra.as_object().unwrap() {
+            body[key] = value.clone();
+        }
         let response = router
             .clone()
             .oneshot(
@@ -443,24 +441,76 @@ mod tests {
             )
             .await
             .unwrap();
+        let status = response.status();
         let body = response.into_body().collect().await.unwrap().to_bytes();
-        let id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["connection_id"].as_str().unwrap().to_string();
-        let domains = |state: &AppState| -> Vec<String> {
-            state.db.lock().unwrap().list_store_domains(&id).unwrap().into_iter().map(|d| d.domain).collect()
-        };
-        let expected = vec!["headless.example".to_string(), "store-home.example".to_string()];
-        assert_eq!(domains(&state), expected, "a new store's site and origins are added straight away; onion skipped");
+        let json = serde_json::from_slice::<serde_json::Value>(&body).unwrap_or_default();
+        (status, json["connection_id"].as_str().unwrap_or_default().to_string())
+    }
 
-        // A store from before this existed: imported from the engine's list.
+    #[tokio::test]
+    async fn api_domains_join_the_store_and_existing_stores_get_their_site_imported_once() {
+        let (state, _engine) = test_state(Arc::new(FakeDns::default())).await;
+        let router = build_router(state.clone());
+        let session = session_for(&router, "import@example.com").await;
+        let (status, id) = create_store_via_api(
+            &router,
+            &session,
+            serde_json::json!({ "domains": ["headless.example", "https://second.example", "http://abcdefghijklmnop.onion"] }),
+        )
+        .await;
+        assert_eq!(status, StatusCode::CREATED);
+        let domains = |state: &AppState, id: &str| -> Vec<String> {
+            state.db.lock().unwrap().list_store_domains(id).unwrap().into_iter().map(|d| d.domain).collect()
+        };
+        assert_eq!(
+            domains(&state, &id),
+            vec!["headless.example".to_string(), "second.example".to_string(), "store-home.example".to_string()],
+            "a new store's site and domains (bare or as origins) are added straight away; onion skipped"
+        );
+
+        // A store from before this existed: only its own site is imported,
+        // from monokulo's own records (nothing is read from the engine).
+        let site_only = vec!["store-home.example".to_string()];
+        let existing = state.db.lock().unwrap().list_store_domains(&id).unwrap();
+        for domain in existing {
+            state.db.lock().unwrap().delete_store_domain(&id, &domain.id).unwrap();
+        }
         state.db.lock().unwrap().reset_store_domains_imported_for_test(&id);
-        embed_domains::import_existing_domains(&state.db, &state.engine_client, &state.encryption_key).await;
-        assert_eq!(domains(&state), expected);
+        embed_domains::import_existing_domains(&state.db);
+        assert_eq!(domains(&state, &id), site_only);
 
         // Once only: a domain the merchant removes afterwards stays removed.
-        let headless = state.db.lock().unwrap().list_store_domains(&id).unwrap().into_iter().find(|d| d.domain == "headless.example").unwrap();
-        state.db.lock().unwrap().delete_store_domain(&id, &headless.id).unwrap();
-        embed_domains::import_existing_domains(&state.db, &state.engine_client, &state.encryption_key).await;
-        assert_eq!(domains(&state), vec!["store-home.example".to_string()]);
+        let site = state.db.lock().unwrap().list_store_domains(&id).unwrap().pop().unwrap();
+        state.db.lock().unwrap().delete_store_domain(&id, &site.id).unwrap();
+        embed_domains::import_existing_domains(&state.db);
+        assert!(domains(&state, &id).is_empty());
+    }
+
+    /// Old API callers still sending `allowed_origins` (the field's name when
+    /// it was forwarded to the engine) get the same treatment as `domains`,
+    /// and the engine tenant is created with no origins either way.
+    #[tokio::test]
+    async fn the_old_allowed_origins_field_is_accepted_as_an_alias_for_domains() {
+        let (state, _engine) = test_state(Arc::new(FakeDns::default())).await;
+        let router = build_router(state.clone());
+        let session = session_for(&router, "alias@example.com").await;
+        let (status, id) =
+            create_store_via_api(&router, &session, serde_json::json!({ "allowed_origins": ["https://legacy.example"] })).await;
+        assert_eq!(status, StatusCode::CREATED);
+        let domains: Vec<String> =
+            state.db.lock().unwrap().list_store_domains(&id).unwrap().into_iter().map(|d| d.domain).collect();
+        assert_eq!(domains, vec!["legacy.example".to_string(), "store-home.example".to_string()]);
+
+        let (status, _) = create_store_via_api(&router, &session, serde_json::json!({})).await;
+        assert_eq!(status, StatusCode::CREATED, "domains is optional");
+
+        let (status, _) = create_store_via_api(
+            &router,
+            &session,
+            serde_json::json!({ "allowed_origins": ["https://a.example"], "domains": ["b.example"] }),
+        )
+        .await;
+        assert!(status.is_client_error(), "sending both names is refused rather than silently picking one");
     }
 
     #[tokio::test]

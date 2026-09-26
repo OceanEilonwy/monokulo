@@ -39,7 +39,15 @@ pub struct CreateConnectionRequest {
     pub view_key_hex: String,
     pub spend_pubkey_hex: String,
     pub network: Option<String>,
-    pub allowed_origins: Vec<String>,
+    /// Extra domains the store's checkout will be embedded on, besides the
+    /// site's own. Each joins the store's domains waiting for DNS
+    /// verification (`crate::embed_domains`); nothing is sent to the engine,
+    /// which has no concept of origins. Optional. `allowed_origins`, the
+    /// field's old name from when it was forwarded to the engine, is still
+    /// accepted as an alias so older API callers keep working (sending both
+    /// is a duplicate-field error).
+    #[serde(default, alias = "allowed_origins")]
+    pub domains: Vec<String>,
     pub confirmations_required: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
     /// The store's base currency (WBS: "Confirmation Thresholds") -
@@ -67,7 +75,7 @@ pub(super) struct CreateConnectionFields {
     pub view_key_hex: String,
     pub spend_pubkey_hex: String,
     pub network: Option<String>,
-    pub allowed_origins: Vec<String>,
+    pub domains: Vec<String>,
     pub confirmations_required: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
     pub base_currency: String,
@@ -113,14 +121,15 @@ pub(super) async fn create_connection_for_user(
         .map_err(|_| CreateConnectionError::Internal)?
         .ok_or_else(|| CreateConnectionError::BadRequest(format!("{:?} is not a known currency", req.base_currency)))?;
 
-    let allowed_origins = req.allowed_origins;
     let created = state
         .engine_client
         .create_tenant(CreateTenantRequest {
             view_key_hex: req.view_key_hex,
             spend_pubkey_hex: req.spend_pubkey_hex,
             network: req.network,
-            allowed_origins: allowed_origins.clone(),
+            // Always empty: embedding and CORS policy live in monokulo
+            // (`crate::embed_domains`), never on the engine.
+            allowed_origins: Vec::new(),
             confirmations_required: req.confirmations_required,
             order_expiry_seconds: req.order_expiry_seconds,
         })
@@ -157,11 +166,11 @@ pub(super) async fn create_connection_for_user(
         )
         .map_err(|_| CreateConnectionError::Internal)?;
 
-    // The site's domain, and any allowed origins an API caller passed, join
+    // The site's domain, and any extra domains an API caller passed, join
     // the store's domains waiting for DNS (`crate::embed_domains`).
     crate::embed_domains::suggest_site_domain(&state.db, &id, &req.site_url, now_unix());
-    for origin in &allowed_origins {
-        crate::embed_domains::suggest_site_domain(&state.db, &id, origin, now_unix());
+    for domain in &req.domains {
+        crate::embed_domains::suggest_domain(&state.db, &id, domain, now_unix());
     }
     let _ = state.db.lock().unwrap().mark_store_domains_imported(&id);
 
@@ -179,7 +188,7 @@ pub async fn create_connection(
         view_key_hex: req.view_key_hex,
         spend_pubkey_hex: req.spend_pubkey_hex,
         network: req.network,
-        allowed_origins: req.allowed_origins,
+        domains: req.domains,
         confirmations_required: req.confirmations_required,
         order_expiry_seconds: req.order_expiry_seconds,
         base_currency: req.base_currency,
@@ -274,7 +283,7 @@ mod tests {
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
             "network": "mainnet",
-            "allowed_origins": [],
+            "domains": [],
             "base_currency": "XMR",
         });
         builder.body(Body::from(body.to_string())).unwrap()
@@ -393,7 +402,7 @@ mod tests {
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
             "network": "mainnet",
-            "allowed_origins": [],
+            "domains": [],
             "base_currency": "NOTREAL",
         });
         let request = Request::builder()
@@ -436,7 +445,7 @@ mod tests {
             "view_key_hex": TEST_VIEW_KEY_HEX,
             "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
             "network": "mainnet",
-            "allowed_origins": [],
+            "domains": [],
             "base_currency": "EUR",
         });
         let request = Request::builder()
