@@ -183,10 +183,51 @@ precede deletion of old browser tests.
   separately reviewed POS denominator; the browser line floor was adjusted
   to 480 so the clean CI checkout is measured against its own source state.
 
+- Session of 26 Sep (another agent, picking up after `1069359`):
+  - Final `cargo xtask coverage all` from commit `f64643c` passed and
+    validated: Rust 24,543/27,184 lines and 1,304/1,714 branches (the
+    denominators grew from 27,070/1,698 because commits `3f2558a` and
+    `f64643c` added code), browser 537/613 and 400/590, WooCommerce 378/429
+    and 181/225.
+  - Default suites checked: `cargo test --workspace` 894 passed;
+    `surface.config.js` 2/2; `coverage-real.config.js` 37/37.
+  - CI fixed (`27f56a3`), after the first GitHub run failed at
+    `composer install`. `composer.lock` needed PHP >= 8.4, CI used 8.3, and
+    the wp-env test container ran 8.3.33. Changes:
+    - wp-env `phpVersion` is 8.5 in both configs;
+    - composer.json pins `config.platform.php` 8.5.0;
+    - CI sets up PHP 8.5;
+    - PHPUnit 9.6.37 and yoast/phpunit-polyfills 4.0.0;
+    - checkout, setup-node and upload-artifact are all v7;
+    - the upload warns (rather than errors) when nothing was collected.
+
+    Locally, wp-env's container runs PHP 8.5.11 and `coverage woocommerce`
+    passes with unchanged metrics. The tools record now says PHP 8.5.11 and
+    PHPUnit 9.6.37. The validator's line floors are keyed to exact tool
+    versions, so the PHP floor compares only once a baseline is recorded
+    for the new versions. The remote CI run on the new commit is still to
+    be checked.
+  - `pos-fit.spec.js` removed (`4923d8f`/`9d1bb8e`): it still used the
+    pre-redesign POS markup and timed out. Its WebKit family moved into
+    `coverage-fit.spec.js` (it skips, with the reason, where WebKit can't
+    launch; here its system libraries are missing).
+  - The paid suite's no-JS POS test is removed: the POS is explicitly
+    JavaScript-only (owner's decision). The inventory and audit docs are
+    updated.
+  - Stagenet reliability:
+    - The wallet (`05d0cf8`) and the e2e harness engine (`4923d8f`) now fall
+      back across node, node2 and node3.monerodevs.org. node.monerodevs.org
+      resets connections from one busy address.
+    - All four Rust stagenet tests pass.
+    - The paid POS payment test (`pos.spec.js`) still fails waiting for
+      `#payment-state` after a successful send. It is deferred until the POS
+      redesign rework (owner's request of 26 Sep), which changes that flow.
+    - `cargo xtask coverage stagenet` has not been run yet.
+
 ## Resume next
 
-Commit the CI/validator/operations files, then run one final `coverage all`
-from the new commit. The paid stagenet profile remains an explicit separate
+Check the GitHub coverage run on `27f56a3` or later. After the POS redesign
+rework, re-run the paid `pos.spec.js` and `cargo xtask coverage stagenet`. The paid stagenet profile remains an explicit separate
 run. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.
