@@ -48,6 +48,7 @@ The former `surface.spec.js` claims map to final tests as follows:
 | 21–23 | `coverage-challenge.spec.js`: production challenge view and timed JS/no-JS continuation, including cross-site frame |
 | 24 | `surface.spec.js`: retained client challenge protocol case |
 | `pos-fit` Chromium family | `coverage-fit.spec.js`: 14 controlled sizes and five resizes, each checking keypad, filled, and payment states |
+| `pos-fit` WebKit family | `coverage-fit.spec.js`: the same 14 sizes on WebKit, skipped with its reason where WebKit can't launch. `pos-fit.spec.js` was removed: it still drove the pre-redesign POS markup (`#note-input`, `#charge-btn`), so its Chromium cases timed out against the live harness and its WebKit cases would have too |
 
 Every named screenshot follows a state assertion. The default profile has
 no screenshot-only test. The two initial fixture smoke cases were deleted

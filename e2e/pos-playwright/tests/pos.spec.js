@@ -80,23 +80,6 @@ async function chargeAndGetOrder(page, digits) {
 }
 
 test.describe.serial('POS terminal - real stagenet payments', () => {
-  test('the store disables POS without JavaScript and a direct visit explains why', async ({ browser }) => {
-    const context = await browser.newContext({ javaScriptEnabled: false });
-    try {
-      await context.addCookies([{ name: 'session', value: fixture.session_cookie.slice(fixture.session_cookie.indexOf('=') + 1), url: fixture.monokulo_base_url }]);
-      const page = await context.newPage();
-      await page.goto(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}`);
-      const launcher = page.locator('#pos-launch');
-      await expect(launcher).toHaveAttribute('aria-disabled', 'true');
-      await expect(launcher).not.toHaveAttribute('href', /./);
-      await expect(page.locator('#pos-launch-hint')).toHaveText('Requires JS');
-      await captureCoverageStage(page, 'pos-stagenet-no-js-launcher', test.info());
-      await page.goto(`${fixture.monokulo_base_url}/dashboard/stores/${fixture.connection_id}/pos`);
-      await expect(page.getByText('POS requires JavaScript.')).toBeVisible();
-      await expect(page.locator('.pos-keypad')).toBeHidden();
-    } finally { await context.close(); }
-  });
-
   test('a 0-conf-trusted payment shows shared success and stays reviewable', async ({ page, context }) => {
     // Each connect+send attempt is bounded by StagenetTestWallet's own 60s
     // reqwest client timeout (decoy selection is served from a cached

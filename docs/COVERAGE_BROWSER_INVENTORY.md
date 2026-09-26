@@ -56,7 +56,7 @@ was dirty at collection because the original POS work remained uncommitted.
 
 | Test | Claim and real code | Boundary / nearest overlap | Decision |
 | --- | --- | --- | --- |
-| No-JS store launcher | Real store and POS views disable POS without JS | Live harness; surface 14 tests checkout instead | Keep as explicit stagenet wiring check |
+| No-JS store launcher | Real store and POS views disable POS without JS | Live harness; surface 14 tests checkout instead | Removed later: the POS is explicitly JavaScript-only (owner's decision); only the checkout embed must work without JavaScript |
 | 0-conf trusted payment | Real login, order creation, compact checkout, QR refund, payment, paid status, dashboard order | Live engine/node/wallet; surface 1 and 16 only cover isolated states | Keep outside deterministic default; add optional checkpoints |
 | Confirming payment backgrounded | Real payment, confirming state, background stack, eventual completion | Live engine/node/wallet; surface 16 covers reload/cancel/search | Keep outside deterministic default; add optional checkpoints |
 
@@ -68,7 +68,9 @@ was dirty at collection because the original POS work remained uncommitted.
 | WebKit: same 14 sizes when runnable | Same POS fit across Safari layout engine | Live harness; skipped if WebKit unavailable | Keep; record skip status explicitly |
 | Resize after load | Real POS remains within viewport after five size changes | Live harness; catches stale keypad measurement | Keep; move to controlled local engine when available |
 
-No test has been deleted in this inventory step.
+No test has been deleted in this inventory step. (Later, all three families
+moved to `coverage-fit.spec.js` against the controlled local engine and
+`pos-fit.spec.js` was removed; see `COVERAGE_MIGRATION_AUDIT.md`.)
 
 ## Checkout migration (task 2.3)
 
