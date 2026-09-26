@@ -86,6 +86,13 @@ difference is how many rows exist in `tenants`:
   bringing their own watch-only wallet. New tenants must be scannable without a
   restart (§7.3).
 
+**The engine is private.** It listens on `127.0.0.1:8443` by default (`server.bind`,
+`SCANNER_SERVER_BIND`) and only monokulo, on the same machine or a private network,
+should ever reach it. At boot the engine prints a loud warning if it is bound to
+anything other than a loopback, RFC 1918, IPv6 unique-local (`fc00::/7`) or
+link-local address (`0.0.0.0` and `::` count as public, since they listen on every
+interface). Monokulo is the only public address; see the monokulo boundary section.
+
 ### 4.1 Onboarding tooling
 
 `scanner --init` (optionally `--stagenet`/`--testnet`, `--config <path>`) is
@@ -979,7 +986,7 @@ expired_order_grace_period_minutes = 360  # 6h - how long past expires_at ordina
 scan_chunk_memory_budget_mb = 8
 
 [server]
-bind = "0.0.0.0:8443"
+bind = "127.0.0.1:8443"       # loopback by default: only monokulo should reach the engine (§4)
 worker_threads = 2
 tls = "rustls"                # rustls | none (behind an external reverse proxy)
 tls_cert = "/etc/moneropay/cert.pem"

@@ -99,6 +99,15 @@ inside a confidential VM changes any other config surface, per WBS 2.1.3's
 own outcome ("swap which `KeyCustody` implementation the engine constructs...
 behind a config flag").
 
+**Keep the engine private.** The engine's `server.bind` defaults to
+`127.0.0.1:8443`, which is what this deployment wants: monokulo is the only
+public address and the only thing that should ever talk to the engine. The
+`moneropay-engine.service` unit sets no bind address of its own, so it keeps
+that default. Only change it (to a private address that monokulo can reach, if
+monokulo runs on another host in a private network) if you have to; never bind
+it to `0.0.0.0` or a public address. The engine logs a `WARNING` at startup if
+it finds itself listening on anything other than a loopback or private address.
+
 ## 4. Install and start the two units
 
 ```sh

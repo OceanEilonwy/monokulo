@@ -223,6 +223,19 @@ async fn main() {
     let router = build_router(app_state, max_body_bytes);
     let listener = tokio::net::TcpListener::bind(&bind).await.expect("failed to bind server address");
     println!("moneropay listening on {bind}");
+    // The engine is private: only monokulo, on this machine or a private
+    // network, should ever reach it. Nothing stops an operator binding it
+    // elsewhere, but it must not happen by accident.
+    if let Ok(local) = listener.local_addr() {
+        if !settings::is_private_bind_address(local.ip()) {
+            eprintln!(
+                "WARNING: the engine is listening on {local}, which is not a loopback or private address. \
+                 The engine is meant to be reached only by monokulo; anything that can connect to it can \
+                 create tenants and hit its API directly. Set server.bind (SCANNER_SERVER_BIND) to a \
+                 loopback or private address such as 127.0.0.1:8443 unless you really mean this."
+            );
+        }
+    }
     axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .await
         .expect("server error");

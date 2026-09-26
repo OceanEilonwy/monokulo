@@ -203,7 +203,7 @@ fn validate_scalar(key: &str, value: &str) -> Result<(), String> {
         "server.bind" => value
             .parse::<std::net::SocketAddr>()
             .map(|_| ())
-            .map_err(|_| format!("server.bind {value:?} is not a valid address:port, e.g. \"0.0.0.0:8443\"")),
+            .map_err(|_| format!("server.bind {value:?} is not a valid address:port, e.g. \"127.0.0.1:8443\"")),
         "server.worker_threads" => require_range::<usize>(key, value, 1, 1024, "at least 1"),
         "server.rate_limit_per_ip_per_min" => require_range::<u32>(
             key,

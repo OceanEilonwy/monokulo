@@ -111,7 +111,7 @@ scalar_settings! {
     PAYMENT_MEMPOOL_POLL_INTERVAL_MS => { key: "payment.mempool_poll_interval_ms", env: "SCANNER_PAYMENT_MEMPOOL_POLL_INTERVAL_MS", default: "1000" },
     PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES => { key: "payment.expired_order_grace_period_minutes", env: "SCANNER_PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES", default: "360" },
     PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB => { key: "payment.scan_chunk_memory_budget_mb", env: "SCANNER_PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB", default: "8" },
-    SERVER_BIND => { key: "server.bind", env: "SCANNER_SERVER_BIND", default: "0.0.0.0:8443" },
+    SERVER_BIND => { key: "server.bind", env: "SCANNER_SERVER_BIND", default: "127.0.0.1:8443" },
     SERVER_WORKER_THREADS => { key: "server.worker_threads", env: "SCANNER_SERVER_WORKER_THREADS", default: "2" },
     SERVER_RATE_LIMIT_PER_IP_PER_MIN => { key: "server.rate_limit_per_ip_per_min", env: "SCANNER_SERVER_RATE_LIMIT_PER_IP_PER_MIN", default: "20" },
     SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN => { key: "server.rate_limit_per_token_per_min", env: "SCANNER_SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN", default: "120" },
@@ -125,6 +125,31 @@ scalar_settings! {
 /// used by both the instance-admin HTTP listing and `main.rs`'s own boot
 /// sequence so neither can enumerate a different set than the other.
 pub const NETWORKS: &[&str] = &["mainnet", "stagenet", "testnet"];
+
+/// Whether an address the engine is listening on can only be reached from
+/// this machine or a private network - loopback, RFC 1918 (`10/8`,
+/// `172.16/12`, `192.168/16`), IPv6 unique-local (`fc00::/7`) or link-local
+/// (`169.254/16`, `fe80::/10`). The engine is private: monokulo is the only
+/// thing meant to talk to it (see `docs/DESIGN.md`'s monokulo boundary
+/// section), so `main.rs` warns loudly at boot when this returns `false`.
+///
+/// The unspecified addresses (`0.0.0.0`, `::`) count as *not* private: they
+/// listen on every interface, including a public one if the host has one.
+/// An IPv4-mapped IPv6 address is judged by the IPv4 address it carries.
+pub fn is_private_bind_address(ip: std::net::IpAddr) -> bool {
+    use std::net::IpAddr;
+    match ip.to_canonical() {
+        IpAddr::V4(v4) => v4.is_loopback() || v4.is_private() || v4.is_link_local(),
+        IpAddr::V6(v6) => {
+            let first = v6.segments()[0];
+            v6.is_loopback()
+                // fc00::/7, unique local
+                || (first & 0xfe00) == 0xfc00
+                // fe80::/10, link-local
+                || (first & 0xffc0) == 0xfe80
+        }
+    }
+}
 
 pub fn get<T: std::str::FromStr>(store: &crate::store::Store, setting: &ScalarSetting) -> T {
     let db_value = store.get_setting(setting.key).ok().flatten();
@@ -165,6 +190,32 @@ mod tests {
         let _: bool = get(&store, &WEBHOOKS_ALLOW_PRIVATE_URLS);
         let _: u64 = get(&store, &WEBHOOKS_DELIVERY_TIMEOUT_MS);
         let _: u32 = get(&store, &WEBHOOKS_MAX_ATTEMPTS);
+    }
+
+    #[test]
+    fn the_default_bind_address_is_loopback_only() {
+        let addr: std::net::SocketAddr = SERVER_BIND.default.parse().unwrap();
+        assert!(addr.ip().is_loopback(), "the engine must not listen publicly by default");
+        assert!(is_private_bind_address(addr.ip()));
+    }
+
+    #[test]
+    fn bind_addresses_are_classified_as_private_or_public() {
+        let private = [
+            "127.0.0.1", "127.8.9.10", "::1", "10.0.0.1", "172.16.0.1", "172.31.255.255",
+            "192.168.1.1", "169.254.10.10", "fc00::1", "fd12:3456::1", "fe80::1", "::ffff:10.1.2.3",
+            "::ffff:127.0.0.1",
+        ];
+        for ip in private {
+            assert!(is_private_bind_address(ip.parse().unwrap()), "{ip} should count as private");
+        }
+        let public = [
+            "0.0.0.0", "::", "8.8.8.8", "172.32.0.1", "192.169.0.1", "100.64.0.1", "2001:db8::1",
+            "2a00:1450::1", "fec0::1", "::ffff:8.8.8.8",
+        ];
+        for ip in public {
+            assert!(!is_private_bind_address(ip.parse().unwrap()), "{ip} should count as public");
+        }
     }
 
     #[test]
