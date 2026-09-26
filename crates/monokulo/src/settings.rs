@@ -41,7 +41,7 @@ macro_rules! scalar_settings {
 
 scalar_settings! {
     SIGNUP_MODE => { key: "signup.mode", env: "MONOKULO_SIGNUP_MODE", default: "invite_only" },
-    ENGINE_URL => { key: "engine.url", env: "MONOKULO_ENGINE_URL", default: "http://127.0.0.1:8080" },
+    ENGINE_URL => { key: "engine.url", env: "MONOKULO_ENGINE_URL", default: "http://127.0.0.1:8443" },
     SCANNER_ADMIN_TOKEN => { key: "engine.admin_token", env: "MONOKULO_SCANNER_ADMIN_TOKEN", default: "" },
     EXCHANGE_RATE_COINGECKO_ENABLED => { key: "exchange_rate.coingecko_enabled", env: "MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED", default: "true" },
     EXCHANGE_RATE_COINGECKO_BASE_URL => { key: "exchange_rate.coingecko_base_url", env: "MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL", default: "https://api.coingecko.com" },

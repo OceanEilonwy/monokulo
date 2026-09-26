@@ -43,12 +43,11 @@
 # `crates/monokulo/src/http/admin_settings.rs`'s own module doc comment
 # for what that page actually does with it.
 #
-# ENGINE_URL is fixed at 127.0.0.1:8080 (via SCANNER_SERVER_BIND below),
-# matching monokulo's own MONOKULO_ENGINE_URL setting default - genuinely
-# just a *default* now on both sides (both are real, database-backed
-# settings, not hardcoded), but this script still pins the engine's side
-# explicitly so the pairing is correct out of the box without the operator
-# having to configure anything through the browser first.
+# ENGINE_URL is fixed at 127.0.0.1:8080 here, set on both sides: the engine's
+# SCANNER_SERVER_BIND and monokulo's MONOKULO_ENGINE_URL below. (Left to
+# their defaults, both sides agree on 127.0.0.1:8443 instead; both are
+# real, database-backed settings.) Pinning both keeps this script's pairing
+# correct out of the box without configuring anything in the browser.
 #
 # monokulo's own admin account no longer needs seeding by this script at
 # all: opening http://127.0.0.1:8081 for the first time now redirects
