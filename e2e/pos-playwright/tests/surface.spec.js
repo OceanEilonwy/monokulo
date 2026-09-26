@@ -1,5 +1,5 @@
 // @ts-check
-const { test, expect } = require('@playwright/test');
+const { test, expect, installCoverageContext, collectCoverageContext } = require('../coverage-test');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -7,6 +7,11 @@ const root = path.resolve(__dirname, '../../..');
 const address = '86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC';
 const qrImage = path.join(__dirname, '../fixtures/refund-qr.png');
 const host = 'http://localhost:8787';
+
+function authoredAsset(name) {
+  const directory = process.env.COVERAGE_ASSETS_DIR || path.join(root, 'crates/monokulo/static');
+  return path.join(directory, name);
+}
 
 function pageHtml(initialSaved = false) {
   return `<!doctype html><html><head></head><body>
@@ -43,7 +48,7 @@ async function routeCheckout(page, getStatus = () => 'pending', save = async () 
       return route.fulfill({ contentType: 'text/javascript', body: fs.readFileSync(path.join(root, 'crates/monokulo/static/jsQR.js')) });
     }
     if (pathname === '/static/checkout.js') {
-      return route.fulfill({ contentType: 'text/javascript', body: fs.readFileSync(path.join(root, 'crates/monokulo/static/checkout.js')) });
+      return route.fulfill({ contentType: 'text/javascript', body: fs.readFileSync(authoredAsset('checkout.js')) });
     }
     if (pathname.endsWith('/events')) {
       const status = getStatus();
@@ -159,7 +164,7 @@ test('payment address is unboxed, copies with its button, and selects fully on d
       value: { writeText: async value => { window.copiedAddress = value; } },
     });
   });
-  await page.addScriptTag({ path: path.join(root, 'crates/monokulo/static/checkout.js') });
+  await page.addScriptTag({ path: authoredAsset('checkout.js') });
   await expect(page.locator('#copy-address')).toBeVisible();
   const alignment = await page.evaluate(() => {
     const addressField = document.querySelector('#address');
@@ -378,7 +383,7 @@ test('POS backgrounds a pending order, restores it after reload, and reopens it'
     const pathname = new URL(request.url()).pathname;
     if (pathname === '/static/pos-app.js' || pathname === '/static/pos-app.css') {
       const name = path.basename(pathname);
-      return route.fulfill({ contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css', body: fs.readFileSync(path.join(root, 'crates/monokulo/static', name)) });
+      return route.fulfill({ contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css', body: fs.readFileSync(process.env.COVERAGE_ASSETS_DIR && name.endsWith('.js') ? authoredAsset(name) : path.join(root, 'crates/monokulo/static', name)) });
     }
     if (pathname.endsWith('/pos/orders') && request.method() === 'POST') return route.fulfill({ json: order });
     if (pathname.endsWith('/pos/orders') && request.method() === 'GET') return route.fulfill({ json: { orders: backgrounded ? [{ ...order, backgrounded, cancelled_at: cancelled ? 2000 : null }] : [], total: backgrounded ? 1 : 0 } });
@@ -416,7 +421,7 @@ test('embed refund option changes the iframe URL without changing status updates
   await page.route(`${host}/**`, async route => {
     const pathname = new URL(route.request().url()).pathname;
     if (pathname === '/static/monokulo-client.js') {
-      return route.fulfill({ contentType: 'text/javascript', body: fs.readFileSync(path.join(root, 'crates/monokulo/static/monokulo-client.js')) });
+      return route.fulfill({ contentType: 'text/javascript', body: fs.readFileSync(authoredAsset('monokulo-client.js')) });
     }
     if (pathname.endsWith('/events')) {
       statusRequests++;
@@ -526,7 +531,7 @@ function challengeServer({ difficulty = 8 } = {}) {
     const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type, monokulo-proof', 'access-control-expose-headers': 'monokulo-challenge, retry-after' };
     if (url.pathname === '/static/challenge.js' || url.pathname === '/static/monokulo-client.js') {
       res.writeHead(200, { 'content-type': 'text/javascript', ...cors });
-      return res.end(fs.readFileSync(path.join(root, 'crates/monokulo/static', url.pathname.slice('/static/'.length))));
+      return res.end(fs.readFileSync(authoredAsset(url.pathname.slice('/static/'.length))));
     }
     if (url.pathname === '/shop') {
       res.writeHead(200, { 'content-type': 'text/html' });
@@ -601,10 +606,12 @@ test('the interstitial works inside a cross-site frame, with and without JavaScr
     const { server, port } = await challengeServer();
     const context = await browser.newContext({ javaScriptEnabled });
     try {
+      await installCoverageContext(context);
       const page = await context.newPage();
       await page.goto(`http://shop.localhost:${port}/shop`);
       await expect(page.frameLocator('#checkout').locator('h1')).toHaveText('Checkout', { timeout: 20000 });
     } finally {
+      await collectCoverageContext(context, test.info());
       await context.close();
       server.close();
     }

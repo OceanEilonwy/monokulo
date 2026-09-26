@@ -52,3 +52,12 @@ production files with links to LLVM's annotated source. A source file that
 contributes no executable code to the default build, or requires a feature
 that is not enabled, is listed as unavailable without inventing a zero-line
 denominator. The crate totals are checked against LLVM's workspace totals.
+
+The browser collector builds instrumented assets under `browser/assets/`, runs
+the deterministic Playwright suite with two workers, stores per-test frame
+snapshots under `browser/raw/`, and merges them into `browser/index.html`,
+`browser/lcov.info`, `browser/coverage-final.json`, and `browser.json`.
+The collector checks that each of the four authored source areas has executed
+lines and branches. Checkout code inside the real POS iframe contributes to
+the same report. Source maps attribute the coverage-only POS bundle to
+`pos-ui/src/main.tsx`.

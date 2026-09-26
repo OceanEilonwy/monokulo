@@ -11,7 +11,19 @@ any removal.
 Baseline on 2026-09-26: `cd e2e/pos-playwright && npx playwright test -c
 surface.config.js` passed all 24 cases in 29.1 seconds. The three paid stagenet
 tests and `pos-fit`'s live-harness cases were not run; they are outside this
-offline baseline. Browser source coverage is pending tasks 3.1–3.2.
+offline baseline. The instrumented baseline from tasks 3.1–3.2 passed the 24
+surface cases plus two real-rendered fixture cases with two workers. Its source
+set and covered branch decisions are saved in
+[the baseline paths JSON](coverage-browser-baseline-paths.json). The source tree
+was dirty at collection because the original POS work remained uncommitted.
+
+| Authored source | Lines | Branches |
+| --- | ---: | ---: |
+| `challenge.js` | 43/49 | 15/19 |
+| `checkout.js` | 168/201 | 107/160 |
+| `monokulo-client.js` | 104/139 | 68/134 |
+| `pos-ui/src/main.tsx` | 206/224 | 187/277 |
+| **Total** | **521/613** | **377/590** |
 
 | # | Regression claim | Real code exercised | Mocked boundary | Nearest overlap | Decision / replacement |
 | --- | --- | --- | --- | --- | --- |

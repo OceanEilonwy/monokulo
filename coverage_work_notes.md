@@ -54,15 +54,18 @@ precede deletion of old browser tests.
   All four authored paths have nonzero line and branch maps (plain JS branch
   maps: checkout 78, challenge 9, client 63); generated `pos-app.js` and
   `jsQR.js` are absent from the measured source set.
-- 3.2 in progress: the current `cargo xtask coverage browser` run passes 26/26
+- 3.2 complete: `cargo xtask coverage browser` passes 26/26
   tests with two workers and writes HTML, LCOV, JSON, and `browser.json`.
   Browser baseline is 521/613 lines and 377/590 branches across exactly four
   authored files. The real POS test's raw snapshots include checkout code
   executed only inside its iframe. Cross-site custom contexts now contribute
-  challenge counters as well. Finish report validation and commit separately.
+  challenge counters as well. Two runs retained the same four-file source set
+  and 613 line / 590 branch denominators. The browser index's local links
+  resolve; [baseline paths](docs/coverage-browser-baseline-paths.json) are
+  saved before removing any old test.
 
 ## Resume next
 
-Finish 3.2 report validation and commit. Then continue 0.2 PHP collector and
-migrate browser assertions. The original surface test's search/badge changes
-remain user-owned and unstaged; only coverage-specific hunks were staged.
+Continue 0.2 PHP collector, then migrate browser assertions. The original
+surface test's search/badge changes remain user-owned and unstaged; stage only
+coverage-specific hunks for the collector commit.
