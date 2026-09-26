@@ -196,3 +196,33 @@ test('client refund option frames the real checkout and retains its status strea
   await expect(page.frameLocator('#mount iframe').locator('#refund-form')).toHaveCount(0);
   await expect.poll(() => statusRequests).toBeGreaterThan(0);
 });
+
+test('real restricted checkout permits its own origin and blocks another origin', async ({ page, request }) => {
+  const restricted = await request.post(`${fixture.base_url}/__coverage/embed/restricted`);
+  expect(restricted.status()).toBe(204);
+  const url = await checkoutUrl(request);
+  const response = await request.get(url);
+  expect(response.headers()['content-security-policy']).toContain("frame-ancestors 'self'");
+  await page.goto(`${fixture.base_url}/__coverage/ready`);
+  await page.setContent(`<iframe id="allowed" title="Allowed" src="${url}"></iframe>`);
+  await expect(page.frameLocator('#allowed').locator('#checkout-root')).toBeVisible();
+  const otherOrigin = fixture.base_url.replace('127.0.0.1', 'localhost');
+  await page.goto(`${otherOrigin}/__coverage/ready`);
+  await page.setContent(`<iframe id="blocked" title="Blocked" src="${url}"></iframe>`);
+  await expect(page.frameLocator('#blocked').locator('#checkout-root')).toHaveCount(0);
+});
+
+test('real frame-only checkout refuses a top-level navigation', async ({ page, request }) => {
+  const restricted = await request.post(`${fixture.base_url}/__coverage/embed/restricted`);
+  expect(restricted.status()).toBe(204);
+  const url = await checkoutUrl(request);
+  const orderId = url.split('/').pop();
+  const flagged = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/browser-created`);
+  expect(flagged.status()).toBe(204);
+  const top = await page.goto(url);
+  expect(top.status()).toBe(403);
+  await expect(page.getByText('This store only shows its checkout inside its own website')).toBeVisible();
+  await page.goto(`${fixture.base_url}/__coverage/ready`);
+  await page.setContent(`<iframe id="payment" title="Payment" src="${url}"></iframe>`);
+  await expect(page.frameLocator('#payment').locator('#checkout-root')).toBeVisible();
+});

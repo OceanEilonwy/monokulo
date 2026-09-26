@@ -53,3 +53,56 @@ test('real POS header remains above its compact checkout frame', async ({ page }
     }
   }
 });
+
+test('real POS shows pending, partial, confirming, and terminal badge symbols', async ({ page }) => {
+  const states = [
+    ['pending', 'pending'], ['unconfirmed', 'unconfirmed'], ['confirming', 'confirming'],
+    ['partial', 'partial'], ['paid', 'paid'], ['overpaid', 'overpaid'], ['expired', 'expired'],
+    ['double', 'pending'], ['cancelled', 'pending'],
+  ];
+  const orders = states.map(([id, status], index) => ({
+    order_id: id, merchant_order_id: id, address: '86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC',
+    amount: '1.00', currency: 'XMR', xmr_amount: '1.000000000000', status,
+    confirmations: id === 'confirming' ? 3 : 0, confirmations_required: 10,
+    error: id === 'double' ? 'Double-spend detected on this payment.' : null,
+    backgrounded: true, cancelled_at: id === 'cancelled' ? 2000 : null,
+    created_at: 1000 + index, expires_at: 9999999999, updated_at: 1000 + index,
+  }));
+  await page.addInitScript(() => { window.EventSource = class { addEventListener() {} close() {} }; });
+  await page.route('**/pos/orders?*', route => route.fulfill({ json: { orders, total: orders.length } }));
+  await page.goto(posUrl());
+  await expect(page.locator('.pos-stack-card')).toHaveCount(5);
+  await expect(page.locator('.state-partial .pos-icon use')).toHaveAttribute('href', '#pos-coin-partial');
+  await expect(page.locator('.state-confirming .pos-disc')).toHaveAttribute('style', /--progress: 30%/);
+  await page.getByRole('button', { name: 'View all →' }).click();
+  await expect(page.locator('.pos-order-card .pos-badge.state-partial use')).toHaveAttribute('href', '#pos-coin-partial');
+  await page.getByRole('tab', { name: /Finished/ }).click();
+  for (const name of ['paid', 'overpaid', 'expired', 'cancelled']) {
+    await expect(page.locator(`.pos-order-card .pos-badge.state-${name}`)).toHaveCount(1);
+  }
+});
+
+test('real dashboard health indicator follows healthy and unavailable polls', async ({ page }) => {
+  let health = true;
+  let polls = 0;
+  let releaseFirst;
+  await page.clock.install();
+  await page.route('**/status/summary', async route => {
+    polls++;
+    if (polls === 1) await new Promise(resolve => { releaseFirst = resolve; });
+    return health === null
+      ? route.fulfill({ status: 503, contentType: 'text/plain', body: 'Unavailable' })
+      : route.fulfill({ json: { healthy: health } });
+  });
+  await page.goto(`${fixture.base_url}/dashboard`);
+  const dot = page.locator('#status-indicator .status-dot');
+  await expect(dot).toBeVisible();
+  await expect(dot).toHaveClass(/status-dot-unknown/);
+  await expect.poll(() => polls).toBeGreaterThan(0);
+  releaseFirst();
+  await expect(dot).toHaveClass(/status-dot-ok/);
+  health = null;
+  await page.clock.runFor(30000);
+  await expect(dot).toHaveClass(/status-dot-unknown/);
+  await expect(page.locator('#status-indicator')).toHaveAttribute('title', 'could not check status');
+});

@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Json, Router};
 use monokulo::{
-    crypto, db::Db, embed_domains::UnavailableDns,
+    crypto, db::{Db, SharedDb}, embed_domains::UnavailableDns,
     engine_client::{CreateTenantRequest, EngineClient},
     exchange_rate_config::ExchangeRateProviders,
     http::{build_router, status_page, AppState}, views,
@@ -18,7 +18,7 @@ const SESSION: &str = "coverage-session-token";
 
 #[derive(Clone)]
 struct Controls { engine: Arc<TestEngineHandle>, client: EngineClient, token: String,
-    public_key: String, order_id: String }
+    public_key: String, order_id: String, db: SharedDb }
 
 async fn ready() -> &'static str { "ready" }
 
@@ -44,6 +44,22 @@ async fn challenge(State(control): State<Controls>) -> axum::response::Html<Stri
     };
     axum::response::Html(views::challenge::challenge_page(
         &views::PageChrome::from_user(None, "/__coverage/challenge"), &view).into_string())
+}
+
+async fn restrict_embed(State(control): State<Controls>) -> StatusCode {
+    match control.db.lock().unwrap().set_embed_restricted("coverage-store", true) {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
+async fn mark_browser_created(State(control): State<Controls>, Path(id): Path<String>) -> StatusCode {
+    match control.db.lock().unwrap().create_order_currency_metadata(
+        "coverage-store", &id, "XMR", "0.001", 1_000_000_000_000, "fixed", 1,
+        "XMR", None, 1, false) {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
 }
 
 #[tokio::main]
@@ -84,10 +100,12 @@ async fn main() {
     let controls = Router::new()
         .route("/__coverage/ready", get(ready))
         .route("/__coverage/challenge", get(challenge))
+        .route("/__coverage/embed/restricted", post(restrict_embed))
         .route("/__coverage/orders", post(create_order))
         .route("/__coverage/orders/{id}/paid", post(mark_paid))
+        .route("/__coverage/orders/{id}/browser-created", post(mark_browser_created))
         .with_state(Controls { engine, client: state.engine_client.clone(), token: tenant.secret_token.clone(),
-            public_key: tenant.public_key.clone(), order_id: order.order_id.clone() });
+            public_key: tenant.public_key.clone(), order_id: order.order_id.clone(), db: state.db.clone() });
     let app = build_router(state).merge(controls);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind fixture");
     let url = format!("http://{}", listener.local_addr().unwrap());

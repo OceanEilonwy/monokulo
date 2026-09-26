@@ -96,10 +96,19 @@ precede deletion of old browser tests.
   iframe continuation in both modes. Two more tests pass against real POS for
   background/reload/reopen/cancel/search and header/iframe geometry at three
   sizes. These were added before deleting their older hand-built counterparts.
+- 2.4 in progress: real POS now covers status symbols using intercepted order
+  API data, and the real dashboard covers unknown/healthy/unavailable health
+  polling. Restricted checkout tests use actual Monokulo CSP headers and
+  `Sec-Fetch-Dest` behavior: same-origin framing works, another origin is
+  blocked, and a browser-created order is forbidden as a top-level page but
+  works in a frame. Removed the corresponding old surface tests from the
+  staged source. The user-owned uncommitted badge test remains in the working
+  file and currently adds one duplicate case to local runs. The instrumented
+  browser suite passes 23/23 with that local test included.
 
 ## Resume next
 
-Continue POS status badges, health, framing policy, and remaining cleanup in
-2.4. The original
+Finish 2.4 with the POS viewport family and handle the retained uncommitted
+badge test without losing its source. Then run the 2.5 comparison. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.
