@@ -623,6 +623,67 @@ mod tests {
         assert_eq!(create_order_as(&router, &pk, None, Some(&key)).await.0, StatusCode::TOO_MANY_REQUESTS);
     }
 
+    /// `GET uri` with an optional `Sec-Fetch-Dest`: `(status, body, Vary)`.
+    async fn fetch_as(router: &Router, uri: &str, dest: Option<&str>) -> (StatusCode, String, String) {
+        let mut builder = Request::builder().uri(uri);
+        if let Some(dest) = dest {
+            builder = builder.header("sec-fetch-dest", dest);
+        }
+        let response = router.clone().oneshot(builder.body(Body::empty()).unwrap()).await.unwrap();
+        let status = response.status();
+        let vary = response.headers().get("vary").map(|v| v.to_str().unwrap().to_string()).unwrap_or_default();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, String::from_utf8(body.to_vec()).unwrap(), vary)
+    }
+
+    #[tokio::test]
+    async fn a_restricted_stores_browser_created_orders_only_open_inside_a_frame() {
+        let dns = Arc::new(FakeDns::default());
+        let (state, _engine) = test_state(dns.clone()).await;
+        let router = build_router(state.clone());
+        let session = session_for(&router, "frame-only@example.com").await;
+        let (id, pk) = create_store_with_key(&router, &session).await;
+        let key = format!("Bearer {}", secret_key_of(&state, &id));
+
+        // Created while the store is still unrestricted, from a page: not keyed.
+        let (_, browser_order) = create_order_as(&router, &pk, Some("https://store-home.example"), None).await;
+        let (_, keyed_order) = create_order_as(&router, &pk, None, Some(&key)).await;
+        let checkout = |order: &serde_json::Value| format!("/pay/{pk}/orders/{}", order["order_id"].as_str().unwrap());
+
+        // Unrestricted: every order opens as a full page.
+        assert_eq!(fetch_as(&router, &checkout(&browser_order), Some("document")).await.0, StatusCode::OK);
+
+        let row = state.db.lock().unwrap().list_store_domains(&id).unwrap().pop().unwrap();
+        dns.publish("_monokulo.store-home.example", &embed_domains::record_value(&row.token));
+        embed_domains::check_and_record(&state.db, dns.as_ref(), &row, crate::now_unix()).await.unwrap();
+        state.db.lock().unwrap().set_embed_restricted(&id, true).unwrap();
+
+        // Restricted, browser-created: a full page gets the plain "open it from the shop" page.
+        let (status, html, vary) = fetch_as(&router, &checkout(&browser_order), Some("document")).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(html.contains("Open this payment from the shop"), "got: {html}");
+        assert!(!html.contains("<script"), "works without JavaScript, got: {html}");
+        assert!(!html.contains(browser_order["address"].as_str().unwrap()), "no payment details leak, got: {html}");
+        assert!(vary.contains("Sec-Fetch-Dest"), "caches must key on the header, got: {vary:?}");
+        // ...but inside a frame, or from a browser that sends no Sec-Fetch-Dest, it renders.
+        for dest in [Some("iframe"), Some("frame"), None] {
+            let (status, html, _) = fetch_as(&router, &checkout(&browser_order), dest).await;
+            assert_eq!(status, StatusCode::OK, "{dest:?}");
+            assert!(html.contains(browser_order["address"].as_str().unwrap()), "{dest:?}");
+        }
+        // Its share page is turned away the same way when opened directly.
+        let share = format!("{}/share", checkout(&browser_order));
+        assert_eq!(fetch_as(&router, &share, Some("document")).await.0, StatusCode::FORBIDDEN);
+        // Status and live updates keep working (the embed library and the framed page use them).
+        assert_eq!(fetch_as(&router, &format!("{}/status", checkout(&browser_order)), Some("empty")).await.0, StatusCode::OK);
+
+        // A keyed order (WooCommerce, dashboard, POS, payment links) opens either way, share page included.
+        for dest in [Some("document"), Some("iframe"), None] {
+            assert_eq!(fetch_as(&router, &checkout(&keyed_order), dest).await.0, StatusCode::OK, "{dest:?}");
+        }
+        assert_eq!(fetch_as(&router, &format!("{}/share", checkout(&keyed_order)), Some("document")).await.0, StatusCode::OK);
+    }
+
     #[tokio::test]
     async fn a_restricted_store_only_works_on_its_verified_domains() {
         let dns = Arc::new(FakeDns::default());

@@ -171,13 +171,63 @@ impl CheckoutOptions {
     }
 }
 
-pub async fn checkout_page(State(state): State<AppState>, Path((pk, order_id)): Path<(String, String)>, Query(options): Query<CheckoutOptions>) -> Response {
+pub async fn checkout_page(
+    State(state): State<AppState>,
+    Path((pk, order_id)): Path<(String, String)>,
+    Query(options): Query<CheckoutOptions>,
+    headers: HeaderMap,
+) -> Response {
     let (row, sk, detail) = match load_order(&state, &pk, &order_id).await {
         Ok(loaded) => loaded,
         Err(LoadError::NotFound) => return not_found_response(),
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_checkout_page(&state, pk, row, sk, detail, None, &options).await
+    if must_open_from_shop(&state, &row, &order_id, &headers) {
+        return open_from_shop_response(&pk, &order_id);
+    }
+    with_vary_on_fetch_dest(render_checkout_page(&state, pk, row, sk, detail, None, &options).await)
+}
+
+/// Whether this request for a checkout (or share) page must be turned away
+/// with "Open this payment from the shop's website": the store restricts
+/// its checkout to its verified domains, the order was created by a browser
+/// page (not with the store's secret key - `created_with_key`), and the
+/// browser says the page is being loaded as something other than a frame.
+///
+/// That closes the last way to show such an order outside the shop: its
+/// creation already needed a verified page's `Origin` (which a script
+/// outside a browser can forge), and `frame-ancestors` already keeps it out
+/// of other sites' frames, but the checkout URL itself could still be sent
+/// to a customer to open directly.
+///
+/// "Framed" is judged by `Sec-Fetch-Dest`, which browsers set and pages
+/// can't: `iframe` or `frame` pass. A request without the header (an older
+/// browser, or anything that isn't a browser) is let through, as are
+/// orders created with the key (WooCommerce, the dashboard, the POS and
+/// payment links shared from it), orders monokulo has no record of, and
+/// every order of an unrestricted store.
+fn must_open_from_shop(state: &AppState, row: &StoreConnectionRow, order_id: &str, headers: &HeaderMap) -> bool {
+    let Some(dest) = headers.get("sec-fetch-dest").and_then(|value| value.to_str().ok()) else { return false };
+    if dest.eq_ignore_ascii_case("iframe") || dest.eq_ignore_ascii_case("frame") {
+        return false;
+    }
+    let db = state.db.lock().unwrap();
+    if !db.embed_restricted(&row.id).unwrap_or(false) {
+        return false;
+    }
+    matches!(db.get_order_currency_metadata(&row.id, order_id), Ok(Some(metadata)) if !metadata.created_with_key)
+}
+
+fn open_from_shop_response(pk: &str, order_id: &str) -> Response {
+    let chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{order_id}"));
+    with_vary_on_fetch_dest((StatusCode::FORBIDDEN, views::checkout::open_from_shop_page(&chrome)).into_response())
+}
+
+/// The checkout and share pages answer differently depending on
+/// `Sec-Fetch-Dest` ([`must_open_from_shop`]), so any cache must key on it.
+fn with_vary_on_fetch_dest(mut response: Response) -> Response {
+    response.headers_mut().append(axum::http::header::VARY, axum::http::HeaderValue::from_static("Sec-Fetch-Dest"));
+    response
 }
 
 fn not_found_response() -> Response {
@@ -481,7 +531,15 @@ pub async fn checkout_share_page(
     headers: HeaderMap,
 ) -> Response {
     let found = match load_order(&state, &pk, &order_id).await {
-        Ok(_) => true,
+        Ok((row, _, _)) => {
+            // The share page frames the checkout from monokulo itself, so it
+            // would otherwise show a browser-created order of a restricted
+            // store as a full page - the same rule applies to it.
+            if must_open_from_shop(&state, &row, &order_id, &headers) {
+                return open_from_shop_response(&pk, &order_id);
+            }
+            true
+        }
         Err(LoadError::NotFound) => false,
         Err(LoadError::Internal) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -490,7 +548,7 @@ pub async fn checkout_share_page(
     let current_path = format!("/pay/{pk}/orders/{order_id}/share");
     let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), current_path);
     let view = CheckoutShareViewModel { pk, order_id, found };
-    (status, views::checkout::share_page(&chrome, &view)).into_response()
+    with_vary_on_fetch_dest((status, views::checkout::share_page(&chrome, &view)).into_response())
 }
 
 #[cfg(test)]

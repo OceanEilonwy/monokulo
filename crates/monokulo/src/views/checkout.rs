@@ -430,6 +430,24 @@ pub fn not_found_page(chrome: &PageChrome) -> Markup {
     layout_bare(chrome, "Order not found", body)
 }
 
+/// Shown instead of the checkout when a store that only allows its checkout
+/// on its verified domains has an order a browser page created, and it is
+/// opened as a full page rather than inside the shop's own frame
+/// (`http::checkout::must_open_from_shop`). Styled like [`not_found_page`],
+/// plain HTML with nothing that needs JavaScript.
+pub fn open_from_shop_page(chrome: &PageChrome) -> Markup {
+    let body = html! {
+        div class="wrap" {
+            h1 { "Open this payment from the shop's website" }
+            p {
+                "This store only shows its checkout inside its own website. Go back to the shop and continue "
+                "your payment there."
+            }
+        }
+    };
+    layout_bare(chrome, "Open this payment from the shop's website", body)
+}
+
 /// The view model [`share_page`] takes - unlike [`CheckoutViewModel`] this
 /// page *does* carry the site nav (via [`super::layout`]).
 pub struct CheckoutShareViewModel {

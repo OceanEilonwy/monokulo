@@ -456,3 +456,38 @@ test('a restricted store\'s framing header keeps its checkout off other websites
   await expect.poll(() => page.frames().map(frame => frame.url())).toContain('chrome-error://chromewebdata/');
   await expect(page.frameLocator('#elsewhere').locator('h1')).toHaveCount(0);
 });
+
+test('a browser says whether it is loading a page as a frame, which the frame-only checkout rule relies on', async ({ page }) => {
+  // A real server (not a routed fake), so the browser's own Sec-Fetch-Dest
+  // header reaches it. It applies the same rule as monokulo's
+  // `must_open_from_shop` for a restricted store's browser-created order:
+  // render only for `iframe`/`frame` (or no header), refuse a full page.
+  const http = require('node:http');
+  const seen = [];
+  const server = http.createServer((req, res) => {
+    if (req.url === '/shop') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      return res.end(`<iframe id="checkout" src="http://checkout.localhost:${server.address().port}/pay"></iframe>`);
+    }
+    if (req.url !== '/pay') {
+      res.writeHead(404);
+      return res.end();
+    }
+    const dest = req.headers['sec-fetch-dest'];
+    seen.push(dest);
+    const framed = dest === undefined || dest === 'iframe' || dest === 'frame';
+    res.writeHead(framed ? 200 : 403, { 'content-type': 'text/html' });
+    res.end(framed ? '<h1>Checkout</h1>' : "<h1>Open this payment from the shop's website</h1>");
+  });
+  await new Promise(resolve => server.listen(0, '127.0.0.1', resolve));
+  const port = server.address().port;
+  try {
+    await page.goto(`http://checkout.localhost:${port}/pay`);
+    await expect(page.locator('h1')).toHaveText("Open this payment from the shop's website");
+    await page.goto(`http://shop.localhost:${port}/shop`);
+    await expect(page.frameLocator('#checkout').locator('h1')).toHaveText('Checkout');
+    expect(seen).toEqual(['document', 'iframe']);
+  } finally {
+    server.close();
+  }
+});
