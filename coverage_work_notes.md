@@ -78,9 +78,16 @@ precede deletion of old browser tests.
   181/225 branches. It validates the two authored PHP files and report links.
   The gateway's branch report shows 180/218 branches, including missed ones;
   vendor, WordPress, WooCommerce, and test files are absent.
+- 2.3 in progress: six new tests now exercise the real checkout for QR upload,
+  saved-state restoration, validation/saving/rejection/retry, camera and network
+  failure, address selection/copy, compact geometry, and no-JS form visibility.
+  All six pass in the real fixture. The 320px geometry assertion exposed a real
+  grid min-content overflow; `checkout.rs` now uses a zero-minimum column and
+  grid children. Existing surface tests remain until SSE and embed claims are
+  migrated and the instrumented coverage comparison is complete.
 
 ## Resume next
 
-Migrate browser assertions, beginning with checkout/embed 2.3. The original
+Continue checkout/embed 2.3 with SSE and client claims. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.

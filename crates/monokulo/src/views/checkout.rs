@@ -111,7 +111,8 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .expiry-pill svg { flex: none; width: 1em; height: 1em; }
 .expiry-pill.expiry-soon { border-color: var(--warning); color: var(--warning); background: var(--tint-warning); }
 .expiry-pill.expiry-urgent { border-color: var(--error); color: var(--error); background: var(--tint-error); }
-.pay-grid { display: grid; grid-template-columns: 1fr; gap: 0; text-align: center; }
+.pay-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; text-align: center; }
+.pay-grid > * { min-width: 0; }
 @media (min-width: 700px) {
   .pay-grid { grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 2rem; text-align: left; }
   .pay-col-primary { text-align: center; }

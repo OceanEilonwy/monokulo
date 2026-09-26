@@ -17,7 +17,7 @@ const SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada34
 const SESSION: &str = "coverage-session-token";
 
 #[derive(Clone)]
-struct Controls { engine: Arc<TestEngineHandle> }
+struct Controls { engine: Arc<TestEngineHandle>, client: EngineClient, token: String }
 
 async fn ready() -> &'static str { "ready" }
 
@@ -26,6 +26,12 @@ async fn mark_paid(State(control): State<Controls>, Path(id): Path<String>) -> S
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::NOT_FOUND,
     }
+}
+
+async fn create_order(State(control): State<Controls>) -> Result<Json<serde_json::Value>, StatusCode> {
+    let order = control.client.create_order(&control.token, 1_000_000_000, None, None)
+        .await.map_err(|_| StatusCode::BAD_GATEWAY)?;
+    Ok(Json(serde_json::json!({"order_id": order.order_id})))
 }
 
 #[tokio::main]
@@ -65,8 +71,9 @@ async fn main() {
     };
     let controls = Router::new()
         .route("/__coverage/ready", get(ready))
+        .route("/__coverage/orders", post(create_order))
         .route("/__coverage/orders/{id}/paid", post(mark_paid))
-        .with_state(Controls { engine });
+        .with_state(Controls { engine, client: state.engine_client.clone(), token: tenant.secret_token.clone() });
     let app = build_router(state).merge(controls);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind fixture");
     let url = format!("http://{}", listener.local_addr().unwrap());
