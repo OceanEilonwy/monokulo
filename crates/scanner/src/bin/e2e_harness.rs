@@ -152,10 +152,13 @@ async fn send_payment_handler(State(state): State<SendPaymentState>, Json(req): 
     };
     let _guard = state.network_lock.lock().await;
 
-    // `state.node_url` and `WalletCtx::default()`'s own are the same value
-    // (both built from the same NODE_HOST/NODE_PORT above) - set explicitly
-    // anyway, so this stays correct if that ever changes.
-    let ctx = cli_wallet::WalletCtx { node_url: state.node_url.clone(), ..Default::default() };
+    // The harness's own node first, then `WalletCtx::default()`'s other
+    // stagenet nodes: the engine in this process keeps a connection open to
+    // that node, and a public node rate-limiting this address would
+    // otherwise fail the payment.
+    let mut node_urls = vec![state.node_url.clone()];
+    node_urls.extend(cli_wallet::DEFAULT_STAGENET_NODES.iter().map(|url| url.to_string()).filter(|url| *url != state.node_url));
+    let ctx = cli_wallet::WalletCtx { node_urls, ..Default::default() };
     let spender = match cli_wallet::WalletStore::load(&ctx).and_then(|store| store.wallet("spender")) {
         Ok(w) => w,
         Err(e) => return (StatusCode::INTERNAL_SERVER_ERROR, format!("failed to load the spender wallet: {e}")).into_response(),

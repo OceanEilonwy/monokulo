@@ -29,9 +29,10 @@ struct Cli {
     #[arg(long, global = true, default_value = DEFAULT_WALLET_NAME)]
     wallet: String,
 
-    /// Overrides `WalletCtx::default()`'s node URL.
+    /// Overrides `WalletCtx::default()`'s stagenet nodes (node, node2 and
+    /// node3.monerodevs.org). Repeat it to give several, tried in order.
     #[arg(long, global = true)]
-    node_url: Option<String>,
+    node_url: Vec<String>,
 
     /// Overrides `WalletCtx::default()`'s wallets file path.
     #[arg(long, global = true)]
@@ -51,8 +52,8 @@ impl Cli {
     /// this CLI's own path/URL flags overlaid on top.
     fn ctx(&self) -> WalletCtx {
         let mut ctx = WalletCtx::default();
-        if let Some(v) = &self.node_url {
-            ctx.node_url = v.clone();
+        if !self.node_url.is_empty() {
+            ctx.node_urls = self.node_url.clone();
         }
         if let Some(v) = &self.wallets_path {
             ctx.wallets_path = v.clone();

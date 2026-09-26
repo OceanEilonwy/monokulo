@@ -333,7 +333,12 @@ pub struct WalletCredentials {
 /// name at all.
 #[derive(Debug, Clone)]
 pub struct WalletCtx {
-    pub node_url: String,
+    /// Stagenet nodes to use, in order of preference. A node that can't be
+    /// reached (public nodes rate-limit, and one busy address - an e2e
+    /// test's own engine talking to the same node - is enough to have
+    /// connections reset) is skipped for the next one; see
+    /// [`ResolvedWallet::connect`] and [`send_payment`].
+    pub node_urls: Vec<String>,
     pub accept_invalid_certs: bool,
     pub wallets_path: String,
     pub decoy_distribution_path: String,
@@ -355,6 +360,16 @@ pub struct WalletCtx {
 /// `Cargo.toml` lives, regardless of which downstream crate's test
 /// ultimately calls `WalletCtx::default()` or what cwd that process has -
 /// so this is correct everywhere, always, by construction.
+/// `nodes` in the order a connection attempt tries them: starting at index
+/// `start` (wrapping around), each without a trailing `/`.
+fn nodes_in_order(nodes: &[String], start: usize) -> Vec<String> {
+    (0..nodes.len()).map(|offset| nodes[(start + offset) % nodes.len()].trim_end_matches('/').to_string()).collect()
+}
+
+/// See [`WalletCtx::node_urls`].
+pub const DEFAULT_STAGENET_NODES: [&str; 3] =
+    ["http://node.monerodevs.org:38089", "http://node2.monerodevs.org:38089", "http://node3.monerodevs.org:38089"];
+
 macro_rules! e2e_path {
     ($file:literal) => {
         concat!(env!("CARGO_MANIFEST_DIR"), "/../../e2e/", $file)
@@ -366,7 +381,10 @@ impl Default for WalletCtx {
     /// see `e2e/README.md`.
     fn default() -> Self {
         Self {
-            node_url: "http://node.monerodevs.org:38089".to_string(),
+            // The same three community stagenet nodes monokulo's stagenet
+            // config uses (`e2e/moneropay-stagenet.toml`): separate
+            // machines, so one rate-limiting us doesn't block the others.
+            node_urls: DEFAULT_STAGENET_NODES.iter().map(|url| url.to_string()).collect(),
             accept_invalid_certs: true,
             wallets_path: e2e_path!("stagenet-wallets.json").to_string(),
             decoy_distribution_path: e2e_path!("stagenet-decoy-distribution.json").to_string(),
@@ -383,7 +401,8 @@ pub struct ResolvedWallet {
     pub address: String,
     pub private_spend_key_hex: String,
     pub private_view_key_hex: String,
-    pub node_url: String,
+    /// See [`WalletCtx::node_urls`].
+    pub node_urls: Vec<String>,
     pub accept_invalid_certs: bool,
     pub decoy_distribution_path: String,
     pub ledger_path: String,
@@ -410,6 +429,15 @@ impl ResolvedWallet {
     /// StagenetSpendWallet::connect` already made), and loads the cached
     /// decoy-distribution snapshot at `self.decoy_distribution_path`.
     pub async fn connect(&self) -> Result<Wallet, WalletError> {
+        self.connect_starting_at(0).await
+    }
+
+    /// [`Self::connect`], trying [`Self::node_urls`] in order starting at
+    /// index `start` (wrapping around) and using the first that answers.
+    /// [`send_payment`] moves `start` on for each retry, so a node that
+    /// accepts a connection but then fails the payment isn't tried first
+    /// every time.
+    pub async fn connect_starting_at(&self, start: usize) -> Result<Wallet, WalletError> {
         let spend_key = scalar_from_hex(&self.private_spend_key_hex);
         let view_key = scalar_from_hex(&self.private_view_key_hex);
         let spend_key_dalek: Zeroizing<curve25519_dalek::Scalar> = Zeroizing::new((*spend_key).into());
@@ -427,9 +455,26 @@ impl ResolvedWallet {
             .timeout(std::time::Duration::from_secs(60))
             .build()
             .expect("failed to build reqwest client");
-        let node_url = self.node_url.trim_end_matches('/').to_string();
-        let transport = ReqwestTransport { client: http_client.clone(), base_url: node_url.clone() };
-        let rpc = MoneroDaemon::new(transport).await.map_err(|source| WalletError::DaemonUnreachable { url: node_url.clone(), source })?;
+        assert!(!self.node_urls.is_empty(), "no stagenet node configured");
+        let mut last_error = None;
+        let mut connected = None;
+        for node_url in nodes_in_order(&self.node_urls, start) {
+            let transport = ReqwestTransport { client: http_client.clone(), base_url: node_url.clone() };
+            match MoneroDaemon::new(transport).await {
+                Ok(rpc) => {
+                    connected = Some((rpc, node_url));
+                    break;
+                }
+                Err(source) => {
+                    let error = WalletError::DaemonUnreachable { url: node_url, source };
+                    eprintln!("cli-wallet: {error}; trying the next node");
+                    last_error = Some(error);
+                }
+            }
+        }
+        let Some((rpc, node_url)) = connected else {
+            return Err(last_error.expect("at least one node was tried"));
+        };
         let distribution = load_decoy_distribution(&self.decoy_distribution_path)?;
         let decoy_cache = DecoyCache { daemon: rpc.clone(), distribution };
 
@@ -501,7 +546,7 @@ impl WalletStore {
             address: credentials.address,
             private_spend_key_hex: credentials.private_spend_key_hex,
             private_view_key_hex: credentials.private_view_key_hex,
-            node_url: self.ctx.node_url.clone(),
+            node_urls: self.ctx.node_urls.clone(),
             accept_invalid_certs: self.ctx.accept_invalid_certs,
             decoy_distribution_path: self.ctx.decoy_distribution_path.clone(),
             ledger_path: self.ctx.ledger_path.clone(),
@@ -1009,7 +1054,9 @@ pub async fn send_payment(wallet: ResolvedWallet, to: &str, amount: u64, split_c
     let mut attempt = 1;
     loop {
         let result: Result<[u8; 32], WalletError> = async {
-            let wallet = wallet.connect().await?;
+            // Each retry starts from the next node (see
+            // `ResolvedWallet::connect_starting_at`).
+            let wallet = wallet.connect_starting_at((attempt - 1) as usize).await?;
             match split_change_into {
                 Some(n) => wallet.send_with_change_split(to, amount, n).await,
                 None => wallet.send(to, amount).await,
@@ -1035,6 +1082,17 @@ mod tests {
 
     fn entry(txid: &str, height: Option<u64>, spent: bool) -> LedgerEntry {
         LedgerEntry { txid: txid.to_string(), height, serialized_output_hex: None, amount_piconero: 1, spent }
+    }
+
+    #[test]
+    fn each_retry_starts_from_the_next_node_and_still_tries_them_all() {
+        let nodes: Vec<String> = DEFAULT_STAGENET_NODES.iter().map(|n| format!("{n}/")).collect();
+        let host = |url: &String| url.split("//").nth(1).unwrap().split('.').next().unwrap().to_string();
+        let order = |start| nodes_in_order(&nodes, start).iter().map(host).collect::<Vec<_>>();
+        assert_eq!(order(0), ["node", "node2", "node3"]);
+        assert_eq!(order(1), ["node2", "node3", "node"]);
+        assert_eq!(order(4), ["node2", "node3", "node"], "wraps around");
+        assert!(nodes_in_order(&nodes, 0).iter().all(|url| !url.ends_with('/')));
     }
 
     /// Three real outputs of one stagenet split transaction
