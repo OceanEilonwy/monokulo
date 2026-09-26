@@ -15,11 +15,11 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 | 7 | Only show browser-created orders inside a verified frame | done | `8dfffd7` |
 | 8 | Remove the engine's public surface | done | `e06bcfb` |
 | 9a | Client identity (Tor circuit ID, trusted proxies) | in progress (uncommitted, see Resume here) | |
-| 9b | Tor's own defences (torrc, docs) | done | (this commit) |
+| 9b | Tor's own defences (torrc, docs) | done | `e65834a` |
 | 9c | Tiered limits | done | `5387224` (with 9d) |
 | 9d | The challenge (pages, JSON API) | done | `5387224` (with 9c) |
 | 9e | Settings and screens | done | `9992123` |
-| 9f | API and integration changes | not started | |
+| 9f | API and integration changes | done | (this commit; code in `5387224`) |
 | 9g | Tests | not started | |
 | 10 | Docs and cleanup | not started | |
 
@@ -27,7 +27,7 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 
 **Shared worktree, read first (added by the reviewer, 26 Sep 12:5x).** A separate POS redesign (Solid 2.0 POS app, `pos_redesign.md`) is being worked on in this same worktree by another agent. Its in-progress state was committed as `a93b4ca` ("WIP: POS redesign ..."), and that agent may resume and keep editing. The rules in README §0 ("Shared worktree") apply from now on: don't touch POS-owned files, stage by explicit path only, and use migration number 0023 or higher.
 
-Steps 1-8, 9a-9e done. Next: 9f (document the 429 + challenge shape and headers in the API docs: `docs/DESIGN.md` monokulo boundary section / a new `docs/ABUSE_PROTECTION.md`; the embed library header comment is already done), then 9g (real tor test `crates/monokulo/tests/e2e_tor.rs`, docs in `e2e/README.md` and `docs/TESTING.md`), step 10.
+Steps 1-8, 9a-9f done. Next: 9g (real tor test `crates/monokulo/tests/e2e_tor.rs`, docs in `e2e/README.md` and `docs/TESTING.md`), step 10.
 
 Known POS-side issue (not mine, not fixed per the shared-worktree rule): clippy `match_single_binding` warning at `crates/monokulo/src/http/pos.rs:344` from the POS redesign.
 
@@ -148,3 +148,7 @@ Rust half:
 - `deploy/tor/torrc.snippet`: onion service to `127.0.0.1:8082` (monokulo's onion listener), `HiddenServiceExportCircuitID haproxy`, `HiddenServicePoWDefensesEnabled 1` (+ `PoWQueueRate 50`/`Burst 250`), `HiddenServiceEnableIntroDoSDefense 1` (rate 25/s, burst 200), `HiddenServiceMaxStreams 64` + `MaxStreamsCloseCircuit 1`.
 - `docs/TOR.md`: why the onion listener, how to check tor has PoW (`tor --list-modules` -> `pow: yes`), every line explained, monokulo settings, how to run the real-tor test.
 - Verified: `tor --verify-config` accepts the snippet (tor 0.4.9.12, `pow: yes`).
+
+### Step 9f: API and integration changes
+- Code landed with 9d (`5387224`): the `429` + `challenge` shape, `Monokulo-Challenge`/`Monokulo-Proof`, CORS allow/expose, `monokulo-client.js` header comment and solver. WooCommerce plugin and engine unchanged (key-authenticated / private).
+- Docs: new `docs/ABUSE_PROTECTION.md` (identities, tiers, matrix, JSON and page challenge flows, headers, settings, why not Anubis). DESIGN.md links to it in step 10.
