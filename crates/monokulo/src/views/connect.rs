@@ -15,9 +15,9 @@ pub struct ConnectViewModel {
     pub error: Option<String>,
     pub public_key: Option<String>,
     pub connection_id: Option<String>,
-    /// The engine's real base URL - only ever populated (and only ever
-    /// rendered) alongside `public_key`.
-    pub endpoint: String,
+    /// This instance's public address, when set - used by the integration
+    /// help shown alongside `public_key`.
+    pub public_url: Option<String>,
     /// The submitted field values, echoed back into the re-rendered form on
     /// a validation error so a rejected submission doesn't throw away
     /// everything the merchant typed. All empty (network flags defaulting
@@ -52,6 +52,9 @@ pub struct PlatformConnectViewModel {
     /// the confirm screen offer "use an existing store" instead of always
     /// forcing a brand-new tenant to be provisioned.
     pub existing_stores: Vec<ExistingStoreOption>,
+    /// Set when this instance can't connect plugins at all right now (no
+    /// public address configured): the reason is shown and no form is.
+    pub unavailable: Option<String>,
 }
 
 /// One entry in the "use an existing store" picker.
@@ -95,7 +98,7 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
                     "Keep this value handy. Your secret token is stored securely and is never shown "
                     "here - the control plane keeps it on your behalf for the calls it makes on your store's behalf."
                 }
-                (super::integration_help::fragment(public_key, &data.endpoint, false))
+                (super::integration_help::fragment(public_key, data.public_url.as_deref(), false))
             } @else {
                 nav class="context-nav" aria-label="Breadcrumb" {
                     a href="/dashboard/stores/new" { "Add a store" }
@@ -170,6 +173,9 @@ pub fn platform_page(chrome: &PageChrome, data: &PlatformConnectViewModel) -> Ma
                 "public spend key are collected below, never a spend key. Once confirmed you'll be sent straight "
                 "back to " (data.site_url) "."
             }
+            @if let Some(unavailable) = &data.unavailable {
+                p class="error" role="alert" { (unavailable) }
+            } @else {
             @if let Some(error) = &data.error {
                 p class="error" { (error) }
             }
@@ -229,6 +235,7 @@ pub fn platform_page(chrome: &PageChrome, data: &PlatformConnectViewModel) -> Ma
                 }
                 button type="submit" { "Create a new store" }
             }
+            }
         }
     };
     layout(chrome, "Connect Monero payments - Monokulo", body)
@@ -276,7 +283,7 @@ mod tests {
             error: None,
             public_key: None,
             connection_id: None,
-            endpoint: String::new(),
+            public_url: None,
             site_url: String::new(),
             view_key_hex: String::new(),
             spend_pubkey_hex: String::new(),
@@ -333,13 +340,15 @@ mod tests {
         let data = ConnectViewModel {
             public_key: Some("pk_deadbeef".to_string()),
             connection_id: Some("conn_1".to_string()),
-            endpoint: "http://127.0.0.1:8080".to_string(),
+            public_url: Some("https://pay.example.com".to_string()),
             ..default_connect_data()
         };
         let html = page(&chrome(), &data).into_string();
         assert!(html.contains(r#"href="/dashboard/stores/conn_1""#));
         assert!(html.contains("pk_deadbeef"));
         assert!(!html.contains("id=\"connect-form\""), "the confirmation view should not still show the connect form");
+        assert!(html.contains("https://pay.example.com/static/monokulo-client.js"), "snippets use the public address, got: {html}");
+        assert!(html.contains("POST https://pay.example.com/pay/pk_deadbeef/orders"));
     }
 
     fn default_platform_data() -> PlatformConnectViewModel {
@@ -356,7 +365,16 @@ mod tests {
             network_testnet_selected: false,
             currency_options: vec![],
             existing_stores: vec![],
+            unavailable: None,
         }
+    }
+
+    #[test]
+    fn platform_page_shows_why_it_cannot_connect_and_no_form_when_unavailable() {
+        let data = PlatformConnectViewModel { unavailable: Some("No public address yet.".to_string()), ..default_platform_data() };
+        let html = platform_page(&chrome(), &data).into_string();
+        assert!(html.contains("No public address yet."));
+        assert!(!html.contains("<form"), "no form while connecting is impossible, got: {html}");
     }
 
     #[test]

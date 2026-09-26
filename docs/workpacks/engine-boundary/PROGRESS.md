@@ -9,8 +9,8 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 | 1 | Make the engine private by default | done | `f4495b8` |
 | 2 | Stop monokulo using the engine's public routes | done | `11838f0` |
 | 3 | Stop monokulo reading or writing the engine's allowed origins | done | `74d4876` |
-| 4 | Let a shop's server create orders with its secret key | done | (this commit) |
-| 5 | Give plugins monokulo's address, not the engine's | not started | |
+| 4 | Let a shop's server create orders with its secret key | done | `3600a96` |
+| 5 | Give plugins monokulo's address, not the engine's | done | (this commit) |
 | 6 | Fix the WooCommerce plugin | not started | |
 | 7 | Only show browser-created orders inside a verified frame | not started | |
 | 8 | Remove the engine's public surface | not started | |
@@ -25,7 +25,9 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 
 ## Resume here
 
-Steps 1-4 done. Next: step 5 (`public_url` setting in `crates/monokulo/src/settings.rs` + admin settings; `/connect/{platform}/finish` in `http/connect.rs` returns it as `endpoint` and refuses while unset; remove the unrendered engine `endpoint` fields from `integration_help` and the store/connect views).
+Steps 1-5 done. Next: step 6 (fix the WooCommerce plugin `plugins/woocommerce/includes/class-wc-gateway-monokulo.php`: create orders at `{endpoint}/pay/{pk}/orders` with `Authorization: Bearer {secret_token}` and `{amount, currency, merchant_order_id}`; redirect to `{endpoint}/pay/{pk}/orders/{order_id}`; a settings/schema version marker, reconnect notice and `is_available()` false for old installs; PHP tests; extend `crates/mock-woocommerce` so a full checkout (connect, keyed order, checkout page, paid webhook) runs by default; move the stagenet tests' status checks to monokulo's `/pay/{pk}/orders/{id}/status`).
+
+Note on `crates/mock-woocommerce/tests/e2e_stagenet_connect_flow.rs`: after step 5 it still reads order status from `{credentials.endpoint}/api/v1/t/...`, which now points at monokulo and would 404. It can't run here (stagenet), but step 6 must switch it to monokulo's routes.
 
 Adding an `AppState` field: every literal has `event_streams: Default::default(),`; a one-line script that inserts the new field after that line in every file from `grep -rl 'event_streams: Default::default(),' crates` (except `crates/monokulo/src/main.rs`, edited by hand) covers them all.
 
@@ -37,15 +39,15 @@ Commit SHAs: each step's commit records its own SHA in the *next* step's PROGRES
 
 ## Test status at last commit
 
-After step 4:
-- `cargo test --workspace`: 860 passed, 0 failed, 18 ignored.
+After step 5:
+- `cargo test --workspace`: 864 passed, 0 failed, 18 ignored.
 - clippy: per-file warning counts identical to baseline (checked with a per-file count diff).
-- Playwright surface: not re-run (no JS/HTML/CSS touched).
+- Playwright surface: 18 passed (run after step 5; views changed).
 - PHP suite: not run.
 
 Baseline (before step 1), at `e4d83da`:
 - `cargo test --workspace`: 854 passed, 0 failed, 18 ignored.
-- Playwright surface (`e2e/pos-playwright`, `npx playwright test -c surface.config.js`): 19 passed.
+- Playwright surface (`e2e/pos-playwright`, `npx playwright test -c surface.config.js`): recorded here as 19 when the pack was written, but `surface.spec.js` at `e4d83da` contains 18 tests and all 18 pass.
 - PHP suite: not run (needs the wp-env test container).
 
 ## Notes per step
@@ -78,3 +80,11 @@ Baseline (before step 1), at `e4d83da`:
 - `http/embed_domains.rs::embed_policy_middleware`: for a restricted store, `POST /pay/{pk}/orders` needs a verified `Origin` or the key; neither gives `403` with a message mentioning the secret key (closes phase 2's no-`Origin` gap).
 - Migration `crates/monokulo/migrations/0021_order_created_with_key.sql` (default 1 for old rows, decision 7); `Db::create_order_currency_metadata` takes `created_with_key`; `OrderCurrencyMetadataRow.created_with_key`. `pay::create_order` records whether the key was presented; dashboard (`orders::create_order`) and POS (`pos::create_order`) record `true`.
 - Tests: `secret_key_orders_are_accepted_and_recorded_and_restricted_stores_need_a_key_or_a_verified_page` (`http/embed_domains.rs`): unrestricted no key/no Origin ok and not keyed; right key ok and keyed; wrong key, other store's key, `Basic` all 401 JSON; failures spend per-IP budget while keyed requests bypass it; restricted: no key+no Origin 403, verified page ok (not keyed), key ok with or without Origin, other store's key 401; per-store key budget 429. Phase 2's restricted test updated (no Origin now 403). POS and dashboard order tests assert `created_with_key`.
+
+### Step 5: plugins get monokulo's address
+- `crates/monokulo/src/settings.rs`: `PUBLIC_URL` (`public_url`, `MONOKULO_PUBLIC_URL`), `validate_public_url`, `public_url(db)`, `help(key)` (decision 9). Unit tests for validation and normalisation.
+- `http/admin_settings.rs`: validates `public_url`; each monokulo field carries help text (`views/admin.rs` renders `span.field-help`).
+- `http/connect.rs`: `public_url_for_plugins`; confirm screen shows the reason and no form while unset (`PlatformConnectViewModel.unavailable`), submission refused, `/finish` returns `503` JSON before redeeming the token; `FinishResponse.endpoint` = `public_url` (decision 8). Test: `plugins_cannot_connect_until_the_public_url_is_set_and_are_told_why`; the round-trip test asserts `endpoint == public_url` and not the engine address.
+- Views: `integration_help::fragment(public_key, public_url, is_woocommerce)` (absolute snippets when set); `ConnectViewModel`/`StoreDetailData` carry `public_url` instead of the engine `endpoint` (decision 10).
+- `crates/mock-woocommerce` test monokulos (lib and stagenet connect test) set `public_url` to their own listener; assertions now expect monokulo's address.
+- Verified: no view, JSON response or plugin-facing value contains `engine_client.base_url()` any more (grep: the only remaining use is `connections.rs` storing it in the internal `moneropay_endpoint` column).

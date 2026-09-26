@@ -521,7 +521,7 @@ async fn render_store_detail_page(
             platform: row.platform,
             site_url: row.site_url,
             public_key: row.tenant_public_key,
-            endpoint: row.moneropay_endpoint,
+            public_url: crate::settings::public_url(&state.db.lock().unwrap()),
             base_currency: row.base_currency,
             health,
             health_label,

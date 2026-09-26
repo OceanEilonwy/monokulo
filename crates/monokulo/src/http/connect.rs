@@ -28,7 +28,8 @@
 //!    [`AuthedUser`]: the plugin calls this server-to-server, with no
 //!    monokulo session at all. Redeems the token exactly once (see
 //!    [`crate::db::Db::consume_connect_token`]'s atomicity doc comment) and
-//!    returns `{public_key, secret_token, endpoint}` plus, as of WBS 1.4.4,
+//!    returns `{public_key, secret_token, endpoint}` (`endpoint` is this
+//!    instance's public address, never the engine's) plus, as of WBS 1.4.4,
 //!    a `webhook_signing_secret` when the request carried a `webhook_url` -
 //!    see [`finish`]'s own doc comment for the registration/failure policy.
 
@@ -102,6 +103,7 @@ fn render_confirm_form(
             platform: row.platform,
         })
         .collect();
+    let unavailable = public_url_for_plugins(state).err();
     let chrome = super::page_chrome(state, Some(user), format!("/connect/{platform}"));
     let data = PlatformConnectViewModel {
         platform: platform.to_string(),
@@ -116,8 +118,23 @@ fn render_confirm_form(
         network_testnet_selected,
         currency_options,
         existing_stores,
+        unavailable,
     };
     crate::views::connect::platform_page(&chrome, &data).into_response()
+}
+
+/// Why plugins can't connect while this instance has no public address.
+const NO_PUBLIC_URL: &str = "This Monokulo instance can't connect plugins yet: its operator hasn't set its public \
+     address (the public URL setting on the admin settings page). Plugins need it to create orders and send \
+     customers to the checkout. Ask the operator to set it, then try connecting again.";
+
+/// This instance's public address, which is what a plugin is given as its
+/// `endpoint` - or, while it isn't set, the message explaining that
+/// connecting can't work yet. Checked on the confirm screen (so the merchant
+/// sees it before typing anything), again when it is submitted, and in
+/// `/finish`, so a plugin is never handed a wrong address.
+fn public_url_for_plugins(state: &AppState) -> Result<String, String> {
+    crate::settings::public_url(&state.db.lock().unwrap()).ok_or_else(|| NO_PUBLIC_URL.to_string())
 }
 
 /// Percent-encodes `s` for safe embedding as one query-string value - the
@@ -228,6 +245,10 @@ pub async fn confirm_submit(
     Path(platform): Path<String>,
     Form(form): Form<ConfirmForm>,
 ) -> Response {
+    if public_url_for_plugins(&state).is_err() {
+        // `render_confirm_form` shows the reason instead of the form.
+        return render_confirm_form(&state, &platform, &form.site_url, &form.return_url, &form.nonce, None, Some(&form), &user);
+    }
     if form.mode == "existing" {
         confirm_existing_store(&state, &user, &platform, &form).await
     } else {
@@ -430,6 +451,10 @@ pub struct FinishRequest {
 pub struct FinishResponse {
     pub public_key: String,
     pub secret_token: String,
+    /// This instance's public address (`crate::settings::public_url`): where
+    /// the plugin creates orders (`POST {endpoint}/pay/{pk}/orders` with the
+    /// secret key) and sends customers (`{endpoint}/pay/{pk}/orders/{id}`).
+    /// Never the engine's address - the engine is private.
     pub endpoint: String,
     /// Present only when `webhook_url` was supplied and registration succeeded.
     /// `skip_serializing_if` keeps the wire shape for a caller with no webhook
@@ -458,7 +483,15 @@ pub struct FinishResponse {
 /// choice, not just "reuse the existing pattern" - see the doc comment
 /// immediately above the webhook-registration branch below for the tradeoff
 /// this accepts and why.
+///
+/// While this instance has no public address, `/finish` answers `503` with
+/// a JSON `{"error": ...}` the plugin can show, *before* redeeming the
+/// token, so the same token still works once the operator sets it.
 pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest>) -> Response {
+    let endpoint = match public_url_for_plugins(&state) {
+        Ok(url) => url,
+        Err(message) => return (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({ "error": message }))).into_response(),
+    };
     let token_hash = shared::auth::hash_secret_token(&req.token);
 
     let connection_id = {
@@ -517,7 +550,7 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
     Json(FinishResponse {
         public_key: row.tenant_public_key,
         secret_token,
-        endpoint: state.engine_client.base_url().to_string(),
+        endpoint,
         webhook_signing_secret,
     })
     .into_response()
@@ -541,6 +574,9 @@ mod tests {
     const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
     const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
     const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
+    /// This test instance's configured public address - what `/finish`
+    /// must hand plugins as `endpoint`.
+    const TEST_PUBLIC_URL: &str = "https://pay.example.test";
 
     /// A fixed 1-XMR-per-unit `FixedRateProvider` for tests that don't
     /// actually exercise fiat conversion, just need `AppState.exchange_rate`
@@ -553,7 +589,12 @@ mod tests {
         let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
+            db: {
+                let db = Db::open_in_memory().unwrap();
+                db.seed_test_admin();
+                db.set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL).unwrap();
+                db.into_shared()
+            },
             engine_client,
             encryption_key: TEST_ENCRYPTION_KEY,
             status_cache: crate::http::status_page::new_status_cache(),
@@ -711,7 +752,8 @@ mod tests {
         let secret_token = obj.get("secret_token").unwrap().as_str().unwrap();
         assert!(secret_token.starts_with("sk_"));
         let endpoint = obj.get("endpoint").unwrap().as_str().unwrap();
-        assert!(!endpoint.is_empty());
+        assert_eq!(endpoint, TEST_PUBLIC_URL, "plugins get monokulo's public address");
+        assert_ne!(endpoint, format!("http://{}", engine.addr), "never the engine's");
         // No webhook signing secret yet (WBS 1.4.4, not this task).
         assert!(!obj.contains_key("webhook_secret"));
         assert!(!obj.contains_key("signing_secret"));
@@ -1335,5 +1377,79 @@ mod tests {
         assert_eq!(post_response.status(), StatusCode::OK);
         let html = body_text(post_response).await;
         assert!(html.contains("Choose a store to connect."), "expected a clear error, got: {html}");
+    }
+
+    /// While no public address is set, the confirm screen explains why
+    /// connecting can't work (no form), submitting it does nothing, and
+    /// `/finish` answers `503` with a JSON error *without* spending the
+    /// token - which then works once the operator sets the address.
+    #[tokio::test]
+    async fn plugins_cannot_connect_until_the_public_url_is_set_and_are_told_why() {
+        let (state, engine) = test_state_with_real_engine().await;
+        state.db.lock().unwrap().set_setting(crate::settings::PUBLIC_URL.key, "").unwrap();
+        let router = build_router(state.clone());
+        let cookie = signed_up_and_logged_in_session_cookie(&router, "no-public-url@example.com", "correct horse battery staple").await;
+
+        let start = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fcb&nonce=n1")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(start).await;
+        assert!(html.contains("hasn't set its public"), "got: {html}");
+        assert!(!html.contains("<form method=\"post\" action=\"/connect/woocommerce\""), "no confirm form, got: {html}");
+
+        let fields = [
+            ("site_url", "https://shop.example.com"),
+            ("return_url", "https://shop.example.com/cb"),
+            ("nonce", "n1"),
+            ("view_key_hex", TEST_VIEW_KEY_HEX),
+            ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+            ("network", "mainnet"),
+            ("base_currency", "XMR"),
+        ];
+        let submit = router.clone().oneshot(form_request("/connect/woocommerce", Some(&cookie), &fields)).await.unwrap();
+        assert_eq!(submit.status(), StatusCode::OK, "no redirect, no token");
+        let user_id = signed_in_user_id(&state, "no-public-url@example.com");
+        assert!(state.db.lock().unwrap().list_store_connections_for_user(&user_id).unwrap().is_empty());
+
+        // Get a real token with the address set, then unset it again.
+        state.db.lock().unwrap().set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL).unwrap();
+        let submit = router.clone().oneshot(form_request("/connect/woocommerce", Some(&cookie), &fields)).await.unwrap();
+        assert_eq!(submit.status(), StatusCode::FOUND);
+        let token = parse_query_params(submit.headers()["location"].to_str().unwrap())["token"].clone();
+        state.db.lock().unwrap().set_setting(crate::settings::PUBLIC_URL.key, "").unwrap();
+
+        let finish = |token: String| {
+            router.clone().oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri("/connect/woocommerce/finish")
+                    .header("content-type", "application/json")
+                    .body(Body::from(serde_json::json!({ "token": token }).to_string()))
+                    .unwrap(),
+            )
+        };
+        let response = finish(token.clone()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = body_json(response).await;
+        assert!(body["error"].as_str().unwrap().contains("public address"), "{body}");
+
+        state.db.lock().unwrap().set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL).unwrap();
+        let response = finish(token).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "the token was not spent by the refused call");
+        let body = body_json(response).await;
+        assert_eq!(body["endpoint"], TEST_PUBLIC_URL);
+        assert!(!body.to_string().contains(&engine.addr.to_string()), "nothing in the response names the engine: {body}");
+    }
+
+    fn signed_in_user_id(state: &AppState, email: &str) -> String {
+        state.db.lock().unwrap().get_user_by_email(email).unwrap().unwrap().id
     }
 }

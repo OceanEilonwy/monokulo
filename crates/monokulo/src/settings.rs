@@ -49,6 +49,7 @@ scalar_settings! {
     HTTP_CACHE_MAX_MB => { key: "http_cache.max_mb", env: "MONOKULO_HTTP_CACHE_MAX_MB", default: "16" },
     RATE_LIMIT_PER_IP_PER_MIN => { key: "rate_limit.per_ip_per_min", env: "MONOKULO_RATE_LIMIT_PER_IP_PER_MIN", default: "20" },
     RATE_LIMIT_PER_STORE_KEY_PER_MIN => { key: "rate_limit.per_store_key_per_min", env: "MONOKULO_RATE_LIMIT_PER_STORE_KEY_PER_MIN", default: "600" },
+    PUBLIC_URL => { key: "public_url", env: "MONOKULO_PUBLIC_URL", default: "" },
 }
 
 pub fn get<T: std::str::FromStr>(db: &Db, setting: &ScalarSetting) -> T {
@@ -61,6 +62,65 @@ pub fn get<T: std::str::FromStr>(db: &Db, setting: &ScalarSetting) -> T {
 pub fn get_raw(db: &Db, setting: &ScalarSetting) -> (String, SettingSource) {
     let db_value = db.get_setting(setting.key).ok().flatten();
     resolve_raw(setting.env_var, db_value.as_deref(), setting.default)
+}
+
+/// Checks a `public_url` value: this instance's external base URL, the one
+/// address plugins and customers use (clearnet or `.onion`). It must be an
+/// absolute `http`/`https` URL with a host and nothing after it but an
+/// optional `/` - no path, query, fragment or login - since callers append
+/// paths like `/pay/{pk}/orders` to it. Returns it without the trailing
+/// `/`. The empty string is not valid here; an empty setting just means
+/// "not set" ([`public_url`]).
+pub fn validate_public_url(value: &str) -> Result<String, String> {
+    let value = value.trim();
+    let problem = "Enter this instance's public address, like https://pay.example.com or http://abc...xyz.onion, with no path after it.";
+    let parsed = url::Url::parse(value).map_err(|_| problem.to_string())?;
+    let ok = matches!(parsed.scheme(), "http" | "https")
+        && parsed.host_str().is_some_and(|host| !host.is_empty())
+        && parsed.path() == "/"
+        && parsed.query().is_none()
+        && parsed.fragment().is_none()
+        && parsed.username().is_empty()
+        && parsed.password().is_none();
+    if !ok {
+        return Err(problem.to_string());
+    }
+    Ok(parsed.as_str().trim_end_matches('/').to_string())
+}
+
+/// This instance's public base URL (no trailing `/`), or `None` while it
+/// isn't set (or holds a value that doesn't validate, which the admin page
+/// refuses to save but an environment variable could still carry).
+pub fn public_url(db: &Db) -> Option<String> {
+    let value: String = get(db, &PUBLIC_URL);
+    if value.trim().is_empty() {
+        return None;
+    }
+    match validate_public_url(&value) {
+        Ok(url) => Some(url),
+        Err(_) => {
+            eprintln!("settings: public_url {value:?} is not a valid public address; treating it as unset");
+            None
+        }
+    }
+}
+
+/// A short explanation shown under a setting on the admin settings page,
+/// for the settings that need one.
+pub fn help(key: &str) -> Option<&'static str> {
+    match key {
+        "public_url" => Some(
+            "This instance's public address, e.g. https://pay.example.com or an http://....onion address. Plugins \
+             such as WooCommerce are given it when they connect, and send customers to its checkout. Plugins can't \
+             connect until it is set.",
+        ),
+        "rate_limit.per_ip_per_min" => Some("Requests a minute one address may make to the public checkout routes. Read at startup."),
+        "rate_limit.per_store_key_per_min" => Some(
+            "Requests a minute a shop's server may make with its store's secret key (for example the WooCommerce plugin \
+             creating orders). These skip the per-address limit. Read at startup.",
+        ),
+        _ => None,
+    }
 }
 
 /// `SIGNUP_MODE`'s two valid values - a real enum rather than every caller
@@ -100,6 +160,41 @@ mod tests {
         let _: u64 = get(&db, &HTTP_CACHE_MAX_MB);
         let _: u32 = get(&db, &RATE_LIMIT_PER_IP_PER_MIN);
         let _: u32 = get(&db, &RATE_LIMIT_PER_STORE_KEY_PER_MIN);
+        let _: String = get(&db, &PUBLIC_URL);
+    }
+
+    #[test]
+    fn a_public_url_must_be_an_http_base_url_with_nothing_after_it() {
+        for (input, expected) in [
+            ("https://pay.example.com", "https://pay.example.com"),
+            ("https://pay.example.com/", "https://pay.example.com"),
+            ("  http://pay.example.com:8081/ ", "http://pay.example.com:8081"),
+            ("http://abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz234.onion", "http://abcdefghijklmnopqrstuvwxyzabcdefghijklmnopqrstuvwxyz234.onion"),
+        ] {
+            assert_eq!(validate_public_url(input).as_deref(), Ok(expected), "{input}");
+        }
+        for bad in [
+            "",
+            "pay.example.com",
+            "ftp://pay.example.com",
+            "https://pay.example.com/monokulo",
+            "https://pay.example.com/?a=b",
+            "https://pay.example.com/#top",
+            "https://user:pass@pay.example.com",
+            "https://",
+        ] {
+            assert!(validate_public_url(bad).is_err(), "{bad:?} should be refused");
+        }
+    }
+
+    #[test]
+    fn public_url_is_none_until_set_and_then_normalized() {
+        let db = Db::open_in_memory().unwrap();
+        assert_eq!(public_url(&db), None);
+        db.set_setting(PUBLIC_URL.key, "https://pay.example.com/").unwrap();
+        assert_eq!(public_url(&db).as_deref(), Some("https://pay.example.com"));
+        db.set_setting(PUBLIC_URL.key, "not a url").unwrap();
+        assert_eq!(public_url(&db), None);
     }
 
     #[test]

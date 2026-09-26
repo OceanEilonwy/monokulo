@@ -12,12 +12,9 @@ pub struct StoreDetailData {
     pub platform: String,
     pub site_url: String,
     pub public_key: String,
-    /// No longer shown anywhere on this page (an internal detail, not
-    /// something a merchant needs day to day) - kept only because
-    /// `integration_help::fragment` still takes it as a parameter, for
-    /// signature parity with the old partial it replaced; that fragment
-    /// itself never actually renders it (`let _ = endpoint;`).
-    pub endpoint: String,
+    /// This instance's public address, when set - used by the integration
+    /// help's snippets (`integration_help::fragment`).
+    pub public_url: Option<String>,
     pub base_currency: String,
     pub health: String,
     pub health_label: String,
@@ -138,7 +135,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                     details class="help-disclosure" {
                         summary class="btn btn-secondary help-control" { "Help" }
                         div class="store-help-content" {
-                            (super::integration_help::fragment(&store.public_key, &store.endpoint, store.is_woocommerce))
+                            (super::integration_help::fragment(&store.public_key, store.public_url.as_deref(), store.is_woocommerce))
                         }
                     }
                 }
@@ -287,7 +284,7 @@ mod tests {
             platform: if is_woocommerce { "woocommerce".to_string() } else { "custom".to_string() },
             site_url: "https://shop.example.com".to_string(),
             public_key: "pk_abc123".to_string(),
-            endpoint: "http://127.0.0.1:8080".to_string(),
+            public_url: None,
             base_currency: "XMR".to_string(),
             health: "ok".to_string(),
             health_label: "healthy".to_string(),
@@ -367,10 +364,8 @@ mod tests {
         // store's own public_key, not some stale or empty value - the exact
         // same fragment the post-connect success page uses
         // (`views::connect`'s own tests), so the two can never drift on
-        // what "integrate this store" means. `endpoint` isn't asserted here -
-        // `integration_help::fragment` never actually renders it (`let _ =
-        // endpoint;` in that function, kept only for signature parity), and
-        // this page's own "Engine endpoint" table row is gone by design.
+        // what "integrate this store" means. The engine's address is never
+        // part of this page.
         assert!(html.contains("pk_abc123"));
         assert!(html.contains("tag-error"));
         assert!(html.contains("Integrate this store"));

@@ -896,6 +896,15 @@ mod tests {
         // (login, connect confirm) then fails with a genuinely confusing
         // `401`, far from the actual cause.
         db.set_setting("signup.mode", "public").expect("failed to set signup.mode for test monokulo db");
+        // Bound before the state is built so monokulo's public address (what
+        // `/finish` hands the plugin as `endpoint`) can be this very listener.
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("failed to bind an ephemeral local port for the test control plane");
+        let addr = listener
+            .local_addr()
+            .expect("bound listener has no local address");
+        db.set_setting("public_url", &format!("http://{addr}")).expect("failed to set public_url for test monokulo db");
         let state = AppState {
             db: db.into_shared(),
             engine_client: EngineClient::new(format!("http://{engine_addr}")),
@@ -908,13 +917,6 @@ mod tests {
             dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
         };
         let router = build_router(state);
-
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("failed to bind an ephemeral local port for the test control plane");
-        let addr = listener
-            .local_addr()
-            .expect("bound listener has no local address");
 
         let task = tokio::spawn(async move {
             let _ = axum::serve(listener, router).await;
@@ -953,7 +955,7 @@ mod tests {
             "expected a real sk_ value, got: {}",
             credentials.secret_token
         );
-        assert_eq!(credentials.endpoint, format!("http://{}", engine.addr));
+        assert_eq!(credentials.endpoint, monokulo_base_url, "plugins get monokulo's public address, never the engine's");
 
         // Strong proof, not just "starts with sk_": the returned
         // secret_token is genuinely this tenant's working credential against
@@ -1018,7 +1020,7 @@ mod tests {
         let credentials = run_connect_flow(&monokulo_base_url).await.expect(
             "the connect flow should succeed end to end against a real engine + control plane",
         );
-        assert_eq!(credentials.endpoint, format!("http://{}", engine.addr));
+        assert_eq!(credentials.endpoint, monokulo_base_url, "plugins get monokulo's public address, never the engine's");
 
         let order = create_order(
             &monokulo_base_url,

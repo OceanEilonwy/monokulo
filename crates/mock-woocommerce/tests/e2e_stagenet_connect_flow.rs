@@ -174,6 +174,15 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
     // Same "signup defaults to invite-only" fix `mock_woocommerce::spawn_test_monokulo`
     // (`src/lib.rs`) needs - see that call site's own comment.
     db.set_setting("signup.mode", "public").expect("failed to set signup.mode for test monokulo db");
+    // Bound first so monokulo's public address (`/finish`'s `endpoint`) can
+    // be this very listener - see `mock_woocommerce`'s own `spawn_test_monokulo`.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+        .await
+        .expect("failed to bind an ephemeral local port for the test control plane");
+    let addr = listener
+        .local_addr()
+        .expect("bound listener has no local address");
+    db.set_setting("public_url", &format!("http://{addr}")).expect("failed to set public_url for test monokulo db");
     let state = AppState {
         db: db.into_shared(),
         engine_client: EngineClient::new(format!("http://{engine_addr}")),
@@ -189,13 +198,6 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
         dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
     };
     let router = build_router(state);
-
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-        .await
-        .expect("failed to bind an ephemeral local port for the test control plane");
-    let addr = listener
-        .local_addr()
-        .expect("bound listener has no local address");
 
     let task = tokio::spawn(async move {
         let _ = axum::serve(listener, router).await;
@@ -320,7 +322,7 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
     )
     .await
     .expect("the real stagenet connect flow should succeed end to end against a real engine + control plane");
-    assert_eq!(credentials.endpoint, format!("http://{}", engine.addr));
+    assert_eq!(credentials.endpoint, monokulo_base_url);
     println!(
         "connected: public_key={} endpoint={}",
         credentials.public_key, credentials.endpoint

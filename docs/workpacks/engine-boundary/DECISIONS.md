@@ -49,3 +49,21 @@ Format for each entry:
 - **Decision:** `order_currency_metadata.created_with_key INTEGER NOT NULL DEFAULT 1`; every new insert sets it explicitly (`pay::create_order`: whether the key was presented; dashboard and POS: `true`).
 - **Alternatives considered:** Default `0` for existing rows.
 - **Why:** Which path created an old order isn't recorded. Step 7 hides browser-created orders of restricted stores outside a frame; defaulting old rows to "not keyed" could break checkout links merchants already sent out. Old browser-created orders on restricted stores (phase 2 shipped days earlier) are a small, shrinking set.
+
+### 8. The missing-`public_url` check happens on the confirm screen, on its submission and in `/finish`
+- **Step:** 5
+- **Decision:** While `public_url` is unset, `GET /connect/{platform}` shows the confirm page with the reason and no form (so the merchant learns early), `POST /connect/{platform}` re-renders that page without creating anything, and `POST /connect/{platform}/finish` answers `503` with `{"error": "..."}` *before* redeeming the token (so the same token still works once the operator sets the address).
+- **Alternatives considered:** Only `/finish` (the merchant would only find out after entering keys); only the confirm screen (a token minted just before the setting was cleared would hand out a wrong address).
+- **Why:** The plan asks for the merchant to see it early and for plugins never to get a wrong address; checking in all three places does both. `503` fits "this instance isn't ready", and a JSON body lets the plugin show the message.
+
+### 9. `public_url` validation and normalisation
+- **Step:** 5
+- **Decision:** New monokulo setting `public_url` (`MONOKULO_PUBLIC_URL`, default empty = unset). Valid: an absolute `http`/`https` URL with a host and nothing after it but an optional `/` (no path, query, fragment or login). Stored as typed; read through `settings::public_url()`, which trims the trailing `/` and treats an invalid value (possible only via the environment variable) as unset with a log line. The admin page refuses invalid values and shows help text (new `help` field on `AdminScalarFieldView`, from `settings::help`), which step 9e reuses.
+- **Alternatives considered:** Allow a path prefix (monokulo behind a sub-path).
+- **Why:** The plan says no path beyond `/`; monokulo's routes and `monokulo-client.js` assume they sit at the root.
+
+### 10. `integration_help` shows the public address; `store_connections.moneropay_endpoint` is left in the database
+- **Step:** 5
+- **Decision:** `integration_help::fragment` now takes `public_url: Option<&str>` instead of the unrendered engine endpoint, and uses it to make the widget and API snippets absolute when set (relative, as before, when not). The views' `endpoint` fields are gone. The `store_connections.moneropay_endpoint` column is still written (the engine URL) and read into `StoreConnectionRow`, but nothing renders or returns it.
+- **Alternatives considered:** Drop the column with a migration; keep the relative snippets only.
+- **Why:** Absolute URLs are what a merchant pasting into another site needs. The column is internal (never sent to a merchant or plugin) and dropping it is unrelated schema churn; its existence doesn't break "nothing a merchant or plugin receives contains the engine's address".

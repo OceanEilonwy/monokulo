@@ -7,8 +7,13 @@
 
 use maud::{html, Markup};
 
-pub fn fragment(public_key: &str, endpoint: &str, is_woocommerce: bool) -> Markup {
-    let _ = endpoint; // Carried for signature parity with the old partial's params - never rendered (same as before).
+/// `public_url` is this instance's configured public address
+/// (`crate::settings::public_url`); when set, the snippets below use it in
+/// absolute URLs so they can be pasted as-is into a page on another site.
+/// While it isn't set they fall back to paths relative to wherever this
+/// dashboard is being viewed.
+pub fn fragment(public_key: &str, public_url: Option<&str>, is_woocommerce: bool) -> Markup {
+    let base = public_url.unwrap_or("");
     html! {
         div class="box" {
             h2 { "Integrate this store" }
@@ -34,7 +39,7 @@ pub fn fragment(public_key: &str, endpoint: &str, is_woocommerce: bool) -> Marku
             pre {
                 "<button id=\"monokulo-buy-button\">Pay with Monero</button>\n"
                 "<div id=\"monokulo-checkout\"></div>\n"
-                "<script src=\"/static/monokulo-client.js\"></script>\n"
+                "<script src=\"" (base) "/static/monokulo-client.js\"></script>\n"
                 "<script>\n"
                 "document.getElementById('monokulo-buy-button').addEventListener('click', function () {\n"
                 "  Monokulo.createOrder({\n"
@@ -52,7 +57,9 @@ pub fn fragment(public_key: &str, endpoint: &str, is_woocommerce: bool) -> Marku
             }
             p class="hint" {
                 "The script infers this instance's own address from its own " code { "<script src>" } " - paste it "
-                "verbatim, from wherever this dashboard is hosted."
+                "verbatim"
+                @if public_url.is_none() { ", from wherever this dashboard is hosted" }
+                "."
             }
 
             p {
@@ -61,7 +68,7 @@ pub fn fragment(public_key: &str, endpoint: &str, is_woocommerce: bool) -> Marku
                 "returned checkout link:"
             }
             pre {
-                "POST /pay/" (public_key) "/orders\n"
+                "POST " (base) "/pay/" (public_key) "/orders\n"
                 "Content-Type: application/json\n"
                 "\n"
                 "{\n"
@@ -72,10 +79,14 @@ pub fn fragment(public_key: &str, endpoint: &str, is_woocommerce: bool) -> Marku
             }
             p class="hint" { code { "merchant_order_id" } " is optional - your own order/cart id, if you have one." }
             p class="hint" {
-                "Send this request to wherever this dashboard is hosted (the same origin this page is on). The "
-                "response includes a " code { "order_id" } " - send the buyer to "
-                code { "/pay/" (public_key) "/orders/<order_id>" } " (same origin) to complete the payment. This endpoint "
-                "needs no secret - it's safe to call directly from your storefront's backend."
+                @if public_url.is_none() {
+                    "Send this request to wherever this dashboard is hosted (the same origin this page is on). "
+                }
+                "The response includes a " code { "order_id" } " - send the buyer to "
+                code { (base) "/pay/" (public_key) "/orders/<order_id>" } " to complete the payment. This endpoint "
+                "needs no secret while your store accepts orders from any website. If you restrict it to your "
+                "verified domains, orders must come from a page on one of them, or from a plugin (which uses your "
+                "store's secret key)."
             }
         }
     }

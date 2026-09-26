@@ -75,7 +75,13 @@ fn monokulo_fields(db: &Db) -> Vec<AdminScalarFieldView> {
         .iter()
         .map(|setting| {
             let (value, source) = crate::settings::get_raw(db, setting);
-            AdminScalarFieldView { key: setting.key.to_string(), label: humanize_key(setting.key), value, source_label: source_label(source).to_string() }
+            AdminScalarFieldView {
+                key: setting.key.to_string(),
+                label: humanize_key(setting.key),
+                value,
+                source_label: source_label(source).to_string(),
+                help: crate::settings::help(setting.key).map(str::to_string),
+            }
         })
         .collect()
 }
@@ -134,7 +140,7 @@ async fn fetch_scanner_settings(engine_url: &str, admin_token: &str) -> Result<O
     let fields = parsed
         .scalars
         .into_iter()
-        .map(|(key, s)| AdminScalarFieldView { label: humanize_key(&key), key, value: s.value, source_label: remote_source_label(&s.source) })
+        .map(|(key, s)| AdminScalarFieldView { label: humanize_key(&key), key, value: s.value, source_label: remote_source_label(&s.source), help: None })
         .collect();
     let networks = parsed
         .monero_node
@@ -233,6 +239,13 @@ fn validate_monokulo_scalar(setting: &ScalarSetting, value: &str) -> Result<(), 
             Ok(n) if n >= 1 => Ok(()),
             _ => Err(format!("{} must be a whole number of at least 1, got {value:?}", setting.key)),
         },
+        "public_url" => {
+            if value.trim().is_empty() {
+                Ok(())
+            } else {
+                crate::settings::validate_public_url(value).map(|_| ()).map_err(|problem| format!("{}: {problem}", setting.key))
+            }
+        }
         "engine.url" => {
             if value.trim().is_empty() {
                 Err(format!("{} must not be empty", setting.key))
@@ -559,6 +572,7 @@ mod tests {
             ("http_cache.max_mb", "42"),
             ("rate_limit.per_ip_per_min", "33"),
             ("rate_limit.per_store_key_per_min", "444"),
+            ("public_url", "https://pay.example.com"),
         ];
         // Every one of `ALL_SCALAR`'s own keys must be covered here, or this
         // test would silently stop proving anything about a setting added

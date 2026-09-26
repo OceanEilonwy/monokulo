@@ -197,6 +197,8 @@ pub struct AdminScalarFieldView {
     pub value: String,
     /// `"environment variable"`, `"saved value"`, or `"default"`.
     pub source_label: String,
+    /// A short explanation shown under the field, when it needs one.
+    pub help: Option<String>,
 }
 
 /// One `monero_node.<network>` entry on the scanner-settings half of the
@@ -226,6 +228,9 @@ fn scalar_field(field: &AdminScalarFieldView) -> Markup {
     html! {
         label { (field.label) " " input type="text" name=(field.key) value=(field.value); }
         span class="setting-source" { "(" (field.source_label) ")" }
+        @if let Some(help) = &field.help {
+            span class="field-help" { (help) }
+        }
     }
 }
 
@@ -413,6 +418,7 @@ mod tests {
                 label: "engine url".to_string(),
                 value: "http://scanner.internal".to_string(),
                 source_label: "saved value".to_string(),
+                help: Some("Where the engine listens.".to_string()),
             }],
             scanner_configured: true,
             scanner_reachable: true,
@@ -421,12 +427,14 @@ mod tests {
                 label: "payment confirmations required".to_string(),
                 value: "10".to_string(),
                 source_label: "default".to_string(),
+                help: None,
             }],
             scanner_networks: vec![AdminNetworkFieldView { network: "mainnet".to_string(), value_json: "{}".to_string() }],
             ..Default::default()
         };
         let html = admin_settings_page(&chrome(), &data).into_string();
         assert!(html.contains("engine url"));
+        assert!(html.contains(r#"<span class="field-help">Where the engine listens.</span>"#));
         assert!(html.contains(r#"value="http://scanner.internal""#));
         assert!(html.contains("payment confirmations required"));
         assert!(html.contains(r#"value="10""#));
