@@ -15,6 +15,9 @@ node "$playwright/prepare-coverage-assets.js"
 export COVERAGE_ASSETS_DIR="$COVERAGE_OUTPUT/assets"
 export COVERAGE_RAW_DIR="$COVERAGE_OUTPUT/raw"
 export COVERAGE_INSTRUMENT=1
+export COVERAGE_SCREENSHOTS=1
+screenshots_dir="$(dirname "$COVERAGE_OUTPUT")/screenshots"
+rm -rf "$screenshots_dir"
 mkdir -p "$COVERAGE_RAW_DIR"
 (cd "$playwright" && ./node_modules/.bin/playwright test -c coverage-browser.config.js)
 node "$playwright/collect-browser-report.js"

@@ -119,10 +119,18 @@ precede deletion of old browser tests.
   captures. The optional stagenet POS tests now have seven unmasked payment
   checkpoints, also gated by `COVERAGE_SCREENSHOTS=1`. The local coverage run
   produced all 12 deterministic images, split 6 checkout, 4 POS, 2 challenge.
+- 4.2 complete: the custom Playwright reporter stores named checkpoints and
+  failure screenshots with test ID, retry, worker, sequence, and stage in
+  collision-safe filenames. It writes `screenshots/manifest.json`; the
+  collector validates image paths, uniqueness, at least ten stages, and all
+  required groups. Playwright's HTML report and failure-only trace/screenshot
+  remain in the same coverage artifact. A synthetic reporter run verified
+  two workers, retry separation, an earlier checkpoint, and a distinct failure
+  image. The full 38/38 browser run produced 12 manifest entries.
 
 ## Resume next
 
-Finish the reporter/gallery (4.2–4.3), then handle the retained uncommitted
+Finish the offline gallery (4.3), then handle the retained uncommitted
 badge test and run the 2.5 comparison. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.

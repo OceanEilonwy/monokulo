@@ -20,6 +20,23 @@ for (const name of records) {
 }
 
 async function main() {
+  const gallery = path.join(root, 'target/coverage/screenshots');
+  const entries = JSON.parse(fs.readFileSync(path.join(gallery, 'manifest.json')));
+  if (entries.length < 10) throw new Error(`browser screenshot manifest has only ${entries.length} stages`);
+  const imageSet = new Set();
+  const groups = new Set();
+  for (const entry of entries) {
+    if (!['checkout', 'pos', 'challenge'].includes(entry.group)) throw new Error(`invalid screenshot group ${entry.group}`);
+    if (!/^images\/[a-z0-9-]+\.png$/.test(entry.image)) throw new Error(`invalid screenshot path ${entry.image}`);
+    if (imageSet.has(entry.image)) throw new Error(`duplicate screenshot path ${entry.image}`);
+    imageSet.add(entry.image);
+    if (!fs.statSync(path.join(gallery, entry.image)).size) throw new Error(`empty screenshot ${entry.image}`);
+    if (entry.stage !== 'failure') groups.add(entry.group);
+  }
+  if (!['checkout', 'pos', 'challenge'].every(group => groups.has(group))) {
+    throw new Error('browser screenshots lack a required checkout, POS, or challenge stage');
+  }
+  if (!fs.existsSync(path.join(gallery, 'index.html'))) throw new Error('browser screenshot gallery is missing');
   const finalMap = await sourceMaps.createSourceMapStore().transformCoverage(map);
   const required = [
     'crates/monokulo/static/checkout.js',
