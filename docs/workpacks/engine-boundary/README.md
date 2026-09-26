@@ -31,6 +31,14 @@ Your work will be reviewed independently, step by step, against this document. C
   - `crates/mock-woocommerce` contains e2e tests driving the WooCommerce connect flow.
   - `plugins/woocommerce` is the PHP WooCommerce gateway plugin.
   - `e2e/pos-playwright` holds the Playwright tests. `surface.spec.js` is the fast mocked suite; `pos.spec.js` needs stagenet funds and must not be run.
+- **Shared worktree (added mid-way; applies from step 9 on).** A separate POS redesign (Solid 2.0 POS app; task list `pos_redesign.md`) is being worked on in this same worktree by another agent, which may be editing files while you work. Its snapshot is commit `a93b4ca`.
+  - **Don't modify POS-owned files:** `crates/monokulo/src/http/pos.rs`, `crates/monokulo/src/views/pos.rs`, `crates/monokulo/pos-ui/`, `crates/monokulo/static/pos-app.*`, `crates/monokulo/migrations/0022_pos_orders.sql`, `e2e/pos-playwright/helpers.js`, `e2e/pos-playwright/tests/pos.spec.js`, `pos_redesign.md`, `docs/pos-background-orders-sketches.*`.
+    - The one exception is a mechanical change to an `AppState` literal in `http/pos.rs`'s tests, kept to that hunk only.
+    - Where step 9 needs POS behaviour (the POS is never challenged; the POS stream is keyed by the signed-in user), do it in the shared middleware and router, not in POS files. If a POS file change is truly unavoidable, keep it minimal and log it in `DECISIONS.md`.
+  - **`surface.spec.js` is shared.** Add your own tests; don't change the POS ones.
+  - **Stage by explicit path only.** Never `git add -A`, `git add .` or `git commit -a`. If a file you need to commit also holds POS changes, stage only your hunks (build a patch and `git apply --cached`). Before every commit, check `git diff --cached` contains only your changes.
+  - **Migrations:** the POS work owns `0022`; use `0023` or higher.
+  - **Tests:** if the POS work breaks the build or the tests while you're working, don't fix it. Record it in `PROGRESS.md` and carry on, testing your own changes as far as you can.
 - **Tests you must run and keep green before every commit:**
   - `cargo test --workspace` (currently 854 passed, 0 failed, 18 ignored).
   - `cargo clippy --workspace --all-targets`: add no new warnings in files you touch. Pre-existing warnings elsewhere are fine.

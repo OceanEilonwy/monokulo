@@ -13,8 +13,8 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 | 5 | Give plugins monokulo's address, not the engine's | done | `171ba94` |
 | 6 | Fix the WooCommerce plugin | done | `4f415dd` (PHP), `aa13374` (Rust) |
 | 7 | Only show browser-created orders inside a verified frame | done | `8dfffd7` |
-| 8 | Remove the engine's public surface | done | (this commit) |
-| 9a | Client identity (Tor circuit ID, trusted proxies) | not started | |
+| 8 | Remove the engine's public surface | done | `e06bcfb` |
+| 9a | Client identity (Tor circuit ID, trusted proxies) | in progress (uncommitted, see Resume here) | |
 | 9b | Tor's own defences (torrc, docs) | not started | |
 | 9c | Tiered limits | not started | |
 | 9d | The challenge (pages, JSON API) | not started | |
@@ -24,6 +24,17 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 | 10 | Docs and cleanup | not started | |
 
 ## Resume here
+
+**Shared worktree, read first (added by the reviewer, 26 Sep 12:5x).** A separate POS redesign (Solid 2.0 POS app, `pos_redesign.md`) is being worked on in this same worktree by another agent. Its in-progress state was committed as `a93b4ca` ("WIP: POS redesign ..."), and that agent may resume and keep editing. The rules in README §0 ("Shared worktree") apply from now on: don't touch POS-owned files, stage by explicit path only, and use migration number 0023 or higher.
+
+**Step 9a was in progress when the implementer's session ended (session limit).** Its work is uncommitted in the tree, and was deliberately left out of `a93b4ca`:
+- new `crates/monokulo/src/abuse/` (`mod.rs`, `identity.rs`, `proxy_protocol.rs`, and `streams.rs`, which replaces the deleted `http/stream_limit.rs`);
+- new `crates/monokulo/src/http/abuse.rs` (replaces the deleted `http/rate_limit.rs`);
+- `AppState` fields `rate_limiter`, `store_key_rate_limiter` and `event_streams` folded into `abuse: Arc<crate::abuse::AbuseProtection>` in every `AppState` literal;
+- new settings `abuse.trusted_proxies`, `abuse.onion_listener`, `abuse.stream_cap`;
+- new dependencies `hmac`, `sha2`, `rand`.
+
+The implementer's last note was "Now write http/abuse.rs (9a version) and rewire". First check whether the tree builds (`cargo test --workspace`), then finish 9a and commit it by explicit paths.
 
 Steps 1-8 done. Next: step 9 (abuse protection). Re-read README 9a-9g first, including the reviewer's `a0abcca` change: the Tor test must be a real `#[ignore]`d end-to-end test against the installed tor 0.4.9.12 (`crates/monokulo/tests/e2e_tor.rs`), plus a fast synthetic PROXY-header test that runs by default. Suggested order: 9a (client identity type + trusted proxies + PROXY v1 listener) -> 9c (tiered buckets) -> 9d (challenge, pages + JSON API + JS) -> 9e (settings + status page) -> 9f (docs/CORS headers) -> 9b (torrc + doc) -> 9g (tests incl. real tor), committing PROGRESS at each sub-step.
 
