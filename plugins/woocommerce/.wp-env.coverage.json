@@ -1,10 +1,13 @@
 {
   "$schema": "https://schemas.wp.org/trunk/wp-env.json",
   "core": null,
+  "phpVersion": "8.5",
   "testsEnvironment": true,
   "port": 8898,
   "testsPort": 8899,
-  "plugins": ["https://downloads.wordpress.org/plugin/woocommerce.zip"],
+  "plugins": [
+    "https://downloads.wordpress.org/plugin/woocommerce.zip"
+  ],
   "mappings": {
     "wp-content/plugins/monokulo": "."
   },
