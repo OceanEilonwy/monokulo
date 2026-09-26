@@ -10,23 +10,24 @@ if ( ! defined( 'ABSPATH' ) ) {
 }
 
 /**
- * Registers "Monero (via Monokulo)" as a WooCommerce checkout option
- * and, since WBS 1.5.2, actually hands off to the real engine at checkout.
+ * Registers "Monero (via Monokulo)" as a WooCommerce checkout option and
+ * hands each order off to Monokulo at checkout.
  *
- * WBS 1.5.1 built registration only (the gateway shows up, disabled by
- * default - still true today, see the constructor's own comment on
- * `$this->enabled`). WBS 1.5.2 added `process_payment()`: a real
- * `POST /api/v1/t/{pk}/orders` call to the engine, keyed by the two settings
- * fields (`endpoint`/`public_key`) added in that same step as a documented,
- * manual stand-in for WBS 1.5.3's real one-click connect flow (see
- * `$api_base_url`'s own doc comment for the full reasoning and the field-
- * naming decision). This gateway still ships disabled by default - not a
- * placeholder left half-finished, but WBS 1.5.1's own stated acceptance
- * outcome, matching `docs/WOOCOMMERCE_ROADMAP.md` Stage 8: a merchant has to
- * actually connect a wallet (today: paste in `endpoint`/`public_key` by
- * hand; eventually: WBS 1.5.3's button) before this gateway can honor a real
- * checkout, and `is_available()` (below) additionally keeps an enabled-but-
- * unconfigured gateway off the checkout too, for the same reason.
+ * The plugin talks to Monokulo only, never to the engine behind it (which is
+ * private). Connecting (`process_connect_return()`) stores Monokulo's public
+ * address (`endpoint`), the store's public key and its secret key. At
+ * checkout `process_payment()` creates the order with
+ * `POST {endpoint}/pay/{pk}/orders`, authenticated with
+ * `Authorization: Bearer {secret key}`, and sends the customer to Monokulo's
+ * checkout page, `{endpoint}/pay/{pk}/orders/{order_id}`. Monokulo prices
+ * the order into XMR. Payment updates arrive as webhooks the engine sends
+ * straight to this site (`handle_webhook()`), registered for it by Monokulo
+ * during connect.
+ *
+ * The gateway ships disabled by default (`docs/WOOCOMMERCE_ROADMAP.md`
+ * Stage 8): connecting enables it. `is_available()` also keeps it off the
+ * checkout while it has no usable connection, including a connection made
+ * by a plugin version before this one (see `CONNECTION_VERSION`).
  *
  * Every real decision - order creation, payment matching, exchange rates,
  * webhook delivery - lives in the Rust engine (`scanner`) and the
@@ -42,25 +43,16 @@ if ( ! defined( 'ABSPATH' ) ) {
 class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 
 	/**
-	 * The one, fixed address of Monokulo's own hosted control plane -
-	 * the service `control-plane/src/http/connect.rs` implements, sitting in
-	 * front of (potentially many) real engines. **Not** the same thing as
-	 * `$api_base_url`/`endpoint` below, and the two must never be conflated:
-	 * `$api_base_url` is *an engine's* base URL (there can be many - every
-	 * tenant's own hosted engine, or a self-hoster's own instance); this
-	 * constant is *the* control plane's base URL, and for the hosted
-	 * "Monokulo" product this plugin exists for
-	 * (`docs/WOOCOMMERCE_ROADMAP.md`'s framing throughout, e.g. "we (not each
-	 * individual merchant) run the infrastructure") there is exactly one of
-	 * them - a fixed, known address, never something a merchant types in.
-	 * That asymmetry is exactly why this is a class constant and
-	 * `$api_base_url` is a per-merchant settings field: a merchant has to
-	 * tell this plugin *which engine* their store talks to (today: pasted
-	 * in by hand; via this step: written automatically by the connect flow
-	 * below), but never *which control plane* - there's only the one this
-	 * plugin ships already knowing about, exactly the way a Stripe or
-	 * WooCommerce Payments extension hardcodes Stripe's/WooCommerce's own
-	 * API host rather than asking the merchant to paste it in.
+	 * The one, fixed address of Monokulo's own hosted service - where the
+	 * connect flow starts (`crates/monokulo/src/http/connect.rs`). The
+	 * address orders are then created at is the `endpoint` that flow's
+	 * `/finish` returns (`$api_base_url`), which is the same Monokulo
+	 * instance's configured public address; keeping the two separate lets
+	 * an instance serve its connect pages and its checkout from different
+	 * addresses (for example a clearnet dashboard and an onion checkout).
+	 * For the hosted product there is exactly one such service, so this is
+	 * a class constant rather than something a merchant types in - the way
+	 * a Stripe or WooCommerce Payments extension hardcodes its own API host.
 	 *
 	 * **This is a placeholder, deliberately, not a real address**: as of
 	 * this step, Monokulo's control plane has no real, decided
@@ -88,6 +80,28 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * consistent with what the mock already exercised end to end.
 	 */
 	const CONNECT_PLATFORM = 'woocommerce';
+
+	/**
+	 * The version of the connection this plugin stores, written to the
+	 * `connection_version` setting by `process_connect_return()` whenever
+	 * the connect flow succeeds.
+	 *
+	 * Version `2` is the first where `endpoint` is Monokulo's own public
+	 * address. Before it, `/finish` handed plugins the engine's address,
+	 * which no longer accepts orders from anything but Monokulo. An install
+	 * connected by an older plugin has credentials but no
+	 * `connection_version` at all, which is how it is recognised - never by
+	 * looking at the URL it holds. Such an install needs a reconnect:
+	 * `is_available()` keeps the gateway off the checkout (rather than
+	 * letting orders fail) and an admin notice asks the merchant to
+	 * reconnect (`render_reconnect_notice()`).
+	 *
+	 * Bump this whenever a stored connection from an older plugin can no
+	 * longer work as-is.
+	 *
+	 * @var string
+	 */
+	const CONNECTION_VERSION = '2';
 
 	/**
 	 * The `admin-post.php` action name this gateway registers as `return_url`
@@ -164,82 +178,34 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	);
 
 	/**
-	 * The engine instance this store talks to, e.g. `https://pay.example.com`
-	 * - no trailing slash (stripped in the getters below, so a merchant
-	 * pasting one in doesn't produce a double slash in the outbound URL).
-	 *
-	 * **Why this exists at all in WBS 1.5.2, and not just at 1.5.3**:
-	 * `process_payment()` (below) has to call *some* engine, at *some*
-	 * tenant's public key, the moment this step lands - but the real
-	 * one-click "Connect your Monero wallet" flow that would normally
-	 * populate these two fields for real (mirroring `mock-woocommerce`'s
-	 * `run_connect_flow`/`ConnectedCredentials`) is WBS 1.5.3's job, not
-	 * built here. Rather than block 1.5.2 on 1.5.3, or fake the HTTP call
-	 * behind a config constant nothing else in this plugin's own settings UI
-	 * could reach, this step adds the two plain, manually-entered text
-	 * fields (`endpoint`/`public_key` below) that are genuinely the minimum
-	 * `process_payment()` needs to make a real call - explicitly documented
-	 * here, in `init_form_fields()`, and in the settings screen itself as a
-	 * stand-in for 1.5.3's real connect flow, not a finished credentials UX.
-	 *
-	 * **Field naming, chosen so 1.5.3 never has to rename these**: matched
-	 * to `mock-woocommerce/src/lib.rs`'s own `ConnectedCredentials` struct
-	 * (`public_key`, `endpoint`) - the exact two fields a real connect flow
-	 * will have in hand once it exists, since that struct already mirrors
-	 * `control-plane/src/http/connect.rs`'s real `FinishResponse`. Once WBS
-	 * 1.5.3 exists, its callback handler can `update_option()` these same
-	 * two settings keys directly (`$this->update_option( 'endpoint', ... )`)
-	 * instead of introducing a second, differently-named pair of settings
-	 * this class would then have to reconcile.
-	 *
-	 * Deliberately **not** named after `sk_` (the tenant's secret key) or
-	 * given any field for one at all: `POST /api/v1/t/{pk}/orders` is a
-	 * public endpoint (verified directly against `src/http/public.rs` and
-	 * its route registration in `src/http/mod.rs` before writing this) -
-	 * order creation only ever needs the tenant's *public* key in the URL
-	 * path, never a secret token. A secret-key field belongs to whatever
-	 * step first needs authenticated admin-API access from this plugin
-	 * (refunds, webhook management, etc.) - not this one.
+	 * Monokulo's public address this store talks to, e.g.
+	 * `https://pay.example.com` - the `endpoint` `/finish` returned when the
+	 * store connected (`connect.rs::FinishResponse::endpoint`). Order
+	 * creation and the checkout redirect both go here; the engine behind
+	 * Monokulo is never contacted. No trailing slash is needed (stripped
+	 * where URLs are built).
 	 *
 	 * @var string
 	 */
 	private $api_base_url;
 
 	/**
-	 * The tenant's public key (`pk_...`) this gateway creates orders under -
-	 * see `$api_base_url`'s doc comment immediately above for why this is a
-	 * plain manually-entered field at this step, and why no secret key
-	 * field exists alongside it.
+	 * The store's public key (`pk_...`) this gateway creates orders under,
+	 * saved by the connect flow.
 	 *
 	 * @var string
 	 */
 	private $tenant_public_key;
 
 	/**
-	 * The tenant's secret key (`sk_...`), as of this step (WBS 1.5.3)
-	 * genuinely returned by a real connect flow's `/finish` call
-	 * (`FinishResponse::secret_token`, `control-plane/src/http/connect.rs`)
-	 * and now actually stored - unlike WBS 1.5.2's deliberate choice not to
-	 * add a secret-key field at all, back when nothing in this plugin ever
-	 * saw one.
-	 *
-	 * **Why store it now when nothing here reads it yet**: discarding it
-	 * would be actively harmful, not just unused - `consume_connect_token`
-	 * redeems the connect token exactly once (see that method's own
-	 * atomicity doc comment), so a `secret_token` that isn't saved the one
-	 * time it's ever handed over is *gone* until the merchant reconnects
-	 * their wallet from scratch. A future step that needs authenticated
-	 * admin-API access (webhook management, refunds, anything behind
-	 * `AuthedTenant`) would otherwise have to force every already-connected
-	 * merchant through the whole browser-redirect connect flow again just to
-	 * get back a value this plugin already had in hand once and threw away.
-	 * Storing a string nobody reads yet costs nothing; losing a single-use
-	 * secret costs a real support burden later. Exposed as a real (masked,
-	 * `type => 'password'`) settings field below for the same reason
-	 * `endpoint`/`public_key` are - so a self-hoster or an advanced merchant
-	 * can also paste one in by hand, exactly like those two fields already
-	 * allow - not because this step has any code path that reads it back
-	 * out.
+	 * The store's secret key (`sk_...`), returned by the connect flow's
+	 * `/finish` call (`FinishResponse::secret_token`). Sent as
+	 * `Authorization: Bearer ...` when creating orders
+	 * (`create_monokulo_order()`), which is how Monokulo knows the order
+	 * comes from the store's own server: it skips the per-address rate
+	 * limit and is accepted even when the store only allows its checkout on
+	 * its verified domains. Never sent anywhere else, and never shown to
+	 * customers.
 	 *
 	 * @var string
 	 */
@@ -295,9 +261,9 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		// This gateway never renders its own fields inline at WooCommerce's
 		// checkout - per `docs/WOOCOMMERCE_ROADMAP.md` Stage 7's explicit
 		// integration choice, paying with Monero means redirecting the
-		// customer to the engine's own already-built, already-tested
-		// `/pay/v1/{pk}/{order_id}` checkout page, not embedding a new
-		// widget into WooCommerce's checkout form. `has_fields = false` is
+		// customer to Monokulo's own checkout page
+		// (`/pay/{pk}/orders/{order_id}`), not embedding a new widget into
+		// WooCommerce's checkout form. `has_fields = false` is
 		// what tells WooCommerce's checkout template not to reserve any
 		// inline space for this gateway.
 		$this->has_fields = false;
@@ -360,14 +326,12 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			__( 'Pay with Monero. You will be redirected to a secure Monokulo payment page to complete your purchase.', 'monokulo' )
 		);
 
-		// The 1.5.3-stand-in connection fields (see `$api_base_url`'s own doc
-		// comment above for why these two specific fields exist already,
-		// manually-entered, at this step). `trim()`, not just a raw
-		// `get_option()` read: a merchant pasting a value from a dashboard
+		// The connection the connect flow saved. `trim()`, not just a raw
+		// `get_option()` read: a value pasted by hand into the settings form
 		// notoriously picks up leading/trailing whitespace, and an
-		// un-trimmed `pk_...\n` would fail `create_engine_order()`'s outbound
-		// call in a way that looks identical to a genuinely wrong key -
-		// exactly the kind of support ticket worth avoiding for free.
+		// un-trimmed `pk_...\n` would fail `create_monokulo_order()`'s
+		// outbound call in a way that looks identical to a genuinely wrong
+		// key.
 		$this->api_base_url     = trim( (string) $this->get_option( 'endpoint', '' ) );
 		$this->tenant_public_key = trim( (string) $this->get_option( 'public_key', '' ) );
 		$this->secret_token      = trim( (string) $this->get_option( 'secret_token', '' ) );
@@ -456,6 +420,9 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		// renders the settings form, and the connect callback is a separate
 		// request).
 		add_action( 'admin_notices', array( $this, 'maybe_render_connect_notice' ) );
+		// The site-wide "please reconnect" notice is registered in
+		// `monokulo.php` instead, so it shows on every admin screen whether
+		// or not WooCommerce has built its gateways on that request.
 	}
 
 	/**
@@ -471,13 +438,12 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * this project's own established practice (see `work_notes.md`'s
 	 * progress log) has repeatedly flagged and avoided elsewhere.
 	 *
-	 * **WBS 1.5.3 note**: `endpoint`/`public_key` (added at 1.5.2, as a
-	 * manual stand-in for this step) are kept, unrenamed - see this class's
-	 * own `$api_base_url` doc comment for why the real connect flow below
-	 * writes into these exact same two keys rather than introducing a
-	 * second pair. `secret_token` is new (see `$secret_token`'s own doc
-	 * comment for why it's stored at all, given nothing reads it back yet).
-	 * No `webhook_signing_secret` field here, deliberately: unlike the three
+	 * `endpoint`/`public_key`/`secret_token` are written by the connect flow
+	 * (`process_connect_return()`); they stay visible (the key masked) so a
+	 * merchant can see what the store is connected with. Neither
+	 * `connection_version` (see `CONNECTION_VERSION`) nor
+	 * `webhook_signing_secret` is a form field. No `webhook_signing_secret`
+	 * field here, deliberately: unlike the three
 	 * fields above, a merchant has no legitimate way to independently know
 	 * that value by hand - it's minted fresh by the engine only when a
 	 * webhook is registered (`connect.rs::finish`), so it's only ever
@@ -524,7 +490,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			'connection'  => array(
 				'title'       => __( 'Connection', 'monokulo' ),
 				'type'        => 'title',
-				'description' => __( 'Click below to connect your Monero wallet through Monokulo - this fills in everything below automatically and enables this gateway. Advanced/self-hosted users can also enter these by hand instead.', 'monokulo' ),
+				'description' => __( 'Click below to connect your Monero wallet through Monokulo - this fills in everything below automatically and enables this gateway.', 'monokulo' ),
 			),
 
 			// The real WBS 1.5.3 button - see `generate_monokulo_connect_html()`'s
@@ -539,25 +505,25 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			),
 
 			'endpoint'    => array(
-				'title'       => __( 'Engine API base URL', 'monokulo' ),
+				'title'       => __( 'Monokulo address', 'monokulo' ),
 				'type'        => 'text',
-				'description' => __( 'The base URL of the Monokulo engine this store talks to (no trailing slash needed). Filled in automatically by Connect above - only edit this by hand for a self-hosted engine.', 'monokulo' ),
+				'description' => __( 'The public address of the Monokulo instance this store uses. Filled in automatically by Connect above.', 'monokulo' ),
 				'default'     => '',
 				'placeholder' => 'https://pay.example.com',
 				'desc_tip'    => true,
 			),
 			'public_key'  => array(
-				'title'       => __( 'Tenant public key', 'monokulo' ),
+				'title'       => __( 'Store public key', 'monokulo' ),
 				'type'        => 'text',
-				'description' => __( 'Your Monokulo tenant\'s public key (starts with pk_). Filled in automatically by Connect above.', 'monokulo' ),
+				'description' => __( 'Your Monokulo store\'s public key (starts with pk_). Filled in automatically by Connect above.', 'monokulo' ),
 				'default'     => '',
 				'placeholder' => 'pk_...',
 				'desc_tip'    => true,
 			),
 			'secret_token' => array(
-				'title'       => __( 'Tenant secret key', 'monokulo' ),
+				'title'       => __( 'Store secret key', 'monokulo' ),
 				'type'        => 'password',
-				'description' => __( 'Your Monokulo tenant\'s secret key (starts with sk_). Filled in automatically by Connect above. Not currently used by this plugin for anything - kept so a future update never has to ask you to reconnect just to retrieve it again.', 'monokulo' ),
+				'description' => __( 'Your Monokulo store\'s secret key (starts with sk_). Filled in automatically by Connect above. Used to create orders from this site\'s server; never shown to customers.', 'monokulo' ),
 				'default'     => '',
 				'placeholder' => 'sk_...',
 				'desc_tip'    => true,
@@ -566,18 +532,13 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * Extends `WC_Payment_Gateway::is_available()` (checked directly,
-	 * `includes/abstracts/abstract-wc-payment-gateway.php` - the base
-	 * implementation only checks `$this->enabled === 'yes'` plus a currency
-	 * restriction) with the one additional fact genuinely true of *this*
-	 * gateway: an enabled gateway with no engine URL or no public key
-	 * configured cannot honor a real checkout at all -
-	 * `create_engine_order()` below would just throw on the first customer
-	 * to try it. Excluding it from `get_available_payment_gateways()` in
-	 * that state is the same "don't offer what you can't honor" principle
-	 * WBS 1.5.1 already used to justify shipping disabled by default (see
-	 * that constructor's own comment on `$this->enabled`) - this is that
-	 * same principle applied to the one new failure mode 1.5.2 introduces.
+	 * Extends `WC_Payment_Gateway::is_available()` (which only checks
+	 * `enabled` and a currency restriction): the gateway is only offered at
+	 * checkout while it has a complete, current connection. Without one
+	 * `create_monokulo_order()` would fail for the first customer to try it,
+	 * so it is better not to offer it at all - including for an install
+	 * connected by an older plugin version, which must reconnect first (see
+	 * `CONNECTION_VERSION`).
 	 *
 	 * @return bool
 	 */
@@ -586,22 +547,69 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			return false;
 		}
 
-		return $this->has_credentials();
+		return $this->has_credentials() && ! $this->needs_reconnect();
 	}
 
 	/**
-	 * Whether this gateway has enough to actually create an order right now
-	 * - factored out of `is_available()` so `generate_monokulo_connect_html()`
-	 * below can show "Connected"/"Reconnect" status using the exact same
-	 * fact, rather than a second, potentially-drifting check. Deliberately
-	 * does **not** consider `secret_token`/`webhook_signing_secret` - see
-	 * `$secret_token`'s own doc comment: order creation (the only thing
-	 * `is_available()` is gating) never needs either.
+	 * Whether this gateway has everything order creation needs: Monokulo's
+	 * address, the store's public key and its secret key.
 	 *
 	 * @return bool
 	 */
 	private function has_credentials() {
-		return '' !== $this->api_base_url && '' !== $this->tenant_public_key;
+		return '' !== $this->api_base_url && '' !== $this->tenant_public_key && '' !== $this->secret_token;
+	}
+
+	/**
+	 * Whether this install holds a connection made before the current
+	 * `CONNECTION_VERSION` and must reconnect. See that constant.
+	 *
+	 * @return bool
+	 */
+	public function needs_reconnect() {
+		return self::settings_need_reconnect( $this->settings );
+	}
+
+	/**
+	 * `needs_reconnect()` for a raw settings array (the
+	 * `woocommerce_monokulo_settings` option), so `monokulo.php`'s admin
+	 * notice can ask without building a gateway. A store that has never
+	 * connected at all doesn't "need a reconnect"; it just isn't connected.
+	 *
+	 * @param mixed $settings The saved settings array, or anything else if
+	 *                        nothing was ever saved.
+	 * @return bool
+	 */
+	public static function settings_need_reconnect( $settings ) {
+		if ( ! is_array( $settings ) ) {
+			return false;
+		}
+		$connected = ! empty( $settings['endpoint'] ) || ! empty( $settings['public_key'] ) || ! empty( $settings['secret_token'] );
+		$version   = isset( $settings['connection_version'] ) ? (string) $settings['connection_version'] : '';
+
+		return $connected && self::CONNECTION_VERSION !== $version;
+	}
+
+	/**
+	 * Shows every WooCommerce manager, on every admin screen, that the
+	 * store must reconnect before it can take Monero payments again. Hooked
+	 * on `admin_notices` from `monokulo.php`.
+	 */
+	public static function render_reconnect_notice() {
+		if ( ! current_user_can( 'manage_woocommerce' ) ) {
+			return;
+		}
+		if ( ! self::settings_need_reconnect( get_option( 'woocommerce_monokulo_settings' ) ) ) {
+			return;
+		}
+		$settings_url = admin_url( 'admin.php?page=wc-settings&tab=checkout&section=monokulo' );
+		echo '<div class="notice notice-warning"><p><strong>' .
+			esc_html__( 'Monokulo: please reconnect your Monero wallet.', 'monokulo' ) .
+			'</strong> ' .
+			esc_html__( 'This store was connected by an older version of the Monokulo plugin, which can no longer create orders. Monero payments are hidden at checkout until you reconnect.', 'monokulo' ) .
+			' <a href="' . esc_url( $settings_url ) . '">' .
+			esc_html__( 'Reconnect now', 'monokulo' ) .
+			'</a></p></div>';
 	}
 
 	/**
@@ -629,9 +637,9 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *   it reads `$result['redirect']` verbatim, either via `wp_redirect()`
 	 *   (classic, non-AJAX submit) or as the `redirect` field of the JSON
 	 *   `wp_send_json( $result )` sends back (AJAX/Blocks checkout) - neither
-	 *   path constrains the URL's shape or origin. So `redirect` here is the
-	 *   engine's own already-built checkout page,
-	 *   `GET /pay/v1/{pk}/{order_id}`, off-site by design.
+	 *   path constrains the URL's shape or origin. So `redirect` here is
+	 *   Monokulo's checkout page, `GET {endpoint}/pay/{pk}/orders/{order_id}`,
+	 *   off-site by design.
 	 * - Failure is signaled by *throwing*, not by returning
 	 *   `array( 'result' => 'fail' )` - confirmed against `WC_Checkout::
 	 *   process_checkout()` directly: it calls `process_order_payment()`
@@ -647,16 +655,16 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * the order's status - the order WooCommerce just created is already
 	 * `pending`/awaiting payment, and it should stay exactly that until a
 	 * real payment is actually observed on-chain. Marking it paid here,
-	 * before the customer has even reached the engine's own checkout page,
+	 * before the customer has even reached Monokulo's checkout page,
 	 * would be simply false. That transition is WBS 1.5.4's job (the webhook
 	 * receiver + status mapping), not this step's - this method's only job
-	 * is "hand off to the engine, and tell WooCommerce where to send the
+	 * is "hand off to Monokulo, and tell WooCommerce where to send the
 	 * customer next."
 	 *
 	 * @param int $order_id Order ID.
 	 * @return array{result: string, redirect: string}
 	 * @throws Exception If the order can't be loaded, this gateway isn't
-	 *                    configured, or the engine's order-creation call
+	 *                    configured, or Monokulo's order-creation call
 	 *                    fails or returns something unexpected - see
 	 *                    `WC_Checkout::process_checkout()`'s own catch block
 	 *                    above for what WooCommerce does with it.
@@ -667,107 +675,84 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			throw new Exception( __( 'Could not load this order to start the Monero payment.', 'monokulo' ) );
 		}
 
-		$engine_order = $this->create_engine_order( $order );
+		$monokulo_order = $this->create_monokulo_order( $order );
 
 		// The one point in this gateway's whole flow that ever sees the
-		// mapping between a WC order and the engine's own order_id -
-		// recorded now, while it's in hand, so it isn't thrown away.
-		// WBS 1.5.4's webhook receiver will need exactly this lookup (an
-		// incoming delivery carries an order_id, not a WC order id) to know
-		// which order to update; nothing here *consumes* that meta key yet -
-		// that consumption is 1.5.4's job, not built here.
-		$order->update_meta_data( self::META_ORDER_ID, $engine_order['order_id'] );
+		// mapping between a WC order and Monokulo's order_id - recorded
+		// now, while it's in hand. The webhook receiver needs exactly this
+		// lookup (an incoming delivery carries an order_id, not a WC order
+		// id) to know which order to update.
+		$order->update_meta_data( self::META_ORDER_ID, $monokulo_order['order_id'] );
 		$order->add_order_note(
 			sprintf(
 				/* translators: %s: Monokulo order_id */
 				__( 'Customer redirected to Monokulo checkout for order_id %s.', 'monokulo' ),
-				$engine_order['order_id']
+				$monokulo_order['order_id']
 			)
 		);
 		$order->save();
 
 		return array(
 			'result'   => 'success',
-			'redirect' => $this->get_engine_checkout_url( $engine_order['order_id'] ),
+			'redirect' => $this->get_checkout_url( $monokulo_order['order_id'] ),
 		);
 	}
 
 	/**
-	 * Calls the engine's real, public `POST /api/v1/t/{pk}/orders` endpoint
-	 * (`src/http/public.rs::create_order`, read directly rather than
-	 * paraphrased - a **public** route: no secret token, only the tenant's
-	 * public key in the URL path) to create a real order for `$order`, and
-	 * returns the decoded JSON response
-	 * (`order_id`/`address`/`xmr_amount_piconero`/`fiat_amount`/
-	 * `fiat_currency`/`expires_at`) on success.
+	 * Creates the order on Monokulo: `POST {endpoint}/pay/{pk}/orders`
+	 * (`crates/monokulo/src/http/pay.rs::create_order`) with
+	 * `Authorization: Bearer {secret key}` and a JSON body of
+	 * `{amount, currency, merchant_order_id}`. Monokulo prices the amount into
+	 * XMR with its own exchange rate and returns
+	 * `{order_id, address, xmr_amount_piconero, amount, currency,
+	 * merchant_order_id, expires_at}`.
 	 *
-	 * Every failure mode below throws a plain, customer-safe `Exception`
-	 * (never the raw engine/HTTP error text - that's logged instead, via
-	 * `self::log()`, for the merchant to actually diagnose) - see
-	 * `process_payment()`'s own doc comment for why throwing, specifically,
-	 * is this contract's real failure signal.
+	 * Every failure throws a plain, customer-safe `Exception` (see
+	 * `process_payment()` for why throwing is the contract); the detail -
+	 * status code and Monokulo's own error message - is logged for the
+	 * merchant via `self::log()`, never shown to the customer.
 	 *
-	 * @param WC_Order $order The order to create an engine-side order for.
+	 * @param WC_Order $order The order to create a Monokulo order for.
 	 * @return array{order_id: string, address: string, xmr_amount_piconero: int,
-	 *               fiat_amount: string, fiat_currency: string, expires_at: int}
+	 *               amount: string, currency: string, expires_at: int}
 	 * @throws Exception See above.
 	 */
-	private function create_engine_order( WC_Order $order ) {
-		if ( '' === $this->api_base_url || '' === $this->tenant_public_key ) {
+	private function create_monokulo_order( WC_Order $order ) {
+		if ( ! $this->has_credentials() || $this->needs_reconnect() ) {
 			// Reachable even though `is_available()` should normally have
-			// kept an unconfigured gateway off the checkout entirely - e.g.
-			// an already-rendered checkout page submitted after an admin
-			// disables/unconfigures the gateway in another tab. Not purely
-			// defensive dead code: this exact path is what this plugin's own
-			// mocked-HTTP unit test exercises to prove the unconfigured case
-			// fails loudly rather than silently calling `wp_remote_post()`
-			// with an empty URL.
+			// kept an unusable gateway off the checkout entirely - e.g. an
+			// already-rendered checkout page submitted after the connection
+			// changed in another tab.
 			throw new Exception(
 				__( 'Monero payments are not fully configured for this store yet. Please contact the store owner.', 'monokulo' )
 			);
 		}
 
 		$request_url = $this->get_orders_endpoint_url();
+		$currency    = $order->get_currency();
 
-		// `fiat_amount` as a plain "123.45"-shaped decimal string, never a
-		// locale-formatted one (no thousands separator, always a `.` decimal
-		// point) - matches exactly what the engine's own
-		// `exchange_rate::compute_xmr_amount()` parses
-		// (`src/exchange_rate.rs`, read directly): at most two decimal
-		// places, no separators, no scientific notation. `number_format()`
-		// with an explicit `.`/`''` pair guarantees this regardless of the
-		// site's own locale settings, which `(string) $order->get_total()`
-		// alone would not.
 		$body = array(
-			'fiat_amount'       => number_format( (float) $order->get_total(), 2, '.', '' ),
-			'fiat_currency'     => $order->get_currency(),
+			'amount'            => self::format_amount( $order->get_total(), $currency ),
+			'currency'          => $currency,
 			// The order's own numeric id, not `get_order_number()` - the
 			// latter is filterable (some plugins prefix it, e.g. "WC-1042")
 			// and only ever meant for human display, whereas this value
-			// exists purely so a merchant can cross-reference an engine-side
-			// order against `wp_posts`/`wc_orders` later; a stable raw id
-			// serves that better than a display string liable to change
-			// under a filter this gateway doesn't control.
+			// exists so a merchant can match a Monokulo order back to this
+			// store's order later, and shows on Monokulo's order page.
 			'merchant_order_id' => (string) $order->get_id(),
-			'description'       => sprintf(
-				/* translators: 1: order number, 2: site name */
-				__( 'Order #%1$s on %2$s', 'monokulo' ),
-				$order->get_order_number(),
-				get_bloginfo( 'name' )
-			),
 		);
 
 		$response = wp_remote_post(
 			$request_url,
 			array(
-				'headers' => array( 'Content-Type' => 'application/json' ),
+				'headers' => array(
+					'Content-Type'  => 'application/json',
+					'Authorization' => 'Bearer ' . $this->secret_token,
+				),
 				'body'    => wp_json_encode( $body ),
-				// Order creation itself needs no live Monero daemon
-				// connectivity (only a registered tenant + a configured
-				// exchange rate - see `src/http/public.rs::create_order`),
-				// so this is a fast, ordinary HTTP round trip; 30s is
-				// generous headroom for a loaded engine or a slow network
-				// hop, not a tuned value.
+				// An ordinary HTTP round trip (Monokulo prices the order and
+				// asks its engine for an address); 30s is generous headroom,
+				// not a tuned value.
 				'timeout' => 30,
 			)
 		);
@@ -786,13 +771,19 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$raw_body    = wp_remote_retrieve_body( $response );
 
 		if ( 200 !== $status_code ) {
+			$decoded_error = json_decode( $raw_body, true );
+			$detail        = is_array( $decoded_error ) && isset( $decoded_error['error'] ) ? (string) $decoded_error['error'] : $raw_body;
 			$this->log(
-				sprintf( 'Order creation request to %s returned HTTP %d: %s', $request_url, $status_code, $raw_body ),
+				sprintf(
+					'Order creation request to %s returned HTTP %d: %s%s',
+					$request_url,
+					$status_code,
+					$detail,
+					self::hint_for_status( $status_code )
+				),
 				'error'
 			);
-			throw new Exception(
-				__( 'Monokulo could not start this payment. Please contact the store or try again.', 'monokulo' )
-			);
+			throw new Exception( self::customer_message_for_status( $status_code ) );
 		}
 
 		$decoded = json_decode( $raw_body, true );
@@ -810,40 +801,88 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
-	 * `{endpoint}/api/v1/t/{pk}/orders` - the engine's real, public
-	 * order-creation route (`src/http/mod.rs`'s own `.route(...)` table,
-	 * read directly). `rtrim()` on the base URL, not on the merchant's
-	 * stored option: an admin pasting a trailing slash into the settings
-	 * field is exactly the kind of copy-paste artifact worth absorbing here
-	 * rather than rejecting at save time.
+	 * The order total as the plain decimal string Monokulo parses: `.` as
+	 * the decimal point, no thousands separator, whatever the site's locale.
+	 * Fiat amounts carry two decimal places (Monokulo refuses more); an XMR
+	 * amount keeps up to XMR's own twelve.
+	 *
+	 * @param string|float $total    The order total.
+	 * @param string       $currency The order currency.
+	 * @return string
+	 */
+	private static function format_amount( $total, $currency ) {
+		$decimals = 2;
+		if ( 'XMR' === strtoupper( $currency ) ) {
+			$decimals = function_exists( 'wc_get_price_decimals' ) ? min( 12, max( 2, (int) wc_get_price_decimals() ) ) : 12;
+		}
+		return number_format( (float) $total, $decimals, '.', '' );
+	}
+
+	/**
+	 * What the customer sees when Monokulo refuses an order - kept vague on
+	 * purpose (the logged detail is for the merchant).
+	 *
+	 * @param int $status_code Monokulo's HTTP status.
+	 * @return string
+	 */
+	private static function customer_message_for_status( $status_code ) {
+		if ( 429 === $status_code ) {
+			return __( 'Monero payments are busy right now. Please wait a moment and try again.', 'monokulo' );
+		}
+		if ( 401 === $status_code || 403 === $status_code ) {
+			return __( 'Monero payments are not available for this store right now. Please contact the store owner.', 'monokulo' );
+		}
+		return __( 'Monokulo could not start this payment. Please contact the store or try again.', 'monokulo' );
+	}
+
+	/**
+	 * A pointer for the merchant reading the log, for the statuses whose
+	 * fix is on their side.
+	 *
+	 * @param int $status_code Monokulo's HTTP status.
+	 * @return string
+	 */
+	private static function hint_for_status( $status_code ) {
+		switch ( $status_code ) {
+			case 401:
+				return ' (the store secret key was rejected - reconnect the plugin from its settings page)';
+			case 403:
+				return ' (Monokulo refused the order - check the store\'s verified-domain settings on Monokulo)';
+			case 404:
+				return ' (Monokulo does not know this store\'s public key - reconnect the plugin)';
+			case 429:
+				return ' (rate limited - Monokulo is receiving too many orders from this store)';
+			default:
+				return '';
+		}
+	}
+
+	/**
+	 * `{endpoint}/pay/{pk}/orders` - Monokulo's order-creation route.
+	 * `rtrim()` absorbs a trailing slash on the stored address.
 	 *
 	 * @return string
 	 */
 	private function get_orders_endpoint_url() {
 		return sprintf(
-			'%s/api/v1/t/%s/orders',
+			'%s/pay/%s/orders',
 			rtrim( $this->api_base_url, '/' ),
 			rawurlencode( $this->tenant_public_key )
 		);
 	}
 
 	/**
-	 * `{endpoint}/pay/v1/{pk}/{order_id}` - the engine's own already-built
-	 * checkout page (`src/http/mod.rs`'s `.route("/pay/v1/{pk}/{order_id}",
-	 * get(public::payment_page))`, read directly) this gateway redirects the
-	 * customer to. `rawurlencode()` on `order_id` even though the engine's
-	 * own ids are UUID-shaped today (never containing characters this would
-	 * change) - cheap, correct-by-construction defense against that
-	 * assumption quietly becoming false in a later engine version, rather
-	 * than this gateway silently relying on it.
+	 * `{endpoint}/pay/{pk}/orders/{order_id}` - Monokulo's checkout page for
+	 * the order, where the customer is sent to pay. `rawurlencode()` on
+	 * `order_id` is cheap defence against its shape ever changing.
 	 *
-	 * @param string $order_id The engine's own order id, from
-	 *                            `create_engine_order()`'s response.
+	 * @param string $order_id Monokulo's order id, from
+	 *                         `create_monokulo_order()`'s response.
 	 * @return string
 	 */
-	private function get_engine_checkout_url( $order_id ) {
+	private function get_checkout_url( $order_id ) {
 		return sprintf(
-			'%s/pay/v1/%s/%s',
+			'%s/pay/%s/orders/%s',
 			rtrim( $this->api_base_url, '/' ),
 			rawurlencode( $this->tenant_public_key ),
 			rawurlencode( $order_id )
@@ -1023,7 +1062,9 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 				<label for="<?php echo esc_attr( $field_key ); ?>"><?php esc_html_e( 'Connect your Monero wallet', 'monokulo' ); ?></label>
 			</th>
 			<td class="forminp">
-				<?php if ( $this->has_credentials() ) : ?>
+				<?php if ( $this->needs_reconnect() ) : ?>
+					<p><strong><?php esc_html_e( 'Reconnect needed: this store was connected by an older plugin version, so Monero payments are hidden at checkout until you reconnect.', 'monokulo' ); ?></strong></p>
+				<?php elseif ( $this->has_credentials() ) : ?>
 					<p>
 						<?php esc_html_e( 'Connected as', 'monokulo' ); ?>
 						<code><?php echo esc_html( $this->tenant_public_key ); ?></code>
@@ -1168,9 +1209,13 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 			return $this->build_settings_url( array( 'monokulo_connect_error' => 'nonce' ) );
 		}
 
-		$finish = $this->call_connect_finish( $token );
+		$finish_status = 0;
+		$finish        = $this->call_connect_finish( $token, $finish_status );
 		if ( null === $finish ) {
-			return $this->build_settings_url( array( 'monokulo_connect_error' => 'finish' ) );
+			// 503: Monokulo isn't ready to connect plugins (no public address
+			// yet) - worth its own message, since retrying later can work.
+			$reason = 503 === $finish_status ? 'unavailable' : 'finish';
+			return $this->build_settings_url( array( 'monokulo_connect_error' => $reason ) );
 		}
 
 		$this->update_option( 'endpoint', $finish['endpoint'] );
@@ -1189,6 +1234,9 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		// enables the gateway outright, not just fills in fields for the
 		// merchant to separately flip a switch on afterward.
 		$this->update_option( 'enabled', 'yes' );
+		// Marks this connection as made by this plugin version, whose
+		// `endpoint` is Monokulo's own address - see `CONNECTION_VERSION`.
+		$this->update_option( 'connection_version', self::CONNECTION_VERSION );
 
 		return $this->build_settings_url( array( 'monokulo_connected' => '1' ) );
 	}
@@ -1225,18 +1273,22 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 *
 	 * Returns `null` on any failure (transport error, non-200, or a response
 	 * missing any of the three fields this plugin actually needs) - this
-	 * method never throws, unlike `create_engine_order()`: this isn't inside
+	 * method never throws, unlike `create_monokulo_order()`: this isn't inside
 	 * WooCommerce's own checkout `try`/`catch`, so there's no framework
 	 * mechanism here to catch an `Exception` and turn it into a user-facing
 	 * message; the caller (`process_connect_return()`) is responsible for
 	 * turning a `null` into the right redirect + notice instead.
 	 *
-	 * @param string $token The single-use connect token from the `return_url`
-	 *                       redirect's own `token` query param.
+	 * @param string $token       The single-use connect token from the
+	 *                            `return_url` redirect's own `token` query
+	 *                            param.
+	 * @param int    $status_code Set to the HTTP status `/finish` answered
+	 *                            with (0 on a transport failure), so the
+	 *                            caller can tell "not ready yet" (503) apart.
 	 * @return array{public_key: string, secret_token: string, endpoint: string,
 	 *               webhook_signing_secret?: string}|null
 	 */
-	private function call_connect_finish( $token ) {
+	private function call_connect_finish( $token, &$status_code = 0 ) {
 		$url = rtrim( $this->get_control_plane_base_url(), '/' ) . '/connect/' . self::CONNECT_PLATFORM . '/finish';
 
 		$response = wp_remote_post(
@@ -1249,7 +1301,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 						'webhook_url' => $this->get_webhook_receiver_url(),
 					)
 				),
-				// Same generous, untuned headroom `create_engine_order()`
+				// Same generous, untuned headroom `create_monokulo_order()`
 				// above uses, for the same reason: an ordinary HTTP round
 				// trip with no reason to be slow, not a value chosen from
 				// measurement.
@@ -1265,13 +1317,12 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$status_code = (int) wp_remote_retrieve_response_code( $response );
 		$raw_body    = wp_remote_retrieve_body( $response );
 
-		// A bare 401 is the real, documented shape of *every* failure mode
+		// A bare 401 is the shape of every token-related failure
 		// `connect.rs::finish` can produce (unknown/expired/already-consumed
-		// token, a rejected webhook URL, an internal error) - collapsed
-		// deliberately on that side for enumeration-defense reasons (see
-		// `finish`'s own doc comment); this side has nothing more specific
-		// to recover from any of them, so every non-200 is treated
-		// identically here too.
+		// token, a rejected webhook URL, an internal error). The one other
+		// status is 503 with a JSON `error`: Monokulo has no public address
+		// configured yet, so it refuses to hand out one. The caller turns
+		// that into its own notice; the message is logged either way.
 		if ( 200 !== $status_code ) {
 			$this->log( sprintf( 'Connect finish request to %s returned HTTP %d: %s', $url, $status_code, $raw_body ), 'error' );
 			return null;
@@ -1925,6 +1976,10 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		if ( isset( $_GET['monokulo_connected'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			echo '<div class="notice notice-success is-dismissible"><p>' .
 				esc_html__( 'Your Monero wallet is connected - Monero payments are now enabled.', 'monokulo' ) .
+				'</p></div>';
+		} elseif ( isset( $_GET['monokulo_connect_error'] ) && 'unavailable' === $_GET['monokulo_connect_error'] ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
+			echo '<div class="notice notice-error is-dismissible"><p>' .
+				esc_html__( 'Monokulo is not ready to connect plugins yet: its operator has not set its public address. Please try again later.', 'monokulo' ) .
 				'</p></div>';
 		} elseif ( isset( $_GET['monokulo_connect_error'] ) ) { // phpcs:ignore WordPress.Security.NonceVerification.Recommended
 			echo '<div class="notice notice-error is-dismissible"><p>' .

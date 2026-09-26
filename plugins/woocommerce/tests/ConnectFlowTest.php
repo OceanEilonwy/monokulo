@@ -92,7 +92,7 @@ class ConnectFlowTest extends WP_UnitTestCase {
 		return array(
 			'public_key'              => 'pk_connect_test_123',
 			'secret_token'            => 'sk_connect_test_456',
-			'endpoint'                => 'http://engine.connect-test',
+			'endpoint'                => 'http://monokulo.connect-test',
 			'webhook_signing_secret'  => 'whsec_connect_test_789',
 		);
 	}
@@ -214,7 +214,8 @@ class ConnectFlowTest extends WP_UnitTestCase {
 		// --- The real, persisted settings - re-read via a brand new ---
 		// --- instance, exactly like a real next request would.       ---
 		$saved = new WC_Gateway_Monokulo();
-		$this->assertSame( 'http://engine.connect-test', $saved->get_option( 'endpoint' ) );
+		$this->assertSame( 'http://monokulo.connect-test', $saved->get_option( 'endpoint' ) );
+		$this->assertSame( WC_Gateway_Monokulo::CONNECTION_VERSION, $saved->get_option( 'connection_version' ), 'A new connection records the plugin\'s connection version.' );
 		$this->assertSame( 'pk_connect_test_123', $saved->get_option( 'public_key' ) );
 		$this->assertSame(
 			'sk_connect_test_456',
@@ -245,7 +246,7 @@ class ConnectFlowTest extends WP_UnitTestCase {
 		// install stays empty (which a bug that skipped saving entirely
 		// would also make pass).
 		$seed = new WC_Gateway_Monokulo();
-		$seed->update_option( 'endpoint', 'http://old-engine.test' );
+		$seed->update_option( 'endpoint', 'http://old-monokulo.test' );
 		$seed->update_option( 'public_key', 'pk_old_value' );
 		$seed->update_option( 'secret_token', 'sk_old_value' );
 		$seed->update_option( 'enabled', 'no' );
@@ -272,10 +273,37 @@ class ConnectFlowTest extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'monokulo_connect_error=finish', $redirect_url );
 
 		$unchanged = new WC_Gateway_Monokulo();
-		$this->assertSame( 'http://old-engine.test', $unchanged->get_option( 'endpoint' ) );
+		$this->assertSame( 'http://old-monokulo.test', $unchanged->get_option( 'endpoint' ) );
 		$this->assertSame( 'pk_old_value', $unchanged->get_option( 'public_key' ) );
 		$this->assertSame( 'sk_old_value', $unchanged->get_option( 'secret_token' ) );
 		$this->assertSame( 'no', $unchanged->enabled );
+	}
+
+	/**
+	 * `/finish` answering 503 means Monokulo has no public address to hand
+	 * out yet: the merchant gets its own "not ready yet" notice, and nothing
+	 * is saved.
+	 */
+	public function test_process_connect_return_reports_monokulo_not_ready_on_503() {
+		list( , $nonce ) = $this->render_connect_button_and_capture_nonce();
+		$this->mock_next_http_response(
+			array(
+				'headers'  => array(),
+				'body'     => wp_json_encode( array( 'error' => 'no public address yet' ) ),
+				'response' => array( 'code' => 503, 'message' => 'Service Unavailable' ),
+				'cookies'  => array(),
+			)
+		);
+
+		$redirect_url = ( new WC_Gateway_Monokulo() )->process_connect_return(
+			array(
+				'token' => 'conn_token',
+				'nonce' => $nonce,
+			)
+		);
+
+		$this->assertStringContainsString( 'monokulo_connect_error=unavailable', $redirect_url );
+		$this->assertSame( '', ( new WC_Gateway_Monokulo() )->get_option( 'connection_version', '' ) );
 	}
 
 	/**

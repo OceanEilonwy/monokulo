@@ -10,8 +10,8 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 | 2 | Stop monokulo using the engine's public routes | done | `11838f0` |
 | 3 | Stop monokulo reading or writing the engine's allowed origins | done | `74d4876` |
 | 4 | Let a shop's server create orders with its secret key | done | `3600a96` |
-| 5 | Give plugins monokulo's address, not the engine's | done | (this commit) |
-| 6 | Fix the WooCommerce plugin | not started | |
+| 5 | Give plugins monokulo's address, not the engine's | done | `171ba94` |
+| 6 | Fix the WooCommerce plugin | in progress (PHP half done) | (PHP half: this commit) |
 | 7 | Only show browser-created orders inside a verified frame | not started | |
 | 8 | Remove the engine's public surface | not started | |
 | 9a | Client identity (Tor circuit ID, trusted proxies) | not started | |
@@ -25,7 +25,11 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 
 ## Resume here
 
-Steps 1-5 done. Next: step 6 (fix the WooCommerce plugin `plugins/woocommerce/includes/class-wc-gateway-monokulo.php`: create orders at `{endpoint}/pay/{pk}/orders` with `Authorization: Bearer {secret_token}` and `{amount, currency, merchant_order_id}`; redirect to `{endpoint}/pay/{pk}/orders/{order_id}`; a settings/schema version marker, reconnect notice and `is_available()` false for old installs; PHP tests; extend `crates/mock-woocommerce` so a full checkout (connect, keyed order, checkout page, paid webhook) runs by default; move the stagenet tests' status checks to monokulo's `/pay/{pk}/orders/{id}/status`).
+Steps 1-5 done; step 6's PHP half is committed. Next (step 6, Rust half):
+- Extend `crates/mock-woocommerce` so a full checkout runs by default: `create_order` there must send `Authorization: Bearer {secret_token}`; add a test named `a_full_woocommerce_checkout_is_created_with_the_key_opened_and_paid` (the PHP live test's doc comment already names it) that connects, creates an order with the key, opens the checkout page, marks the order paid on the test engine and waits for the signed `order.paid` webhook at the mock receiver.
+- Switch `crates/mock-woocommerce/tests/e2e_stagenet_connect_flow.rs` and `e2e_stagenet_confirmation_threshold.rs` status checks from the engine's `/api/v1/t/...` to monokulo's `/pay/{pk}/orders/{id}/status` (address/amount come from monokulo's create-order response).
+
+PHP suite: see decision 13 for how to run it (wp-env's plugin mount collides with WooCommerce).
 
 Note on `crates/mock-woocommerce/tests/e2e_stagenet_connect_flow.rs`: after step 5 it still reads order status from `{credentials.endpoint}/api/v1/t/...`, which now points at monokulo and would 404. It can't run here (stagenet), but step 6 must switch it to monokulo's routes.
 
@@ -43,7 +47,7 @@ After step 5:
 - `cargo test --workspace`: 864 passed, 0 failed, 18 ignored.
 - clippy: per-file warning counts identical to baseline (checked with a per-file count diff).
 - Playwright surface: 18 passed (run after step 5; views changed).
-- PHP suite: not run.
+- PHP suite: run (decision 13): 43 tests OK; `--group live-monokulo`: 1 skipped (no local config).
 
 Baseline (before step 1), at `e4d83da`:
 - `cargo test --workspace`: 854 passed, 0 failed, 18 ignored.
@@ -88,3 +92,9 @@ Baseline (before step 1), at `e4d83da`:
 - Views: `integration_help::fragment(public_key, public_url, is_woocommerce)` (absolute snippets when set); `ConnectViewModel`/`StoreDetailData` carry `public_url` instead of the engine `endpoint` (decision 10).
 - `crates/mock-woocommerce` test monokulos (lib and stagenet connect test) set `public_url` to their own listener; assertions now expect monokulo's address.
 - Verified: no view, JSON response or plugin-facing value contains `engine_client.base_url()` any more (grep: the only remaining use is `connections.rs` storing it in the internal `moneropay_endpoint` column).
+
+### Step 6: WooCommerce plugin
+PHP half (committed first):
+- `plugins/woocommerce/includes/class-wc-gateway-monokulo.php`: `create_monokulo_order()` posts `{amount, currency, merchant_order_id}` to `{endpoint}/pay/{pk}/orders` with `Authorization: Bearer {secret_token}`; customer-safe messages for 401/403/429/other with logged detail; redirect to `{endpoint}/pay/{pk}/orders/{order_id}`. `CONNECTION_VERSION`, `needs_reconnect()`, `settings_need_reconnect()`, `render_reconnect_notice()` (decision 11); `is_available()` needs endpoint, public key, secret key and a current connection. Connect: saves `connection_version`; a 503 from `/finish` gives a "Monokulo not ready" notice. Settings labels now say Monokulo address / store keys. Doc comments no longer describe the engine as the plugin's peer.
+- `plugins/woocommerce/monokulo.php`: `admin_notices` hook for the reconnect notice.
+- Tests: `ProcessPaymentTest.php` (new request shape and header, redirect, 401/403/429 messages, amount formatting, old-install reconnect + notice, never-connected), `ConnectFlowTest.php` (`connection_version` saved, 503 notice), `LiveEngineIntegrationTest.php` renamed `LiveMonokuloIntegrationTest.php` (`@group live-monokulo`, config `tests/live-monokulo.local.json`, checks monokulo's status route and checkout page); `phpunit.xml.dist` and `.gitignore` follow the rename.

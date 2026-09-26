@@ -101,3 +101,17 @@ function monokulo_add_gateway_class( $gateways ) {
 	return $gateways;
 }
 add_filter( 'woocommerce_payment_gateways', 'monokulo_add_gateway_class' );
+
+/**
+ * Tells WooCommerce managers, on every admin screen, when this store was
+ * connected by an older plugin version and must reconnect before it can
+ * take Monero payments again (see `WC_Gateway_Monokulo::CONNECTION_VERSION`).
+ * Hooked here rather than in the gateway's constructor so it shows whether
+ * or not WooCommerce builds its gateways on the current request.
+ */
+function monokulo_render_reconnect_notice() {
+	if ( class_exists( 'WC_Gateway_Monokulo' ) ) {
+		WC_Gateway_Monokulo::render_reconnect_notice();
+	}
+}
+add_action( 'admin_notices', 'monokulo_render_reconnect_notice' );

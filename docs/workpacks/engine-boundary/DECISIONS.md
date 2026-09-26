@@ -67,3 +67,21 @@ Format for each entry:
 - **Decision:** `integration_help::fragment` now takes `public_url: Option<&str>` instead of the unrendered engine endpoint, and uses it to make the widget and API snippets absolute when set (relative, as before, when not). The views' `endpoint` fields are gone. The `store_connections.moneropay_endpoint` column is still written (the engine URL) and read into `StoreConnectionRow`, but nothing renders or returns it.
 - **Alternatives considered:** Drop the column with a migration; keep the relative snippets only.
 - **Why:** Absolute URLs are what a merchant pasting into another site needs. The column is internal (never sent to a merchant or plugin) and dropping it is unrelated schema churn; its existence doesn't break "nothing a merchant or plugin receives contains the engine's address".
+
+### 11. Old WooCommerce installs are detected by a missing `connection_version` setting
+- **Step:** 6
+- **Decision:** `WC_Gateway_Monokulo::CONNECTION_VERSION = '2'`. `process_connect_return()` writes `connection_version = '2'` after a successful connect. An install with any credential (`endpoint`, `public_key` or `secret_token`) but a different or missing `connection_version` "needs reconnect": `is_available()` is false, `create_monokulo_order()` refuses without any HTTP call, the gateway's settings field says so, and a site-wide `admin_notices` warning (hooked in `monokulo.php`, shown to `manage_woocommerce` users) links to the settings page. A store that never connected gets no reconnect notice. Only the connect flow writes the marker; hand-editing the settings form doesn't.
+- **Alternatives considered:** Compare the stored endpoint with something (rejected by the plan: no URL guessing); set the marker whenever the settings form is saved (a merchant pressing Save on an old install would silently re-mark the engine address as current).
+- **Why:** The marker states a fact the plugin knows for certain (this connection came from the new `/finish`), and the check is a pure function of the stored settings, easy to test. Self-hosters can still use the connect flow via the existing `monokulo_control_plane_base_url` filter.
+
+### 12. Plugin amount formatting and error handling
+- **Step:** 6
+- **Decision:** The plugin sends `amount` with 2 decimals for fiat (Monokulo refuses more) and, for an `XMR`-priced store, the store's price decimals clamped to 2..12. `description` is no longer sent (Monokulo's request has no such field). Monokulo errors are logged with status, Monokulo's `error` text and a hint (401: reconnect, 403: verified-domain settings, 404: unknown store, 429: rate limited); the customer sees one of three generic messages (busy for 429, "not available for this store" for 401/403, "could not start this payment" otherwise).
+- **Alternatives considered:** Always 2 decimals (loses XMR precision); show Monokulo's error to customers (leaks store configuration).
+- **Why:** Matches Monokulo's `compute_order_amount` rules and keeps customer-facing text safe.
+
+### 13. How the PHP suite was run
+- **Step:** 6
+- **Decision:** `npx @wordpress/env start` fails here: the plugin's directory is named `woocommerce` (since commit `a5491cf`), so wp-env mounts it over WooCommerce's own `wp-content/plugins/woocommerce` and WooCommerce disappears ("requires 1 plugin"); Node's 250 ms happy-eyeballs timeout also broke its downloads until `NODE_OPTIONS=--dns-result-order=ipv4first --network-family-autoselection-attempt-timeout=5000`. I ran the suite with wp-env's generated `docker-compose.yml`, copied to the session scratchpad with this plugin mounted at `wp-content/plugins/monokulo` instead, plus a `wp-tests-config.php` copied from another wp-env instance: `docker compose -f <copy> -p monokulo-phpunit run --rm -w /var/www/html/wp-content/plugins/monokulo tests-cli vendor/bin/phpunit`.
+- **Alternatives considered:** Rename the plugin directory in the repo (out of scope, affects packaging); skip the PHP suite (the plan prefers running it).
+- **Why:** Runs the real suite against real WordPress/WooCommerce without changing the repository layout. The collision itself is a pre-existing problem worth fixing separately (e.g. a `.wp-env.json` `mappings` entry).
