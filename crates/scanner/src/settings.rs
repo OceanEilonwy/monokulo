@@ -228,9 +228,8 @@ mod tests {
     fn an_env_var_overrides_a_saved_setting() {
         let store = Store::open_in_memory().unwrap();
         store.set_setting(PAYMENT_CONFIRMATIONS_REQUIRED.key, "3").unwrap();
-        std::env::set_var(PAYMENT_CONFIRMATIONS_REQUIRED.env_var, "9");
+        let _env = shared::settings::test_env::set(PAYMENT_CONFIRMATIONS_REQUIRED.env_var, Some("9"));
         let value: u64 = get(&store, &PAYMENT_CONFIRMATIONS_REQUIRED);
-        std::env::remove_var(PAYMENT_CONFIRMATIONS_REQUIRED.env_var);
         assert_eq!(value, 9);
     }
 

@@ -1360,9 +1360,9 @@ async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save
         .await
         .unwrap();
 
-    std::env::set_var("SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED", "99");
+    let env = shared::settings::test_env::set("SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED", Some("99"));
     let get = router.oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
-    std::env::remove_var("SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED");
+    drop(env);
     let body = body_json(get).await;
     assert_eq!(body["scalars"]["payment.confirmations_required"]["value"], "99");
     assert_eq!(body["scalars"]["payment.confirmations_required"]["source"], "env");

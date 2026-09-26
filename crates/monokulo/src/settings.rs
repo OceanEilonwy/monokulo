@@ -248,9 +248,8 @@ mod tests {
     fn an_env_var_overrides_a_saved_setting() {
         let db = Db::open_in_memory().unwrap();
         db.set_setting(EXCHANGE_RATE_CACHE_SECONDS.key, "3").unwrap();
-        std::env::set_var(EXCHANGE_RATE_CACHE_SECONDS.env_var, "9");
+        let _env = shared::settings::test_env::set(EXCHANGE_RATE_CACHE_SECONDS.env_var, Some("9"));
         let value: u64 = get(&db, &EXCHANGE_RATE_CACHE_SECONDS);
-        std::env::remove_var(EXCHANGE_RATE_CACHE_SECONDS.env_var);
         assert_eq!(value, 9);
     }
 
@@ -260,8 +259,7 @@ mod tests {
         assert_eq!(get_raw(&db, &ENGINE_URL).1, SettingSource::Default);
         db.set_setting(ENGINE_URL.key, "http://scanner.internal:8443").unwrap();
         assert_eq!(get_raw(&db, &ENGINE_URL), ("http://scanner.internal:8443".to_string(), SettingSource::Database));
-        std::env::set_var(ENGINE_URL.env_var, "http://env-wins.example");
+        let _env = shared::settings::test_env::set(ENGINE_URL.env_var, Some("http://env-wins.example"));
         assert_eq!(get_raw(&db, &ENGINE_URL).1, SettingSource::Env);
-        std::env::remove_var(ENGINE_URL.env_var);
     }
 }

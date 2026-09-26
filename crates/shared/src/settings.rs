@@ -34,7 +34,7 @@ pub enum SettingSource {
 /// `db_value` (a row already read from the caller's own `settings` table)
 /// wins if present; otherwise `default`.
 pub fn resolve_raw(env_var: &str, db_value: Option<&str>, default: &str) -> (String, SettingSource) {
-    if let Ok(v) = std::env::var(env_var) {
+    if let Some(v) = env_value(env_var) {
         if !v.trim().is_empty() {
             return (v, SettingSource::Env);
         }
@@ -58,7 +58,7 @@ pub fn resolve_parsed<T>(env_var: &str, db_value: Option<&str>, default: T) -> T
 where
     T: std::str::FromStr,
 {
-    if let Ok(raw) = std::env::var(env_var) {
+    if let Some(raw) = env_value(env_var) {
         if !raw.trim().is_empty() {
             return raw
                 .parse()
@@ -79,8 +79,8 @@ where
 /// field is overridden by an environment variable" without needing to
 /// duplicate the precedence rule itself.
 pub fn source(env_var: &str, db_value: Option<&str>) -> SettingSource {
-    match std::env::var(env_var) {
-        Ok(v) if !v.trim().is_empty() => SettingSource::Env,
+    match env_value(env_var) {
+        Some(v) if !v.trim().is_empty() => SettingSource::Env,
         _ => {
             if db_value.is_some() {
                 SettingSource::Database
@@ -91,9 +91,91 @@ pub fn source(env_var: &str, db_value: Option<&str>) -> SettingSource {
     }
 }
 
+/// The one place settings read the environment. With the `test-support`
+/// feature (tests only), a [`test_env::EnvOverride`] on the current thread
+/// takes precedence over the real process environment.
+fn env_value(env_var: &str) -> Option<String> {
+    #[cfg(any(test, feature = "test-support"))]
+    if let Some(value) = test_env::overridden(env_var) {
+        return value;
+    }
+    std::env::var(env_var).ok()
+}
+
+/// Per-thread environment overrides for tests that need a setting to come
+/// from "the environment".
+///
+/// `std::env::set_var` changes the real process environment, which every
+/// test running in parallel in the same binary shares. A test setting
+/// `SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED` would make another test that
+/// happens to read that setting at the same moment see the wrong value,
+/// and fail only now and then. An override here is visible only on the
+/// thread that set it - under `#[tokio::test]`'s default single-threaded
+/// runtime that is the whole test, handlers included - and is undone when
+/// its guard is dropped.
+#[cfg(any(test, feature = "test-support"))]
+pub mod test_env {
+    use std::cell::RefCell;
+    use std::collections::HashMap;
+
+    thread_local! {
+        static OVERRIDES: RefCell<HashMap<String, Option<String>>> = RefCell::new(HashMap::new());
+    }
+
+    /// `Some(Some(value))`: set to `value`; `Some(None)`: forced unset;
+    /// `None`: not overridden, use the real environment.
+    pub(super) fn overridden(env_var: &str) -> Option<Option<String>> {
+        OVERRIDES.with(|overrides| overrides.borrow().get(env_var).cloned())
+    }
+
+    /// Restores the previous override (or none) when dropped.
+    #[must_use = "the override is undone as soon as this guard is dropped"]
+    pub struct EnvOverride {
+        env_var: String,
+        previous: Option<Option<String>>,
+    }
+
+    /// Makes `env_var` read as `value` (or as unset, for `None`) for
+    /// settings resolved on this thread, until the guard is dropped.
+    pub fn set(env_var: &str, value: Option<&str>) -> EnvOverride {
+        let previous = OVERRIDES.with(|overrides| overrides.borrow_mut().insert(env_var.to_string(), value.map(str::to_string)));
+        EnvOverride { env_var: env_var.to_string(), previous }
+    }
+
+    impl Drop for EnvOverride {
+        fn drop(&mut self) {
+            OVERRIDES.with(|overrides| {
+                let mut overrides = overrides.borrow_mut();
+                match self.previous.take() {
+                    Some(previous) => overrides.insert(self.env_var.clone(), previous),
+                    None => overrides.remove(&self.env_var),
+                };
+            });
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_thread_override_wins_over_the_real_environment_and_is_undone_on_drop() {
+        std::env::remove_var("SETTINGS_TEST_THREAD_OVERRIDE");
+        {
+            let _guard = test_env::set("SETTINGS_TEST_THREAD_OVERRIDE", Some("from-override"));
+            assert_eq!(resolve_raw("SETTINGS_TEST_THREAD_OVERRIDE", Some("from-db"), "d"), ("from-override".to_string(), SettingSource::Env));
+            // Invisible on any other thread.
+            let elsewhere = std::thread::spawn(|| resolve_raw("SETTINGS_TEST_THREAD_OVERRIDE", Some("from-db"), "d")).join().unwrap();
+            assert_eq!(elsewhere.1, SettingSource::Database);
+            {
+                let _unset = test_env::set("SETTINGS_TEST_THREAD_OVERRIDE", None);
+                assert_eq!(source("SETTINGS_TEST_THREAD_OVERRIDE", Some("from-db")), SettingSource::Database);
+            }
+            assert_eq!(source("SETTINGS_TEST_THREAD_OVERRIDE", None), SettingSource::Env, "the inner guard restores the outer override");
+        }
+        assert_eq!(source("SETTINGS_TEST_THREAD_OVERRIDE", None), SettingSource::Default);
+    }
 
     // `std::env::set_var`/`remove_var` mutate real process-wide state, so
     // every test below uses its own never-reused variable name - this suite

@@ -114,4 +114,8 @@ path = "src/bin/e2e_harness.rs"
 required-features = ["e2e"]
 
 [dev-dependencies]
+# Per-thread environment overrides for settings tests
+# (`shared::settings::test_env`), instead of mutating the real process
+# environment that parallel tests share.
+shared = { path = "../shared", features = ["test-support"] }
 tokio = { version = "1.53.1", features = ["rt", "macros"] }

@@ -36,6 +36,10 @@ uuid = { version = "1.26.0", features = ["v4"] }
 hickory-resolver = "0.26.3"
 
 [dev-dependencies]
+# Per-thread environment overrides for settings tests
+# (`shared::settings::test_env`), instead of mutating the real process
+# environment that parallel tests share.
+shared = { path = "../shared", features = ["test-support"] }
 scanner-test-support = { path = "../scanner-test-support" }
 http-body-util = "0.1.5"
 scanner = { path = "../scanner" }
