@@ -69,3 +69,24 @@ was dirty at collection because the original POS work remained uncommitted.
 | Resize after load | Real POS remains within viewport after five size changes | Live harness; catches stale keypad measurement | Keep; move to controlled local engine when available |
 
 No test has been deleted in this inventory step.
+
+## Checkout migration (task 2.3)
+
+The first migration removed former surface cases 1–6, 8–14, and 18 after
+their claims passed against production checkout markup and scripts in
+`coverage-checkout.spec.js`. The real checkout tests now cover QR upload,
+saved and empty refund states, delayed saving, server rejection and retry,
+network and camera errors, address copy and selection, SSE during an edit,
+no-JS manual entry and refresh, compact and tall layout, a paid terminal
+state, and `monokulo-client.js` framing the actual checkout with refund
+disabled. The deterministic suite passed 22/22 cases after this change.
+
+At this source revision, instrumented coverage after removal is 521/613
+lines and 375/590 branches, compared with the 521/613 and 377/590 baseline.
+The two stable lost branch decisions are the false payment-address and copy
+button guards at checkout.js:10–11. Production checkout always renders both
+elements; only the former hand-built page could omit them. Client.js:316's
+error fallback was also hit by the former finite fake stream, but the real
+fixture keeps its stream open; its conditional and line remain a specific
+follow-up for task 2.5. Client.js:105's recursive proof batch varies with a
+random challenge token, so its hit status is not a stable test claim.

@@ -72,6 +72,27 @@ test('real checkout validates, shows saving, rejects a response, and retries', a
   await expect(field).toHaveClass(/is-saved/);
 });
 
+test('real checkout live update preserves a focused partial refund address', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  let release;
+  const requested = new Promise(resolve => { release = resolve; });
+  let sendUpdate;
+  await page.route(`${url}/events?*`, async route => {
+    release();
+    await new Promise(resolve => { sendUpdate = resolve; });
+    const fragment = '<div id="live-status" data-live><span id="status-badge">Partial payment received</span></div>';
+    const status = JSON.stringify({ status: 'partial', confirmations: 0, confirmations_required: 1, is_terminal: false, error: 'Underpaid' });
+    await route.fulfill({ contentType: 'text/event-stream', body: `event: fragment\ndata: ${fragment}\n\nevent: status\ndata: ${status}\n\n` });
+  });
+  await page.goto(url);
+  await requested;
+  await page.locator('#refund_address').fill('4AdUndXHHZ');
+  sendUpdate();
+  await expect(page.locator('#status-badge')).toHaveText('Partial payment received');
+  await expect(page.locator('#refund_address')).toHaveValue('4AdUndXHHZ');
+  await expect(page.locator('#refund_address')).toBeFocused();
+});
+
 test('real checkout keeps retry and camera upload paths after failures', async ({ page, request }) => {
   const url = await checkoutUrl(request);
   await page.addInitScript(() => {
@@ -117,6 +138,32 @@ test('real compact checkout positions refund controls below a full width field',
   expect(controls.y).toBeGreaterThanOrEqual(input.y + input.height - 1);
 });
 
+test('real tall checkout keeps one background and a readable progress bar', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  await page.setViewportSize({ width: 700, height: 1400 });
+  await page.goto(url);
+  const layout = await page.evaluate(() => ({
+    html: getComputedStyle(document.documentElement).backgroundColor,
+    body: getComputedStyle(document.body).backgroundColor,
+    bodyHeight: document.body.getBoundingClientRect().height,
+    barHeight: document.querySelector('.progress-bar').getBoundingClientRect().height,
+    viewportHeight: innerHeight,
+  }));
+  expect(layout.html).toBe(layout.body);
+  expect(layout.bodyHeight).toBeGreaterThanOrEqual(layout.viewportHeight);
+  expect(layout.barHeight).toBeGreaterThanOrEqual(14);
+});
+
+test('real checkout renders a paid order without opening a live stream', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  const orderId = url.split('/').pop();
+  const paid = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/paid`);
+  expect(paid.status()).toBe(204);
+  await page.goto(url);
+  await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
+  await expect(page.locator('.payment-state.is-paid')).toBeVisible();
+});
+
 test('real checkout retains manual refund entry without JavaScript', async ({ browser, request }) => {
   const url = await checkoutUrl(request);
   const context = await browser.newContext({ javaScriptEnabled: false });
@@ -124,7 +171,28 @@ test('real checkout retains manual refund entry without JavaScript', async ({ br
     const page = await context.newPage();
     await page.goto(url);
     await expect(page.locator('#refund_address')).toBeVisible();
+    await expect(page.locator('#scan-refund')).toBeHidden();
+    await expect(page.locator('#upload-refund')).toBeHidden();
     await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();
     await expect(page.locator('#checkout-refresh')).toHaveCount(1);
+    await expect(page.getByRole('link', { name: 'Auto Refresh: ON' })).toBeVisible();
   } finally { await context.close(); }
+});
+
+test('client refund option frames the real checkout and retains its status stream', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  let statusRequests = 0;
+  page.on('request', received => {
+    if (received.url().startsWith(`${url}/events?`) || received.url().startsWith(`${url}/status`)) statusRequests++;
+  });
+  await page.goto(`${fixture.base_url}/__coverage/ready`);
+  await page.setContent('<div id="mount"></div>');
+  await page.addScriptTag({ url: `${fixture.base_url}/static/monokulo-client.js` });
+  await page.evaluate(({ base_url, public_key, order_id }) => {
+    window.Monokulo.mount('#mount', { orderId: order_id, endpoint: base_url, publicKey: public_key }, { refund: false });
+  }, { base_url: fixture.base_url, public_key: fixture.public_key, order_id: url.split('/').pop() });
+  await expect(page.locator('#mount iframe')).toHaveAttribute('src', `${url}?refund=false`);
+  await expect(page.frameLocator('#mount iframe').locator('#checkout-root')).toBeVisible();
+  await expect(page.frameLocator('#mount iframe').locator('#refund-form')).toHaveCount(0);
+  await expect.poll(() => statusRequests).toBeGreaterThan(0);
 });

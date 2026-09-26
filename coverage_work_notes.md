@@ -78,16 +78,21 @@ precede deletion of old browser tests.
   181/225 branches. It validates the two authored PHP files and report links.
   The gateway's branch report shows 180/218 branches, including missed ones;
   vendor, WordPress, WooCommerce, and test files are absent.
-- 2.3 in progress: six new tests now exercise the real checkout for QR upload,
-  saved-state restoration, validation/saving/rejection/retry, camera and network
-  failure, address selection/copy, compact geometry, and no-JS form visibility.
-  All six pass in the real fixture. The 320px geometry assertion exposed a real
-  grid min-content overflow; `checkout.rs` now uses a zero-minimum column and
-  grid children. Existing surface tests remain until SSE and embed claims are
-  migrated and the instrumented coverage comparison is complete.
+- 2.3 complete: ten real-checkout tests now cover the former surface checkout
+  and embed claims, including QR upload, saved state, validation and failures,
+  copy, no-JS refresh, SSE during an edit, compact/tall geometry, terminal
+  status, and a real iframe driven by `monokulo-client.js`. The 320px geometry
+  assertion exposed and fixed a real grid min-content overflow. Removed former
+  surface cases 1–6, 8–14, and 18 with selective staging; user-owned POS
+  badge/search edits remain unstaged. The deterministic instrumented suite
+  passed 22/22 after migration. Browser totals changed from 521/613 lines and
+  377/590 branches to 521/613 lines and 375/590 branches. The stable lost
+  branches are guards for missing payment-address elements that production
+  checkout always renders. The finite-stream fallback branch needs an explicit
+  deterministic check in 2.5; proof-batch recursion varies with random token.
 
 ## Resume next
 
-Continue checkout/embed 2.3 with SSE and client claims. The original
+Continue POS/challenge/status/policy migration in 2.4. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.
