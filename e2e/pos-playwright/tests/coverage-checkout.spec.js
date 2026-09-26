@@ -1,6 +1,7 @@
 const path = require('node:path');
 const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
+const { captureCoverageStage } = require('../coverage-screenshot');
 
 const address = '86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC';
 const qrImage = path.join(__dirname, '../fixtures/refund-qr.png');
@@ -34,6 +35,7 @@ test('real checkout saves a QR refund address and restores a saved address after
   await expect(input).toHaveValue(address);
   await expect(field).toHaveClass(/is-saved/);
   await expect(page.locator('#refund-save-state')).toHaveAttribute('aria-label', 'Refund address saved');
+  await captureCoverageStage(page, 'checkout-refund-saved', test.info());
   await page.reload();
   await expect(input).toHaveValue(address);
   await expect(field).toHaveClass(/is-saved/);
@@ -66,6 +68,7 @@ test('real checkout validates, shows saving, rejects a response, and retries', a
   release();
   await expect(field).toHaveClass(/is-invalid/);
   await expect(page.locator('#scan-error')).toContainText('Invalid refund address');
+  await captureCoverageStage(page, 'checkout-invalid-address', test.info());
   responseStatus = 200;
   await input.fill(address.slice(0, -1) + 'D');
   await expect(field).not.toHaveClass(/is-invalid/);
@@ -105,6 +108,7 @@ test('real checkout keeps retry and camera upload paths after failures', async (
   await page.getByRole('button', { name: 'Scan refund QR' }).click();
   await expect(page.locator('#scan-error')).toContainText('Camera unavailable');
   await expect(page.locator('#upload-refund')).toBeVisible();
+  await captureCoverageStage(page, 'checkout-camera-fallback', test.info());
   await page.locator('#refund_address').fill(address);
   await expect(page.locator('#scan-error')).toContainText('Failed to fetch');
   await expect(page.locator('#refund-field')).not.toHaveClass(/is-saved/);
@@ -136,6 +140,7 @@ test('real compact checkout positions refund controls below a full width field',
   const form = await page.locator('#refund-form').boundingBox();
   expect(input.width).toBeGreaterThan(form.width * .8);
   expect(controls.y).toBeGreaterThanOrEqual(input.y + input.height - 1);
+  await captureCoverageStage(page, 'checkout-compact', test.info());
 });
 
 test('real tall checkout keeps one background and a readable progress bar', async ({ page, request }) => {
@@ -162,6 +167,7 @@ test('real checkout renders a paid order without opening a live stream', async (
   await page.goto(url);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
   await expect(page.locator('.payment-state.is-paid')).toBeVisible();
+  await captureCoverageStage(page, 'checkout-paid', test.info());
 });
 
 test('real checkout retains manual refund entry without JavaScript', async ({ browser, request }) => {
@@ -176,6 +182,7 @@ test('real checkout retains manual refund entry without JavaScript', async ({ br
     await expect(page.getByRole('button', { name: 'Save' })).toBeVisible();
     await expect(page.locator('#checkout-refresh')).toHaveCount(1);
     await expect(page.getByRole('link', { name: 'Auto Refresh: ON' })).toBeVisible();
+    await captureCoverageStage(page, 'checkout-no-js', test.info());
   } finally { await context.close(); }
 });
 

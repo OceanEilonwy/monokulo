@@ -1,5 +1,6 @@
 const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
+const { captureCoverageStage } = require('../coverage-screenshot');
 
 const sizes = [
   ['iPhone SE', 375, 667], ['iPhone 14', 390, 844], ['iPad', 768, 1024],
@@ -27,12 +28,16 @@ for (const [name, width, height] of sizes) {
         await page.getByRole('button', { name: 'Background order', exact: true }).click();
         await expect(page.locator('.pos-keypad')).toBeVisible();
         await assertNoOuterScroll(page, `${name} ${orientation} keypad`);
+        if (name === 'iPhone SE' && orientation === 'landscape')
+          await captureCoverageStage(page, 'pos-narrow-keypad', test.info());
         for (const digit of ['1', '2', '3', '4', '5']) await page.getByRole('button', { name: digit, exact: true }).click();
         await page.locator('#pos-reference').fill('A Fairly Long Customer Name Here');
         await assertNoOuterScroll(page, `${name} ${orientation} filled`);
         await page.getByRole('button', { name: 'Charge' }).click();
         await expect(page.frameLocator('.pos-checkout-card iframe').locator('.qr-wrap svg')).toBeVisible();
         await assertNoOuterScroll(page, `${name} ${orientation} payment`);
+        if (name === 'iPhone SE' && orientation === 'landscape')
+          await captureCoverageStage(page, 'pos-narrow-payment', test.info());
       } finally { await stopCoverageFixture(fixture.process); }
     });
   }

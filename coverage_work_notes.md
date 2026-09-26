@@ -113,10 +113,16 @@ precede deletion of old browser tests.
   `cargo xtask coverage browser` passes 38/38 locally after this fix,
   including the preexisting uncommitted badge test. The optional stagenet
   WebKit family remains available separately.
+- 4.1 complete: a gated screenshot helper attaches 12 stable PNG checkpoints
+  after assertions across checkout, POS, and challenge tests. The normal
+  browser suite remains free of screenshot work; `coverage browser` enables
+  captures. The optional stagenet POS tests now have seven unmasked payment
+  checkpoints, also gated by `COVERAGE_SCREENSHOTS=1`. The local coverage run
+  produced all 12 deterministic images, split 6 checkout, 4 POS, 2 challenge.
 
 ## Resume next
 
-Handle the retained uncommitted badge test without losing its source, then
-run the 2.5 comparison. The original
+Finish the reporter/gallery (4.2–4.3), then handle the retained uncommitted
+badge test and run the 2.5 comparison. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.

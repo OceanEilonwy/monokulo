@@ -1,5 +1,6 @@
 const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
+const { captureCoverageStage } = require('../coverage-screenshot');
 
 let fixture;
 test.beforeAll(async () => { fixture = await startCoverageFixture(); });
@@ -24,6 +25,7 @@ test('real challenge offers a ten second no-JavaScript continuation', async ({ b
     await expect(page.getByRole('heading', { name: 'Checking your connection' })).toBeVisible();
     await expect(page.locator('meta[http-equiv="refresh"]')).toHaveAttribute('content', /^10;url=/);
     await expect(page.getByRole('link', { name: 'continue' })).toBeVisible();
+    await captureCoverageStage(page, 'challenge-no-js', test.info());
     await page.getByRole('link', { name: 'continue' }).click();
     await expect(page.locator('#checkout-root')).toBeVisible();
   } finally { await context.close(); }
@@ -41,6 +43,7 @@ test('real challenge continues inside a cross-site checkout frame with and witho
       const frame = page.frameLocator('#payment');
       if (!javaScriptEnabled) {
         await expect(frame.getByRole('heading', { name: 'Checking your connection' })).toBeVisible();
+        await captureCoverageStage(frame.locator('body'), 'challenge-cross-site', test.info());
         await frame.getByRole('link', { name: 'continue' }).click();
       }
       await expect(frame.locator('#checkout-root')).toBeVisible();

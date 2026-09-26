@@ -1,5 +1,6 @@
 const { test, expect } = require('../coverage-test');
 const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
+const { captureCoverageStage } = require('../coverage-screenshot');
 
 let fixture;
 test.beforeEach(async ({ context }) => {
@@ -16,6 +17,7 @@ test('real POS backgrounds, reloads, reopens, cancels, and searches an order', a
   await expect(page.locator('.pos-checkout-card iframe')).toBeVisible();
   await page.getByRole('button', { name: 'Background order', exact: true }).click();
   await expect(page.locator('.pos-stack-card')).toContainText('Fixture order');
+  await captureCoverageStage(page, 'pos-background-stack', test.info());
   await page.reload();
   await expect(page.locator('.pos-stack-card')).toBeVisible();
   await page.locator('.pos-stack-card').click();
@@ -23,6 +25,7 @@ test('real POS backgrounds, reloads, reopens, cancels, and searches an order', a
   page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: 'Cancel order' }).click();
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Cancelled');
+  await captureCoverageStage(page, 'pos-cancelled', test.info());
   await expect(page.locator('.pos-checkout-card iframe')).toBeHidden();
   await page.getByRole('button', { name: 'New order' }).click();
   await page.getByRole('button', { name: 'View all →' }).click();
