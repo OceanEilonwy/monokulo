@@ -105,10 +105,18 @@ precede deletion of old browser tests.
   staged source. The user-owned uncommitted badge test remains in the working
   file and currently adds one duplicate case to local runs. The instrumented
   browser suite passes 23/23 with that local test included.
+- 2.4 complete in the committed source: added the 14 Chromium device and
+  orientation cases plus five resize checks against the controlled POS.
+  They exposed overflow on iPhone SE portrait and four short landscape
+  sizes; the authored and served POS CSS now keep the root within the
+  viewport and arrange the keypad in two columns for short landscape.
+  `cargo xtask coverage browser` passes 38/38 locally after this fix,
+  including the preexisting uncommitted badge test. The optional stagenet
+  WebKit family remains available separately.
 
 ## Resume next
 
-Finish 2.4 with the POS viewport family and handle the retained uncommitted
-badge test without losing its source. Then run the 2.5 comparison. The original
+Handle the retained uncommitted badge test without losing its source, then
+run the 2.5 comparison. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.

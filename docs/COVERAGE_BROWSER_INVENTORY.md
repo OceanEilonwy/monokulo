@@ -90,3 +90,20 @@ error fallback was also hit by the former finite fake stream, but the real
 fixture keeps its stream open; its conditional and line remain a specific
 follow-up for task 2.5. Client.js:105's recursive proof batch varies with a
 random challenge token, so its hit status is not a stable test claim.
+
+## POS, challenge, and policy migration (task 2.4)
+
+Production-rendered fixtures now cover the former surface claims 7, 15–17,
+and 19–23: POS background/reload/reopen/cancel/search and status badges;
+dashboard health polling; challenge continuation with JavaScript, without
+JavaScript, and in a cross-site frame; checkout framing restrictions from
+Monokulo's actual CSP and frame-only response; and POS/checkout geometry.
+The fake-page cases were removed from the committed test source. The
+`monokulo-client.js` challenge protocol test remains as a separate boundary.
+
+The local deterministic suite runs 14 controlled Chromium device/orientation
+sizes plus five live-resize checks. The independent stagenet `pos-fit` suite
+still supplies optional WebKit coverage. The new fit checks found a short
+viewport overflow in the current POS CSS; authored `pos.css` and served
+`pos-app.css` now constrain the root height and use two columns in short
+landscape. All 14 device cases and the resize case passed after the fix.
