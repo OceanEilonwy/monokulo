@@ -234,6 +234,11 @@ fn scalar_field(field: &AdminScalarFieldView) -> Markup {
     }
 }
 
+/// Settings shown under "Abuse protection" (`crate::abuse`).
+fn is_abuse_field(key: &str) -> bool {
+    key.starts_with("abuse.") || key.starts_with("rate_limit.")
+}
+
 pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
@@ -249,7 +254,18 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
             h2 { "Monokulo" }
             p { "An environment variable, where set, always wins over the value saved here - saving still works, it just won't take effect until that variable is unset." }
             form method="post" action="/dashboard/admin/settings" {
-                @for field in &data.monokulo_fields {
+                @for field in data.monokulo_fields.iter().filter(|f| !is_abuse_field(&f.key)) {
+                    (scalar_field(field))
+                }
+                h3 id="abuse-protection" { "Abuse protection" }
+                p class="hint" {
+                    "How this instance tells visitors apart and slows down anyone sending too many requests. A visitor "
+                    "past the soft limit is asked to pass a short check (automatic with JavaScript, a 10-second wait "
+                    "without); past the hard limit they're refused until the minute is up. Signed-in merchants and "
+                    "plugins using their store's secret key are never checked. Changes apply straight away, except "
+                    "the onion listener, which is read at startup."
+                }
+                @for field in data.monokulo_fields.iter().filter(|f| is_abuse_field(&f.key)) {
                     (scalar_field(field))
                 }
                 button type="submit" { "Save monokulo settings" }
@@ -435,6 +451,7 @@ mod tests {
         let html = admin_settings_page(&chrome(), &data).into_string();
         assert!(html.contains("engine url"));
         assert!(html.contains(r#"<span class="field-help">Where the engine listens.</span>"#));
+        assert!(html.contains("Abuse protection"));
         assert!(html.contains(r#"value="http://scanner.internal""#));
         assert!(html.contains("payment confirmations required"));
         assert!(html.contains(r#"value="10""#));

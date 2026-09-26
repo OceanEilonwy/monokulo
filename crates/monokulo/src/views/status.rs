@@ -36,7 +36,17 @@ pub struct StatusNetworkView {
 /// `engine_error`, when set, means the engine itself couldn't be reached at
 /// all - a genuinely different, more serious case than any one node or
 /// scanner being unhealthy.
+/// Abuse-protection activity, shown to operators (admins) only.
+pub struct AbuseStatusView {
+    pub under_attack: bool,
+    pub issued: u64,
+    pub solved: u64,
+    pub refused: u64,
+}
+
 pub struct StatusPageViewModel {
+    /// Set only when an admin is viewing (`http::status_page`).
+    pub abuse: Option<AbuseStatusView>,
     pub engine_error: Option<String>,
     pub networks: Vec<StatusNetworkView>,
     pub poll_interval_secs: u64,
@@ -57,6 +67,26 @@ pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
                 "moment. The scan loop polls every " (data.poll_interval_secs) "s."
             }
 
+            @if let Some(abuse) = &data.abuse {
+                div class="box" id="abuse-protection" {
+                    h2 { "Abuse protection" }
+                    p class="hint" { "Only operators see this." }
+                    p {
+                        "Under-attack mode: "
+                        @if abuse.under_attack { span class="tag tag-error" { "on" } " - every visitor who isn't signed in is challenged." }
+                        @else { span class="tag tag-ok" { "off" } }
+                    }
+                    table {
+                        thead { tr { th { "Last hour" } th { "Challenges" } } }
+                        tbody {
+                            tr { td { "Issued" } td { (abuse.issued) } }
+                            tr { td { "Solved" } td { (abuse.solved) } }
+                            tr { td { "Refused" } td { (abuse.refused) } }
+                        }
+                    }
+                    p class="hint" { "Refused counts wrong or replayed answers and requests turned away past the hard limit." }
+                }
+            }
             @if let Some(error) = &data.engine_error {
                 div class="error" { "The engine could not be reached: " (error) }
             } @else if data.networks.is_empty() {
@@ -122,6 +152,7 @@ mod tests {
     #[test]
     fn shows_a_plain_error_banner_when_the_engine_is_unreachable() {
         let data = StatusPageViewModel {
+            abuse: None,
             engine_error: Some("the engine could not be reached".to_string()),
             networks: vec![],
             poll_interval_secs: 30,
@@ -134,7 +165,7 @@ mod tests {
 
     #[test]
     fn shows_no_configured_networks_message_when_networks_is_empty() {
-        let data = StatusPageViewModel { engine_error: None, networks: vec![], poll_interval_secs: 30, generated_at_display: "just now".to_string() };
+        let data = StatusPageViewModel { abuse: None, engine_error: None, networks: vec![], poll_interval_secs: 30, generated_at_display: "just now".to_string() };
         let html = page(&chrome(), &data).into_string();
         assert!(html.to_lowercase().contains("no monero nodes are configured"));
     }
@@ -142,6 +173,7 @@ mod tests {
     #[test]
     fn shows_a_node_row_and_its_error_when_unreachable() {
         let data = StatusPageViewModel {
+            abuse: None,
             engine_error: None,
             networks: vec![StatusNetworkView {
                 network: "mainnet".to_string(),

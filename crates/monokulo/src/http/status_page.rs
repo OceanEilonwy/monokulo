@@ -136,9 +136,10 @@ async fn get_status_cached(state: &AppState) -> Result<EngineStatusResponse, Str
 /// per-request check (see `StatusPageViewModel::logged_in`'s own doc
 /// comment), not a fixed literal like most other pages.
 pub async fn status_page(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    let view_model = match get_status_cached(&state).await {
+    let mut view_model = match get_status_cached(&state).await {
         Ok(status) => build_view_model(status),
         Err(message) => views::status::StatusPageViewModel {
+            abuse: None,
             engine_error: Some(message),
             networks: Vec::new(),
             poll_interval_secs: 0,
@@ -146,6 +147,17 @@ pub async fn status_page(State(state): State<AppState>, headers: axum::http::Hea
         },
     };
     let authed = super::resolve_authed_user(&state, &headers);
+    // Challenge activity is for operators only; anonymous visitors and
+    // merchants don't see it.
+    if authed.as_ref().is_some_and(|(user, _)| user.is_admin) {
+        let counts = state.abuse.stats.last_hour(crate::now_unix());
+        view_model.abuse = Some(views::status::AbuseStatusView {
+            under_attack: state.abuse.config().under_attack,
+            issued: counts.issued,
+            solved: counts.solved,
+            refused: counts.refused,
+        });
+    }
     let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/status");
     views::status::page(&chrome, &view_model).into_response()
 }
@@ -170,6 +182,7 @@ fn build_view_model(status: EngineStatusResponse) -> views::status::StatusPageVi
     let now = crate::now_unix();
     let networks = status.networks.into_iter().map(|n| build_network_view(n, now)).collect();
     views::status::StatusPageViewModel {
+        abuse: None,
         engine_error: None,
         networks,
         poll_interval_secs: status.poll_interval_secs,

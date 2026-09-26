@@ -16,9 +16,9 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 | 8 | Remove the engine's public surface | done | `e06bcfb` |
 | 9a | Client identity (Tor circuit ID, trusted proxies) | in progress (uncommitted, see Resume here) | |
 | 9b | Tor's own defences (torrc, docs) | not started | |
-| 9c | Tiered limits | done | (this commit, with 9d) |
-| 9d | The challenge (pages, JSON API) | done | (this commit, with 9c) |
-| 9e | Settings and screens | not started | |
+| 9c | Tiered limits | done | `5387224` (with 9d) |
+| 9d | The challenge (pages, JSON API) | done | `5387224` (with 9c) |
+| 9e | Settings and screens | done | (this commit) |
 | 9f | API and integration changes | not started | |
 | 9g | Tests | not started | |
 | 10 | Docs and cleanup | not started | |
@@ -27,7 +27,7 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 
 **Shared worktree, read first (added by the reviewer, 26 Sep 12:5x).** A separate POS redesign (Solid 2.0 POS app, `pos_redesign.md`) is being worked on in this same worktree by another agent. Its in-progress state was committed as `a93b4ca` ("WIP: POS redesign ..."), and that agent may resume and keep editing. The rules in README §0 ("Shared worktree") apply from now on: don't touch POS-owned files, stage by explicit path only, and use migration number 0023 or higher.
 
-Steps 1-8, 9a, 9c, 9d done. Next: 9e (admin settings "Abuse protection" section in `crates/monokulo/src/views/admin.rs`; operators-only challenge counts + under-attack flag on the status page, `crates/monokulo/src/http/status_page.rs`, using `state.abuse.stats.last_hour(now)`), then 9f (API docs), 9b (torrc + `docs/TOR.md`), 9g (real tor test `crates/monokulo/tests/e2e_tor.rs`), step 10.
+Steps 1-8, 9a, 9c, 9d, 9e done. Next: 9f (document the 429 + challenge shape and headers in the API docs: `docs/DESIGN.md` monokulo boundary section / a new `docs/ABUSE_PROTECTION.md`; the embed library header comment is already done), then 9b (`deploy/tor/torrc.snippet` + `docs/TOR.md`), 9g (real tor test `crates/monokulo/tests/e2e_tor.rs`, docs in `e2e/README.md` and `docs/TESTING.md`), step 10.
 
 Known POS-side issue (not mine, not fixed per the shared-worktree rule): clippy `match_single_binding` warning at `crates/monokulo/src/http/pos.rs:344` from the POS redesign.
 
@@ -45,8 +45,8 @@ Commit SHAs: each step's commit records its own SHA in the *next* step's PROGRES
 
 ## Test status at last commit
 
-After 9c/9d:
-- `cargo test --workspace`: 889 passed, 0 failed, 18 ignored (includes the POS redesign snapshot `a93b4ca`)., 0 failed, 18 ignored.
+After 9e:
+- `cargo test --workspace`: 890 passed, 0 failed, 18 ignored (includes the POS redesign snapshot `a93b4ca`)., 0 failed, 18 ignored.
 - clippy: per-file warning counts identical to baseline in files I touched; one new warning in POS-owned `http/pos.rs:344` from the POS work.
 - Playwright surface: 23 passed (4 new challenge tests in 9d; includes the POS redesign's own surface tests).
 - PHP suite: run (decision 13): 43 tests OK; `--group live-monokulo`: 1 skipped (no local config).
@@ -138,3 +138,8 @@ Rust half:
 - Settings: `abuse.soft_per_min`, `abuse.hard_per_min`, `abuse.signed_in_per_min`, `abuse.challenge_bits`, `abuse.under_attack` (validated; hard must exceed soft; hot-reloaded). `rate_limit.per_ip_per_min` removed.
 - Tests: unit (limiter tiers/pass/rolling minute/LRU cap, challenge signing/expiry/replay/wrong client/wait not-before/fail-closed cap, stats window, interstitial markup), HTTP (`http::abuse::tests`: interstitial + proof + redirect, JSON challenge + header proof + wrong connection, hard limit 429 + Retry-After for API/page/stream, signed-in never challenged, under-attack, CORS), Playwright (JS solve, no-JS wait, cross-site frame with/without JS, client library solves order challenge) against a Node stand-in server that implements the same protocol with the real `challenge.js`/`monokulo-client.js`.
 - Weakness: the Playwright tests use a stand-in server's interstitial markup (same data-attribute contract, pinned by the Rust view test), not monokulo's own rendered page.
+
+### Step 9e: settings and screens
+- Admin settings (`crates/monokulo/src/views/admin.rs`): an "Abuse protection" heading groups `abuse.*` and `rate_limit.*` fields with an explanation; each field has help text (`settings::help`) and is validated (`http/admin_settings.rs`, incl. hard > soft); saving hot-reloads (`AbuseProtection::reload`).
+- Status page (`http/status_page.rs`, `views/status.rs`): admins see under-attack on/off and last-hour challenges issued/solved/refused; anonymous visitors and merchants don't. Test `only_operators_see_challenge_activity_on_the_status_page`.
+- Merchants: nothing to configure.

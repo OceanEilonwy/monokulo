@@ -520,4 +520,32 @@ mod tests {
         let exposed = response.headers()["access-control-expose-headers"].to_str().unwrap().to_ascii_lowercase();
         assert!(exposed.contains("monokulo-challenge") && exposed.contains("retry-after"), "{exposed}");
     }
+
+    #[tokio::test]
+    async fn only_operators_see_challenge_activity_on_the_status_page() {
+        let state = state(low_limits());
+        {
+            let db = state.db.lock().unwrap();
+            db.create_user("admin", "admin@example.com", "x", true, 0).unwrap();
+            db.create_user("merchant", "m@example.com", "x", false, 0).unwrap();
+            db.create_session(&shared::auth::hash_secret_token("admin-token"), "admin", crate::now_unix()).unwrap();
+            db.create_session(&shared::auth::hash_secret_token("merchant-token"), "merchant", crate::now_unix()).unwrap();
+        }
+        state.abuse.stats.record(crate::abuse::stats::Event::Issued, crate::now_unix());
+        let router = build_router(state);
+        let page = |cookie: Option<&'static str>| {
+            let mut request = Request::builder().uri("/status").body(Body::empty()).unwrap();
+            if let Some(cookie) = cookie {
+                request.headers_mut().insert("cookie", cookie.parse().unwrap());
+            }
+            router.clone().oneshot(request)
+        };
+        let html = text(page(Some("session=admin-token")).await.unwrap()).await;
+        assert!(html.contains(r#"id="abuse-protection""#), "{html}");
+        assert!(html.contains("<td>Issued</td><td>1</td>"), "{html}");
+        for cookie in [None, Some("session=merchant-token")] {
+            let html = text(page(cookie).await.unwrap()).await;
+            assert!(!html.contains(r#"id="abuse-protection""#), "{cookie:?}");
+        }
+    }
 }
