@@ -127,10 +127,17 @@ precede deletion of old browser tests.
   remain in the same coverage artifact. A synthetic reporter run verified
   two workers, retry separation, an earlier checkpoint, and a distinct failure
   image. The full 38/38 browser run produced 12 manifest entries.
+- 4.3 complete: `screenshots/index.html` is a static gallery grouped by
+  component, with full PNG and Playwright test-result links. The coverage
+  landing page previews one image from each group and links to the gallery.
+  A local link scan found no missing relative href/src targets in either
+  index. Visual review of the narrow POS checkpoint found keypad digits
+  inheriting an invisible button color; authored and served CSS now sets
+  ink explicitly and reduces digit line height for short landscape.
 
 ## Resume next
 
-Finish the offline gallery (4.3), then handle the retained uncommitted
-badge test and run the 2.5 comparison. The original
+Handle the retained uncommitted badge test and run the 2.5 comparison, then
+validate the unified run and CI. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.

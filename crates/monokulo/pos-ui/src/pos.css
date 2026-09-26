@@ -28,9 +28,11 @@ html,body{height:100%}body{margin:0;background:var(--pos-paper);color:var(--pos-
 #pos-root{height:100dvh;min-height:0;overflow:hidden}
 .pos-keypad{min-height:0}
 .pos-keys{min-height:0}
+.pos-keys button{color:var(--pos-ink);padding:0}
 @media (max-height:480px) and (orientation:landscape){
   .pos-keypad,.pos-keypad.has-stack{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);grid-template-rows:auto auto auto 1fr;column-gap:12px;row-gap:3px;padding:5px 12px 7px;max-width:none}
   .pos-keypad .pos-keys,.pos-keypad.has-stack .pos-keys{grid-column:1;grid-row:1/5;min-height:0;max-height:none;gap:3px}
+  .pos-keypad .pos-keys button,.pos-keypad.has-stack .pos-keys button{font-size:18px!important;line-height:1!important}
   .pos-keypad .pos-amount{grid-column:2;grid-row:1;font-size:clamp(24px,5vh,36px);line-height:1}
   .pos-keypad .pos-ref-label{grid-column:2;grid-row:2;margin:0}
   .pos-keypad .pos-reference{grid-column:2;grid-row:3;height:32px}

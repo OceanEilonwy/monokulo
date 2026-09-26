@@ -251,6 +251,76 @@ fn write_rust_crates(output: &Path, files: &[Value], workspace: &Value) -> io::R
     Ok(())
 }
 
+fn render_index(output: &Path, results: &[Value]) -> io::Result<()> {
+    let mut page = String::from("<!doctype html><html lang=\"en\"><meta charset=\"utf-8\"><meta name=\"viewport\" content=\"width=device-width\"><title>Monokulo coverage</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:1050px;margin:2rem auto;padding:0 1rem;color:#17212b}table{border-collapse:collapse;width:100%}th,td{border-bottom:1px solid #ccd3db;text-align:left;padding:.65rem}code{overflow-wrap:anywhere}a{color:#164e8a}.bad{color:#a32}.good{color:#175c38}small{color:#52606d}</style><h1>Monokulo coverage</h1><p>Coverage from separate Rust, browser, and WooCommerce test runs. Counts use executable lines and branches in authored product source.</p><table><thead><tr><th>Component</th><th>Tests</th><th>Lines</th><th>Branches</th><th>Reports</th></tr></thead><tbody>");
+    for result in results {
+        let name = result["component"].as_str().unwrap_or("unknown");
+        let status = result["status"].as_str().unwrap_or("unavailable");
+        let manifest_path = output.join(format!("{name}.json"));
+        let manifest: Option<Value> = if manifest_path.is_file() {
+            Some(serde_json::from_slice(&fs::read(&manifest_path)?)?)
+        } else { None };
+        let count = |metric: &str| -> String {
+            manifest.as_ref().and_then(|m| {
+                Some(format!("{} / {}", m[metric]["covered"].as_u64()?, m[metric]["total"].as_u64()?))
+            }).unwrap_or_else(|| "unavailable".into())
+        };
+        let report = manifest.as_ref().and_then(|m| m["report"].as_str())
+            .filter(|p| output.join(p).is_file());
+        let link = if let Some(path) = report {
+            format!("<a href=\"{}\">Annotated source</a>", escape_html(path))
+        } else { "unavailable".into() };
+        page.push_str(&format!("<tr><td>{}</td><td class=\"{}\">{} <a href=\"{}/test.log\">log</a></td><td>{}</td><td>{}</td><td>{}</td></tr>",
+            escape_html(name), if status == "passed" {"good"} else {"bad"}, escape_html(status),
+            escape_html(name), count("lines"), count("branches"), link));
+    }
+    page.push_str("</tbody></table>");
+    if output.join("rust/crates/index.html").is_file() {
+        page.push_str("<p><a href=\"rust/crates/index.html\">Rust coverage by crate and source file</a></p>");
+    }
+    if output.join("screenshots/index.html").is_file() {
+        page.push_str("<p><a href=\"screenshots/index.html\">Screenshot gallery</a></p>");
+        let entries: Value = serde_json::from_slice(&fs::read(output.join("screenshots/manifest.json"))?)?;
+        let entries = entries.as_array().ok_or_else(|| io::Error::other("screenshot manifest is not an array"))?;
+        page.push_str("<h2>UI evidence</h2><div style=\"display:flex;flex-wrap:wrap;gap:1rem\">");
+        for group in ["checkout", "pos", "challenge"] {
+            if let Some(entry) = entries.iter().find(|e| e["group"] == group && e["stage"] != "failure") {
+                let image = entry["image"].as_str().ok_or_else(|| io::Error::other("screenshot entry has no image"))?;
+                let target = output.join("screenshots").join(image);
+                if !target.is_file() { return Err(io::Error::other(format!("missing screenshot: {image}"))); }
+                let source = format!("screenshots/{image}");
+                page.push_str(&format!("<a href=\"{}\" style=\"width:30%;min-width:220px\"><img src=\"{}\" alt=\"{}\" style=\"width:100%;height:160px;object-fit:contain;background:#eee\"><br>{}</a>",
+                    escape_html(&source), escape_html(&source), escape_html(group),
+                    escape_html(entry["stage"].as_str().unwrap_or(group))));
+            }
+        }
+        page.push_str("</div>");
+    }
+    if let Some(first) = results.iter().find_map(|r| {
+        let p = output.join(format!("{}.json", r["component"].as_str()?));
+        let data: Value = serde_json::from_slice(&fs::read(p).ok()?).ok()?;
+        Some(data)
+    }) {
+        page.push_str(&format!("<p><small>Revision: <code>{}</code>{}</small></p>",
+            escape_html(first["revision"].as_str().unwrap_or("unknown")),
+            if first["source_dirty"] == true {" · source tree dirty during collection"} else {""}));
+    }
+    page.push_str("<h2>Toolchains</h2><ul>");
+    for result in results {
+        let name = result["component"].as_str().unwrap_or("unknown");
+        let manifest_path = output.join(format!("{name}.json"));
+        if !manifest_path.is_file() { continue; }
+        let m: Value = serde_json::from_slice(&fs::read(manifest_path)?)?;
+        let tools = &m["tools"];
+        page.push_str(&format!("<li>{}: <code>{}</code>; <code>{}</code>; <code>{}</code></li>",
+            escape_html(name), escape_html(tools["rustc"].as_str().unwrap_or("?")),
+            escape_html(tools["cargo"].as_str().unwrap_or("?")),
+            escape_html(tools["collector"].as_str().unwrap_or("?"))));
+    }
+    page.push_str("</ul></html>");
+    fs::write(output.join("index.html"), page)
+}
+
 fn coverage(command: &str) -> io::Result<bool> {
     let output = root().join("target/coverage");
     if command == "open" {
@@ -280,6 +350,7 @@ fn coverage(command: &str) -> io::Result<bool> {
         // Write after every collector so an interrupted run retains progress.
         let manifest = json!({"revision":revision,"components":results});
         fs::write(output.join("run.json"), serde_json::to_vec_pretty(&manifest)?)?;
+        render_index(&output, manifest["components"].as_array().unwrap())?;
     }
     Ok(results.iter().all(|r| r["status"] == "passed"))
 }

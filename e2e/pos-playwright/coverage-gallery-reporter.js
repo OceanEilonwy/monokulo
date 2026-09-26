@@ -42,7 +42,7 @@ class CoverageGalleryReporter {
     for (const group of ['checkout', 'pos', 'challenge']) {
       html += `<h2>${group}</h2><div class="grid">`;
       for (const entry of this.entries.filter(e => e.group === group)) {
-        html += `<article class="card"><a href="${escapeHtml(entry.image)}"><img src="${escapeHtml(entry.image)}" alt="${escapeHtml(entry.stage)}"></a><p><strong>${escapeHtml(entry.stage)}</strong></p><p>${escapeHtml(entry.test)}</p><small>Retry ${entry.retry}; ${escapeHtml(entry.status)}</small></article>`;
+        html += `<article class="card"><a href="${escapeHtml(entry.image)}"><img src="${escapeHtml(entry.image)}" alt="${escapeHtml(entry.stage)}"></a><p><strong>${escapeHtml(entry.stage)}</strong></p><p>${escapeHtml(entry.test)}</p><p><a href="../browser/playwright-report/index.html#?testId=${encodeURIComponent(entry.test_id)}">Test result</a></p><small>Retry ${entry.retry}; ${escapeHtml(entry.status)}</small></article>`;
       }
       html += '</div>';
     }
