@@ -1,5 +1,6 @@
-//! Merchant POS shell. Solid 2 owns the terminal interaction; the shared
-//! public checkout stays an independent page inside its payment iframe.
+//! Merchant POS shell. Solid 2 owns the whole terminal, including its own
+//! payment card (QR, address, refund address); it does not embed the public
+//! checkout page.
 
 use maud::{html, Markup};
 

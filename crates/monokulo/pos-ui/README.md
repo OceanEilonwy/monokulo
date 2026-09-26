@@ -1,6 +1,6 @@
 # POS frontend
 
-The merchant POS is a Solid 2 mini-app mounted by `views/pos.rs`. The payment and refund form remains the shared checkout page in an iframe.
+The merchant POS is a Solid 2 mini-app mounted by `views/pos.rs`. It renders its own payment card (QR, address, copy, refund address with QR scan) from the authenticated POS order API; it no longer embeds the public checkout page. The POS requires JavaScript; only the public checkout must work without it.
 
 Run `pnpm install --frozen-lockfile` and `pnpm run build` here after changing `src/`. Vite writes `../static/pos-app.js` and `../static/pos-app.css`; these generated files are checked in because the Rust binary embeds them with `include_str!` and must build without Node on the production host. Run `cargo test -p monokulo --lib http::pos::tests` and the deterministic Playwright `surface.spec.js` suite when changing the POS flow.
 

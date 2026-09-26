@@ -26,8 +26,8 @@ you actually want that level of confidence.
 ## What it proves (and what it doesn't)
 
 Covers, against the real chain: order creation in the store's own base currency, the
-real keypad's digit entry, the shared checkout iframe and QR code, the confirmation
-state appearing at real 0-conf mempool detection, a 0-conf-trusted order auto-returning to
+real keypad's digit entry, the POS's own payment card and QR code, the paid
+status appearing at real 0-conf mempool detection, a 0-conf-trusted order auto-returning to
 the keypad with no merchant action, a confirming order's progress display + "confirm in
 background" + top stacked completion, and that a POS-created order is a real order visible
 on the normal dashboard orders list.
@@ -41,7 +41,7 @@ module (`derive_payment_error`). Also only ever backgrounds one payment at a tim
 for and waiting on two independent confirmations) - each is independently polled by
 construction, so this generalizes without needing to prove it twice at real cost.
 
-The POS uses the shared checkout iframe and QR flow. Its refund scanner accepts
+The POS renders its own payment card and QR. Its refund scanner accepts
 an uploaded QR image; webcam access is browser-permission dependent. This suite
 exercises the upload path.
 
@@ -129,7 +129,7 @@ screenshots, and the offline report.
 The suite builds `monokulo`'s `coverage_fixture` example with Cargo's offline
 mode, starts a real Monokulo router and `scanner-test-support` engine on local
 ephemeral ports, and stops the fixture after the tests. It seeds one merchant,
-store, session, and order. The full checkout and compact POS iframe are the
+store, session, and order. The full checkout and the POS app are the
 product's own HTML, CSS, and JavaScript. No public node or wallet is involved.
 The example alone mounts `/__coverage/*` controls for ready, new/paid orders,
 restricted framing, and the production challenge view. Production routes

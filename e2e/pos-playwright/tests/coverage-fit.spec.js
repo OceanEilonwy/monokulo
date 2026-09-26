@@ -26,7 +26,7 @@ async function checkFit(page, context, label, w, h, captures = {}) {
     await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
     await page.setViewportSize({ width: w, height: h });
     await page.goto(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/pos`);
-    await expect(page.locator('.pos-checkout-card iframe')).toBeVisible();
+    await expect(page.locator('.pos-pay-card')).toBeVisible();
     await page.getByRole('button', { name: 'Background order', exact: true }).click();
     await expect(page.locator('.pos-keypad')).toBeVisible();
     await assertNoOuterScroll(page, `${label} keypad`);
@@ -35,7 +35,7 @@ async function checkFit(page, context, label, w, h, captures = {}) {
     await page.locator('#pos-reference').fill('A Fairly Long Customer Name Here');
     await assertNoOuterScroll(page, `${label} filled`);
     await page.getByRole('button', { name: 'Charge' }).click();
-    await expect(page.frameLocator('.pos-checkout-card iframe').locator('.qr-wrap svg')).toBeVisible();
+    await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
     await assertNoOuterScroll(page, `${label} payment`);
     if (captures.payment) await captureCoverageStage(page, captures.payment, test.info());
   } finally { await stopCoverageFixture(fixture.process); }

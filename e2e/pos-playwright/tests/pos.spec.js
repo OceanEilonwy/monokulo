@@ -1,6 +1,6 @@
 // @ts-check
 // Real stagenet + real browser e2e for the POS terminal screen
-// (views/pos.rs + views/checkout.rs). See ../README.md for what this needs and how to
+// (views/pos.rs + the pos-ui app). See ../README.md for what this needs and how to
 // run it - deliberately never wired into any default `npm test`/CI.
 //
 // The backend (a real, network-bound engine against the real public
@@ -98,31 +98,26 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     const piconero = piconeroFromXmrDisplay(order.xmr_amount);
     expect(piconero).toBe(335_000_000n);
 
-    // The POS displays the same payment page as public checkout.
-    const checkout = page.frameLocator('.pos-checkout-card iframe');
-    await expect(page.locator('.pos-checkout-card iframe')).toHaveAttribute('src', new RegExp(`/pay/.*/orders/${order.order_id}\\?view=compact$`));
-    await expect(checkout.locator('.qr-wrap svg')).toBeVisible();
-    await expect(checkout.locator('#address')).toHaveValue(order.address);
+    // The POS's own payment card shows the order's QR and address.
+    const card = page.locator('.pos-pay-card');
+    await expect(card.locator('.pos-qr svg')).toBeVisible();
+    await expect(card.locator('.pos-address code')).toHaveAttribute('title', order.address);
     await captureCoverageStage(page, 'pos-stagenet-payment-ready', test.info());
     // An image of the displayed QR can fill the refund address without typing.
-    const qrImage = await checkout.locator('.qr-wrap svg').screenshot();
-    await checkout.locator('#refund-image').setInputFiles({ name: 'refund.png', mimeType: 'image/png', buffer: qrImage });
-    await expect(checkout.locator('#refund_address')).toHaveValue(order.address);
-    await expect(checkout.locator('#refund-field')).toHaveClass(/is-saved/);
-    await expect(checkout.locator('#refund-save-state')).toHaveAttribute('aria-label', 'Refund address saved');
+    const qrImage = await card.locator('.pos-qr svg').screenshot();
+    await card.locator('.pos-refund-tools input[type=file]').setInputFiles({ name: 'refund.png', mimeType: 'image/png', buffer: qrImage });
+    await expect(card.locator('#pos-refund')).toHaveValue(order.address);
+    await expect(card.locator('.pos-refund-state')).toHaveAttribute('aria-label', 'Refund address saved');
     await captureCoverageStage(page, 'pos-stagenet-refund-saved', test.info());
 
     console.log(`sending real stagenet payment: ${piconero} piconero to ${order.address}`);
     const txHash = await sendStagenetPayment(fixture.send_payment_url, order.address, piconero);
     console.log(`sent - tx ${txHash}`);
 
-    // The shared confirmation state appears when a real tx is seen in the
-    // mempool - 0-conf, before any confirmations at all.
-    await expect(checkout.locator('#payment-state')).toBeVisible({ timeout: 90_000 });
-    await expect(checkout.locator('#payment-state')).not.toHaveClass(/is-error/);
-    await captureCoverageStage(page, 'pos-stagenet-paid-checkout', test.info());
-
-    await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Paid', { timeout: 60_000 });
+    // With 0-conf trusted, the order is paid as soon as the real tx is seen
+    // in the mempool, before any confirmations at all.
+    await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Paid', { timeout: 150_000 });
+    await expect(page.locator('.pos-outcome')).toBeVisible();
     await captureCoverageStage(page, 'pos-stagenet-paid-terminal', test.info());
     await page.getByRole('button', { name: 'New order' }).click();
     await expect(page.locator('.pos-keypad')).toBeVisible();
@@ -150,9 +145,9 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     const txHash = await sendStagenetPayment(fixture.send_payment_url, order.address, piconero);
     console.log(`sent - tx ${txHash}`);
 
-    // While confirming, the shared state and wrapper's background action appear.
-    const checkout = page.frameLocator('.pos-checkout-card iframe');
-    await expect(checkout.locator('#payment-state')).toBeVisible({ timeout: 90_000 });
+    // Once the tx is seen, the order waits for its confirmation and can
+    // still be backgrounded.
+    await expect(page.locator('.pos-order-heading .pos-badge')).toContainText(/Unconfirmed|Confirming/, { timeout: 90_000 });
     await expect(page.getByRole('button', { name: 'Background order', exact: true })).toBeVisible({ timeout: 30_000 });
     await captureCoverageStage(page, 'pos-stagenet-confirming', test.info());
 
@@ -168,8 +163,10 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     // The one genuinely slow step in this whole suite - real stagenet blocks
     // land roughly every ~2 minutes.
     await expect(bgItem).toBeHidden({ timeout: 5 * 60 * 1000 });
-    await page.getByRole('button', { name: 'View all →' }).click();
+    // The stack is gone once nothing is left in the background.
+    await page.getByRole('button', { name: 'All orders' }).click();
     await page.getByRole('tab', { name: /Finished/ }).click();
-    await expect(page.locator('.pos-order-card').filter({ hasText: order.order_id.slice(0, 6) })).toContainText('Paid');
+    const core = order.order_id.replace(/^order_/, '');
+    await expect(page.locator('.pos-order-card').filter({ hasText: `#${core.slice(0, 4)}…${core.slice(-4)}` })).toContainText('Paid');
   });
 });

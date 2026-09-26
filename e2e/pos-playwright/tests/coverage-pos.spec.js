@@ -14,46 +14,46 @@ function posUrl() { return `${fixture.base_url}/dashboard/stores/${fixture.conne
 
 test('real POS backgrounds, reloads, reopens, cancels, and searches an order', async ({ page }) => {
   await page.goto(posUrl());
-  await expect(page.locator('.pos-checkout-card iframe')).toBeVisible();
+  await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
   await page.getByRole('button', { name: 'Background order', exact: true }).click();
-  await expect(page.locator('.pos-stack-card')).toContainText('Fixture order');
+  await expect(page.locator('.pos-stack-card')).toContainText('Fixture o');
   await captureCoverageStage(page, 'pos-background-stack', test.info());
   await page.reload();
   await expect(page.locator('.pos-stack-card')).toBeVisible();
   await page.locator('.pos-stack-card').click();
-  await expect(page.frameLocator('.pos-checkout-card iframe').locator('#checkout-root')).toBeVisible();
+  await expect(page.locator('.pos-order-heading h1')).toHaveText('Fixture order');
+  await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
   page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: 'Cancel order' }).click();
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Cancelled');
   await captureCoverageStage(page, 'pos-cancelled', test.info());
-  await expect(page.locator('.pos-checkout-card iframe')).toBeHidden();
+  await expect(page.locator('.pos-pay-card')).toBeHidden();
+  await expect(page.locator('.pos-outcome')).toContainText('cancelled');
   await page.getByRole('button', { name: 'New order' }).click();
-  await page.getByRole('button', { name: 'View all →' }).click();
+  // Nothing is backgrounded any more, so the stack is gone; the top bar
+  // still reaches the list.
+  await expect(page.locator('.pos-stack')).toHaveCount(0);
+  await page.getByRole('button', { name: 'All orders' }).click();
   await page.getByRole('tab', { name: /Finished/ }).click();
   await expect(page.locator('.pos-order-card .pos-badge')).toContainText('Cancelled');
   await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('fixture');
   await expect(page.locator('.pos-order-card')).toContainText('Fixture order');
 });
 
-test('real POS header remains above its compact checkout frame', async ({ page }) => {
+test('real POS header stays above its payment card and its actions stay reachable', async ({ page }) => {
   await page.goto(posUrl());
-  await expect(page.locator('.pos-checkout-card iframe')).toBeVisible();
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
   for (const { width, height } of [{ width: 1126, height: 700 }, { width: 667, height: 375 }, { width: 360, height: 740 }]) {
     await page.setViewportSize({ width, height });
-    const bounds = await page.evaluate(() => {
-      const bar = document.querySelector('.pos-top').getBoundingClientRect();
-      const panel = document.querySelector('.pos-checkout-card').getBoundingClientRect();
-      const frame = document.querySelector('.pos-checkout-card iframe').getBoundingClientRect();
-      return { barBottom: bar.bottom, panelTop: panel.top, frameTop: frame.top,
-        frameBottom: frame.bottom, viewportHeight: innerHeight };
-    });
-    expect(bounds.panelTop).toBeGreaterThanOrEqual(bounds.barBottom);
-    expect(bounds.frameTop).toBeGreaterThanOrEqual(bounds.barBottom);
-    if (height >= 620) expect(bounds.frameBottom).toBeLessThanOrEqual(bounds.viewportHeight);
-    else {
-      await page.getByRole('button', { name: 'Cancel order' }).scrollIntoViewIfNeeded();
-      await expect(page.getByRole('button', { name: 'Cancel order' })).toBeInViewport();
-    }
+    const bounds = await page.evaluate(() => ({
+      barBottom: document.querySelector('.pos-top').getBoundingClientRect().bottom,
+      cardTop: document.querySelector('.pos-pay-card').getBoundingClientRect().top,
+      pageScrolls: document.documentElement.scrollHeight > innerHeight + 1,
+    }));
+    expect(bounds.cardTop).toBeGreaterThanOrEqual(bounds.barBottom);
+    expect(bounds.pageScrolls, 'the page itself never scrolls; the payment panel does').toBe(false);
+    await page.getByRole('button', { name: 'Cancel order' }).scrollIntoViewIfNeeded();
+    await expect(page.getByRole('button', { name: 'Cancel order' })).toBeInViewport();
   }
 });
 
@@ -63,8 +63,8 @@ test('real POS displays a shortened ID for an order without a reference', async 
   await page.getByRole('button', { name: '1', exact: true }).click();
   await expect(page.locator('#pos-reference')).toHaveValue('');
   await page.getByRole('button', { name: 'Charge' }).click();
-  await expect(page.locator('.pos-order-heading h1')).toHaveText(/^order_…/);
-  await expect(page.frameLocator('.pos-checkout-card iframe').locator('#checkout-root')).toBeVisible();
+  await expect(page.locator('.pos-order-heading h1')).toHaveText(/^#[0-9a-f]{4}…[0-9a-f]{4}$/);
+  await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
 });
 
 test('real POS opens an empty keypad when its order list is empty', async ({ page }) => {
@@ -101,6 +101,41 @@ test('real POS shows pending, partial, confirming, and terminal badge symbols', 
   for (const name of ['paid', 'overpaid', 'expired', 'cancelled']) {
     await expect(page.locator(`.pos-order-card .pos-badge.state-${name}`)).toHaveCount(1);
   }
+});
+
+test('real POS payment card copies the address and saves a refund address', async ({ page, context }) => {
+  await context.grantPermissions(['clipboard-read', 'clipboard-write']);
+  await page.goto(posUrl());
+  const card = page.locator('.pos-pay-card');
+  await expect(card.locator('.pos-expiry')).toContainText('Send payment within');
+  const address = await card.locator('.pos-address code').getAttribute('title');
+  await card.getByRole('button', { name: 'Copy payment address' }).click();
+  await expect(card.getByRole('button', { name: 'Copy payment address' })).toHaveText('Copied');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(address);
+  // The order's own address is a valid address on the store's network.
+  await card.locator('#pos-refund').fill(address);
+  await expect(card.locator('.pos-refund-state')).toHaveAttribute('aria-label', 'Refund address saved');
+  await page.reload();
+  await expect(page.locator('#pos-refund')).toHaveValue(address);
+  await expect(page.locator('.pos-refund-state')).toHaveAttribute('aria-label', 'Refund address saved');
+});
+
+test('real POS theme toggle switches and remembers light and dark', async ({ page }) => {
+  await page.goto(posUrl());
+  const toggle = page.locator('.pos-theme');
+  await expect(toggle).toHaveAttribute('title', 'Theme: System');
+  await toggle.click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
+  await toggle.click();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  const paper = await page.evaluate(() => getComputedStyle(document.getElementById('pos-root')).backgroundColor);
+  expect(paper).toBe('rgb(30, 30, 30)');
+  await page.waitForTimeout(300);
+  await page.reload();
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page.locator('.pos-theme')).toHaveAttribute('title', 'Theme: Dark');
+  await page.locator('.pos-theme').click();
+  await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
 });
 
 test('real dashboard health indicator follows healthy and unavailable polls', async ({ page }) => {

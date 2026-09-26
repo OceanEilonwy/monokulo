@@ -119,3 +119,16 @@ The sketch is illustrative: its amounts, IDs, timestamps, and QR pixels are plac
 - Shared checkout/refund controls: [`crates/monokulo/src/views/checkout.rs`](crates/monokulo/src/views/checkout.rs), [`crates/monokulo/static/checkout.js`](crates/monokulo/static/checkout.js).
 - Existing browser coverage: [`e2e/pos-playwright/tests/pos.spec.js`](e2e/pos-playwright/tests/pos.spec.js), [`e2e/pos-playwright/tests/surface.spec.js`](e2e/pos-playwright/tests/surface.spec.js).
 - Solid 2.0 RC APIs and build tooling: [official Solid 2.0 announcement](https://github.com/solidjs/solid/discussions/2995), [releases](https://github.com/solidjs/solid/releases), [preview documentation](https://v2.solidjs.com/).
+
+## Decision: native payment card instead of the checkout iframe
+
+The compact checkout iframe could not be made to match sketch 2 without the
+checkout knowing about the POS, so the POS now renders its own payment card in
+Solid: expiry pill, amount (remaining amount when partly paid), server-rendered
+QR SVG (`qr_svg`, only on the single-order detail response), address with Copy,
+and the refund address with auto-save, camera scan and QR image upload. Finished
+orders show an outcome card instead of a payment prompt. Other calls made while
+matching the sketches: a System/Light/Dark theme button saving through
+`/dashboard/theme`, an "All orders" top-bar button for when the stack is empty,
+a centred 480px column on desktop, a two-column keypad in short landscape, and
+24-hour times.

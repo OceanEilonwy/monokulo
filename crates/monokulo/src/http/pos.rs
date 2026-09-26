@@ -299,6 +299,17 @@ pub struct PosOrderData {
     cancelled_at: Option<i64>,
     created_at: i64,
     expires_at: i64,
+    /// XMR received so far, and what is still owed (zero once covered),
+    /// both formatted here like `xmr_amount`.
+    received_xmr: String,
+    remaining_xmr: String,
+    /// The customer's refund address, once recorded.
+    refund_address: Option<String>,
+    /// The payment QR code (an SVG, rendered here like the checkout's own),
+    /// only on a single order's detail - never in lists, where it would
+    /// only add weight.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    qr_svg: Option<String>,
 }
 
 async fn pos_order_data(state: &AppState, connection_id: &str, sk: &str, row: crate::db::PosOrderRow) -> Result<PosOrderData, EngineClientError> {
@@ -321,6 +332,12 @@ async fn pos_order_data(state: &AppState, connection_id: &str, sk: &str, row: cr
         cancelled_at: row.cancelled_at,
         created_at: row.created_at,
         expires_at: detail.order.expires_at,
+        received_xmr: shared::exchange_rate::format_piconero_as_xmr(detail.order.amount_received_piconero),
+        remaining_xmr: shared::exchange_rate::format_piconero_as_xmr(
+            detail.order.xmr_amount_piconero.saturating_sub(detail.order.amount_received_piconero),
+        ),
+        refund_address: detail.order.refund_address.clone(),
+        qr_svg: None,
     })
 }
 
@@ -371,7 +388,10 @@ pub async fn order_detail(
     };
     let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
     match pos_order_data(&state, &id, &sk, pos_row).await {
-        Ok(data) => Json(data).into_response(),
+        Ok(mut data) => {
+            data.qr_svg = super::checkout::qr_svg_for_html(&data.address).ok();
+            Json(data).into_response()
+        }
         Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => ApiError::NotFound.into_response(),
         Err(_) => ApiError::Internal.into_response(),
     }
