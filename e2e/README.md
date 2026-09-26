@@ -197,3 +197,51 @@ spent, and change too small/young to help):
    `txid`, `amount_piconero`, `spent: false`, `height`/`serialized_output_hex`
    left `null` until the next run resolves them - see `Ledger`'s own doc
    comment in `crates/cli-wallet/src/lib.rs`).
+
+
+# Real Tor end-to-end test
+
+`crates/monokulo/tests/e2e_tor.rs` checks monokulo's Tor support against a real
+`tor` process and the live Tor network. Like the stagenet tests it is
+`#[ignore]`d by default.
+
+## Requirements
+
+- `tor` 0.4.8 or newer on `PATH`, built with the proof-of-work module:
+  `tor --list-modules` must show `pow: yes`.
+- Outbound network access to the Tor network. No root, no system tor, no
+  torrc of your own: the test writes a temporary one.
+
+## Running it
+
+```sh
+cargo test -p monokulo --test e2e_tor -- --ignored --nocapture
+```
+
+It takes about five minutes, mostly waiting for tor to bootstrap and for the
+fresh onion service's descriptor to become reachable (each wait has a timeout
+of several minutes and fails with a clear message).
+
+## What it does
+
+1. Starts a test engine and monokulo in-process, with one store and one order,
+   and monokulo's onion listener on a loopback port. Small limits (soft 5,
+   hard 12, stream cap 3) keep the number of requests over Tor low.
+2. Starts `tor` with a temporary `DataDirectory`, using the service lines of
+   `deploy/tor/torrc.snippet` verbatim (only the directory and target port
+   are rewritten), plus a `SocksPort` and a cookie-authenticated
+   `ControlPort`. The tor log is in the printed temporary directory.
+3. Waits for `status/bootstrap-phase` `PROGRESS=100`, then checks
+   `GETCONF HiddenServiceOptions` shows `HiddenServiceExportCircuitID=haproxy`,
+   `HiddenServicePoWDefensesEnabled=1`, the intro-DoS defence and the stream
+   limits.
+4. Connects to the `.onion` through the `SocksPort` as four visitors, each with
+   its own SOCKS username/password (so tor's `IsolateSOCKSAuth` gives each its
+   own circuit), and checks: one distinct circuit identity per visitor; visitor
+   A is challenged past the soft limit while B is not; A's solved proof is
+   accepted; A alone gets `429` + `Retry-After` past the hard limit; visitor C
+   can hold 3 live-update streams and the 4th gets `429` while D can still open
+   one.
+
+The fast, default-run counterpart with synthetic PROXY headers is
+`crates/monokulo/tests/onion_listener.rs`.

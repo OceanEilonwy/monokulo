@@ -153,6 +153,11 @@ impl<K: Eq + Hash + Clone> TieredLimiter<K> {
     pub fn tracked(&self) -> usize {
         self.state.lock().unwrap().entries.len()
     }
+
+    /// Every client currently tracked (for tests and diagnostics).
+    pub fn clients(&self) -> Vec<K> {
+        self.state.lock().unwrap().entries.keys().cloned().collect()
+    }
 }
 
 #[cfg(test)]

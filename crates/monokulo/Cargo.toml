@@ -40,3 +40,6 @@ scanner-test-support = { path = "../scanner-test-support" }
 http-body-util = "0.1.5"
 scanner = { path = "../scanner" }
 tower = { version = "0.5.3", features = ["util"] }
+# The real-Tor e2e test (`tests/e2e_tor.rs`) connects through tor's SocksPort,
+# one set of SOCKS credentials per simulated visitor.
+tokio-socks = "0.5"

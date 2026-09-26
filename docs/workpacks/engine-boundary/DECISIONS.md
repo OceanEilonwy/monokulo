@@ -163,3 +163,9 @@ Format for each entry:
 - **Decision:** `HiddenServicePoWQueueRate 50`, `HiddenServicePoWQueueBurst 250`, `HiddenServiceEnableIntroDoSRatePerSec 25`, `HiddenServiceEnableIntroDoSBurstPerSec 200`, `HiddenServiceMaxStreams 64` with `HiddenServiceMaxStreamsCloseCircuit 1`, onion port 80 -> `127.0.0.1:8082`.
 - **Alternatives considered:** tor's defaults (PoW queue 250/2500; intro DoS 25/200); MaxStreams 32.
 - **Why:** Monokulo is a single small process; 50 introductions/s sustained is far above a shop's real traffic while keeping a flood from reaching it. Intro DoS uses tor's documented defaults. 64 streams per circuit covers a real visitor (pages, API calls, up to 16 live streams per store under monokulo's cap) with margin, and closing the circuit makes an abuser rebuild (and re-solve PoW).
+
+### 27. Real Tor test design
+- **Step:** 9g
+- **Decision:** Raw HTTP/1.1 over `tokio-socks` (new dev-dependency) rather than reqwest's `socks` feature; small limits (soft 5, hard 12, stream cap 3, 8-bit challenge) configured directly in the in-process `AbuseConfig`; tor's acceptance of the settings checked with `GETCONF HiddenServiceOptions` over a cookie-authenticated control port; circuit identities read from `AbuseProtection::limiter.clients()` (new public method). Loops tolerate a minute boundary (the count is a rolling minute).
+- **Alternatives considered:** reqwest `socks` feature (would add a feature to the production dependency graph); production-default limits (hundreds of requests over Tor, much slower and flakier).
+- **Why:** Raw sockets make it easy to hold streams open for the cap check and keep the production build unchanged; small limits exercise exactly the same code paths.

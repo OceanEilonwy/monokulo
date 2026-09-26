@@ -19,15 +19,15 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 | 9c | Tiered limits | done | `5387224` (with 9d) |
 | 9d | The challenge (pages, JSON API) | done | `5387224` (with 9c) |
 | 9e | Settings and screens | done | `9992123` |
-| 9f | API and integration changes | done | (this commit; code in `5387224`) |
-| 9g | Tests | not started | |
+| 9f | API and integration changes | done | `2cd674e` (code in `5387224`) |
+| 9g | Tests | done | unit/HTTP/Playwright/synthetic PROXY in `2a198a5`, `5387224`, `9992123`; real Tor test: this commit |
 | 10 | Docs and cleanup | not started | |
 
 ## Resume here
 
 **Shared worktree, read first (added by the reviewer, 26 Sep 12:5x).** A separate POS redesign (Solid 2.0 POS app, `pos_redesign.md`) is being worked on in this same worktree by another agent. Its in-progress state was committed as `a93b4ca` ("WIP: POS redesign ..."), and that agent may resume and keep editing. The rules in README §0 ("Shared worktree") apply from now on: don't touch POS-owned files, stage by explicit path only, and use migration number 0023 or higher.
 
-Steps 1-8, 9a-9f done. Next: 9g (real tor test `crates/monokulo/tests/e2e_tor.rs`, docs in `e2e/README.md` and `docs/TESTING.md`), step 10.
+Steps 1-9 done. Next: step 10 (docs and cleanup: `docs/DESIGN.md` monokulo boundary / verified embed domains / abuse protection section, `docs/WOOCOMMERCE_ROADMAP.md` (+ `WOOCOMMERCE_WBS.md` if relevant) for the plugin integrating through monokulo, check `deploy/` notes, mark every step done). Was: 9g (real tor test `crates/monokulo/tests/e2e_tor.rs`, docs in `e2e/README.md` and `docs/TESTING.md`), step 10.
 
 Known POS-side issue (not mine, not fixed per the shared-worktree rule): clippy `match_single_binding` warning at `crates/monokulo/src/http/pos.rs:344` from the POS redesign.
 
@@ -45,8 +45,8 @@ Commit SHAs: each step's commit records its own SHA in the *next* step's PROGRES
 
 ## Test status at last commit
 
-After 9e:
-- `cargo test --workspace`: 890 passed, 0 failed, 18 ignored (includes the POS redesign snapshot `a93b4ca`)., 0 failed, 18 ignored.
+After 9g:
+- `cargo test --workspace`: 890 passed, 0 failed, 19 ignored (the new ignored one is the real Tor test). One run in this session hit a pre-existing flake: `scanner http::tests::saving_an_out_of_range_scalar_is_rejected_and_nothing_changes` failed once because another scanner test (`http/tests.rs:1363`) sets `SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED` process-wide while it runs; it passed on the next three runs and the rerun of the whole workspace. Not caused by this work pack; not fixed., 0 failed, 18 ignored (includes the POS redesign snapshot `a93b4ca`)., 0 failed, 18 ignored.
 - clippy: per-file warning counts identical to baseline in files I touched; one new warning in POS-owned `http/pos.rs:344` from the POS work.
 - Playwright surface: 23 passed (4 new challenge tests in 9d; includes the POS redesign's own surface tests).
 - PHP suite: run (decision 13): 43 tests OK; `--group live-monokulo`: 1 skipped (no local config).
@@ -152,3 +152,12 @@ Rust half:
 ### Step 9f: API and integration changes
 - Code landed with 9d (`5387224`): the `429` + `challenge` shape, `Monokulo-Challenge`/`Monokulo-Proof`, CORS allow/expose, `monokulo-client.js` header comment and solver. WooCommerce plugin and engine unchanged (key-authenticated / private).
 - Docs: new `docs/ABUSE_PROTECTION.md` (identities, tiers, matrix, JSON and page challenge flows, headers, settings, why not Anubis). DESIGN.md links to it in step 10.
+
+### Step 9g: tests
+- Unit: `abuse::identity`, `abuse::proxy_protocol`, `abuse::limiter`, `abuse::challenge`, `abuse::stats`, `abuse::streams`, `views::challenge`.
+- HTTP: `http::abuse::tests` (7 + status page), plus the key/embed tests from steps 4 and 7.
+- Browser (Playwright surface): JS solve, no-JS wait, cross-site frame both ways, client library solving an order challenge.
+- Synthetic PROXY listener (default run): `crates/monokulo/tests/onion_listener.rs`.
+- Real Tor (`#[ignore]`d): `crates/monokulo/tests/e2e_tor.rs`, new dev-dependency `tokio-socks 0.5`; `TieredLimiter::clients()` added for it. **Run here and passed** against tor 0.4.9.12 and the live network: `test result: ok. 1 passed ... finished in 315.90s` (bootstrap, descriptor reachable, 2 then 4 distinct circuits, A challenged then proof accepted then 429+Retry-After, B unaffected, C capped at 3 streams, D allowed, tor accepted PoW/export/intro-DoS/stream settings).
+- Docs: `e2e/README.md` (real Tor section), `docs/TESTING.md` (rows for challenge, identity, tiers, embed policy/key auth, real Tor, browser tests, default-run WooCommerce checkout).
+- Weakness: the Tor test uses soft 5/hard 12/stream cap 3 to keep it short, not the production defaults.
