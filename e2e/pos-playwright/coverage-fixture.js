@@ -3,6 +3,7 @@ const path = require('node:path');
 
 const root = path.resolve(__dirname, '../..');
 const binary = path.join(root, 'target/debug/examples/coverage_fixture');
+const coverageAssets = path.join(root, 'target/coverage/browser/assets');
 
 async function startCoverageFixture() {
   const build = spawnSync('cargo', ['build', '--offline', '--locked', '-p', 'monokulo', '--example', 'coverage_fixture'],
@@ -48,3 +49,16 @@ async function stopCoverageFixture(child) {
 }
 
 module.exports = { startCoverageFixture, stopCoverageFixture };
+
+async function serveInstrumentedAssets(context) {
+  await context.route('**/static/*', async route => {
+    const name = path.basename(new URL(route.request().url()).pathname);
+    if (!['checkout.js', 'challenge.js', 'monokulo-client.js', 'pos-app.js', 'pos-app.css'].includes(name)) {
+      return route.continue();
+    }
+    return route.fulfill({ path: path.join(coverageAssets, name),
+      contentType: name.endsWith('.css') ? 'text/css' : 'text/javascript' });
+  });
+}
+
+module.exports.serveInstrumentedAssets = serveInstrumentedAssets;

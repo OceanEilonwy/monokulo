@@ -1,10 +1,13 @@
-const { test, expect } = require('@playwright/test');
-const { startCoverageFixture, stopCoverageFixture } = require('../coverage-fixture');
+const { test, expect } = require('../coverage-test');
+const { startCoverageFixture, stopCoverageFixture, serveInstrumentedAssets } = require('../coverage-fixture');
 
 let fixture;
 
 test.beforeAll(async () => { fixture = await startCoverageFixture(); });
 test.afterAll(async () => { await stopCoverageFixture(fixture?.process); });
+test.beforeEach(async ({ context }) => {
+  if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);
+});
 
 test('real checkout renders full and compact views from the controlled engine', async ({ page }) => {
   const checkout = `${fixture.base_url}/pay/${fixture.public_key}/orders/${fixture.order_id}`;
@@ -16,6 +19,10 @@ test('real checkout renders full and compact views from the controlled engine', 
   await expect(page.locator('#checkout-root')).toBeVisible();
   await expect(page.locator('.checkout-compact')).toBeVisible();
   await expect(page.locator('.qr-wrap svg')).toBeVisible();
+  if (process.env.COVERAGE_INSTRUMENT === '1') {
+    const file = await page.evaluate(() => window.__coverage__?.['crates/monokulo/static/checkout.js']);
+    expect(Object.keys(file?.branchMap || {}).length).toBeGreaterThan(0);
+  }
 });
 
 test('real POS opens its compact checkout iframe', async ({ page, context }) => {
@@ -30,4 +37,8 @@ test('real POS opens its compact checkout iframe', async ({ page, context }) => 
   await page.getByRole('button', { name: 'Charge' }).click();
   await expect(page.locator('.pos-checkout-card iframe')).toBeVisible();
   await expect(page.frameLocator('.pos-checkout-card iframe').locator('.qr-wrap svg')).toBeVisible();
+  if (process.env.COVERAGE_INSTRUMENT === '1') {
+    const file = await page.evaluate(() => window.__coverage__?.['crates/monokulo/pos-ui/src/main.tsx']);
+    expect(Object.keys(file?.branchMap || {}).length).toBeGreaterThan(0);
+  }
 });

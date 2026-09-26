@@ -48,8 +48,21 @@ precede deletion of old browser tests.
   compact iframe, and POS landmarks. `npx playwright test -c
   coverage-real.config.js`: 2/2 passed. The seeded pending POS order reopens
   automatically, so the smoke test backgrounds it before checking the keypad.
+- 3.1 complete: Istanbul instruments checkout, challenge, and client scripts
+  as served, plus POS TSX through a coverage-only Vite 8.3.1 post-transform
+  with a source map. The instrumented real checkout/POS smoke tests pass.
+  All four authored paths have nonzero line and branch maps (plain JS branch
+  maps: checkout 78, challenge 9, client 63); generated `pos-app.js` and
+  `jsQR.js` are absent from the measured source set.
+- 3.2 in progress: the current `cargo xtask coverage browser` run passes 26/26
+  tests with two workers and writes HTML, LCOV, JSON, and `browser.json`.
+  Browser baseline is 521/613 lines and 377/590 branches across exactly four
+  authored files. The real POS test's raw snapshots include checkout code
+  executed only inside its iframe. Cross-site custom contexts now contribute
+  challenge counters as well. Finish report validation and commit separately.
 
 ## Resume next
 
-Build browser instrumentation (3.1–3.2) before deleting the old browser tests.
-Continue 0.2 browser/PHP collectors, then migrate browser assertions.
+Finish 3.2 report validation and commit. Then continue 0.2 PHP collector and
+migrate browser assertions. The original surface test's search/badge changes
+remain user-owned and unstaged; only coverage-specific hunks were staged.
