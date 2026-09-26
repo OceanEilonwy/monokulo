@@ -31,3 +31,13 @@ The Rust collector refreshes the newest available nightly compiler and
 `rustup component add llvm-tools-preview --toolchain nightly`, and
 `cargo +stable install cargo-llvm-cov --locked`. These commands need network
 access. Exact `rustc`, Cargo, and collector versions go into each manifest.
+
+## Commands
+
+`cargo xtask coverage --help` lists the entry points. `rust`, `browser`, and
+`woocommerce` run only their collector. `all` runs all three sequentially and
+writes `target/coverage/run.json` after each one, retaining completed reports
+when a later collector fails. Each collector's old output directory is removed
+at its own start; ordinary Cargo build artifacts are untouched. Test output is
+saved in `<collector>/test.log`. `open` opens the last landing page with the
+system default browser and fails when that page does not exist.

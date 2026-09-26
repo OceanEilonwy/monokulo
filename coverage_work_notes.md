@@ -17,7 +17,15 @@ precede deletion of old browser tests.
   unpinned nightly/collector refresh script. JSON fixture syntax and shell
   syntax checked. Full schema validation awaits the xtask validator; Python's
   `jsonschema` package is not installed in this environment.
+- 0.2 in progress: `cargo xtask coverage` entry point compiles and its help
+  works. It preserves a run manifest after each component and logs each child.
+  Browser and WooCommerce collector scripts are still pending.
+- 1.1 in progress: nightly 1.100.0 and cargo-llvm-cov 0.9.1 installed. The
+  first Rust collection is compiling the workspace. An initial concurrent
+  tool installation briefly conflicted on `llvm-tools`; the later run started
+  after installation completed.
 
 ## Resume next
 
-Implement 0.2 `cargo xtask` commands and manifest validation.
+Inspect the Rust collector result and JSON, then add validated component
+manifests. Continue 0.2 and 1.1 before 1.2.
