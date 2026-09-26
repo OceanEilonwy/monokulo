@@ -63,9 +63,17 @@ precede deletion of old browser tests.
   and 613 line / 590 branch denominators. The browser index's local links
   resolve; [baseline paths](docs/coverage-browser-baseline-paths.json) are
   saved before removing any old test.
+- 5.1 complete: a derived wp-env test image installs Xdebug 3.5.3 and runs
+  PHPUnit 9.6 with coverage mode, path coverage, and an authored-plugin-only
+  Xdebug filter. The normal `live-monokulo` exclusion remains in the coverage
+  PHPUnit config. The default suite passed 43 tests and 145 assertions; native
+  data reports 378/429 lines, 181/225 branches, and 72/626 paths. The runner
+  explicitly rejects a missing Xdebug coverage mode. Initial unrestricted
+  instrumentation was too large; the filter reduced the run to about three
+  seconds and 107 MB.
 
 ## Resume next
 
-Continue 0.2 PHP collector, then migrate browser assertions. The original
+Finish 5.2's common WooCommerce manifest, then migrate browser assertions. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.
