@@ -11,6 +11,9 @@ if ! test -f crates/monokulo/pos-ui/node_modules/vite/bin/vite.js; then
   echo 'missing prerequisite: POS Vite dependencies (run npm install in crates/monokulo/pos-ui)' >&2; exit 2
 fi
 
+# Build the fixture server up front: each spec's beforeAll rebuilds it, and a
+# cold build there overruns the 40s hook timeout.
+cargo build --locked -p monokulo --example coverage_fixture
 node "$playwright/prepare-coverage-assets.js"
 export COVERAGE_ASSETS_DIR="$COVERAGE_OUTPUT/assets"
 export COVERAGE_RAW_DIR="$COVERAGE_OUTPUT/raw"

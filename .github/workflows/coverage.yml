@@ -32,6 +32,8 @@ jobs:
           cache-dependency-path: e2e/pos-playwright/package-lock.json
       - name: Install browser and POS dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y ripgrep
           npm ci --prefix e2e/pos-playwright
           npm install --prefix crates/monokulo/pos-ui --no-audit --no-fund
           cd e2e/pos-playwright
