@@ -17,9 +17,10 @@ precede deletion of old browser tests.
   unpinned nightly/collector refresh script. JSON fixture syntax and shell
   syntax checked. Full schema validation awaits the xtask validator; Python's
   `jsonschema` package is not installed in this environment.
-- 0.2 in progress: `cargo xtask coverage` entry point compiles and its help
-  works. It preserves a run manifest after each component and logs each child.
-  Browser and WooCommerce collector scripts are still pending.
+- 0.2 complete: `cargo xtask coverage` supports rust, browser, woocommerce,
+  all, open, and an explicit paid stagenet profile. Help works, missing
+  prerequisites produce named nonzero errors, child logs and the run manifest
+  survive later failures, and `all` leaves ordinary Cargo artifacts alone.
 - 1.1 complete: nightly 1.100.0 and cargo-llvm-cov 0.9.1 installed. The
   workspace test run passed and produced `rust/index.html`, `rust/raw.json`,
   and `rust.json` from one profile set. Measured 24,451 / 27,070 lines and
@@ -146,10 +147,46 @@ precede deletion of old browser tests.
   is in `docs/COVERAGE_MIGRATION_AUDIT.md`. Separate paid stagenet
   instrumentation is implemented but has not been run during this offline
   audit.
+- 6.1 complete: `cargo xtask coverage all` passed all three default
+  collectors and produced one offline landing page with separate language
+  metrics, tool versions, source links, and gallery previews. The Rust,
+  browser, WooCommerce, gallery, and crate index pages had no broken local
+  links. A shimmed `xdg-open` verified that `coverage open` opens the landing
+  path without requiring a GUI in this environment.
+- 6.2 implemented, remote CI run pending: the new workflow installs Node,
+  Chromium, Composer, wp-env, and the collector dependencies, runs the
+  deterministic `all` command, prints a component table, uploads the
+  artifact on success or failure, and fails after upload when collection
+  fails. The isolated `.wp-env.coverage.json` was tested locally with
+  wp-env 11.16.0, then `coverage woocommerce` passed against its own
+  test container. Ports 8898/8899 avoid the existing local wp-env instance.
+  The new instance was stopped after the check.
+- 6.3 in progress: `scripts/validate-coverage.py` validates the example and
+  real manifest schema, required source sets and branches, native report
+  links, screenshot paths/groups, and reviewed line floors. It passes on the
+  first full artifact and is now invoked automatically by `coverage all`.
+  Floors are 24,000 Rust, 480 browser, and 370 PHP covered lines when the
+  exact recorded tool versions match; branch counts remain trend data.
+  An isolated clean committed checkout passed all 38 instrumented browser
+  tests at 501/575 lines and 369/546 branches; the original working tree's
+  preexisting POS edits explain its higher 537/613 and 400/590 results.
+- 6.3 complete for the deterministic artifact: a second `coverage all`
+  passed and retained the same Rust (27,070 lines/1,698 branches), browser
+  (613/590 in this dirty worktree), and PHP (429/225) denominators with
+  unchanged resolved tools. The validator scans all 134 native/landing HTML
+  pages and passed. Corrupting a screenshot path, removing a branch total,
+  or deleting a browser source each made it fail; the files were restored.
+  A deliberate `all` run with an invalid WooCommerce test container exited
+  nonzero while preserving completed Rust/browser reports and recording the
+  failed PHP component. The next successful `all` restored the full artifact.
+  A clean committed checkout passed the browser suite with the lower,
+  separately reviewed POS denominator; the browser line floor was adjusted
+  to 480 so the clean CI checkout is measured against its own source state.
 
 ## Resume next
 
-Validate the unified run and CI, then decide whether to run the explicitly
-paid stagenet profile. The original
+Commit the CI/validator/operations files, then run one final `coverage all`
+from the new commit. The paid stagenet profile remains an explicit separate
+run. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.

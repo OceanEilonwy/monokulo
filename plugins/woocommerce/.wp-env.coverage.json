@@ -1,0 +1,16 @@
+{
+  "$schema": "https://schemas.wp.org/trunk/wp-env.json",
+  "core": null,
+  "testsEnvironment": true,
+  "port": 8898,
+  "testsPort": 8899,
+  "plugins": ["https://downloads.wordpress.org/plugin/woocommerce.zip"],
+  "mappings": {
+    "wp-content/plugins/monokulo": "."
+  },
+  "config": {
+    "WP_DEBUG": true,
+    "WP_DEBUG_LOG": true,
+    "WP_DEBUG_DISPLAY": false
+  }
+}

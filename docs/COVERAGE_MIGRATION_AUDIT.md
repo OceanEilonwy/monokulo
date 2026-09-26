@@ -28,6 +28,13 @@ line. Three baseline branch decisions were not executed after migration:
   stream that falls back to status polling. The remaining reconnect decision
   is a browser transport edge, not a lost merchant-facing state assertion.
 
+The comparison above was made in the same worktree with preexisting,
+uncommitted POS edits present on both sides. An isolated clean checkout of
+the committed source also passed all 38 instrumented tests; it measured
+501/575 browser lines and 369/546 branches. Its lower denominator reflects
+the separate POS TSX edits still in the original working tree. CI's reviewed
+line floor uses this clean committed baseline.
+
 The former `surface.spec.js` claims map to final tests as follows:
 
 | Former claims | Final test file and state |

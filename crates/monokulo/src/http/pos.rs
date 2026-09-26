@@ -701,6 +701,8 @@ mod tests {
         assert_eq!(list["orders"][0]["order_id"], first_id);
         assert_eq!(list["orders"][0]["backgrounded"], true);
         assert_eq!(list["orders"][0]["status"], "pending");
+        let search_list = router.clone().oneshot(Request::builder().uri(format!("{base}?search=mia")).header("authorization", format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(body_json(search_list).await["total"], 1);
         let other_detail = router.clone().oneshot(Request::builder().uri(&order_url).header("authorization", format!("Bearer {other}")).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(other_detail.status(), StatusCode::NOT_FOUND);
         let cancel = router.clone().oneshot(Request::builder().method("POST").uri(format!("{order_url}/cancel")).header("authorization", format!("Bearer {owner}")).body(Body::empty()).unwrap()).await.unwrap();

@@ -6,10 +6,11 @@ fn root() -> PathBuf {
 }
 
 fn help() {
-    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|all|open>\n\n\
+    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|open>\n\n\
         rust          Refresh nightly and cargo-llvm-cov; run workspace tests and collect Rust coverage\n\
         browser       Run deterministic Playwright tests and collect authored browser source coverage\n\
         woocommerce   Run default PHPUnit tests in wp-env and collect plugin coverage\n\
+        stagenet      Explicit extended run: paid browser tests and separate instrumented report\n\
         all           Run every collector; preserve successful reports if another fails\n\
         open          Open target/coverage/index.html in the default browser\n\
         --help        Show this help");
@@ -50,6 +51,14 @@ fn run(component: &str, output: &Path) -> io::Result<Value> {
         if let Err(e) = summarize_woocommerce(output) {
             eprintln!("coverage woocommerce: report validation failed: {e}");
             passed = false;
+        }
+    }
+    if passed && component == "stagenet" {
+        for required in ["stagenet.json", "stagenet/index.html", "stagenet/screenshots/index.html"] {
+            if !output.join(required).is_file() {
+                eprintln!("coverage stagenet: missing report {required}");
+                passed = false;
+            }
         }
     }
     eprintln!("coverage {component}: {} (log: {})", if passed { "passed" } else { "failed" }, log_path.display());
@@ -338,6 +347,7 @@ fn coverage(command: &str) -> io::Result<bool> {
         "rust" => &["rust"],
         "browser" => &["browser"],
         "woocommerce" => &["woocommerce"],
+        "stagenet" => &["stagenet"],
         "all" => &["rust", "browser", "woocommerce"],
         _ => { help(); return Ok(false); }
     };
@@ -345,6 +355,9 @@ fn coverage(command: &str) -> io::Result<bool> {
         .current_dir(root()).output()?;
     let revision = String::from_utf8_lossy(&revision.stdout).trim().to_owned();
     let mut results = Vec::new();
+    fs::write(output.join("run.json"), serde_json::to_vec_pretty(&json!({
+        "revision":revision,"components":results
+    }))?)?;
     for name in names {
         results.push(run(name, &output)?);
         // Write after every collector so an interrupted run retains progress.
@@ -352,7 +365,14 @@ fn coverage(command: &str) -> io::Result<bool> {
         fs::write(output.join("run.json"), serde_json::to_vec_pretty(&manifest)?)?;
         render_index(&output, manifest["components"].as_array().unwrap())?;
     }
-    Ok(results.iter().all(|r| r["status"] == "passed"))
+    let passed = results.iter().all(|r| r["status"] == "passed");
+    if passed && command == "all" {
+        let validation = Command::new("python3").arg(root().join("scripts/validate-coverage.py"))
+            .current_dir(root()).status()
+            .map_err(|e| io::Error::other(format!("missing prerequisite: python3 ({e})")))?;
+        if !validation.success() { return Ok(false); }
+    }
+    Ok(passed)
 }
 
 fn main() -> ExitCode {

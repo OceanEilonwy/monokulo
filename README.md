@@ -119,3 +119,11 @@ test setup this wallet backs, and
 [`crates/cli-wallet/src/lib.rs`](crates/cli-wallet/src/lib.rs)'s module doc
 comment for why this wallet is deliberately narrower than a general-purpose
 Monero wallet.
+
+## Coverage and UI evidence
+
+Run `cargo xtask coverage all` for the deterministic Rust, browser, and
+WooCommerce reports, then `cargo xtask coverage open` to browse the local
+artifact. See [the coverage guide](docs/COVERAGE.md) for prerequisites,
+per-component commands, screenshots, CI artifacts, and the separate paid
+stagenet profile.

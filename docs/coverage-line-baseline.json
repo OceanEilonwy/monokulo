@@ -1,0 +1,58 @@
+{
+  "note": "Reviewed complete local run and isolated clean committed checkout on 2026-09-26. Browser baseline uses the committed source (501/575 lines), while the main worktree's preexisting POS edits measured 537/613. Floors apply only when every recorded tool version matches; changed toolchains require review, while branch totals remain trend data.",
+  "components": {
+    "rust": {
+      "tools": {
+        "cargo": "cargo 1.100.0-nightly (3d7cf6e93 2026-09-25)",
+        "collector": "cargo-llvm-cov 0.9.1",
+        "rustc": "rustc 1.100.0-nightly (5ceaf6608 2026-09-25)"
+      },
+      "measured_lines": {
+        "covered": 24451,
+        "total": 27070
+      },
+      "measured_branches": {
+        "covered": 1294,
+        "total": 1698
+      },
+      "floor_lines": 24000
+    },
+    "browser": {
+      "tools": {
+        "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)",
+        "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
+        "collector": "istanbul-lib-instrument 6.0.3",
+        "playwright": "1.63.0",
+        "node": "v24.14.1",
+        "vite": "8.3.1",
+        "solidPlugin": "3.0.0-next.44"
+      },
+      "measured_lines": {
+        "covered": 501,
+        "total": 575
+      },
+      "measured_branches": {
+        "covered": 369,
+        "total": 546
+      },
+      "floor_lines": 480
+    },
+    "woocommerce": {
+      "tools": {
+        "cargo": "cargo 1.94.0 (85eff7c80 2026-01-15)",
+        "collector": "PHPUnit 9.6.36 / Xdebug 3.5.3",
+        "php": "8.3.33",
+        "rustc": "rustc 1.94.0 (4a4ef493e 2026-03-02)"
+      },
+      "measured_lines": {
+        "covered": 378,
+        "total": 429
+      },
+      "measured_branches": {
+        "covered": 181,
+        "total": 225
+      },
+      "floor_lines": 370
+    }
+  }
+}

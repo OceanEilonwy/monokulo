@@ -64,6 +64,41 @@ async function routeCheckout(page, getStatus = () => 'pending', save = async () 
   return submissions;
 }
 
+test('POS uses the approved symbols in the compact stack and list badges', async ({ page }) => {
+  const states = [
+    ['pending', 'pending'], ['unconfirmed', 'unconfirmed'], ['confirming', 'confirming'],
+    ['partial', 'partial'], ['paid', 'paid'], ['overpaid', 'overpaid'], ['expired', 'expired'],
+    ['double', 'pending'], ['cancelled', 'pending'],
+  ];
+  const orders = states.map(([id, status], index) => ({
+    order_id: id, merchant_order_id: id, address, amount: '1.00', currency: 'XMR', xmr_amount: '1.000000000000',
+    status, confirmations: id === 'confirming' ? 3 : 0, confirmations_required: 10,
+    error: id === 'double' ? 'Double-spend detected on this payment.' : null,
+    backgrounded: true, cancelled_at: id === 'cancelled' ? 2000 : null,
+    created_at: 1000 + index, expires_at: 9999999999, updated_at: 1000 + index,
+  }));
+  await page.addInitScript(() => { window.EventSource = class { addEventListener() {} close() {} }; });
+  await page.route(`${host}/**`, route => {
+    const url = new URL(route.request().url());
+    if (url.pathname === '/static/pos-app.js' || url.pathname === '/static/pos-app.css') {
+      const name = path.basename(url.pathname);
+      return route.fulfill({ contentType: name.endsWith('.js') ? 'text/javascript' : 'text/css', body: fs.readFileSync(process.env.COVERAGE_ASSETS_DIR && name.endsWith('.js') ? authoredAsset(name) : path.join(root, 'crates/monokulo/static', name)) });
+    }
+    if (url.pathname.endsWith('/pos/orders')) return route.fulfill({ json: { orders, total: orders.length } });
+    return route.fulfill({ contentType: 'text/html', body: '<!doctype html><html><head><link rel="stylesheet" href="/static/pos-app.css"></head><body><div id="pos-root" data-connection-id="conn-1" data-public-key="pk-1" data-currency="XMR" data-decimals="12" data-store-name="example.com"></div><script type="module" src="/static/pos-app.js"></script></body></html>' });
+  });
+  await page.goto(`${host}/dashboard/stores/conn-1/pos`);
+  await expect(page.locator('.pos-stack-card')).toHaveCount(5);
+  await expect(page.locator('.state-partial .pos-icon use')).toHaveAttribute('href', '#pos-coin-partial');
+  await expect(page.locator('.state-confirming .pos-disc')).toHaveAttribute('style', /--progress: 30%/);
+  await page.getByRole('button', { name: 'View all →' }).click();
+  await expect(page.locator('.pos-order-card .pos-badge.state-partial use')).toHaveAttribute('href', '#pos-coin-partial');
+  await page.getByRole('tab', { name: /Finished/ }).click();
+  for (const name of ['paid', 'overpaid', 'expired', 'cancelled']) {
+    await expect(page.locator(`.pos-order-card .pos-badge.state-${name}`)).toHaveCount(1);
+  }
+});
+
 function challengeServer({ difficulty = 8 } = {}) {
   const http = require('node:http');
   const crypto = require('node:crypto');

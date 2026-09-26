@@ -7,9 +7,10 @@ const report = require('istanbul-lib-report');
 const sourceMaps = require('istanbul-lib-source-maps');
 
 const root = path.resolve(__dirname, '../..');
-const directory = path.join(root, 'target/coverage/browser');
+const stagenet = process.env.COVERAGE_PROFILE === 'stagenet';
+const directory = path.join(root, 'target/coverage', stagenet ? 'stagenet' : 'browser');
 const rawDir = path.join(directory, 'raw');
-const initial = JSON.parse(fs.readFileSync(path.join(directory, 'assets/initial.json')));
+const initial = JSON.parse(fs.readFileSync(path.join(root, 'target/coverage/browser/assets/initial.json')));
 const map = coverage.createCoverageMap(initial);
 const records = fs.readdirSync(rawDir).filter(name => name.endsWith('.json'));
 if (!records.length) throw new Error('browser coverage has no Playwright frame snapshots');
@@ -20,9 +21,9 @@ for (const name of records) {
 }
 
 async function main() {
-  const gallery = path.join(root, 'target/coverage/screenshots');
+  const gallery = stagenet ? path.join(directory, 'screenshots') : path.join(root, 'target/coverage/screenshots');
   const entries = JSON.parse(fs.readFileSync(path.join(gallery, 'manifest.json')));
-  if (entries.length < 10) throw new Error(`browser screenshot manifest has only ${entries.length} stages`);
+  if (entries.length < (stagenet ? 5 : 10)) throw new Error(`browser screenshot manifest has only ${entries.length} stages`);
   const imageSet = new Set();
   const groups = new Set();
   for (const entry of entries) {
@@ -33,17 +34,26 @@ async function main() {
     if (!fs.statSync(path.join(gallery, entry.image)).size) throw new Error(`empty screenshot ${entry.image}`);
     if (entry.stage !== 'failure') groups.add(entry.group);
   }
-  if (!['checkout', 'pos', 'challenge'].every(group => groups.has(group))) {
+  if (!(stagenet ? ['pos'] : ['checkout', 'pos', 'challenge']).every(group => groups.has(group))) {
     throw new Error('browser screenshots lack a required checkout, POS, or challenge stage');
   }
   if (!fs.existsSync(path.join(gallery, 'index.html'))) throw new Error('browser screenshot gallery is missing');
-  const finalMap = await sourceMaps.createSourceMapStore().transformCoverage(map);
-  const required = [
+  const transformed = await sourceMaps.createSourceMapStore().transformCoverage(map);
+  const required = stagenet ? [
+    'crates/monokulo/static/checkout.js',
+    'crates/monokulo/pos-ui/src/main.tsx',
+  ] : [
     'crates/monokulo/static/checkout.js',
     'crates/monokulo/static/challenge.js',
     'crates/monokulo/static/monokulo-client.js',
     'crates/monokulo/pos-ui/src/main.tsx',
   ];
+  const finalMap = stagenet ? coverage.createCoverageMap({}) : transformed;
+  if (stagenet) {
+    for (const file of transformed.files()) {
+      if (required.some(name => file.endsWith(name))) finalMap.addFileCoverage(transformed.fileCoverageFor(file));
+    }
+  }
   for (const name of required) {
     const file = finalMap.files().find(file => file.endsWith(name));
     if (!file) throw new Error(`browser coverage is missing required source ${name}`);
@@ -67,20 +77,23 @@ async function main() {
   const summary = finalMap.getCoverageSummary();
   const version = (command, args) => execFileSync(command, args, { cwd: root, encoding: 'utf8' }).trim();
   const manifest = {
-    component: 'browser', revision: version('git', ['rev-parse', 'HEAD']),
+    component: stagenet ? 'stagenet' : 'browser', revision: version('git', ['rev-parse', 'HEAD']),
     source_dirty: version('git', ['status', '--porcelain']).length > 0,
     tools: {
       rustc: version('rustc', ['--version']), cargo: version('cargo', ['--version']),
       collector: `istanbul-lib-instrument ${require('istanbul-lib-instrument/package.json').version}`,
       playwright: require('@playwright/test/package.json').version,
       node: process.version,
+      vite: JSON.parse(fs.readFileSync(path.join(root, 'crates/monokulo/pos-ui/node_modules/vite/package.json'))).version,
+      solidPlugin: JSON.parse(fs.readFileSync(path.join(root, 'crates/monokulo/pos-ui/node_modules/@solidjs/vite-plugin/package.json'))).version,
     },
-    test: { status: 'passed', command: 'playwright test -c coverage-browser.config.js', exit_code: 0, log: 'browser/test.log' },
+    test: { status: 'passed', command: stagenet ? 'playwright test -c coverage-stagenet.config.js' : 'playwright test -c coverage-browser.config.js',
+      exit_code: 0, log: stagenet ? 'stagenet/test.log' : 'browser/test.log' },
     lines: { covered: summary.lines.covered, total: summary.lines.total },
     branches: { covered: summary.branches.covered, total: summary.branches.total },
-    report: 'browser/index.html', unavailable: [],
+    report: stagenet ? 'stagenet/index.html' : 'browser/index.html', unavailable: [],
   };
-  fs.writeFileSync(path.join(root, 'target/coverage/browser.json'), JSON.stringify(manifest, null, 2));
+  fs.writeFileSync(path.join(root, 'target/coverage', `${stagenet ? 'stagenet' : 'browser'}.json`), JSON.stringify(manifest, null, 2));
   console.log(`Browser lines ${summary.lines.covered}/${summary.lines.total}; branches ${summary.branches.covered}/${summary.branches.total}`);
 }
 

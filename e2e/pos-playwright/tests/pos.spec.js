@@ -25,15 +25,19 @@
 // free, and fast; reproducing it with a real transaction here would only add
 // real cost and wall-clock time for the same coverage.
 
-const { test, expect } = require('@playwright/test');
+const { test, expect } = require('../coverage-test');
 const { loadFixture, piconeroFromXmrDisplay, sendStagenetPayment, enterAmount } = require('../helpers');
 const { captureCoverageStage } = require('../coverage-screenshot');
+const { serveInstrumentedAssets } = require('../coverage-fixture');
 
 /** @type {ReturnType<typeof loadFixture>} */
 let fixture;
 
 test.beforeAll(() => {
   fixture = loadFixture();
+});
+test.beforeEach(async ({ context }) => {
+  if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);
 });
 
 /** Real login through the real form, then navigates to the real POS page. */

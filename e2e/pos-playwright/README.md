@@ -123,11 +123,18 @@ screenshots on failure).
 
 # Deterministic rendered-UI fixture
 
-Run `npx playwright test -c coverage-real.config.js` from this directory.
+Run `npx playwright test -c coverage-real.config.js` from this directory, or
+`cargo xtask coverage browser` from the repository root for instrumentation,
+screenshots, and the offline report.
 The suite builds `monokulo`'s `coverage_fixture` example with Cargo's offline
 mode, starts a real Monokulo router and `scanner-test-support` engine on local
 ephemeral ports, and stops the fixture after the tests. It seeds one merchant,
 store, session, and order. The full checkout and compact POS iframe are the
 product's own HTML, CSS, and JavaScript. No public node or wallet is involved.
-The example alone mounts `/__coverage/ready` and
-`/__coverage/orders/{id}/paid`; production routes never receive these controls.
+The example alone mounts `/__coverage/*` controls for ready, new/paid orders,
+restricted framing, and the production challenge view. Production routes
+never receive these controls. The controlled suite also covers 14 POS device
+orientations and five resizes. The old `surface.spec.js` is reduced to a
+client challenge protocol check in committed source; the current working
+tree may contain a separate preexisting badge test that the coverage config
+excludes as a duplicate of the real POS badge case.

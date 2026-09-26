@@ -34,7 +34,10 @@ const plainAmount = (digits: string) => {
   const padded = digits.padStart(config.decimals + 1, '0');
   return `${padded.slice(0, -config.decimals) || '0'}.${padded.slice(-config.decimals)}`;
 };
-const displayAmount = (digits: string) => plainAmount(digits).replace(/\B(?=(\d{3})+(?!\d))/g, ',');
+const displayAmount = (digits: string) => {
+  const [whole, fraction] = plainAmount(digits).split('.');
+  return `${whole.replace(/\B(?=(\d{3})+(?!\d))/g, ',')}.${fraction}`;
+};
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
   const response = await fetch(url, init);
   if (!response.ok) {
@@ -104,19 +107,25 @@ function App() {
   const [loading, setLoading] = createSignal(true);
   const [offline, setOffline] = createSignal(false);
   const [search, setSearch] = createSignal('');
+  const [searchOrders, setSearchOrders] = createSignal<Order[]>([]);
+  const [searchTotal, setSearchTotal] = createSignal(0);
+  const [searchOffset, setSearchOffset] = createSignal(0);
+  const [searching, setSearching] = createSignal(false);
   const [tab, setTab] = createSignal<'active' | 'finished'>('active');
   const [total, setTotal] = createSignal(0);
   const [nextOffset, setNextOffset] = createSignal(0);
   const [listScroll, setListScroll] = createSignal(0);
   const active = createMemo(() => orders().find(o => o.order_id === activeId()) || null);
-  const background = createMemo(() => orders().filter(o => o.backgrounded && !terminal(o)));
-  const listed = createMemo(() => orders().filter(o => o.backgrounded));
+  const background = createMemo(() => orders().filter(o => !terminal(o) && o.order_id !== activeId()));
+  const listed = createMemo(() => orders());
   const activeCount = createMemo(() => listed().filter(o => !terminal(o)).length);
   const finishedCount = createMemo(() => listed().filter(terminal).length);
-  const visible = createMemo(() => listed().filter(o => (tab() === 'active') !== terminal(o))
-    .filter(o => `${o.merchant_order_id || ''} ${o.order_id}`.toLowerCase().includes(search().trim().toLowerCase())));
+  const visible = createMemo(() => (search().trim() ? searchOrders() : listed())
+    .filter(o => (tab() === 'active') !== terminal(o)));
   let stream: EventSource | null = null;
   let lostTimer: number | undefined;
+  let searchTimer: number | undefined;
+  let searchGeneration = 0;
   let listElement: HTMLElement | undefined;
   let pendingRequest: { amount: string; reference: string; key: string } | null = null;
 
@@ -126,6 +135,34 @@ function App() {
       return found ? previous.map(o => o.order_id === order.order_id ?
         (o.updated_at !== undefined && order.updated_at !== undefined && order.updated_at < o.updated_at ? o : order) : o) : [order, ...previous];
     });
+    setSearchOrders(previous => previous.map(o => o.order_id === order.order_id ? order : o));
+  }
+  async function refreshSearch(append = false) {
+    const term = search().trim();
+    if (!term) return;
+    const generation = searchGeneration;
+    setSearching(true);
+    const offset = append ? searchOffset() : 0;
+    try {
+      const data = await json<{ orders: Order[]; total: number }>(`${api}/orders?offset=${offset}&limit=40&search=${encodeURIComponent(term)}`);
+      if (generation !== searchGeneration) return;
+      setSearchTotal(data.total);
+      setSearchOffset(offset + data.orders.length);
+      setSearchOrders(previous => append ? [...previous, ...data.orders.filter(o => !previous.some(p => p.order_id === o.order_id))] : data.orders);
+      setError('');
+      queueMicrotask(openStream);
+    } catch (e) { if (generation === searchGeneration) setError((e as Error).message); }
+    finally { if (generation === searchGeneration) setSearching(false); }
+  }
+  function onSearch(value: string) {
+    searchGeneration++;
+    setSearch(value);
+    window.clearTimeout(searchTimer);
+    if (value.trim()) {
+      setSearchOrders([]); setSearchOffset(0); setSearchTotal(0); setSearching(true); setError('');
+      searchTimer = window.setTimeout(() => void refreshSearch(), 200);
+    }
+    else { setSearchOrders([]); setSearchOffset(0); setSearchTotal(0); setSearching(false); setError(''); queueMicrotask(openStream); }
   }
   async function refresh(append = false) {
     try {
@@ -148,29 +185,39 @@ function App() {
     upsert(order);
     return order;
   }
+  function watchedIds() {
+    const foreground = active() && !terminal(active()!) ? [active()!.order_id] : [];
+    const onScreen = screen() === 'list' ? visible().filter(o => !terminal(o)).map(o => o.order_id) : background().map(o => o.order_id);
+    const otherActive = orders().filter(o => !terminal(o)).map(o => o.order_id);
+    const cancelled = orders().filter(o => o.cancelled_at && o.status === 'pending').slice(0, 8).map(o => o.order_id);
+    return [...new Set([...foreground, ...onScreen, ...otherActive, ...cancelled])].slice(0, 32);
+  }
   function openStream() {
     stream?.close(); stream = null;
-    const activeIds = orders().filter(o => !terminal(o)).map(o => o.order_id);
-    const cancelledIds = orders().filter(o => o.cancelled_at && o.status === 'pending').slice(0, 8).map(o => o.order_id);
-    const ids = [...activeIds, ...cancelledIds].slice(0, 32);
+    const ids = watchedIds();
     if (!ids.length) { setOffline(false); return; }
-    stream = new EventSource(`${api}/events?orders=${ids.map(encodeURIComponent).join(',')}`);
-    stream.addEventListener('open', () => { window.clearTimeout(lostTimer); setOffline(false); void refreshStatuses(); });
-    stream.addEventListener('status', event => {
+    const source = new EventSource(`${api}/events?orders=${ids.map(encodeURIComponent).join(',')}`);
+    stream = source;
+    source.addEventListener('open', () => { if (stream !== source) return; window.clearTimeout(lostTimer); setOffline(false); void refreshStatuses(); });
+    source.addEventListener('status', event => {
+      if (stream !== source) return;
       try {
         const update = JSON.parse((event as MessageEvent).data) as StatusEvent;
         setOrders(previous => previous.map(o => o.order_id === update.order_id ?
           (o.updated_at !== undefined && update.updated_at !== undefined && update.updated_at < o.updated_at ? o : { ...o, ...update }) : o));
+        setSearchOrders(previous => previous.map(o => o.order_id === update.order_id ?
+          (o.updated_at !== undefined && update.updated_at !== undefined && update.updated_at < o.updated_at ? o : { ...o, ...update }) : o));
         if (update.is_terminal) queueMicrotask(openStream);
       } catch { /* Ignore malformed event; next snapshot will reconcile. */ }
     });
-    stream.addEventListener('error', () => {
+    source.addEventListener('error', () => {
+      if (stream !== source) return;
       window.clearTimeout(lostTimer);
       lostTimer = window.setTimeout(() => setOffline(true), 6000);
     });
   }
   async function refreshStatuses() {
-    const ids = orders().filter(o => !terminal(o)).slice(0, 32).map(o => o.order_id);
+    const ids = watchedIds();
     const results = await Promise.allSettled(ids.map(loadOrder));
     if (results.some(r => r.status === 'rejected')) setOffline(true);
   }
@@ -217,9 +264,9 @@ function App() {
   async function openOrder(order: Order) {
     if (screen() === 'list' && listElement) setListScroll(listElement.scrollTop);
     setError(''); setActiveId(order.order_id); setScreen('payment');
-    try { await loadOrder(order.order_id); } catch (e) { setError((e as Error).message); }
+    try { await loadOrder(order.order_id); queueMicrotask(openStream); } catch (e) { setError((e as Error).message); }
   }
-  function showList() { setScreen('list'); queueMicrotask(() => { if (listElement) listElement.scrollTop = listScroll(); }); }
+  function showList() { setScreen('list'); queueMicrotask(() => { if (listElement) listElement.scrollTop = listScroll(); openStream(); }); }
   function onKey(event: KeyboardEvent) {
     if (screen() !== 'keypad') return;
     if (event.target instanceof HTMLInputElement) { if (event.key === 'Enter') void charge(); return; }
@@ -230,12 +277,12 @@ function App() {
   }
   document.addEventListener('keydown', onKey);
   queueMicrotask(() => { void refresh(); });
-  onCleanup(() => { document.removeEventListener('keydown', onKey); stream?.close(); window.clearTimeout(lostTimer); });
+  onCleanup(() => { document.removeEventListener('keydown', onKey); stream?.close(); window.clearTimeout(lostTimer); window.clearTimeout(searchTimer); });
 
   return <><Symbols/>
     <header class="pos-top">
       <Show when={screen() === 'list'} fallback={<a class="pos-store" href={`/dashboard/stores/${encodeURIComponent(config.connectionId)}`}>{config.storeName}</a>}>
-        <button class="pos-back" onClick={() => setScreen('keypad')} aria-label="Back to POS">←</button>
+        <button class="pos-back" onClick={() => { setScreen('keypad'); queueMicrotask(openStream); }} aria-label="Back to POS">←</button>
         <span class="pos-store">POS</span>
       </Show>
       <span class="pos-chevron">›</span><strong>{screen() === 'list' ? 'Orders' : 'POS'}</strong>
@@ -271,27 +318,28 @@ function App() {
       <Show when={error()}><p class="pos-error" role="alert">{error()}</p></Show>
       <Show when={!terminal(active()!)}>
         <button class="pos-primary" disabled={busy()} onClick={() => void backgroundOrder()}>Background order</button>
-        <button class="pos-cancel" disabled={busy()} onClick={() => void cancelOrder()}>Cancel order</button>
+        <Show when={active()!.status === 'pending' && !active()!.error}><button class="pos-cancel" disabled={busy()} onClick={() => void cancelOrder()}>Cancel order</button></Show>
         <p class="pos-action-hint">Keep the payment open while you serve the next customer.</p>
       </Show>
       <Show when={terminal(active()!)}><button class="pos-primary" onClick={resetKeypad}>New order</button></Show>
     </main>}</Show>
     <Show when={screen() === 'list'}><main class="pos-list" ref={el => { listElement = el; }}>
       <h1>Background orders</h1><p class="pos-list-subtitle">Keep track of every order while you serve the next customer.</p>
-      <input type="search" aria-label="Search reference or order ID" placeholder="Search reference or order ID" value={search()} onInput={event => setSearch(event.currentTarget.value)}/>
+      <input type="search" aria-label="Search reference or order ID" placeholder="Search reference or order ID" value={search()} onInput={event => onSearch(event.currentTarget.value)}/>
       <div class="pos-tabs" role="tablist" aria-label="Order status">
-        <button role="tab" aria-selected={tab() === 'active' ? 'true' : 'false'} class={tab() === 'active' ? 'selected' : ''} onClick={() => setTab('active')}>Active · {activeCount()}{nextOffset() < total() ? '+' : ''}</button>
-        <button role="tab" aria-selected={tab() === 'finished' ? 'true' : 'false'} class={tab() === 'finished' ? 'selected' : ''} onClick={() => setTab('finished')}>Finished · {finishedCount()}{nextOffset() < total() ? '+' : ''}</button>
+        <button role="tab" aria-selected={tab() === 'active' ? 'true' : 'false'} class={tab() === 'active' ? 'selected' : ''} onClick={() => { setTab('active'); queueMicrotask(openStream); }}>Active · {activeCount()}{nextOffset() < total() ? '+' : ''}</button>
+        <button role="tab" aria-selected={tab() === 'finished' ? 'true' : 'false'} class={tab() === 'finished' ? 'selected' : ''} onClick={() => { setTab('finished'); queueMicrotask(openStream); }}>Finished · {finishedCount()}{nextOffset() < total() ? '+' : ''}</button>
       </div>
       <Show when={loading()}><p>Loading orders…</p></Show>
+      <Show when={searching()}><p>Searching orders…</p></Show>
       <Show when={error()}><p class="pos-error" role="alert">{error()} <button onClick={() => void refresh()}>Retry</button></p></Show>
-      <Show when={!loading() && !error() && visible().length === 0}><p class="pos-empty">{search() ? 'No matching orders.' : `No ${tab()} background orders yet.`}</p></Show>
+      <Show when={!loading() && !searching() && !error() && visible().length === 0}><p class="pos-empty">{search() ? 'No matching orders.' : `No ${tab()} background orders yet.`}</p></Show>
       <div class="pos-list-items"><For each={visible()}>{order => <article class="pos-order-card">
         <div class="pos-order-card-head"><div><h2>{label(order)}</h2><p>{order.merchant_order_id ? 'Reference · ' : ''}{shortId(order.order_id)} · created {new Date(order.created_at * 1000).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}</p></div><Badge order={order} offline={offline() && !terminal(order)}/></div>
         <div class="pos-order-sum">{order.amount} <span>{order.currency}</span></div>
         <div class="pos-order-foot"><small>{order.cancelled_at && order.status !== 'pending' ? 'Payment activity after cancellation — review' : order.error || (order.status === 'partial' ? 'Waiting for remaining amount' : order.status === 'confirming' ? `${order.confirmations} of ${order.confirmations_required} confirmations` : statusName[stateOf(order)])}</small><button onClick={() => void openOrder(order)}>Open →</button></div>
       </article>}</For></div>
-      <Show when={nextOffset() < total()}><button class="pos-load-more" onClick={() => void refresh(true)}>Load more orders</button></Show>
+      <Show when={search().trim() ? searchOffset() < searchTotal() : nextOffset() < total()}><button class="pos-load-more" onClick={() => void (search().trim() ? refreshSearch(true) : refresh(true))}>Load more orders</button></Show>
     </main></Show>
   </>;
 }

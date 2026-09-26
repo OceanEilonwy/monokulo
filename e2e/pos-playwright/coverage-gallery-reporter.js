@@ -4,8 +4,10 @@ const crypto = require('node:crypto');
 
 const output = process.env.COVERAGE_OUTPUT;
 const enabled = process.env.COVERAGE_SCREENSHOTS === '1' && output;
-const gallery = output && path.join(output, '..', 'screenshots');
+const stagenet = process.env.COVERAGE_PROFILE === 'stagenet';
+const gallery = output && (stagenet ? path.join(output, 'screenshots') : path.join(output, '..', 'screenshots'));
 const images = gallery && path.join(gallery, 'images');
+const reportLink = stagenet ? '../playwright-report/index.html' : '../browser/playwright-report/index.html';
 const escapeHtml = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;')
   .replace(/>/g, '&gt;').replace(/"/g, '&quot;').replace(/'/g, '&#39;');
 
@@ -38,18 +40,19 @@ class CoverageGalleryReporter {
       || a.retry - b.retry || a.sequence - b.sequence);
     fs.writeFileSync(path.join(gallery, 'manifest.json'), JSON.stringify(this.entries, null, 2));
     const groups = new Set(this.entries.filter(e => e.stage !== 'failure').map(e => e.group));
-    let html = '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Monokulo UI stages</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#17212b}a{color:#164e8a}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem}.card{border:1px solid #ccd3db;border-radius:8px;padding:.7rem}.card img{width:100%;height:180px;object-fit:contain;background:#eee}.card p{margin:.3rem 0}small{color:#52606d}</style><h1>UI stages</h1><p><a href="../index.html">Coverage summary</a> · <a href="../browser/playwright-report/index.html">Playwright test report</a></p>';
+    let html = '<!doctype html><html lang="en"><meta charset="utf-8"><meta name="viewport" content="width=device-width"><title>Monokulo UI stages</title><style>body{font:16px/1.5 system-ui,sans-serif;max-width:1100px;margin:2rem auto;padding:0 1rem;color:#17212b}a{color:#164e8a}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(240px,1fr));gap:1rem}.card{border:1px solid #ccd3db;border-radius:8px;padding:.7rem}.card img{width:100%;height:180px;object-fit:contain;background:#eee}.card p{margin:.3rem 0}small{color:#52606d}</style><h1>UI stages</h1><p><a href="../index.html">Coverage summary</a> · <a href="' + reportLink + '">Playwright test report</a></p>';
     for (const group of ['checkout', 'pos', 'challenge']) {
       html += `<h2>${group}</h2><div class="grid">`;
       for (const entry of this.entries.filter(e => e.group === group)) {
-        html += `<article class="card"><a href="${escapeHtml(entry.image)}"><img src="${escapeHtml(entry.image)}" alt="${escapeHtml(entry.stage)}"></a><p><strong>${escapeHtml(entry.stage)}</strong></p><p>${escapeHtml(entry.test)}</p><p><a href="../browser/playwright-report/index.html#?testId=${encodeURIComponent(entry.test_id)}">Test result</a></p><small>Retry ${entry.retry}; ${escapeHtml(entry.status)}</small></article>`;
+        html += `<article class="card"><a href="${escapeHtml(entry.image)}"><img src="${escapeHtml(entry.image)}" alt="${escapeHtml(entry.stage)}"></a><p><strong>${escapeHtml(entry.stage)}</strong></p><p>${escapeHtml(entry.test)}</p><p><a href="${reportLink}#?testId=${encodeURIComponent(entry.test_id)}">Test result</a></p><small>Retry ${entry.retry}; ${escapeHtml(entry.status)}</small></article>`;
       }
       html += '</div>';
     }
     html += '</html>';
     fs.writeFileSync(path.join(gallery, 'index.html'), html);
-    if (!['checkout', 'pos', 'challenge'].every(group => groups.has(group))) {
-      console.error(`coverage screenshots missing required stage groups: ${['checkout', 'pos', 'challenge'].filter(g => !groups.has(g)).join(', ')}`);
+    const requiredGroups = stagenet ? ['pos'] : ['checkout', 'pos', 'challenge'];
+    if (!requiredGroups.every(group => groups.has(group))) {
+      console.error(`coverage screenshots missing required stage groups: ${requiredGroups.filter(g => !groups.has(g)).join(', ')}`);
       return { status: 'failed' };
     }
     return result;
