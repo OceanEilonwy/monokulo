@@ -46,6 +46,12 @@ fn run(component: &str, output: &Path) -> io::Result<Value> {
             passed = false;
         }
     }
+    if passed && component == "woocommerce" {
+        if let Err(e) = summarize_woocommerce(output) {
+            eprintln!("coverage woocommerce: report validation failed: {e}");
+            passed = false;
+        }
+    }
     eprintln!("coverage {component}: {} (log: {})", if passed { "passed" } else { "failed" }, log_path.display());
     Ok(json!({"component":component,"status":if passed {"passed"} else {"failed"},
         "exit_code":code,"log":format!("{component}/test.log")}))
@@ -97,6 +103,49 @@ fn summarize_rust(output: &Path) -> io::Result<()> {
     });
     fs::write(output.join("rust.json"), serde_json::to_vec_pretty(&manifest)?)?;
     write_rust_crates(output, files, &manifest)?;
+    Ok(())
+}
+
+fn summarize_woocommerce(output: &Path) -> io::Result<()> {
+    let dir = output.join("woocommerce");
+    let summary: Value = serde_json::from_slice(&fs::read(dir.join("summary.json"))?)?;
+    let counts = |name: &str| -> io::Result<(u64, u64)> {
+        let value = &summary[name];
+        let covered = value["covered"].as_u64().ok_or_else(|| io::Error::other(format!("missing PHP {name}.covered")))?;
+        let total = value["total"].as_u64().ok_or_else(|| io::Error::other(format!("missing PHP {name}.total")))?;
+        if total == 0 || covered > total { return Err(io::Error::other(format!("invalid PHP {name} counts"))); }
+        Ok((covered, total))
+    };
+    let lines = counts("lines")?;
+    let branches = counts("branches")?;
+    let _paths = counts("paths")?;
+    let files = summary["files"].as_array().ok_or_else(|| io::Error::other("missing PHP file list"))?;
+    let expected = ["monokulo.php", "class-wc-gateway-monokulo.php"];
+    if files.len() != expected.len() || expected.iter().any(|name| {
+        !files.iter().any(|f| f["name"].as_str() == Some(name))
+    }) { return Err(io::Error::other("PHP coverage contains missing or non-plugin source files")); }
+    for required in ["index.html", "xml/index.xml", "clover.xml", "junit.xml",
+        "includes/class-wc-gateway-monokulo.php_branch.html"] {
+        if !dir.join(required).is_file() { return Err(io::Error::other(format!("missing PHP report {required}"))); }
+    }
+    let revisions = version("git", &["rev-parse", "HEAD"])?;
+    let source_dirty = !Command::new("git").args(["status", "--porcelain"])
+        .current_dir(root()).output()?.stdout.is_empty();
+    let versions = &summary["versions"];
+    let php = versions["php"].as_str().ok_or_else(|| io::Error::other("missing PHP version"))?;
+    let phpunit = versions["phpunit"].as_str().ok_or_else(|| io::Error::other("missing PHPUnit version"))?;
+    let xdebug = versions["xdebug"].as_str().ok_or_else(|| io::Error::other("missing Xdebug version"))?;
+    let manifest = json!({
+        "component":"woocommerce", "revision":revisions, "source_dirty":source_dirty,
+        "tools":{"rustc":version("rustc", &["--version"])?, "cargo":version("cargo", &["--version"])?,
+            "collector":format!("PHPUnit {phpunit} / Xdebug {xdebug}"), "php":php},
+        "test":{"status":"passed", "command":"vendor/bin/phpunit --configuration phpunit.coverage.xml --path-coverage",
+            "exit_code":0, "log":"woocommerce/test.log"},
+        "lines":{"covered":lines.0,"total":lines.1},
+        "branches":{"covered":branches.0,"total":branches.1},
+        "report":"woocommerce/index.html", "unavailable":[]
+    });
+    fs::write(output.join("woocommerce.json"), serde_json::to_vec_pretty(&manifest)?)?;
     Ok(())
 }
 

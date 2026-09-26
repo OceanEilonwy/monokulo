@@ -25,6 +25,11 @@ $visit = static function ( $node ) use ( &$visit, &$files ) {
 };
 $visit( $root );
 $result = array(
+	'versions' => array(
+		'php'     => PHP_VERSION,
+		'phpunit' => PHPUnit\Runner\Version::id(),
+		'xdebug'  => phpversion( 'xdebug' ),
+	),
 	'lines'    => array( 'covered' => $root->numberOfExecutedLines(), 'total' => $root->numberOfExecutableLines() ),
 	'branches' => array( 'covered' => $root->numberOfExecutedBranches(), 'total' => $root->numberOfExecutableBranches() ),
 	'paths'    => array( 'covered' => $root->numberOfExecutedPaths(), 'total' => $root->numberOfExecutablePaths() ),

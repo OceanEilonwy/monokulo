@@ -71,9 +71,16 @@ precede deletion of old browser tests.
   explicitly rejects a missing Xdebug coverage mode. Initial unrestricted
   instrumentation was too large; the filter reduced the run to about three
   seconds and 107 MB.
+- 5.2 complete: `cargo xtask coverage woocommerce` passes 43/43 tests and
+  publishes PHPUnit HTML, XML, Clover, JUnit, serialized native coverage,
+  summary JSON, and the common `woocommerce.json` manifest. The manifest
+  records PHP 8.3.33, PHPUnit 9.6.36, Xdebug 3.5.3, 378/429 lines, and
+  181/225 branches. It validates the two authored PHP files and report links.
+  The gateway's branch report shows 180/218 branches, including missed ones;
+  vendor, WordPress, WooCommerce, and test files are absent.
 
 ## Resume next
 
-Finish 5.2's common WooCommerce manifest, then migrate browser assertions. The original
+Migrate browser assertions, beginning with checkout/embed 2.3. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.
