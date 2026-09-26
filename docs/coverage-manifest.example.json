@@ -1,0 +1,19 @@
+{
+  "component": "scanner",
+  "revision": "3f2558a",
+  "tools": {
+    "rustc": "rustc 1.x-nightly",
+    "cargo": "cargo 1.x-nightly",
+    "collector": "cargo-llvm-cov 0.x"
+  },
+  "test": {
+    "status": "passed",
+    "command": "cargo +nightly llvm-cov --workspace --locked --branch --html",
+    "exit_code": 0,
+    "log": "rust/test.log"
+  },
+  "lines": {"covered": 10, "total": 20},
+  "branches": {"covered": 2, "total": 4},
+  "report": "rust/index.html",
+  "unavailable": []
+}
