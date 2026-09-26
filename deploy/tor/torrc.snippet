@@ -1,0 +1,44 @@
+## Monokulo onion service. Add to /etc/tor/torrc (or a file it %includes),
+## adjust the directory, then reload tor. Every line is explained in
+## docs/TOR.md. Needs tor >= 0.4.8 built with the proof-of-work module:
+## `tor --list-modules` must print `pow: yes`.
+##
+## Monokulo side: set the admin setting `abuse.onion_listener` (or
+## MONOKULO_ABUSE_ONION_LISTENER) to 127.0.0.1:8082 and restart monokulo.
+## `public_url` should be this service's http://<address>.onion (see
+## <HiddenServiceDir>/hostname once tor has started).
+
+HiddenServiceDir /var/lib/tor/monokulo/
+HiddenServiceVersion 3
+# Port 80 of the .onion goes to monokulo's loopback onion listener, which
+# requires the PROXY header below. Never point it at monokulo's ordinary
+# port (127.0.0.1:8081): that one ignores PROXY headers, so every visitor
+# would look like the same client, 127.0.0.1.
+HiddenServicePort 80 127.0.0.1:8082
+
+# Tell monokulo which Tor circuit each connection arrived on (a PROXY v1
+# header with the circuit id in an fc00::/16 source address). One circuit
+# is one visitor, so monokulo can limit and challenge circuits separately.
+HiddenServiceExportCircuitID haproxy
+
+# Proof-of-work at the introduction step: under load, tor asks clients to
+# solve a puzzle whose effort rises with the attack. Tor Browser does this
+# automatically, no JavaScript involved.
+HiddenServicePoWDefensesEnabled 1
+# How many rendezvous requests a second tor hands on from the PoW queue,
+# and the burst it allows.
+HiddenServicePoWQueueRate 50
+HiddenServicePoWQueueBurst 250
+
+# Rate-limit introductions at the introduction points themselves, before
+# they reach this machine.
+HiddenServiceEnableIntroDoSDefense 1
+HiddenServiceEnableIntroDoSRatePerSec 25
+HiddenServiceEnableIntroDoSBurstPerSec 200
+
+# At most 64 simultaneous streams (connections) per circuit, and close the
+# circuit of anyone who tries for more. A normal visitor needs a handful
+# of page and API connections plus at most 16 live-update streams per
+# store (monokulo's own cap), so 64 leaves plenty of room.
+HiddenServiceMaxStreams 64
+HiddenServiceMaxStreamsCloseCircuit 1

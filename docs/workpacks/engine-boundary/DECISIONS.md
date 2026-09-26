@@ -157,3 +157,9 @@ Format for each entry:
 - **Decision:** One commit for the tiered limiter and the challenge.
 - **Alternatives considered:** Separate commits.
 - **Why:** The middleware's "past soft" branch *is* the challenge; a 9c-only commit would have needed a throwaway "past soft = 429" behaviour that 9d immediately replaces. Both are sub-steps of step 9, so no two README steps are mixed.
+
+### 26. torrc values
+- **Step:** 9b
+- **Decision:** `HiddenServicePoWQueueRate 50`, `HiddenServicePoWQueueBurst 250`, `HiddenServiceEnableIntroDoSRatePerSec 25`, `HiddenServiceEnableIntroDoSBurstPerSec 200`, `HiddenServiceMaxStreams 64` with `HiddenServiceMaxStreamsCloseCircuit 1`, onion port 80 -> `127.0.0.1:8082`.
+- **Alternatives considered:** tor's defaults (PoW queue 250/2500; intro DoS 25/200); MaxStreams 32.
+- **Why:** Monokulo is a single small process; 50 introductions/s sustained is far above a shop's real traffic while keeping a flood from reaching it. Intro DoS uses tor's documented defaults. 64 streams per circuit covers a real visitor (pages, API calls, up to 16 live streams per store under monokulo's cap) with margin, and closing the circuit makes an abuser rebuild (and re-solve PoW).
