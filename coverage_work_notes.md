@@ -20,12 +20,16 @@ precede deletion of old browser tests.
 - 0.2 in progress: `cargo xtask coverage` entry point compiles and its help
   works. It preserves a run manifest after each component and logs each child.
   Browser and WooCommerce collector scripts are still pending.
-- 1.1 in progress: nightly 1.100.0 and cargo-llvm-cov 0.9.1 installed. The
-  first Rust collection is compiling the workspace. An initial concurrent
-  tool installation briefly conflicted on `llvm-tools`; the later run started
-  after installation completed.
+- 1.1 complete: nightly 1.100.0 and cargo-llvm-cov 0.9.1 installed. The
+  workspace test run passed and produced `rust/index.html`, `rust/raw.json`,
+  and `rust.json` from one profile set. Measured 24,451 / 27,070 lines and
+  1,294 / 1,698 branches. `scanner` has 370 and `monokulo` 1,060 branch
+  denominator. Ignored live-node and stagenet tests stayed ignored. The first
+  attempt had concurrent tool installation and the second exposed LLVM's
+  nested `html/` output; both issues are resolved. The source tree was dirty
+  before coverage work began; reports now mark that condition.
 
 ## Resume next
 
-Inspect the Rust collector result and JSON, then add validated component
-manifests. Continue 0.2 and 1.1 before 1.2.
+Build crate-filtered Rust summaries and annotated-source links for 1.2. Then
+continue 0.2 browser/PHP collectors and the 2.1 browser inventory.

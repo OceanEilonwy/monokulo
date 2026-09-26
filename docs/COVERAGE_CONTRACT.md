@@ -8,6 +8,9 @@ are relative to the run root so an extracted artifact works offline.
 
 Every component manifest follows [the JSON schema](coverage-manifest.schema.json);
 [the example](coverage-manifest.example.json) is a fixture for validation.
+`revision` is the HEAD commit; `source_dirty` indicates that the working tree
+contained changes during collection, so that commit alone does not identify
+the exact measured source.
 `covered` and `total` are integers only when measured. An unavailable metric
 uses `null` for both numbers and names that metric in `unavailable`; zero means
 that the collector measured zero. A failed test retains its exit code and log

@@ -18,6 +18,8 @@ fn help() {
 fn run(component: &str, output: &Path) -> io::Result<Value> {
     let script = root().join("scripts").join(format!("coverage-{component}.sh"));
     let dir = output.join(component);
+    let manifest_path = output.join(format!("{component}.json"));
+    if manifest_path.exists() { fs::remove_file(&manifest_path)?; }
     if dir.exists() { fs::remove_dir_all(&dir)?; }
     fs::create_dir_all(&dir)?;
     let log_path = dir.join("test.log");
@@ -37,9 +39,64 @@ fn run(component: &str, output: &Path) -> io::Result<Value> {
             "log":format!("{component}/test.log"),"reason":format!("missing collector script {}", script.display())}));
     };
     let code = status.code().unwrap_or(1);
-    eprintln!("coverage {component}: {} (log: {})", if status.success() { "passed" } else { "failed" }, log_path.display());
-    Ok(json!({"component":component,"status":if status.success() {"passed"} else {"failed"},
+    let mut passed = status.success();
+    if passed && component == "rust" {
+        if let Err(e) = summarize_rust(output) {
+            eprintln!("coverage rust: report validation failed: {e}");
+            passed = false;
+        }
+    }
+    eprintln!("coverage {component}: {} (log: {})", if passed { "passed" } else { "failed" }, log_path.display());
+    Ok(json!({"component":component,"status":if passed {"passed"} else {"failed"},
         "exit_code":code,"log":format!("{component}/test.log")}))
+}
+
+fn version(command: &str, args: &[&str]) -> io::Result<String> {
+    let output = Command::new(command).args(args).output()?;
+    if !output.status.success() {
+        return Err(io::Error::other(format!("{command} {} failed", args.join(" "))));
+    }
+    Ok(String::from_utf8_lossy(&output.stdout).trim().to_owned())
+}
+
+fn summarize_rust(output: &Path) -> io::Result<()> {
+    let raw: Value = serde_json::from_slice(&fs::read(output.join("rust/raw.json"))?)?;
+    let data = raw["data"].as_array().and_then(|a| a.first())
+        .ok_or_else(|| io::Error::other("Rust JSON has no data"))?;
+    let totals = &data["totals"];
+    let counts = |metric: &str| -> io::Result<(u64, u64)> {
+        let value = &totals[metric];
+        Ok((value["covered"].as_u64().ok_or_else(|| io::Error::other(format!("missing {metric}.covered")))?,
+            value["count"].as_u64().ok_or_else(|| io::Error::other(format!("missing {metric}.count")))?))
+    };
+    let lines = counts("lines")?;
+    let branches = counts("branches")?;
+    if lines.1 == 0 || branches.1 == 0 {
+        return Err(io::Error::other("Rust line or branch denominator is zero"));
+    }
+    let files = data["files"].as_array().ok_or_else(|| io::Error::other("Rust JSON has no files"))?;
+    for crate_name in ["scanner", "monokulo"] {
+        let branch_count: u64 = files.iter().filter(|f| {
+            f["filename"].as_str().is_some_and(|s| s.contains(&format!("/crates/{crate_name}/src/")))
+        }).filter_map(|f| f["summary"]["branches"]["count"].as_u64()).sum();
+        if branch_count == 0 { return Err(io::Error::other(format!("missing branch data for {crate_name}"))); }
+    }
+    let revision = version("git", &["rev-parse", "HEAD"])?;
+    let source_dirty = !Command::new("git").args(["status", "--porcelain"])
+        .current_dir(root()).output()?.stdout.is_empty();
+    let manifest = json!({
+        "component":"rust-workspace", "revision":revision, "source_dirty":source_dirty,
+        "tools": {"rustc":version("rustc", &["+nightly", "--version"])?,
+            "cargo":version("cargo", &["+nightly", "--version"])?,
+            "collector":version("cargo", &["llvm-cov", "--version"])?},
+        "test":{"status":"passed", "command":"cargo +nightly llvm-cov --workspace --locked --branch --html --exclude xtask",
+            "exit_code":0,"log":"rust/test.log"},
+        "lines":{"covered":lines.0,"total":lines.1},
+        "branches":{"covered":branches.0,"total":branches.1},
+        "report":"rust/index.html", "unavailable":[]
+    });
+    fs::write(output.join("rust.json"), serde_json::to_vec_pretty(&manifest)?)?;
+    Ok(())
 }
 
 fn coverage(command: &str) -> io::Result<bool> {
