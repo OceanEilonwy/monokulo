@@ -166,3 +166,15 @@ Rust half:
 - `docs/WOOCOMMERCE_ROADMAP.md`: a top note describing the current integration (connect via monokulo, `public_url` as endpoint, `connection_version`, keyed order creation, monokulo checkout redirect, webhooks unchanged); superseded markers on Stage 1 and Stage 7. `docs/WOOCOMMERCE_WBS.md`: notes on 1.4.3 and 1.5.2.
 - `deploy/`: `deploy/sev-snp/README.md` engine-private note (step 1), `deploy/tor/torrc.snippet` (9b). New docs `docs/TOR.md`, `docs/ABUSE_PROTECTION.md`.
 - Nothing under `~/.claude` was edited. This folder is left in place.
+
+## Independent review (reviewer, 26 Sep 2026)
+
+- Every step's diff and acceptance criteria were checked against `README.md`. Steps 1-10 match the plan. POS-owned files are untouched since `a93b4ca`, apart from the permitted `AppState` test hunk.
+- **Tests re-run by the reviewer:**
+  - `cargo test --workspace`: 890 passed, 0 failed, 19 ignored. The known scanner env-var flake (decision 30) failed once and passed on re-run.
+  - Playwright surface: 23 passed.
+  - Real Tor e2e: failed twice for network reasons, then passed twice (117 s, 98 s) after the fixes in decision 29.
+- **Reviewer commits:**
+  - `8bb3a93`: default `engine.url` (decision 28).
+  - This commit: Tor test resilience and docs (decision 29), and this review record.
+

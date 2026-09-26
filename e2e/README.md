@@ -222,12 +222,23 @@ It takes about five minutes, mostly waiting for tor to bootstrap and for the
 fresh onion service's descriptor to become reachable (each wait has a timeout
 of several minutes and fails with a clear message).
 
+tor's `DataDirectory` (its cached network consensus and relay descriptors) is
+kept between runs in `target/tmp/e2e-tor-data`, the way a real tor client
+keeps it, so later runs bootstrap in seconds. The very first run has to
+download all of it, which on a slow day can take longer than the bootstrap
+timeout. If that happens, run the test again. The onion service itself (keys
+and address) is still new every run. A new circuit to the onion service can
+also take a while to build, so each visitor retries its SOCKS connection for
+up to five minutes. A failed attempt never reaches monokulo, so retries can't
+change the counts the test checks.
+
 ## What it does
 
 1. Starts a test engine and monokulo in-process, with one store and one order,
    and monokulo's onion listener on a loopback port. Small limits (soft 5,
    hard 12, stream cap 3) keep the number of requests over Tor low.
-2. Starts `tor` with a temporary `DataDirectory`, using the service lines of
+2. Starts `tor` with the cached `DataDirectory` above and a fresh onion
+   service directory, using the service lines of
    `deploy/tor/torrc.snippet` verbatim (only the directory and target port
    are rewritten), plus a `SocksPort` and a cookie-authenticated
    `ControlPort`. The tor log is in the printed temporary directory.

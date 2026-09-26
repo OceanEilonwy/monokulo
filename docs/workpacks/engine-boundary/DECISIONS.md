@@ -169,3 +169,28 @@ Format for each entry:
 - **Decision:** Raw HTTP/1.1 over `tokio-socks` (new dev-dependency) rather than reqwest's `socks` feature; small limits (soft 5, hard 12, stream cap 3, 8-bit challenge) configured directly in the in-process `AbuseConfig`; tor's acceptance of the settings checked with `GETCONF HiddenServiceOptions` over a cookie-authenticated control port; circuit identities read from `AbuseProtection::limiter.clients()` (new public method). Loops tolerate a minute boundary (the count is a rolling minute).
 - **Alternatives considered:** reqwest `socks` feature (would add a feature to the production dependency graph); production-default limits (hundreds of requests over Tor, much slower and flakier).
 - **Why:** Raw sockets make it easy to hold streams open for the cap check and keep the production build unchanged; small limits exercise exactly the same code paths.
+
+### 28. (Reviewer) Monokulo's default `engine.url` follows the engine's default address
+- **Step:** review (follows step 1)
+- **Decision:** Changed monokulo's `engine.url` default from `http://127.0.0.1:8080` to `http://127.0.0.1:8443`, the engine's default bind. `scripts/dev-run.sh` still pins both sides to 8080 explicitly; only its comment changed. Commit `8bb3a93`.
+- **Alternatives considered:** Leave it (the plan didn't mention it); change the engine's default port to 8080 instead.
+- **Why:** With both left on their defaults, the two couldn't reach each other. This predates the work pack, but step 1 is where the engine's default address was decided, so this is where it gets fixed. 8443 is the engine's long-standing port in its docs and config examples.
+
+### 29. (Reviewer) The real Tor test keeps tor's cache and retries connections
+- **Step:** review (follows 9g)
+- **Decision:** Two changes to `crates/monokulo/tests/e2e_tor.rs`:
+  - tor's `DataDirectory` is kept between runs in `target/tmp/e2e-tor-data`. The onion service directory is still new every run.
+  - Each visitor retries its SOCKS connect for up to 5 minutes.
+- **Alternatives considered:** Longer single timeouts; a fresh `DataDirectory` every run, as before.
+- **Why:** On independent re-runs, the original test failed twice for network reasons, not monokulo ones:
+  - a new visitor's circuit took longer than the one 90-second attempt allowed;
+  - a cold tor stalled at "Loading relay descriptors" past the 300-second bootstrap timeout.
+
+  A real tor client keeps its consensus cache. With it warm the test passed twice, in 117 s and 98 s. A failed SOCKS attempt never reaches monokulo, so retries can't change the counts the test checks. Documented in `e2e/README.md`.
+
+### 30. (Reviewer) The pre-existing scanner test flake is reported, not fixed here
+- **Step:** review
+- **Decision:** Left `scanner http::tests::saving_an_out_of_range_scalar_is_rejected_and_nothing_changes` alone. It fails occasionally because a sibling test sets `SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED` in the process environment while it runs.
+- **Alternatives considered:** Serialise the env-var tests behind a lock now.
+- **Why:** It predates this work and is unrelated to the plan. It should be fixed separately (serialise the tests that touch `std::env`, or inject the environment).
+

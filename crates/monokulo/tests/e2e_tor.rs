@@ -54,6 +54,8 @@ const BITS: u32 = 8;
 
 const BOOTSTRAP_TIMEOUT: Duration = Duration::from_secs(300);
 const REACHABLE_TIMEOUT: Duration = Duration::from_secs(420);
+/// How long one visitor keeps retrying a SOCKS connect (see `Visitor::connect`).
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(300);
 
 fn free_port() -> u16 {
     std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap().port()
@@ -61,7 +63,10 @@ fn free_port() -> u16 {
 
 struct Tor {
     child: tokio::process::Child,
+    /// This run's files (onion service keys, torrc, log); removed afterwards.
     dir: PathBuf,
+    /// tor's `DataDirectory`, kept between runs (see [`data_dir`]).
+    data: PathBuf,
     socks: SocketAddr,
     control: SocketAddr,
 }
@@ -73,9 +78,19 @@ impl Drop for Tor {
     }
 }
 
+/// tor's `DataDirectory`, kept under cargo's target directory between runs,
+/// the way a real tor client keeps it. With a warm cache of the network
+/// consensus and relay descriptors, tor bootstraps in seconds. From empty it
+/// has to download them all first, which on the live network can take longer
+/// than the bootstrap timeout. The onion service itself (keys, address) is
+/// still new every run, in [`Tor::dir`].
+fn data_dir() -> PathBuf {
+    Path::new(env!("CARGO_TARGET_TMPDIR")).join("e2e-tor-data")
+}
+
 /// `deploy/tor/torrc.snippet`, with the directory and target port for this
 /// run, plus what the test itself needs.
-fn torrc(dir: &Path, onion_port: u16, socks: u16, control: u16) -> String {
+fn torrc(dir: &Path, data: &Path, onion_port: u16, socks: u16, control: u16) -> String {
     let snippet = std::fs::read_to_string(Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deploy/tor/torrc.snippet"))
         .expect("deploy/tor/torrc.snippet must exist");
     assert!(snippet.contains("HiddenServiceDir /var/lib/tor/monokulo/"));
@@ -86,7 +101,7 @@ fn torrc(dir: &Path, onion_port: u16, socks: u16, control: u16) -> String {
     format!(
         "DataDirectory {data}\nSocksPort 127.0.0.1:{socks}\nControlPort 127.0.0.1:{control}\nCookieAuthentication 1\n\
          Log notice file {log}\n{service}\n",
-        data = dir.join("data").display(),
+        data = data.display(),
         log = dir.join("tor.log").display(),
     )
 }
@@ -94,16 +109,17 @@ fn torrc(dir: &Path, onion_port: u16, socks: u16, control: u16) -> String {
 async fn start_tor(onion_port: u16) -> Tor {
     let dir = std::env::temp_dir().join(format!("monokulo-e2e-tor-{}", std::process::id()));
     let _ = std::fs::remove_dir_all(&dir);
-    for sub in ["hs", "data"] {
-        std::fs::create_dir_all(dir.join(sub)).unwrap();
+    let data = data_dir();
+    for path in [dir.join("hs"), data.clone()] {
+        std::fs::create_dir_all(&path).unwrap();
         #[cfg(unix)]
         {
             use std::os::unix::fs::PermissionsExt;
-            std::fs::set_permissions(dir.join(sub), std::fs::Permissions::from_mode(0o700)).unwrap();
+            std::fs::set_permissions(&path, std::fs::Permissions::from_mode(0o700)).unwrap();
         }
     }
     let (socks, control) = (free_port(), free_port());
-    std::fs::write(dir.join("torrc"), torrc(&dir, onion_port, socks, control)).unwrap();
+    std::fs::write(dir.join("torrc"), torrc(&dir, &data, onion_port, socks, control)).unwrap();
     let child = tokio::process::Command::new("tor")
         .arg("-f")
         .arg(dir.join("torrc"))
@@ -112,7 +128,7 @@ async fn start_tor(onion_port: u16) -> Tor {
         .kill_on_drop(true)
         .spawn()
         .expect("could not start `tor` - is it installed and on PATH?");
-    Tor { child, dir, socks: ([127, 0, 0, 1], socks).into(), control: ([127, 0, 0, 1], control).into() }
+    Tor { child, dir, data, socks: ([127, 0, 0, 1], socks).into(), control: ([127, 0, 0, 1], control).into() }
 }
 
 /// One control-port session, authenticated with the cookie.
@@ -132,7 +148,7 @@ impl Control {
             }
         };
         let mut control = Control(BufReader::new(stream));
-        let cookie = std::fs::read(tor.dir.join("data/control_auth_cookie")).expect("control_auth_cookie");
+        let cookie = std::fs::read(tor.data.join("control_auth_cookie")).expect("control_auth_cookie");
         let reply = control.command(&format!("AUTHENTICATE {}", hex::encode(cookie))).await;
         assert!(reply.starts_with("250"), "control port refused authentication: {reply}");
         control
@@ -170,15 +186,30 @@ struct Reply {
 }
 
 impl Visitor {
+    /// Connects through tor on this visitor's own circuit. Building a new
+    /// circuit to an onion service on the live network sometimes takes
+    /// longer than one attempt allows, so a failed SOCKS connect is retried
+    /// until `CONNECT_TIMEOUT` runs out. A failed attempt never reaches
+    /// monokulo, so retrying can't change the counts this test checks.
     async fn connect(&self) -> std::io::Result<TcpStream> {
-        let stream = tokio::time::timeout(
-            Duration::from_secs(90),
-            Socks5Stream::connect_with_password(self.socks, (self.onion.as_str(), 80), self.name, "password"),
-        )
-        .await
-        .map_err(|_| std::io::Error::other("SOCKS connect timed out"))?
-        .map_err(std::io::Error::other)?;
-        Ok(stream.into_inner())
+        let deadline = Instant::now() + CONNECT_TIMEOUT;
+        loop {
+            let attempt = tokio::time::timeout(
+                Duration::from_secs(90),
+                Socks5Stream::connect_with_password(self.socks, (self.onion.as_str(), 80), self.name, "password"),
+            )
+            .await;
+            let error = match attempt {
+                Ok(Ok(stream)) => return Ok(stream.into_inner()),
+                Ok(Err(e)) => e.to_string(),
+                Err(_) => "SOCKS connect timed out".to_string(),
+            };
+            if Instant::now() >= deadline {
+                return Err(std::io::Error::other(format!("{}: {error} (gave up after {CONNECT_TIMEOUT:?})", self.name)));
+            }
+            println!("{}: {error}, retrying", self.name);
+            tokio::time::sleep(Duration::from_secs(5)).await;
+        }
     }
 
     async fn get(&self, path: &str, extra_headers: &str) -> std::io::Result<Reply> {
