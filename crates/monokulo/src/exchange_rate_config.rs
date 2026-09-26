@@ -42,7 +42,7 @@
 //!   merchant picks *which* provider their store uses, not how
 //!   aggressively it's cached; that's an operational tuning knob for
 //!   whoever runs this instance, the same reasoning
-//!   `MONOKULO_RATE_LIMIT_PER_IP_PER_MIN` is an admin knob and not
+//!   `MONOKULO_ABUSE_SOFT_PER_MIN` is an admin knob and not
 //!   something a request can override.
 //!
 //! **No startup currency whitelist any more.** An earlier version of this

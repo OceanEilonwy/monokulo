@@ -220,12 +220,18 @@ pub fn build_router(state: AppState) -> Router {
         // iframe - see `checkout::checkout_share_page`'s own doc comment.
         .route("/pay/{pk}/orders/{order_id}/share", axum::routing::get(checkout::checkout_share_page))
         .layer(middleware::from_fn_with_state(state.clone(), embed_domains::embed_policy_middleware))
-        // Identifies the client (and a store's secret key) and spends its
-        // budget before anything else runs (`http::abuse`).
-        .layer(middleware::from_fn_with_state(state.clone(), abuse::abuse_middleware))
+        // Identifies the client (and a store's secret key), spends its
+        // budget and challenges it past its soft limit before anything else
+        // runs (`http::abuse`).
+        .layer(middleware::from_fn_with_state(state.clone(), abuse::pay_middleware))
         // Outside the rate limit, so a preflight never spends budget and a
         // `429` still carries the headers a cross-origin caller needs to read it.
         .layer(embed_cors_layer(&state));
+
+    // Every other route (the dashboard, login, sign-up, the landing and
+    // status pages) is counted too - see `http::abuse::site_middleware`.
+    // Static files are added below, outside it, and never counted.
+    let router = router.layer(middleware::from_fn_with_state(state.clone(), abuse::site_middleware));
 
     let router = router.merge(pay_router);
 
@@ -233,6 +239,7 @@ pub fn build_router(state: AppState) -> Router {
     // (`docs/fx_refactor.md` Phase 4.3), same as the engine's original.
     let router = router.route("/static/monokulo-client.js", axum::routing::get(pay::client_library).layer(any_origin_cors_layer()));
     let router = router.route("/static/checkout.js", axum::routing::get(pay::checkout_script));
+    let router = router.route("/static/challenge.js", axum::routing::get(pay::challenge_script));
     let router = router.route("/static/pos-app.js", axum::routing::get(pay::pos_script));
     let router = router.route("/static/pos-app.css", axum::routing::get(pay::pos_style));
     let router = router.route("/static/jsQR.js", axum::routing::get(pay::qr_decoder_script));
@@ -335,7 +342,11 @@ fn any_origin_cors_layer() -> tower_http::cors::CorsLayer {
 fn cors_layer_base() -> tower_http::cors::CorsLayer {
     tower_http::cors::CorsLayer::new()
         .allow_methods([axum::http::Method::GET, axum::http::Method::POST])
-        .allow_headers([header::CONTENT_TYPE, header::ACCEPT])
+        // `Monokulo-Proof` carries a solved challenge; `Monokulo-Challenge`
+        // and `Retry-After` must be readable by the embed library on another
+        // site (`http::abuse`).
+        .allow_headers([header::CONTENT_TYPE, header::ACCEPT, header::HeaderName::from_static(abuse::PROOF_HEADER)])
+        .expose_headers([header::HeaderName::from_static(abuse::CHALLENGE_HEADER), header::RETRY_AFTER])
         .allow_private_network(true)
         .max_age(std::time::Duration::from_secs(24 * 60 * 60))
 }

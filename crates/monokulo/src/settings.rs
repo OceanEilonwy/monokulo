@@ -47,12 +47,16 @@ scalar_settings! {
     EXCHANGE_RATE_COINGECKO_BASE_URL => { key: "exchange_rate.coingecko_base_url", env: "MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL", default: "https://api.coingecko.com" },
     EXCHANGE_RATE_CACHE_SECONDS => { key: "exchange_rate.cache_seconds", env: "MONOKULO_EXCHANGE_RATE_CACHE_SECONDS", default: "30" },
     HTTP_CACHE_MAX_MB => { key: "http_cache.max_mb", env: "MONOKULO_HTTP_CACHE_MAX_MB", default: "16" },
-    RATE_LIMIT_PER_IP_PER_MIN => { key: "rate_limit.per_ip_per_min", env: "MONOKULO_RATE_LIMIT_PER_IP_PER_MIN", default: "20" },
     RATE_LIMIT_PER_STORE_KEY_PER_MIN => { key: "rate_limit.per_store_key_per_min", env: "MONOKULO_RATE_LIMIT_PER_STORE_KEY_PER_MIN", default: "600" },
     PUBLIC_URL => { key: "public_url", env: "MONOKULO_PUBLIC_URL", default: "" },
     ABUSE_TRUSTED_PROXIES => { key: "abuse.trusted_proxies", env: "MONOKULO_ABUSE_TRUSTED_PROXIES", default: "" },
     ABUSE_ONION_LISTENER => { key: "abuse.onion_listener", env: "MONOKULO_ABUSE_ONION_LISTENER", default: "" },
     ABUSE_STREAM_CAP => { key: "abuse.stream_cap", env: "MONOKULO_ABUSE_STREAM_CAP", default: "16" },
+    ABUSE_SOFT_PER_MIN => { key: "abuse.soft_per_min", env: "MONOKULO_ABUSE_SOFT_PER_MIN", default: "60" },
+    ABUSE_HARD_PER_MIN => { key: "abuse.hard_per_min", env: "MONOKULO_ABUSE_HARD_PER_MIN", default: "300" },
+    ABUSE_SIGNED_IN_PER_MIN => { key: "abuse.signed_in_per_min", env: "MONOKULO_ABUSE_SIGNED_IN_PER_MIN", default: "600" },
+    ABUSE_CHALLENGE_BITS => { key: "abuse.challenge_bits", env: "MONOKULO_ABUSE_CHALLENGE_BITS", default: "16" },
+    ABUSE_UNDER_ATTACK => { key: "abuse.under_attack", env: "MONOKULO_ABUSE_UNDER_ATTACK", default: "false" },
 }
 
 pub fn get<T: std::str::FromStr>(db: &Db, setting: &ScalarSetting) -> T {
@@ -117,10 +121,9 @@ pub fn help(key: &str) -> Option<&'static str> {
              such as WooCommerce are given it when they connect, and send customers to its checkout. Plugins can't \
              connect until it is set.",
         ),
-        "rate_limit.per_ip_per_min" => Some("Requests a minute one address may make to the public checkout routes. Read at startup."),
         "rate_limit.per_store_key_per_min" => Some(
             "Requests a minute a shop's server may make with its store's secret key (for example the WooCommerce plugin \
-             creating orders). These skip the per-address limit. Read at startup.",
+             creating orders). These are never challenged.",
         ),
         "abuse.trusted_proxies" => Some(
             "Addresses and CIDR ranges of reverse proxies in front of this instance, comma-separated (e.g. \
@@ -133,6 +136,21 @@ pub fn help(key: &str) -> Option<&'static str> {
              it off. Only loopback is accepted. Read at startup.",
         ),
         "abuse.stream_cap" => Some("Live-update streams one client may hold open at once to one store (at least 1)."),
+        "abuse.soft_per_min" => Some(
+            "Requests a minute one visitor (a Tor circuit, or an address) may make to the checkout and public pages \
+             before being asked to solve a short challenge. Signed-in merchants and shops using their secret key are \
+             never challenged.",
+        ),
+        "abuse.hard_per_min" => Some("Requests a minute past which a visitor is refused outright (429) until the minute is up. Must be above the soft limit."),
+        "abuse.signed_in_per_min" => Some("Requests a minute a signed-in merchant may make (dashboard, POS). Never challenged."),
+        "abuse.challenge_bits" => Some(
+            "How hard the challenge is, in leading zero bits of a SHA-256 hash (8 to 24). Each extra bit doubles the \
+             work; 16 takes a phone about a second.",
+        ),
+        "abuse.under_attack" => Some(
+            "true or false. When true, every visitor who isn't signed in must pass a challenge before using the \
+             checkout or public pages (live updates are not affected). A pass lasts 10 minutes.",
+        ),
         _ => None,
     }
 }
@@ -172,7 +190,11 @@ mod tests {
         let _: String = get(&db, &EXCHANGE_RATE_COINGECKO_BASE_URL);
         let _: u64 = get(&db, &EXCHANGE_RATE_CACHE_SECONDS);
         let _: u64 = get(&db, &HTTP_CACHE_MAX_MB);
-        let _: u32 = get(&db, &RATE_LIMIT_PER_IP_PER_MIN);
+        let _: u32 = get(&db, &ABUSE_SOFT_PER_MIN);
+        let _: u32 = get(&db, &ABUSE_HARD_PER_MIN);
+        let _: u32 = get(&db, &ABUSE_SIGNED_IN_PER_MIN);
+        let _: u32 = get(&db, &ABUSE_CHALLENGE_BITS);
+        let _: bool = get(&db, &ABUSE_UNDER_ATTACK);
         let _: u32 = get(&db, &RATE_LIMIT_PER_STORE_KEY_PER_MIN);
         let _: String = get(&db, &PUBLIC_URL);
         let _: String = get(&db, &ABUSE_TRUSTED_PROXIES);

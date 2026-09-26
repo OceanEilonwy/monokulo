@@ -565,7 +565,7 @@ mod tests {
         let (mut state, _engine) = test_state(dns.clone()).await;
         // A per-client budget of 4 a minute: key requests must not spend it.
         state.abuse = Arc::new(crate::abuse::AbuseProtection::new(crate::abuse::AbuseConfig {
-            per_client_per_min: 4,
+            soft_per_min: 4,
             per_store_key_per_min: 5,
             ..Default::default()
         }));

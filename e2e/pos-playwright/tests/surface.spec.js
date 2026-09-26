@@ -490,3 +490,139 @@ test('a browser says whether it is loading a page as a frame, which the frame-on
     server.close();
   }
 });
+
+// --- Abuse protection: the "Checking your connection" interstitial ------
+//
+// A small real HTTP server stands in for monokulo's challenge protocol
+// (crates/monokulo/src/abuse/challenge.rs, http/abuse.rs): the first visit to
+// /pay gets the interstitial (same markup contract as
+// views::challenge::challenge_page, whose Rust test pins it), a correct
+// `monokulo_proof` or a wait token presented after 10 seconds redirects back
+// to /pay, which then shows the checkout. The real challenge.js and
+// monokulo-client.js are served from the repo.
+function challengeServer({ difficulty = 8 } = {}) {
+  const http = require('node:http');
+  const crypto = require('node:crypto');
+  const state = { passed: false, waitIssuedAt: 0, orderAttempts: [] };
+  const challenge = 'c0ffee.' + crypto.randomBytes(8).toString('hex');
+  const zeroBits = buf => {
+    let bits = 0;
+    for (const byte of buf) { if (byte === 0) { bits += 8; continue; } return bits + Math.clz32(byte) - 24; }
+    return bits;
+  };
+  const solved = proof => {
+    const at = proof.lastIndexOf('.');
+    return proof.slice(0, at) === challenge && zeroBits(crypto.createHash('sha256').update(proof.slice(0, at) + proof.slice(at + 1)).digest()) >= difficulty;
+  };
+  const interstitial = () => `<!doctype html><html><head><title>Checking your connection</title>
+    <noscript><meta http-equiv="refresh" content="10;url=/pay?monokulo_wait=tok"></noscript></head><body>
+    <main id="challenge" aria-busy="true" data-challenge="${challenge}" data-difficulty="${difficulty}" data-continue="/pay" data-wait="/pay?monokulo_wait=tok">
+    <h1>Checking your connection</h1>
+    <noscript><p role="status">Checking your connection, this page continues in 10 seconds.</p></noscript>
+    <p id="challenge-progress" role="status" aria-live="polite" hidden>Checking your connection…</p></main>
+    <script src="/static/challenge.js"></script></body></html>`;
+  const server = http.createServer((req, res) => {
+    const url = new URL(req.url, 'http://x');
+    const cors = { 'access-control-allow-origin': '*', 'access-control-allow-headers': 'content-type, monokulo-proof', 'access-control-expose-headers': 'monokulo-challenge, retry-after' };
+    if (url.pathname === '/static/challenge.js' || url.pathname === '/static/monokulo-client.js') {
+      res.writeHead(200, { 'content-type': 'text/javascript', ...cors });
+      return res.end(fs.readFileSync(path.join(root, 'crates/monokulo/static', url.pathname.slice('/static/'.length))));
+    }
+    if (url.pathname === '/shop') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      return res.end(`<iframe id="checkout" src="http://checkout.localhost:${server.address().port}/pay"></iframe>`);
+    }
+    if (url.pathname === '/merchant') {
+      res.writeHead(200, { 'content-type': 'text/html' });
+      return res.end(`<script src="http://checkout.localhost:${server.address().port}/static/monokulo-client.js"></script>`);
+    }
+    if (url.pathname === '/pay/pk/orders') {
+      if (req.method === 'OPTIONS') { res.writeHead(204, cors); return res.end(); }
+      const proof = req.headers['monokulo-proof'];
+      state.orderAttempts.push(proof || null);
+      if (proof && solved(proof)) {
+        res.writeHead(200, { 'content-type': 'application/json', ...cors });
+        return res.end(JSON.stringify({ order_id: 'order-9', address: '8addr', xmr_amount_piconero: 1, amount: '1', currency: 'XMR', expires_at: 0 }));
+      }
+      res.writeHead(429, { 'content-type': 'application/json', 'monokulo-challenge': `${challenge}; difficulty=${difficulty}`, ...cors });
+      return res.end(JSON.stringify({ error: 'Too many requests', challenge: { challenge, difficulty, expires_in: 300 } }));
+    }
+    if (url.pathname === '/pay') {
+      const proof = url.searchParams.get('monokulo_proof');
+      const wait = url.searchParams.get('monokulo_wait');
+      if ((proof && solved(proof)) || (wait === 'tok' && Date.now() - state.waitIssuedAt >= 10000)) {
+        state.passed = true;
+        res.writeHead(303, { location: '/pay' });
+        return res.end();
+      }
+      if (state.passed) {
+        res.writeHead(200, { 'content-type': 'text/html' });
+        return res.end('<h1>Checkout</h1>');
+      }
+      if (!state.waitIssuedAt) state.waitIssuedAt = Date.now();
+      res.writeHead(429, { 'content-type': 'text/html', 'cache-control': 'no-store' });
+      return res.end(interstitial());
+    }
+    res.writeHead(404);
+    res.end();
+  });
+  return new Promise(resolve => server.listen(0, '127.0.0.1', () => resolve({ server, state, port: server.address().port })));
+}
+
+test('the interstitial solves its challenge with JavaScript and continues by itself', async ({ page }) => {
+  const { server, port } = await challengeServer();
+  try {
+    await page.goto(`http://checkout.localhost:${port}/pay`);
+    await expect(page.locator('h1')).toHaveText('Checkout', { timeout: 10000 });
+    expect(new URL(page.url()).search).toBe('');
+  } finally {
+    server.close();
+  }
+});
+
+test('without JavaScript the interstitial waits ten seconds and continues', async ({ browser }) => {
+  test.setTimeout(40000);
+  const { server, port } = await challengeServer();
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  try {
+    const page = await context.newPage();
+    await page.goto(`http://checkout.localhost:${port}/pay`);
+    await expect(page.getByRole('status').first()).toContainText('continues in 10 seconds');
+    await expect(page.locator('h1')).toHaveText('Checkout', { timeout: 20000 });
+  } finally {
+    await context.close();
+    server.close();
+  }
+});
+
+test('the interstitial works inside a cross-site frame, with and without JavaScript', async ({ browser }) => {
+  test.setTimeout(40000);
+  for (const javaScriptEnabled of [true, false]) {
+    const { server, port } = await challengeServer();
+    const context = await browser.newContext({ javaScriptEnabled });
+    try {
+      const page = await context.newPage();
+      await page.goto(`http://shop.localhost:${port}/shop`);
+      await expect(page.frameLocator('#checkout').locator('h1')).toHaveText('Checkout', { timeout: 20000 });
+    } finally {
+      await context.close();
+      server.close();
+    }
+  }
+});
+
+test('monokulo-client.js solves an order-creation challenge on its own', async ({ page }) => {
+  const { server, state, port } = await challengeServer();
+  try {
+    await page.goto(`http://shop.localhost:${port}/merchant`);
+    const order = await page.evaluate(port => window.Monokulo.createOrder({
+      endpoint: `http://checkout.localhost:${port}`, publicKey: 'pk', amount: 1, currency: 'XMR',
+    }), port);
+    expect(order.orderId).toBe('order-9');
+    expect(state.orderAttempts.length).toBe(2);
+    expect(state.orderAttempts[0]).toBeNull();
+    expect(state.orderAttempts[1]).toMatch(/^c0ffee\.[0-9a-f]+\.\d+$/);
+  } finally {
+    server.close();
+  }
+});

@@ -15,7 +15,9 @@ use monokulo::http::{build_router, AppState};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
 
-fn state(per_client_per_min: u32) -> AppState {
+/// A soft limit of `soft_per_min` (past it the JSON status route answers
+/// `429` with a challenge) and a much higher hard limit.
+fn state(soft_per_min: u32) -> AppState {
     AppState {
         db: Db::open_in_memory().unwrap().into_shared(),
         // Never reached: every request below is for an unknown store.
@@ -23,7 +25,7 @@ fn state(per_client_per_min: u32) -> AppState {
         encryption_key: [7u8; 32],
         status_cache: monokulo::http::status_page::new_status_cache(),
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-        abuse: Arc::new(AbuseProtection::new(AbuseConfig { per_client_per_min, ..Default::default() })),
+        abuse: Arc::new(AbuseProtection::new(AbuseConfig { soft_per_min, ..Default::default() })),
         dns: Arc::new(monokulo::embed_domains::UnavailableDns("no DNS in tests".to_string())),
     }
 }

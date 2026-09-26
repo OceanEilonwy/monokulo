@@ -232,9 +232,18 @@ fn validate_monokulo_scalar(setting: &ScalarSetting, value: &str) -> Result<(), 
         "http_cache.max_mb" => {
             value.parse::<u64>().map(|_| ()).map_err(|_| format!("{} must be a positive integer, got {value:?}", setting.key))
         }
-        "rate_limit.per_ip_per_min" => {
-            value.parse::<u32>().map(|_| ()).map_err(|_| format!("{} must be a positive integer, got {value:?}", setting.key))
-        }
+        "abuse.soft_per_min" | "abuse.hard_per_min" | "abuse.signed_in_per_min" => match value.parse::<u32>() {
+            Ok(n) if n >= 1 => Ok(()),
+            _ => Err(format!("{} must be a positive integer, got {value:?}", setting.key)),
+        },
+        "abuse.challenge_bits" => match value.parse::<u32>() {
+            Ok(n) if (8..=24).contains(&n) => Ok(()),
+            _ => Err(format!("{} must be a whole number from 8 to 24, got {value:?}", setting.key)),
+        },
+        "abuse.under_attack" => value
+            .parse::<bool>()
+            .map(|_| ())
+            .map_err(|_| format!("{} must be \"true\" or \"false\", got {value:?}", setting.key)),
         "rate_limit.per_store_key_per_min" => match value.parse::<u32>() {
             Ok(n) if n >= 1 => Ok(()),
             _ => Err(format!("{} must be a whole number of at least 1, got {value:?}", setting.key)),
@@ -282,6 +291,19 @@ pub async fn save_monokulo(
                 return render_error(&state, &admin_user, message).await;
             }
         }
+    }
+    // The hard limit must sit above the soft one, or the challenge tier
+    // would never be reached.
+    let (soft, hard) = {
+        let db = state.db.lock().unwrap();
+        let effective = |setting: &ScalarSetting| -> u32 {
+            form.get(setting.key).and_then(|v| v.parse().ok()).unwrap_or_else(|| crate::settings::get(&db, setting))
+        };
+        (effective(&crate::settings::ABUSE_SOFT_PER_MIN), effective(&crate::settings::ABUSE_HARD_PER_MIN))
+    };
+    if hard <= soft {
+        let message = format!("abuse.hard_per_min ({hard}) must be above abuse.soft_per_min ({soft}).");
+        return render_error(&state, &admin_user, message).await;
     }
 
     let save_error = {
@@ -546,7 +568,7 @@ mod tests {
 
         let save = router
             .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("rate_limit.per_ip_per_min", "5")]))
+            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("abuse.soft_per_min", "5")]))
             .await
             .unwrap();
         assert_eq!(save.status(), StatusCode::OK);
@@ -580,7 +602,11 @@ mod tests {
             ("exchange_rate.coingecko_base_url", "http://127.0.0.1:9999"),
             ("exchange_rate.cache_seconds", "77"),
             ("http_cache.max_mb", "42"),
-            ("rate_limit.per_ip_per_min", "33"),
+            ("abuse.soft_per_min", "33"),
+            ("abuse.hard_per_min", "330"),
+            ("abuse.signed_in_per_min", "700"),
+            ("abuse.challenge_bits", "18"),
+            ("abuse.under_attack", "true"),
             ("rate_limit.per_store_key_per_min", "444"),
             ("public_url", "https://pay.example.com"),
             ("abuse.trusted_proxies", "127.0.0.1, 10.0.0.0/8"),
@@ -667,7 +693,7 @@ mod tests {
 
         let save = router
             .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("rate_limit.per_ip_per_min", "not-a-number")]))
+            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("abuse.soft_per_min", "not-a-number")]))
             .await
             .unwrap();
         assert_eq!(save.status(), StatusCode::OK);
@@ -676,7 +702,7 @@ mod tests {
 
         let reload = get_settings_page(&router, &cookie).await;
         let html = body_text(reload).await;
-        assert!(html.contains("value=\"20\""), "the rejected save must not have changed the default, got: {html}");
+        assert!(html.contains("value=\"60\""), "the rejected save must not have changed the default, got: {html}");
     }
 
     #[tokio::test]

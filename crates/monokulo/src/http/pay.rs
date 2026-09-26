@@ -213,6 +213,12 @@ pub async fn pos_style() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../../static/pos-app.css"))
 }
 
+/// `GET /static/challenge.js` - solves the abuse-protection challenge on
+/// the "Checking your connection" page (`views::challenge`).
+pub async fn challenge_script() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/challenge.js"))
+}
+
 pub async fn qr_decoder_script() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/jsQR.js"))
 }

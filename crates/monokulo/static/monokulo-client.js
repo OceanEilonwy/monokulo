@@ -19,6 +19,17 @@
  * no-JavaScript fallback. It does not post messages back to this library;
  * this file's own subscription (running here, in the merchant's page, not
  * inside the frame) is what makes the callbacks below fire.
+ *
+ * Abuse protection: a visitor making a lot of requests may be asked to
+ * prove it's a real browser. monokulo then answers `createOrder` or the
+ * status poll with `429` and a JSON body
+ * `{ "error": ..., "challenge": { "challenge": "<token>", "difficulty": <bits>, ... } }`
+ * (also in the `Monokulo-Challenge` response header). This library solves it
+ * by itself - finding a nonce such that SHA-256(challenge + nonce) starts with
+ * `difficulty` zero bits, with Web Crypto - and retries once with the header
+ * `Monokulo-Proof: <challenge>.<nonce>`. A `429` without a challenge (with
+ * `Retry-After`) means "past the hard limit": the call fails and the caller
+ * may retry later. Merchants don't need to change anything.
  */
 (function (global) {
   "use strict";
@@ -63,6 +74,62 @@
     return SCRIPT_ORIGIN;
   }
 
+  function leadingZeroBits(bytes) {
+    var bits = 0;
+    for (var i = 0; i < bytes.length; i++) {
+      if (bytes[i] === 0) { bits += 8; continue; }
+      var b = bytes[i];
+      while ((b & 0x80) === 0) { bits++; b <<= 1; }
+      return bits;
+    }
+    return bits;
+  }
+
+  // Resolves to "<challenge>.<nonce>" (see the header comment).
+  function solveChallenge(challenge, difficulty) {
+    if (!global.crypto || !global.crypto.subtle || typeof TextEncoder !== "function") {
+      return Promise.reject(new Error("this browser can't solve monokulo's challenge (no Web Crypto)"));
+    }
+    var encoder = new TextEncoder();
+    var nonce = 0;
+    function batch() {
+      var tries = [];
+      for (var i = 0; i < 256; i++) tries.push(String(nonce + i));
+      nonce += 256;
+      return Promise.all(tries.map(function (n) {
+        return global.crypto.subtle.digest("SHA-256", encoder.encode(challenge + n)).then(function (hash) {
+          return leadingZeroBits(new Uint8Array(hash)) >= difficulty ? n : null;
+        });
+      })).then(function (results) {
+        for (var j = 0; j < results.length; j++) if (results[j] !== null) return challenge + "." + results[j];
+        return batch();
+      });
+    }
+    return batch();
+  }
+
+  // `fetch`, retried once with a solved challenge if monokulo asks for one.
+  function fetchSolvingChallenges(url, init) {
+    init = init || {};
+    return fetch(url, init).then(function (response) {
+      if (response.status !== 429) return response;
+      return response.clone().json().catch(function () { return null; }).then(function (body) {
+        var issued = body && body.challenge;
+        if (!issued || !issued.challenge) return response;
+        return solveChallenge(issued.challenge, issued.difficulty).then(function (proof) {
+          var headers = {};
+          var original = init.headers || {};
+          for (var key in original) if (Object.prototype.hasOwnProperty.call(original, key)) headers[key] = original[key];
+          headers["Monokulo-Proof"] = proof;
+          var retry = {};
+          for (var k in init) if (Object.prototype.hasOwnProperty.call(init, k)) retry[k] = init[k];
+          retry.headers = headers;
+          return fetch(url, retry);
+        });
+      });
+    });
+  }
+
   function createOrder(params) {
     params = params || {};
     var endpoint = (params.endpoint || scriptOrigin() || "").replace(/\/+$/, "");
@@ -77,7 +144,7 @@
       return Promise.reject(new Error("Monokulo.createOrder: amount and currency are required (currency: \"XMR\", or any fiat currency this store's exchange rate provider supports)"));
     }
 
-    return fetch(endpoint + "/pay/" + encodeURIComponent(publicKey) + "/orders", {
+    return fetchSolvingChallenges(endpoint + "/pay/" + encodeURIComponent(publicKey) + "/orders", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({
@@ -218,7 +285,7 @@
 
     function poll() {
       if (destroyed) return;
-      fetch(statusUrl)
+      fetchSolvingChallenges(statusUrl)
         .then(function (r) {
           // A non-2xx response (a transient rate limit or 5xx) still has a
           // JSON body, so `.json()` alone would "succeed" with `data.status`

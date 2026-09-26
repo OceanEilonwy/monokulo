@@ -21,6 +21,7 @@ use crate::db::{Theme, UserRow};
 
 pub mod admin;
 pub mod auth;
+pub mod challenge;
 pub mod checkout;
 pub mod connect;
 pub mod create_order;

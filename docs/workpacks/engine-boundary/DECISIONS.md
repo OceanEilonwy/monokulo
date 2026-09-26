@@ -127,3 +127,33 @@ Format for each entry:
 - **Decision:** `abuse.onion_listener` (empty = off, must be loopback, read at startup) binds `abuse::proxy_protocol::OnionListener`, an `axum::serve::Listener` whose acceptor task reads each connection's PROXY v1 header on its own task (5 s timeout, 107-byte cap, byte-by-byte so the HTTP request isn't consumed) and drops connections with no valid header. The circuit id is the low 32 bits of a source address in `fc00::/16`; a non-tor PROXY source is used as an address identity. The ordinary listener never parses PROXY; hyper rejects it as a bad request. `PROXY UNKNOWN` is refused.
 - **Alternatives considered:** Parse the header inside the connection handler (one slow client would block `accept`); accept PROXY v2 (tor sends v1).
 - **Why:** Matches the tor manual's `haproxy` export format and keeps the header trusted only where only tor can send it.
+
+### 21. Tier defaults and the arithmetic behind them
+- **Step:** 9c
+- **Decision:** soft 60/min, hard 300/min per anonymous client (Tor circuit or address/`/64`); signed-in merchant 600/min; store key 600/min (unchanged from step 4); challenge 16 bits; pass 10 minutes; wait 10 s; max 100 000 tracked clients (LRU); max 200 000 remembered redeemed tokens. The old flat `rate_limit.per_ip_per_min` (20) is replaced by `abuse.soft_per_min`/`abuse.hard_per_min`.
+- **Alternatives considered:** Keep 20/min as soft; hard at 2x soft; 18-20 challenge bits.
+- **Why:** A customer's checkout visit costs: the page (1), `POST /pay/{pk}/orders` from the embed (1), one SSE stream (1 per connection plus back-off reconnects, at most ~1/min), the no-JS meta refresh (1/min), refund auto-save (a few), and - where EventSource is missing or refused - `monokulo-client.js` polling `/status` every 3 s (20/min). That is at most ~25/min for one visitor, and a few tabs or a NAT with several customers still stay under 60, so a normal visit is never challenged. 300 hard leaves room for a busy shared address to solve a challenge and continue, while stopping floods. 16 bits is 65 536 hashes on average: about a second with Web Crypto on a phone, trivial for one visitor and expensive at scale. With authenticated limits soft = hard, so they can only be refused, never challenged.
+
+### 22. Rolling minute via two weighted windows; pass = "treated as under soft"
+- **Step:** 9c
+- **Decision:** `abuse::limiter::TieredLimiter` estimates the last 60 s as `previous_window * (1 - elapsed/60) + current_window`. A pass lets a client skip the challenge for 10 minutes but the hard limit still applies. Under-attack mode forces "past soft" only for challengeable requests (pages, JSON API), never streams or form posts; a pass still lets the client through.
+- **Alternatives considered:** A classic token bucket (two buckets for soft/hard); timestamp lists per client.
+- **Why:** The sliding-window counter matches "counted over a rolling minute" with two integers per client and no per-request storage, and gives an exact Retry-After (end of the current window).
+
+### 23. Which routes are challengeable, and how responses look
+- **Step:** 9d
+- **Decision:** Pages = `GET /pay/{pk}/orders/{id}`, `/share`, `/`, `/dashboard/login`, `/dashboard/signup`, `/request-invite`, `/status`. JSON API = `POST /pay/{pk}/orders`, `GET .../status`. Streams = `.../events`. Everything else (form posts incl. refund address and login POSTs, `/connect/.../finish`, the dashboard) is counted and only ever hard-limited; `/status/summary` (the nav indicator's cached poll) and `/static/*` are not counted. The interstitial is served with status `429` and `Cache-Control: no-store` at the requested URL (no redirect); a successful `monokulo_proof`/`monokulo_wait` redeems, grants the pass and `303`s back to the URL without the parameter. A POST page past soft is not challenged (it would lose its body). The JSON challenge is `429` + `{"error","challenge":{challenge,difficulty,expires_in,algorithm,proof_header}}` + `Monokulo-Challenge: <challenge>; difficulty=<n>`; a failed proof gets a fresh challenge and says why. Past hard: `429` + `Retry-After` (+ a small HTML page for pages).
+- **Alternatives considered:** `200`/`403`/`503` for the interstitial; redirecting to a separate `/challenge` URL.
+- **Why:** `429` tells tools and caches "not the page you asked for" while browsers still render the HTML and follow the meta refresh; serving in place keeps it working inside any frame without extra URLs.
+
+### 24. Challenge token format and replay store
+- **Step:** 9d
+- **Decision:** `hex(payload).hex(HMAC-SHA256(per-process key, payload))`, payload `pow|difficulty|expires|client|random` (TTL 5 min) or `wait|not_before|expires|client|random` (not_before = issue + 10 s, TTL 5 min after that). Proof = `<challenge>.<decimal nonce>`, valid when `SHA-256(challenge ‖ nonce)` has ≥ difficulty leading zero bits. Redeemed tokens are remembered until expiry; when the store is full of unexpired tokens further redemptions fail closed (`Full`) rather than evicting (which would allow replay).
+- **Alternatives considered:** base64/JSON payloads; evicting oldest redeemed tokens.
+- **Why:** Hex needs no new dependency and is URL/header safe; failing closed can't reopen a replay.
+
+### 25. Steps 9c and 9d committed together
+- **Step:** 9c, 9d
+- **Decision:** One commit for the tiered limiter and the challenge.
+- **Alternatives considered:** Separate commits.
+- **Why:** The middleware's "past soft" branch *is* the challenge; a 9c-only commit would have needed a throwaway "past soft = 429" behaviour that 9d immediately replaces. Both are sub-steps of step 9, so no two README steps are mixed.
