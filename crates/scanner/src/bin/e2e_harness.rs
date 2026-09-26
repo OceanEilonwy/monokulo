@@ -71,6 +71,12 @@ use monokulo::http::{build_router as build_monokulo_router, AppState as ControlP
 // meaningfully-sized logic worth restructuring the crate to share.
 const NODE_HOST: &str = "node.monerodevs.org";
 const NODE_PORT: u16 = 38089;
+/// Tried in order when `NODE_HOST` stops answering - the same fallbacks
+/// `e2e/moneropay-stagenet.toml` configures. These public nodes rate-limit
+/// one address: with the scanner and the payment wallet in this one process
+/// both talking to `NODE_HOST`, it resets connections, and the scanner then
+/// never sees the payment.
+const FALLBACK_NODE_HOSTS: [&str; 2] = ["node2.monerodevs.org", "node3.monerodevs.org"];
 const NODE_SSL: bool = false;
 const NODE_ACCEPT_SELF_SIGNED_CERTS: bool = true;
 const WALLET_PRIVATE_VIEW_KEY: &str = "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e";
@@ -192,8 +198,13 @@ async fn main() {
     if let Err(e) = daemon.get_height().await {
         panic!("\n\ncannot reach the stagenet node at {NODE_HOST}:{NODE_PORT}: {e}\n");
     }
-    let fallback_daemon =
-        Arc::new(FallbackDaemonClient::new(vec![FallbackNode { label: format!("{NODE_HOST}:{NODE_PORT}"), client: daemon.clone() }]));
+    let mut nodes = vec![FallbackNode { label: format!("{NODE_HOST}:{NODE_PORT}"), client: daemon.clone() }];
+    for host in FALLBACK_NODE_HOSTS {
+        let client: Arc<dyn MoneroDaemonClient> =
+            Arc::new(RpcDaemonClient::new(host, NODE_PORT, NODE_SSL, NODE_ACCEPT_SELF_SIGNED_CERTS).expect("failed to build daemon RPC client"));
+        nodes.push(FallbackNode { label: format!("{host}:{NODE_PORT}"), client });
+    }
+    let fallback_daemon = Arc::new(FallbackDaemonClient::new(nodes));
     let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> = Arc::new(RwLock::new(HashMap::new()));
 
     let engine_state = EngineAppState {
@@ -203,7 +214,7 @@ async fn main() {
         wallet_handles: wallet_handles.clone(),
         admin_rate_limiter: Arc::new(RateLimiter::new(1_000_000)),
         configured_networks: Arc::new(HashSet::from([Network::Stagenet])),
-        daemons: Arc::new(HashMap::from([(Network::Stagenet, fallback_daemon)])),
+        daemons: Arc::new(HashMap::from([(Network::Stagenet, fallback_daemon.clone())])),
         scanner_status: new_scanner_status_map(),
         scan_poll_interval_secs: 2,
         expired_order_grace_period_seconds: 0,
@@ -280,7 +291,8 @@ async fn main() {
     {
         let store = store.clone();
         let key_custody = key_custody.clone();
-        let daemon = daemon.clone();
+        // Through the fallback list, not the one node directly.
+        let daemon: Arc<dyn MoneroDaemonClient> = fallback_daemon.clone();
         let wallet_handles = wallet_handles.clone();
         let network_lock = network_lock.clone();
         tokio::spawn(async move {
