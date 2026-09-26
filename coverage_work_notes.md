@@ -90,9 +90,16 @@ precede deletion of old browser tests.
   branches are guards for missing payment-address elements that production
   checkout always renders. The finite-stream fallback branch needs an explicit
   deterministic check in 2.5; proof-batch recursion varies with random token.
+- 2.4 in progress: the fixture now renders the production challenge view at
+  an example-only route. Three browser tests pass for JavaScript proof
+  continuation, no-JS ten-second meta refresh/manual link, and cross-site
+  iframe continuation in both modes. Two more tests pass against real POS for
+  background/reload/reopen/cancel/search and header/iframe geometry at three
+  sizes. These were added before deleting their older hand-built counterparts.
 
 ## Resume next
 
-Continue POS/challenge/status/policy migration in 2.4. The original
+Continue POS status badges, health, framing policy, and remaining cleanup in
+2.4. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.

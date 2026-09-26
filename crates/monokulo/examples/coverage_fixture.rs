@@ -7,7 +7,7 @@ use monokulo::{
     crypto, db::Db, embed_domains::UnavailableDns,
     engine_client::{CreateTenantRequest, EngineClient},
     exchange_rate_config::ExchangeRateProviders,
-    http::{build_router, status_page, AppState},
+    http::{build_router, status_page, AppState}, views,
 };
 use scanner_test_support::{TestEngineConfig, TestEngineHandle};
 
@@ -17,7 +17,8 @@ const SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada34
 const SESSION: &str = "coverage-session-token";
 
 #[derive(Clone)]
-struct Controls { engine: Arc<TestEngineHandle>, client: EngineClient, token: String }
+struct Controls { engine: Arc<TestEngineHandle>, client: EngineClient, token: String,
+    public_key: String, order_id: String }
 
 async fn ready() -> &'static str { "ready" }
 
@@ -34,6 +35,17 @@ async fn create_order(State(control): State<Controls>) -> Result<Json<serde_json
     Ok(Json(serde_json::json!({"order_id": order.order_id})))
 }
 
+async fn challenge(State(control): State<Controls>) -> axum::response::Html<String> {
+    let continue_url = format!("/pay/{}/orders/{}", control.public_key, control.order_id);
+    let view = views::challenge::ChallengePageView {
+        challenge: "coverage-challenge".into(), difficulty: 1,
+        wait_url: format!("{continue_url}?monokulo_wait=coverage"), continue_url,
+        error: None,
+    };
+    axum::response::Html(views::challenge::challenge_page(
+        &views::PageChrome::from_user(None, "/__coverage/challenge"), &view).into_string())
+}
+
 #[tokio::main]
 async fn main() {
     let engine = Arc::new(TestEngineConfig::new()
@@ -46,7 +58,7 @@ async fn main() {
         confirmations_required: Some(1),
         order_expiry_seconds: Some(3600),
     }).await.expect("create fixture tenant");
-    let order = engine_client.create_order(&tenant.secret_token, 1_000_000_000, None, None)
+    let order = engine_client.create_order(&tenant.secret_token, 1_000_000_000, Some("Fixture order".into()), None)
         .await.expect("create fixture order");
     let db = Db::open_in_memory().expect("open fixture database");
     db.create_user("coverage-merchant", "coverage@example.test", "unused", false, 0)
@@ -71,9 +83,11 @@ async fn main() {
     };
     let controls = Router::new()
         .route("/__coverage/ready", get(ready))
+        .route("/__coverage/challenge", get(challenge))
         .route("/__coverage/orders", post(create_order))
         .route("/__coverage/orders/{id}/paid", post(mark_paid))
-        .with_state(Controls { engine, client: state.engine_client.clone(), token: tenant.secret_token.clone() });
+        .with_state(Controls { engine, client: state.engine_client.clone(), token: tenant.secret_token.clone(),
+            public_key: tenant.public_key.clone(), order_id: order.order_id.clone() });
     let app = build_router(state).merge(controls);
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind fixture");
     let url = format!("http://{}", listener.local_addr().unwrap());
