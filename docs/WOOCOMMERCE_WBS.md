@@ -221,6 +221,9 @@ despite the two tracks above being independent on paper:
       - test: run it against a live control plane in CI; exit 0 with valid
         credentials in hand is the pass condition
     - 1.4.3 Mock order creation + checkout redirect
+      - (now: the mock creates orders on monokulo's `POST /pay/{pk}/orders`
+        with the store's secret key, and a default-run test pays one end to
+        end - see the engine-boundary work pack, step 6)
       - outcome: the mock calls the engine's public order-creation
         endpoint with its `pk_` and gets a valid redirect target back
       - what: driver function in the mock crate
@@ -265,6 +268,10 @@ despite the two tracks above being independent on paper:
       - test: `wp-env`/WooCommerce PHPUnit test asserting the gateway ID
         appears in the available-gateways list
     - 1.5.2 `process_payment` → order creation → redirect
+      - (now: `POST {endpoint}/pay/{pk}/orders` on monokulo with
+        `Authorization: Bearer {secret_token}`, redirect to monokulo's
+        `/pay/{pk}/orders/{order_id}`; the engine route and `/pay/v1/...`
+        no longer exist - see `docs/WOOCOMMERCE_ROADMAP.md`'s top note)
       - outcome: placing an order with this gateway calls the real order
         API and redirects the customer to `/pay/v1/...`
       - what: `process_payment()` using `wp_remote_post`

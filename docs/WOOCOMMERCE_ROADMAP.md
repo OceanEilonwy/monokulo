@@ -8,6 +8,33 @@ WooCommerce checkout in a handful of clicks.
 For the task-by-task execution breakdown (small, sequenced, individually
 testable chunks), see `docs/WOOCOMMERCE_WBS.md`.
 
+> **How the plugin integrates today (supersedes the engine-facing details
+> below).** The engine is private: it listens on loopback, has no public
+> routes, and only monokulo talks to it (`docs/DESIGN.md` §4, §10.3,
+> `docs/workpacks/engine-boundary/`). The WooCommerce plugin talks to
+> monokulo only:
+>
+> - **Connect**: `/connect/woocommerce` → `/connect/woocommerce/finish`
+>   returns `{public_key, secret_token, endpoint, webhook_signing_secret}`,
+>   where `endpoint` is monokulo's configured public address (`public_url`),
+>   never the engine's. Until `public_url` is set, connecting is refused with a
+>   clear message (`503` from `/finish`). The plugin records
+>   `connection_version = 2`; an install connected by an older version (which
+>   holds the engine's address) is hidden at checkout and shown a "please
+>   reconnect" admin notice.
+> - **Order creation**: `POST {endpoint}/pay/{pk}/orders` with
+>   `Authorization: Bearer {secret_token}` and `{amount, currency,
+>   merchant_order_id}`. Monokulo prices it into XMR. The key lets the shop's
+>   server create orders even when the store only allows its checkout on its
+>   verified domains, gives it its own rate limit, and is never challenged.
+> - **Checkout**: the customer is redirected to monokulo's
+>   `{endpoint}/pay/{pk}/orders/{order_id}`.
+> - **Webhooks**: unchanged - registered by monokulo during connect, sent by
+>   the engine straight to the shop, signed with `X-Monokulo-Signature`.
+>
+> Stages 1 and 7 below describe the earlier design (public engine routes,
+> `/pay/v1/...` engine checkout); they are kept for history.
+
 ## 0. Decisions already made
 
 These came out of discussion before this document was written, and everything
@@ -357,6 +384,9 @@ Deploy `scanner` itself, unmodified, as a running service:
   (or a reverse-proxy rule) reachable only from the control plane's network,
   while `/api/v1/t/{pk}/...` and `/pay/v1/...` stay public exactly as
   designed. No engine code change — purely a deployment-topology decision.
+  *(Superseded: the engine now has no public routes at all and binds to
+  loopback by default; monokulo is the only public address. See the note at
+  the top of this document.)*
 - Basic monitoring: process up/down, node sync height, disk space (the SQLite
   file), webhook delivery queue depth.
 
@@ -547,6 +577,9 @@ The plugin itself:
 
 - `class WC_Gateway_Monokulo extends WC_Payment_Gateway`, registered the
   normal WooCommerce way (`woocommerce_payment_gateways` filter).
+- *(Superseded - the plugin now creates orders on monokulo with the store's
+  secret key and redirects to monokulo's `/pay/{pk}/orders/{order_id}`; see
+  the note at the top.)*
 - **Integration style: redirect to the engine's existing hosted checkout
   page, not a custom in-checkout widget.** `process_payment( $order_id )`
   calls `POST /api/v1/t/{pk}/orders` (server-side, from PHP — no browser

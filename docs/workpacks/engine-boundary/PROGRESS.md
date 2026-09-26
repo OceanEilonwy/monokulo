@@ -20,36 +20,34 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 | 9d | The challenge (pages, JSON API) | done | `5387224` (with 9c) |
 | 9e | Settings and screens | done | `9992123` |
 | 9f | API and integration changes | done | `2cd674e` (code in `5387224`) |
-| 9g | Tests | done | unit/HTTP/Playwright/synthetic PROXY in `2a198a5`, `5387224`, `9992123`; real Tor test: this commit |
-| 10 | Docs and cleanup | not started | |
+| 9g | Tests | done | unit/HTTP/Playwright/synthetic PROXY in `2a198a5`, `5387224`, `9992123`; real Tor test `6552c92` |
+| 10 | Docs and cleanup | done | (this commit; earlier doc updates landed with each step) |
 
 ## Resume here
 
-**Shared worktree, read first (added by the reviewer, 26 Sep 12:5x).** A separate POS redesign (Solid 2.0 POS app, `pos_redesign.md`) is being worked on in this same worktree by another agent. Its in-progress state was committed as `a93b4ca` ("WIP: POS redesign ..."), and that agent may resume and keep editing. The rules in README §0 ("Shared worktree") apply from now on: don't touch POS-owned files, stage by explicit path only, and use migration number 0023 or higher.
+**All steps (1-10) are done.** Nothing is in progress. Remaining known issues are listed under "Known issues" below; none block the work pack.
 
-Steps 1-9 done. Next: step 10 (docs and cleanup: `docs/DESIGN.md` monokulo boundary / verified embed domains / abuse protection section, `docs/WOOCOMMERCE_ROADMAP.md` (+ `WOOCOMMERCE_WBS.md` if relevant) for the plugin integrating through monokulo, check `deploy/` notes, mark every step done). Was: 9g (real tor test `crates/monokulo/tests/e2e_tor.rs`, docs in `e2e/README.md` and `docs/TESTING.md`), step 10.
-
-Known POS-side issue (not mine, not fixed per the shared-worktree rule): clippy `match_single_binding` warning at `crates/monokulo/src/http/pos.rs:344` from the POS redesign.
+Shared worktree: the POS redesign (`a93b4ca`, `pos_redesign.md`) belongs to another agent; see README §0 "Shared worktree".
 
 PHP suite: see decision 13 for how to run it (wp-env's plugin mount collides with WooCommerce).
 
-Note on `crates/mock-woocommerce/tests/e2e_stagenet_connect_flow.rs`: after step 5 it still reads order status from `{credentials.endpoint}/api/v1/t/...`, which now points at monokulo and would 404. It can't run here (stagenet), but step 6 must switch it to monokulo's routes.
+Commit SHAs: each step's commit records its own SHA in the *next* PROGRESS update. Baseline commit before this work pack: `e4d83da`.
 
-Adding an `AppState` field: every literal has `event_streams: Default::default(),`; a one-line script that inserts the new field after that line in every file from `grep -rl 'event_streams: Default::default(),' crates` (except `crates/monokulo/src/main.rs`, edited by hand) covers them all.
+## Known issues
 
-Gotcha: never hold `state.db.lock()` in a `for` loop header (`for x in db.lock().unwrap().list(..)`) and lock again inside: the guard lives for the whole loop and the test deadlocks. Also never `pkill -f` a pattern that appears in your own command line.
-
-Note: the reviewer committed `a0abcca` (README only) mid-step 2: step 9g's Tor test must now be a real end-to-end test against the installed tor 0.4.9.12 (`#[ignore]`d, real tor process, SOCKS isolation per visitor). Re-read README 9g before step 9.
-
-Commit SHAs: each step's commit records its own SHA in the *next* step's PROGRESS update (a commit can't contain its own hash). Baseline commit before this work pack: `e4d83da`.
+- Pre-existing flake (not from this work): `scanner http::tests::saving_an_out_of_range_scalar_is_rejected_and_nothing_changes` can fail when another test sets `SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED` concurrently (`crates/scanner/src/http/tests.rs:1363`). Seen once; passes on rerun.
+- POS-owned clippy warning (`match_single_binding`) at `crates/monokulo/src/http/pos.rs:344`, from the POS redesign; not touched per the shared-worktree rule.
+- `wp-env start` can't mount this plugin (its directory is named `woocommerce`, colliding with WooCommerce); decision 13 describes the workaround used.
 
 ## Test status at last commit
 
-After 9g:
-- `cargo test --workspace`: 890 passed, 0 failed, 19 ignored (the new ignored one is the real Tor test). One run in this session hit a pre-existing flake: `scanner http::tests::saving_an_out_of_range_scalar_is_rejected_and_nothing_changes` failed once because another scanner test (`http/tests.rs:1363`) sets `SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED` process-wide while it runs; it passed on the next three runs and the rerun of the whole workspace. Not caused by this work pack; not fixed., 0 failed, 18 ignored (includes the POS redesign snapshot `a93b4ca`)., 0 failed, 18 ignored.
-- clippy: per-file warning counts identical to baseline in files I touched; one new warning in POS-owned `http/pos.rs:344` from the POS work.
-- Playwright surface: 23 passed (4 new challenge tests in 9d; includes the POS redesign's own surface tests).
-- PHP suite: run (decision 13): 43 tests OK; `--group live-monokulo`: 1 skipped (no local config).
+After step 10 (final):
+- `cargo test --workspace`: 890 passed, 0 failed, 19 ignored.
+- Stagenet/e2e targets compile: `cargo test -p scanner --features e2e --no-run`, `cargo test -p mock-woocommerce --no-run`.
+- Real Tor test (`cargo test -p monokulo --test e2e_tor -- --ignored`): passed once in 315.9 s (step 9g).
+- clippy: per-file warning counts unchanged from baseline in every file this work pack touched; one new warning in POS-owned `http/pos.rs:344` (not ours).
+- Playwright surface: 23 passed.
+- PHP suite: run via the decision-13 compose setup: 43 tests OK; `--group live-monokulo`: 1 skipped (no local config).
 
 Baseline (before step 1), at `e4d83da`:
 - `cargo test --workspace`: 854 passed, 0 failed, 18 ignored.
@@ -161,3 +159,10 @@ Rust half:
 - Real Tor (`#[ignore]`d): `crates/monokulo/tests/e2e_tor.rs`, new dev-dependency `tokio-socks 0.5`; `TieredLimiter::clients()` added for it. **Run here and passed** against tor 0.4.9.12 and the live network: `test result: ok. 1 passed ... finished in 315.90s` (bootstrap, descriptor reachable, 2 then 4 distinct circuits, A challenged then proof accepted then 429+Retry-After, B unaffected, C capped at 3 streams, D allowed, tor accepted PoW/export/intro-DoS/stream settings).
 - Docs: `e2e/README.md` (real Tor section), `docs/TESTING.md` (rows for challenge, identity, tiers, embed policy/key auth, real Tor, browser tests, default-run WooCommerce checkout).
 - Weakness: the Tor test uses soft 5/hard 12/stream cap 3 to keep it short, not the production defaults.
+
+### Step 10: docs and cleanup
+- `docs/DESIGN.md`: §4 (engine private), new §4.2 "The monokulo boundary" (engine vs monokulo, keyed order creation, verified embed domains + frame-only rule, abuse protection summary with links), §10 tables (admin refund-address route, no public API), §12 rewritten (done across steps 1, 2, 8).
+- `docs/TESTING.md`: engine origin rows replaced by monokulo embed-policy, key-auth, `Sec-Fetch-Dest` and abuse-protection rows, the real Tor test, browser tests, the default-run WooCommerce checkout (steps 8 and 9g).
+- `docs/WOOCOMMERCE_ROADMAP.md`: a top note describing the current integration (connect via monokulo, `public_url` as endpoint, `connection_version`, keyed order creation, monokulo checkout redirect, webhooks unchanged); superseded markers on Stage 1 and Stage 7. `docs/WOOCOMMERCE_WBS.md`: notes on 1.4.3 and 1.5.2.
+- `deploy/`: `deploy/sev-snp/README.md` engine-private note (step 1), `deploy/tor/torrc.snippet` (9b). New docs `docs/TOR.md`, `docs/ABUSE_PROTECTION.md`.
+- Nothing under `~/.claude` was edited. This folder is left in place.

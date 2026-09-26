@@ -91,7 +91,7 @@ difference is how many rows exist in `tenants`:
 should ever reach it. At boot the engine prints a loud warning if it is bound to
 anything other than a loopback, RFC 1918, IPv6 unique-local (`fc00::/7`) or
 link-local address (`0.0.0.0` and `::` count as public, since they listen on every
-interface). Monokulo is the only public address; see the monokulo boundary section.
+interface). Monokulo is the only public address; see §4.2.
 
 ### 4.1 Onboarding tooling
 
@@ -121,6 +121,48 @@ The database always lives next to whichever config file was actually used
 (`moneropay.db` in the config's own directory, not the process's CWD) so these
 commands, and the server itself, reliably agree on which file they mean
 regardless of the directory `scanner` happens to be launched from.
+
+### 4.2 The monokulo boundary
+
+Two processes, one public:
+
+- **The engine** (`crates/scanner`, private) watches the chain, stores orders and
+  payments, and sends webhooks out to shops. It listens on loopback by default, has
+  no public routes, no CORS and no origin lists, and is reached only by monokulo:
+  through its `sk_`-authenticated admin API (§10.2) plus `GET /status`. Monokulo's
+  engine client is guarded by a test that every URL it builds is one of those.
+- **Monokulo** (`crates/monokulo`, public) is everything people and plugins touch:
+  pricing (fiat → XMR), the checkout and share pages, the POS, the dashboard, the
+  embed library, verified embed domains, embed policy and CORS, rate limits and
+  challenges. It is the only public address, on clearnet, Tor or both
+  (`public_url` is what plugins are given).
+
+**Order creation** goes through monokulo's `POST /pay/{pk}/orders`, from a browser
+page (the embed library) or a shop's server with `Authorization: Bearer sk_...` (the
+WooCommerce plugin). Monokulo records whether the key was used
+(`order_currency_metadata.created_with_key`; dashboard and POS orders count as keyed).
+
+**Verified embed domains.** A store lists the domains its checkout runs on and proves
+each with a DNS TXT record at `_monokulo.<domain>` (3-day grace when it disappears,
+re-checked daily). With "only my verified domains" on:
+
+- every `/pay/{pk}/...` response carries `Content-Security-Policy: frame-ancestors
+  'self' <verified domains>`, and CORS answers only those origins;
+- `POST /pay/{pk}/orders` needs a verified page's `Origin` or the store's key -
+  neither is `403`;
+- the checkout (and share) page of an order a browser created renders only inside a
+  frame (`Sec-Fetch-Dest: iframe`/`frame`; requests without the header pass); as a
+  full page it shows "Open this payment from the shop's website". Keyed orders open
+  either way.
+
+**Abuse protection** identifies each client (Tor circuit via a loopback onion
+listener fed by tor's PROXY header, clearnet address behind trusted proxies with IPv6
+grouped by `/64`, signed-in user, store key), counts it over a rolling minute, and
+past a soft limit asks for a cookie-free proof-of-work or 10-second-wait challenge,
+past a hard limit answers `429` + `Retry-After`. Signed-in merchants and store keys
+are never challenged. Details, response shapes and settings:
+[`docs/ABUSE_PROTECTION.md`](ABUSE_PROTECTION.md); Tor deployment:
+[`docs/TOR.md`](TOR.md).
 
 ## 5. High-Level Architecture
 
@@ -944,7 +986,7 @@ remaining layers are:
 3. **Short connection timeouts**, bounded worker/task counts.
 
 Everything public - per-client limits for Tor and clearnet visitors, challenges,
-verified embed domains, CORS - is monokulo's job; see the monokulo boundary section.
+verified embed domains, CORS - is monokulo's job; see §4.2 and `docs/ABUSE_PROTECTION.md`.
 
 ## 13. Configuration Surface (sketch)
 
