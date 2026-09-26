@@ -105,7 +105,7 @@ Facts established during planning (verify each as you go; line numbers may have 
   - Peer IP comes from `ConnectInfo`, failing open when absent (tests).
   - Monokulo binds `127.0.0.1:8081` (hard-coded in `crates/monokulo/src/main.rs`).
 - **Several places construct monokulo's `AppState` directly:** the `http/*.rs` test modules, `crates/mock-woocommerce/src/lib.rs`, `crates/mock-woocommerce/tests/*.rs` and `crates/scanner/src/bin/e2e_harness.rs`. When you add fields, update all of them. `cargo test --workspace` catches it; `-p monokulo` alone does not.
-- **Toolchain:** `tor` is not installed. `php` 8.5 and `composer` are. `docker` is installed.
+- **Toolchain:** `tor` 0.4.9.12 is installed at `/usr/bin/tor`, built with the proof-of-work module (`tor --list-modules` shows `pow: yes`). `php` 8.5 and `composer` are installed, and so is `docker`.
 
 ---
 
@@ -301,7 +301,19 @@ The alternative:
   - it waits and continues without JS;
   - both work inside a cross-site frame;
   - `monokulo-client.js` solves an order-creation challenge on its own.
-- **Tor:** tor isn't installed here. Write the scripted check (local tor, circuit IDs arrive, different circuits get separate limits) as an `#[ignore]` test or script with clear instructions, and cover the PROXY listener with a synthetic-header integration test that runs by default.
+- **Tor: a real tor end-to-end test (owner's requirement: real tor, not a mocked environment).** Tor is installed (see §1).
+  - **Test file:** add a Rust e2e test (e.g. `crates/monokulo/tests/e2e_tor.rs`). It needs the live Tor network, so follow the stagenet tests' convention: `#[ignore]` by default, run with `cargo test -p monokulo --test e2e_tor -- --ignored --nocapture`.
+  - **Server side:** the test launches a **real `tor` process** with a temporary `DataDirectory` and a v3 onion service pointing at monokulo's loopback onion listener. It uses exactly the `torrc` lines this step ships in `deploy/`: `HiddenServiceExportCircuitID haproxy`, `HiddenServicePoWDefensesEnabled 1`, the intro DoS defence and `HiddenServiceMaxStreams`. Monokulo runs in-process on loopback.
+  - **Client side:** the test connects to the `.onion` through tor's own `SocksPort`. Each simulated visitor uses a different SOCKS username/password, so `IsolateSOCKSAuth` gives it its own circuit. Adding a SOCKS-capable dev-dependency is fine: `reqwest`'s `socks` feature or `tokio-socks`.
+  - **Wait for readiness:** wait for bootstrap and for the onion descriptor to be reachable, by retrying a request with a generous timeout of several minutes. Fail with a clear message on timeout; never pass silently.
+  - **It must verify:**
+    - monokulo sees a distinct client identity (circuit ID) per visitor;
+    - pushing one visitor past the soft limit challenges only that visitor while another keeps getting normal responses;
+    - past the hard limit, only that visitor gets `429`;
+    - the open-stream cap applies per (circuit, store);
+    - tor accepted the proof-of-work settings, checked through the control port (`GETCONF`) or tor's startup log, not assumed.
+  - **Docs:** document how to run it in `e2e/README.md` and `docs/TESTING.md`.
+  - **Keep the fast synthetic PROXY-header integration test as well.** It runs by default and guards the parser and the rule that the public listener rejects PROXY headers. It doesn't replace the real test.
 
 #### Rate-limiting matrix (this is the agreed behaviour)
 
