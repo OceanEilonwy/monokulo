@@ -328,35 +328,21 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         credentials.public_key, credentials.endpoint
     );
 
+    // Created the way the plugin does it: on monokulo, with the store's key.
     let order = create_order(
-        &monokulo_base_url,
+        &credentials.endpoint,
         &credentials.public_key,
+        &credentials.secret_token,
         TEST_ORDER_AMOUNT,
         TEST_CURRENCY,
     )
     .await
     .expect("order creation should succeed against the real stagenet-configured control plane");
 
-    // `create_order` only returns `order_id`/`checkout_url` - fetch the real
-    // derived address and exact XMR amount directly from the engine's own public,
-    // unauthenticated order-status endpoint, the same one a real customer's browser
-    // would poll (and the same one `tests/e2e_stagenet.rs` reads at the repo root).
-    let order_status: Value = reqwest::get(format!(
-        "{}/api/v1/t/{}/orders/{}",
-        credentials.endpoint, credentials.public_key, order.order_id
-    ))
-    .await
-    .expect("order status request failed")
-    .json()
-    .await
-    .expect("order status response was not valid JSON");
-    let address = order_status["address"]
-        .as_str()
-        .expect("expected a real derived address")
-        .to_string();
-    let amount_piconero = order_status["xmr_amount_piconero"]
-        .as_u64()
-        .expect("expected a real xmr_amount_piconero");
+    // Monokulo's own create-order response carries the real derived address
+    // and exact XMR amount - nothing needs to ask the (private) engine.
+    let address = order.address.clone();
+    let amount_piconero = order.xmr_amount_piconero;
     println!(
         "created order {}: {amount_piconero} piconero to {address}",
         order.order_id
@@ -436,20 +422,17 @@ async fn real_stagenet_connect_flow_pays_a_real_order_end_to_end() {
         // detection one).
         let height = daemon.get_height().await;
         let location = daemon.locate_transaction(&tx_hash_hex).await;
+        // Monokulo's public status route - what the customer's checkout page polls.
         let order_status: Result<Value, _> = async {
-            reqwest::get(format!(
-                "{}/api/v1/t/{}/orders/{}",
-                credentials.endpoint, credentials.public_key, order.order_id
-            ))
+            reqwest::get(format!("{}/status", order.checkout_url))
             .await?
             .json()
             .await
         }
         .await;
         eprintln!(
-            "DIAG tick {tick}: daemon_height={height:?} tx_location={location:?} order_status={:?} amount_received={:?} confirmations={:?}",
+            "DIAG tick {tick}: daemon_height={height:?} tx_location={location:?} order_status={:?} confirmations={:?}",
             order_status.as_ref().ok().and_then(|v| v.get("status")),
-            order_status.as_ref().ok().and_then(|v| v.get("amount_received_piconero")),
             order_status.as_ref().ok().and_then(|v| v.get("confirmations")),
         );
 

@@ -199,6 +199,41 @@ impl TestEngineHandle {
     pub fn store(&self) -> &scanner::store::SharedStore {
         &self.store
     }
+
+    /// Pays `order_id` in full, the way a real scan would record it: a
+    /// synthetic confirmed payment of exactly the order's amount, then the
+    /// same status recompute-and-enqueue a scan tick does
+    /// (`scanner::scanner::recompute_and_notify`), so the order reads `paid`
+    /// and an `order.paid` webhook is queued for delivery. For end-to-end
+    /// tests that need a paid order without a real chain: pair it with
+    /// [`TestEngineConfig::with_background_loops`] (and usually
+    /// [`TestEngineConfig::without_background_scan_loop`]) so the webhook is
+    /// actually delivered.
+    ///
+    /// The payment is recorded at height 1000 and the recompute runs as if
+    /// the chain tip were 100 blocks later, comfortably past any
+    /// confirmation requirement a test would configure.
+    pub fn mark_order_paid(&self, order_id: &str) -> Result<(), scanner::store::StoreError> {
+        const PAYMENT_HEIGHT: i64 = 1000;
+        let store = self.store.lock().unwrap();
+        let tenant_id = store.get_order_tenant_id(order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
+        let order = store.get_order(&tenant_id, order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
+        let now = scanner::now_unix();
+        store.record_payment_match(
+            order_id,
+            &format!("test-payment-{order_id}"),
+            0,
+            order.xmr_amount_piconero,
+            "[]",
+            now,
+            Some(PAYMENT_HEIGHT),
+        )?;
+        scanner::scanner::recompute_and_notify(&store, order_id, PAYMENT_HEIGHT as u64 + 100, now)
+            .map_err(|e| match e {
+                scanner::scanner::ScannerError::Store(e) => e,
+                other => panic!("recomputing a test order's status failed: {other}"),
+            })
+    }
 }
 
 impl Drop for TestEngineHandle {

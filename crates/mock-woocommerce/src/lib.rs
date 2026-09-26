@@ -269,6 +269,10 @@ async fn spawn_webhook_receiver() -> Result<WebhookReceiver, ConnectFlowError> {
 pub struct CreatedOrder {
     pub order_id: String,
     pub checkout_url: String,
+    /// The payment address and exact XMR amount monokulo's own response
+    /// carried - what a stagenet test pays, without asking the engine.
+    pub address: String,
+    pub xmr_amount_piconero: u64,
 }
 
 /// Field-for-field mirror of monokulo's own
@@ -280,6 +284,8 @@ pub struct CreatedOrder {
 #[derive(Debug, Deserialize)]
 struct CreateOrderResponseBody {
     order_id: String,
+    address: String,
+    xmr_amount_piconero: u64,
 }
 
 /// Every way [`run_connect_flow`] (or the callback handler it waits on) can
@@ -591,29 +597,29 @@ async fn expect_ok(response: reqwest::Response, step: &str) -> Result<(), Connec
     })
 }
 
-/// Creates a real order through monokulo's own public, unauthenticated
-/// `POST /pay/{pk}/orders` (`monokulo/src/http/pay.rs::create_order`) -
-/// exactly the call a real WooCommerce checkout page makes, per
-/// `docs/fx_refactor.md` decisions 2/3: the engine has no concept of fiat or
-/// a checkout UI at all any more, so a real storefront integration talks to
-/// monokulo, not the engine directly, for both. Builds the checkout
-/// redirect target (`{monokulo_base_url}/pay/{public_key}/orders/{order_id}`,
-/// matching monokulo's own route table for `checkout::checkout_page`)
-/// from the real `order_id` monokulo handed back - not a
-/// plausibly-shaped guess.
+/// Creates a real order through monokulo's `POST /pay/{pk}/orders`
+/// (`monokulo/src/http/pay.rs::create_order`) exactly the way the real
+/// WooCommerce plugin does: from the shop's server, authenticated with the
+/// store's secret key (`Authorization: Bearer sk_...`), with monokulo pricing
+/// the amount into XMR. Builds the checkout redirect target
+/// (`{monokulo_base_url}/pay/{public_key}/orders/{order_id}`, matching
+/// monokulo's own route table for `checkout::checkout_page`) from the real
+/// `order_id` monokulo handed back - not a plausibly-shaped guess.
 ///
-/// `monokulo_base_url` is monokulo's own externally-reachable
-/// address - *not* the engine's; a real WooCommerce plugin never talks to
-/// the engine directly at all.
+/// `monokulo_base_url` is monokulo's own externally-reachable address (the
+/// `endpoint` `/finish` returned) - *not* the engine's; a WooCommerce plugin
+/// never talks to the engine at all.
 pub async fn create_order(
     monokulo_base_url: &str,
     public_key: &str,
+    secret_token: &str,
     amount: &str,
     currency: &str,
 ) -> Result<CreatedOrder, ConnectFlowError> {
     let client = reqwest::Client::new();
     let response = client
         .post(format!("{monokulo_base_url}/pay/{public_key}/orders"))
+        .bearer_auth(secret_token)
         .json(&serde_json::json!({
             "amount": amount,
             "currency": currency,
@@ -639,6 +645,8 @@ pub async fn create_order(
     Ok(CreatedOrder {
         order_id: parsed.order_id,
         checkout_url,
+        address: parsed.address,
+        xmr_amount_piconero: parsed.xmr_amount_piconero,
     })
 }
 
@@ -1025,6 +1033,7 @@ mod tests {
         let order = create_order(
             &monokulo_base_url,
             &credentials.public_key,
+            &credentials.secret_token,
             "10.00",
             TEST_CURRENCY,
         )
@@ -1412,6 +1421,7 @@ mod tests {
         let order = create_order(
             &monokulo_base_url,
             &credentials.public_key,
+            &credentials.secret_token,
             "1.00",
             TEST_CURRENCY,
         )
@@ -1469,5 +1479,75 @@ mod tests {
             &event.raw_body,
             &event.signature
         ));
+    }
+
+    /// The whole WooCommerce checkout, end to end, with no stagenet: the
+    /// plugin connects (and gets monokulo's address, not the engine's),
+    /// creates an order on monokulo with the store's secret key, the
+    /// customer's browser opens monokulo's checkout page, the order is paid
+    /// on the test engine, and the plugin receives the signed `order.paid`
+    /// webhook straight from the engine. Also checks a wrong key is refused.
+    #[tokio::test]
+    async fn a_full_woocommerce_checkout_is_created_with_the_key_opened_and_paid() {
+        let engine = scanner_test_support::TestEngineConfig::new()
+            .with_networks(&[monero::Network::Mainnet])
+            .with_background_loops()
+            .without_background_scan_loop()
+            .spawn()
+            .await;
+        let monokulo = spawn_test_monokulo(engine.addr).await;
+        let monokulo_base_url = format!("http://{}", monokulo.addr);
+
+        let credentials = run_connect_flow(&monokulo_base_url)
+            .await
+            .expect("the connect flow should succeed");
+        assert_eq!(credentials.endpoint, monokulo_base_url);
+
+        // The plugin's order creation, with the key, against the endpoint it was given.
+        let order = create_order(&credentials.endpoint, &credentials.public_key, &credentials.secret_token, "0.5", TEST_CURRENCY)
+            .await
+            .expect("keyed order creation should succeed");
+        assert_eq!(order.xmr_amount_piconero, 500_000_000_000);
+        assert_eq!(order.checkout_url, format!("{monokulo_base_url}/pay/{}/orders/{}", credentials.public_key, order.order_id));
+
+        // A wrong key is refused, not silently treated as a browser request.
+        let wrong = create_order(&credentials.endpoint, &credentials.public_key, "sk_wrong", "0.5", TEST_CURRENCY).await;
+        assert!(
+            matches!(wrong, Err(ConnectFlowError::UnexpectedResponse { status: 401, .. })),
+            "a wrong key must get 401, got: {wrong:?}"
+        );
+
+        // The customer's browser follows the redirect to monokulo's checkout page.
+        let page = reqwest::get(&order.checkout_url).await.expect("checkout page request failed");
+        assert_eq!(page.status(), reqwest::StatusCode::OK);
+        let html = page.text().await.unwrap();
+        assert!(html.contains(&order.address), "the checkout page shows the payment address");
+
+        // Paid on the engine; the engine's delivery loop sends the webhook.
+        engine.mark_order_paid(&order.order_id).expect("marking the order paid failed");
+
+        let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(15);
+        let paid = loop {
+            let found = credentials.webhook_receiver.events().into_iter().find(|e| {
+                e.event == "order.paid" && e.payload.get("order_id").and_then(|v| v.as_str()) == Some(order.order_id.as_str())
+            });
+            if found.is_some() || tokio::time::Instant::now() >= deadline {
+                break found;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+        };
+        let paid = paid.expect("expected a signed order.paid webhook within the deadline");
+        assert_eq!(paid.payload["status"], serde_json::json!("paid"));
+        assert!(shared::webhook_sign::verify_signature(&credentials.webhook_signing_secret, &paid.raw_body, &paid.signature));
+
+        // And monokulo's own status route, which the checkout page polls, agrees.
+        let status: serde_json::Value = reqwest::get(format!("{}/status", order.checkout_url))
+            .await
+            .expect("status request failed")
+            .json()
+            .await
+            .expect("status response was not JSON");
+        assert_eq!(status["status"], "paid");
+        assert_eq!(status["is_terminal"], true);
     }
 }
