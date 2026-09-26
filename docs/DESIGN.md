@@ -99,7 +99,7 @@ interface). Monokulo is the only public address; see the monokulo boundary secti
 an interactive wizard that produces or merges `moneropay.toml` — curated node
 choice with a live "test this connection now" check, the `[wallet]` bootstrap
 walked through field by field (or, on a re-run against an existing bootstrap,
-offered as keep-as-is / add an allowed origin / replace entirely), and a rendered
+offered as keep-as-is / replace entirely), and a rendered
 file with every setting present, active or commented with its default. It
 deliberately does not generate wallet key material — a self-hoster brings their
 own existing wallet (§3, non-goals).
@@ -162,7 +162,7 @@ Components, each with one clear owner of state:
 
 | Component | Owns | Never does |
 |---|---|---|
-| HTTP API layer | Request/response, auth resolution, CORS/Origin checks | Direct SQLite writes; talks to the writer actor and read pool only |
+| HTTP API layer | Request/response, auth resolution (the engine is private: no CORS, no Origin checks) | Direct SQLite writes; talks to the writer actor and read pool only |
 | `KeyCustody` | Private view keys, scan/derive crypto | Anything involving a spend key; never returns key material to a caller |
 | Chain Scanner | Polling monerod, matching outputs, reorg detection | SQLite access — sends match/void events to the writer actor |
 | Writer Actor | The single SQLite write connection; all mutations | Outbound HTTP (webhooks go through the delivery worker) |
@@ -658,7 +658,7 @@ CREATE TABLE tenants (
     next_minor_index        INTEGER NOT NULL DEFAULT 1,
     confirmations_required  INTEGER NOT NULL DEFAULT 10,
     order_expiry_seconds    INTEGER NOT NULL DEFAULT 1800,
-    allowed_origins         TEXT NOT NULL,
+    -- allowed_origins was dropped (migration 0014): embedding policy is monokulo's
     created_at              INTEGER NOT NULL,
     disabled_at             INTEGER
 );
@@ -809,9 +809,9 @@ JSON API — `xmr_amount_piconero` only, no fiat concept anywhere in it.
 
 Two credential types per tenant:
 
-- **`pk_...` (public key)** — embedded in the merchant's static site JS. Identifies
-  which tenant's orders/widget a request concerns. Not a secret; never accepted as
-  authorization for anything.
+- **`pk_...` (public key)** — identifies a tenant. Monokulo uses it in its own
+  public URLs (`/pay/{pk}/...`); the engine itself serves no `pk_`-addressed routes
+  any more. Not a secret; never accepted as authorization for anything.
 - **`sk_...` (admin secret)** — stored only as a SHA-256 hex digest
   (`secret_token_hash`, unique-indexed for O(1) lookup). Deliberately not a slow,
   memory-hard hash like Argon2id: the token is high-entropy and machine-generated, not
@@ -841,13 +841,13 @@ every handler an already-scoped tenant context, not re-implemented per handler.
 
 | Method | Path | Auth | Notes |
 |---|---|---|---|
-| `POST` | `/api/v1/admin/tenants` | none (DDoS layer only, §12) | `{view_key_hex, spend_pubkey_hex, network, allowed_origins[], confirmations_required?, order_expiry_seconds?}` → `{tenant_id, public_key, secret_token}` (secret shown once) |
+| `POST` | `/api/v1/admin/tenants` | none at the application layer; reachable only by monokulo (§4: the engine is private) | `{view_key_hex, spend_pubkey_hex, network, confirmations_required?, order_expiry_seconds?}` → `{tenant_id, public_key, secret_token}` (secret shown once) |
 | `GET` | `/api/v1/admin/tenant` | `sk_` | Own config; never returns `sealed_key_material` or the token hash |
-| `PATCH` | `/api/v1/admin/tenant` | `sk_` | Mutable fields only: `allowed_origins`, `confirmations_required`, `order_expiry_seconds`. Key material and `public_key` are immutable — rotate by creating a new tenant |
+| `PATCH` | `/api/v1/admin/tenant` | `sk_` | Mutable fields only: `confirmations_required`, `order_expiry_seconds`. Key material and `public_key` are immutable — rotate by creating a new tenant |
 | `POST` | `/api/v1/admin/tenant/rotate-secret` | `sk_` | Invalidates the old secret, returns a new one once |
 | `DELETE` | `/api/v1/admin/tenant` | `sk_` | Soft-delete: `key_custody.remove_wallet()`, set `disabled_at`; orders keep a valid FK |
 | `GET` | `/api/v1/admin/tenant/orders?status=&cursor=` | `sk_` | Paginated; each row also carries `first_scanned_height`/`last_scanned_height`/`currently_scanning` (§7.8) |
-| `POST` | `/api/v1/admin/tenant/orders` | `sk_` | Creates an order with an optional per-order `confirmations_required` override, including 0-conf |
+| `POST` | `/api/v1/admin/tenant/orders` | `sk_` | `{merchant_order_id?, xmr_amount_piconero, description?, confirmations_required?}` → `{order_id, address, xmr_amount_piconero, expires_at}`. The only way to create an order; the per-order `confirmations_required` override may be 0 (0-conf). The engine does no fiat lookup (`docs/fx_refactor.md` Phase 3) |
 | `GET` | `/api/v1/admin/tenant/orders/{payment_id}` | `sk_` | Includes `order_payments` audit trail and the same three scanned-range fields |
 | `POST` | `/api/v1/admin/tenant/orders/{order_id}/refund-address` | `sk_` | `{refund_address}` → `200`, or `404` if the order isn't this tenant's. Stored verbatim; nothing ever sends it. Monokulo's checkout calls this on the customer's behalf after checking the address parses for the order's network |
 | `GET` | `/api/v1/admin/tenant/events` | `sk_` | Server-Sent Events: `ready` on connect, `order` `{order_id}` whenever one of this tenant's orders visibly changes (status, confirmations, amount, payments, double-spend flag, refund address), `resync` if the subscriber fell behind. Hints only - the client re-reads the order. Published after the write commits |
@@ -856,16 +856,16 @@ every handler an already-scoped tenant context, not re-implemented per handler.
 | `GET` | `/api/v1/admin/tenant/webhooks` | `sk_` | List (never re-shows `signing_secret`) |
 | `DELETE` | `/api/v1/admin/tenant/webhooks/{id}` | `sk_` | Rotation is delete+recreate in v1 |
 
-### 10.3 Public API (`/api/v1/t/{pk}/...`)
+### 10.3 No public API
 
-No bearer auth — scoped by `pk_` in the path plus an `allowed_origins` check on
-`Origin`, independent of the CORS header itself.
-
-| Method | Path | Notes |
-|---|---|---|
-| `POST` | `/api/v1/t/{pk}/orders` | `{merchant_order_id?, xmr_amount_piconero, description?}` → `{order_id, address, xmr_amount_piconero, expires_at}`. Public callers cannot set per-order confirmation overrides; the engine does no fiat lookup (`docs/fx_refactor.md` Phase 3) |
-| `GET` | `/api/v1/t/{pk}/orders/{payment_id}` | Status poll |
-| `POST` | `/api/v1/t/{pk}/orders/{payment_id}/refund-address` | Records only; nothing ever sends it |
+The engine used to serve `pk_`-addressed public routes (`/api/v1/t/{pk}/orders`,
+order status and refund address) with a CORS layer and a per-tenant `allowed_origins`
+check. They are gone: the engine is private (§4), and everything a browser, merchant
+or plugin touches is served by monokulo, which reaches the engine only through §10.2
+(plus `GET /status`, the unauthenticated JSON health report monokulo's status page
+reads). `POST /api/v1/admin/tenants` stays unauthenticated at the application layer
+(monokulo provisions a store before it has any `sk_`) but, like everything else here,
+is reachable only by monokulo.
 
 ### 10.4 Checkout page and client library — moved off the engine
 
@@ -884,10 +884,9 @@ Both now live on monokulo, not here (`docs/fx_refactor.md` Phases 2-4):
   monokulo at `GET /static/moneropay-client.js` and calls monokulo's own
   `POST /pay/{pk}/orders`, not this engine's API directly.
 
-A self-hoster running the engine alone, with no monokulo in front of it, has
-neither of these — they get the plain JSON API in §10.3 and are expected to build
-their own checkout experience against it, per this project's own "power users write a
-custom integration" stance on that deployment shape.
+A self-hoster runs monokulo in front of the engine too: the engine has no public API
+of its own any more (§10.3), so monokulo is the only supported way to put a checkout
+in front of customers.
 
 ## 11. Webhook Delivery
 
@@ -934,26 +933,18 @@ custom integration" stance on that deployment shape.
 
 ## 12. DDoS Protections
 
-The realistic threat model: unauthenticated endpoints (`POST /api/v1/t/{pk}/orders`,
-`POST /api/v1/admin/tenants`) exist by necessity, since a static site has nowhere to
-keep a secret. Layers, cheapest first:
+The engine has no public surface to protect: it listens on loopback by default (§4),
+serves only the `sk_` admin API and `/status`, and is reached only by monokulo. Its own
+remaining layers are:
 
-1. **Per-IP token-bucket rate limiting** on state-changing endpoints.
+1. **Per-token rate limiting** on every route (`http::rate_limit`), keyed on the
+   presented `sk_`, falling back to the caller's address for the two token-less routes
+   (tenant creation and `/status`).
 2. **Small request body caps**, enforced before JSON parsing.
-3. **`allowed_origins` enforcement independent of the CORS header** — reject
-   non-matching `Origin`/`Referer` at the application layer too, not just via the
-   browser-enforced CORS mechanism (which is a client-side courtesy, not a server-side
-   guarantee).
-4. **Optional JS proof-of-work challenge**, gated behind a load threshold (normal
-   traffic never sees it) — no third-party CAPTCHA dependency, no accounts.
-5. **Bounded global concurrency** (a semaphore in front of the router) in addition to
-   per-IP limits — relevant specifically because the async model makes idle
-   connections cheap, so an attacker can open far more of them before hitting OS fd
-   limits than a thread-per-connection model would allow.
-6. **Short connection timeouts**, bounded worker/task counts.
-7. **Documented, not implemented**: running behind Tor (hides the home IP entirely) or
-   a reverse proxy/CDN for a clearnet domain — a deployment recommendation, not app
-   code.
+3. **Short connection timeouts**, bounded worker/task counts.
+
+Everything public - per-client limits for Tor and clearnet visitors, challenges,
+verified embed domains, CORS - is monokulo's job; see the monokulo boundary section.
 
 ## 13. Configuration Surface (sketch)
 
@@ -997,9 +988,8 @@ tls_key = "/etc/moneropay/key.pem"
 dir = "/etc/moneropay/templates"   # overridable with --templates-dir
 
 [ddos]
-rate_limit_per_ip_per_min = 20
+rate_limit_per_token_per_min = 120   # per sk_ (per address for token-less routes); no per-IP limit, the engine is private
 max_body_bytes = 8192
-pow_challenge = "auto"        # off | auto | always
 
 [webhooks]
 allow_private_urls = false    # SSRF escape hatch, self-hosted LAN testing only
@@ -1039,8 +1029,8 @@ whichever monokulo instance a merchant is using:
 </script>
 ```
 
-`createOrder()` posts to monokulo's own `POST /pay/{pk}/orders` (§10.3's
-XMR-only engine endpoint is never called from the browser); `mount()` injects an
+`createOrder()` posts to monokulo's own `POST /pay/{pk}/orders` (the engine is
+never called from the browser); `mount()` injects an
 `<iframe src="https://cloud.example.com/pay/{pk}/orders/{paymentId}">` and listens for
 `postMessage` events that page posts on status changes. All payment logic and UI lives
 server-side in monokulo's own templates; the client library stays thin

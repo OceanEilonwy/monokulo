@@ -167,7 +167,6 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         key_custody: key_custody.clone(),
         key_custody_backend: "plain".to_string(),
         wallet_handles: wallet_handles.clone(),
-        rate_limiter: Arc::new(RateLimiter::new(10_000)),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         configured_networks: Arc::new(HashSet::from([Network::Stagenet])),
         daemons: Arc::new(HashMap::from([(Network::Stagenet, fallback_daemon)])),

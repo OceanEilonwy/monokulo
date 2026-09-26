@@ -64,7 +64,6 @@ fn test_app_state() -> AppState {
         // Generous by default so the auth/IDOR/order-flow tests below aren't
         // incidentally affected by rate limiting - the middleware's own behavior is
         // tested separately, end to end, in `rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info`.
-        rate_limiter: Arc::new(RateLimiter::new(10_000)),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
         scanner_status: new_scanner_status_map(),
@@ -98,7 +97,7 @@ struct TestTenant {
     secret_token: String,
 }
 
-async fn create_tenant(router: &Router, seed: u8, allowed_origins: Vec<&str>) -> TestTenant {
+async fn create_tenant(router: &Router, seed: u8) -> TestTenant {
     let req = json_request(
         "POST",
         "/api/v1/admin/tenants",
@@ -107,7 +106,6 @@ async fn create_tenant(router: &Router, seed: u8, allowed_origins: Vec<&str>) ->
         serde_json::json!({
             "view_key_hex": valid_view_key_hex(seed),
             "spend_pubkey_hex": valid_spend_pubkey_hex(seed.wrapping_add(1)),
-            "allowed_origins": allowed_origins,
         }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
@@ -122,13 +120,13 @@ async fn create_tenant(router: &Router, seed: u8, allowed_origins: Vec<&str>) ->
 #[tokio::test]
 async fn create_tenant_then_create_order_happy_path() {
     let router = test_router();
-    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let tenant = create_tenant(&router, 1).await;
 
     let req = json_request(
         "POST",
-        &format!("/api/v1/t/{}/orders", tenant.public_key),
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
         None,
-        Some("https://merchant.example"),
         serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
@@ -140,7 +138,8 @@ async fn create_tenant_then_create_order_happy_path() {
 
     let req = Request::builder()
         .method("GET")
-        .uri(format!("/api/v1/t/{}/orders/{order_id}", tenant.public_key))
+        .uri(format!("/api/v1/admin/tenant/orders/{order_id}"))
+        .header("authorization", format!("Bearer {}", tenant.secret_token))
         .body(Body::empty())
         .unwrap();
     let response = router.oneshot(req).await.unwrap();
@@ -155,7 +154,7 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
     let state = test_app_state();
     let store = state.store.clone();
     let router = build_router(state, 1_000_000);
-    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let tenant = create_tenant(&router, 1).await;
 
     let req = json_request(
         "POST",
@@ -179,13 +178,13 @@ async fn creating_an_order_with_no_confirmations_required_override_leaves_it_uns
     let state = test_app_state();
     let store = state.store.clone();
     let router = build_router(state, 1_000_000);
-    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let tenant = create_tenant(&router, 1).await;
 
     let req = json_request(
         "POST",
-        &format!("/api/v1/t/{}/orders", tenant.public_key),
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
         None,
-        Some("https://merchant.example"),
         serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
     );
     let response = router.oneshot(req).await.unwrap();
@@ -203,7 +202,7 @@ async fn creating_an_order_with_an_out_of_range_confirmations_required_is_reject
     // `0` is no longer out of range - native 0-conf, see `status::derive_status`'s
     // own doc comment - so the only remaining bad value is over the 720 cap.
     let router = test_router();
-    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let tenant = create_tenant(&router, 1).await;
 
     let req = json_request(
         "POST",
@@ -221,7 +220,7 @@ async fn creating_an_order_with_confirmations_required_zero_is_accepted() {
     let state = test_app_state();
     let store = state.store.clone();
     let router = build_router(state, 1_000_000);
-    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let tenant = create_tenant(&router, 1).await;
 
     let req = json_request(
         "POST",
@@ -238,26 +237,6 @@ async fn creating_an_order_with_confirmations_required_zero_is_accepted() {
     let tenant_id = guard.find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
     let order = guard.get_order(&tenant_id, &order_id).unwrap().unwrap();
     assert_eq!(order.confirmations_required_override, Some(0));
-}
-
-#[tokio::test]
-async fn public_order_creation_cannot_override_confirmation_policy() {
-    let state = test_app_state();
-    let store = state.store.clone();
-    let router = build_router(state, 1_000_000);
-    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
-    for confirmations in [0, 3] {
-        let req = json_request(
-            "POST",
-            &format!("/api/v1/t/{}/orders", tenant.public_key),
-            None,
-            Some("https://merchant.example"),
-            serde_json::json!({"xmr_amount_piconero": 167_500_000_000u64, "confirmations_required": confirmations}),
-        );
-        assert_eq!(router.clone().oneshot(req).await.unwrap().status(), StatusCode::FORBIDDEN);
-    }
-    let tenant_id = store.lock().unwrap().find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
-    assert!(store.lock().unwrap().list_orders(&tenant_id, None, 10, None).unwrap().is_empty());
 }
 
 /// Regression test: a `spend_pubkey_hex` that's the right length and valid hex
@@ -287,7 +266,6 @@ async fn create_tenant_rejects_a_syntactically_valid_but_off_curve_spend_pubkey_
             // curve point (real, verified: this genuinely fails
             // `PublicKey::from_slice`, not assumed).
             "spend_pubkey_hex": "ff".repeat(32),
-            "allowed_origins": Vec::<&str>::new(),
         }),
     );
     let response = router.oneshot(req).await.unwrap();
@@ -318,7 +296,6 @@ async fn create_tenant_rejects_a_non_canonical_view_key_scalar_as_bad_request_no
             // order l - a real non-canonical scalar, not merely hypothetical.
             "view_key_hex": "ff".repeat(32),
             "spend_pubkey_hex": valid_spend_pubkey_hex(1),
-            "allowed_origins": Vec::<&str>::new(),
         }),
     );
     let response = router.oneshot(req).await.unwrap();
@@ -342,16 +319,16 @@ async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_i
     let state = test_app_state();
     let store = state.store.clone();
     let router = build_router(state, 1_000_000);
-    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let tenant = create_tenant(&router, 1).await;
 
     let mut addresses = Vec::new();
     for _ in 0..3 {
         let req = json_request(
-            "POST",
-            &format!("/api/v1/t/{}/orders", tenant.public_key),
-            None,
-            Some("https://merchant.example"),
-            serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
+        "POST",
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
+        None,
+        serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
         );
         let response = router.clone().oneshot(req).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
@@ -383,7 +360,7 @@ async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_i
 #[tokio::test]
 async fn admin_route_rejects_the_tenants_own_public_key_as_a_bearer_token() {
     let router = test_router();
-    let tenant = create_tenant(&router, 2, vec![]).await;
+    let tenant = create_tenant(&router, 2).await;
 
     let req = Request::builder()
         .method("GET")
@@ -409,14 +386,14 @@ async fn tenant_a_cannot_read_tenant_bs_order_via_admin_api() {
     // exercised end to end through real HTTP requests: tenant A's valid sk_ plus
     // tenant B's real order_id must come back as 404, not tenant B's order.
     let router = test_router();
-    let tenant_a = create_tenant(&router, 3, vec![]).await;
-    let tenant_b = create_tenant(&router, 4, vec!["https://b.example"]).await;
+    let tenant_a = create_tenant(&router, 3).await;
+    let tenant_b = create_tenant(&router, 4).await;
 
     let req = json_request(
         "POST",
-        &format!("/api/v1/t/{}/orders", tenant_b.public_key),
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant_b.secret_token),
         None,
-        Some("https://b.example"),
         serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
@@ -447,7 +424,7 @@ async fn tenant_a_cannot_read_tenant_bs_order_via_admin_api() {
 #[tokio::test]
 async fn rotated_secret_invalidates_the_old_token_end_to_end() {
     let router = test_router();
-    let tenant = create_tenant(&router, 5, vec![]).await;
+    let tenant = create_tenant(&router, 5).await;
 
     let req = Request::builder()
         .method("POST")
@@ -479,39 +456,50 @@ async fn rotated_secret_invalidates_the_old_token_end_to_end() {
     assert_eq!(response.status(), StatusCode::OK);
 }
 
+/// The engine is private: its old public, `pk_`-addressed order routes are
+/// gone (orders are created, read and updated only through the `sk_` admin
+/// API, by monokulo), and no route grants CORS to any browser origin.
 #[tokio::test]
-async fn order_creation_from_a_disallowed_origin_is_rejected_even_with_a_valid_public_key() {
+async fn the_engine_serves_no_public_order_routes_and_no_cors() {
     let router = test_router();
-    let tenant = create_tenant(&router, 6, vec!["https://good.example"]).await;
+    let tenant = create_tenant(&router, 6).await;
+    let order_id = create_admin_order(&router, &tenant).await;
 
-    let req = json_request(
-        "POST",
-        &format!("/api/v1/t/{}/orders", tenant.public_key),
-        None,
-        Some("https://evil.example"),
-        serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
-    );
-    let response = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+    let pk = &tenant.public_key;
+    for (method, uri) in [
+        ("POST", format!("/api/v1/t/{pk}/orders")),
+        ("GET", format!("/api/v1/t/{pk}/orders/{order_id}")),
+        ("POST", format!("/api/v1/t/{pk}/orders/{order_id}/refund-address")),
+    ] {
+        let req = json_request(method, &uri, None, None, serde_json::json!({ "xmr_amount_piconero": 1u64, "refund_address": "x" }));
+        let response = router.clone().oneshot(req).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "{method} {uri} must not exist");
+    }
 
-    // No Origin header at all (a non-browser caller) is allowed through - only a
-    // *mismatched* Origin is rejected, per docs/DESIGN.md §12's reasoning.
-    let req = json_request(
-        "POST",
-        &format!("/api/v1/t/{}/orders", tenant.public_key),
-        None,
-        None,
-        serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
-    );
-    let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
+    for uri in [
+        format!("/api/v1/t/{pk}/orders"),
+        "/api/v1/admin/tenant/orders".to_string(),
+        "/api/v1/admin/tenants".to_string(),
+        "/status".to_string(),
+    ] {
+        let preflight = Request::builder()
+            .method("OPTIONS")
+            .uri(&uri)
+            .header("origin", "https://merchant.example")
+            .header("access-control-request-method", "POST")
+            .header("access-control-request-headers", "content-type")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(preflight).await.unwrap();
+        assert!(response.headers().get("access-control-allow-origin").is_none(), "{uri} must not grant CORS");
+    }
 }
 
 #[tokio::test]
 async fn webhook_lifecycle_is_scoped_to_the_owning_tenant() {
     let router = test_router();
-    let tenant_a = create_tenant(&router, 7, vec![]).await;
-    let tenant_b = create_tenant(&router, 8, vec![]).await;
+    let tenant_a = create_tenant(&router, 7).await;
+    let tenant_b = create_tenant(&router, 8).await;
 
     let req = json_request(
         "POST",
@@ -555,12 +543,12 @@ async fn a_zero_or_malformed_xmr_amount_is_rejected_with_bad_request() {
     // validation left here is "an order can't be worth exactly nothing" and "the
     // field must actually be present and correctly typed."
     let router = test_router();
-    let tenant = create_tenant(&router, 9, vec![]).await;
+    let tenant = create_tenant(&router, 9).await;
 
     let req = json_request(
         "POST",
-        &format!("/api/v1/t/{}/orders", tenant.public_key),
-        None,
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
         None,
         serde_json::json!({ "xmr_amount_piconero": 0u64 }),
     );
@@ -573,8 +561,8 @@ async fn a_zero_or_malformed_xmr_amount_is_rejected_with_bad_request() {
     // which only cover validation the handler itself performs).
     let req = json_request(
         "POST",
-        &format!("/api/v1/t/{}/orders", tenant.public_key),
-        None,
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
         None,
         serde_json::json!({ "xmr_amount_piconero": "not_a_number" }),
     );
@@ -599,7 +587,6 @@ async fn tenant_creation_is_rejected_for_a_network_with_no_configured_node() {
             "view_key_hex": valid_view_key_hex(20),
             "spend_pubkey_hex": valid_spend_pubkey_hex(21),
             "network": "stagenet",
-            "allowed_origins": [],
         }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
@@ -616,7 +603,6 @@ async fn tenant_creation_is_rejected_for_a_network_with_no_configured_node() {
         serde_json::json!({
             "view_key_hex": valid_view_key_hex(20),
             "spend_pubkey_hex": valid_spend_pubkey_hex(21),
-            "allowed_origins": [],
         }),
     );
     let response = router.oneshot(req).await.unwrap();
@@ -626,7 +612,7 @@ async fn tenant_creation_is_rejected_for_a_network_with_no_configured_node() {
 #[tokio::test]
 async fn tenant_deletion_disables_it_and_admin_routes_stop_working() {
     let router = test_router();
-    let tenant = create_tenant(&router, 10, vec![]).await;
+    let tenant = create_tenant(&router, 10).await;
 
     let req = Request::builder()
         .method("DELETE")
@@ -646,36 +632,30 @@ async fn tenant_deletion_disables_it_and_admin_routes_stop_working() {
     let response = router.clone().oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 
-    // A disabled tenant's public_key must also stop working for order creation.
+    // A disabled tenant's key must also stop working for order creation.
     let req = json_request(
         "POST",
-        &format!("/api/v1/t/{}/orders", tenant.public_key),
-        None,
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
         None,
         serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
     );
     let response = router.oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
 }
 
 #[tokio::test]
-async fn rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info() {
-    // Unlike the other tests, this one exercises the middleware wired into a real
-    // router with a fabricated `ConnectInfo` extension, the way production's
-    // `into_make_service_with_connect_info` would actually provide it - proving the
-    // wiring, not just `RateLimiter`'s standalone logic (already covered in
-    // `rate_limit.rs`'s own unit tests). Uses a *public* route
-    // (`/api/v1/t/{pk}/orders/{order_id}`) so this exercises `state.rate_limiter`
-    // specifically - `/api/v1/admin/*` now has its own, separately-tested limiter
-    // (`admin_rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info`
-    // below).
+async fn unauthenticated_routes_are_limited_per_address_by_the_admin_limiter() {
+    // Tenant creation and `/status` carry no token, so the admin limiter keys
+    // them on the caller's address (with a fabricated `ConnectInfo`, the way
+    // production's `into_make_service_with_connect_info` provides it).
     let mut state = test_app_state();
-    state.rate_limiter = Arc::new(RateLimiter::new(2));
+    state.admin_rate_limiter = Arc::new(RateLimiter::new(2));
     let router = build_router(state, 1_000_000);
 
     let peer: std::net::SocketAddr = "10.0.0.1:12345".parse().unwrap();
     let make_request = || {
-        let mut req = Request::builder().method("GET").uri("/api/v1/t/pk_nope/orders/pay_nope").body(Body::empty()).unwrap();
+        let mut req = Request::builder().method("GET").uri("/status").body(Body::empty()).unwrap();
         req.extensions_mut().insert(axum::extract::ConnectInfo(peer));
         req
     };
@@ -683,11 +663,8 @@ async fn rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info(
     let r1 = router.clone().oneshot(make_request()).await.unwrap();
     let r2 = router.clone().oneshot(make_request()).await.unwrap();
     let r3 = router.oneshot(make_request()).await.unwrap();
-
-    // All three get 404 (unknown tenant/order) or 429 - what matters is the third
-    // is specifically rate-limited, not merely a not-found like the first two.
-    assert_eq!(r1.status(), StatusCode::NOT_FOUND);
-    assert_eq!(r2.status(), StatusCode::NOT_FOUND);
+    assert_eq!(r1.status(), StatusCode::OK);
+    assert_eq!(r2.status(), StatusCode::OK);
     assert_eq!(r3.status(), StatusCode::TOO_MANY_REQUESTS);
 }
 
@@ -761,64 +738,12 @@ async fn oversized_request_body_is_rejected_before_reaching_the_handler() {
 
     let req = Request::builder()
         .method("POST")
-        .uri("/api/v1/t/pk_whatever/orders")
+        .uri("/api/v1/admin/tenants")
         .header("content-type", "application/json")
         .body(Body::from(oversized_body))
         .unwrap();
     let response = router.oneshot(req).await.unwrap();
     assert_eq!(response.status(), StatusCode::PAYLOAD_TOO_LARGE);
-}
-
-#[tokio::test]
-async fn cors_preflight_and_actual_request_succeed_only_for_an_allowed_cross_origin_merchant_site() {
-    let router = test_router();
-    let tenant = create_tenant(&router, 6, vec!["https://merchant.example"]).await;
-
-    // Preflight: the browser's own OPTIONS check before the real cross-origin POST.
-    let preflight = Request::builder()
-        .method("OPTIONS")
-        .uri(format!("/api/v1/t/{}/orders", tenant.public_key))
-        .header("origin", "https://merchant.example")
-        .header("access-control-request-method", "POST")
-        .header("access-control-request-headers", "content-type")
-        .body(Body::empty())
-        .unwrap();
-    let response = router.clone().oneshot(preflight).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("access-control-allow-origin").unwrap(),
-        "https://merchant.example"
-    );
-
-    // The actual request from that same allowed origin gets the header back too, so
-    // the browser will actually let the merchant page's JS read the response.
-    let req = json_request(
-        "POST",
-        &format!("/api/v1/t/{}/orders", tenant.public_key),
-        None,
-        Some("https://merchant.example"),
-        serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }),
-    );
-    let response = router.clone().oneshot(req).await.unwrap();
-    assert_eq!(response.status(), StatusCode::OK);
-    assert_eq!(
-        response.headers().get("access-control-allow-origin").unwrap(),
-        "https://merchant.example"
-    );
-
-    // A different, non-allowlisted origin gets no CORS grant at all - the server-side
-    // check in `resolve_public_tenant` already rejects the request body-wise, but
-    // this confirms the browser-facing header is also absent, not just permissive.
-    let preflight_from_evil = Request::builder()
-        .method("OPTIONS")
-        .uri(format!("/api/v1/t/{}/orders", tenant.public_key))
-        .header("origin", "https://evil.example")
-        .header("access-control-request-method", "POST")
-        .header("access-control-request-headers", "content-type")
-        .body(Body::empty())
-        .unwrap();
-    let response = router.oneshot(preflight_from_evil).await.unwrap();
-    assert!(response.headers().get("access-control-allow-origin").is_none());
 }
 
 #[tokio::test]
@@ -831,7 +756,7 @@ async fn a_tenants_reported_primary_address_is_a_standard_address_a_payment_coul
     // wallet it names. Mainnet standard addresses start with '4', subaddresses with
     // '8'.
     let router = test_router();
-    let tenant = create_tenant(&router, 30, vec![]).await;
+    let tenant = create_tenant(&router, 30).await;
 
     let req = Request::builder()
         .method("GET")
@@ -867,7 +792,6 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
         let mut create_body = serde_json::json!({
             "view_key_hex": valid_view_key_hex(40),
             "spend_pubkey_hex": valid_spend_pubkey_hex(41),
-            "allowed_origins": [],
         });
         for (k, v) in bad.as_object().unwrap() {
             create_body[k] = v.clone();
@@ -880,7 +804,7 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
         assert_eq!(response.status(), StatusCode::BAD_REQUEST, "creation accepted {bad}");
     }
 
-    let tenant = create_tenant(&router, 42, vec![]).await;
+    let tenant = create_tenant(&router, 42).await;
     for bad in [
         serde_json::json!({ "confirmations_required": 100_000 }),
         serde_json::json!({ "order_expiry_seconds": 0 }),
@@ -932,7 +856,6 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
     let create_body = serde_json::json!({
         "view_key_hex": valid_view_key_hex(43),
         "spend_pubkey_hex": valid_spend_pubkey_hex(44),
-        "allowed_origins": [],
         "confirmations_required": 0,
     });
     let response =
@@ -945,8 +868,8 @@ async fn the_admin_refund_address_route_is_scoped_to_the_tenant_behind_the_secre
     // Monokulo's checkout records a customer's refund address through this
     // route with the store's `sk_`; the engine needs no public route for it.
     let router = test_router();
-    let a = create_tenant(&router, 60, vec![]).await;
-    let b = create_tenant(&router, 62, vec![]).await;
+    let a = create_tenant(&router, 60).await;
+    let b = create_tenant(&router, 62).await;
     let order = body_json(
         router
             .clone()
@@ -996,19 +919,19 @@ async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
     // walks all of them with tenant B's token and asserts none of them can be
     // steered at tenant A's data by any identifier in the path or the body.
     let router = test_router();
-    let a = create_tenant(&router, 50, vec![]).await;
-    let b = create_tenant(&router, 52, vec![]).await;
+    let a = create_tenant(&router, 50).await;
+    let b = create_tenant(&router, 52).await;
 
     // Give A an order and a webhook to try to reach.
     let order = body_json(
         router
             .clone()
             .oneshot(json_request(
-                "POST",
-                &format!("/api/v1/t/{}/orders", a.public_key),
-                None,
-                None,
-                serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
+        "POST",
+        "/api/v1/admin/tenant/orders",
+        Some(&a.secret_token),
+        None,
+        serde_json::json!({ "xmr_amount_piconero": 167_500_000_000u64 }),
             ))
             .await
             .unwrap(),
@@ -1175,7 +1098,7 @@ async fn every_path_that_can_set_a_webhook_url_validates_the_scheme() {
     // what proves it - if a second one is ever added without its own check, the
     // sweep below over every route in the router stops matching reality.
     let router = test_router();
-    let tenant = create_tenant(&router, 60, vec![]).await;
+    let tenant = create_tenant(&router, 60).await;
 
     for bad_url in [
         "file:///etc/passwd",
@@ -1227,71 +1150,6 @@ async fn every_path_that_can_set_a_webhook_url_validates_the_scheme() {
     )
     .await;
     assert_eq!(webhooks.as_array().unwrap().len(), 0, "no webhook may have been created by a patch");
-}
-
-#[tokio::test]
-async fn the_cors_predicate_fails_closed_on_every_confusable_path_shape() {
-    // The predicate parses the *raw* path before axum's own routing, so it has to
-    // reach the same conclusion axum does. Granting a cross-origin allowance for a
-    // path that isn't really the orders route - or for the wrong tenant's - would
-    // hand a merchant site's origin to something it was never allowlisted for.
-    let router = test_router();
-    let allowed = create_tenant(&router, 70, vec!["https://merchant.example"]).await;
-    let other = create_tenant(&router, 72, vec!["https://other.example"]).await;
-
-    let preflight = |uri: String, origin: &'static str| {
-        Request::builder()
-            .method("OPTIONS")
-            .uri(uri)
-            .header("origin", origin)
-            .header("access-control-request-method", "POST")
-            .header("access-control-request-headers", "content-type")
-            .body(Body::empty())
-            .unwrap()
-    };
-
-    for uri in [
-        // Percent-encoded "orders" - a real router would not route this here, so
-        // neither may the predicate.
-        format!("/api/v1/t/{}/%6frders", allowed.public_key),
-        // Percent-encoded separator inside the pk.
-        format!("/api/v1/t/{}%2Forders", allowed.public_key),
-        // The admin family, which is deliberately granted no CORS at all.
-        "/api/v1/admin/tenant".to_string(),
-        "/api/v1/admin/tenants".to_string(),
-        // Truncated and over-long shapes.
-        format!("/api/v1/t/{}", allowed.public_key),
-        "/api/v1/t//orders".to_string(),
-        "/api/v1/t/orders".to_string(),
-        // An unknown tenant.
-        "/api/v1/t/pk_does_not_exist/orders".to_string(),
-    ] {
-        let response = router.clone().oneshot(preflight(uri.clone(), "https://merchant.example")).await.unwrap();
-        assert!(
-            response.headers().get("access-control-allow-origin").is_none(),
-            "{uri} must not produce a CORS grant"
-        );
-    }
-
-    // One tenant's allowlisted origin must never be honoured on another tenant's
-    // path, even though both paths are real.
-    let response = router
-        .clone()
-        .oneshot(preflight(format!("/api/v1/t/{}/orders", other.public_key), "https://merchant.example"))
-        .await
-        .unwrap();
-    assert!(response.headers().get("access-control-allow-origin").is_none());
-
-    // The genuinely-correct combination still works, so the above isn't just a
-    // blanket denial.
-    let response = router
-        .oneshot(preflight(format!("/api/v1/t/{}/orders", allowed.public_key), "https://merchant.example"))
-        .await
-        .unwrap();
-    assert_eq!(
-        response.headers().get("access-control-allow-origin").unwrap(),
-        "https://merchant.example"
-    );
 }
 
 async fn get_status_json(router: Router) -> serde_json::Value {
@@ -1412,7 +1270,6 @@ fn test_app_state_with_real_daemon() -> (AppState, Arc<FakeDaemonClient>) {
         key_custody_backend: "plain".to_string(),
         wallet_handles: Arc::new(RwLock::new(HashMap::new())),
         configured_networks: Arc::new(HashSet::from([Network::Mainnet])),
-        rate_limiter: Arc::new(RateLimiter::new(10_000)),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
         scanner_status: new_scanner_status_map(),
@@ -1446,7 +1303,7 @@ async fn a_tenants_own_secret_token_cannot_authenticate_as_the_instance_admin() 
     let (state, _daemon) = test_app_state_with_real_daemon();
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
     let router = build_router(state, 1_000_000);
-    let tenant = create_tenant(&router, 1, vec!["https://merchant.example"]).await;
+    let tenant = create_tenant(&router, 1).await;
     let response = router.oneshot(settings_request("GET", Some(&tenant.secret_token), None)).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "a tenant's own sk_ must never satisfy the instance-wide admin API");
 }
@@ -1707,7 +1564,6 @@ async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_toke
         key_custody_backend: "plain".to_string(),
         wallet_handles: Arc::new(RwLock::new(HashMap::new())),
         configured_networks: Arc::new(HashSet::new()),
-        rate_limiter: Arc::new(RateLimiter::new(10_000)),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         daemons: Arc::new(HashMap::new()),
         scanner_status: new_scanner_status_map(),
@@ -1758,7 +1614,7 @@ fn fixture_spend_pubkey_hex() -> String {
     hex::encode(PublicKey::from_private_key(&secret_spend).to_bytes())
 }
 
-async fn create_fixture_tenant(router: &Router, allowed_origins: Vec<&str>) -> TestTenant {
+async fn create_fixture_tenant(router: &Router) -> TestTenant {
     let req = json_request(
         "POST",
         "/api/v1/admin/tenants",
@@ -1767,7 +1623,6 @@ async fn create_fixture_tenant(router: &Router, allowed_origins: Vec<&str>) -> T
         serde_json::json!({
             "view_key_hex": fixture_view_key_hex(),
             "spend_pubkey_hex": fixture_spend_pubkey_hex(),
-            "allowed_origins": allowed_origins,
         }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
@@ -1780,7 +1635,7 @@ async fn create_fixture_tenant(router: &Router, allowed_origins: Vec<&str>) -> T
 async fn lookup_payment_rejects_a_malformed_txid() {
     let (state, _daemon) = test_app_state_with_real_daemon();
     let router = build_router(state, 1_000_000);
-    let tenant = create_tenant(&router, 1, vec![]).await;
+    let tenant = create_tenant(&router, 1).await;
 
     let response = router.clone().oneshot(lookup_request(&tenant.secret_token, "not-a-real-txid")).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -1799,7 +1654,7 @@ async fn lookup_payment_requires_authentication() {
 async fn lookup_payment_reports_not_found_on_chain_for_an_unknown_txid() {
     let (state, _daemon) = test_app_state_with_real_daemon();
     let router = build_router(state, 1_000_000);
-    let tenant = create_tenant(&router, 1, vec![]).await;
+    let tenant = create_tenant(&router, 1).await;
 
     let bogus = "0".repeat(64);
     let response = router.clone().oneshot(lookup_request(&tenant.secret_token, &bogus)).await.unwrap();
@@ -1814,7 +1669,7 @@ async fn lookup_payment_reports_no_matching_order_for_a_real_but_unrelated_tx() 
     let router = build_router(state, 1_000_000);
     // Random, non-fixture keys - this tenant genuinely has no claim on the
     // fixture transaction's outputs.
-    let tenant = create_tenant(&router, 1, vec![]).await;
+    let tenant = create_tenant(&router, 1).await;
 
     let tx = fixture_tx_for_lookup_tests();
     daemon.set_mempool(vec![tx.clone()]);
@@ -1832,7 +1687,7 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
     let (state, daemon) = test_app_state_with_real_daemon();
     let store = state.store.clone();
     let router = build_router(state, 1_000_000);
-    let tenant = create_fixture_tenant(&router, vec!["https://merchant.example"]).await;
+    let tenant = create_fixture_tenant(&router).await;
 
     // A real order against this tenant's own minor_index 1 (`subaddress_tx.hex`
     // pays subaddress 0/1, the same fixture `scanner.rs`'s own tests already
@@ -1840,9 +1695,9 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
     // (`store::tests::minor_index_allocation_starts_at_one_and_increments`).
     let req = json_request(
         "POST",
-        &format!("/api/v1/t/{}/orders", tenant.public_key),
+        "/api/v1/admin/tenant/orders",
+        Some(&tenant.secret_token),
         None,
-        Some("https://merchant.example"),
         serde_json::json!({ "xmr_amount_piconero": 1u64 }),
     );
     let response = router.clone().oneshot(req).await.unwrap();
@@ -1905,13 +1760,15 @@ async fn next_sse_event(body: &mut Body, buffer: &mut String) -> (String, String
     }
 }
 
-async fn create_public_order(router: &Router, public_key: &str) -> String {
+/// Creates an order the only way there is now: the tenant's `sk_` against
+/// the admin API (what monokulo does for every order).
+async fn create_admin_order(router: &Router, tenant: &TestTenant) -> String {
     let response = router
         .clone()
         .oneshot(json_request(
             "POST",
-            &format!("/api/v1/t/{public_key}/orders"),
-            None,
+            "/api/v1/admin/tenant/orders",
+            Some(&tenant.secret_token),
             None,
             serde_json::json!({ "xmr_amount_piconero": 1_000_000_000_000u64 }),
         ))
@@ -1924,10 +1781,10 @@ async fn create_public_order(router: &Router, public_key: &str) -> String {
 #[tokio::test]
 async fn order_events_stream_reports_only_the_authenticated_tenants_changes() {
     let router = test_router();
-    let tenant = create_tenant(&router, 11, vec![]).await;
-    let other = create_tenant(&router, 21, vec![]).await;
-    let order_id = create_public_order(&router, &tenant.public_key).await;
-    let other_order_id = create_public_order(&router, &other.public_key).await;
+    let tenant = create_tenant(&router, 11).await;
+    let other = create_tenant(&router, 21).await;
+    let order_id = create_admin_order(&router, &tenant).await;
+    let other_order_id = create_admin_order(&router, &other).await;
 
     let unauthenticated = router
         .clone()
@@ -1953,13 +1810,13 @@ async fn order_events_stream_reports_only_the_authenticated_tenants_changes() {
     let mut buffer = String::new();
     assert_eq!(next_sse_event(&mut body, &mut buffer).await.0, "ready");
 
-    for (public_key, id) in [(&other.public_key, &other_order_id), (&tenant.public_key, &order_id)] {
+    for (owner, id) in [(&other, &other_order_id), (&tenant, &order_id)] {
         let response = router
             .clone()
             .oneshot(json_request(
                 "POST",
-                &format!("/api/v1/t/{public_key}/orders/{id}/refund-address"),
-                None,
+                &format!("/api/v1/admin/tenant/orders/{id}/refund-address"),
+                Some(&owner.secret_token),
                 None,
                 serde_json::json!({ "refund_address": "refund" }),
             ))

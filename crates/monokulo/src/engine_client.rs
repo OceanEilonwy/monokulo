@@ -373,14 +373,13 @@ pub enum EngineClientError {
 }
 
 /// Mirrors the engine's own `CreateTenantRequest` (`src/http/admin.rs` at the
-/// repo root) field-for-field. `allowed_origins` is always sent empty:
-/// monokulo keeps embedding policy to itself (`crate::embed_domains`).
+/// repo root) field-for-field. There is no origin list: embedding policy is
+/// monokulo's alone (`crate::embed_domains`).
 #[derive(Serialize)]
 pub struct CreateTenantRequest {
     pub view_key_hex: String,
     pub spend_pubkey_hex: String,
     pub network: Option<String>,
-    pub allowed_origins: Vec<String>,
     pub confirmations_required: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
 }
@@ -475,9 +474,7 @@ pub struct OrderDetailResponse {
 /// needed), so the engine sees exactly "leave everything not set here
 /// unchanged" - the same "unchanged vs. set to a value" contract
 /// `TenantConfigPatch`'s own doc comment (`src/store.rs` at the repo
-/// root) describes. Deliberately has no `allowed_origins`: monokulo never
-/// reads or writes the engine's origin list (embedding policy lives in
-/// `crate::embed_domains`).
+/// root) describes.
 #[derive(Serialize)]
 struct PatchTenantRequest {
     confirmations_required: Option<u64>,
@@ -608,7 +605,6 @@ mod tests {
             view_key_hex: TEST_VIEW_KEY_HEX.to_string(),
             spend_pubkey_hex: TEST_SPEND_PUBKEY_HEX.to_string(),
             network: Some("mainnet".to_string()),
-            allowed_origins: vec![],
             confirmations_required: None,
             order_expiry_seconds: None,
         }

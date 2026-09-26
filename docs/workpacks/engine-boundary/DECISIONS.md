@@ -97,3 +97,21 @@ Format for each entry:
 - **Decision:** The new surface test runs a real local Node HTTP server applying the same rule and checks Chromium sends `Sec-Fetch-Dest: document` for a top-level visit and `iframe` inside a cross-site frame. The server rule itself is covered by the Rust HTTP test `a_restricted_stores_browser_created_orders_only_open_inside_a_frame`.
 - **Alternatives considered:** Drive a real monokulo from the surface suite (it is fully mocked by design and has no backend).
 - **Why:** The surface suite has no real backend; this still proves the one thing Rust tests can't: that a real browser sends the header the rule depends on.
+
+### 16. No shared instance token on tenant creation
+- **Step:** 8
+- **Decision:** `POST /api/v1/admin/tenants` stays unauthenticated at the application layer; no shared instance token is added.
+- **Alternatives considered:** Require the engine's existing instance admin token (monokulo's `engine.admin_token` setting, today only needed for the admin settings page) on tenant creation.
+- **Why:** The engine now binds to loopback by default and warns loudly on a public bind (step 1), and has no public routes left, so the endpoint is reachable only by whatever can already reach the admin API. Requiring the instance token would make store creation fail on every install where monokulo's `engine.admin_token` isn't configured (it's optional today and empty by default), a new failure mode for little gain. Worth revisiting if the engine is ever deployed on a shared network.
+
+### 17. The engine's per-IP limiter is removed; token-less routes use the admin limiter
+- **Step:** 8
+- **Decision:** `AppState::rate_limiter`, `rate_limit_middleware` and the `server.rate_limit_per_ip_per_min` setting are deleted. Tenant creation and `/status` now sit behind `admin_rate_limit_middleware`, which keys a token-less request on its address (per-token budget, default 120/min).
+- **Alternatives considered:** Keep the per-IP limiter for those two routes.
+- **Why:** Its job was the public routes. Monokulo is now the only caller, from one address, so a per-IP limit would only ever throttle monokulo as a whole; the admin limiter already falls back to the address and keeps a cap on both routes. Monokulo caches `/status`.
+
+### 18. Old engine API callers sending `allowed_origins` are not refused; the CLI flag is
+- **Step:** 8
+- **Decision:** The engine's create/patch request types no longer have `allowed_origins`; serde ignores unknown fields, so a request still carrying one succeeds and the value is dropped. The `--bootstrap-wallet --allowed-origins` CLI flag is removed and now errors as an unrecognized argument (`scripts/dev-run.sh` updated). Migration `0014_drop_tenant_allowed_origins.sql` drops the column with a plain `DROP COLUMN` (no index/constraint uses it, same as 0005/0006/0013). `crates/scanner/src/http/public.rs` becomes `orders.rs` holding only the admin order creation.
+- **Alternatives considered:** `deny_unknown_fields` on the requests; keep the CLI flag as a silently ignored no-op.
+- **Why:** Silently accepting an ignored JSON field keeps any remaining script working (the field never did anything monokulo needs); an operator typing a CLI flag is better told it no longer exists than led to believe it did something.

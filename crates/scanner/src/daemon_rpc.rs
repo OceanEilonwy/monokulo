@@ -1202,7 +1202,6 @@ mod live_node_tests {
                     sealed_key_material: vec![],
                     primary_address: "4test".into(),
                     network: "mainnet".into(),
-                    allowed_origins: vec![],
                     confirmations_required: None,
                     order_expiry_seconds: None,
                 },

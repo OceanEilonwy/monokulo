@@ -212,8 +212,7 @@ ensure_wallet_bootstrapped() {
         --primary-address "54F1KdjaAtnL6Fb4SbLUM1AMQSjSERjYUgYRtVgwjBirA26RyJCzxc4TbWPW65ZvRC6bifBfrTTv3fyu25BFQuvA2ogNiXg" \
         --view-key "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e" \
         --spend-pubkey "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335" \
-        --network stagenet \
-        --allowed-origins "http://127.0.0.1:8190" 2>&1); then
+        --network stagenet 2>&1); then
         echo "==> bootstrapped the dev stagenet tenant:"
         echo "$out" | sed 's/^/    /'
     fi

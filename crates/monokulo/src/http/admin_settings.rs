@@ -612,16 +612,19 @@ mod tests {
             ("payment.mempool_poll_interval_ms", "2000"),
             ("payment.expired_order_grace_period_minutes", "500"),
             ("payment.scan_chunk_memory_budget_mb", "16"),
-            ("server.bind", "0.0.0.0:9443"),
+            ("server.bind", "127.0.0.1:9443"),
             ("server.worker_threads", "4"),
-            ("server.rate_limit_per_ip_per_min", "50"),
             ("server.rate_limit_per_token_per_min", "200"),
             ("server.max_body_bytes", "16384"),
             ("webhooks.allow_private_urls", "true"),
             ("webhooks.delivery_timeout_ms", "10000"),
             ("webhooks.max_attempts", "12"),
         ];
-        assert_eq!(new_values.len(), 16, "this test must cover every known scanner setting (scanner::settings::ALL_SCALAR has 16 entries)");
+        assert_eq!(
+            new_values.len(),
+            scanner::settings::ALL_SCALAR.len(),
+            "this test must cover every known scanner setting (scanner::settings::ALL_SCALAR)"
+        );
 
         let save = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/scanner-settings", &cookie, new_values)).await.unwrap();
         assert_eq!(save.status(), StatusCode::OK);

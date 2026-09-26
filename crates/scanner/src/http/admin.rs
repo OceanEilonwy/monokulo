@@ -29,12 +29,15 @@ fn key_custody_error_for_new_tenant(e: KeyCustodyError) -> ApiError {
     }
 }
 
+/// No `allowed_origins` any more: the engine is private and keeps no
+/// per-tenant origin list (embedding policy is monokulo's). Like every
+/// request body here, unknown fields are ignored, so an old caller still
+/// sending one is not refused.
 #[derive(Deserialize)]
 pub struct CreateTenantRequest {
     view_key_hex: String,
     spend_pubkey_hex: String,
     network: Option<String>,
-    allowed_origins: Vec<String>,
     confirmations_required: Option<u64>,
     order_expiry_seconds: Option<i64>,
 }
@@ -81,7 +84,6 @@ pub async fn create_tenant(
             sealed_key_material: sealed,
             primary_address: primary_address.to_string(),
             network: network_str(network).to_string(),
-            allowed_origins: req.allowed_origins,
             confirmations_required: req.confirmations_required,
             order_expiry_seconds: req.order_expiry_seconds,
         },
@@ -167,7 +169,6 @@ pub struct TenantView {
     network: String,
     confirmations_required: u64,
     order_expiry_seconds: i64,
-    allowed_origins: Vec<String>,
 }
 
 impl From<crate::store::Tenant> for TenantView {
@@ -179,7 +180,6 @@ impl From<crate::store::Tenant> for TenantView {
             network: t.network,
             confirmations_required: t.confirmations_required,
             order_expiry_seconds: t.order_expiry_seconds,
-            allowed_origins: t.allowed_origins,
         }
     }
 }
@@ -190,7 +190,6 @@ pub async fn get_own_tenant(AuthedTenant(tenant): AuthedTenant) -> Json<TenantVi
 
 #[derive(Deserialize, Default)]
 pub struct PatchTenantRequest {
-    allowed_origins: Option<Vec<String>>,
     confirmations_required: Option<u64>,
     order_expiry_seconds: Option<i64>,
 }
@@ -202,7 +201,6 @@ pub async fn patch_own_tenant(
 ) -> Result<Json<TenantView>, ApiError> {
     validate_tenant_settings(req.confirmations_required, req.order_expiry_seconds)?;
     let patch = TenantConfigPatch {
-        allowed_origins: req.allowed_origins,
         confirmations_required: req.confirmations_required,
         order_expiry_seconds: req.order_expiry_seconds,
     };

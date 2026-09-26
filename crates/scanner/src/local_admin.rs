@@ -40,7 +40,6 @@ pub struct BootstrapWalletArgs {
     pub view_key_hex: String,
     pub spend_pubkey_hex: String,
     pub network: String,
-    pub allowed_origins: Vec<String>,
 }
 
 /// Creates the one tenant a self-hosted deployment needs - but only if none
@@ -72,7 +71,6 @@ pub async fn bootstrap_wallet(
             sealed_key_material: sealed,
             primary_address: args.primary_address,
             network: args.network,
-            allowed_origins: args.allowed_origins,
             confirmations_required: Some(confirmations_required),
             order_expiry_seconds: Some(order_expiry_minutes * 60),
         },
@@ -111,7 +109,7 @@ pub fn rotate_secret(store: &Store, pk: Option<&str>) -> Result<(String, String)
 
 /// A snapshot of a tenant's non-secret settings, for `--show-tenant`. Everything
 /// here is either public by design (`public_key`) or was chosen by the operator
-/// and is safe to print back to them (`allowed_origins`, thresholds). Deliberately
+/// and is safe to print back to them (network, thresholds). Deliberately
 /// excludes `sealed_key_material`: even though `PlainKeyCustody` seals to plain
 /// bytes today (see its own doc comment), a future sealed backend's raw bytes are
 /// not something a "show me my settings" command should ever surface.
@@ -120,7 +118,6 @@ pub struct TenantSummary {
     pub public_key: String,
     pub network: String,
     pub primary_address: String,
-    pub allowed_origins: Vec<String>,
     pub confirmations_required: u64,
     pub order_expiry_seconds: i64,
 }
@@ -131,7 +128,6 @@ pub fn show_tenant(store: &Store, pk: Option<&str>) -> Result<TenantSummary, Loc
         public_key: tenant.public_key,
         network: tenant.network,
         primary_address: tenant.primary_address,
-        allowed_origins: tenant.allowed_origins,
         confirmations_required: tenant.confirmations_required,
         order_expiry_seconds: tenant.order_expiry_seconds,
     })
@@ -143,7 +139,7 @@ mod tests {
     use crate::key_custody::{KeyCustody, PlainKeyCustody, WalletMaterial};
     use crate::store::NewTenant;
 
-    async fn store_with_tenant(allowed_origins: Vec<String>) -> (Store, Tenant, String) {
+    async fn store_with_tenant() -> (Store, Tenant, String) {
         let store = Store::open_in_memory().unwrap();
         let key_custody = PlainKeyCustody::default();
         let material = WalletMaterial::new([7u8; 32], [8u8; 32]);
@@ -155,7 +151,6 @@ mod tests {
                     sealed_key_material: sealed,
                     primary_address: "4abc".to_string(),
                     network: "mainnet".to_string(),
-                    allowed_origins,
                     confirmations_required: None,
                     order_expiry_seconds: None,
                 },
@@ -168,7 +163,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_tenant_with_no_pk_and_exactly_one_tenant_finds_it() {
-        let (store, tenant, _) = store_with_tenant(vec![]).await;
+        let (store, tenant, _) = store_with_tenant().await;
         let resolved = resolve_tenant(&store, None).unwrap();
         assert_eq!(resolved.id, tenant.id);
     }
@@ -193,7 +188,6 @@ mod tests {
                         sealed_key_material: sealed,
                         primary_address: "4abc".to_string(),
                         network: "mainnet".to_string(),
-                        allowed_origins: vec![],
                         confirmations_required: None,
                         order_expiry_seconds: None,
                     },
@@ -205,7 +199,7 @@ mod tests {
         assert!(matches!(err, LocalAdminError::AmbiguousTenant(_)), "got {err}");
 
         // But naming one directly still works with two present.
-        let (_, tenant, pk) = store_with_tenant(vec![]).await;
+        let (_, tenant, pk) = store_with_tenant().await;
         let _ = tenant;
         let store2 = Store::open_in_memory().unwrap();
         let material = WalletMaterial::new([9u8; 32], [10u8; 32]);
@@ -217,7 +211,6 @@ mod tests {
                     sealed_key_material: sealed,
                     primary_address: "4abc".to_string(),
                     network: "mainnet".to_string(),
-                    allowed_origins: vec![],
                     confirmations_required: None,
                     order_expiry_seconds: None,
                 },
@@ -231,7 +224,7 @@ mod tests {
 
     #[tokio::test]
     async fn resolve_tenant_with_an_unknown_pk_is_a_clear_error() {
-        let (store, _, _) = store_with_tenant(vec![]).await;
+        let (store, _, _) = store_with_tenant().await;
         let err = resolve_tenant(&store, Some("pk_doesnotexist")).unwrap_err();
         assert!(matches!(err, LocalAdminError::UnknownTenant(pk) if pk == "pk_doesnotexist"));
     }
@@ -249,7 +242,6 @@ mod tests {
                     sealed_key_material: sealed,
                     primary_address: "4abc".to_string(),
                     network: "mainnet".to_string(),
-                    allowed_origins: vec![],
                     confirmations_required: None,
                     order_expiry_seconds: None,
                 },
@@ -266,11 +258,10 @@ mod tests {
 
     #[tokio::test]
     async fn show_tenant_reports_the_real_settings_and_never_the_key_material() {
-        let (store, _, pk) = store_with_tenant(vec!["https://merchant.example".to_string()]).await;
+        let (store, _, pk) = store_with_tenant().await;
         let summary = show_tenant(&store, None).unwrap();
         assert_eq!(summary.public_key, pk);
         assert_eq!(summary.network, "mainnet");
-        assert_eq!(summary.allowed_origins, vec!["https://merchant.example".to_string()]);
     }
 
     #[tokio::test]
@@ -288,7 +279,6 @@ mod tests {
             view_key_hex: "aa".repeat(32),
             spend_pubkey_hex: "bb".repeat(32),
             network: "stagenet".to_string(),
-            allowed_origins: vec!["https://merchant.example".to_string()],
         }
     }
 
@@ -299,7 +289,6 @@ mod tests {
         let created = bootstrap_wallet(&store, &key_custody, "plain", bootstrap_args()).await.unwrap();
 
         assert_eq!(created.tenant.network, "stagenet");
-        assert_eq!(created.tenant.allowed_origins, vec!["https://merchant.example".to_string()]);
         assert_eq!(created.tenant.confirmations_required, 10, "should reflect this instance's real current settings, not a hardcoded value");
         assert!(store.find_tenant_by_secret_token(&created.secret_token).unwrap().is_some());
     }

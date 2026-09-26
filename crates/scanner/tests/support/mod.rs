@@ -34,7 +34,6 @@ pub mod e2e_fixture {
     pub const WALLET_PRIVATE_VIEW_KEY: &str = "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e";
     pub const WALLET_PUBLIC_SPEND_KEY: &str = "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335";
     pub const WALLET_NETWORK: &str = "stagenet";
-    pub const WALLET_ALLOWED_ORIGIN: &str = "http://127.0.0.1:8190";
 
     // Real stagenet blocks land roughly every ~2 minutes; requiring any
     // confirmations at all would make these tests spend most of their time

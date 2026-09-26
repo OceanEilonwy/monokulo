@@ -63,8 +63,10 @@ async fn require_daemon_reachable(daemon: &dyn MoneroDaemonClient, host: &str, p
     }
 }
 
-async fn oneshot_json(router: &axum::Router, method: &str, uri: String, body: Option<Value>) -> (StatusCode, Value) {
-    let mut builder = Request::builder().method(method).uri(uri);
+/// One request against the engine's admin API, authenticated with the
+/// tenant's `sk_` - the only way orders are created or read now.
+async fn oneshot_json(router: &axum::Router, sk: &str, method: &str, uri: String, body: Option<Value>) -> (StatusCode, Value) {
+    let mut builder = Request::builder().method(method).uri(uri).header("authorization", format!("Bearer {sk}"));
     let body = match body {
         Some(v) => {
             builder = builder.header("content-type", "application/json");
@@ -113,14 +115,13 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
                 sealed_key_material: sealed,
                 primary_address: e2e_fixture::WALLET_PRIMARY_ADDRESS.to_string(),
                 network: e2e_fixture::WALLET_NETWORK.to_string(),
-                allowed_origins: vec![e2e_fixture::WALLET_ALLOWED_ORIGIN.to_string()],
                 confirmations_required: Some(e2e_fixture::PAYMENT_CONFIRMATIONS_REQUIRED),
                 order_expiry_seconds: Some(e2e_fixture::PAYMENT_ORDER_EXPIRY_MINUTES * 60),
             },
             now_unix(),
         )
         .expect("failed to create tenant");
-    let pk = created.tenant.public_key.clone();
+    let sk = created.secret_token.clone();
     let handle = key_custody.unseal_and_register(&created.tenant.sealed_key_material).await.unwrap();
     let wallet_handles = Arc::new(RwLock::new(HashMap::from([(created.tenant.id.clone(), handle)])));
 
@@ -129,7 +130,6 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
         key_custody: key_custody.clone(),
         key_custody_backend: "plain".to_string(),
         wallet_handles,
-        rate_limiter: Arc::new(RateLimiter::new(10_000)),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         configured_networks: Arc::new(HashSet::from([Network::Stagenet])),
         // This test drives scanning directly via `run_scan_tick` below (not
@@ -152,8 +152,9 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     // why this is a few hundred thousand piconero, not a realistic amount) --
     let (status, order) = oneshot_json(
         &router,
+        &sk,
         "POST",
-        format!("/api/v1/t/{pk}/orders"),
+        "/api/v1/admin/tenant/orders".to_string(),
         Some(json!({
             "merchant_order_id": format!("rust-e2e-{}", now_unix()),
             "xmr_amount_piconero": 335_000_000u64,
@@ -187,7 +188,7 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
             .expect("scan tick failed");
 
         let (status, order_status) =
-            oneshot_json(&router, "GET", format!("/api/v1/t/{pk}/orders/{order_id}"), None).await;
+            oneshot_json(&router, &sk, "GET", format!("/api/v1/admin/tenant/orders/{order_id}"), None).await;
         assert_eq!(status, StatusCode::OK);
         last_status = order_status["status"].as_str().unwrap().to_string();
         println!("[{attempt}/30] status={last_status}");

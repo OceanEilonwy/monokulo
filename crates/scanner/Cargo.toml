@@ -52,7 +52,7 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 tokio = { version = "1.53.1", features = ["full"] }
 toml = "1.1.5"
 tower = { version = "0.5.3", features = ["util"] }
-tower-http = { version = "0.7.1", features = ["limit", "cors"] }
+tower-http = { version = "0.7.1", features = ["limit"] }
 url = "2.5.8"
 uuid = { version = "1.26.0", features = ["v4"] }
 zeroize = { version = "1.9.0", features = ["derive"] }

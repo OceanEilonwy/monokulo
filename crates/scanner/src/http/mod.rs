@@ -15,23 +15,21 @@
 //!    `Store::list_active_tenants` + `KeyCustody::unseal_and_register`), with the
 //!    lazy path in `resolve_wallet_handle` kept as a fallback for a tenant created
 //!    after boot.
-//! 3. Rate limiting (`rate_limit`) is a fixed-window per-IP counter, not a proper
+//! 3. Rate limiting (`rate_limit`) is a fixed-window per-token counter, not a proper
 //!    token bucket - simpler, and sufficient for the actual goal (§DESIGN.md §12).
-//!    The PoW-challenge fallback for sustained load is not implemented.
-//! 4. CORS (`build_cors_layer`) re-derives the same `allowed_origins` check
-//!    `public::resolve_public_tenant` already does server-side (§DESIGN.md §12: the
-//!    app-layer check is the actual guarantee, this layer only makes the browser's
-//!    *own* enforcement work at all) via one extra `Store` lookup per preflight -
-//!    negligible against local SQLite, and it's what lets a genuinely cross-origin
-//!    merchant site's `fetch()` calls succeed instead of being silently blocked by
-//!    the browser for lacking `Access-Control-Allow-Origin`.
+//!
+//! **The engine is private** (`docs/DESIGN.md` §4 and the monokulo boundary
+//! section): the only thing meant to reach it is monokulo, through the
+//! `sk_`-authenticated admin API plus `/status`. There are no public
+//! (`/api/v1/t/{pk}/...`) routes, no CORS and no per-origin checks; everything
+//! a customer's browser, a merchant or a plugin touches is served by monokulo.
 //!
 //! Not implemented in this pass: TLS termination (expected to sit behind a reverse
 //! proxy or terminate via `rustls` in `main`, not implemented here).
 
 mod admin;
 pub mod instance_admin;
-mod public;
+mod orders;
 pub mod rate_limit;
 mod status_page;
 #[cfg(test)]
@@ -41,13 +39,12 @@ use std::collections::HashMap;
 use std::sync::{Arc, RwLock};
 
 use axum::extract::FromRequestParts;
-use axum::http::{Method, StatusCode, header, request::Parts};
+use axum::http::{StatusCode, header, request::Parts};
 use axum::middleware;
 use axum::response::{IntoResponse, Json, Response};
 use axum::routing::{delete, get, post};
 use axum::Router;
 use serde_json::json;
-use tower_http::cors::{AllowOrigin, CorsLayer};
 use tower_http::limit::RequestBodyLimitLayer;
 
 use crate::daemon_fallback::FallbackDaemonClient;
@@ -56,7 +53,7 @@ use crate::scanner_status::ScannerStatusMap;
 use crate::status::OrderStatus;
 use crate::store::{SharedStore, StoreError, Tenant};
 
-use rate_limit::{admin_rate_limit_middleware, rate_limit_middleware, RateLimiter};
+use rate_limit::{admin_rate_limit_middleware, RateLimiter};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -78,13 +75,9 @@ pub struct AppState {
     /// deliberately never given.
     pub key_custody_backend: String,
     pub wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
-    /// Per-source-IP budget for the public/unauthenticated endpoints and
-    /// `/status` - see `http::rate_limit`'s own module doc comment.
-    pub rate_limiter: Arc<RateLimiter>,
-    /// Per-`sk_`-token budget for the admin API - a separate, independent
-    /// limiter from `rate_limiter` above, not a second view of the same
-    /// data. See `http::rate_limit`'s own module doc comment for why IP-
-    /// keying is the wrong shape for this particular surface.
+    /// Per-`sk_`-token budget for every route (falling back to the caller's
+    /// address for a request without a token) - see `http::rate_limit`'s own
+    /// module doc comment for why token-keying is the right shape here.
     pub admin_rate_limiter: Arc<RateLimiter<String>>,
     /// Which networks this instance can actually scan - i.e. which
     /// `[monero_node.<network>]` sections are configured. A tenant can only be
@@ -125,46 +118,32 @@ pub struct AppState {
 }
 
 pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
-    // Two sub-routers, each with its own rate-limit middleware and key - see
-    // `http::rate_limit`'s own module doc comment for why these need to be
-    // separate rather than one shared limiter over the whole API.
+    // The engine is private: every route here is for monokulo (or an operator
+    // on the same private network), never a browser. No CORS layer, no
+    // public routes.
     //
-    // `POST /api/v1/admin/tenants` (tenant creation) sits in the *public*
-    // group despite living under `/api/v1/admin/...`: it takes no
-    // `Authorization` header at all (see `EngineClient`'s own doc comment on
-    // why - admin-API network isolation is an ops-level concern, not one
-    // this endpoint enforces itself), so it has no token to key a per-token
-    // limit on, and it's exactly the kind of unauthenticated, state-changing
-    // request this repo's rate limiting exists to bound in the first place.
-    let public_router = Router::new()
+    // Unauthenticated, but reachable only by monokulo now (see the module doc
+    // comment): tenant creation (monokulo provisions a store's tenant before
+    // it has any `sk_`) and `/status` (a JSON status *API* - monokulo's own
+    // `GET /status` calls it and renders the real, styled page; it reports
+    // node/scanner health across every configured network, not tenant-scoped
+    // data, so it sits outside the versioned `/api/v1/...` prefix like a
+    // service's own `/healthz`). Both share the admin limiter, which keys a
+    // token-less request on its address.
+    let unauthenticated_router = Router::new()
         .route("/api/v1/admin/tenants", post(admin::create_tenant))
-        .route("/api/v1/t/{pk}/orders", post(public::create_order))
-        .route("/api/v1/t/{pk}/orders/{order_id}", get(public::get_order_status))
-        .route(
-            "/api/v1/t/{pk}/orders/{order_id}/refund-address",
-            post(public::set_refund_address),
-        )
-        // A JSON status *API*, not a page - the monokulo's own
-        // `GET /status` calls this and renders the real, styled page.
-        // Deliberately unauthenticated (no `sk_`/`pk_` involved) and outside
-        // the `/api/v1/...` version prefix those doc comments explain the
-        // reasoning for - this reports node/scanner
-        // health across *every* configured network at once, not tenant-
-        // scoped API surface, the same way a service's own `/healthz`
-        // typically sits outside its versioned API.
         .route("/status", get(status_page::status_page))
-        .layer(middleware::from_fn_with_state(state.clone(), rate_limit_middleware));
+        .layer(middleware::from_fn_with_state(state.clone(), admin_rate_limit_middleware));
 
     // Every route here requires a real `Authorization: Bearer sk_...` (see
-    // `AuthedTenant`), so each gets its own per-token budget instead of
-    // sharing the public group's per-IP one.
+    // `AuthedTenant`), so each gets its own per-token budget.
     let admin_router = Router::new()
         .route(
             "/api/v1/admin/tenant",
             get(admin::get_own_tenant).patch(admin::patch_own_tenant).delete(admin::delete_own_tenant),
         )
         .route("/api/v1/admin/tenant/rotate-secret", post(admin::rotate_secret))
-        .route("/api/v1/admin/tenant/orders", get(admin::list_orders).post(public::create_order_for_admin))
+        .route("/api/v1/admin/tenant/orders", get(admin::list_orders).post(orders::create_order_for_admin))
         .route("/api/v1/admin/tenant/orders/{order_id}", get(admin::get_order_detail))
         .route(
             "/api/v1/admin/tenant/orders/{order_id}/refund-address",
@@ -182,7 +161,7 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     // The instance-wide settings API - a different credential (the instance
     // admin token, `AuthedInstanceAdmin`) from every route above, which all
     // authenticate as one specific *tenant*. Shares the admin group's
-    // per-token rate limit rather than a third bucket of its own - this is
+    // per-token rate limit rather than a bucket of its own - this is
     // exactly the kind of low-volume, human-driven traffic
     // (`admin_rate_limit_middleware`'s own generous default) that budget
     // already exists for.
@@ -193,52 +172,11 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         )
         .layer(middleware::from_fn_with_state(state.clone(), admin_rate_limit_middleware));
 
-    public_router
+    unauthenticated_router
         .merge(admin_router)
         .merge(instance_admin_router)
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
-        .layer(build_cors_layer(state.store.clone()))
         .with_state(state)
-}
-
-/// Only the `/api/v1/t/{pk}/orders...` family needs real cross-origin browser
-/// support: it's the surface a caller's own (necessarily different-origin) site can
-/// call directly via `fetch()` for a custom integration (`docs/fx_refactor.md`
-/// decision 2/3: the hosted checkout UI and its embed library now live on the
-/// monokulo, which calls this API server-to-server, not from a browser - this
-/// grant exists for a self-hoster's own direct browser-side integration instead).
-/// The admin API is deliberately left with no CORS grant at all: it's a
-/// backend-to-backend surface authenticated by a secret token, never meant to be
-/// called from an arbitrary browser tab.
-fn build_cors_layer(store: SharedStore) -> CorsLayer {
-    CorsLayer::new()
-        .allow_methods([Method::GET, Method::POST])
-        .allow_headers([header::CONTENT_TYPE])
-        .allow_origin(AllowOrigin::predicate(move |origin, parts| {
-            let Some(pk) = public_orders_route_pk(parts.uri.path()) else {
-                return false;
-            };
-            let Ok(origin_str) = origin.to_str() else {
-                return false;
-            };
-            let store = store.lock().unwrap();
-            matches!(
-                store.find_tenant_by_public_key(pk),
-                Ok(Some(tenant)) if tenant.allowed_origins.iter().any(|o| o == origin_str)
-            )
-        }))
-}
-
-/// Extracts `{pk}` from a path if it matches `/api/v1/t/{pk}/orders...` - shared by
-/// `build_cors_layer`'s preflight check (which runs before axum's own path-param
-/// extraction, on the raw `Parts`) so the same route family stays defined in one
-/// place rather than drifting out of sync with the `.route(...)` calls above.
-fn public_orders_route_pk(path: &str) -> Option<&str> {
-    let mut segments = path.trim_start_matches('/').split('/');
-    match (segments.next(), segments.next(), segments.next(), segments.next(), segments.next()) {
-        (Some("api"), Some("v1"), Some("t"), Some(pk), Some("orders")) => Some(pk),
-        _ => None,
-    }
 }
 
 pub use crate::now_unix;

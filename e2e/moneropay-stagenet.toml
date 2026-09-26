@@ -30,7 +30,6 @@ primary_address = "54F1KdjaAtnL6Fb4SbLUM1AMQSjSERjYUgYRtVgwjBirA26RyJCzxc4TbWPW6
 private_view_key = "fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e"
 public_spend_key = "3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335"
 network = "stagenet"
-allowed_origins = ["http://127.0.0.1:8190"]
 
 [payment]
 # Real stagenet blocks land roughly every ~2 minutes; requiring several

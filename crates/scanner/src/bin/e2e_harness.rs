@@ -198,7 +198,6 @@ async fn main() {
         key_custody: key_custody.clone(),
         key_custody_backend: "plain".to_string(),
         wallet_handles: wallet_handles.clone(),
-        rate_limiter: Arc::new(RateLimiter::new(1_000_000)),
         admin_rate_limiter: Arc::new(RateLimiter::new(1_000_000)),
         configured_networks: Arc::new(HashSet::from([Network::Stagenet])),
         daemons: Arc::new(HashMap::from([(Network::Stagenet, fallback_daemon)])),
@@ -349,7 +348,6 @@ async fn main() {
                     ("view_key_hex", WALLET_PRIVATE_VIEW_KEY),
                     ("spend_pubkey_hex", WALLET_PUBLIC_SPEND_KEY),
                     ("network", "stagenet"),
-                    ("allowed_origins", ""),
                     // `ConnectForm::base_currency` (`http::dashboard`) has no
                     // real default despite its `#[serde(default)]` (that
                     // only covers a missing form field, not what the

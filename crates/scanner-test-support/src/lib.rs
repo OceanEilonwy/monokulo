@@ -458,7 +458,6 @@ impl TestEngineConfig {
             key_custody: key_custody.clone(),
             key_custody_backend: key_custody_backend.to_string(),
             wallet_handles: wallet_handles.clone(),
-            rate_limiter: Arc::new(RateLimiter::new(10_000)),
             admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
             configured_networks: Arc::new(
                 self.networks.iter().copied().collect::<HashSet<Network>>(),
@@ -733,7 +732,6 @@ mod tests {
                 "view_key_hex": TEST_VIEW_KEY_HEX,
                 "spend_pubkey_hex": TEST_SPEND_PUBKEY_HEX,
                 "network": "mainnet",
-                "allowed_origins": [],
                 "order_expiry_seconds": 1,
             }))
             .send()
@@ -742,7 +740,6 @@ mod tests {
             .json()
             .await
             .expect("create_tenant response was not valid JSON");
-        let public_key = created["public_key"].as_str().unwrap().to_string();
         let secret_token = created["secret_token"].as_str().unwrap().to_string();
 
         let (receiver_addr, received, receiver_task) = spawn_recording_receiver().await;
@@ -759,7 +756,8 @@ mod tests {
         let signing_secret = webhook["signing_secret"].as_str().unwrap().to_string();
 
         let order: serde_json::Value = client
-            .post(format!("{base_url}/api/v1/t/{public_key}/orders"))
+            .post(format!("{base_url}/api/v1/admin/tenant/orders"))
+            .bearer_auth(&secret_token)
             .json(&serde_json::json!({ "xmr_amount_piconero": 1_000_000_000_000u64 }))
             .send()
             .await
@@ -972,7 +970,6 @@ mod tests {
                 "view_key_hex": FIXTURE_VIEW_KEY_HEX,
                 "spend_pubkey_hex": fixture_spend_pubkey_hex(),
                 "network": "mainnet",
-                "allowed_origins": [],
             }))
             .send()
             .await
@@ -980,14 +977,15 @@ mod tests {
             .json()
             .await
             .expect("create_tenant response was not valid JSON");
-        let public_key = created["public_key"].as_str().unwrap().to_string();
+        let secret_token = created["secret_token"].as_str().unwrap().to_string();
 
         // The tenant's very first order lands on minor index 1 (`next_minor_index`
         // starts at 1 - see `migrations/0001_init.sql`) - exactly the subaddress
         // the fixture transaction pays, same as `src/scanner.rs::setup_with_zero_
         // conf_ceiling`'s own assertion pins this for the internal test.
         let order: serde_json::Value = client
-            .post(format!("{base_url}/api/v1/t/{public_key}/orders"))
+            .post(format!("{base_url}/api/v1/admin/tenant/orders"))
+            .bearer_auth(&secret_token)
             .json(&serde_json::json!({ "xmr_amount_piconero": 1_000u64 }))
             .send()
             .await
@@ -1003,7 +1001,8 @@ mod tests {
             .expect("real scan tick failed");
 
         let status: serde_json::Value = client
-            .get(format!("{base_url}/api/v1/t/{public_key}/orders/{order_id}"))
+            .get(format!("{base_url}/api/v1/admin/tenant/orders/{order_id}"))
+            .bearer_auth(&secret_token)
             .send()
             .await
             .expect("get_order_status request failed")

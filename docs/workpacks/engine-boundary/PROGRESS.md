@@ -12,8 +12,8 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 | 4 | Let a shop's server create orders with its secret key | done | `3600a96` |
 | 5 | Give plugins monokulo's address, not the engine's | done | `171ba94` |
 | 6 | Fix the WooCommerce plugin | done | `4f415dd` (PHP), `aa13374` (Rust) |
-| 7 | Only show browser-created orders inside a verified frame | done | (this commit) |
-| 8 | Remove the engine's public surface | not started | |
+| 7 | Only show browser-created orders inside a verified frame | done | `8dfffd7` |
+| 8 | Remove the engine's public surface | done | (this commit) |
 | 9a | Client identity (Tor circuit ID, trusted proxies) | not started | |
 | 9b | Tor's own defences (torrc, docs) | not started | |
 | 9c | Tiered limits | not started | |
@@ -25,7 +25,7 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 
 ## Resume here
 
-Steps 1-7 done. Next: step 8 (remove the engine's public surface: delete `/api/v1/t/{pk}/...` routes and handlers in `crates/scanner/src/http/public.rs`/`mod.rs`, the CORS layer, origin checks, the per-IP limiter if only public routes used it; drop `allowed_origins` from tenant create/patch/view plus a scanner migration dropping the column; update monokulo's `EngineClient` types, `scanner-test-support`, `e2e_harness`, stagenet configs (`e2e/moneropay-stagenet.toml`), all tests, `docs/DESIGN.md` and `docs/TESTING.md`; decide on a shared instance token for `POST /api/v1/admin/tenants`).
+Steps 1-8 done. Next: step 9 (abuse protection). Re-read README 9a-9g first, including the reviewer's `a0abcca` change: the Tor test must be a real `#[ignore]`d end-to-end test against the installed tor 0.4.9.12 (`crates/monokulo/tests/e2e_tor.rs`), plus a fast synthetic PROXY-header test that runs by default. Suggested order: 9a (client identity type + trusted proxies + PROXY v1 listener) -> 9c (tiered buckets) -> 9d (challenge, pages + JSON API + JS) -> 9e (settings + status page) -> 9f (docs/CORS headers) -> 9b (torrc + doc) -> 9g (tests incl. real tor), committing PROGRESS at each sub-step.
 
 PHP suite: see decision 13 for how to run it (wp-env's plugin mount collides with WooCommerce).
 
@@ -41,8 +41,8 @@ Commit SHAs: each step's commit records its own SHA in the *next* step's PROGRES
 
 ## Test status at last commit
 
-After step 7:
-- `cargo test --workspace`: 866 passed, 0 failed, 18 ignored.
+After step 8:
+- `cargo test --workspace`: 864 passed (a few engine tests of the removed public routes/CORS were deleted or merged), 0 failed, 18 ignored.
 - clippy: per-file warning counts identical to baseline (checked with a per-file count diff).
 - Playwright surface: 19 passed (one new test in step 7).
 - PHP suite: run (decision 13): 43 tests OK; `--group live-monokulo`: 1 skipped (no local config).
@@ -108,3 +108,13 @@ Rust half:
 - `crates/monokulo/src/views/checkout.rs`: `open_from_shop_page`.
 - Tests: `a_restricted_stores_browser_created_orders_only_open_inside_a_frame` (`http/embed_domains.rs`): unrestricted opens; restricted browser order: `document` 403 with the page, no script, no address, `Vary`; `iframe`/`frame`/absent render; share page 403 as document; `/status` still 200; keyed order opens for `document`/`iframe`/absent and via share. Playwright: `a browser says whether it is loading a page as a frame...` (decision 15).
 - Weakness: the rule trusts the browser's `Sec-Fetch-Dest` and lets header-less requests through (by design, per the plan); old orders from before migration 0021 count as keyed (decision 7).
+
+### Step 8: engine public surface removed
+- `crates/scanner/src/http/mod.rs`: router has an unauthenticated group (tenant creation, `/status`), the `sk_` admin group and the instance-settings group; no `/api/v1/t/...` routes, no CORS layer, no `public_orders_route_pk`. `AppState::rate_limiter` removed.
+- `crates/scanner/src/http/public.rs` renamed `orders.rs`: only `create_order_for_admin` and its request/response types remain.
+- `crates/scanner/src/http/rate_limit.rs`: only the admin (per-token, address fallback) middleware (decision 17). `server.rate_limit_per_ip_per_min` removed from `settings.rs`, `instance_admin.rs`, `main.rs`.
+- `allowed_origins` gone from `Tenant`/`NewTenant`/`TenantConfigPatch`/SQL (`store.rs`), admin create/patch/view (`admin.rs`), `local_admin.rs`, `cli.rs` (flag removed), `main.rs --show-tenant`; migration `crates/scanner/migrations/0014_drop_tenant_allowed_origins.sql` + test `migration_0014_drops_the_tenant_allowed_origins_column_and_keeps_the_tenant` (decision 18).
+- Monokulo `EngineClient::CreateTenantRequest` has no `allowed_origins`. `scanner-test-support`, `e2e_harness`, `crates/scanner/tests/e2e_stagenet.rs` (+ `tests/support/mod.rs`), `scripts/dev-run.sh`, `e2e/moneropay-stagenet.toml`, `tower-http` `cors` feature dropped from the scanner crate.
+- Tests: engine HTTP tests now create/read orders through the admin API; new `the_engine_serves_no_public_order_routes_and_no_cors` and `unauthenticated_routes_are_limited_per_address_by_the_admin_limiter`; removed public-only tests (public confirmation override, disallowed origin, two CORS tests). Monokulo's scanner-settings admin test no longer lists the removed setting and now counts against `ALL_SCALAR`.
+- Docs: `docs/DESIGN.md` (§5 table, §8 schema note, §10.1, §10.2 table, §10.3 "No public API", §10.4 note, §12 rewritten, §13 `[ddos]`, §14 wording), `docs/TESTING.md` (rows for the engine's absent public surface, monokulo's engine-call guard, the per-token limiter, and the §11 origin row now pointing at monokulo's embed policy).
+- Shared instance token: not added (decision 16).

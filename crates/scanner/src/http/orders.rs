@@ -1,5 +1,9 @@
-use axum::extract::{Path, State};
-use axum::http::HeaderMap;
+//! Order creation for the `sk_`-authenticated admin API
+//! (`POST /api/v1/admin/tenant/orders`) - the only way orders are created now
+//! the engine is private. Monokulo calls it for every order (its public
+//! checkout API, the dashboard and the POS) after pricing the order in XMR.
+
+use axum::extract::State;
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
@@ -8,28 +12,10 @@ use crate::store::{NewOrder, Tenant};
 
 use super::{parse_network, AppState, ApiError, AuthedTenant, now_unix, resolve_wallet_handle};
 
-/// Resolves a tenant by its public key (not a secret - safe to look up directly
-/// from a path parameter) and enforces the origin allowlist independently of
-/// whatever CORS header this response also carries, per `docs/DESIGN.md` §12: CORS
-/// is a browser-enforced courtesy, not a server-side guarantee, so a script that
-/// simply doesn't run in a browser is not stopped by it. When no `Origin` header is
-/// present at all (non-browser clients, curl, server-to-server), the request is
-/// allowed through - this endpoint has no secret to protect, only a "which sites can
-/// call this on a customer's behalf" concern that only applies to browser contexts.
-async fn resolve_public_tenant(state: &AppState, pk: &str, origin: Option<&str>) -> Result<Tenant, ApiError> {
-    let tenant = state.store.lock().unwrap().find_tenant_by_public_key(pk)?.ok_or(ApiError::NotFound)?;
-    if let Some(origin) = origin {
-        if !tenant.allowed_origins.iter().any(|o| o == origin) {
-            return Err(ApiError::Forbidden("origin not allowed for this tenant".into()));
-        }
-    }
-    Ok(tenant)
-}
-
 /// XMR-only, per `docs/fx_refactor.md` Phase 3: this process has no concept of fiat
-/// or exchange rates at all any more. A public integration supplies the exact
-/// `xmr_amount_piconero` an order is
-/// worth; this engine only ever watches the chain for that amount arriving. Any fiat
+/// or exchange rates at all any more. The caller (monokulo) supplies the exact
+/// `xmr_amount_piconero` an order is worth; this engine only ever watches the
+/// chain for that amount arriving. Any fiat
 /// display a customer sees is entirely the monokulo's responsibility, backed by
 /// its own local `order_fiat_metadata` record - this engine's `orders` table no
 /// longer stores fiat fields at all (see migration `0005_drop_order_fiat_columns.sql`).
@@ -38,8 +24,7 @@ pub struct CreateOrderRequest {
     merchant_order_id: Option<String>,
     xmr_amount_piconero: u64,
     description: Option<String>,
-    /// A per-order confirmation-count override. The public route rejects
-    /// this field; the authenticated tenant route accepts it. Set by monokulo's
+    /// A per-order confirmation-count override. Set by monokulo's
     /// amount-tiered "Confirmation Thresholds" feature, which resolves the
     /// right value itself before ever calling here - this engine has no
     /// concept of currency or amount tiers, it only ever locks in the
@@ -55,20 +40,6 @@ pub struct CreateOrderResponse {
     address: String,
     xmr_amount_piconero: u64,
     expires_at: i64,
-}
-
-pub async fn create_order(
-    Path(pk): Path<String>,
-    State(state): State<AppState>,
-    headers: HeaderMap,
-    Json(req): Json<CreateOrderRequest>,
-) -> Result<Json<CreateOrderResponse>, ApiError> {
-    let origin = headers.get(axum::http::header::ORIGIN).and_then(|v| v.to_str().ok());
-    let tenant = resolve_public_tenant(&state, &pk, origin).await?;
-    if req.confirmations_required.is_some() {
-        return Err(ApiError::Forbidden("per-order confirmations require tenant authentication".into()));
-    }
-    create_order_for_tenant(state, tenant, req).await
 }
 
 pub async fn create_order_for_admin(
@@ -143,61 +114,4 @@ async fn create_order_for_tenant(state: AppState, tenant: Tenant, req: CreateOrd
         xmr_amount_piconero: order.xmr_amount_piconero,
         expires_at: order.expires_at,
     }))
-}
-
-#[derive(Serialize)]
-pub struct OrderStatusResponse {
-    order_id: String,
-    status: String,
-    address: String,
-    confirmations: u64,
-    amount_received_piconero: u64,
-    xmr_amount_piconero: u64,
-    double_spend_detected_at: Option<i64>,
-    expires_at: i64,
-}
-
-/// Note: only `pk_` and `order_id` scope this lookup - there is no `sk_` to check
-/// here by design, since a order_id is an unguessable random identifier the
-/// customer already holds (from the order-creation response), not a secret this
-/// server needs to authenticate. The equivalent IDOR concern for the *admin* surface
-/// (see `docs/DESIGN.md` §10.1) doesn't apply the same way here: this route's whole
-/// job is to let anyone holding a order_id check its status.
-pub async fn get_order_status(
-    Path((pk, order_id)): Path<(String, String)>,
-    State(state): State<AppState>,
-) -> Result<Json<OrderStatusResponse>, ApiError> {
-    let store = state.store.lock().unwrap();
-    let tenant = store.find_tenant_by_public_key(&pk)?.ok_or(ApiError::NotFound)?;
-    let order = store.get_order(&tenant.id, &order_id)?.ok_or(ApiError::NotFound)?;
-    Ok(Json(OrderStatusResponse {
-        order_id: order.id,
-        status: order.status.as_str().to_string(),
-        address: order.address,
-        confirmations: order.confirmations,
-        amount_received_piconero: order.amount_received_piconero,
-        xmr_amount_piconero: order.xmr_amount_piconero,
-        double_spend_detected_at: order.double_spend_detected_at,
-        expires_at: order.expires_at,
-    }))
-}
-
-#[derive(Deserialize)]
-pub struct SetRefundAddressRequest {
-    refund_address: String,
-}
-
-pub async fn set_refund_address(
-    Path((pk, order_id)): Path<(String, String)>,
-    State(state): State<AppState>,
-    Json(req): Json<SetRefundAddressRequest>,
-) -> Result<(), ApiError> {
-    let store = state.store.lock().unwrap();
-    let tenant = store.find_tenant_by_public_key(&pk)?.ok_or(ApiError::NotFound)?;
-    let updated = store.set_refund_address(&tenant.id, &order_id, &req.refund_address)?;
-    if updated {
-        Ok(())
-    } else {
-        Err(ApiError::NotFound)
-    }
 }

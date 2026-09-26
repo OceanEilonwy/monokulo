@@ -48,7 +48,6 @@ fn seed_tenant_and_orders(store: &Store, n: u32) -> String {
                 sealed_key_material: vec![0u8; 64],
                 primary_address: "4backup_restore_test_addr".into(),
                 network: "mainnet".into(),
-                allowed_origins: vec!["https://merchant.example".into()],
                 confirmations_required: None,
                 order_expiry_seconds: None,
             },

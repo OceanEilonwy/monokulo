@@ -43,6 +43,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (11, include_str!("../migrations/0011_order_confirmations_override.sql")),
     (12, include_str!("../migrations/0012_drop_order_rescans.sql")),
     (13, include_str!("../migrations/0013_drop_zero_conf_max_piconero.sql")),
+    (14, include_str!("../migrations/0014_drop_tenant_allowed_origins.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -140,7 +141,6 @@ pub struct Tenant {
     pub next_minor_index: u32,
     pub confirmations_required: u64,
     pub order_expiry_seconds: i64,
-    pub allowed_origins: Vec<String>,
     pub created_at: i64,
     pub disabled_at: Option<i64>,
 }
@@ -150,17 +150,14 @@ pub struct NewTenant {
     pub sealed_key_material: Vec<u8>,
     pub primary_address: String,
     pub network: String,
-    pub allowed_origins: Vec<String>,
     pub confirmations_required: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
 }
 
 /// A partial update to a tenant's config. Fields are plain `Option<T>` for
-/// "unchanged vs. set to a value" (there's no way to clear `allowed_origins` etc.
-/// back to empty via this API, which is fine - it's never meant to be empty).
+/// "unchanged vs. set to a value".
 #[derive(Default)]
 pub struct TenantConfigPatch {
-    pub allowed_origins: Option<Vec<String>>,
     pub confirmations_required: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
 }
@@ -381,14 +378,12 @@ impl Store {
         let public_key = generate_public_key();
         let secret_token = generate_secret_token();
         let secret_hash = hash_secret_token(&secret_token);
-        let allowed_origins_json = serde_json::to_string(&new.allowed_origins).unwrap();
 
         self.conn.execute(
             "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
                 sealed_key_material, primary_address, network, next_minor_index,
-                confirmations_required, order_expiry_seconds,
-                allowed_origins, created_at_utc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10, ?11)",
+                confirmations_required, order_expiry_seconds, created_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10)",
             params![
                 id,
                 public_key,
@@ -399,7 +394,6 @@ impl Store {
                 new.network,
                 new.confirmations_required.unwrap_or(10) as i64,
                 new.order_expiry_seconds.unwrap_or(1800),
-                allowed_origins_json,
                 now,
             ],
         )?;
@@ -409,9 +403,6 @@ impl Store {
     }
 
     fn row_to_tenant(row: &rusqlite::Row) -> rusqlite::Result<Tenant> {
-        let allowed_origins_json: String = row.get("allowed_origins")?;
-        let allowed_origins: Vec<String> =
-            serde_json::from_str(&allowed_origins_json).unwrap_or_default();
         Ok(Tenant {
             id: row.get("id")?,
             public_key: row.get("public_key")?,
@@ -422,7 +413,6 @@ impl Store {
             next_minor_index: row.get::<_, i64>("next_minor_index")? as u32,
             confirmations_required: row.get::<_, i64>("confirmations_required")? as u64,
             order_expiry_seconds: row.get("order_expiry_seconds")?,
-            allowed_origins,
             created_at: row.get("created_at_utc")?,
             disabled_at: row.get("disabled_at_utc")?,
         })
@@ -496,13 +486,6 @@ impl Store {
     /// `None` means "leave unchanged", so a partial PATCH body only touches the
     /// fields it actually included.
     pub fn update_tenant_config(&self, tenant_id: &str, patch: TenantConfigPatch) -> Result<()> {
-        if let Some(origins) = &patch.allowed_origins {
-            let json = serde_json::to_string(origins).unwrap();
-            self.conn.execute(
-                "UPDATE tenants SET allowed_origins = ?2 WHERE id = ?1",
-                params![tenant_id, json],
-            )?;
-        }
         if let Some(v) = patch.confirmations_required {
             self.conn.execute(
                 "UPDATE tenants SET confirmations_required = ?2 WHERE id = ?1",
@@ -1551,7 +1534,6 @@ mod tests {
                     sealed_key_material: vec![0u8; 64],
                     primary_address: "4addr".into(),
                     network: "mainnet".into(),
-                    allowed_origins: vec!["https://merchant.example".into()],
                     confirmations_required: None,
                     order_expiry_seconds: None,
                 },
@@ -1975,7 +1957,7 @@ mod tests {
             .unwrap();
         let refetched = store.get_tenant_by_id(&created.tenant.id).unwrap().unwrap();
         assert_eq!(refetched.confirmations_required, 3);
-        assert_eq!(refetched.allowed_origins, created.tenant.allowed_origins); // untouched
+        assert_eq!(refetched.order_expiry_seconds, created.tenant.order_expiry_seconds); // untouched
 
         // Native 0-conf: a tenant's own default can be patched down to zero directly,
         // no separate ceiling/`_set` flag machinery needed.
@@ -2278,7 +2260,6 @@ mod tests {
                     sealed_key_material: vec![],
                     primary_address: "5stagenet".into(),
                     network: "stagenet".into(),
-                    allowed_origins: vec![],
                     confirmations_required: None,
                     order_expiry_seconds: None,
                 },
@@ -2313,7 +2294,6 @@ mod tests {
                     sealed_key_material: vec![],
                     primary_address: "5stagenet".into(),
                     network: "stagenet".into(),
-                    allowed_origins: vec![],
                     confirmations_required: None,
                     order_expiry_seconds: None,
                 },
@@ -2356,7 +2336,6 @@ mod tests {
                     sealed_key_material: vec![],
                     primary_address: "5stagenet".into(),
                     network: "stagenet".into(),
-                    allowed_origins: vec![],
                     confirmations_required: None,
                     order_expiry_seconds: None,
                 },
@@ -2530,7 +2509,6 @@ mod tests {
                     sealed_key_material: vec![],
                     primary_address: "5stagenet".into(),
                     network: "stagenet".into(),
-                    allowed_origins: vec![],
                     confirmations_required: None,
                     order_expiry_seconds: None,
                 },
@@ -2763,6 +2741,31 @@ mod tests {
             )
             .unwrap();
         assert!(has_unique_index, "the UNIQUE(order_id, txid, output_index) constraint must survive as a real index");
+    }
+
+    #[test]
+    fn migration_0014_drops_the_tenant_allowed_origins_column_and_keeps_the_tenant() {
+        let conn = Connection::open_in_memory().unwrap();
+        configure_connection(&conn).unwrap();
+        shared::migrations::apply(&conn, &MIGRATIONS[..13]).unwrap();
+        conn.execute_batch(
+            "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
+                sealed_key_material, primary_address, allowed_origins, created_at_utc)
+             VALUES ('old', 'pk_old', 'hash_old', 'plain', x'00', '4addr', '[\"https://a.example\"]', 1000);",
+        )
+        .unwrap();
+
+        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+        let columns: Vec<String> = conn
+            .prepare("SELECT name FROM pragma_table_info('tenants')")
+            .unwrap()
+            .query_map([], |row| row.get(0))
+            .unwrap()
+            .collect::<rusqlite::Result<_>>()
+            .unwrap();
+        assert!(!columns.iter().any(|c| c == "allowed_origins"), "got columns {columns:?}");
+        let store = Store::from_connection(conn);
+        assert_eq!(store.get_tenant_by_id("old").unwrap().unwrap().public_key, "pk_old");
     }
 
     #[test]

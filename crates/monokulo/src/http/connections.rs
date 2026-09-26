@@ -127,9 +127,6 @@ pub(super) async fn create_connection_for_user(
             view_key_hex: req.view_key_hex,
             spend_pubkey_hex: req.spend_pubkey_hex,
             network: req.network,
-            // Always empty: embedding and CORS policy live in monokulo
-            // (`crate::embed_domains`), never on the engine.
-            allowed_origins: Vec::new(),
             confirmations_required: req.confirmations_required,
             order_expiry_seconds: req.order_expiry_seconds,
         })

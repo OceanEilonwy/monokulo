@@ -113,7 +113,6 @@ scalar_settings! {
     PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB => { key: "payment.scan_chunk_memory_budget_mb", env: "SCANNER_PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB", default: "8" },
     SERVER_BIND => { key: "server.bind", env: "SCANNER_SERVER_BIND", default: "127.0.0.1:8443" },
     SERVER_WORKER_THREADS => { key: "server.worker_threads", env: "SCANNER_SERVER_WORKER_THREADS", default: "2" },
-    SERVER_RATE_LIMIT_PER_IP_PER_MIN => { key: "server.rate_limit_per_ip_per_min", env: "SCANNER_SERVER_RATE_LIMIT_PER_IP_PER_MIN", default: "20" },
     SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN => { key: "server.rate_limit_per_token_per_min", env: "SCANNER_SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN", default: "120" },
     SERVER_MAX_BODY_BYTES => { key: "server.max_body_bytes", env: "SCANNER_SERVER_MAX_BODY_BYTES", default: "8192" },
     WEBHOOKS_ALLOW_PRIVATE_URLS => { key: "webhooks.allow_private_urls", env: "SCANNER_WEBHOOKS_ALLOW_PRIVATE_URLS", default: "false" },
@@ -184,7 +183,6 @@ mod tests {
         let _: u32 = get(&store, &PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB);
         let _: String = get(&store, &SERVER_BIND);
         let _: usize = get(&store, &SERVER_WORKER_THREADS);
-        let _: u32 = get(&store, &SERVER_RATE_LIMIT_PER_IP_PER_MIN);
         let _: u32 = get(&store, &SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN);
         let _: usize = get(&store, &SERVER_MAX_BODY_BYTES);
         let _: bool = get(&store, &WEBHOOKS_ALLOW_PRIVATE_URLS);

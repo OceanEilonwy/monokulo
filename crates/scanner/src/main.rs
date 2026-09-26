@@ -77,10 +77,6 @@ async fn main() {
                     println!("Public key:            {}", s.public_key);
                     println!("Network:               {}", s.network);
                     println!("Primary address:       {}", s.primary_address);
-                    println!(
-                        "Allowed origins:       {}",
-                        if s.allowed_origins.is_empty() { "(none configured)".to_string() } else { s.allowed_origins.join(", ") }
-                    );
                     println!("Confirmations required: {}", s.confirmations_required);
                     println!("Order expiry:          {} minutes", s.order_expiry_seconds / 60);
                     std::process::exit(0);
@@ -165,7 +161,6 @@ async fn main() {
 
     let wallet_handles = Arc::new(RwLock::new(register_all_tenants(&store, &key_custody).await));
 
-    let rate_limit_per_ip_per_min: u32 = settings::get(&store.lock().unwrap(), &settings::SERVER_RATE_LIMIT_PER_IP_PER_MIN);
     let rate_limit_per_token_per_min: u32 = settings::get(&store.lock().unwrap(), &settings::SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN);
     let expired_order_grace_period_minutes: i64 =
         settings::get(&store.lock().unwrap(), &settings::PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES);
@@ -175,7 +170,6 @@ async fn main() {
         key_custody: key_custody.clone(),
         key_custody_backend,
         wallet_handles: wallet_handles.clone(),
-        rate_limiter: Arc::new(RateLimiter::new(rate_limit_per_ip_per_min)),
         admin_rate_limiter: Arc::new(RateLimiter::new(rate_limit_per_token_per_min)),
         configured_networks,
         daemons: daemons.clone(),
