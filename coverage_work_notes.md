@@ -134,10 +134,22 @@ precede deletion of old browser tests.
   index. Visual review of the narrow POS checkpoint found keypad digits
   inheriting an invisible button color; authored and served CSS now sets
   ink explicitly and reduces digit line height for short landscape.
+- 2.5 deterministic audit complete: after removing the redundant fixture
+  smoke cases and excluding the preexisting uncommitted badge duplicate, the
+  suite passes 38/38 with two workers. Final coverage is 537/613 lines and
+  400/590 branches, up from 521/613 and 377/590 at baseline. No baseline
+  executable line was lost. The three lost branch decisions are two guards
+  for absent checkout elements (impossible on the production view) and the
+  browser EventSource reconnecting-error edge; the refused-stream fallback
+  now has its own real-frame test. Three intentional checkout/POS/embed
+  mutations each failed the expected test and were restored. The audit map
+  is in `docs/COVERAGE_MIGRATION_AUDIT.md`. Separate paid stagenet
+  instrumentation is implemented but has not been run during this offline
+  audit.
 
 ## Resume next
 
-Handle the retained uncommitted badge test and run the 2.5 comparison, then
-validate the unified run and CI. The original
+Validate the unified run and CI, then decide whether to run the explicitly
+paid stagenet profile. The original
 surface test's search/badge changes remain user-owned and unstaged; stage only
 coverage-specific hunks for the collector commit.

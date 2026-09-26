@@ -57,6 +57,24 @@ test('real POS header remains above its compact checkout frame', async ({ page }
   }
 });
 
+test('real POS displays a shortened ID for an order without a reference', async ({ page }) => {
+  await page.goto(posUrl());
+  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  await page.getByRole('button', { name: '1', exact: true }).click();
+  await expect(page.locator('#pos-reference')).toHaveValue('');
+  await page.getByRole('button', { name: 'Charge' }).click();
+  await expect(page.locator('.pos-order-heading h1')).toHaveText(/^order_…/);
+  await expect(page.frameLocator('.pos-checkout-card iframe').locator('#checkout-root')).toBeVisible();
+});
+
+test('real POS opens an empty keypad when its order list is empty', async ({ page }) => {
+  await page.route('**/pos/orders?*', route => route.fulfill({ json: { orders: [], total: 0 } }));
+  await page.goto(posUrl());
+  await expect(page.locator('.pos-keypad')).toBeVisible();
+  await expect(page.locator('.pos-stack-card')).toHaveCount(0);
+  await expect(page.getByRole('button', { name: 'Charge' })).toBeDisabled();
+});
+
 test('real POS shows pending, partial, confirming, and terminal badge symbols', async ({ page }) => {
   const states = [
     ['pending', 'pending'], ['unconfirmed', 'unconfirmed'], ['confirming', 'confirming'],

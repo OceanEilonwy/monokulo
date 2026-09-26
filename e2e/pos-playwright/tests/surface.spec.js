@@ -68,7 +68,7 @@ function challengeServer({ difficulty = 8 } = {}) {
   const http = require('node:http');
   const crypto = require('node:crypto');
   const state = { passed: false, waitIssuedAt: 0, orderAttempts: [] };
-  const challenge = 'c0ffee.' + crypto.randomBytes(8).toString('hex');
+  const challenge = 'c0ffee.coverage'; // First valid nonce is 419 at eight bits.
   const zeroBits = buf => {
     let bits = 0;
     for (const byte of buf) { if (byte === 0) { bits += 8; continue; } return bits + Math.clz32(byte) - 24; }
@@ -143,7 +143,7 @@ test('monokulo-client.js solves an order-creation challenge on its own', async (
     expect(order.orderId).toBe('order-9');
     expect(state.orderAttempts.length).toBe(2);
     expect(state.orderAttempts[0]).toBeNull();
-    expect(state.orderAttempts[1]).toMatch(/^c0ffee\.[0-9a-f]+\.\d+$/);
+    expect(state.orderAttempts[1]).toMatch(/^c0ffee\.coverage\.\d+$/);
   } finally {
     server.close();
   }

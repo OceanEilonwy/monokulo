@@ -26,8 +26,7 @@ test('real challenge offers a ten second no-JavaScript continuation', async ({ b
     await expect(page.locator('meta[http-equiv="refresh"]')).toHaveAttribute('content', /^10;url=/);
     await expect(page.getByRole('link', { name: 'continue' })).toBeVisible();
     await captureCoverageStage(page, 'challenge-no-js', test.info());
-    await page.getByRole('link', { name: 'continue' }).click();
-    await expect(page.locator('#checkout-root')).toBeVisible();
+    await expect(page.locator('#checkout-root')).toBeVisible({ timeout: 20000 });
   } finally { await context.close(); }
 });
 
@@ -44,9 +43,9 @@ test('real challenge continues inside a cross-site checkout frame with and witho
       if (!javaScriptEnabled) {
         await expect(frame.getByRole('heading', { name: 'Checking your connection' })).toBeVisible();
         await captureCoverageStage(frame.locator('body'), 'challenge-cross-site', test.info());
-        await frame.getByRole('link', { name: 'continue' }).click();
+        await expect(frame.getByRole('link', { name: 'continue' })).toBeVisible();
       }
-      await expect(frame.locator('#checkout-root')).toBeVisible();
+      await expect(frame.locator('#checkout-root')).toBeVisible({ timeout: 20000 });
     } finally { await context.close(); }
   }
 });

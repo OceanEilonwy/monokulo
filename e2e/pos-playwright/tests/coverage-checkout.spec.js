@@ -204,6 +204,32 @@ test('client refund option frames the real checkout and retains its status strea
   await expect.poll(() => statusRequests).toBeGreaterThan(0);
 });
 
+test('client falls back to status polling when its stream is refused', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  let refused = 0;
+  let polled = 0;
+  await page.route(`${url}/events*`, route => {
+    if (route.request().frame() !== page.mainFrame()) return route.continue();
+    refused++;
+    return route.fulfill({ status: 204, body: '' });
+  });
+  await page.route(`${url}/status`, route => {
+    polled++;
+    return route.fulfill({ json: { status: 'paid', confirmations: 1 } });
+  });
+  await page.goto(`${fixture.base_url}/__coverage/ready`);
+  await page.setContent('<div id="mount"></div>');
+  await page.addScriptTag({ url: `${fixture.base_url}/static/monokulo-client.js` });
+  await page.evaluate(({ base_url, public_key, order_id }) => {
+    window.Monokulo.mount('#mount', order_id, { endpoint: base_url, publicKey: public_key,
+      onStatusChange: status => { document.querySelector('#mount').dataset.status = status; } });
+  }, { base_url: fixture.base_url, public_key: fixture.public_key, order_id: url.split('/').pop() });
+  await expect(page.locator('#mount iframe')).toHaveAttribute('src', url);
+  await expect(page.locator('#mount')).toHaveAttribute('data-status', 'paid', { timeout: 10000 });
+  expect(refused).toBeGreaterThan(0);
+  expect(polled).toBeGreaterThan(0);
+});
+
 test('real restricted checkout permits its own origin and blocks another origin', async ({ page, request }) => {
   const restricted = await request.post(`${fixture.base_url}/__coverage/embed/restricted`);
   expect(restricted.status()).toBe(204);

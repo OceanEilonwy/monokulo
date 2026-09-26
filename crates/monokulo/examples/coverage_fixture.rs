@@ -38,7 +38,9 @@ async fn create_order(State(control): State<Controls>) -> Result<Json<serde_json
 async fn challenge(State(control): State<Controls>) -> axum::response::Html<String> {
     let continue_url = format!("/pay/{}/orders/{}", control.public_key, control.order_id);
     let view = views::challenge::ChallengePageView {
-        challenge: "coverage-challenge".into(), difficulty: 1,
+        // The first valid nonce is 382 at eight bits, so the UI always
+        // exercises its second proof batch before continuing.
+        challenge: "coverage-challenge".into(), difficulty: 8,
         wait_url: format!("{continue_url}?monokulo_wait=coverage"), continue_url,
         error: None,
     };
