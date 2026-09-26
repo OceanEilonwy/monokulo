@@ -229,6 +229,10 @@ fn validate_monokulo_scalar(setting: &ScalarSetting, value: &str) -> Result<(), 
         "rate_limit.per_ip_per_min" => {
             value.parse::<u32>().map(|_| ()).map_err(|_| format!("{} must be a positive integer, got {value:?}", setting.key))
         }
+        "rate_limit.per_store_key_per_min" => match value.parse::<u32>() {
+            Ok(n) if n >= 1 => Ok(()),
+            _ => Err(format!("{} must be a whole number of at least 1, got {value:?}", setting.key)),
+        },
         "engine.url" => {
             if value.trim().is_empty() {
                 Err(format!("{} must not be empty", setting.key))
@@ -409,6 +413,7 @@ mod tests {
             exchange_rate: test_exchange_rate_provider(),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             event_streams: Default::default(),
+            store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
         }
     }
@@ -553,6 +558,7 @@ mod tests {
             ("exchange_rate.cache_seconds", "77"),
             ("http_cache.max_mb", "42"),
             ("rate_limit.per_ip_per_min", "33"),
+            ("rate_limit.per_store_key_per_min", "444"),
         ];
         // Every one of `ALL_SCALAR`'s own keys must be covered here, or this
         // test would silently stop proving anything about a setting added
@@ -695,6 +701,7 @@ mod tests {
                 exchange_rate: test_exchange_rate_provider(),
                 rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
                 event_streams: Default::default(),
+                store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
                 dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
             }
         };

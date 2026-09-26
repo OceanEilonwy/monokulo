@@ -27,7 +27,13 @@ use super::AppState;
 /// see a real peer address (`main.rs`); it's absent only in tests driven
 /// directly through the router via `tower::ServiceExt::oneshot`, where
 /// failing open trades nothing real.
+///
+/// A request `super::store_key` already authenticated with the store's
+/// secret key has spent the store's own budget instead and skips this one.
 pub async fn rate_limit_middleware(State(state): State<AppState>, req: Request, next: Next) -> Response {
+    if req.extensions().get::<super::store_key::StoreKeyAuthenticated>().is_some() {
+        return next.run(req).await;
+    }
     let peer_ip = req.extensions().get::<ConnectInfo<SocketAddr>>().map(|ci| ci.0.ip());
     if let Some(ip) = peer_ip {
         if !state.rate_limiter.check(ip, crate::now_unix()) {
@@ -65,6 +71,7 @@ mod tests {
             exchange_rate: std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             rate_limiter: std::sync::Arc::new(RateLimiter::new(limit_per_minute)),
             event_streams: Default::default(),
+            store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
         }
     }

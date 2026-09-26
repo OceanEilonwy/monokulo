@@ -32,9 +32,12 @@ pub(super) fn public_key_of_pay_path(path: &str) -> Option<&str> {
 /// - every response carries `Content-Security-Policy: frame-ancestors ...`,
 ///   so browsers only show the checkout inside monokulo itself or a
 ///   verified domain;
-/// - `POST /pay/{pk}/orders` from a browser page anywhere else gets `403`.
-///   A request with no `Origin` (a shop's server, like the WooCommerce
-///   plugin) is unaffected.
+/// - `POST /pay/{pk}/orders` must come either from a browser page on a
+///   verified domain (its `Origin`) or from someone holding the store's
+///   secret key (`super::store_key`, e.g. the WooCommerce plugin on the
+///   shop's server). Anything else gets `403`, including a request with no
+///   `Origin` and no key, which could otherwise come from any script
+///   anywhere.
 ///
 /// An unrestricted store's requests pass through untouched.
 pub async fn embed_policy_middleware(State(state): State<AppState>, request: Request, next: Next) -> Response {
@@ -45,12 +48,17 @@ pub async fn embed_policy_middleware(State(state): State<AppState>, request: Req
     let now = crate::now_unix();
 
     let creates_order = request.method() == Method::POST && request.uri().path().ends_with("/orders") && request.uri().path().matches('/').count() == 3;
-    if creates_order {
-        if let Some(origin) = request.headers().get(header::ORIGIN) {
-            if !origin.to_str().is_ok_and(|origin| policy.allows_origin(origin, now)) {
-                let error = "This store only accepts orders from its verified websites.";
-                return (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({ "error": error }))).into_response();
-            }
+    let has_key = request.extensions().get::<super::store_key::StoreKeyAuthenticated>().is_some();
+    if creates_order && !has_key {
+        let error = match request.headers().get(header::ORIGIN) {
+            Some(origin) if origin.to_str().is_ok_and(|origin| policy.allows_origin(origin, now)) => None,
+            Some(_) => Some("This store only accepts orders from its verified websites."),
+            None => Some(
+                "This store only accepts orders from its verified websites, or from its own server using the store's secret key.",
+            ),
+        };
+        if let Some(error) = error {
+            return (StatusCode::FORBIDDEN, axum::Json(serde_json::json!({ "error": error }))).into_response();
         }
     }
 
@@ -338,6 +346,7 @@ mod tests {
             exchange_rate: Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             event_streams: Default::default(),
+            store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             dns,
         };
         (state, engine)
@@ -513,6 +522,107 @@ mod tests {
         assert!(status.is_client_error(), "sending both names is refused rather than silently picking one");
     }
 
+    /// `POST /pay/{pk}/orders` with an optional page `Origin` and optional
+    /// `Authorization` value.
+    async fn create_order_as(router: &Router, pk: &str, origin: Option<&str>, authorization: Option<&str>) -> (StatusCode, serde_json::Value) {
+        create_order_from_ip(router, "203.0.113.9", pk, origin, authorization).await
+    }
+
+    async fn create_order_from_ip(
+        router: &Router,
+        ip: &str,
+        pk: &str,
+        origin: Option<&str>,
+        authorization: Option<&str>,
+    ) -> (StatusCode, serde_json::Value) {
+        let mut builder = Request::builder().method("POST").uri(format!("/pay/{pk}/orders")).header("content-type", "application/json");
+        if let Some(origin) = origin {
+            builder = builder.header("origin", origin);
+        }
+        if let Some(authorization) = authorization {
+            builder = builder.header("authorization", authorization);
+        }
+        let body = serde_json::json!({ "amount": "1", "currency": "XMR" }).to_string();
+        let mut request = builder.body(Body::from(body)).unwrap();
+        request.extensions_mut().insert(axum::extract::ConnectInfo(format!("{ip}:4000").parse::<std::net::SocketAddr>().unwrap()));
+        let response = router.clone().oneshot(request).await.unwrap();
+        let status = response.status();
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        (status, serde_json::from_slice(&body).unwrap_or_default())
+    }
+
+    fn secret_key_of(state: &AppState, id: &str) -> String {
+        let row = state.db.lock().unwrap().get_store_connection_by_id(id).unwrap().unwrap();
+        crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap()
+    }
+
+    fn recorded_with_key(state: &AppState, id: &str, order: &serde_json::Value) -> bool {
+        let order_id = order["order_id"].as_str().unwrap();
+        state.db.lock().unwrap().get_order_currency_metadata(id, order_id).unwrap().unwrap().created_with_key
+    }
+
+    #[tokio::test]
+    async fn secret_key_orders_are_accepted_and_recorded_and_restricted_stores_need_a_key_or_a_verified_page() {
+        let dns = Arc::new(FakeDns::default());
+        let (mut state, _engine) = test_state(dns.clone()).await;
+        // A per-IP budget of 4 a minute: key requests must not spend it.
+        state.rate_limiter = Arc::new(shared::rate_limit::RateLimiter::new(4));
+        state.store_key_rate_limiter = Arc::new(shared::rate_limit::RateLimiter::new(5));
+        let router = build_router(state.clone());
+        let session = session_for(&router, "keys@example.com").await;
+        let (id, pk) = create_store_with_key(&router, &session).await;
+        let (other_id, _) = create_store_with_key(&router, &session).await;
+        let key = format!("Bearer {}", secret_key_of(&state, &id));
+        let other_key = format!("Bearer {}", secret_key_of(&state, &other_id));
+
+        // Unrestricted: no key and no Origin still works, recorded as not keyed.
+        let (status, order) = create_order_as(&router, &pk, None, None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!recorded_with_key(&state, &id, &order));
+
+        // The right key works and is recorded as keyed.
+        let (status, order) = create_order_as(&router, &pk, None, Some(&key)).await;
+        assert_eq!(status, StatusCode::OK, "{order}");
+        assert!(recorded_with_key(&state, &id, &order));
+
+        // A wrong key, another store's key or a non-bearer value: 401 with a JSON error.
+        for bad in ["Bearer sk_wrong", other_key.as_str(), "Basic abc"] {
+            let (status, body) = create_order_as(&router, &pk, None, Some(bad)).await;
+            assert_eq!(status, StatusCode::UNAUTHORIZED, "{bad}");
+            assert!(body["error"].as_str().unwrap().contains("secret key"), "{body}");
+        }
+        // One unkeyed order and three failures spent the per-IP budget (4): unauthenticated
+        // requests from this address are now limited, keyed ones are not.
+        assert_eq!(create_order_as(&router, &pk, None, None).await.0, StatusCode::TOO_MANY_REQUESTS);
+        assert_eq!(create_order_as(&router, &pk, None, Some(&key)).await.0, StatusCode::OK);
+
+        // Restrict the store to its verified domain.
+        let row = state.db.lock().unwrap().list_store_domains(&id).unwrap().pop().unwrap();
+        dns.publish("_monokulo.store-home.example", &embed_domains::record_value(&row.token));
+        embed_domains::check_and_record(&state.db, dns.as_ref(), &row, crate::now_unix()).await.unwrap();
+        state.db.lock().unwrap().set_embed_restricted(&id, true).unwrap();
+
+        // From a fresh address (the first one is out of per-IP budget):
+        // neither a key nor an Origin is refused with a clear message.
+        let (status, body) = create_order_from_ip(&router, "198.51.100.7", &pk, None, None).await;
+        assert_eq!(status, StatusCode::FORBIDDEN);
+        assert!(body["error"].as_str().unwrap().contains("secret key"), "{body}");
+        // A verified page: fine, and not keyed.
+        let (status, order) = create_order_from_ip(&router, "198.51.100.7", &pk, Some("https://store-home.example"), None).await;
+        assert_eq!(status, StatusCode::OK);
+        assert!(!recorded_with_key(&state, &id, &order));
+        // The key, with or without an Origin: fine.
+        assert_eq!(create_order_as(&router, &pk, None, Some(&key)).await.0, StatusCode::OK);
+        assert_eq!(create_order_as(&router, &pk, Some("https://elsewhere.example"), Some(&key)).await.0, StatusCode::OK);
+        // Another store's key is still a 401, not a pass.
+        assert_eq!(create_order_from_ip(&router, "198.51.100.7", &pk, None, Some(&other_key)).await.0, StatusCode::UNAUTHORIZED);
+
+        // The per-store key budget (5) is its own limit: 4 keyed orders so
+        // far, 1 more passes, then 429.
+        assert_eq!(create_order_as(&router, &pk, None, Some(&key)).await.0, StatusCode::OK);
+        assert_eq!(create_order_as(&router, &pk, None, Some(&key)).await.0, StatusCode::TOO_MANY_REQUESTS);
+    }
+
     #[tokio::test]
     async fn a_restricted_store_only_works_on_its_verified_domains() {
         let dns = Arc::new(FakeDns::default());
@@ -552,10 +662,12 @@ mod tests {
             "frame-ancestors 'self' https://store-home.example https://*.store-home.example"
         );
 
-        // Order creation: a subdomain of the verified domain, or no page at
-        // all (a shop's server), is fine; anywhere else is refused.
+        // Order creation: a subdomain of the verified domain is fine; no
+        // page at all and no secret key (see
+        // `secret_key_orders_are_accepted_and_recorded_and_restricted_stores_need_a_key_or_a_verified_page`),
+        // or anywhere else, is refused.
         assert_eq!(create_order_from(&router, &pk, Some("https://www.store-home.example")).await.status(), StatusCode::OK);
-        assert_eq!(create_order_from(&router, &pk, None).await.status(), StatusCode::OK);
+        assert_eq!(create_order_from(&router, &pk, None).await.status(), StatusCode::FORBIDDEN);
         assert_eq!(create_order_from(&router, &pk, Some("https://evilstore-home.example")).await.status(), StatusCode::FORBIDDEN);
         assert_eq!(create_order_from(&router, &pk, Some("http://store-home.example")).await.status(), StatusCode::FORBIDDEN);
 

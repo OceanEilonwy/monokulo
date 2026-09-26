@@ -18,6 +18,7 @@
 //! for display purposes only; the engine never sees or stores it.
 
 use axum::extract::{Path, State};
+use axum::Extension;
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
 
@@ -60,12 +61,18 @@ pub struct CreateOrderResponse {
     pub expires_at: i64,
 }
 
-/// `POST /pay/{pk}/orders`.
+/// `POST /pay/{pk}/orders`. Open to anyone for an unrestricted store; a
+/// shop's server may authenticate with `Authorization: Bearer sk_...`
+/// (`super::store_key`, checked before this runs), which is recorded on the
+/// order (`created_with_key`) and is how a restricted store takes orders
+/// from outside a browser (`super::embed_domains::embed_policy_middleware`).
 pub async fn create_order(
     State(state): State<AppState>,
     Path(pk): Path<String>,
+    key: Option<Extension<super::store_key::StoreKeyAuthenticated>>,
     Json(req): Json<CreateOrderRequest>,
 ) -> Response {
+    let created_with_key = key.is_some();
     let policy_lock = crate::confirmation_thresholds::policy_lock(&pk);
     let _policy_guard = policy_lock.lock().await;
     let row = match state.db.lock().unwrap().get_store_connection_by_public_key(&pk) {
@@ -148,6 +155,7 @@ pub async fn create_order(
                 &resolution.base_currency,
                 resolution.base_currency_piconero_per_unit,
                 resolution.confirmations_required,
+                created_with_key,
             ) {
                 eprintln!(
                     "failed to record local fiat metadata for order {} on connection {}: {e} - the real order \
@@ -318,6 +326,7 @@ mod tests {
             exchange_rate: test_exchange_rate_provider().await,
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             event_streams: Default::default(),
+            store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
         };
         (state, engine)

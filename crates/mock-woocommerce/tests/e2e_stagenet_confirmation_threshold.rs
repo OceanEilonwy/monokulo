@@ -163,6 +163,7 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         event_streams: Default::default(),
+        store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
     };
     let router = build_router(state);

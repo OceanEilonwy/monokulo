@@ -800,6 +800,8 @@ pub async fn create_order(
                 &resolution.base_currency,
                 resolution.base_currency_piconero_per_unit,
                 resolution.confirmations_required,
+                // The merchant's own signed-in session: as trusted as the key.
+                true,
             ) {
                 eprintln!(
                     "failed to record local fiat metadata for order {} on connection {}: {e} - the real order \
@@ -1205,6 +1207,7 @@ mod tests {
             exchange_rate: test_exchange_rate_provider(),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             event_streams: Default::default(),
+            store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
         };
         (state, engine)
@@ -1230,6 +1233,7 @@ mod tests {
             exchange_rate: test_exchange_rate_provider(),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             event_streams: Default::default(),
+            store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
         };
         (state, engine)
@@ -2758,6 +2762,7 @@ mod tests {
             "the order's own currency already was the base currency, so no second conversion rate exists to snapshot"
         );
         assert_eq!(metadata.confirmations_required_applied, Some(20));
+        assert!(metadata.created_with_key, "a dashboard order is the merchant's own, as trusted as the key");
 
         // The whole point of the snapshot (WBS: "makes it clear how the
         // confirmation threshold was decided") - the order's own detail

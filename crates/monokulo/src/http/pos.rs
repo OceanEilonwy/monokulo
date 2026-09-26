@@ -187,6 +187,8 @@ pub async fn create_order(
                 &resolution.base_currency,
                 resolution.base_currency_piconero_per_unit,
                 resolution.confirmations_required,
+                // The merchant's own signed-in session: as trusted as the key.
+                true,
             ) {
                 eprintln!(
                     "failed to record local fiat metadata for POS order {} on connection {}: {e} - the real \
@@ -415,6 +417,7 @@ mod tests {
             exchange_rate: test_exchange_rate_provider(),
             rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             event_streams: Default::default(),
+            store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
         };
         (state, engine)
@@ -575,7 +578,7 @@ mod tests {
     #[tokio::test]
     async fn creating_a_pos_order_uses_the_stores_own_base_currency_and_is_visible_on_the_dashboard() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token =
             signed_up_and_logged_in_session_token(&router, "pos-create@example.com", "correct horse battery staple").await;
@@ -621,6 +624,10 @@ mod tests {
         assert_eq!(orders_list.status(), StatusCode::OK);
         let html = body_text(orders_list).await;
         assert!(html.contains(&order_id), "expected the POS-created order to show up in the dashboard's own orders list");
+
+        // Created by the merchant's own session: recorded as trusted as the key.
+        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&id, &order_id).unwrap().unwrap();
+        assert!(metadata.created_with_key);
     }
 
     #[tokio::test]

@@ -41,6 +41,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (18, include_str!("../migrations/0018_rename_payment_id_to_order_id.sql")),
     (19, include_str!("../migrations/0019_store_domains.sql")),
     (20, include_str!("../migrations/0020_embed_restriction.sql")),
+    (21, include_str!("../migrations/0021_order_created_with_key.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -249,6 +250,11 @@ pub struct OrderCurrencyMetadataRow {
     /// the engine (`crate::confirmation_thresholds::Resolution::confirmations_required`) -
     /// `None` only for a row predating this snapshot.
     pub confirmations_required_applied: Option<u64>,
+    /// Whether whoever created the order held the store's secret key (a
+    /// shop's server, the dashboard or the POS) rather than being a browser
+    /// page using the public embed library - see migration
+    /// `0021_order_created_with_key.sql`.
+    pub created_with_key: bool,
 }
 
 /// One row from the static `currencies` reference table - see that
@@ -653,14 +659,15 @@ impl Db {
         base_currency: &str,
         base_currency_piconero_per_unit: Option<u64>,
         confirmations_required_applied: u64,
+        created_with_key: bool,
     ) -> Result<()> {
         let piconero_per_unit = i64::try_from(piconero_per_unit)
             .expect("piconero_per_unit out of i64 range - not a plausible real exchange rate");
         self.conn.execute(
             "INSERT INTO order_currency_metadata
                 (connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
-                 store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)",
+                 store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
             params![
                 connection_id,
                 order_id,
@@ -672,6 +679,7 @@ impl Db {
                 base_currency,
                 base_currency_piconero_per_unit.map(|v| v as i64),
                 confirmations_required_applied as i64,
+                created_with_key,
             ],
         )?;
         Ok(())
@@ -685,7 +693,7 @@ impl Db {
         self.conn
             .query_row(
                 "SELECT connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
-                        store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied
+                        store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key
                  FROM order_currency_metadata WHERE connection_id = ?1 AND order_id = ?2",
                 params![connection_id, order_id],
                 |row| {
@@ -703,6 +711,7 @@ impl Db {
                         store_base_currency: row.get(7)?,
                         base_currency_piconero_per_unit: base_currency_piconero_per_unit.map(|v| v as u64),
                         confirmations_required_applied: confirmations_required_applied.map(|v| v as u64),
+                        created_with_key: row.get(10)?,
                     })
                 },
             )
@@ -722,7 +731,7 @@ impl Db {
     ) -> Result<std::collections::HashMap<String, OrderCurrencyMetadataRow>> {
         let mut stmt = self.conn.prepare(
             "SELECT connection_id, order_id, currency, amount, piconero_per_unit, provider, created_at_utc,
-                    store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied
+                    store_base_currency, base_currency_piconero_per_unit, confirmations_required_applied, created_with_key
              FROM order_currency_metadata WHERE connection_id = ?1",
         )?;
         let rows = stmt
@@ -741,6 +750,7 @@ impl Db {
                     store_base_currency: row.get(7)?,
                     base_currency_piconero_per_unit: base_currency_piconero_per_unit.map(|v| v as u64),
                     confirmations_required_applied: confirmations_required_applied.map(|v| v as u64),
+                    created_with_key: row.get(10)?,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -1682,7 +1692,7 @@ mod tests {
     fn creating_order_fiat_metadata_then_reading_it_back_round_trips() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_order_currency_metadata(&connection_id, "pay_1", "USD", "25.00", 6_700_000_000, "fixed", 1000, "XMR", None, 10).unwrap();
+        db.create_order_currency_metadata(&connection_id, "pay_1", "USD", "25.00", 6_700_000_000, "fixed", 1000, "XMR", None, 10, false).unwrap();
 
         let row = db.get_order_currency_metadata(&connection_id, "pay_1").unwrap().unwrap();
         assert_eq!(row.connection_id, connection_id);
@@ -1725,8 +1735,8 @@ mod tests {
         )
         .unwrap();
 
-        db.create_order_currency_metadata(&connection_id, "pay_shared", "USD", "10.00", 1_000_000, "fixed", 1000, "XMR", None, 10).unwrap();
-        db.create_order_currency_metadata("conn-2", "pay_shared", "EUR", "20.00", 2_000_000, "coingecko", 2000, "XMR", None, 10).unwrap();
+        db.create_order_currency_metadata(&connection_id, "pay_shared", "USD", "10.00", 1_000_000, "fixed", 1000, "XMR", None, 10, false).unwrap();
+        db.create_order_currency_metadata("conn-2", "pay_shared", "EUR", "20.00", 2_000_000, "coingecko", 2000, "XMR", None, 10, false).unwrap();
 
         let first = db.get_order_currency_metadata(&connection_id, "pay_shared").unwrap().unwrap();
         let second = db.get_order_currency_metadata("conn-2", "pay_shared").unwrap().unwrap();
@@ -1740,8 +1750,8 @@ mod tests {
     fn listing_fiat_metadata_for_a_connection_returns_a_map_keyed_by_order_id() {
         let db = Db::open_in_memory().unwrap();
         let connection_id = seed_connection_for_connect_token_tests(&db);
-        db.create_order_currency_metadata(&connection_id, "pay_a", "USD", "10.00", 1_000_000, "fixed", 1000, "XMR", None, 10).unwrap();
-        db.create_order_currency_metadata(&connection_id, "pay_b", "EUR", "20.00", 2_000_000, "fixed", 2000, "XMR", None, 10).unwrap();
+        db.create_order_currency_metadata(&connection_id, "pay_a", "USD", "10.00", 1_000_000, "fixed", 1000, "XMR", None, 10, false).unwrap();
+        db.create_order_currency_metadata(&connection_id, "pay_b", "EUR", "20.00", 2_000_000, "fixed", 2000, "XMR", None, 10, false).unwrap();
 
         let map = db.list_order_currency_metadata_for_connection(&connection_id).unwrap();
         assert_eq!(map.len(), 2);

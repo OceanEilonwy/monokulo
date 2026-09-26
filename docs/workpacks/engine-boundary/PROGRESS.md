@@ -8,8 +8,8 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 |---|---|---|---|
 | 1 | Make the engine private by default | done | `f4495b8` |
 | 2 | Stop monokulo using the engine's public routes | done | `11838f0` |
-| 3 | Stop monokulo reading or writing the engine's allowed origins | done | (this commit) |
-| 4 | Let a shop's server create orders with its secret key | not started | |
+| 3 | Stop monokulo reading or writing the engine's allowed origins | done | `74d4876` |
+| 4 | Let a shop's server create orders with its secret key | done | (this commit) |
 | 5 | Give plugins monokulo's address, not the engine's | not started | |
 | 6 | Fix the WooCommerce plugin | not started | |
 | 7 | Only show browser-created orders inside a verified frame | not started | |
@@ -25,7 +25,9 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 
 ## Resume here
 
-Steps 1-3 done. Next: step 4 (secret-key auth on `POST /pay/{pk}/orders` in `crates/monokulo/src/http/pay.rs`; restricted stores need a verified `Origin` or the key; new monokulo migration `0021` adding a created-with-key column to `order_currency_metadata`; per-store limiter for key-authenticated requests).
+Steps 1-4 done. Next: step 5 (`public_url` setting in `crates/monokulo/src/settings.rs` + admin settings; `/connect/{platform}/finish` in `http/connect.rs` returns it as `endpoint` and refuses while unset; remove the unrendered engine `endpoint` fields from `integration_help` and the store/connect views).
+
+Adding an `AppState` field: every literal has `event_streams: Default::default(),`; a one-line script that inserts the new field after that line in every file from `grep -rl 'event_streams: Default::default(),' crates` (except `crates/monokulo/src/main.rs`, edited by hand) covers them all.
 
 Gotcha: never hold `state.db.lock()` in a `for` loop header (`for x in db.lock().unwrap().list(..)`) and lock again inside: the guard lives for the whole loop and the test deadlocks. Also never `pkill -f` a pattern that appears in your own command line.
 
@@ -35,8 +37,8 @@ Commit SHAs: each step's commit records its own SHA in the *next* step's PROGRES
 
 ## Test status at last commit
 
-After step 3:
-- `cargo test --workspace`: 859 passed, 0 failed, 18 ignored.
+After step 4:
+- `cargo test --workspace`: 860 passed, 0 failed, 18 ignored.
 - clippy: per-file warning counts identical to baseline (checked with a per-file count diff).
 - Playwright surface: not re-run (no JS/HTML/CSS touched).
 - PHP suite: not run.
@@ -69,3 +71,10 @@ Baseline (before step 1), at `e4d83da`:
 - `crates/monokulo/src/embed_domains.rs`: `import_existing_domains(db)` imports only each store's own site domain, once (`domains_imported`), no engine client or key (decision 3). `main.rs` calls it synchronously.
 - Tests: `api_domains_join_the_store_and_existing_stores_get_their_site_imported_once`, `the_old_allowed_origins_field_is_accepted_as_an_alias_for_domains` (in `http/embed_domains.rs`); `connect.rs`'s second-site test no longer reads the engine's list. Test JSON bodies across monokulo now send `domains`.
 - Verified "no monokulo code path reads or writes the engine's allowed origins" by grep: the only remaining `allowed_origins` in `crates/monokulo/src` are the always-empty create field, the alias, and form-field names in tests proving the old form field is ignored.
+
+### Step 4: secret-key order creation
+- `crates/monokulo/src/http/store_key.rs` (new): `store_key_middleware`, `check`, `key_matches` (constant-time via `subtle`). Layered on the `/pay/...` sub-router in `http/mod.rs` before the per-IP limiter (decision 5).
+- `http/rate_limit.rs`: a `StoreKeyAuthenticated` request skips the per-IP limiter. `AppState::store_key_rate_limiter` (per store pk) with setting `rate_limit.per_store_key_per_min` (default 600, decision 6), validated in `http/admin_settings.rs`, built in `main.rs`.
+- `http/embed_domains.rs::embed_policy_middleware`: for a restricted store, `POST /pay/{pk}/orders` needs a verified `Origin` or the key; neither gives `403` with a message mentioning the secret key (closes phase 2's no-`Origin` gap).
+- Migration `crates/monokulo/migrations/0021_order_created_with_key.sql` (default 1 for old rows, decision 7); `Db::create_order_currency_metadata` takes `created_with_key`; `OrderCurrencyMetadataRow.created_with_key`. `pay::create_order` records whether the key was presented; dashboard (`orders::create_order`) and POS (`pos::create_order`) record `true`.
+- Tests: `secret_key_orders_are_accepted_and_recorded_and_restricted_stores_need_a_key_or_a_verified_page` (`http/embed_domains.rs`): unrestricted no key/no Origin ok and not keyed; right key ok and keyed; wrong key, other store's key, `Basic` all 401 JSON; failures spend per-IP budget while keyed requests bypass it; restricted: no key+no Origin 403, verified page ok (not keyed), key ok with or without Origin, other store's key 401; per-store key budget 429. Phase 2's restricted test updated (no Origin now 403). POS and dashboard order tests assert `created_with_key`.

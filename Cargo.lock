@@ -2142,6 +2142,7 @@ dependencies = [
  "serde",
  "serde_json",
  "shared",
+ "subtle",
  "thiserror 2.0.20",
  "time",
  "tokio",

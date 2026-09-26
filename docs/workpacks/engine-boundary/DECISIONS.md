@@ -31,3 +31,21 @@ Format for each entry:
 - **Decision:** Monokulo still serializes `allowed_origins: []` when creating a tenant, because the engine's create request requires the field until step 8 removes it. `TenantView` and `PatchTenantRequest` lost the field now.
 - **Alternatives considered:** Make the engine field optional in step 3.
 - **Why:** Keeps engine changes in step 8 where the plan puts them; sending an empty list is "creating with an empty `allowed_origins`", which the plan asks for.
+
+### 5. The secret key is recognised on every `/pay/{pk}/...` route, checked in its own middleware
+- **Step:** 4
+- **Decision:** `http::store_key::store_key_middleware` runs first on the `/pay/...` sub-router (after CORS). Any request with an `Authorization` header is checked against the store in the path: the right key marks the request (`StoreKeyAuthenticated` extension) and spends a per-store budget instead of the per-IP one; anything else (wrong key, another store's key, a non-`Bearer` value, an unknown store) gets `401` with a JSON error, and the failed attempt spends the caller's per-IP budget. The comparison uses `subtle::ConstantTimeEq` on the decrypted stored key (new direct dependency `subtle = "2.6.1"`, already in `Cargo.lock` transitively).
+- **Alternatives considered:** Check the key only inside `pay::create_order`; only on `POST /pay/{pk}/orders`.
+- **Why:** The rate limiter and the embed-policy middleware both need to know about the key before the handler runs, so one middleware decides once. Recognising it on the status route too lets a shop's server poll status under its own budget (the plan's matrix: "keyed by store (key)" for the JSON API). Browsers can't send `Authorization` cross-origin (CORS doesn't allow it), so embedding pages are unaffected. Charging the per-IP budget for failures bounds key guessing.
+
+### 6. Per-store key limit: 600 a minute, a boot-time setting
+- **Step:** 4
+- **Decision:** New setting `rate_limit.per_store_key_per_min` (`MONOKULO_RATE_LIMIT_PER_STORE_KEY_PER_MIN`), default `600`, at least 1, read at boot like the per-IP limit, editable on the admin settings page.
+- **Alternatives considered:** 120/min (the engine's old per-token default); unlimited.
+- **Why:** A shop's server sends every customer's order-creation (and maybe status polling) from one address; 600/min (10/s) is far above a normal shop's checkout rate while still capping a leaked or runaway key. Step 9 folds this into the tiered design.
+
+### 7. Orders recorded before migration 0021 count as created with the key
+- **Step:** 4
+- **Decision:** `order_currency_metadata.created_with_key INTEGER NOT NULL DEFAULT 1`; every new insert sets it explicitly (`pay::create_order`: whether the key was presented; dashboard and POS: `true`).
+- **Alternatives considered:** Default `0` for existing rows.
+- **Why:** Which path created an old order isn't recorded. Step 7 hides browser-created orders of restricted stores outside a frame; defaulting old rows to "not keyed" could break checkout links merchants already sent out. Old browser-created orders on restricted stores (phase 2 shipped days earlier) are a small, shrinking set.

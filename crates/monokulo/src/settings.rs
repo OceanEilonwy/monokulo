@@ -48,6 +48,7 @@ scalar_settings! {
     EXCHANGE_RATE_CACHE_SECONDS => { key: "exchange_rate.cache_seconds", env: "MONOKULO_EXCHANGE_RATE_CACHE_SECONDS", default: "30" },
     HTTP_CACHE_MAX_MB => { key: "http_cache.max_mb", env: "MONOKULO_HTTP_CACHE_MAX_MB", default: "16" },
     RATE_LIMIT_PER_IP_PER_MIN => { key: "rate_limit.per_ip_per_min", env: "MONOKULO_RATE_LIMIT_PER_IP_PER_MIN", default: "20" },
+    RATE_LIMIT_PER_STORE_KEY_PER_MIN => { key: "rate_limit.per_store_key_per_min", env: "MONOKULO_RATE_LIMIT_PER_STORE_KEY_PER_MIN", default: "600" },
 }
 
 pub fn get<T: std::str::FromStr>(db: &Db, setting: &ScalarSetting) -> T {
@@ -98,6 +99,7 @@ mod tests {
         let _: u64 = get(&db, &EXCHANGE_RATE_CACHE_SECONDS);
         let _: u64 = get(&db, &HTTP_CACHE_MAX_MB);
         let _: u32 = get(&db, &RATE_LIMIT_PER_IP_PER_MIN);
+        let _: u32 = get(&db, &RATE_LIMIT_PER_STORE_KEY_PER_MIN);
     }
 
     #[test]

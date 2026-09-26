@@ -80,6 +80,7 @@ async fn main() {
     // never needs one at all.
     let exchange_rate = Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::build(&exchange_rate_cfg));
     let rate_limiter = Arc::new(RateLimiter::new(settings::get(&db, &settings::RATE_LIMIT_PER_IP_PER_MIN)));
+    let store_key_rate_limiter = Arc::new(RateLimiter::new(settings::get(&db, &settings::RATE_LIMIT_PER_STORE_KEY_PER_MIN)));
     // Verified embed domains: the machine's own resolver. If it can't be set
     // up, the dashboard still works and every check says why it failed.
     let dns: Arc<dyn monokulo::embed_domains::TxtLookup> = match monokulo::embed_domains::SystemDns::new() {
@@ -99,6 +100,7 @@ async fn main() {
         status_cache: new_status_cache(),
         exchange_rate,
         rate_limiter,
+        store_key_rate_limiter,
         event_streams: Default::default(),
         dns,
     };

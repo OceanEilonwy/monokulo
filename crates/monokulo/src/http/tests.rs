@@ -31,6 +31,7 @@ pub(super) fn test_app_state() -> AppState {
         exchange_rate: test_exchange_rate_provider(),
         rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         event_streams: Default::default(),
+        store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
     }
 }
@@ -624,6 +625,7 @@ async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestE
         exchange_rate: test_exchange_rate_provider(),
         rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         event_streams: Default::default(),
+        store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
         dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
     };
     (state, engine)

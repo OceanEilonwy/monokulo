@@ -1,0 +1,13 @@
+-- Whether an order was created by someone holding the store's secret key
+-- (`sk_`): a shop's own server calling `POST /pay/{pk}/orders` with
+-- `Authorization: Bearer sk_...` (the WooCommerce plugin), or the merchant
+-- themselves through the dashboard or the POS. `0` means a browser page
+-- created it through `monokulo-client.js` without the key.
+--
+-- For a store that restricts embedding to its verified domains, an order a
+-- browser created is only shown inside a frame (`http::checkout`), so a
+-- page elsewhere can't create an order and send a customer to it as a full
+-- page. Orders from before this column existed default to `1`: which path
+-- created them isn't known, and treating them as trusted keeps every
+-- checkout link that worked before working.
+ALTER TABLE order_currency_metadata ADD COLUMN created_with_key INTEGER NOT NULL DEFAULT 1;

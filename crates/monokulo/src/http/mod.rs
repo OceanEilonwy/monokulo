@@ -62,6 +62,7 @@ pub mod rate_limit;
 mod signup;
 pub mod embed_domains;
 pub mod status_page;
+pub mod store_key;
 pub mod stream_limit;
 #[cfg(test)]
 mod tests;
@@ -116,6 +117,10 @@ pub struct AppState {
     /// needs this at all now, and `http::build_router` for which routes it's
     /// actually layered onto.
     pub rate_limiter: Arc<shared::rate_limit::RateLimiter<std::net::IpAddr>>,
+    /// Per-store budget for requests authenticated with a store's secret
+    /// key (`http::store_key`), which skip the per-IP limit above: a shop's
+    /// server creates every one of its customers' orders from one address.
+    pub store_key_rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
     /// Open checkout live-update streams per `(source IP, store pk)` - see
     /// `http::stream_limit`.
     pub event_streams: Arc<stream_limit::StreamLimiter>,
@@ -224,6 +229,9 @@ pub fn build_router(state: AppState) -> Router {
         .route("/pay/{pk}/orders/{order_id}/share", axum::routing::get(checkout::checkout_share_page))
         .layer(middleware::from_fn_with_state(state.clone(), embed_domains::embed_policy_middleware))
         .layer(middleware::from_fn_with_state(state.clone(), rate_limit::rate_limit_middleware))
+        // Before the per-IP limit: a request with the store's secret key
+        // spends a per-store budget instead (`store_key`).
+        .layer(middleware::from_fn_with_state(state.clone(), store_key::store_key_middleware))
         // Outside the rate limit, so a preflight never spends budget and a
         // `429` still carries the headers a cross-origin caller needs to read it.
         .layer(embed_cors_layer(&state));
