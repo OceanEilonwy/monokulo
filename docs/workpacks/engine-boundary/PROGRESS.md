@@ -27,16 +27,9 @@ Work notes for `README.md` in this folder. Keep this current and commit it with 
 
 **Shared worktree, read first (added by the reviewer, 26 Sep 12:5x).** A separate POS redesign (Solid 2.0 POS app, `pos_redesign.md`) is being worked on in this same worktree by another agent. Its in-progress state was committed as `a93b4ca` ("WIP: POS redesign ..."), and that agent may resume and keep editing. The rules in README §0 ("Shared worktree") apply from now on: don't touch POS-owned files, stage by explicit path only, and use migration number 0023 or higher.
 
-**Step 9a was in progress when the implementer's session ended (session limit).** Its work is uncommitted in the tree, and was deliberately left out of `a93b4ca`:
-- new `crates/monokulo/src/abuse/` (`mod.rs`, `identity.rs`, `proxy_protocol.rs`, and `streams.rs`, which replaces the deleted `http/stream_limit.rs`);
-- new `crates/monokulo/src/http/abuse.rs` (replaces the deleted `http/rate_limit.rs`);
-- `AppState` fields `rate_limiter`, `store_key_rate_limiter` and `event_streams` folded into `abuse: Arc<crate::abuse::AbuseProtection>` in every `AppState` literal;
-- new settings `abuse.trusted_proxies`, `abuse.onion_listener`, `abuse.stream_cap`;
-- new dependencies `hmac`, `sha2`, `rand`.
+Steps 1-8 and 9a done. Next: 9c (tiered limits: soft/hard per client per minute, LRU-capped memory, under-attack mode) in `crates/monokulo/src/abuse/`, then 9d (challenge), 9e, 9f, 9b, 9g (real tor test `crates/monokulo/tests/e2e_tor.rs`), step 10.
 
-The implementer's last note was "Now write http/abuse.rs (9a version) and rewire". First check whether the tree builds (`cargo test --workspace`), then finish 9a and commit it by explicit paths.
-
-Steps 1-8 done. Next: step 9 (abuse protection). Re-read README 9a-9g first, including the reviewer's `a0abcca` change: the Tor test must be a real `#[ignore]`d end-to-end test against the installed tor 0.4.9.12 (`crates/monokulo/tests/e2e_tor.rs`), plus a fast synthetic PROXY-header test that runs by default. Suggested order: 9a (client identity type + trusted proxies + PROXY v1 listener) -> 9c (tiered buckets) -> 9d (challenge, pages + JSON API + JS) -> 9e (settings + status page) -> 9f (docs/CORS headers) -> 9b (torrc + doc) -> 9g (tests incl. real tor), committing PROGRESS at each sub-step.
+Known POS-side issue (not mine, not fixed per the shared-worktree rule): clippy `match_single_binding` warning at `crates/monokulo/src/http/pos.rs:344` from the POS redesign.
 
 PHP suite: see decision 13 for how to run it (wp-env's plugin mount collides with WooCommerce).
 
@@ -52,9 +45,9 @@ Commit SHAs: each step's commit records its own SHA in the *next* step's PROGRES
 
 ## Test status at last commit
 
-After step 8:
-- `cargo test --workspace`: 864 passed (a few engine tests of the removed public routes/CORS were deleted or merged), 0 failed, 18 ignored.
-- clippy: per-file warning counts identical to baseline (checked with a per-file count diff).
+After 9a:
+- `cargo test --workspace`: 871 passed, 0 failed, 18 ignored (includes the POS redesign snapshot `a93b4ca`)., 0 failed, 18 ignored.
+- clippy: per-file warning counts identical to baseline in files I touched; one new warning in POS-owned `http/pos.rs:344` from the POS work.
 - Playwright surface: 19 passed (one new test in step 7).
 - PHP suite: run (decision 13): 43 tests OK; `--group live-monokulo`: 1 skipped (no local config).
 
@@ -129,3 +122,9 @@ Rust half:
 - Tests: engine HTTP tests now create/read orders through the admin API; new `the_engine_serves_no_public_order_routes_and_no_cors` and `unauthenticated_routes_are_limited_per_address_by_the_admin_limiter`; removed public-only tests (public confirmation override, disallowed origin, two CORS tests). Monokulo's scanner-settings admin test no longer lists the removed setting and now counts against `ALL_SCALAR`.
 - Docs: `docs/DESIGN.md` (§5 table, §8 schema note, §10.1, §10.2 table, §10.3 "No public API", §10.4 note, §12 rewritten, §13 `[ddos]`, §14 wording), `docs/TESTING.md` (rows for the engine's absent public surface, monokulo's engine-call guard, the per-token limiter, and the §11 origin row now pointing at monokulo's embed policy).
 - Shared instance token: not added (decision 16).
+
+### Step 9a: client identity
+- `crates/monokulo/src/abuse/mod.rs` (`AbuseConfig`, `AbuseProtection`: per-client and per-store-key limiters, stream cap, `reload`), `abuse/identity.rs` (`ClientIdentity`, `/64` grouping, `IpNet`, `TrustedProxies`, `client_address` for `X-Forwarded-For`), `abuse/proxy_protocol.rs` (`parse_v1_header`, `OnionPeer::identity`, `OnionListener`, `validate_onion_listener`), `abuse/streams.rs` (was `http/stream_limit.rs`, now keyed by `ClientIdentity`, adjustable cap).
+- `crates/monokulo/src/http/abuse.rs`: `abuse_middleware` + `anonymous_identity` (decision 19). `http/rate_limit.rs` deleted; `http/store_key.rs` keeps only `check`/`key_matches`/`StoreKeyAuthenticated`.
+- `checkout_events` takes the identity from extensions for the stream cap. `main.rs` builds `AbuseProtection` from settings and starts the onion listener when set. Admin settings validate and hot-reload `abuse.trusted_proxies`, `abuse.onion_listener`, `abuse.stream_cap`.
+- Tests: unit (`abuse::identity`, `abuse::proxy_protocol`, `abuse::streams`), HTTP `clients_behind_a_trusted_proxy_get_their_own_budgets_and_untrusted_forwarding_is_ignored`, and the default-run socket test `crates/monokulo/tests/onion_listener.rs` (per-circuit budgets, header-less connections dropped, ordinary listener ignores PROXY).

@@ -224,9 +224,7 @@ async fn main() {
         encryption_key: [7u8; 32],
         status_cache: monokulo::http::status_page::new_status_cache(),
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-        rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(1_000_000)),
-        event_streams: Default::default(),
-        store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+        abuse: Default::default(),
         dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
     };
     let cp_router = build_monokulo_router(cp_state);

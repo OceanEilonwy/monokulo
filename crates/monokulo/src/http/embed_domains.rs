@@ -344,9 +344,7 @@ mod tests {
             encryption_key: [7u8; 32],
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-            rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
-            event_streams: Default::default(),
-            store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+            abuse: Default::default(),
             dns,
         };
         (state, engine)
@@ -565,9 +563,12 @@ mod tests {
     async fn secret_key_orders_are_accepted_and_recorded_and_restricted_stores_need_a_key_or_a_verified_page() {
         let dns = Arc::new(FakeDns::default());
         let (mut state, _engine) = test_state(dns.clone()).await;
-        // A per-IP budget of 4 a minute: key requests must not spend it.
-        state.rate_limiter = Arc::new(shared::rate_limit::RateLimiter::new(4));
-        state.store_key_rate_limiter = Arc::new(shared::rate_limit::RateLimiter::new(5));
+        // A per-client budget of 4 a minute: key requests must not spend it.
+        state.abuse = Arc::new(crate::abuse::AbuseProtection::new(crate::abuse::AbuseConfig {
+            per_client_per_min: 4,
+            per_store_key_per_min: 5,
+            ..Default::default()
+        }));
         let router = build_router(state.clone());
         let session = session_for(&router, "keys@example.com").await;
         let (id, pk) = create_store_with_key(&router, &session).await;

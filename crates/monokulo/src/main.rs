@@ -9,7 +9,6 @@ use monokulo::exchange_rate_config::{self, ExchangeRateConfig};
 use monokulo::http::status_page::new_status_cache;
 use monokulo::http::{AppState, build_router};
 use monokulo::settings::{self, ScalarSetting};
-use shared::rate_limit::RateLimiter;
 use std::sync::Arc;
 
 /// Builds the real `ExchangeRateConfig` from `db`'s own settings
@@ -79,8 +78,11 @@ async fn main() {
     // goes stale) a request actually needs one; an XMR-denominated order
     // never needs one at all.
     let exchange_rate = Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::build(&exchange_rate_cfg));
-    let rate_limiter = Arc::new(RateLimiter::new(settings::get(&db, &settings::RATE_LIMIT_PER_IP_PER_MIN)));
-    let store_key_rate_limiter = Arc::new(RateLimiter::new(settings::get(&db, &settings::RATE_LIMIT_PER_STORE_KEY_PER_MIN)));
+    let abuse = Arc::new(monokulo::abuse::AbuseProtection::new(monokulo::abuse::AbuseConfig::from_settings(&db)));
+    let onion_listener = match monokulo::abuse::proxy_protocol::validate_onion_listener(&settings::get::<String>(&db, &settings::ABUSE_ONION_LISTENER)) {
+        Ok(address) => address,
+        Err(e) => panic!("abuse.onion_listener: {e}"),
+    };
     // Verified embed domains: the machine's own resolver. If it can't be set
     // up, the dashboard still works and every check says why it failed.
     let dns: Arc<dyn monokulo::embed_domains::TxtLookup> = match monokulo::embed_domains::SystemDns::new() {
@@ -99,22 +101,34 @@ async fn main() {
         encryption_key,
         status_cache: new_status_cache(),
         exchange_rate,
-        rate_limiter,
-        store_key_rate_limiter,
-        event_streams: Default::default(),
+        abuse,
         dns,
     };
     let router = build_router(app_state);
 
+    // The onion listener (`monokulo::abuse::proxy_protocol`): same router,
+    // but every connection must start with tor's PROXY header, which names
+    // the Tor circuit - each circuit is then its own client.
+    if let Some(address) = onion_listener {
+        let listener = monokulo::abuse::proxy_protocol::OnionListener::bind(address)
+            .await
+            .unwrap_or_else(|e| panic!("failed to bind the onion listener on {address}: {e}"));
+        println!("monokulo onion listener (PROXY protocol, for tor) on {address}");
+        let router = router.clone();
+        tokio::spawn(async move {
+            axum::serve(listener, router.into_make_service_with_connect_info::<monokulo::abuse::proxy_protocol::OnionPeer>())
+                .await
+                .expect("onion listener error");
+        });
+    }
+
     let bind = "127.0.0.1:8081";
     let listener = tokio::net::TcpListener::bind(bind).await.expect("failed to bind server address");
     println!("monokulo listening on {bind}");
-    // `with_connect_info` (`docs/fx_refactor.md` Phase 1.3) - without this,
-    // `http::rate_limit::rate_limit_middleware`'s own `ConnectInfo` lookup
+    // `with_connect_info` - without this, `http::abuse`'s client lookup
     // would never see a real peer address in production, and would fail
-    // open for every request (the same "no signal at all" case its own doc
-    // comment says should only ever happen in a test harness driven via
-    // `tower::ServiceExt::oneshot`, not for real traffic).
+    // open for every request (the "no signal at all" case that should only
+    // ever happen in a test harness driven via `tower::ServiceExt::oneshot`).
     axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
         .await
         .expect("server error");

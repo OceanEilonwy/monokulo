@@ -50,6 +50,9 @@ scalar_settings! {
     RATE_LIMIT_PER_IP_PER_MIN => { key: "rate_limit.per_ip_per_min", env: "MONOKULO_RATE_LIMIT_PER_IP_PER_MIN", default: "20" },
     RATE_LIMIT_PER_STORE_KEY_PER_MIN => { key: "rate_limit.per_store_key_per_min", env: "MONOKULO_RATE_LIMIT_PER_STORE_KEY_PER_MIN", default: "600" },
     PUBLIC_URL => { key: "public_url", env: "MONOKULO_PUBLIC_URL", default: "" },
+    ABUSE_TRUSTED_PROXIES => { key: "abuse.trusted_proxies", env: "MONOKULO_ABUSE_TRUSTED_PROXIES", default: "" },
+    ABUSE_ONION_LISTENER => { key: "abuse.onion_listener", env: "MONOKULO_ABUSE_ONION_LISTENER", default: "" },
+    ABUSE_STREAM_CAP => { key: "abuse.stream_cap", env: "MONOKULO_ABUSE_STREAM_CAP", default: "16" },
 }
 
 pub fn get<T: std::str::FromStr>(db: &Db, setting: &ScalarSetting) -> T {
@@ -119,6 +122,17 @@ pub fn help(key: &str) -> Option<&'static str> {
             "Requests a minute a shop's server may make with its store's secret key (for example the WooCommerce plugin \
              creating orders). These skip the per-address limit. Read at startup.",
         ),
+        "abuse.trusted_proxies" => Some(
+            "Addresses and CIDR ranges of reverse proxies in front of this instance, comma-separated (e.g. \
+             127.0.0.1, 10.0.0.0/8). A request from one of these is identified by the last address in its \
+             X-Forwarded-For header that isn't a trusted proxy. Leave empty if clients connect directly.",
+        ),
+        "abuse.onion_listener" => Some(
+            "A loopback address:port (e.g. 127.0.0.1:8082) for tor's onion service to connect to, with \
+             HiddenServiceExportCircuitID haproxy set in torrc, so each Tor circuit is its own client. Empty turns \
+             it off. Only loopback is accepted. Read at startup.",
+        ),
+        "abuse.stream_cap" => Some("Live-update streams one client may hold open at once to one store (at least 1)."),
         _ => None,
     }
 }
@@ -161,6 +175,9 @@ mod tests {
         let _: u32 = get(&db, &RATE_LIMIT_PER_IP_PER_MIN);
         let _: u32 = get(&db, &RATE_LIMIT_PER_STORE_KEY_PER_MIN);
         let _: String = get(&db, &PUBLIC_URL);
+        let _: String = get(&db, &ABUSE_TRUSTED_PROXIES);
+        let _: String = get(&db, &ABUSE_ONION_LISTENER);
+        let _: usize = get(&db, &ABUSE_STREAM_CAP);
     }
 
     #[test]

@@ -45,6 +45,7 @@
 //! [`AuthedUser`] — it's called server-to-server by the plugin, which has no
 //! monokulo session at all — and redeems that token exactly once.
 
+pub mod abuse;
 mod admin_settings;
 mod admin_setup;
 mod checkout;
@@ -58,12 +59,10 @@ mod logout;
 mod orders;
 mod pay;
 mod pos;
-pub mod rate_limit;
 mod signup;
 pub mod embed_domains;
 pub mod status_page;
 pub mod store_key;
-pub mod stream_limit;
 #[cfg(test)]
 mod tests;
 
@@ -111,19 +110,9 @@ pub struct AppState {
     /// `exchange_rate_config::ExchangeRateProviders` and
     /// `db::StoreConnectionRow::fx_provider`.
     pub exchange_rate: Arc<crate::exchange_rate_config::ExchangeRateProviders>,
-    /// Per-source-IP budget for monokulo's own new public,
-    /// unauthenticated endpoints (`docs/fx_refactor.md` Phase 1.3/1.4) -
-    /// see `http::rate_limit`'s own module doc comment for why monokulo
-    /// needs this at all now, and `http::build_router` for which routes it's
-    /// actually layered onto.
-    pub rate_limiter: Arc<shared::rate_limit::RateLimiter<std::net::IpAddr>>,
-    /// Per-store budget for requests authenticated with a store's secret
-    /// key (`http::store_key`), which skip the per-IP limit above: a shop's
-    /// server creates every one of its customers' orders from one address.
-    pub store_key_rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
-    /// Open checkout live-update streams per `(source IP, store pk)` - see
-    /// `http::stream_limit`.
-    pub event_streams: Arc<stream_limit::StreamLimiter>,
+    /// Rate limits, the open-stream cap and (later) challenges, per client
+    /// (`crate::abuse`, `http::abuse`).
+    pub abuse: Arc<crate::abuse::AbuseProtection>,
     /// TXT lookups for verified embed domains (`crate::embed_domains`) -
     /// the machine's own resolver in the real binary, a fake in tests.
     pub dns: Arc<dyn crate::embed_domains::TxtLookup>,
@@ -231,10 +220,9 @@ pub fn build_router(state: AppState) -> Router {
         // iframe - see `checkout::checkout_share_page`'s own doc comment.
         .route("/pay/{pk}/orders/{order_id}/share", axum::routing::get(checkout::checkout_share_page))
         .layer(middleware::from_fn_with_state(state.clone(), embed_domains::embed_policy_middleware))
-        .layer(middleware::from_fn_with_state(state.clone(), rate_limit::rate_limit_middleware))
-        // Before the per-IP limit: a request with the store's secret key
-        // spends a per-store budget instead (`store_key`).
-        .layer(middleware::from_fn_with_state(state.clone(), store_key::store_key_middleware))
+        // Identifies the client (and a store's secret key) and spends its
+        // budget before anything else runs (`http::abuse`).
+        .layer(middleware::from_fn_with_state(state.clone(), abuse::abuse_middleware))
         // Outside the rate limit, so a preflight never spends budget and a
         // `429` still carries the headers a cross-origin caller needs to read it.
         .layer(embed_cors_layer(&state));

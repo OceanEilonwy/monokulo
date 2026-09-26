@@ -213,9 +213,7 @@ mod tests {
                 encryption_key: TEST_ENCRYPTION_KEY,
                 status_cache: crate::http::status_page::new_status_cache(),
                 exchange_rate: test_exchange_rate_provider(),
-                rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
-                event_streams: Default::default(),
-                store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+                abuse: Default::default(),
                 dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
             };
             (state, engine)

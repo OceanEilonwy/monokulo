@@ -452,8 +452,8 @@ pub async fn checkout_status(State(state): State<AppState>, Path((pk, order_id))
 /// rendered. Also re-checked every 30s, since the time left to pay moves
 /// with the clock rather than with the order.
 ///
-/// One source IP may hold only so many of these open per store at once
-/// (`http::stream_limit`); past that the request gets `429`.
+/// One client may hold only so many of these open per store at once
+/// (`crate::abuse::streams`); past that the request gets `429`.
 pub async fn checkout_events(
     State(state): State<AppState>,
     Path((pk, order_id)): Path<(String, String)>,
@@ -465,10 +465,10 @@ pub async fn checkout_events(
         Err(LoadError::NotFound) => return ApiError::NotFound.into_response(),
         Err(LoadError::Internal) => return ApiError::Internal.into_response(),
     };
-    // Same fail-open-without-a-peer-address rule as `rate_limit_middleware`
-    // (only tests drive the router without one).
-    let permit = match extensions.get::<axum::extract::ConnectInfo<std::net::SocketAddr>>() {
-        Some(peer) => match state.event_streams.try_acquire(peer.0.ip(), &pk) {
+    // The client `http::abuse` identified; absent only when a test drives
+    // the router without a connection, which fails open.
+    let permit = match extensions.get::<crate::abuse::ClientIdentity>() {
+        Some(client) => match state.abuse.streams.try_acquire(client, &pk) {
             Some(permit) => Some(permit),
             None => return (StatusCode::TOO_MANY_REQUESTS, Json(serde_json::json!({ "error": "too many open update streams" }))).into_response(),
         },
@@ -632,9 +632,7 @@ mod tests {
             encryption_key: TEST_ENCRYPTION_KEY,
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
-            rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
-            event_streams: Default::default(),
-            store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+            abuse: Default::default(),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
         };
         (state, engine)
@@ -990,7 +988,10 @@ mod tests {
     #[tokio::test]
     async fn one_source_may_hold_only_so_many_open_streams_per_store() {
         let (mut state, _engine) = test_state_with_real_engine().await;
-        state.event_streams = std::sync::Arc::new(crate::http::stream_limit::StreamLimiter::new(1));
+        state.abuse = std::sync::Arc::new(crate::abuse::AbuseProtection::new(crate::abuse::AbuseConfig {
+            stream_cap: 1,
+            ..Default::default()
+        }));
         let router = build_router(state);
         let session_token =
             signed_up_and_logged_in_session_token(&router, "checkout-events-cap@example.com", "correct horse battery staple").await;

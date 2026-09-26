@@ -21,6 +21,11 @@ serde_json = "1.0.151"
 shared = { path = "../shared" }
 # Constant-time comparison of a presented store secret key (`http::store_key`).
 subtle = "2.6.1"
+# Abuse protection (`crate::abuse`): HMAC-signed challenges, proof-of-work
+# checks and a per-process random signing key.
+hmac = "0.13.0"
+sha2 = "0.11.0"
+rand = "0.10.2"
 thiserror = "2.0.20"
 time = "0.3.55"
 futures-util = { version = "0.3.34", default-features = false, features = ["std"] }

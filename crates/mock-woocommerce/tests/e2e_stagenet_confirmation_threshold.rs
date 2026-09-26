@@ -161,9 +161,7 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
         status_cache: monokulo::http::status_page::new_status_cache(),
         // Every currency this test touches is XMR - needs no real provider.
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-        rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
-        event_streams: Default::default(),
-        store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+        abuse: Default::default(),
         dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
     };
     let router = build_router(state);

@@ -201,7 +201,8 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         // `tests/e2e_stagenet.rs`'s own target and `mock-woocommerce`'s own
         // real-stagenet test.
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-        rate_limiter: Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+        abuse: Default::default(),
+        dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
     };
     let cp_router = build_monokulo_router(cp_state);
 

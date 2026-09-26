@@ -246,6 +246,14 @@ fn validate_monokulo_scalar(setting: &ScalarSetting, value: &str) -> Result<(), 
                 crate::settings::validate_public_url(value).map(|_| ()).map_err(|problem| format!("{}: {problem}", setting.key))
             }
         }
+        "abuse.trusted_proxies" => crate::abuse::TrustedProxies::parse(value).map(|_| ()).map_err(|e| format!("{}: {e}", setting.key)),
+        "abuse.onion_listener" => {
+            crate::abuse::proxy_protocol::validate_onion_listener(value).map(|_| ()).map_err(|e| format!("{}: {e}", setting.key))
+        }
+        "abuse.stream_cap" => match value.parse::<usize>() {
+            Ok(n) if n >= 1 => Ok(()),
+            _ => Err(format!("{} must be a whole number of at least 1, got {value:?}", setting.key)),
+        },
         "engine.url" => {
             if value.trim().is_empty() {
                 Err(format!("{} must not be empty", setting.key))
@@ -287,6 +295,10 @@ pub async fn save_monokulo(
     if save_error.is_some() {
         return render_error(&state, &admin_user, "Something went wrong saving these settings. Please try again.".to_string()).await;
     }
+    // Rate limits, trusted proxies and the stream cap take effect straight
+    // away (`crate::abuse::AbuseProtection::reload`).
+    let abuse_config = crate::abuse::AbuseConfig::from_settings(&state.db.lock().unwrap());
+    state.abuse.reload(abuse_config);
 
     let (fields, engine_url, admin_token) = {
         let db = state.db.lock().unwrap();
@@ -424,9 +436,7 @@ mod tests {
             encryption_key: TEST_ENCRYPTION_KEY,
             status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider(),
-            rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
-            event_streams: Default::default(),
-            store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+            abuse: Default::default(),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
         }
     }
@@ -573,6 +583,9 @@ mod tests {
             ("rate_limit.per_ip_per_min", "33"),
             ("rate_limit.per_store_key_per_min", "444"),
             ("public_url", "https://pay.example.com"),
+            ("abuse.trusted_proxies", "127.0.0.1, 10.0.0.0/8"),
+            ("abuse.onion_listener", "127.0.0.1:8082"),
+            ("abuse.stream_cap", "9"),
         ];
         // Every one of `ALL_SCALAR`'s own keys must be covered here, or this
         // test would silently stop proving anything about a setting added
@@ -716,9 +729,7 @@ mod tests {
                 encryption_key: TEST_ENCRYPTION_KEY,
                 status_cache: crate::http::status_page::new_status_cache(),
                 exchange_rate: test_exchange_rate_provider(),
-                rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
-                event_streams: Default::default(),
-                store_key_rate_limiter: std::sync::Arc::new(shared::rate_limit::RateLimiter::new(10_000)),
+                abuse: Default::default(),
                 dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
             }
         };

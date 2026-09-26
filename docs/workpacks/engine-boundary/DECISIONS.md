@@ -115,3 +115,15 @@ Format for each entry:
 - **Decision:** The engine's create/patch request types no longer have `allowed_origins`; serde ignores unknown fields, so a request still carrying one succeeds and the value is dropped. The `--bootstrap-wallet --allowed-origins` CLI flag is removed and now errors as an unrecognized argument (`scripts/dev-run.sh` updated). Migration `0014_drop_tenant_allowed_origins.sql` drops the column with a plain `DROP COLUMN` (no index/constraint uses it, same as 0005/0006/0013). `crates/scanner/src/http/public.rs` becomes `orders.rs` holding only the admin order creation.
 - **Alternatives considered:** `deny_unknown_fields` on the requests; keep the CLI flag as a silently ignored no-op.
 - **Why:** Silently accepting an ignored JSON field keeps any remaining script working (the field never did anything monokulo needs); an operator typing a CLI flag is better told it no longer exists than led to believe it did something.
+
+### 19. One `ClientIdentity` and one middleware for all public-route limiting
+- **Step:** 9a
+- **Decision:** `crate::abuse::ClientIdentity` = `Address` (IPv4, or IPv6 grouped to `/64`) | `Circuit(u32)` | `User(id)` | `Store(pk)`. `http::abuse::abuse_middleware` replaces both `http::rate_limit` and `http::store_key::store_key_middleware`: it identifies the client (onion `ConnectInfo<OnionPeer>` first, else peer address or last untrusted `X-Forwarded-For` hop from a trusted proxy), resolves a presented store key, spends the right budget and puts the identity in request extensions for handlers (the stream cap). All limits live in `AppState::abuse: Arc<AbuseProtection>` (config + limiters + stream cap), reloaded when the admin page saves. The per-IP setting keeps its key `rate_limit.per_ip_per_min` (now "per client").
+- **Alternatives considered:** Keep separate middlewares; rename the setting key.
+- **Why:** One place decides who the client is, so the limiter, the stream cap and (9d) the challenge can't disagree. Keeping the key avoids breaking existing configured values.
+
+### 20. Onion listener design
+- **Step:** 9a
+- **Decision:** `abuse.onion_listener` (empty = off, must be loopback, read at startup) binds `abuse::proxy_protocol::OnionListener`, an `axum::serve::Listener` whose acceptor task reads each connection's PROXY v1 header on its own task (5 s timeout, 107-byte cap, byte-by-byte so the HTTP request isn't consumed) and drops connections with no valid header. The circuit id is the low 32 bits of a source address in `fc00::/16`; a non-tor PROXY source is used as an address identity. The ordinary listener never parses PROXY; hyper rejects it as a bad request. `PROXY UNKNOWN` is refused.
+- **Alternatives considered:** Parse the header inside the connection handler (one slow client would block `accept`); accept PROXY v2 (tor sends v1).
+- **Why:** Matches the tor manual's `haproxy` export format and keeps the header trusted only where only tor can send it.

@@ -8,29 +8,22 @@
 //! from its own server, and those orders are recorded as created with the
 //! key (`order_currency_metadata.created_with_key`).
 //!
-//! [`store_key_middleware`] runs first on the `/pay/...` routes and only
-//! looks at requests carrying an `Authorization` header:
+//! `super::abuse::abuse_middleware` runs [`check`] on every `/pay/...`
+//! request carrying an `Authorization` header:
 //!
 //! - the right key for the store in the path marks the request
-//!   [`StoreKeyAuthenticated`] and spends the store's own per-key budget
-//!   (`AppState::store_key_rate_limiter`) instead of the per-IP one;
+//!   [`StoreKeyAuthenticated`] and the client becomes that store, with its
+//!   own budget instead of the anonymous per-client one;
 //! - any other value (a wrong key, another store's key, not a bearer token
-//!   at all) gets `401`. The failed attempt still spends the caller's per-IP
-//!   budget, so the endpoint can't be used to guess keys quickly.
+//!   at all) gets `401`. The failed attempt still spends the anonymous
+//!   client's budget, so the endpoint can't be used to guess keys quickly.
 //!
 //! A browser can't send this header cross-origin (CORS doesn't allow it),
 //! so an embedding page never trips the `401`.
 
-use std::net::SocketAddr;
-
-use axum::extract::{ConnectInfo, Request, State};
-use axum::http::{header, StatusCode};
-use axum::middleware::Next;
-use axum::response::{IntoResponse, Response};
-use serde_json::json;
+use axum::http::header;
 use subtle::ConstantTimeEq;
 
-use super::embed_domains::public_key_of_pay_path;
 use super::AppState;
 
 /// Request extension: this request carried the right secret key for the
@@ -77,36 +70,5 @@ pub fn check(state: &AppState, pk: &str, headers: &axum::http::HeaderMap) -> Key
         KeyCheck::Valid
     } else {
         KeyCheck::Invalid
-    }
-}
-
-fn too_many_requests() -> Response {
-    (StatusCode::TOO_MANY_REQUESTS, axum::Json(json!({ "error": "rate limit exceeded" }))).into_response()
-}
-
-/// See the module doc comment.
-pub async fn store_key_middleware(State(state): State<AppState>, mut request: Request, next: Next) -> Response {
-    let Some(pk) = public_key_of_pay_path(request.uri().path()).map(str::to_string) else {
-        return next.run(request).await;
-    };
-    match check(&state, &pk, request.headers()) {
-        KeyCheck::Absent => next.run(request).await,
-        KeyCheck::Valid => {
-            if !state.store_key_rate_limiter.check(pk, crate::now_unix()) {
-                return too_many_requests();
-            }
-            request.extensions_mut().insert(StoreKeyAuthenticated);
-            next.run(request).await
-        }
-        KeyCheck::Invalid => {
-            let peer_ip = request.extensions().get::<ConnectInfo<SocketAddr>>().map(|ci| ci.0.ip());
-            if let Some(ip) = peer_ip {
-                if !state.rate_limiter.check(ip, crate::now_unix()) {
-                    return too_many_requests();
-                }
-            }
-            let error = "This store's secret key was not accepted. Check the key, or reconnect the store.";
-            (StatusCode::UNAUTHORIZED, axum::Json(json!({ "error": error }))).into_response()
-        }
     }
 }
