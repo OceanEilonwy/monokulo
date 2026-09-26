@@ -197,6 +197,11 @@ impl ProvidesUnvalidatedDecoys for DecoyCache {
 /// once old enough) or still `Pending` (a just-broadcast send's own change
 /// output, not yet confirmed). See this crate's own module doc comment for
 /// the full "informed, not scanned" model this implements.
+///
+/// One transaction can pay this wallet several outputs (a `split`, a send
+/// whose change is split), so several entries can share a `txid`; a
+/// resolved entry's output index (read from `serialized_output_hex`) tells
+/// them apart.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct LedgerEntry {
     pub txid: String,
@@ -248,6 +253,49 @@ impl Ledger {
         std::fs::write(&tmp_path, serde_json::to_string_pretty(&file).unwrap() + "\n")
             .map_err(|e| WalletError::Ledger(format!("failed to write {tmp_path}: {e}")))?;
         std::fs::rename(&tmp_path, &self.path).map_err(|e| WalletError::Ledger(format!("failed to move {tmp_path} into place over {}: {e}", self.path)))
+    }
+
+    /// Whether the ledger already has a resolved entry for output
+    /// `index_in_transaction` of `txid`. One transaction can pay this wallet
+    /// several outputs (a `split`, a send's split change), each its own
+    /// entry, so a txid alone doesn't identify an output.
+    fn has_output(&self, txid: &str, index_in_transaction: u64) -> bool {
+        self.entries.iter().any(|e| e.txid == txid && entry_output_index(e) == Some(index_in_transaction))
+    }
+
+    /// Records every output of confirmed transaction `txid` (at `height`)
+    /// that pays this wallet, one entry each: the first new one fills in a
+    /// still-pending entry for `txid` if there is one, the rest are added.
+    /// Outputs already recorded are skipped, so calling this again for the
+    /// same transaction changes nothing. Returns how many outputs were
+    /// newly recorded. Doesn't save.
+    fn record_transaction_outputs(&mut self, txid: &str, height: u64, outputs: &[WalletOutput]) -> usize {
+        let mut recorded = 0;
+        for output in outputs {
+            if self.has_output(txid, output.index_in_transaction()) {
+                continue;
+            }
+            let entry = resolved_entry(txid, height, output);
+            match self.entries.iter_mut().find(|e| e.txid == txid && e.height.is_none()) {
+                Some(pending) => *pending = LedgerEntry { spent: pending.spent, ..entry },
+                None => self.entries.push(entry),
+            }
+            recorded += 1;
+        }
+        recorded
+    }
+
+    /// Marks exactly the given outputs (`(txid, output index)`) spent,
+    /// leaving any other outputs of the same transactions untouched.
+    /// Doesn't save.
+    fn mark_spent(&mut self, spent: &[(String, u64)]) {
+        for entry in self.entries.iter_mut() {
+            if let Some(index) = entry_output_index(entry) {
+                if spent.iter().any(|(txid, spent_index)| *txid == entry.txid && *spent_index == index) {
+                    entry.spent = true;
+                }
+            }
+        }
     }
 
     /// Adds a `Pending` entry for a transaction this wallet just broadcast
@@ -558,6 +606,24 @@ fn wallet_credentials_from_seed(phrase: &str) -> Result<WalletCredentials, Walle
     Err(WalletError::WalletStore(format!("seed phrase has {word_count} words - expected 16 (Polyseed) or 24/25 (legacy Electrum-style)")))
 }
 
+/// A resolved, unspent ledger entry for one output this wallet received.
+fn resolved_entry(txid: &str, height: u64, output: &WalletOutput) -> LedgerEntry {
+    LedgerEntry {
+        txid: txid.to_string(),
+        height: Some(height),
+        serialized_output_hex: Some(hex::encode(output.serialize())),
+        amount_piconero: output.commitment().amount,
+        spent: false,
+    }
+}
+
+/// Which output of its transaction a resolved entry is, read from the
+/// serialized output itself (`None` while the entry is still pending).
+fn entry_output_index(entry: &LedgerEntry) -> Option<u64> {
+    let bytes = hex::decode(entry.serialized_output_hex.as_ref()?).ok()?;
+    WalletOutput::read(&mut &bytes[..]).ok().map(|output| output.index_in_transaction())
+}
+
 impl Wallet {
     /// Resolves every still-`Pending` ledger entry it can (locates the
     /// txid's block height over a plain `/get_transactions` call, scans
@@ -573,24 +639,49 @@ impl Wallet {
             return Ok(());
         }
         for txid in pending_txids {
-            let Some(height) = locate_height(&self.http_client, &self.node_url, &txid).await? else { continue };
-            let block = self.rpc.block_by_number(height as usize).await.map_err(|e| WalletError::Rpc(e.to_string()))?;
-            let scannable = self.rpc.expand_to_scannable_block(block).await.map_err(|e| WalletError::Rpc(e.to_string()))?;
-            let mut scanner = Scanner::new(self.view_pair.clone());
-            let found = scanner.scan(scannable).map_err(|e| WalletError::Rpc(e.to_string()))?.not_additionally_locked();
-            let Some(output) = found.into_iter().find(|o| hex::encode(o.transaction()) == txid) else {
-                // Genuinely shouldn't happen (we only ever add our own
-                // txids), but a wrong/stale ledger entry is a data problem,
-                // not a reason to crash the whole run.
-                eprintln!("cli-wallet: resolve_pending: txid {txid} confirmed at height {height} but no matching output found when scanning that block - leaving it unresolved");
-                continue;
-            };
-            let entry = ledger.entries.iter_mut().find(|e| e.txid == txid).expect("txid came from this same ledger's own pending list");
-            entry.height = Some(height);
-            entry.serialized_output_hex = Some(hex::encode(output.serialize()));
+            let Some((height, outputs)) = self.scan_transaction(&txid).await? else { continue };
+            // A split, or a send whose change was split, pays this wallet
+            // several outputs in one transaction: each gets its own entry.
+            ledger.record_transaction_outputs(&txid, height, &outputs);
             ledger.save()?;
         }
         Ok(())
+    }
+
+    /// Locates `txid`'s block and returns every output in it that pays this
+    /// wallet, in output order - `None` while it's still unconfirmed (or
+    /// pays this wallet nothing, which is logged).
+    async fn scan_transaction(&self, txid: &str) -> Result<Option<(u64, Vec<WalletOutput>)>, WalletError> {
+        let Some(height) = locate_height(&self.http_client, &self.node_url, txid).await? else { return Ok(None) };
+        let block = self.rpc.block_by_number(height as usize).await.map_err(|e| WalletError::Rpc(e.to_string()))?;
+        let scannable = self.rpc.expand_to_scannable_block(block).await.map_err(|e| WalletError::Rpc(e.to_string()))?;
+        let mut scanner = Scanner::new(self.view_pair.clone());
+        let found = scanner.scan(scannable).map_err(|e| WalletError::Rpc(e.to_string()))?.not_additionally_locked();
+        let mut outputs: Vec<WalletOutput> = found.into_iter().filter(|o| hex::encode(o.transaction()) == txid).collect();
+        if outputs.is_empty() {
+            // Genuinely shouldn't happen (we only ever add our own txids),
+            // but a wrong/stale ledger entry is a data problem, not a
+            // reason to crash the whole run.
+            eprintln!("cli-wallet: txid {txid} confirmed at height {height} but no output of it pays this wallet - leaving it unresolved");
+            return Ok(None);
+        }
+        outputs.sort_by_key(|o| o.index_in_transaction());
+        Ok(Some((height, outputs)))
+    }
+
+    /// Adds entries for any outputs of an already-recorded, confirmed
+    /// `txid` that pay this wallet but are missing from the ledger. Earlier
+    /// versions recorded only one output per transaction, so a `split`'s
+    /// other pieces went untracked (still this wallet's on chain, just
+    /// unknown to the ledger); this finds them again. Returns how many were
+    /// added.
+    async fn recover_outputs(&self, ledger: &mut Ledger, txid: &str) -> Result<usize, WalletError> {
+        let Some((height, outputs)) = self.scan_transaction(txid).await? else { return Ok(0) };
+        let added = ledger.record_transaction_outputs(txid, height, &outputs);
+        if added > 0 {
+            ledger.save()?;
+        }
+        Ok(added)
     }
 
     /// Every currently-spendable `WalletOutput` this ledger already knows
@@ -759,7 +850,7 @@ impl Wallet {
             self.rpc.fee_rate(monero_wallet::interface::FeePriority::Unimportant, MAX_FEE_PER_WEIGHT).await.map_err(|e| WalletError::Rpc(e.to_string()))?;
 
         let mut inputs = Vec::new();
-        let mut spent_txids = Vec::new();
+        let mut spent_txids: Vec<(String, u64)> = Vec::new();
         let mut last_necessary_fee: Option<u64> = None;
         let mut remaining = spendable.into_iter();
         let signable = loop {
@@ -770,8 +861,10 @@ impl Wallet {
                     address: self.address(),
                 });
             };
+            // (txid, output index): one transaction can pay this wallet
+            // several outputs, and only this one is being spent.
+            spent_txids.push((txid, output.index_in_transaction()));
             inputs.push(OutputWithDecoys::new(&mut OsRng, &self.decoy_cache, RING_LEN, decoy_block_number, output).await.map_err(|e| WalletError::Rpc(e.to_string()))?);
-            spent_txids.push(txid);
 
             // Recomputed every iteration against `inputs` as it grows -
             // once big enough to also cover the split pieces' own share of
@@ -820,11 +913,7 @@ impl Wallet {
         // Only now, after a successful broadcast, mutate the ledger - a
         // failure anywhere above must leave it exactly as it was, so a
         // caller's own retry sees the same spendable set again.
-        for entry in ledger.entries.iter_mut() {
-            if spent_txids.contains(&entry.txid) {
-                entry.spent = true;
-            }
-        }
+        ledger.mark_spent(&spent_txids);
         // `0` here is a placeholder, not load-bearing: `amount_piconero` on a
         // still-`Pending` entry is purely informational (shown in a future
         // `InsufficientFunds` message) - the real, authoritative amount
@@ -842,8 +931,18 @@ impl Wallet {
     /// [`Self::resolve_pending`] already do all the real work.
     pub async fn add_output(&self, txid: &str) -> Result<(), WalletError> {
         let mut ledger = Ledger::load(&self.ledger_path)?;
+        let known = ledger.entries.iter().any(|e| e.txid == txid && e.height.is_some());
         ledger.record_pending(txid, 0)?;
-        self.resolve_pending(&mut ledger).await
+        self.resolve_pending(&mut ledger).await?;
+        if known {
+            // Already recorded: pick up any of its outputs the ledger is
+            // missing (see `recover_outputs`).
+            let added = self.recover_outputs(&mut ledger, txid).await?;
+            if added > 0 {
+                eprintln!("cli-wallet: recovered {added} untracked output(s) of {txid}");
+            }
+        }
+        Ok(())
     }
 
     /// A cheap, real pre-flight check for callers that want to fail fast
@@ -936,6 +1035,82 @@ mod tests {
 
     fn entry(txid: &str, height: Option<u64>, spent: bool) -> LedgerEntry {
         LedgerEntry { txid: txid.to_string(), height, serialized_output_hex: None, amount_piconero: 1, spent }
+    }
+
+    /// Three real outputs of one stagenet split transaction
+    /// (`testdata/split_transaction_outputs.json`).
+    fn split_transaction() -> (String, u64, Vec<WalletOutput>) {
+        let fixture: Value = serde_json::from_str(include_str!("../testdata/split_transaction_outputs.json")).unwrap();
+        let outputs = fixture["serialized_outputs_hex"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|hex_bytes| WalletOutput::read(&mut &hex::decode(hex_bytes.as_str().unwrap()).unwrap()[..]).unwrap())
+            .collect();
+        (fixture["txid"].as_str().unwrap().to_string(), fixture["height"].as_u64().unwrap(), outputs)
+    }
+
+    fn temp_ledger(name: &str) -> Ledger {
+        let dir = std::env::temp_dir().join(format!("cli-wallet-{name}-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join("ledger.json");
+        let _ = std::fs::remove_file(&path);
+        Ledger::load(path.to_str().unwrap()).unwrap()
+    }
+
+    /// Regression: a split pays this wallet many outputs in one
+    /// transaction, and the ledger used to keep only the first, silently
+    /// losing track of the rest (still the wallet's on chain, but never
+    /// spendable by these tools).
+    #[test]
+    fn every_output_a_transaction_pays_the_wallet_gets_its_own_entry() {
+        let (txid, height, outputs) = split_transaction();
+        let indexes: std::collections::BTreeSet<u64> = outputs.iter().map(|o| o.index_in_transaction()).collect();
+        assert_eq!(indexes.len(), 3, "the fixture holds three distinct outputs of one transaction");
+
+        let mut ledger = temp_ledger("record-all");
+        ledger.record_pending(&txid, 0).unwrap();
+        assert_eq!(ledger.record_transaction_outputs(&txid, height, &outputs), 3);
+
+        assert_eq!(ledger.entries.len(), 3, "the pending entry is filled in and the other outputs added, not dropped");
+        let recorded: std::collections::BTreeSet<u64> = ledger.entries.iter().map(|e| entry_output_index(e).unwrap()).collect();
+        assert_eq!(recorded, indexes);
+        assert!(ledger.entries.iter().all(|e| e.txid == txid && e.height == Some(height) && !e.spent));
+        assert!(ledger.entries.iter().all(|e| e.amount_piconero > 0), "each entry carries its real amount");
+
+        // Recording the same transaction again (a re-scan, `output add` of a
+        // known txid) adds nothing.
+        assert_eq!(ledger.record_transaction_outputs(&txid, height, &outputs), 0);
+        assert_eq!(ledger.entries.len(), 3);
+    }
+
+    /// Regression: recovery of outputs a transaction's earlier resolution
+    /// missed adds exactly the missing ones.
+    #[test]
+    fn outputs_missing_from_an_already_recorded_transaction_are_recovered() {
+        let (txid, height, outputs) = split_transaction();
+        let mut ledger = temp_ledger("recover");
+        // How the old code left it: only the first output recorded.
+        assert_eq!(ledger.record_transaction_outputs(&txid, height, &outputs[..1]), 1);
+        assert_eq!(ledger.record_transaction_outputs(&txid, height, &outputs), 2);
+        assert_eq!(ledger.entries.len(), 3);
+    }
+
+    /// Regression: spending one output of a transaction must not mark its
+    /// sibling outputs spent (spent-marking used to go by txid alone).
+    #[test]
+    fn spending_one_output_leaves_its_siblings_unspent() {
+        let (txid, height, outputs) = split_transaction();
+        let mut ledger = temp_ledger("spend-one");
+        ledger.record_transaction_outputs(&txid, height, &outputs);
+        let spent_index = outputs[1].index_in_transaction();
+
+        ledger.mark_spent(&[(txid.clone(), spent_index)]);
+
+        for entry in &ledger.entries {
+            let index = entry_output_index(entry).unwrap();
+            assert_eq!(entry.spent, index == spent_index, "output {index}");
+        }
     }
 
     #[test]
