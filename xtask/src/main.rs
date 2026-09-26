@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use std::{env, fs, io, path::{Path, PathBuf}, process::{Command, ExitCode, Stdio}};
+use std::{collections::{BTreeMap, BTreeSet}, env, fs, io, path::{Path, PathBuf}, process::{Command, ExitCode, Stdio}};
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
@@ -96,6 +96,109 @@ fn summarize_rust(output: &Path) -> io::Result<()> {
         "report":"rust/index.html", "unavailable":[]
     });
     fs::write(output.join("rust.json"), serde_json::to_vec_pretty(&manifest)?)?;
+    write_rust_crates(output, files, &manifest)?;
+    Ok(())
+}
+
+fn escape_html(s: &str) -> String {
+    s.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;")
+        .replace('"', "&quot;").replace('\'', "&#39;")
+}
+
+fn source_files(dir: &Path, found: &mut BTreeSet<PathBuf>) -> io::Result<()> {
+    for item in fs::read_dir(dir)? {
+        let path = item?.path();
+        if path.is_dir() { source_files(&path, found)?; }
+        else if path.extension().is_some_and(|e| e == "rs")
+            && path.file_name().is_some_and(|n| n != "tests.rs")
+            && !path.file_name().unwrap().to_string_lossy().ends_with("_tests.rs") {
+            found.insert(path.canonicalize()?);
+        }
+    }
+    Ok(())
+}
+
+fn metric(file: &Value, name: &str) -> io::Result<(u64, u64)> {
+    let summary = &file["summary"][name];
+    Ok((summary["covered"].as_u64().ok_or_else(|| io::Error::other(format!("missing {name}.covered")))?,
+        summary["count"].as_u64().ok_or_else(|| io::Error::other(format!("missing {name}.count")))?))
+}
+
+fn write_rust_crates(output: &Path, files: &[Value], workspace: &Value) -> io::Result<()> {
+    let metadata: Value = serde_json::from_slice(&Command::new("cargo")
+        .args(["metadata", "--no-deps", "--format-version", "1", "--locked"])
+        .current_dir(root()).output()?.stdout)?;
+    let members: BTreeSet<&str> = metadata["workspace_members"].as_array()
+        .ok_or_else(|| io::Error::other("Cargo metadata has no workspace members"))?
+        .iter().filter_map(Value::as_str).collect();
+    let mut crates = BTreeMap::<String, PathBuf>::new();
+    for package in metadata["packages"].as_array().ok_or_else(|| io::Error::other("Cargo metadata has no packages"))? {
+        if !package["id"].as_str().is_some_and(|id| members.contains(id)) { continue; }
+        let name = package["name"].as_str().ok_or_else(|| io::Error::other("package without name"))?;
+        if name == "xtask" { continue; }
+        let manifest = Path::new(package["manifest_path"].as_str()
+            .ok_or_else(|| io::Error::other("package without manifest path"))?);
+        crates.insert(name.to_owned(), manifest.parent().unwrap().canonicalize()?);
+    }
+    if crates.is_empty() { return Err(io::Error::other("no product workspace crates")); }
+    let pages = output.join("rust/crates");
+    fs::create_dir_all(&pages)?;
+    let mut index = String::from("<!doctype html><meta charset=\"utf-8\"><title>Rust crates</title><h1>Rust coverage by crate</h1><table border=\"1\"><tr><th>Crate</th><th>Lines</th><th>Branches</th><th>Source files</th></tr>");
+    let mut summaries = Vec::new();
+    let mut mapped = 0usize;
+    for (name, dir) in &crates {
+        let src = dir.join("src");
+        let mut all_source = BTreeSet::new();
+        if src.exists() { source_files(&src, &mut all_source)?; }
+        let mut measured = BTreeSet::new();
+        let mut lines = (0u64, 0u64);
+        let mut branches = (0u64, 0u64);
+        let mut page = format!("<!doctype html><meta charset=\"utf-8\"><title>{name} Rust coverage</title><h1>{name}</h1><p><a href=\"index.html\">All crates</a> · <a href=\"../index.html\">LLVM report</a></p><table border=\"1\"><tr><th>Source</th><th>Lines</th><th>Branches</th></tr>");
+        for file in files {
+            let Some(filename) = file["filename"].as_str() else { continue; };
+            let path = Path::new(filename);
+            if !path.starts_with(&src) { continue; }
+            if !path.extension().is_some_and(|e| e == "rs") { continue; }
+            mapped += 1;
+            measured.insert(path.to_path_buf());
+            let l = metric(file, "lines")?;
+            let b = metric(file, "branches")?;
+            lines.0 += l.0; lines.1 += l.1;
+            branches.0 += b.0; branches.1 += b.1;
+            let native = format!("coverage/{}.html", filename.trim_start_matches('/'));
+            if !output.join("rust").join(&native).is_file() {
+                return Err(io::Error::other(format!("missing annotated source: {native}")));
+            }
+            let relative = path.strip_prefix(dir).unwrap().display().to_string();
+            page.push_str(&format!("<tr><td><a href=\"../{}\">{}</a></td><td>{}/{}</td><td>{}/{}</td></tr>",
+                escape_html(&native), escape_html(&relative), l.0, l.1, b.0, b.1));
+        }
+        for missing in all_source.difference(&measured) {
+            let relative = missing.strip_prefix(dir).unwrap().display().to_string();
+            page.push_str(&format!("<tr><td>{}</td><td colspan=\"2\">unavailable: no executable code in this profile or feature gated</td></tr>", escape_html(&relative)));
+        }
+        page.push_str("</table>");
+        fs::write(pages.join(format!("{name}.html")), page)?;
+        index.push_str(&format!("<tr><td><a href=\"{name}.html\">{name}</a></td><td>{}/{}</td><td>{}/{}</td><td>{} measured, {} unavailable</td></tr>",
+            lines.0, lines.1, branches.0, branches.1, measured.len(), all_source.difference(&measured).count()));
+        summaries.push(json!({"component":name,"lines":{"covered":lines.0,"total":lines.1},
+            "branches":{"covered":branches.0,"total":branches.1},
+            "report":format!("rust/crates/{name}.html"),
+            "measured_files":measured.len(),
+            "unavailable_files":all_source.difference(&measured).map(|p| p.strip_prefix(&root()).unwrap().display().to_string()).collect::<Vec<_>>() }));
+    }
+    if mapped != files.len() { return Err(io::Error::other(format!("{} Rust files did not map to a workspace crate", files.len() - mapped))); }
+    let sum = |name: &str, key: &str| -> u64 { summaries.iter().filter_map(|s| s[name][key].as_u64()).sum() };
+    for name in ["lines", "branches"] {
+        for key in ["covered", "total"] {
+            if sum(name, key) != workspace[name][key].as_u64().unwrap_or(0) {
+                return Err(io::Error::other(format!("crate {name}.{key} totals differ from LLVM workspace totals")));
+            }
+        }
+    }
+    index.push_str("</table><p>Unavailable files have no executable code in this build or require a feature not enabled by the default test run.</p>");
+    fs::write(pages.join("index.html"), index)?;
+    fs::write(output.join("rust-crates.json"), serde_json::to_vec_pretty(&summaries)?)?;
     Ok(())
 }
 

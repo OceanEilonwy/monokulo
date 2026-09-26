@@ -28,8 +28,16 @@ precede deletion of old browser tests.
   attempt had concurrent tool installation and the second exposed LLVM's
   nested `html/` output; both issues are resolved. The source tree was dirty
   before coverage work began; reports now mark that condition.
+- 1.2 complete: `rust-crates.json` and `rust/crates/index.html` contain nine
+  Cargo metadata derived crate rows, 102 measured source files, and seven
+  unavailable source files. Each measured file has an existing annotated LLVM
+  page. Crate totals equal the LLVM workspace totals. The second clean
+  collection with unchanged versions retained the 102-file set and the same
+  27,070 line / 1,698 branch denominators. A missed branch in
+  `scanner/src/scanner.rs` appears as 101/114 covered branches in JSON and
+  the linked LLVM source page.
 
 ## Resume next
 
-Build crate-filtered Rust summaries and annotated-source links for 1.2. Then
-continue 0.2 browser/PHP collectors and the 2.1 browser inventory.
+Continue 0.2 browser/PHP collectors and the 2.1 browser inventory. Build
+browser instrumentation (3.1–3.2) before deleting the old browser tests.

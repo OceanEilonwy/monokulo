@@ -44,3 +44,11 @@ when a later collector fails. Each collector's old output directory is removed
 at its own start; ordinary Cargo build artifacts are untouched. Test output is
 saved in `<collector>/test.log`. `open` opens the last landing page with the
 system default browser and fails when that page does not exist.
+
+The Rust collector also writes `rust-crates.json` and
+`rust/crates/index.html`. Its crate rows are derived from `cargo metadata`,
+including a separate `mock-woocommerce` row. Each crate page lists measured
+production files with links to LLVM's annotated source. A source file that
+contributes no executable code to the default build, or requires a feature
+that is not enabled, is listed as unavailable without inventing a zero-line
+denominator. The crate totals are checked against LLVM's workspace totals.
