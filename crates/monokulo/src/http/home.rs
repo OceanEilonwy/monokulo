@@ -293,18 +293,23 @@ mod tests {
             )
         }
 
-        async fn seed_real_order(engine_addr: std::net::SocketAddr, public_key: &str) -> String {
-            // 10.00 at `TEST_RATE_PICONERO_PER_UNIT` (1e12 piconero/USD) - the
-            // engine itself has no concept of fiat any more
-            // (`docs/fx_refactor.md` Phase 3), so this passes the already
-            // computed XMR amount directly.
+        /// Seeds a real order directly on the spawned engine through its admin
+        /// API (`POST /api/v1/admin/tenant/orders`), authenticated with the store's
+        /// own `sk_` decrypted from monokulo's database - the same way monokulo
+        /// itself reaches the engine. Deliberately bypasses monokulo's own order
+        /// creation, so no local currency metadata exists for the order. 10.00 at
+        /// `TEST_RATE_PICONERO_PER_UNIT` (1e12 piconero/USD); the engine only knows XMR.
+        async fn seed_real_order(state: &AppState, engine_addr: std::net::SocketAddr, public_key: &str) -> String {
+            let row = state.db.lock().unwrap().get_store_connection_by_public_key(public_key).unwrap().expect("connection exists");
+            let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
             let response = reqwest::Client::new()
-                .post(format!("http://{engine_addr}/api/v1/t/{public_key}/orders"))
+                .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))
+                .bearer_auth(sk)
                 .json(&serde_json::json!({ "xmr_amount_piconero": 10 * TEST_RATE_PICONERO_PER_UNIT }))
                 .send()
                 .await
-                .expect("seeding a real order against the engine's public API failed");
-            assert_eq!(response.status(), reqwest::StatusCode::OK);
+                .expect("seeding a real order against the engine's admin API failed");
+            assert_eq!(response.status(), reqwest::StatusCode::OK, "expected the engine to accept the seeded order");
             let body: serde_json::Value = response.json().await.unwrap();
             body.as_object().unwrap().get("order_id").unwrap().as_str().unwrap().to_string()
         }
@@ -354,11 +359,11 @@ mod tests {
         #[tokio::test]
         async fn dashboard_with_a_connected_store_and_a_real_order_shows_the_real_total_received() {
             let (state, engine) = test_state_with_real_engine().await;
-            let router = build_router(state);
+            let router = build_router(state.clone());
             let session_token =
                 signed_up_and_logged_in_session_token(&router, "full-dashboard@example.com", "correct horse battery staple").await;
             let (connection_id, public_key) = create_connection(&router, &session_token).await;
-            let order_id = seed_real_order(engine.addr, &public_key).await;
+            let order_id = seed_real_order(&state, engine.addr, &public_key).await;
 
             let response = router
                 .oneshot(

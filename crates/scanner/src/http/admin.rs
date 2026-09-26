@@ -367,6 +367,33 @@ pub async fn get_order_detail(
 }
 
 #[derive(Deserialize)]
+pub struct SetRefundAddressRequest {
+    refund_address: String,
+}
+
+/// `POST /api/v1/admin/tenant/orders/{order_id}/refund-address` - records
+/// where a refund for one of the authenticated tenant's orders should go.
+/// Monokulo's checkout calls this on the customer's behalf (after checking
+/// the address parses for the order's network itself), so the engine needs
+/// no public route for it. Like every other free-text field here the value
+/// is stored verbatim: a human reviews it before any refund is sent. The
+/// tenant comes from the `sk_` alone, so an `order_id` belonging to another
+/// tenant is simply not found.
+pub async fn set_order_refund_address(
+    AuthedTenant(tenant): AuthedTenant,
+    Path(order_id): Path<String>,
+    State(state): State<AppState>,
+    Json(req): Json<SetRefundAddressRequest>,
+) -> Result<(), ApiError> {
+    let updated = state.store.lock().unwrap().set_refund_address(&tenant.id, &order_id, &req.refund_address)?;
+    if updated {
+        Ok(())
+    } else {
+        Err(ApiError::NotFound)
+    }
+}
+
+#[derive(Deserialize)]
 pub struct CreateWebhookRequest {
     url: String,
     extra_headers: Option<serde_json::Value>,

@@ -166,6 +166,10 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .route("/api/v1/admin/tenant/rotate-secret", post(admin::rotate_secret))
         .route("/api/v1/admin/tenant/orders", get(admin::list_orders).post(public::create_order_for_admin))
         .route("/api/v1/admin/tenant/orders/{order_id}", get(admin::get_order_detail))
+        .route(
+            "/api/v1/admin/tenant/orders/{order_id}/refund-address",
+            post(admin::set_order_refund_address),
+        )
         .route("/api/v1/admin/tenant/events", get(admin::order_events))
         .route("/api/v1/admin/tenant/payments/lookup", post(admin::lookup_payment))
         .route(

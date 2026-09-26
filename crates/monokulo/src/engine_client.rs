@@ -321,18 +321,17 @@ impl EngineClient {
         parse_response(response).await
     }
 
-    /// `POST {base_url}/api/v1/t/{pk}/orders/{order_id}/refund-address` -
-    /// the engine's own public endpoint for a customer (or their storefront,
-    /// on their behalf) to record where a refund should go. The
-    /// engine does no format validation of its own (confirmed by reading
-    /// `src/http/public.rs::set_refund_address` - it stores whatever string
-    /// it's given verbatim, the same as every other stored free-text field
-    /// in this system), so neither does this call; a human reviews it
-    /// before ever sending anything back to it.
-    pub async fn set_refund_address(&self, pk: &str, order_id: &str, refund_address: &str) -> Result<(), EngineClientError> {
+    /// `POST {base_url}/api/v1/admin/tenant/orders/{order_id}/refund-address`:
+    /// records where a refund for one of `sk`'s tenant's orders should go.
+    /// The engine does no format validation of its own (it stores the string
+    /// verbatim, like every other free-text field), so the checkout checks
+    /// the address parses for the order's network before calling this; a
+    /// human reviews it before ever sending anything back to it.
+    pub async fn set_refund_address(&self, sk: &str, order_id: &str, refund_address: &str) -> Result<(), EngineClientError> {
         let response = self
             .http
-            .post(format!("{}/api/v1/t/{pk}/orders/{order_id}/refund-address", self.base_url))
+            .post(format!("{}/api/v1/admin/tenant/orders/{order_id}/refund-address", self.base_url))
+            .bearer_auth(sk)
             .json(&SetRefundAddressRequest { refund_address: refund_address.to_string() })
             .send()
             .await?;
@@ -870,5 +869,27 @@ mod tests {
             2,
             "an ordinary, non-cache-control-bearing response must never be served from cache"
         );
+    }
+
+    /// The engine is private: monokulo may only use its admin API (with a
+    /// store's `sk_`) and `/status`. Every engine URL this client builds is a
+    /// `format!` of `self.base_url` plus a path, so check every such path in this
+    /// file's own source.
+    #[test]
+    fn every_engine_call_uses_the_admin_api_or_status() {
+        let source = include_str!("engine_client.rs");
+        let marker = concat!("format!(\"{}", "/");
+        let mut seen = 0;
+        for (index, _) in source.match_indices(marker) {
+            let path = &source[index + marker.len() - 1..];
+            let path = &path[..path.find('"').unwrap()];
+            seen += 1;
+            assert!(
+                path.starts_with("/api/v1/admin/") || path == "/status",
+                "monokulo must not call the engine's non-admin route {path}"
+            );
+        }
+        assert!(seen >= 10, "expected to find the engine client's URLs, found {seen}");
+        assert!(!source.contains(concat!("/api/v1/", "t/")), "monokulo must not reference the engine's public routes");
     }
 }

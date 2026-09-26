@@ -1306,25 +1306,22 @@ mod tests {
         )
     }
 
-    /// Seeds a real order against the engine's *public* order-creation API
-    /// (`POST /api/v1/t/{pk}/orders`), using a raw `reqwest` call directly
-    /// against the spawned engine's address - not the control plane's own
-    /// router, since this is the engine's own public surface a real
-    /// storefront (or its plugin) would call, not anything the control
-    /// plane proxies. No `Origin` header is sent, so the tenant's
-    /// (empty) `allowed_origins` never comes into play - see
-    /// `src/http/public.rs::resolve_public_tenant` at the repo root: an
-    /// absent `Origin` skips that check entirely, exactly like a
-    /// server-to-server call would.
-    async fn seed_real_order(engine_addr: std::net::SocketAddr, public_key: &str) -> String {
-        // The engine has no concept of fiat any more (`docs/fx_refactor.md`
-        // Phase 3) - 10.00 at `TEST_RATE_PICONERO_PER_UNIT` (1e12 piconero/USD).
+    /// Seeds a real order directly on the spawned engine through its admin
+    /// API (`POST /api/v1/admin/tenant/orders`), authenticated with the store's
+    /// own `sk_` decrypted from monokulo's database - the same way monokulo
+    /// itself reaches the engine. Deliberately bypasses monokulo's own order
+    /// creation, so no local currency metadata exists for the order. 10.00 at
+    /// `TEST_RATE_PICONERO_PER_UNIT` (1e12 piconero/USD); the engine only knows XMR.
+    async fn seed_real_order(state: &AppState, engine_addr: std::net::SocketAddr, public_key: &str) -> String {
+        let row = state.db.lock().unwrap().get_store_connection_by_public_key(public_key).unwrap().expect("connection exists");
+        let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
         let response = reqwest::Client::new()
-            .post(format!("http://{engine_addr}/api/v1/t/{public_key}/orders"))
+            .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))
+            .bearer_auth(sk)
             .json(&serde_json::json!({ "xmr_amount_piconero": 10 * TEST_RATE_PICONERO_PER_UNIT }))
             .send()
             .await
-            .expect("seeding a real order against the engine's public API failed");
+            .expect("seeding a real order against the engine's admin API failed");
         assert_eq!(response.status(), reqwest::StatusCode::OK, "expected the engine to accept the seeded order");
         let body: serde_json::Value = response.json().await.unwrap();
         body.as_object().unwrap().get("order_id").unwrap().as_str().unwrap().to_string()
@@ -1333,14 +1330,14 @@ mod tests {
     #[tokio::test]
     async fn orders_list_shows_a_real_order_seeded_against_the_engines_public_api() {
         let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token =
             signed_up_and_logged_in_session_token(&router, "orders-owner@example.com", "correct horse battery staple")
                 .await;
         let (connection_id, public_key) = create_connection(&router, &session_token).await;
 
-        let order_id = seed_real_order(engine.addr, &public_key).await;
+        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
 
         let response = router
             .oneshot(
@@ -1361,7 +1358,7 @@ mod tests {
     #[tokio::test]
     async fn order_detail_shows_the_seeded_orders_full_detail() {
         let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1371,7 +1368,7 @@ mod tests {
         .await;
         let (connection_id, public_key) = create_connection(&router, &session_token).await;
 
-        let order_id = seed_real_order(engine.addr, &public_key).await;
+        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
 
         let response = router
             .oneshot(
@@ -1485,13 +1482,13 @@ mod tests {
     #[tokio::test]
     async fn a_different_user_hitting_the_first_users_connection_gets_404_not_their_data() {
         let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let owner_token =
             signed_up_and_logged_in_session_token(&router, "cross-user-owner@example.com", "correct horse battery staple")
                 .await;
         let (connection_id, public_key) = create_connection(&router, &owner_token).await;
-        seed_real_order(engine.addr, &public_key).await;
+        seed_real_order(&state, engine.addr, &public_key).await;
 
         let other_token = signed_up_and_logged_in_session_token(
             &router,
@@ -1542,11 +1539,11 @@ mod tests {
     #[tokio::test]
     async fn store_detail_shows_the_real_connected_stores_overview_and_integration_help() {
         let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
 
         let session_token = signed_up_and_logged_in_session_token(&router, "store-detail@example.com", "correct horse battery staple").await;
         let (connection_id, public_key) = create_connection(&router, &session_token).await;
-        let order_id = seed_real_order(engine.addr, &public_key).await;
+        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
 
         let response = router
             .oneshot(
@@ -2989,7 +2986,7 @@ mod tests {
     #[tokio::test]
     async fn scan_range_row_shows_a_muted_dash_for_an_order_with_no_first_tick_yet() {
         let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "scan-range-fresh-owner@example.com",
@@ -2997,7 +2994,7 @@ mod tests {
         )
         .await;
         let (connection_id, public_key) = create_connection(&router, &session_token).await;
-        let order_id = seed_real_order(engine.addr, &public_key).await;
+        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
         // Deliberately no `bump_scanned_range_for_order` call - this harness runs
         // no background scan loop, so a freshly seeded order genuinely has never
         // been examined by anything yet.
@@ -3023,7 +3020,7 @@ mod tests {
     #[tokio::test]
     async fn scan_range_row_shows_a_growing_range_while_the_order_is_still_being_watched() {
         let (state, engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
+        let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(
             &router,
             "scan-range-growing-owner@example.com",
@@ -3031,7 +3028,7 @@ mod tests {
         )
         .await;
         let (connection_id, public_key) = create_connection(&router, &session_token).await;
-        let order_id = seed_real_order(engine.addr, &public_key).await;
+        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
         // Still `pending` (non-terminal) - genuinely still in scope, so the range
         // must read as still growing ("N+"), not a closed span. Two calls to the
         // live scanner's own bulk bump (its only mover now that the manual rescan

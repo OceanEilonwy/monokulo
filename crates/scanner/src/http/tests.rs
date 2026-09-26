@@ -941,6 +941,55 @@ async fn tenant_settings_with_a_silent_failure_mode_are_rejected_on_creation_and
 }
 
 #[tokio::test]
+async fn the_admin_refund_address_route_is_scoped_to_the_tenant_behind_the_secret_key() {
+    // Monokulo's checkout records a customer's refund address through this
+    // route with the store's `sk_`; the engine needs no public route for it.
+    let router = test_router();
+    let a = create_tenant(&router, 60, vec![]).await;
+    let b = create_tenant(&router, 62, vec![]).await;
+    let order = body_json(
+        router
+            .clone()
+            .oneshot(json_request(
+                "POST",
+                "/api/v1/admin/tenant/orders",
+                Some(&a.secret_token),
+                None,
+                serde_json::json!({ "xmr_amount_piconero": 1_000_000u64 }),
+            ))
+            .await
+            .unwrap(),
+    )
+    .await;
+    let order_id = order["order_id"].as_str().unwrap().to_string();
+    let uri = format!("/api/v1/admin/tenant/orders/{order_id}/refund-address");
+    let body = serde_json::json!({ "refund_address": "refund-here" });
+
+    let no_key = router.clone().oneshot(json_request("POST", &uri, None, None, body.clone())).await.unwrap();
+    assert_eq!(no_key.status(), StatusCode::UNAUTHORIZED);
+
+    let other_tenant =
+        router.clone().oneshot(json_request("POST", &uri, Some(&b.secret_token), None, body.clone())).await.unwrap();
+    assert_eq!(other_tenant.status(), StatusCode::NOT_FOUND, "tenant B must not reach tenant A's order");
+
+    let owner = router.clone().oneshot(json_request("POST", &uri, Some(&a.secret_token), None, body)).await.unwrap();
+    assert_eq!(owner.status(), StatusCode::OK);
+
+    let detail = router
+        .clone()
+        .oneshot(
+            Request::builder()
+                .uri(format!("/api/v1/admin/tenant/orders/{order_id}"))
+                .header("authorization", format!("Bearer {}", a.secret_token))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(body_json(detail).await["refund_address"], "refund-here");
+}
+
+#[tokio::test]
 async fn every_admin_route_resolves_its_tenant_from_the_bearer_token_alone() {
     // The structural IDOR fix (§DESIGN.md §10.1) is only a guarantee if it holds for
     // *every* route in the family, not the handful it was designed around. This

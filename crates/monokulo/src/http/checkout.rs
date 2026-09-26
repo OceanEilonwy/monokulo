@@ -1,14 +1,11 @@
 //! Control-plane's own real, public checkout/payment page
-//! (`docs/fx_refactor.md` Phase 2) - moved here from the engine (whose own
-//! equivalent, `src/http/public.rs::payment_page` at the repo root, is
-//! scheduled for full removal in that same document's Phase 4). The
-//! engine's public status API (`GET /api/v1/t/{pk}/orders/{order_id}`)
-//! deliberately carries no `payments` list at all (confirmed by reading
-//! `OrderStatusResponse`), so this reuses the *admin* endpoint instead
-//! (`EngineClient::get_order_detail`, already built and already used by
-//! the dashboard's own order-detail page) via the connection's own
-//! decrypted `sk_...`, entirely server-side - the browser never sees it,
-//! and the engine needed zero changes to support this page.
+//! (`docs/fx_refactor.md` Phase 2) - moved here from the engine. Every
+//! engine call it makes goes through the engine's *admin* API with the
+//! connection's own decrypted `sk_...`, entirely server-side (the browser
+//! never sees it): `EngineClient::get_order_detail` (the same call the
+//! dashboard's order-detail page uses) for the order and its payments, and
+//! `EngineClient::set_refund_address` for the refund form. The engine is
+//! private; monokulo never uses a public engine route.
 //!
 //! Deliberately **no per-tenant template customization** (`docs/fx_refactor.md`
 //! decision 1, dropped outright) and **no site nav** (`{{> nav}}`) - a
@@ -314,15 +311,11 @@ pub struct SetRefundAddressForm {
 
 /// `POST /pay/{pk}/orders/{order_id}/refund-address` - the checkout
 /// page's own plain HTML form for a customer to record where a refund
-/// should go, forwarding to the engine's own real endpoint
+/// should go, forwarding to the engine's admin API with the store's `sk_`
 /// (`EngineClient::set_refund_address`) - monokulo stores nothing of
 /// its own here, same "engine owns order state, monokulo owns
 /// pricing/presentation" split every other order-mutating call in this
-/// module already follows. A real, previously-missing capability: the
-/// engine has supported this since `src/http/public.rs::set_refund_address`
-/// existed, but nothing before this handler ever exposed a way to call it -
-/// a customer paying through the checkout widget had no path to set one at
-/// all.
+/// module already follows.
 ///
 /// Browser-side auto-save requests JSON so it can show saving, saved, and
 /// invalid states without leaving the page. A plain form POST still works
@@ -354,7 +347,7 @@ pub async fn set_refund_address(
         return render_checkout_page(&state, pk, row, sk, detail, Some("Enter a valid Monero address for this store's network.".to_string()), &options).await;
     }
 
-    match state.engine_client.set_refund_address(&pk, &order_id, refund_address).await {
+    match state.engine_client.set_refund_address(&sk, &order_id, refund_address).await {
         Ok(()) if wants_json => Json(serde_json::json!({"ok": true})).into_response(),
         Ok(()) => redirect_302(&format!("/pay/{pk}/orders/{order_id}{}", options.suffix())),
         Err(e) => {
@@ -730,11 +723,10 @@ mod tests {
         assert!(html.contains("style=\"width: 0%\""), "expected a real, already-computed progress-bar fill, got: {html}");
     }
 
-    /// A real, previously-missing capability: the engine has supported a
-    /// customer-settable refund address since `src/http/public.rs::
-    /// set_refund_address` existed, but nothing in monokulo's own
-    /// checkout page ever exposed a way to call it. Plain form POST, no
-    /// JS - this page carries none.
+    /// The checkout's refund-address form, a plain form POST with no JS,
+    /// reaches the engine through its admin API
+    /// (`POST /api/v1/admin/tenant/orders/{order_id}/refund-address`) and
+    /// the address really is stored there.
     #[tokio::test]
     async fn setting_a_refund_address_through_the_checkout_pages_own_form_persists_it_on_the_engine() {
         let (state, _engine) = test_state_with_real_engine().await;
