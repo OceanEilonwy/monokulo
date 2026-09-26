@@ -36,8 +36,13 @@ precede deletion of old browser tests.
   27,070 line / 1,698 branch denominators. A missed branch in
   `scanner/src/scanner.rs` appears as 101/114 covered branches in JSON and
   the linked LLVM source page.
+- 2.1 complete: [browser inventory](docs/COVERAGE_BROWSER_INVENTORY.md) has
+  one row for each of 24 surface tests, the three paid stagenet tests, and
+  the Chromium/WebKit/resize `pos-fit` families. Baseline surface suite:
+  24/24 passed in 29.1 seconds. No tests removed. Browser source coverage
+  baseline remains pending collector tasks 3.1–3.2, before any migration.
 
 ## Resume next
 
-Continue 0.2 browser/PHP collectors and the 2.1 browser inventory. Build
-browser instrumentation (3.1–3.2) before deleting the old browser tests.
+Build browser instrumentation (3.1–3.2) before deleting the old browser tests.
+Continue 0.2 browser/PHP collectors alongside the controlled UI fixture (2.2).
