@@ -41,8 +41,15 @@ precede deletion of old browser tests.
   the Chromium/WebKit/resize `pos-fit` families. Baseline surface suite:
   24/24 passed in 29.1 seconds. No tests removed. Browser source coverage
   baseline remains pending collector tasks 3.1–3.2, before any migration.
+- 2.2 complete: `monokulo`'s `coverage_fixture` example starts its normal
+  router and a controlled `scanner-test-support` engine, creates a store and
+  order, and exposes only example-local health/paid controls. Playwright's
+  fixture builds offline, starts/stops the server, and verifies real checkout,
+  compact iframe, and POS landmarks. `npx playwright test -c
+  coverage-real.config.js`: 2/2 passed. The seeded pending POS order reopens
+  automatically, so the smoke test backgrounds it before checking the keypad.
 
 ## Resume next
 
 Build browser instrumentation (3.1–3.2) before deleting the old browser tests.
-Continue 0.2 browser/PHP collectors alongside the controlled UI fixture (2.2).
+Continue 0.2 browser/PHP collectors, then migrate browser assertions.

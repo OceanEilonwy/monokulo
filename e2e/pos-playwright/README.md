@@ -120,3 +120,14 @@ screenshots on failure).
   `playwright-report/` (screenshots + trace on failure) and `e2e-harness`'s own stderr,
   which `global-setup.js` forwards straight through to this process's own terminal
   output.
+
+# Deterministic rendered-UI fixture
+
+Run `npx playwright test -c coverage-real.config.js` from this directory.
+The suite builds `monokulo`'s `coverage_fixture` example with Cargo's offline
+mode, starts a real Monokulo router and `scanner-test-support` engine on local
+ephemeral ports, and stops the fixture after the tests. It seeds one merchant,
+store, session, and order. The full checkout and compact POS iframe are the
+product's own HTML, CSS, and JavaScript. No public node or wallet is involved.
+The example alone mounts `/__coverage/ready` and
+`/__coverage/orders/{id}/paid`; production routes never receive these controls.
