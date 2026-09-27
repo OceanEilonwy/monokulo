@@ -45,11 +45,22 @@ async function collectCoverageContext(context, testInfo) {
   }));
 }
 
+// Debug builds of monokulo embed Solid's development build, which reports
+// reactivity mistakes (a read that will not update, a write from inside a
+// computation, ...) to the console as `[CODE] message`. Any of those fails
+// the test that produced it.
+const SOLID_DIAGNOSTIC = /^\[[A-Z][A-Z_]+\] /;
+
 const test = base.test.extend({
   context: async ({ context }, use, testInfo) => {
+    const diagnostics = [];
+    context.on('console', message => {
+      if (['warning', 'error'].includes(message.type()) && SOLID_DIAGNOSTIC.test(message.text())) diagnostics.push(message.text());
+    });
     await installCoverageContext(context);
     await use(context);
     await collectCoverageContext(context, testInfo);
+    if (diagnostics.length) throw new Error(`Solid reported ${diagnostics.length} diagnostic(s):\n${diagnostics.join('\n')}`);
   },
 });
 
