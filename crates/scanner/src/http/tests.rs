@@ -1182,6 +1182,8 @@ async fn status_endpoint_shows_the_real_configured_network_and_node_with_its_liv
     assert_eq!(node["height"], 0, "expected the node's real live height shown, got: {body}");
     assert!(node["error"].is_null(), "a reachable node must have no error, got: {body}");
     assert!(!network["scanner"]["ever_ticked"].as_bool().unwrap(), "no scan tick has happened in this test, got: {body}");
+    assert_eq!(network["lagging_tenants"], 0, "got: {body}");
+    assert_eq!(network["max_blocks_behind"], 0, "got: {body}");
 }
 
 #[tokio::test]

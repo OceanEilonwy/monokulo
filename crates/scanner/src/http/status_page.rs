@@ -71,6 +71,11 @@ pub struct NetworkStatus {
     pub network: String,
     pub nodes: Vec<NodeStatus>,
     pub scanner: ScannerStatusView,
+    /// Tenants not yet scanned up to this network's latest scanned block
+    /// (task 5.0): their payments may be detected late until they catch up.
+    pub lagging_tenants: usize,
+    /// How far behind the furthest-behind tenant is, in blocks.
+    pub max_blocks_behind: u64,
 }
 
 #[derive(Serialize)]
@@ -161,7 +166,20 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
             }
         };
 
-        network_views.push(NetworkStatus { network: network_str(network).to_string(), nodes, scanner });
+        let (lagging_tenants, max_blocks_behind) = {
+            let store = state.store.lock();
+            let high_water = store.max_scanned_height(network_str(network)).ok().flatten().unwrap_or(0);
+            let lagging = store.lagging_tenants(network_str(network)).unwrap_or_default();
+            let behind = lagging.iter().map(|(_, cursor)| high_water.saturating_sub(*cursor)).max().unwrap_or(0);
+            (lagging.len(), behind)
+        };
+        network_views.push(NetworkStatus {
+            network: network_str(network).to_string(),
+            nodes,
+            scanner,
+            lagging_tenants,
+            max_blocks_behind,
+        });
     }
 
     let loop_restarts =

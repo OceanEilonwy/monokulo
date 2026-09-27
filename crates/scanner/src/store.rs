@@ -631,7 +631,8 @@ impl Store {
         let mut stmt = self.conn.prepare(
             "SELECT DISTINCT o.tenant_id FROM orders o
              JOIN tenants t ON t.id = o.tenant_id
-             WHERE (o.status IN (?1, ?2, ?3, ?4) OR (o.status = ?5 AND o.expires_at_utc >= ?6)) AND t.network = ?7",
+             WHERE (o.status IN (?1, ?2, ?3, ?4) OR (o.status = ?5 AND o.expires_at_utc >= ?6)) AND t.network = ?7
+               AND t.disabled_at_utc IS NULL",
         )?;
         let rows = stmt
             .query_map(
@@ -648,6 +649,31 @@ impl Store {
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Whether `tenant_id` has an order that could have been paid at any time
+    /// since `since` (a unix time): one still open, or one that expired no
+    /// earlier than `since` minus the grace period. Catch-up uses this with
+    /// the time of a lagging tenant's cursor block, so an order that was in
+    /// scope during the gap is still looked for even if it isn't any more.
+    pub fn tenant_has_orders_in_scope_since(&self, tenant_id: &str, since: i64, grace_period_seconds: i64) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT EXISTS (SELECT 1 FROM orders
+                 WHERE tenant_id = ?1
+                   AND (status IN (?2, ?3, ?4, ?5) OR (status = ?6 AND expires_at_utc >= ?7)))",
+                params![
+                    tenant_id,
+                    status_to_str(OrderStatus::Pending),
+                    status_to_str(OrderStatus::Unconfirmed),
+                    status_to_str(OrderStatus::Confirming),
+                    status_to_str(OrderStatus::Partial),
+                    status_to_str(OrderStatus::Expired),
+                    since - grace_period_seconds,
+                ],
+                |row| row.get(0),
+            )
+            .map_err(Into::into)
     }
 
     /// Every order on `network` still in a non-terminal status - the same four
@@ -1365,15 +1391,22 @@ impl Store {
     /// `height`, except those in `left_behind` (tenants whose scan failed on
     /// this block). Called in the same transaction as `set_scanned_block`, so
     /// the network and its caught-up tenants always move together.
-    pub fn advance_caught_up_cursors(&self, network: &str, height: u64, left_behind: &[String]) -> Result<()> {
+    ///
+    /// Also held back: any tenant created, or given a new order, at or after
+    /// `tick_started` (the time the tick read which tenants to scan). The
+    /// tick didn't scan for it with that order's address, so it catches up
+    /// next tick with its current range instead of being moved past blocks.
+    pub fn advance_caught_up_cursors(&self, network: &str, height: u64, left_behind: &[String], tick_started: i64) -> Result<()> {
         let left_behind = serde_json::to_string(left_behind).map_err(|e| {
             StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
         })?;
         self.conn.execute(
             "UPDATE tenants SET scanned_through_height = ?2
              WHERE network = ?1 AND scanned_through_height = ?2 - 1
-               AND id NOT IN (SELECT value FROM json_each(?3))",
-            params![network, height as i64, left_behind],
+               AND id NOT IN (SELECT value FROM json_each(?3))
+               AND created_at_utc < ?4
+               AND id NOT IN (SELECT tenant_id FROM orders WHERE created_at_utc >= ?4)",
+            params![network, height as i64, left_behind, tick_started],
         )?;
         Ok(())
     }
@@ -1408,18 +1441,13 @@ impl Store {
         Ok(())
     }
 
-    /// A lagging tenant with nothing that could be paid (no order in scope)
-    /// has nothing to catch up on: moves it straight to `height` so it isn't
-    /// reported as lagging for ever.
-    pub fn snap_idle_lagging_cursors(&self, network: &str, height: u64, active_tenant_ids: &[String]) -> Result<()> {
-        let active = serde_json::to_string(active_tenant_ids).map_err(|e| {
-            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
-        })?;
+    /// Moves a lagging tenant straight to `height`: for one with nothing that
+    /// could have been paid during its gap (see
+    /// `tenant_has_orders_in_scope_since`), or a disabled one.
+    pub fn snap_cursor(&self, tenant_id: &str, height: u64) -> Result<()> {
         self.conn.execute(
-            "UPDATE tenants SET scanned_through_height = ?2
-             WHERE network = ?1 AND scanned_through_height < ?2
-               AND id NOT IN (SELECT value FROM json_each(?3))",
-            params![network, height as i64, active],
+            "UPDATE tenants SET scanned_through_height = ?2 WHERE id = ?1 AND scanned_through_height < ?2",
+            params![tenant_id, height as i64],
         )?;
         Ok(())
     }
@@ -1439,10 +1467,24 @@ impl Store {
         Ok(rows)
     }
 
+    /// Disabled tenants on `network` whose cursor is behind: nothing is
+    /// scanned for them any more, so they are simply moved along.
+    pub fn snap_disabled_cursors(&self, network: &str, height: u64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tenants SET scanned_through_height = ?2
+             WHERE network = ?1 AND disabled_at_utc IS NOT NULL AND scanned_through_height < ?2",
+            params![network, height as i64],
+        )?;
+        Ok(())
+    }
+
     /// Whether `tenant` hasn't been scanned up to its network's high-water
     /// mark. While it is, its orders mustn't expire: a payment may be sitting
     /// in a block it hasn't been checked against yet.
     fn is_tenant_lagging(&self, tenant: &Tenant) -> Result<bool> {
+        if tenant.disabled_at.is_some() {
+            return Ok(false);
+        }
         let Some(cursor) = tenant.scanned_through_height else { return Ok(false) };
         Ok(self.max_scanned_height(&tenant.network)?.is_some_and(|high_water| cursor < high_water))
     }

@@ -228,9 +228,16 @@ impl KeyCustody for PlainKeyCustody {
             table,
             keys: &entry.view_pair,
         };
-        let owned = tx
-            .check_outputs_with(&checker)
-            .map_err(|e| KeyCustodyError::ScanFailed(e.to_string()))?;
+        let owned = match tx.check_outputs_with(&checker) {
+            Ok(owned) => owned,
+            // A transaction with no transaction public key, or with script
+            // outputs, can't pay any wallet: it's "no match", not a failure.
+            // Reporting it as a failure would make every tenant fail on it and
+            // retry the same block for ever.
+            Err(monero::blockdata::transaction::Error::NoTxPublicKey)
+            | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Vec::new(),
+            Err(e) => return Err(KeyCustodyError::ScanFailed(e.to_string())),
+        };
         Ok(owned
             .into_iter()
             .map(|o| MatchedOutput {

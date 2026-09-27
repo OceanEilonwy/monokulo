@@ -95,6 +95,40 @@ pub async fn scan_transaction(
     })
 }
 
+/// Longest one tenant's scan of one transaction may take before it counts as
+/// a failure for that tenant (task 7.4). A key-custody backend that answers,
+/// but slowly, is then treated like one that is down: that tenant is left
+/// behind and caught up later, and nobody else waits on it.
+pub const SCAN_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+/// Most tenants scanned for one transaction at the same time.
+const SCAN_CONCURRENCY: usize = 32;
+
+/// Scans one transaction for many tenants at once, each with
+/// `SCAN_CALL_DEADLINE`, so a slow tenant (a slow key-custody backend)
+/// doesn't hold up the others. Results come back in the order given.
+async fn scan_for_tenants(
+    key_custody: &dyn KeyCustody,
+    tx: &Transaction,
+    tenants: &[&(String, WalletHandle, Range<u32>)],
+) -> Vec<(String, Result<ScanResult>)> {
+    use futures_util::stream::{self, StreamExt};
+    let owned: Vec<(String, WalletHandle, Range<u32>)> = tenants.iter().map(|t| (*t).clone()).collect();
+    stream::iter(owned)
+        .map(|(tenant_id, handle, range)| async move {
+            let result = match tokio::time::timeout(SCAN_CALL_DEADLINE, scan_transaction(key_custody, handle, tx, range)).await {
+                Ok(result) => result,
+                Err(_) => Err(ScannerError::KeyCustody(KeyCustodyError::BackendUnavailable(format!(
+                    "scan took longer than {SCAN_CALL_DEADLINE:?}"
+                )))),
+            };
+            (tenant_id, result)
+        })
+        .buffered(SCAN_CONCURRENCY)
+        .collect()
+        .await
+}
+
 /// Persists a `ScanResult` against one tenant. Purely synchronous - no `.await`
 /// anywhere in this function, so a `&Store` parameter here is never an issue.
 /// Returns the set of order ids touched, so the caller knows which orders need
@@ -889,19 +923,21 @@ pub async fn run_scan_tick(
     let mut mempool_txids: Option<HashSet<String>> = None;
     if let Some(mempool_txs) = mempool {
         mempool_txids = Some(mempool_txs.iter().map(tx_id_hex).collect());
+        let all: Vec<&(String, WalletHandle, Range<u32>)> = ranges.iter().collect();
         for tx in &mempool_txs {
-            for (tenant_id, handle, minor_range) in &ranges {
-                // Compute (async, no Store - see ScanResult's doc comment) then
-                // persist (sync, no .await) as two separate steps, never a single
-                // await-spanning call holding a &Store.
-                //
-                // A failure here is genuinely recoverable by doing nothing: the
-                // mempool is re-polled roughly every second, so the same transaction
-                // comes back around next tick. It still gets logged rather than
-                // silently swallowed - a persistently failing scan or store call
-                // that never surfaces anywhere is indistinguishable from "no
-                // payments are arriving".
-                match scan_transaction(key_custody, *handle, tx, minor_range.clone()).await {
+            // Compute (async, no Store - see ScanResult's doc comment) then
+            // persist (sync, no .await) as two separate steps, never a single
+            // await-spanning call holding a &Store.
+            //
+            // A failure here is genuinely recoverable by doing nothing: the
+            // mempool is re-polled roughly every second, so the same transaction
+            // comes back around next tick. It still gets logged rather than
+            // silently swallowed - a persistently failing scan or store call
+            // that never surfaces anywhere is indistinguishable from "no
+            // payments are arriving".
+            for (tenant_id, result) in scan_for_tenants(key_custody, tx, &all).await {
+                let tenant_id = &tenant_id;
+                match result {
                     Ok(scan) => {
                         let s = store.lock();
                         match record_scan_match(&s, tenant_id, &scan, now, None) {
@@ -1046,11 +1082,11 @@ pub async fn run_scan_tick(
             for (offset, block_txs) in chunk.iter().enumerate() {
                 let height = height + offset as u64;
                 for tx in block_txs {
-                    for (tenant_id, handle, minor_range) in live.iter().copied() {
-                        if left_behind.contains(tenant_id) {
-                            continue;
-                        }
-                        let scan = match scan_transaction(key_custody, *handle, tx, minor_range.clone()).await {
+                    let still_live: Vec<&(String, WalletHandle, Range<u32>)> =
+                        live.iter().copied().filter(|(tenant_id, _, _)| !left_behind.contains(tenant_id)).collect();
+                    for (tenant_id, result) in scan_for_tenants(key_custody, tx, &still_live).await {
+                        let tenant_id = &tenant_id;
+                        let scan = match result {
                             Ok(scan) => scan,
                             Err(e) => {
                                 eprintln!(
@@ -1100,7 +1136,7 @@ pub async fn run_scan_tick(
                         let left_behind_ids: Vec<String> = left_behind.iter().cloned().collect();
                         let written = store.lock().in_transaction(|s| -> std::result::Result<(), StoreError> {
                             s.set_scanned_block(network, height, &hash)?;
-                            s.advance_caught_up_cursors(network, height, &left_behind_ids)
+                            s.advance_caught_up_cursors(network, height, &left_behind_ids, now)
                         });
                         if let Err(e) = written {
                             eprintln!(
@@ -1135,9 +1171,20 @@ pub async fn run_scan_tick(
     // happens to also process a new block. `None` (nothing has ever been scanned on
     // this network at all yet) is skipped entirely, correctly leaving every order's
     // range still `NULL`.
-    match catch_up_lagging_tenants(store, key_custody, daemon, network, &ranges, &active_ids, &left_behind, now).await {
-        Ok(order_ids) => touched.extend(order_ids),
-        Err(e) => eprintln!("catching up lagging tenants on {network} failed (retried next tick): {e}"),
+    if let Err(e) = catch_up_lagging_tenants(
+        store,
+        key_custody,
+        daemon,
+        network,
+        tenants,
+        &left_behind,
+        expired_order_grace_period_seconds,
+        now,
+        &mut touched,
+    )
+    .await
+    {
+        eprintln!("catching up lagging tenants on {network} failed (retried next tick): {e}");
     }
 
     // Each tenant's orders show the range scanned *for that tenant*, which is
@@ -1260,19 +1307,73 @@ pub async fn run_scan_tick(
     Ok(())
 }
 
-/// Most blocks one group of lagging tenants is caught up by in one tick, so a
-/// long gap is closed over several ticks without holding up the live scan.
-const CATCH_UP_MAX_BLOCKS_PER_TICK: u64 = 200;
+/// Registers the keys of every enabled tenant on `network` that has none
+/// registered yet, from its sealed key material, and adds the handles to
+/// `wallet_handles`. Registration at boot can fail (a key-custody backend
+/// that wasn't up yet), and until a tenant's keys are registered its
+/// payments can't be detected; this lets the scan loop keep retrying rather
+/// than waiting for an API call to register them lazily. Returns how many
+/// were registered.
+///
+/// Uses the same "first handle in wins" rule as
+/// `http::resolve_wallet_handle`, which may be registering the same tenant
+/// at the same time: the losing registration is removed again.
+pub async fn register_missing_wallets(
+    store: &crate::store::SharedStore,
+    key_custody: &dyn KeyCustody,
+    wallet_handles: &parking_lot::RwLock<HashMap<String, WalletHandle>>,
+    network: &str,
+) -> usize {
+    let missing: Vec<crate::store::Tenant> = match store.lock().list_active_tenants() {
+        Ok(tenants) => {
+            let handles = wallet_handles.read();
+            tenants.into_iter().filter(|t| t.network == network && !handles.contains_key(&t.id)).collect()
+        }
+        Err(e) => {
+            eprintln!("listing tenants to register their keys on {network} failed (retried later): {e}");
+            return 0;
+        }
+    };
+    let mut registered = 0;
+    for tenant in missing {
+        match key_custody.unseal_and_register(&tenant.sealed_key_material).await {
+            Ok(handle) => {
+                let winner = *wallet_handles.write().entry(tenant.id.clone()).or_insert(handle);
+                if winner != handle {
+                    let _ = key_custody.remove_wallet(handle).await;
+                } else {
+                    registered += 1;
+                }
+            }
+            Err(e) => eprintln!("registering the keys of tenant {} on {network} failed (retried later): {e}", tenant.id),
+        }
+    }
+    registered
+}
+
+/// Most blocks caught up per tick across all lagging tenants, shared between
+/// the groups, so a long gap (or many groups) is closed over several ticks
+/// without holding up the live scan.
+const CATCH_UP_BLOCKS_PER_TICK: u64 = 200;
+/// Floor for each group's share of `CATCH_UP_BLOCKS_PER_TICK`, so every
+/// group still makes progress when there are many.
+const CATCH_UP_MIN_BLOCKS_PER_GROUP: u64 = 10;
+/// Most blocks fetched in one `get_blocks_range` call during catch-up.
+const CATCH_UP_FETCH_BLOCKS: u64 = 50;
 
 /// Brings tenants whose cursor is behind the network back up to it
 /// (task 5.0). A tenant falls behind when its scan failed during the live
 /// scan (its key custody backend was down, say) or its keys weren't
 /// registered for a while.
 ///
-/// - A lagging tenant with no order in scope has nothing to find, so its
-///   cursor is moved straight to the network's height.
-/// - The rest, if their keys are usable (they are in `ranges`), are grouped
-///   by cursor so tenants that fell behind together share one block fetch.
+/// - Disabled tenants are moved straight along: nothing is scanned for them.
+/// - A lagging tenant with no order that could have been paid since its
+///   cursor's block (by the time of that block, not now: an order that was
+///   in scope during the gap still counts) has nothing to find, so it is
+///   moved straight to the network's height.
+/// - The rest, if their keys are registered (they are in `tenants`), are
+///   grouped by cursor so tenants that fell behind together share one block
+///   fetch. The groups share a per-tick block budget.
 /// - Each block is checked against the hash the live scan stored for that
 ///   height, where one is still stored. A mismatch means the node answering
 ///   now is on another fork, so this group stops for this tick; the reorg
@@ -1281,46 +1382,84 @@ const CATCH_UP_MAX_BLOCKS_PER_TICK: u64 = 200;
 ///   the live scan or other groups.
 ///
 /// Tenants left behind during this tick's live scan are skipped until next
-/// tick: whatever just failed for them almost certainly still does.
+/// tick: whatever just failed for them almost certainly still does. Orders
+/// touched are added to `touched` as they are found, so they're kept even
+/// if a later step fails.
 #[allow(clippy::too_many_arguments)] // one tick's genuinely independent inputs, as for `run_scan_tick`
 async fn catch_up_lagging_tenants(
     store: &crate::store::SharedStore,
     key_custody: &dyn KeyCustody,
     daemon: &dyn MoneroDaemonClient,
     network: &str,
-    ranges: &[(String, WalletHandle, Range<u32>)],
-    active_ids: &[String],
+    tenants: &[(String, WalletHandle)],
     left_behind: &HashSet<String>,
+    expired_order_grace_period_seconds: i64,
     now: i64,
-) -> Result<HashSet<String>> {
-    let mut touched = HashSet::new();
+    touched: &mut HashSet<String>,
+) -> Result<()> {
     let (high_water, lagging) = {
         let s = store.lock();
-        let Some(high_water) = s.max_scanned_height(network)? else { return Ok(touched) };
-        s.snap_idle_lagging_cursors(network, high_water, active_ids)?;
+        let Some(high_water) = s.max_scanned_height(network)? else { return Ok(()) };
+        s.snap_disabled_cursors(network, high_water)?;
         (high_water, s.lagging_tenants(network)?)
     };
     if lagging.is_empty() {
-        return Ok(touched);
+        return Ok(());
     }
 
-    let usable: HashMap<&String, (&WalletHandle, &Range<u32>)> =
-        ranges.iter().map(|(id, handle, range)| (id, (handle, range))).collect();
-    let mut groups: std::collections::BTreeMap<u64, Vec<(&String, &WalletHandle, &Range<u32>)>> = Default::default();
+    let handles: HashMap<&String, &WalletHandle> = tenants.iter().map(|(id, handle)| (id, handle)).collect();
+    let mut cursor_times: HashMap<u64, i64> = HashMap::new();
+    let mut groups: std::collections::BTreeMap<u64, Vec<(String, WalletHandle, Range<u32>)>> = Default::default();
     for (tenant_id, cursor) in &lagging {
+        // A tenant with no order that could be paid at any time at all needs
+        // no block time to decide: it has nothing to find.
+        if !store.lock().tenant_has_orders_in_scope_since(tenant_id, i64::MIN / 2, expired_order_grace_period_seconds)? {
+            store.lock().snap_cursor(tenant_id, high_water)?;
+            continue;
+        }
+        // When the gap began, as the chain tells it. If that can't be read,
+        // this tenant is left for next tick rather than guessed about.
+        let cursor_time = match cursor_times.get(cursor) {
+            Some(t) => *t,
+            None => match daemon.get_block_timestamp(*cursor).await {
+                Ok(t) => {
+                    cursor_times.insert(*cursor, t as i64);
+                    t as i64
+                }
+                Err(e) => {
+                    eprintln!("catch-up on {network}: reading the time of block {cursor} failed (retried next tick): {e}");
+                    continue;
+                }
+            },
+        };
+        let (in_scope, next_minor_index) = {
+            let s = store.lock();
+            let in_scope = s.tenant_has_orders_in_scope_since(tenant_id, cursor_time.min(now), expired_order_grace_period_seconds)?;
+            let next_minor_index = s.get_tenant_by_id(tenant_id)?.map(|t| t.next_minor_index);
+            (in_scope, next_minor_index)
+        };
+        if !in_scope {
+            store.lock().snap_cursor(tenant_id, high_water)?;
+            continue;
+        }
         if left_behind.contains(tenant_id) {
             continue;
         }
-        if let Some((tenant_id, (handle, range))) = usable.get_key_value(tenant_id) {
-            groups.entry(*cursor).or_default().push((tenant_id, handle, range));
+        if let (Some(handle), Some(next_minor_index)) = (handles.get(tenant_id), next_minor_index) {
+            groups.entry(*cursor).or_default().push((tenant_id.clone(), **handle, 0..next_minor_index));
         }
     }
+    if groups.is_empty() {
+        return Ok(());
+    }
 
+    let per_group = (CATCH_UP_BLOCKS_PER_TICK / groups.len() as u64).max(CATCH_UP_MIN_BLOCKS_PER_GROUP);
     for (cursor, mut group) in groups {
-        let end = high_water.min(cursor + CATCH_UP_MAX_BLOCKS_PER_TICK);
+        let end = high_water.min(cursor + per_group);
         let mut height = cursor + 1;
         'group: while height <= end && !group.is_empty() {
-            let chunk = match daemon.get_blocks_range(height, end - height + 1).await {
+            let count = (end - height + 1).min(CATCH_UP_FETCH_BLOCKS);
+            let chunk = match daemon.get_blocks_range(height, count).await {
                 Ok(chunk) if !chunk.is_empty() => chunk,
                 Ok(_) => break 'group,
                 Err(e) => {
@@ -1350,18 +1489,17 @@ async fn catch_up_lagging_tenants(
                 }
                 let mut failed: HashSet<String> = HashSet::new();
                 for tx in block_txs {
-                    for (tenant_id, handle, range) in &group {
-                        if failed.contains(*tenant_id) {
-                            continue;
-                        }
-                        match scan_transaction(key_custody, **handle, tx, (*range).clone()).await {
+                    let refs: Vec<&(String, WalletHandle, Range<u32>)> =
+                        group.iter().filter(|(tenant_id, _, _)| !failed.contains(tenant_id)).collect();
+                    for (tenant_id, result) in scan_for_tenants(key_custody, tx, &refs).await {
+                        match result {
                             Ok(scan) => {
-                                let recorded = record_scan_match(&store.lock(), tenant_id, &scan, now, Some(height));
+                                let recorded = record_scan_match(&store.lock(), &tenant_id, &scan, now, Some(height));
                                 match recorded {
                                     Ok(order_ids) => touched.extend(order_ids),
                                     Err(e) => {
                                         eprintln!("catch-up on {network}: recording a match in block {height} failed (retried next tick): {e}");
-                                        return Ok(touched);
+                                        return Ok(());
                                     }
                                 }
                             }
@@ -1371,14 +1509,14 @@ async fn catch_up_lagging_tenants(
                                      at block {} for now: {e}",
                                     height - 1
                                 );
-                                failed.insert((*tenant_id).clone());
+                                failed.insert(tenant_id);
                             }
                         }
                     }
                 }
                 let s = store.lock();
                 group.retain(|(tenant_id, _, _)| {
-                    if failed.contains(*tenant_id) {
+                    if failed.contains(tenant_id) {
                         return false;
                     }
                     // False if the cursor moved meanwhile (a reorg clamp), in
@@ -1393,7 +1531,7 @@ async fn catch_up_lagging_tenants(
             }
         }
     }
-    Ok(touched)
+    Ok(())
 }
 
 #[cfg(test)]
@@ -6096,5 +6234,278 @@ mod tests {
                 assert_ne!(order_status(&store, order_id), OrderStatus::Expired, "seed {seed}");
             }
         }
+    }
+
+    // -- Fair, concurrent scanning within a tick (task 7.4) -------------------
+
+    /// Wraps a `PlainKeyCustody` and delays `scan_tx_outputs` for chosen
+    /// handles, the way a key-custody backend that answers slowly does.
+    #[derive(Default)]
+    struct SlowKeyCustody {
+        inner: PlainKeyCustody,
+        delays: parking_lot::Mutex<HashMap<WalletHandle, Duration>>,
+    }
+
+    #[async_trait::async_trait]
+    impl KeyCustody for SlowKeyCustody {
+        async fn register_wallet(&self, material: WalletMaterial) -> std::result::Result<WalletHandle, KeyCustodyError> {
+            self.inner.register_wallet(material).await
+        }
+        async fn remove_wallet(&self, handle: WalletHandle) -> std::result::Result<(), KeyCustodyError> {
+            self.inner.remove_wallet(handle).await
+        }
+        async fn seal(&self, material: &WalletMaterial) -> std::result::Result<Vec<u8>, KeyCustodyError> {
+            self.inner.seal(material).await
+        }
+        async fn unseal_and_register(&self, sealed: &[u8]) -> std::result::Result<WalletHandle, KeyCustodyError> {
+            self.inner.unseal_and_register(sealed).await
+        }
+        async fn derive_subaddress(
+            &self,
+            handle: WalletHandle,
+            index: SubaddressIndex,
+            network: Network,
+        ) -> std::result::Result<Address, KeyCustodyError> {
+            self.inner.derive_subaddress(handle, index, network).await
+        }
+        async fn scan_tx_outputs(
+            &self,
+            handle: WalletHandle,
+            tx: &Transaction,
+            major_range: Range<u32>,
+            minor_range: Range<u32>,
+        ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
+            let delay = self.delays.lock().get(&handle).copied();
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
+            self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await
+        }
+    }
+
+    use std::time::Duration;
+
+    #[tokio::test(start_paused = true)]
+    async fn a_tenant_whose_backend_answers_slowly_is_left_behind_and_holds_nobody_up() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = SlowKeyCustody::default();
+        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let (b, b_handle, b_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let store = store.into_shared();
+        let tenants = [(a.clone(), a_handle), (b.clone(), b_handle)];
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![]);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+
+        custody.delays.lock().insert(a_handle, Duration::from_secs(10 * 60));
+        daemon.push_block("h3", vec![fixture_tx()]);
+        let started = tokio::time::Instant::now();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        assert!(started.elapsed() < SCAN_CALL_DEADLINE * 3, "bounded by the per-call deadline: {:?}", started.elapsed());
+        assert_eq!(store.lock().get_all_payments(&b_order).unwrap().len(), 1, "B was paid on time");
+        assert_eq!(cursor_of(&store, &a), Some(2), "A left behind");
+
+        custody.delays.lock().clear();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1, "and caught up once it answers normally");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn tenants_are_scanned_concurrently_not_one_after_another() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = SlowKeyCustody::default();
+        let mut tenants = vec![];
+        for _ in 0..20 {
+            let (id, handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+            custody.delays.lock().insert(handle, Duration::from_secs(1));
+            tenants.push((id, handle));
+        }
+        let store = store.into_shared();
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![]);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+
+        daemon.push_block("h3", vec![fixture_tx()]);
+        let started = tokio::time::Instant::now();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        // 20 tenants x 1s each: about 1s at once (plus the mempool pass),
+        // not 20s in a row.
+        assert!(started.elapsed() < Duration::from_secs(5), "took {:?}", started.elapsed());
+        for (id, _) in &tenants {
+            assert_eq!(cursor_of(&store, id), Some(3));
+        }
+    }
+
+    // -- Fixes from the independent review of the per-tenant cursors ---------
+
+    #[tokio::test]
+    async fn a_late_payment_in_the_grace_period_is_found_even_if_the_grace_period_ends_during_the_gap() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = FlakyKeyCustody::default();
+        let now = crate::now_unix();
+        // Expired 50s ago, inside a one-hour grace period.
+        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, now - 50).await;
+        let store = store.into_shared();
+        let tenants = [(a.clone(), a_handle)];
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![]);
+        daemon.set_block_timestamp(2, (now - 100) as u64);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600).await.unwrap();
+        assert_eq!(order_status(&store, &a_order), OrderStatus::Expired);
+
+        // Backend down while the late payment is mined.
+        custody.fail(a_handle);
+        daemon.push_block("h3", vec![fixture_tx()]);
+        daemon.set_block_timestamp(3, (now - 20) as u64);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600).await.unwrap();
+        assert_eq!(cursor_of(&store, &a), Some(2));
+
+        // The grace period is over by now (modelled by a grace of 0), so the
+        // order is no longer in scope today. It was in scope during the gap,
+        // though, so the tenant must still be caught up rather than skipped.
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        assert_eq!(cursor_of(&store, &a), Some(2), "not moved past the block with the payment");
+        custody.recover(a_handle);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        assert_eq!(cursor_of(&store, &a), Some(3));
+        let payments = store.lock().get_all_payments(&a_order).unwrap();
+        assert_eq!(payments.len(), 1, "the late payment was recorded");
+        assert_eq!(payments[0].block_height, Some(3));
+    }
+
+    #[tokio::test]
+    async fn a_disabled_tenants_orders_still_expire_and_it_never_counts_as_lagging() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = PlainKeyCustody::default();
+        let (a, _a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let store = store.into_shared();
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![]);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0).await.unwrap();
+
+        store.lock().disable_tenant(&a, crate::now_unix()).unwrap();
+        store.lock().execute_raw_for_test(&format!("UPDATE orders SET expires_at_utc = 1 WHERE id = '{a_order}'")).unwrap();
+        daemon.push_block("h3", vec![unrelated_tx(90)]);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0).await.unwrap();
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0).await.unwrap();
+        assert_eq!(order_status(&store, &a_order), OrderStatus::Expired);
+        assert_eq!(cursor_of(&store, &a), Some(3));
+        assert!(store.lock().lagging_tenants("mainnet").unwrap().is_empty());
+    }
+
+    #[test]
+    fn a_tenant_or_order_created_after_the_tick_started_is_not_moved_past_the_block() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_scanned_block("mainnet", 10, "h10").unwrap();
+        let new_tenant = |created_at: i64| {
+            store
+                .create_tenant(
+                    NewTenant {
+                        key_custody_backend: "plain".into(),
+                        sealed_key_material: vec![],
+                        primary_address: "4x".into(),
+                        network: "mainnet".into(),
+                        confirmations_required: None,
+                        order_expiry_seconds: None,
+                    },
+                    created_at,
+                )
+                .unwrap()
+                .tenant
+                .id
+        };
+        let old = new_tenant(100);
+        let with_new_order = new_tenant(100);
+        let created_mid_tick = new_tenant(500);
+        let index = store.allocate_minor_index(&with_new_order).unwrap();
+        store
+            .create_order(NewOrder {
+                confirmations_required_override: None,
+                tenant_id: with_new_order.clone(),
+                merchant_order_id: None,
+                minor_index: index,
+                address: "x".into(),
+                xmr_amount_piconero: 1,
+                description: None,
+                created_at: 500,
+                expires_at: 10_000,
+            })
+            .unwrap();
+
+        store.advance_caught_up_cursors("mainnet", 11, &[], 500).unwrap();
+        let cursor = |id: &str| store.get_tenant_by_id(id).unwrap().unwrap().scanned_through_height;
+        assert_eq!(cursor(&old), Some(11));
+        assert_eq!(cursor(&with_new_order), Some(10), "its new address wasn't in this tick's scan");
+        assert_eq!(cursor(&created_mid_tick), Some(10));
+    }
+
+    #[tokio::test]
+    async fn a_transaction_that_can_pay_nobody_is_no_match_not_a_failure() {
+        let mut tx = fixture_tx();
+        tx.prefix.extra = monero::blockdata::transaction::RawExtraField(vec![]);
+        let custody = PlainKeyCustody::default();
+        let handle = custody.register_wallet(WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey())).await.unwrap();
+        let matches = custody.scan_tx_outputs(handle, &tx, 0..1, 0..10).await.unwrap();
+        assert!(matches.is_empty());
+    }
+
+    #[tokio::test]
+    async fn keys_that_failed_to_register_are_registered_by_the_retry() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = PlainKeyCustody::default();
+        let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
+        let sealed = custody.seal(&material).await.unwrap();
+        let tenant = store
+            .create_tenant(
+                NewTenant {
+                    key_custody_backend: "plain".into(),
+                    sealed_key_material: sealed,
+                    primary_address: "4x".into(),
+                    network: "mainnet".into(),
+                    confirmations_required: None,
+                    order_expiry_seconds: None,
+                },
+                1,
+            )
+            .unwrap()
+            .tenant;
+        let store = store.into_shared();
+        let handles = parking_lot::RwLock::new(HashMap::new());
+        assert_eq!(register_missing_wallets(&store, &custody, &handles, "stagenet").await, 0, "other networks untouched");
+        assert_eq!(register_missing_wallets(&store, &custody, &handles, "mainnet").await, 1);
+        assert!(handles.read().contains_key(&tenant.id));
+        assert_eq!(register_missing_wallets(&store, &custody, &handles, "mainnet").await, 0, "nothing left to do");
+    }
+
+    #[tokio::test]
+    async fn catch_up_refuses_a_block_whose_hash_differs_even_when_the_reorg_check_cannot_see_it() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = FlakyKeyCustody::default();
+        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let store = store.into_shared();
+        let tenants = [(a.clone(), a_handle)];
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![]);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 1, 0).await.unwrap();
+
+        custody.fail(a_handle);
+        for h in 3..=6 {
+            daemon.push_block(&format!("h{h}"), vec![unrelated_tx(h as u8 + 120)]);
+        }
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 1, 0).await.unwrap();
+        assert_eq!(cursor_of(&store, &a), Some(2));
+
+        // Block 3 now answers with another hash and a payment, below a
+        // reorg-check window of 1 block, so only catch-up can notice.
+        daemon.seed_block_at(3, "other_3", vec![fixture_tx()]);
+        custody.recover(a_handle);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 1, 0).await.unwrap();
+        assert_eq!(cursor_of(&store, &a), Some(2), "stopped at the block that differs");
+        assert!(store.lock().get_all_payments(&a_order).unwrap().is_empty(), "nothing recorded from it");
     }
 }
