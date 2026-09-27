@@ -411,6 +411,61 @@ mod tests {
             assert!(html.contains("could not be reached"), "expected a plain error banner, got: {html}");
         }
 
+        /// The page as it normally looks: a configured network whose node
+        /// answers. Before the first scan tick it says so rather than
+        /// claiming health.
+        #[tokio::test]
+        async fn status_page_lists_a_configured_networks_node_and_a_scanner_not_yet_run() {
+            let engine = scanner_test_support::TestEngineConfig::new()
+                .with_networks(&[monero::Network::Mainnet]).with_admin_lookup_daemon().spawn().await;
+            let router: Router = build_router(state_with_engine(EngineClient::new(format!("http://{}", engine.addr))));
+            let html = body_text(router.clone().oneshot(Request::builder().uri("/status").body(Body::empty()).unwrap()).await.unwrap()).await;
+            assert!(html.contains("mainnet"), "got: {html}");
+            assert!(html.contains("lookup-test-daemon"), "the node is listed by its label: {html}");
+            assert!(html.contains("has not been scanned yet"), "got: {html}");
+            let summary = body_json(router.oneshot(Request::builder().uri("/status/summary").body(Body::empty()).unwrap()).await.unwrap()).await;
+            assert_eq!(summary["healthy"], false, "not healthy before the first scan: {summary}");
+        }
+
+        /// What an operator sees for each scanner state the engine reports:
+        /// healthy, stale (ticks stopped), failing (with the reason), or never
+        /// run; and an unreachable node beside the active one.
+        #[test]
+        fn status_page_describes_each_scanner_state_and_an_unreachable_node() {
+            use crate::engine_client::{EngineStatusResponse, NetworkStatus, NodeStatus, ScannerStatusView};
+            let now = crate::now_unix();
+            let scanner = |ever_ticked, last_tick_ok, is_stale, last_error: Option<&str>| ScannerStatusView {
+                ever_ticked, last_tick_started_at: Some(now - 90), last_tick_finished_at: ever_ticked.then_some(now - 90),
+                tick_count: 7, tenants_scanned: 3, last_tick_ok, last_error: last_error.map(str::to_string), is_stale,
+            };
+            let network = |name: &str, scanner| NetworkStatus {
+                network: name.to_string(),
+                nodes: vec![
+                    NodeStatus { label: "node-a:18081".into(), is_active: true, height: Some(3_700_000), error: None },
+                    NodeStatus { label: "node-b:18081".into(), is_active: false, height: None, error: Some("connection refused".into()) },
+                ],
+                scanner,
+            };
+            let view = super::super::build_view_model(EngineStatusResponse {
+                networks: vec![
+                    network("mainnet", scanner(true, true, false, None)),
+                    network("stagenet", scanner(true, true, true, None)),
+                    network("testnet", scanner(true, false, false, Some("daemon request failed: timed out"))),
+                ],
+                poll_interval_secs: 2,
+                generated_at: now - 5,
+            });
+            let labels: Vec<(&str, &str)> = view.networks.iter().map(|n| (n.scanner.status_label.as_str(), n.scanner.status_tag_class.as_str())).collect();
+            assert_eq!(labels, vec![("healthy", "tag-ok"), ("stale", "tag-error"), ("tick failing", "tag-error")]);
+            assert_eq!(view.networks[2].scanner.last_error.as_deref(), Some("daemon request failed: timed out"));
+            assert_eq!(view.networks[0].scanner.last_tick_display, "1m ago");
+            let node_b = &view.networks[0].nodes[1];
+            assert!(!node_b.is_reachable);
+            assert_eq!(node_b.height_display, "-");
+            let html = crate::views::status::page(&crate::views::PageChrome::from_user(None, "/status"), &view).into_string();
+            assert!(html.contains("connection refused") && html.contains("3700000") && html.contains("daemon request failed: timed out"), "got: {html}");
+        }
+
         #[tokio::test]
         async fn status_summary_reports_unhealthy_when_the_engine_is_unreachable() {
             let state = state_with_engine(EngineClient::new("http://127.0.0.1:1"));
