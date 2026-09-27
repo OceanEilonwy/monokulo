@@ -28,7 +28,9 @@ commits. Nothing is pushed.
 | WBS written and reviewed (two passes) | done | 7b1e47a | |
 | Part 7 review, folded into WBS | done | 6cd5432 | D10 redesigned: `closed_at`, index sets in the custody API, catch-up window |
 | 7.1 panics can't take the engine down | done | 97817e1 | parking_lot locks in engine, test support and monokulo; 3 new tests |
-| 7.12 load and chaos harness (base) | next | | |
+| 5.0 per-store scan cursor | done, under independent review | 6ded980 | 11 new tests incl. randomised outages/reorgs; `/status` lagging report deferred to 3.7 |
+| 7.12 load and chaos harness (base) | partly: the randomised outage/reorg test in 5.0 is its seed; scale runs still to do | | |
+| 7.8 fair webhook delivery | in progress | | |
 
 ## Decisions made while working
 
@@ -44,6 +46,15 @@ reported at the end.)
   listener that can't bind ends the process, by design). Each is allowed
   with the reason written next to it; the scanner crate now denies
   unwrap/expect outside tests.
+- 5.0: catch-up checks each block against the hash the live scan stored
+  (where still stored). `get_blocks_range` doesn't return block hashes, so
+  this checks the node's current view, not the fetched data itself; full
+  protection against mixed forks comes with 7.6 (pin one node per tick).
+- 5.0: the `/status` report of lagging tenants is folded into 3.7's
+  `unserved_tenants` list rather than built twice.
+- 5.0: order of work changed slightly: 7.12's full scale harness comes
+  after 7.2/7.3/7.4, which it measures. The randomised correctness test
+  landed with 5.0.
 - D10 design details (after review): orders get `closed_at_utc`; the
   window is "non-terminal, or closed within the grace period"; the custody
   API gains an index-set scan call plus a protocol version, falling back
@@ -59,6 +70,7 @@ After 7.1: 916 passed, 0 failed, 20 ignored.
 
 ## Current step
 
-7.12 base harness: a load and chaos test helper in `scanner-test-support`
-(payment generator for many stores, fake custody with latency and
-failures), then 5.0 + 7.4 together.
+5.0 committed (6ded980) and sent to an independent reviewer; apply its
+findings when it reports. Meanwhile 7.8 (fair webhook delivery,
+`crates/scanner/src/webhook_delivery.rs`), then 7.4 (fair, parallel
+scanning).
