@@ -180,8 +180,11 @@ test('real dashboard health indicator follows healthy and unavailable polls', as
   await expect(page.locator('#status-indicator')).toHaveAttribute('title', 'could not check status');
 });
 
-async function payment(request, orderId, fraction, inBlock) {
-  const response = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/payment?fraction=${fraction}&in_block=${inBlock}`);
+/** A payment of `fraction` of the order's amount, with `confirmations`
+ * (undefined: seen in the mempool only). */
+async function payment(request, orderId, fraction, confirmations) {
+  const depth = confirmations === undefined ? '' : `&confirmations=${confirmations}`;
+  const response = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/payment?fraction=${fraction}${depth}`);
   expect(response.status()).toBe(204);
 }
 
@@ -216,7 +219,7 @@ test('customer pays while the order is on screen and the merchant starts the nex
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   // Seen in the mempool first: the card says so and cancelling is no longer offered.
-  await payment(request, fixture.order_id, 1, false);
+  await payment(request, fixture.order_id, 1);
   await expect(page.locator('.pos-pay-detail')).toHaveText('Payment seen. Waiting for its first confirmation.');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
   await expect(page.locator('.pos-pay-caption')).toHaveText('Received');
@@ -232,13 +235,13 @@ test('customer pays while the order is on screen and the merchant starts the nex
 test('customer underpays: the card asks for the rest and the order cannot be cancelled', async ({ page, request }) => {
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
-  await payment(request, fixture.order_id, 0.4, true);
+  await payment(request, fixture.order_id, 0.4, 20);
   await expect(page.locator('.pos-pay-detail')).toContainText('0.0004 of 0.001 XMR received');
   await expect(page.locator('.pos-pay-card')).toContainText('0.0006');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
   await expect(page.locator('.pos-action-hint')).toContainText('Background keeps this payment open');
   // The customer sends the rest.
-  await payment(request, fixture.order_id, 0.6, true);
+  await payment(request, fixture.order_id, 0.6, 20);
   await expect(page.locator('.pos-outcome')).toContainText('Payment received and confirmed.');
 });
 
@@ -265,7 +268,7 @@ test('counter loses its connection: the order shows connection lost, then recove
   await expect(badge).toContainText('Connection lost', { timeout: 8000 });
   // The customer pays meanwhile; back online, the stream reconnects and
   // brings the missed payment in without a reload.
-  await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=1&in_block=false`);
+  await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=1`);
   online = true;
   await expect(badge).toContainText('Unconfirmed', { timeout: 10000 });
   await expect(page.locator('.pos-pay-detail')).toHaveText('Payment seen. Waiting for its first confirmation.');
@@ -290,7 +293,7 @@ test('payment lands just before the merchant confirms a cancel: the server refus
   await page.route('**/pos/events?*', () => {});
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
-  await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=0.5&in_block=false`);
+  await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=0.5`);
   page.once('dialog', dialog => dialog.accept());
   await page.getByRole('button', { name: 'Cancel order' }).click();
   await expect(page.locator('.pos-error')).toHaveText('This order has payment activity and cannot be cancelled. Background it for review instead.');
@@ -421,4 +424,38 @@ test('charge whose response is lost is retried without creating a second order',
   await page.getByRole('button', { name: 'Charge' }).click();
   await expect(page.locator('.pos-order-heading h1')).toHaveText('Walk-in 2');
   expect(created[2].key).not.toBe(created[0].key);
+});
+
+test('payment waiting on the store\'s confirmations shows its progress', async ({ page, request }) => {
+  // The merchant asks for 3 confirmations on the store's settings page.
+  const saved = await request.post(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/settings/confirmations`,
+    { headers: { cookie: `session=${fixture.session}` }, form: { confirmations_required: '3' }, maxRedirects: 0 });
+  expect(saved.status()).toBeLessThan(400);
+  await page.goto(posUrl());
+  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  await expect(page.locator('.pos-keypad')).toBeVisible();
+  await page.keyboard.type('30000000000');
+  await page.getByRole('button', { name: 'Charge' }).click();
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  const heading = await page.locator('.pos-order-heading p').textContent();
+  const list = await (await request.get(`${posUrl()}/orders`, { headers: { cookie: `session=${fixture.session}` } })).json();
+  const order = list.orders.find(o => !o.backgrounded && o.status === 'pending');
+  expect(heading).toContain(order.order_id.slice(-4));
+  expect(order.confirmations_required).toBe(3);
+  await payment(request, order.order_id, 1, 1);
+  await expect(page.locator('.pos-pay-detail')).toHaveText('Payment seen · 1 of 3 confirmations');
+  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Confirming');
+  await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
+});
+
+test('double spend on the order on screen warns the merchant not to hand over goods', async ({ page, request }) => {
+  await page.goto(posUrl());
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  await payment(request, fixture.order_id, 1);
+  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Unconfirmed');
+  const flagged = await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/double-spend`);
+  expect(flagged.status()).toBe(204);
+  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Double spend');
+  await expect(page.locator('.pos-pay-detail')).toContainText('Do not treat it as paid');
+  await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
 });

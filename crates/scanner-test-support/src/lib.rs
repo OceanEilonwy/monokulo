@@ -229,7 +229,7 @@ impl TestEngineHandle {
             let tenant_id = store.get_order_tenant_id(order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
             store.get_order(&tenant_id, order_id)?.ok_or(scanner::store::StoreError::NotFound)?.xmr_amount_piconero
         };
-        self.record_order_payment(order_id, amount, true)
+        self.record_order_payment(order_id, amount, Some(101))
     }
 
     /// Mines every mempool-only payment to `order_id` into a block (height
@@ -251,11 +251,12 @@ impl TestEngineHandle {
     }
 
     /// Records a payment of `piconero` to `order_id` the way a scan would,
-    /// then recomputes its status: `in_block` puts it at height 1000 with the
-    /// chain tip 100 blocks later (fully confirmed); otherwise it is seen in
-    /// the mempool only (`unconfirmed`). Less than the order's amount leaves it
-    /// `partial`. Each call is a separate transaction.
-    pub fn record_order_payment(&self, order_id: &str, piconero: u64, in_block: bool) -> Result<(), scanner::store::StoreError> {
+    /// then recomputes its status. `confirmations: None` is a payment seen
+    /// in the mempool only (`unconfirmed`); `Some(n)` puts it in a block
+    /// (height 1000) with the chain tip giving it `n` confirmations. Less
+    /// than the order's amount leaves it `partial`. Each call is a separate
+    /// transaction.
+    pub fn record_order_payment(&self, order_id: &str, piconero: u64, confirmations: Option<u64>) -> Result<(), scanner::store::StoreError> {
         const PAYMENT_HEIGHT: i64 = 1000;
         let store = self.store.lock().unwrap();
         let now = scanner::now_unix();
@@ -267,9 +268,10 @@ impl TestEngineHandle {
             piconero,
             "[]",
             now,
-            in_block.then_some(PAYMENT_HEIGHT),
+            confirmations.map(|_| PAYMENT_HEIGHT),
         )?;
-        scanner::scanner::recompute_and_notify(&store, order_id, PAYMENT_HEIGHT as u64 + 100, now)
+        let tip = PAYMENT_HEIGHT as u64 + confirmations.unwrap_or(1).max(1) - 1;
+        scanner::scanner::recompute_and_notify(&store, order_id, tip, now)
             .map_err(|e| match e {
                 scanner::scanner::ScannerError::Store(e) => e,
                 other => panic!("recomputing a test order's status failed: {other}"),
@@ -278,6 +280,14 @@ impl TestEngineHandle {
 }
 
 impl TestEngineHandle {
+    /// Flags a double spend of `order_id`'s payment, as the scanner does when
+    /// a key image it recorded turns up spent elsewhere.
+    pub fn mark_order_double_spent(&self, order_id: &str) -> Result<(), scanner::store::StoreError> {
+        let store = self.store.lock().unwrap();
+        store.mark_double_spend_detected(order_id, scanner::now_unix())?;
+        Ok(())
+    }
+
     /// Expires `order_id` the way a scan tick after its deadline would: the
     /// same status recompute, run as if the clock were past `expires_at`, so
     /// the order reads `expired` and an `order.expired` webhook is queued.
