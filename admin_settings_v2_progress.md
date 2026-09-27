@@ -243,11 +243,11 @@ reported at the end.)
   reached by a real engine). It serves a fixed chain of empty blocks,
   answers get_blocks.bin with 404 (the engine copes), and can be taken
   offline and back with POST /fake/offline and /fake/online.
-- 6.3: `tests/real-settings.spec.js` passes in about 45s, and fails
+- 6.3: `tests/real-1-settings.spec.js` passes in about 45s, and fails
   against the engine from before 8830c92 at step 3 (status never shows
   the saved node), checked once with a worktree build via E2E_SCANNER_BIN.
 
-- 6.4: `tests/real-store-key-storage.spec.js` (real binaries plus a real
+- 6.4: `tests/real-2-store-key-storage.spec.js` (real binaries plus a real
   key-custody-server process) covers choosing a backend for a new store,
   moving it with its keys, orders before and after, the service going down
   and coming back (alert shown then gone, orders work again), and the
@@ -266,6 +266,29 @@ reported at the end.)
     server" and switched to range scans for good, so a key-custody outage
     permanently slowed scanning. It now asks the server something every
     version understands first, and only falls back if that's answered.
+
+- 7.11 real-process check: `tests/real-4-crash.spec.js` kills the engine
+  binary with SIGKILL six times at random moments while orders are being
+  created and the loop ticks every 100ms, restarting it on the same
+  database each time. Every order the engine confirmed is still there
+  with its address, no address is reused, and it scans again. Passed 5 of
+  5 repeated runs. Payments under crashes stay covered by the in-process
+  crash-injection test (the fake node can't make payments).
+- Part 4's Playwright checks run on the real binaries rather than the
+  coverage fixture (`tests/real-3-admin-page.spec.js`): the real pages and
+  a real engine are a stronger test, and the fixture's in-process engine
+  would need its own node setup. Covered: every field's description
+  visible and the node example opening at phone and desktop widths with no
+  sideways scroll; the confirmation before clearing a network stores use
+  (dismissed sends nothing, accepted sends once) and none for a network no
+  store uses; red and yellow banners together, the red one in the theme's
+  error colour, light and dark, both widths. Not done: adding the page's
+  states to the UI stages gallery (a screenshot reporter for the coverage
+  suites), which would mean wiring the real-binaries suite into that
+  reporter; left for later.
+- The real-binaries specs are numbered (`real-1-...` to `real-4-...`)
+  because they share one pair of processes and the first must see a fresh
+  instance for the pre-fix regression check to mean anything.
 
 ## Baseline
 
@@ -286,9 +309,9 @@ After part 5 review fixes and review items 2-3: 1044 passed, 0 failed.
 After review item 4 and the minor items: 1050 passed, 0 failed.
 After 1.5 (old settings code deleted with its 12 tests): 1038 passed, 0 failed.
 After 6.4: 1040 passed, 0 failed; e2e real-binaries suite 2 passed.
+After the admin page and crash specs: e2e real-binaries suite 10 passed.
 
 ## Current step
 
-The kill -9 real-process test (7.x item listed in the WBS near line 1875)
-and Playwright admin-page tests on the coverage fixture; then a final
-review pass and the report.
+Final pass: independent review of everything since the part 5 review
+(e990f7f..HEAD), apply it, then the report to the user.

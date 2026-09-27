@@ -1,0 +1,114 @@
+// @ts-check
+// Crash safety with a real process (admin_settings_v2.md task 7.11): the
+// engine binary is killed with SIGKILL at random moments while orders are
+// being created and its scan loop is ticking, then started again on the
+// same database. Every order it confirmed must still be there, no two
+// orders may share an address, and it must come back healthy. (Killing a
+// task inside one process can't show what SQLite does when the process
+// really dies.) Payments can't be made against the fake node, so payment
+// recording under crashes is covered by the in-process crash-injection
+// test in the scanner crate.
+const { test, expect } = require('@playwright/test');
+const { spawn } = require('node:child_process');
+const crypto = require('node:crypto');
+const net = require('node:net');
+const path = require('node:path');
+const { fixture, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+
+const SCANNER = process.env.E2E_SCANNER_BIN || path.resolve(__dirname, '..', '..', '..', 'target', 'debug', 'scanner');
+
+function freePort() {
+  return new Promise((resolve) => {
+    const server = net.createServer();
+    server.listen(0, '127.0.0.1', () => {
+      const { port } = server.address();
+      server.close(() => resolve(port));
+    });
+  });
+}
+
+test('killing the engine at random moments never loses a confirmed order or reuses an address', async () => {
+  test.setTimeout(120_000);
+  const { logs, fake_monerod: fakeAddress } = fixture();
+  const [fakeHost, fakePort] = fakeAddress.split(':');
+  const port = await freePort();
+  const url = `http://127.0.0.1:${port}`;
+  const token = crypto.randomBytes(16).toString('hex');
+  const env = { ...process.env, SCANNER_DB_PATH: path.join(logs, 'crash.db'), SCANNER_SERVER_BIND: `127.0.0.1:${port}`, SCANNER_ADMIN_TOKEN: token };
+
+  const start = async () => {
+    const child = spawn(SCANNER, [], { env, stdio: 'ignore' });
+    await expect.poll(async () => {
+      try { return (await fetch(`${url}/status`)).status; } catch { return 0; }
+    }, { timeout: 20_000, intervals: [100] }).toBe(200);
+    return child;
+  };
+  const kill = (child) => new Promise((resolve) => {
+    child.once('exit', resolve);
+    child.kill('SIGKILL');
+  });
+
+  let engine = await start();
+  const saved = await fetch(`${url}/api/v1/admin/settings`, {
+    method: 'POST',
+    headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+    body: JSON.stringify({
+      scalars: { 'payment.mempool_poll_interval_ms': '100', 'server.rate_limit_per_token_per_min': '100000' },
+      monero_node: { stagenet: { host: fakeHost, port: Number(fakePort), ssl: false, accept_self_signed_certs: true, fallbacks: [] } },
+    }),
+  });
+  expect(saved.status).toBe(200);
+  const created = await (await fetch(`${url}/api/v1/admin/tenants`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ view_key_hex: VIEW_KEY, spend_pubkey_hex: SPEND_PUBKEY, network: 'stagenet' }),
+  })).json();
+  const sk = created.secret_token;
+
+  const confirmed = new Map(); // order id -> address, for every 200 the engine sent
+  for (let round = 0; round < 6; round++) {
+    let running = true;
+    const makeOrders = (async () => {
+      while (running) {
+        try {
+          const response = await fetch(`${url}/api/v1/admin/tenant/orders`, {
+            method: 'POST',
+            headers: { authorization: `Bearer ${sk}`, 'content-type': 'application/json' },
+            body: JSON.stringify({ xmr_amount_piconero: 1000 + round }),
+          });
+          if (response.status === 200) {
+            const order = await response.json();
+            confirmed.set(order.order_id, order.address);
+          }
+        } catch {
+          // The engine is being killed; requests in flight fail.
+        }
+      }
+    })();
+    await new Promise((r) => setTimeout(r, 150 + Math.random() * 600));
+    await kill(engine);
+    running = false;
+    await makeOrders;
+    engine = await start();
+  }
+
+  try {
+    expect(confirmed.size).toBeGreaterThan(10);
+    // Every confirmed order survived, with the address it was given.
+    for (const [orderId, address] of confirmed) {
+      const response = await fetch(`${url}/api/v1/admin/tenant/orders/${orderId}`, { headers: { authorization: `Bearer ${sk}` } });
+      expect(response.status, `order ${orderId} lost`).toBe(200);
+      expect((await response.json()).address).toBe(address);
+    }
+    // No address was handed out twice, across every restart.
+    expect(new Set(confirmed.values()).size).toBe(confirmed.size);
+    // And it's scanning again.
+    await expect.poll(async () => {
+      const status = await (await fetch(`${url}/status`)).json();
+      const stagenet = status.networks.find((n) => n.network === 'stagenet');
+      return Boolean(stagenet && stagenet.scanner.last_tick_ok);
+    }, { timeout: 20_000 }).toBe(true);
+  } finally {
+    await kill(engine);
+  }
+});

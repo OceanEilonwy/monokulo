@@ -151,9 +151,9 @@ Its global setup (`real-binaries-setup.js`) builds and starts the real
 `scanner` and `monokulo` binaries - their real `main` and boot wiring -
 against empty databases in a temporary directory, plus `fake-monerod`
 (`crates/scanner-test-support/src/bin/fake-monerod.rs`), a stand-in node
-serving a fixed chain of empty blocks. Specs are `tests/real-*.spec.js`.
+serving a fixed chain of empty blocks. Specs are `tests/real-*.spec.js`, run in name order (the first needs the fresh instance).
 The fake node can't produce payments, so payment flows stay in the Rust
 integration tests. `KEEP_E2E_LOGS=1` keeps the processes' logs and
 databases; `E2E_SCANNER_BIN=<path>` runs another engine build, for
-checking a spec fails against the bug it guards (`real-settings.spec.js`
+checking a spec fails against the bug it guards (`real-1-settings.spec.js`
 fails against the engine from before 8830c92, at the status page step).
