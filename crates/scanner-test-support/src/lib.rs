@@ -28,7 +28,7 @@
 //! dev-dependency is never linked into a normal (non-test, non-dev) build of
 //! whatever depends on it, by cargo's own rules.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::net::SocketAddr;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -592,15 +592,26 @@ impl TestEngineConfig {
             Arc::new(RwLock::new(HashMap::new()));
 
         let lookup_mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>> = Arc::default();
+        let admin_rate_limiter = Arc::new(RateLimiter::new(self.rate_limit_per_minute.unwrap_or(10_000)));
+        // Real settings, so the instance-admin settings API works; node
+        // settings are saved but not applied (this harness's daemons are
+        // fixed fakes). The rate limit keeps this harness's own value unless
+        // a test saves one.
+        let engine_settings =
+            scanner::engine_settings::EngineSettings::load_with(
+                store.clone(),
+                None,
+                Arc::new(RateLimiter::new(1)),
+                live_settings::Env::process(),
+            )
+                .await
+                .expect("test engine settings load from an empty store");
         let app_state = AppState {
             store: store.clone(),
             key_custody: key_custody.clone(),
             key_custody_backend: key_custody_backend.to_string(),
             wallet_handles: wallet_handles.clone(),
-            admin_rate_limiter: Arc::new(RateLimiter::new(self.rate_limit_per_minute.unwrap_or(10_000))),
-            configured_networks: Arc::new(
-                self.networks.iter().copied().collect::<HashSet<Network>>(),
-            ),
+            admin_rate_limiter: admin_rate_limiter.clone(),
             // This harness's own background scan loop (below) talks to a
             // bare `NoopDaemonClient` directly, never through
             // `AppState::daemons` - no caller of this crate exercises the
@@ -608,7 +619,7 @@ impl TestEngineConfig {
             // default, so an empty map here is honest, not a stub standing in
             // for something real. See [`TestEngineConfig::
             // with_admin_lookup_daemon`] for the opt-in that wires one in.
-            daemons: Arc::new(if self.admin_lookup_daemon {
+            daemons: scanner::engine_settings::Daemons::fixed(if self.admin_lookup_daemon {
                 self.networks
                     .iter()
                     .map(|&network| {
@@ -622,14 +633,24 @@ impl TestEngineConfig {
                     })
                     .collect::<HashMap<_, _>>()
             } else {
-                HashMap::new()
+                // A network is "configured" exactly when it has a daemon client
+                // (admin_settings_v2.md task 2.1), so each configured network gets
+                // an inert one: tenants can be created on it, nothing is scanned.
+                self.networks
+                    .iter()
+                    .map(|&network| {
+                        (
+                            network,
+                            Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+                                label: "noop-test-daemon".to_string(),
+                                client: Arc::new(NoopDaemonClient),
+                            }])),
+                        )
+                    })
+                    .collect::<HashMap<_, _>>()
             }),
             scanner_status: scanner::scanner_status::new_scanner_status_map(),
-            scan_poll_interval_secs: BACKGROUND_LOOP_INTERVAL.as_secs().max(1),
-            // Matches `run_scan_tick_now`'s own hardcoded `0` - this harness's
-            // background loops don't exercise grace-period timing (see that
-            // method's own doc comment).
-            expired_order_grace_period_seconds: 0,
+            settings: engine_settings,
         };
         let tenant_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let counter = tenant_requests.clone();

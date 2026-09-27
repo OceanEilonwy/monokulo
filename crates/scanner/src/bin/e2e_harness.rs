@@ -31,7 +31,7 @@
 //! behind the same `e2e` feature every other real-stagenet test in this
 //! crate uses).
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
@@ -214,11 +214,9 @@ async fn main() {
         key_custody_backend: "plain".to_string(),
         wallet_handles: wallet_handles.clone(),
         admin_rate_limiter: Arc::new(RateLimiter::new(1_000_000)),
-        configured_networks: Arc::new(HashSet::from([Network::Stagenet])),
-        daemons: Arc::new(HashMap::from([(Network::Stagenet, fallback_daemon.clone())])),
+        daemons: scanner::engine_settings::Daemons::fixed(HashMap::from([(Network::Stagenet, fallback_daemon.clone())])),
         scanner_status: new_scanner_status_map(),
-        scan_poll_interval_secs: 2,
-        expired_order_grace_period_seconds: 0,
+        settings: scanner::engine_settings::EngineSettings::defaults(),
     };
     let engine_router = build_engine_router(engine_state, 1_000_000);
     let engine_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("failed to bind an ephemeral engine port");

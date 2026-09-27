@@ -4,7 +4,7 @@
 //! end through real request parsing, auth extraction, and JSON (de)serialization,
 //! per `docs/TESTING.md` §5.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use std::str::FromStr;
 use parking_lot::RwLock;
 use std::sync::Arc;
@@ -61,15 +61,13 @@ fn test_app_state() -> AppState {
         // Every test tenant is created without an explicit `network`, which
         // defaults to mainnet (see admin::create_tenant) - so mainnet must be
         // "configured" for tenant creation to succeed in these tests.
-        configured_networks: Arc::new(HashSet::from([Network::Mainnet])),
         // Generous by default so the auth/IDOR/order-flow tests below aren't
         // incidentally affected by rate limiting - the middleware's own behavior is
         // tested separately, end to end, in `rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info`.
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
-        daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
+        daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
         scanner_status: new_scanner_status_map(),
-        scan_poll_interval_secs: 2,
-        expired_order_grace_period_seconds: 21_600,
+        settings: crate::engine_settings::EngineSettings::defaults(),
     }
 }
 
@@ -1195,7 +1193,7 @@ async fn status_endpoint_shows_an_offline_node_as_an_error_not_a_silent_gap() {
         label: "dead-node:18081".to_string(),
         client: Arc::new(FakeDaemonClient::default()), // starts offline (see FakeDaemonClient::new vs. Default)
     }]));
-    state.daemons = Arc::new(HashMap::from([(Network::Mainnet, offline_daemon)]));
+    state.daemons = crate::engine_settings::Daemons::fixed(HashMap::from([(Network::Mainnet, offline_daemon)]));
     let router = build_router(state, 1_000_000);
     let body = get_status_json(router).await;
     let node = &body["networks"][0]["nodes"][0];
@@ -1252,7 +1250,7 @@ async fn status_endpoint_reflects_a_stale_scanner_that_has_stopped_ticking() {
 #[tokio::test]
 async fn status_endpoint_with_no_configured_networks_says_so_plainly() {
     let mut state = test_app_state();
-    state.daemons = Arc::new(HashMap::new());
+    state.daemons = crate::engine_settings::Daemons::fixed(HashMap::new());
     let router = build_router(state, 1_000_000);
     let body = get_status_json(router).await;
     assert_eq!(body["networks"].as_array().unwrap().len(), 0);
@@ -1262,8 +1260,15 @@ async fn status_endpoint_with_no_configured_networks_says_so_plainly() {
 /// a test can script real, findable block heights/transactions - `test_app_state`'s
 /// own daemon starts with no blocks at all, which is fine for most tests here but
 /// not for these.
-fn test_app_state_with_real_daemon() -> (AppState, Arc<FakeDaemonClient>) {
+async fn test_app_state_with_real_daemon() -> (AppState, Arc<FakeDaemonClient>) {
+    test_app_state_with_real_daemon_and_env(live_settings::Env::fixed(Vec::<(String, String)>::new())).await
+}
+
+/// With a real settings registry over the test's store (so the settings
+/// API works), and `env` as the environment it sees.
+async fn test_app_state_with_real_daemon_and_env(env: live_settings::Env) -> (AppState, Arc<FakeDaemonClient>) {
     let store = Store::open_in_memory().unwrap().into_shared();
+    let settings_store = store.clone();
     let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let fake_daemon = Arc::new(FakeDaemonClient::new());
     let mainnet_daemon = Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
@@ -1275,12 +1280,12 @@ fn test_app_state_with_real_daemon() -> (AppState, Arc<FakeDaemonClient>) {
         key_custody,
         key_custody_backend: "plain".to_string(),
         wallet_handles: Arc::new(RwLock::new(HashMap::new())),
-        configured_networks: Arc::new(HashSet::from([Network::Mainnet])),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
-        daemons: Arc::new(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
+        daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
         scanner_status: new_scanner_status_map(),
-        scan_poll_interval_secs: 2,
-        expired_order_grace_period_seconds: 21_600,
+        settings: crate::engine_settings::EngineSettings::load_with(settings_store, None, Arc::new(RateLimiter::new(10_000)), env)
+            .await
+            .unwrap(),
     };
     (state, fake_daemon)
 }
@@ -1297,7 +1302,7 @@ fn settings_request(method: &str, bearer: Option<&str>, body: Option<serde_json:
 
 #[tokio::test]
 async fn instance_admin_settings_requires_a_bearer_token_at_all() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
     let response = router.oneshot(settings_request("GET", None, None)).await.unwrap();
@@ -1306,7 +1311,7 @@ async fn instance_admin_settings_requires_a_bearer_token_at_all() {
 
 #[tokio::test]
 async fn a_tenants_own_secret_token_cannot_authenticate_as_the_instance_admin() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
@@ -1316,7 +1321,7 @@ async fn a_tenants_own_secret_token_cannot_authenticate_as_the_instance_admin() 
 
 #[tokio::test]
 async fn get_settings_reports_code_defaults_when_nothing_is_configured() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
     let response = router.oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
@@ -1329,7 +1334,7 @@ async fn get_settings_reports_code_defaults_when_nothing_is_configured() {
 
 #[tokio::test]
 async fn updating_a_scalar_setting_persists_and_a_later_get_reflects_it() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
@@ -1352,11 +1357,15 @@ async fn updating_a_scalar_setting_persists_and_a_later_get_reflects_it() {
 
 #[tokio::test]
 async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon_and_env(live_settings::Env::fixed([(
+        "SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED",
+        "99",
+    )]))
+    .await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
-    router
+    let post = router
         .clone()
         .oneshot(settings_request(
             "POST",
@@ -1365,10 +1374,10 @@ async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save
         ))
         .await
         .unwrap();
+    let saved = body_json(post).await;
+    assert_eq!(saved["warnings"]["env_overridden"], serde_json::json!(["payment.confirmations_required"]), "got: {saved}");
 
-    let env = shared::settings::test_env::set("SCANNER_PAYMENT_CONFIRMATIONS_REQUIRED", Some("99"));
     let get = router.oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
-    drop(env);
     let body = body_json(get).await;
     assert_eq!(body["scalars"]["payment.confirmations_required"]["value"], "99");
     assert_eq!(body["scalars"]["payment.confirmations_required"]["source"], "env");
@@ -1376,7 +1385,7 @@ async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save
 
 #[tokio::test]
 async fn saving_an_out_of_range_scalar_is_rejected_and_nothing_changes() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
@@ -1400,7 +1409,7 @@ async fn saving_an_out_of_range_scalar_is_rejected_and_nothing_changes() {
 
 #[tokio::test]
 async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
@@ -1427,7 +1436,7 @@ async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
 
 #[tokio::test]
 async fn socket_key_custody_backend_without_a_socket_path_is_rejected() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
@@ -1444,7 +1453,7 @@ async fn socket_key_custody_backend_without_a_socket_path_is_rejected() {
 
 #[tokio::test]
 async fn socket_key_custody_backend_with_a_socket_path_in_the_same_request_succeeds() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
@@ -1471,7 +1480,7 @@ async fn socket_key_custody_backend_using_an_already_saved_socket_path_succeeds(
     // The cross-field check must consider the *merged* state, not just this one
     // request's own body - a caller flipping `backend` to "socket" in a request
     // that doesn't also repeat an already-saved `socket_path` must still succeed.
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
@@ -1498,7 +1507,7 @@ async fn socket_key_custody_backend_using_an_already_saved_socket_path_succeeds(
 
 #[tokio::test]
 async fn setting_a_monero_node_round_trips_including_its_fallback_list() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
@@ -1529,7 +1538,7 @@ async fn setting_a_monero_node_round_trips_including_its_fallback_list() {
 
 #[tokio::test]
 async fn clearing_a_monero_node_with_a_null_value_removes_its_configuration() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
@@ -1564,17 +1573,24 @@ async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_toke
     let store = Store::open_in_memory().unwrap();
     let generated = crate::http::instance_admin::ensure_admin_token_seeded(&store).expect("a fresh database has no token yet");
 
+    let store = store.into_shared();
+    let settings = crate::engine_settings::EngineSettings::load_with(
+        store.clone(),
+        None,
+        Arc::new(RateLimiter::new(10_000)),
+        live_settings::Env::fixed(Vec::<(String, String)>::new()),
+    )
+    .await
+    .unwrap();
     let state = AppState {
-        store: std::sync::Arc::new(parking_lot::Mutex::new(store)),
+        store,
         key_custody: std::sync::Arc::new(PlainKeyCustody::default()),
         key_custody_backend: "plain".to_string(),
         wallet_handles: Arc::new(RwLock::new(HashMap::new())),
-        configured_networks: Arc::new(HashSet::new()),
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
-        daemons: Arc::new(HashMap::new()),
+        daemons: crate::engine_settings::Daemons::fixed(HashMap::new()),
         scanner_status: new_scanner_status_map(),
-        scan_poll_interval_secs: 2,
-        expired_order_grace_period_seconds: 21_600,
+        settings,
     };
     let second_call = crate::http::instance_admin::ensure_admin_token_seeded(&state.store.lock());
     assert_eq!(second_call, None, "a token that already exists must never be silently regenerated (that would invalidate the first one)");
@@ -1639,7 +1655,7 @@ async fn create_fixture_tenant(router: &Router) -> TestTenant {
 
 #[tokio::test]
 async fn lookup_payment_rejects_a_malformed_txid() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
 
@@ -1649,7 +1665,7 @@ async fn lookup_payment_rejects_a_malformed_txid() {
 
 #[tokio::test]
 async fn lookup_payment_requires_authentication() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     let router = build_router(state, 1_000_000);
     let req = json_request("POST", "/api/v1/admin/tenant/payments/lookup", None, None, serde_json::json!({ "txid": "0".repeat(64) }));
     let response = router.oneshot(req).await.unwrap();
@@ -1658,7 +1674,7 @@ async fn lookup_payment_requires_authentication() {
 
 #[tokio::test]
 async fn lookup_payment_reports_not_found_on_chain_for_an_unknown_txid() {
-    let (state, _daemon) = test_app_state_with_real_daemon();
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
 
@@ -1671,7 +1687,7 @@ async fn lookup_payment_reports_not_found_on_chain_for_an_unknown_txid() {
 
 #[tokio::test]
 async fn lookup_payment_reports_no_matching_order_for_a_real_but_unrelated_tx() {
-    let (state, daemon) = test_app_state_with_real_daemon();
+    let (state, daemon) = test_app_state_with_real_daemon().await;
     let router = build_router(state, 1_000_000);
     // Random, non-fixture keys - this tenant genuinely has no claim on the
     // fixture transaction's outputs.
@@ -1690,7 +1706,7 @@ async fn lookup_payment_reports_no_matching_order_for_a_real_but_unrelated_tx() 
 
 #[tokio::test]
 async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
-    let (state, daemon) = test_app_state_with_real_daemon();
+    let (state, daemon) = test_app_state_with_real_daemon().await;
     let store = state.store.clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_fixture_tenant(&router).await;
@@ -1987,4 +2003,169 @@ fn a_key_custody_backend_that_is_down_is_503() {
     use crate::key_custody::KeyCustodyError;
     assert!(matches!(ApiError::from(KeyCustodyError::BackendUnavailable("down".into())), ApiError::Unavailable(_)));
     assert!(matches!(ApiError::from(KeyCustodyError::UnknownWallet), ApiError::Unavailable(_)));
+}
+
+// -- Settings apply to the running engine (admin_settings_v2.md part 2) --------
+
+/// An engine whose node settings really build daemon clients, as in
+/// production, starting with no node configured.
+async fn engine_that_applies_node_settings() -> (Router, crate::engine_settings::Daemons, Arc<RateLimiter<String>>) {
+    let store = Store::open_in_memory().unwrap().into_shared();
+    crate::http::instance_admin::seed_admin_token_for_tests(&store.lock(), "admin_test_token");
+    let daemons = crate::engine_settings::Daemons::default();
+    let rate_limiter = Arc::new(RateLimiter::new(10_000));
+    let settings = crate::engine_settings::EngineSettings::load_with(
+        store.clone(),
+        Some(crate::engine_settings::NodesReloadable { daemons: daemons.clone(), strict_tls: false }),
+        rate_limiter.clone(),
+        live_settings::Env::fixed(Vec::<(String, String)>::new()),
+    )
+    .await
+    .unwrap();
+    let state = AppState {
+        store,
+        key_custody: Arc::new(PlainKeyCustody::default()),
+        key_custody_backend: "plain".to_string(),
+        wallet_handles: Arc::new(RwLock::new(HashMap::new())),
+        admin_rate_limiter: rate_limiter.clone(),
+        daemons: daemons.clone(),
+        scanner_status: new_scanner_status_map(),
+        settings,
+    };
+    (build_router(state, 16 * 1024 * 1024), daemons, rate_limiter)
+}
+
+async fn save_settings(router: &Router, body: serde_json::Value) -> serde_json::Value {
+    let response = router.clone().oneshot(settings_request("POST", Some("admin_test_token"), Some(body))).await.unwrap();
+    let status = response.status();
+    let json = body_json(response).await;
+    assert_eq!(status, StatusCode::OK, "save refused: {json}");
+    json
+}
+
+fn stagenet_tenant_request(seed: u8) -> Request<Body> {
+    json_request(
+        "POST",
+        "/api/v1/admin/tenants",
+        None,
+        None,
+        serde_json::json!({
+            "view_key_hex": valid_view_key_hex(seed),
+            "spend_pubkey_hex": valid_spend_pubkey_hex(seed.wrapping_add(1)),
+            "network": "stagenet",
+        }),
+    )
+}
+
+#[tokio::test]
+async fn a_saved_node_is_used_straight_away_and_clearing_it_stops_it_the_reported_bug() {
+    let (router, daemons, _) = engine_that_applies_node_settings().await;
+
+    // Before: stagenet isn't configured, so a stagenet store can't be created.
+    let refused = router.clone().oneshot(stagenet_tenant_request(1)).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert!(get_status_json(router.clone()).await["networks"].as_array().unwrap().is_empty());
+
+    // Save a stagenet node, as dev-run.sh and the admin page do.
+    save_settings(
+        &router,
+        serde_json::json!({ "monero_node": { "stagenet": {
+            "host": "127.0.0.1", "port": 9, "ssl": false, "accept_self_signed_certs": true,
+            "fallbacks": [{ "host": "127.0.0.2", "port": 9, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] }]
+        } } }),
+    )
+    .await;
+
+    // Straight away, with no restart: a client for it exists, a stagenet
+    // store can be created, and /status lists it with both nodes.
+    assert!(daemons.is_configured(monero::Network::Stagenet));
+    let created = router.clone().oneshot(stagenet_tenant_request(2)).await.unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let status = get_status_json(router.clone()).await;
+    assert_eq!(status["networks"][0]["network"], "stagenet", "got: {status}");
+    assert_eq!(status["networks"][0]["nodes"].as_array().unwrap().len(), 2);
+
+    // Clearing it stops it, and the save says a store still uses it (D2).
+    let cleared = save_settings(&router, serde_json::json!({ "monero_node": { "stagenet": null } })).await;
+    assert_eq!(cleared["warnings"]["unserved_networks"], serde_json::json!([{ "network": "stagenet", "tenants": 1 }]));
+    assert!(!daemons.is_configured(monero::Network::Stagenet));
+    let refused = router.clone().oneshot(stagenet_tenant_request(3)).await.unwrap();
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn an_unchanged_network_keeps_its_client_when_another_network_is_saved() {
+    let (router, daemons, _) = engine_that_applies_node_settings().await;
+    let node = serde_json::json!({ "host": "127.0.0.1", "port": 9, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
+    save_settings(&router, serde_json::json!({ "monero_node": { "stagenet": node.clone() } })).await;
+    let before = daemons.get(monero::Network::Stagenet).unwrap();
+    save_settings(&router, serde_json::json!({ "monero_node": { "testnet": node } })).await;
+    assert!(Arc::ptr_eq(&before, &daemons.get(monero::Network::Stagenet).unwrap()), "stagenet's client (and its node health) was kept");
+    assert!(daemons.is_configured(monero::Network::Testnet));
+}
+
+#[tokio::test]
+async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_request() {
+    let (router, _, rate_limiter) = engine_that_applies_node_settings().await;
+    save_settings(
+        &router,
+        serde_json::json!({ "scalars": {
+            "server.rate_limit_per_token_per_min": "7",
+            "server.max_body_bytes": "300",
+            "payment.confirmations_required": "3"
+        } }),
+    )
+    .await;
+    assert_eq!(rate_limiter.limit(), 7);
+
+    let big = json_request(
+        "POST",
+        "/api/v1/admin/tenants",
+        None,
+        None,
+        serde_json::json!({ "view_key_hex": "a".repeat(400), "spend_pubkey_hex": "b" }),
+    );
+    assert_eq!(router.clone().oneshot(big).await.unwrap().status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    save_settings(&router, serde_json::json!({ "scalars": { "server.max_body_bytes": "8192" } })).await;
+    let save_node = serde_json::json!({ "monero_node": { "mainnet": { "host": "127.0.0.1", "port": 9, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] } } });
+    save_settings(&router, save_node).await;
+    let tenant = create_tenant(&router, 5).await;
+    let me = router
+        .clone()
+        .oneshot(json_request("GET", "/api/v1/admin/tenant", Some(&tenant.secret_token), None, serde_json::json!({})))
+        .await
+        .unwrap();
+    let me = body_json(me).await;
+    assert_eq!(me["confirmations_required"], 3, "the saved default, not the old hardcoded 10: {me}");
+}
+
+#[tokio::test]
+async fn saving_a_restart_only_setting_says_so() {
+    let (router, _, _) = engine_that_applies_node_settings().await;
+    let saved = save_settings(&router, serde_json::json!({ "scalars": { "server.worker_threads": "4" } })).await;
+    assert_eq!(saved["warnings"]["restart_required"], serde_json::json!(["server.worker_threads"]));
+    let get = router.clone().oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
+    let body = body_json(get).await;
+    assert_eq!(body["scalars"]["server.worker_threads"]["pending_restart"], true);
+    assert_eq!(body["scalars"]["server.worker_threads"]["applies"], "restart");
+    assert!(body["scalars"]["server.worker_threads"]["description"].as_str().unwrap().contains("restart"));
+    assert!(body["networks"]["stagenet"]["description"].as_str().unwrap().contains("stagenet"));
+}
+
+#[tokio::test]
+async fn an_unknown_setting_is_refused_and_nothing_is_saved() {
+    let (router, _, _) = engine_that_applies_node_settings().await;
+    let response = router
+        .clone()
+        .oneshot(settings_request(
+            "POST",
+            Some("admin_test_token"),
+            Some(serde_json::json!({ "scalars": { "payment.default_rescan_lookback_days": "3", "payment.confirmations_required": "4" } })),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let get = router.clone().oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
+    assert_eq!(body_json(get).await["scalars"]["payment.confirmations_required"]["value"], "10");
 }

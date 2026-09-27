@@ -46,7 +46,8 @@ const MAX_TRACKED_ADDRESSES: usize = PRUNE_THRESHOLD * 4;
 /// logic is identical either way; only what identifies "one caller"
 /// differs.
 pub struct RateLimiter<K = IpAddr> {
-    limit_per_minute: u32,
+    /// Changeable while running (admin_settings_v2.md task 2.5).
+    limit_per_minute: std::sync::atomic::AtomicU32,
     state: Mutex<LimiterState<K>>,
 }
 
@@ -67,7 +68,18 @@ impl<K> Default for LimiterState<K> {
 
 impl<K: Eq + Hash + Clone> RateLimiter<K> {
     pub fn new(limit_per_minute: u32) -> Self {
-        RateLimiter { limit_per_minute, state: Mutex::new(LimiterState::default()) }
+        RateLimiter { limit_per_minute: std::sync::atomic::AtomicU32::new(limit_per_minute), state: Mutex::new(LimiterState::default()) }
+    }
+
+    /// Changes the limit from the next request on. Counts already taken in
+    /// the current window stay, so lowering the limit can refuse a caller
+    /// straight away and raising it lets them carry on.
+    pub fn set_limit(&self, limit_per_minute: u32) {
+        self.limit_per_minute.store(limit_per_minute, std::sync::atomic::Ordering::Relaxed);
+    }
+
+    pub fn limit(&self) -> u32 {
+        self.limit_per_minute.load(std::sync::atomic::Ordering::Relaxed)
     }
 
     /// Returns `true` if this request is allowed, having consumed one unit of the
@@ -97,7 +109,7 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
         if now - entry.1 >= WINDOW_SECONDS {
             *entry = (0, now);
         }
-        if entry.0 >= self.limit_per_minute {
+        if entry.0 >= self.limit_per_minute.load(std::sync::atomic::Ordering::Relaxed) {
             false
         } else {
             entry.0 += 1;
@@ -212,5 +224,19 @@ mod tests {
         assert!(limiter.check(a, 1000));
         assert!(!limiter.check(a, 1000));
         assert!(limiter.check(b, 1000), "a different IP must not be affected by another IP's usage");
+    }
+
+    #[test]
+    fn a_changed_limit_applies_to_the_next_request() {
+        let limiter: RateLimiter<String> = RateLimiter::new(2);
+        let key = "token".to_string();
+        assert!(limiter.check(key.clone(), 100));
+        assert!(limiter.check(key.clone(), 100));
+        assert!(!limiter.check(key.clone(), 100), "limit of 2 reached");
+        limiter.set_limit(5);
+        assert!(limiter.check(key.clone(), 100), "raised to 5 within the same window");
+        assert!(limiter.check(key.clone(), 100));
+        assert!(limiter.check(key.clone(), 100));
+        assert!(!limiter.check(key, 100));
     }
 }

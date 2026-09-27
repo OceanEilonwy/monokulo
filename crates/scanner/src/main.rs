@@ -16,7 +16,7 @@
 // (a listener that can't bind), which is marked where it happens.
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
@@ -24,8 +24,7 @@ use std::time::Duration;
 use key_custody_service::client::SocketKeyCustody;
 use monero::Network;
 use scanner::cli::{self, Action};
-use scanner::daemon_fallback::{FallbackDaemonClient, FallbackNode};
-use scanner::daemon_rpc::RpcDaemonClient;
+use scanner::engine_settings::{CustodyBackend, CustodyConfig, Daemons, EngineSettings, RuntimeConfig, StoreSettings};
 use scanner::http::instance_admin::ensure_admin_token_seeded;
 use scanner::http::rate_limit::RateLimiter;
 use scanner::http::{build_router, now_unix, AppState};
@@ -34,10 +33,14 @@ use scanner::local_admin;
 use scanner::network::network_str;
 use scanner::scanner::revalidate_recent_double_spend_voids;
 use scanner::scanner_status::{self, ScannerStatusMap};
-use scanner::settings;
 use scanner::store::{SharedStore, Store};
 use scanner::webhook_delivery::run_delivery_tick;
-use shared::supervise::supervise;
+use shared::supervise::{supervise, supervise_until};
+
+/// A fixed outer ceiling on request bodies; `server.max_body_bytes` (the
+/// live limit, task 2.6) is what normally applies, and its own range tops
+/// out here.
+const MAX_BODY_CEILING: usize = 16 * 1024 * 1024;
 
 fn open_store() -> Store {
     let db_path = cli::database_path();
@@ -47,9 +50,25 @@ fn open_store() -> Store {
     })
 }
 
+/// Builds the runtime with `server.worker_threads` threads (task 2.8: read
+/// before the runtime exists, so it applies at the next start), then runs.
+fn main() {
+    let worker_threads = {
+        let store = open_store().into_shared();
+        live_settings::read_sync::<RuntimeConfig>(&StoreSettings(store)).worker_threads
+    };
+    let runtime = match tokio::runtime::Builder::new_multi_thread().worker_threads(worker_threads).enable_all().build() {
+        Ok(runtime) => runtime,
+        Err(e) => {
+            eprintln!("failed to start the async runtime with {worker_threads} worker threads: {e}");
+            std::process::exit(1);
+        }
+    };
+    runtime.block_on(run());
+}
+
 #[allow(clippy::expect_used, reason = "boot-time: a listener that can't bind or a server that can't start ends the process")]
-#[tokio::main]
-async fn main() {
+async fn run() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let action = cli::parse_args(&raw).unwrap_or_else(|e| {
         eprintln!("{e}\n\nRun with --help for usage.");
@@ -94,10 +113,15 @@ async fn main() {
             }
         }
         Action::BootstrapWallet(args) => {
-            let store = open_store();
-            let backend: String = settings::get(&store, &settings::KEY_CUSTODY_BACKEND);
-            let key_custody = build_key_custody(&store).await;
-            match local_admin::bootstrap_wallet(&store, &key_custody, &backend, args).await {
+            let store = open_store().into_shared();
+            let custody = live_settings::read_sync::<CustodyConfig>(&StoreSettings(store.clone()));
+            let backend = custody.backend.as_str().to_string();
+            let key_custody = build_key_custody(&custody).await;
+            let bootstrapped = {
+                let store = store.lock();
+                local_admin::bootstrap_wallet(&store, &key_custody, &backend, args).await
+            };
+            match bootstrapped {
                 Ok(created) => {
                     println!(
                         "bootstrapped self-hosted tenant: public_key={} (save this - it goes in your site's JS)",
@@ -125,119 +149,70 @@ async fn main() {
         );
     }
 
-    let key_custody: Arc<dyn KeyCustody> = build_key_custody(&store.lock()).await;
-    let key_custody_backend: String = settings::get(&store.lock(), &settings::KEY_CUSTODY_BACKEND);
-
-    // One daemon client per configured network (§DESIGN.md §7) - a single instance
-    // can hold mainnet tenants for real customers alongside stagenet/testnet
-    // tenants for testing, each scanned against its own node. Each network's client
-    // is a `FallbackDaemonClient` wrapping its primary node plus any configured
-    // fallbacks, so a single flaky/down public node doesn't stop scanning that
-    // network - see `daemon_fallback`'s own doc comment for the failover policy.
-    let daemons: HashMap<Network, Arc<FallbackDaemonClient>> = build_daemon_clients(&store.lock(), strict_tls);
-    if daemons.is_empty() {
-        // A warning, not a hard exit: the server still has to come up far enough to
-        // serve the instance-admin settings API (`http::instance_admin`) itself,
-        // since `POST /api/v1/admin/settings` (unlike every scalar setting) is the
-        // *only* way to configure `monero_node.<network>` at all - there is no
-        // environment-variable override for it (it's a structured JSON value, not
-        // a single scalar). Refusing to boot here on a genuinely fresh install
-        // would make that endpoint permanently unreachable - the exact
-        // chicken-and-egg problem a settings-driven (rather than config-file-at-
-        // boot) model has to avoid. The scanner/webhook-delivery loops below run
-        // fine with zero configured networks (they simply do nothing each tick,
-        // real behavior already exercised by every test that spawns a harness
-        // with no daemon at all).
+    // Every setting, live (admin_settings_v2.md part 1). Node clients are
+    // built into `daemons` from the saved node settings, and rebuilt whenever
+    // they are saved; the rate limiter follows its setting the same way.
+    let daemons = Daemons::default();
+    let admin_rate_limiter = Arc::new(RateLimiter::new(1));
+    let engine_settings = match EngineSettings::load(store.clone(), daemons.clone(), strict_tls, admin_rate_limiter.clone()).await {
+        Ok(settings) => settings,
+        Err(e) => {
+            eprintln!("failed to load settings: {e}");
+            std::process::exit(1);
+        }
+    };
+    if daemons.networks().is_empty() {
+        // A warning, not an exit: the settings API has to be reachable to
+        // configure a node at all, and one saved there applies straight away.
         eprintln!(
-            "warning: no Monero node is configured for any network (mainnet/stagenet/testnet) yet - the server \
-             is starting anyway, but no chain scanning happens until you configure at least one via \
-             POST /api/v1/admin/settings (monero_node.<network>)"
+            "warning: no Monero node is configured for any network (mainnet/stagenet/testnet) yet - nothing is \
+             scanned until one is saved on the admin settings page (or POST /api/v1/admin/settings, \
+             monero_node.<network>); it applies without a restart"
         );
     }
-    let configured_networks: Arc<HashSet<Network>> = Arc::new(daemons.keys().copied().collect());
-    let daemons = Arc::new(daemons);
+
+    let custody = engine_settings.custody.load();
+    let key_custody: Arc<dyn KeyCustody> = build_key_custody(&custody).await;
+    let key_custody_backend = custody.backend.as_str().to_string();
     let scanner_status = scanner_status::new_scanner_status_map();
-
-    let mempool_poll_interval_ms: u64 = settings::get(&store.lock(), &settings::PAYMENT_MEMPOOL_POLL_INTERVAL_MS);
-    // Rounds down to whole seconds purely for the status page's own
-    // "expected every Ns" display - the scan loop itself still sleeps the
-    // real, precise millisecond value (`poll_interval` below), this is never
-    // used to drive timing.
-    let scan_poll_interval_secs = mempool_poll_interval_ms / 1000;
-
     let wallet_handles = Arc::new(RwLock::new(register_all_tenants(&store, &key_custody).await));
-
-    let rate_limit_per_token_per_min: u32 = settings::get(&store.lock(), &settings::SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN);
-    let expired_order_grace_period_minutes: i64 =
-        settings::get(&store.lock(), &settings::PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES);
 
     let app_state = AppState {
         store: store.clone(),
         key_custody: key_custody.clone(),
         key_custody_backend,
         wallet_handles: wallet_handles.clone(),
-        admin_rate_limiter: Arc::new(RateLimiter::new(rate_limit_per_token_per_min)),
-        configured_networks,
+        admin_rate_limiter,
         daemons: daemons.clone(),
         scanner_status: scanner_status.clone(),
-        scan_poll_interval_secs,
-        expired_order_grace_period_seconds: expired_order_grace_period_minutes * 60,
+        settings: engine_settings.clone(),
     };
 
-    let allow_private_urls: bool = settings::get(&store.lock(), &settings::WEBHOOKS_ALLOW_PRIVATE_URLS);
-    let delivery_timeout_ms: u64 = settings::get(&store.lock(), &settings::WEBHOOKS_DELIVERY_TIMEOUT_MS);
-    let delivery_max_attempts: u32 = settings::get(&store.lock(), &settings::WEBHOOKS_MAX_ATTEMPTS);
     let delivery_store = store.clone();
-    supervise("webhook delivery", move || {
-        run_webhook_delivery_loop(delivery_store.clone(), allow_private_urls, delivery_timeout_ms, delivery_max_attempts)
-    });
+    let delivery_settings = engine_settings.clone();
+    supervise("webhook delivery", move || run_webhook_delivery_loop(delivery_store.clone(), delivery_settings.clone()));
 
-    let reorg_check_depth: u64 = settings::get(&store.lock(), &settings::PAYMENT_REORG_CHECK_DEPTH);
-    let expired_order_grace_period_seconds = expired_order_grace_period_minutes * 60;
-    let poll_interval = Duration::from_millis(mempool_poll_interval_ms);
+    // One scanner loop and one revalidation loop per configured network
+    // (task 7.4), started and stopped as node settings are saved (task 2.1).
+    tokio::spawn(manage_network_loops(
+        store.clone(),
+        key_custody.clone(),
+        daemons.clone(),
+        wallet_handles.clone(),
+        scanner_status.clone(),
+        engine_settings.clone(),
+    ));
 
-    // Cloned before the scanner loop's own `move` closure below consumes the
-    // originals - its own, much slower loop (see `run_double_spend_revalidation_loop`'s
-    // doc comment for why it is never folded into the scan-tick loop itself).
-    //
-    // One loop per network, for scanning and for revalidation (task 7.4): a
-    // slow or dead node on one network never delays another network's
-    // payment detection.
-    for (network, daemon) in daemons.iter() {
-        let (network, daemon) = (*network, daemon.clone());
-        let revalidation_store = store.clone();
-        let revalidation_daemon = daemon.clone();
-        supervise(loop_name("double-spend revalidation", network), move || {
-            run_double_spend_revalidation_loop(revalidation_store.clone(), network, revalidation_daemon.clone())
-        });
-
-        let (store, key_custody, wallet_handles, scanner_status) =
-            (store.clone(), key_custody.clone(), wallet_handles.clone(), scanner_status.clone());
-        supervise(loop_name("chain scanner", network), move || {
-            run_scanner_loop(
-                store.clone(),
-                key_custody.clone(),
-                network,
-                daemon.clone(),
-                wallet_handles.clone(),
-                reorg_check_depth,
-                expired_order_grace_period_seconds,
-                poll_interval,
-                scanner_status.clone(),
-            )
-        });
-    }
-
-    let bind: String = settings::get(&app_state.store.lock(), &settings::SERVER_BIND);
-    let max_body_bytes: usize = settings::get(&app_state.store.lock(), &settings::SERVER_MAX_BODY_BYTES);
-    let router = build_router(app_state, max_body_bytes);
+    // Read once: the listen address is restart-only (decision D8).
+    let bind = engine_settings.runtime.load().bind;
+    let router = build_router(app_state, MAX_BODY_CEILING);
     let listener = tokio::net::TcpListener::bind(&bind).await.expect("failed to bind server address");
     println!("moneropay listening on {bind}");
     // The engine is private: only monokulo, on this machine or a private
     // network, should ever reach it. Nothing stops an operator binding it
     // elsewhere, but it must not happen by accident.
     if let Ok(local) = listener.local_addr() {
-        if !settings::is_private_bind_address(local.ip()) {
+        if !scanner::settings::is_private_bind_address(local.ip()) {
             eprintln!(
                 "WARNING: the engine is listening on {local}, which is not a loopback or private address. \
                  The engine is meant to be reached only by monokulo; anything that can connect to it can \
@@ -263,39 +238,6 @@ async fn main() {
         Ok(Err(e)) => eprintln!("server task failed while shutting down: {e}"),
         Err(_) => eprintln!("requests still running after {SHUTDOWN_GRACE:?}, exiting anyway"),
     }
-}
-
-/// Builds one `FallbackDaemonClient` per configured `[monero_node.<network>]`
-/// network - a real `RpcDaemonClient` (its own `reqwest::Client`) per primary
-/// node plus its configured fallbacks. Called twice at boot (`main`): once for
-/// the live scanner's own `daemons`, once more for `rescan_daemons` - see that
-/// call site's own comment for why these must be two physically separate sets
-/// of HTTP clients rather than one shared `Arc`, even though both are built
-/// from identical node configuration.
-fn build_daemon_clients(store: &Store, strict_tls: bool) -> HashMap<Network, Arc<FallbackDaemonClient>> {
-    settings::NETWORKS
-        .iter()
-        .filter_map(|&network_name| {
-            let network = scanner::network::parse_network(network_name).ok()?;
-            let node_setting = settings::monero_node_setting(store, network_name)?;
-            let build = |host: &str, port: u16, ssl: bool, accept_self_signed_certs: bool| {
-                let accept_self_signed = accept_self_signed_certs && !strict_tls;
-                RpcDaemonClient::new(host, port, ssl, accept_self_signed)
-                    .unwrap_or_else(|e| panic!("failed to build Monero daemon RPC client for {network:?}: {e}"))
-            };
-            let mut nodes = vec![FallbackNode {
-                label: format!("{}:{}", node_setting.host, node_setting.port),
-                client: Arc::new(build(&node_setting.host, node_setting.port, node_setting.ssl, node_setting.accept_self_signed_certs)),
-            }];
-            for fallback in &node_setting.fallbacks {
-                nodes.push(FallbackNode {
-                    label: format!("{}:{}", fallback.host, fallback.port),
-                    client: Arc::new(build(&fallback.host, fallback.port, fallback.ssl, fallback.accept_self_signed_certs)),
-                });
-            }
-            Some((network, Arc::new(FallbackDaemonClient::new(nodes))))
-        })
-        .collect()
 }
 
 // `supervise` itself moved to `shared::supervise` (`docs/fx_refactor.md`
@@ -327,20 +269,12 @@ fn build_daemon_clients(store: &Store, strict_tls: bool) -> HashMap<Network, Arc
 /// *future* migration to a different backend can detect a mismatch between a
 /// stored row's sealing backend and the backend actually running, not to select
 /// one. This setting makes the *whole process* pick one backend.
-async fn build_key_custody(store: &Store) -> Arc<dyn KeyCustody> {
-    let backend: String = settings::get(store, &settings::KEY_CUSTODY_BACKEND);
-    match backend.as_str() {
-        "socket" => {
-            let socket_path: String = settings::get(store, &settings::KEY_CUSTODY_SOCKET_PATH);
-            if socket_path.trim().is_empty() {
-                eprintln!(
-                    "key_custody.backend is \"socket\" but key_custody.socket_path is missing (or empty) - set it via \
-                     POST /api/v1/admin/settings or the SCANNER_KEY_CUSTODY_SOCKET_PATH environment variable"
-                );
-                std::process::exit(1);
-            }
-            Arc::new(connect_socket_key_custody(&socket_path).await)
+async fn build_key_custody(custody: &CustodyConfig) -> Arc<dyn KeyCustody> {
+    match (custody.backend, &custody.socket_path) {
+        (CustodyBackend::Socket, Some(socket_path)) => {
+            Arc::new(connect_socket_key_custody(&socket_path.to_string_lossy()).await)
         }
+        // `CustodyConfig` refuses socket without a path, so this is plain.
         _ => Arc::new(PlainKeyCustody::default()),
     }
 }
@@ -419,12 +353,7 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
     handles
 }
 
-async fn run_webhook_delivery_loop(
-    store: SharedStore,
-    allow_private_urls: bool,
-    timeout_ms: u64,
-    max_attempts: u32,
-) {
+async fn run_webhook_delivery_loop(store: SharedStore, settings: Arc<EngineSettings>) {
     // Building the client can only fail if the TLS backend can't initialise.
     // Retry rather than panic, so the supervisor isn't left in a crash loop.
     let client = loop {
@@ -436,13 +365,24 @@ async fn run_webhook_delivery_loop(
             }
         }
     };
-    let timeout = Duration::from_millis(timeout_ms);
 
     loop {
+        // Read every tick, so saved webhook settings apply to the next
+        // attempt (task 2.4).
+        let config = settings.webhooks.load();
         // `run_delivery_tick` locks the store only around its own brief synchronous
         // sections, never across the outbound HTTP `.await`s it performs per
         // delivery - see its doc comment for why that matters.
-        let sent = match run_delivery_tick(&store, &client, allow_private_urls, timeout, max_attempts, now_unix()).await {
+        let sent = match run_delivery_tick(
+            &store,
+            &client,
+            config.allow_private_urls,
+            config.delivery_timeout,
+            config.max_attempts,
+            now_unix(),
+        )
+        .await
+        {
             Ok(sent) => sent,
             Err(e) => {
                 eprintln!("webhook delivery tick failed: {e}");
@@ -509,23 +449,81 @@ fn tick_deadline(poll_interval: Duration) -> Duration {
     (poll_interval * 20).max(Duration::from_secs(120))
 }
 
+/// Starts a scanner loop and a revalidation loop for each network that has
+/// a node configured, and stops them for a network whose node setting is
+/// cleared, whenever node settings are saved (task 2.1). Runs for the life of
+/// the process.
+async fn manage_network_loops(
+    store: SharedStore,
+    key_custody: Arc<dyn KeyCustody>,
+    daemons: Daemons,
+    wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
+    scanner_status: ScannerStatusMap,
+    settings: Arc<EngineSettings>,
+) {
+    let mut changed = settings.nodes.subscribe();
+    let mut running: HashMap<Network, tokio::sync::watch::Sender<bool>> = HashMap::new();
+    loop {
+        let wanted: std::collections::HashSet<Network> = daemons.networks().into_iter().collect();
+        running.retain(|network, stop| {
+            let keep = wanted.contains(network);
+            if !keep {
+                let _ = stop.send(true);
+                scanner_status.write().remove(network);
+                println!("stopped scanning {network:?}: its node setting was cleared");
+            }
+            keep
+        });
+        for network in wanted {
+            if running.contains_key(&network) {
+                continue;
+            }
+            let (stop, stopped) = tokio::sync::watch::channel(false);
+            let (revalidation_store, revalidation_daemons) = (store.clone(), daemons.clone());
+            supervise_until(loop_name("double-spend revalidation", network), stopped.clone(), move || {
+                run_double_spend_revalidation_loop(revalidation_store.clone(), network, revalidation_daemons.clone())
+            });
+            let (store, key_custody, daemons, wallet_handles, scanner_status, settings) = (
+                store.clone(),
+                key_custody.clone(),
+                daemons.clone(),
+                wallet_handles.clone(),
+                scanner_status.clone(),
+                settings.clone(),
+            );
+            supervise_until(loop_name("chain scanner", network), stopped, move || {
+                run_scanner_loop(
+                    store.clone(),
+                    key_custody.clone(),
+                    network,
+                    daemons.clone(),
+                    wallet_handles.clone(),
+                    scanner_status.clone(),
+                    settings.clone(),
+                )
+            });
+            println!("scanning {network:?}");
+            running.insert(network, stop);
+        }
+        if changed.changed().await.is_err() {
+            return;
+        }
+    }
+}
+
 /// Runs `run_scan_tick` for one network, over and over. Re-reads
-/// `wallet_handles` fresh every round (rather than a boot-time snapshot) so a
-/// tenant created at runtime via the admin API is picked up without a
-/// restart; `run_scan_tick` itself filters that full list down to the
-/// network it was called for (see its doc comment). Each network has its own
+/// `wallet_handles`, the network's node client and the scan settings every
+/// round, so new tenants, saved node settings and saved scan settings all
+/// apply from the next tick (tasks 2.1, 2.3). Each network has its own
 /// loop (task 7.4), so a slow node on one never delays another.
-#[allow(clippy::too_many_arguments)]
 async fn run_scanner_loop(
     store: SharedStore,
     key_custody: Arc<dyn KeyCustody>,
     network: Network,
-    daemon: Arc<FallbackDaemonClient>,
+    daemons: Daemons,
     wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
-    reorg_check_depth: u64,
-    expired_order_grace_period_seconds: i64,
-    poll_interval: Duration,
     scanner_status: ScannerStatusMap,
+    settings: Arc<EngineSettings>,
 ) {
     // Keys that failed to register (at boot, or since) are retried here at
     // most once a minute, so a tenant whose key-custody backend comes back
@@ -538,15 +536,20 @@ async fn run_scanner_loop(
     // Shared by every network's loop, so the handle map is cleared once per
     // lost-state epoch of the key-custody backend, not once per network.
     static HANDLED_CUSTODY_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    let handled_custody_epoch = &HANDLED_CUSTODY_EPOCH;
     loop {
+        let scan = settings.scan.load();
+        let Some(daemon) = daemons.get(network) else {
+            // Being stopped: the node setting was just cleared.
+            tokio::time::sleep(scan.poll_interval).await;
+            continue;
+        };
         if last_registration_attempt.is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
             last_registration_attempt = Some(tokio::time::Instant::now());
             let registered = scanner::scanner::register_missing_wallets_checking_state(
                 &store,
                 key_custody.as_ref(),
                 &wallet_handles,
-                Some(handled_custody_epoch),
+                Some(&HANDLED_CUSTODY_EPOCH),
                 network_str(network),
             )
             .await;
@@ -561,7 +564,7 @@ async fn run_scanner_loop(
         // different heights or on different forks are never mixed.
         let pinned = daemon.pin();
         let result = match tokio::time::timeout(
-            tick_deadline(poll_interval),
+            tick_deadline(scan.poll_interval),
             scanner::scanner::run_scan_tick_with(
                 &mempool_memory,
                 &store,
@@ -569,8 +572,8 @@ async fn run_scanner_loop(
                 &pinned,
                 network_str(network),
                 &tenants,
-                reorg_check_depth,
-                expired_order_grace_period_seconds,
+                scan.reorg_check_depth,
+                scan.expired_order_grace_period_seconds,
             ),
         )
         .await
@@ -578,15 +581,15 @@ async fn run_scanner_loop(
             Ok(result) => result,
             Err(_) => Err(scanner::scanner::ScannerError::Internal(format!(
                 "scan tick did not finish within {:?} and was abandoned",
-                tick_deadline(poll_interval)
+                tick_deadline(scan.poll_interval)
             ))),
         };
         let finished_at = now_unix();
         if let Err(e) = &result {
-            eprintln!("scan tick failed for {network:?}: {e}");
+            shared::log::throttled(&format!("tick-failed:{network:?}"), format!("scan tick failed for {network:?}: {e}"));
         }
         scanner_status::record_tick(&scanner_status, network, started_at, finished_at, tenants.len(), &result);
-        tokio::time::sleep(poll_interval).await;
+        tokio::time::sleep(scan.poll_interval).await;
     }
 }
 
@@ -598,17 +601,19 @@ async fn run_scanner_loop(
 /// `run_scanner_loop`'s tight per-second cadence.
 const DOUBLE_SPEND_REVALIDATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
 
-async fn run_double_spend_revalidation_loop(store: SharedStore, network: Network, daemon: Arc<FallbackDaemonClient>) {
+async fn run_double_spend_revalidation_loop(store: SharedStore, network: Network, daemons: Daemons) {
     loop {
-        match revalidate_recent_double_spend_voids(&store, daemon.as_ref(), network_str(network), now_unix()).await {
-            Ok(recovered) if !recovered.is_empty() => {
-                println!(
-                    "double-spend revalidation on {network:?} reversed {} previously-voided payment(s): {recovered:?}",
-                    recovered.len()
-                );
+        if let Some(daemon) = daemons.get(network) {
+            match revalidate_recent_double_spend_voids(&store, daemon.as_ref(), network_str(network), now_unix()).await {
+                Ok(recovered) if !recovered.is_empty() => {
+                    println!(
+                        "double-spend revalidation on {network:?} reversed {} previously-voided payment(s): {recovered:?}",
+                        recovered.len()
+                    );
+                }
+                Ok(_) => {}
+                Err(e) => eprintln!("double-spend revalidation failed for {network:?}: {e}"),
             }
-            Ok(_) => {}
-            Err(e) => eprintln!("double-spend revalidation failed for {network:?}: {e}"),
         }
         tokio::time::sleep(DOUBLE_SPEND_REVALIDATION_INTERVAL).await;
     }

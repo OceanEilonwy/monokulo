@@ -714,10 +714,9 @@ mod tests {
 
     /// `get_status` against a real engine — proves the DTOs above actually
     /// deserialize the engine's real `EngineStatusResponse` JSON shape, not
-    /// just a plausible guess at its fields. `scanner_test_support`'s harness
-    /// deliberately never populates `AppState::daemons` (see its own doc
-    /// comment), so an honest real response here has an empty `networks`
-    /// list — this proves the shape round-trips, not that any node exists.
+    /// just a plausible guess at its fields. A configured network has a
+    /// daemon client (admin_settings_v2.md task 2.1); the test harness gives
+    /// it an inert one, so the response lists that network and its node.
     #[tokio::test]
     async fn get_status_round_trips_against_a_real_engine() {
         let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
@@ -725,7 +724,8 @@ mod tests {
 
         let status = client.get_status().await.expect("get_status against a real engine should succeed");
 
-        assert_eq!(status.networks.len(), 0);
+        assert_eq!(status.networks.len(), 1);
+        assert_eq!(status.networks[0].network, "mainnet");
         assert!(status.poll_interval_secs > 0);
     }
 

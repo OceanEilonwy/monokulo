@@ -367,7 +367,7 @@ mod tests {
         /// configured" state end to end, not a fabricated one.
         #[tokio::test]
         async fn status_page_is_reachable_with_no_authentication_and_shows_no_configured_networks() {
-            let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+            let engine = scanner_test_support::spawn_test_engine().await;
             let state = state_with_engine(EngineClient::new(format!("http://{}", engine.addr)));
             let router: Router = build_router(state);
 

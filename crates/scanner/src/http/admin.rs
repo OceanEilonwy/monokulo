@@ -56,7 +56,7 @@ pub async fn create_tenant(
     let material = WalletMaterial::from_hex(&req.view_key_hex, &req.spend_pubkey_hex)
         .map_err(|e| ApiError::BadRequest(e.to_string()))?;
     let network = parse_network(req.network.as_deref().unwrap_or("mainnet")).map_err(|e| ApiError::BadRequest(e.to_string()))?;
-    if !state.configured_networks.contains(&network) {
+    if !state.daemons.is_configured(network) {
         return Err(ApiError::BadRequest(format!(
             "no monero_node is configured for network {:?} on this instance",
             network_str(network)
@@ -73,6 +73,7 @@ pub async fn create_tenant(
         .await
         .map_err(key_custody_error_for_new_tenant)?;
     let sealed = state.key_custody.seal(&material).await.map_err(key_custody_error_for_new_tenant)?;
+    let defaults = state.settings.tenant_defaults.load();
 
     let created = state.store.lock().create_tenant(
         NewTenant {
@@ -84,8 +85,10 @@ pub async fn create_tenant(
             sealed_key_material: sealed,
             primary_address: primary_address.to_string(),
             network: network_str(network).to_string(),
-            confirmations_required: req.confirmations_required,
-            order_expiry_seconds: req.order_expiry_seconds,
+            // Values the request doesn't give come from the instance's
+            // current defaults (task 2.9), not a hardcoded number.
+            confirmations_required: Some(req.confirmations_required.unwrap_or(defaults.confirmations_required)),
+            order_expiry_seconds: Some(req.order_expiry_seconds.unwrap_or(defaults.order_expiry_seconds)),
         },
         now_unix(),
     );
@@ -352,7 +355,7 @@ pub async fn list_orders(
     };
     let views: std::result::Result<Vec<OrderView>, _> = orders
         .into_iter()
-        .map(|o| build_order_view(&store, o, now, state.expired_order_grace_period_seconds))
+        .map(|o| build_order_view(&store, o, now, state.settings.scan.load().expired_order_grace_period_seconds))
         .collect();
     Ok(Json(views?))
 }
@@ -395,7 +398,7 @@ pub async fn get_order_detail(
     let store = state.store.lock();
     let order = store.get_order(&tenant.id, &order_id)?.ok_or(ApiError::NotFound)?;
     let payments = store.get_all_payments(&order.id)?;
-    let order_view = build_order_view(&store, order, now_unix(), state.expired_order_grace_period_seconds)?;
+    let order_view = build_order_view(&store, order, now_unix(), state.settings.scan.load().expired_order_grace_period_seconds)?;
     Ok(Json(OrderDetailResponse {
         order: order_view,
         payments: payments.into_iter().map(PaymentView::from).collect(),
@@ -556,9 +559,8 @@ pub async fn lookup_payment(
         .map_err(|e| ApiError::Internal(format!("tenant has an unrecognized network {:?}: {e}", tenant.network)))?;
     let daemon = state
         .daemons
-        .get(&network)
-        .ok_or_else(|| ApiError::Internal(format!("no daemon configured for network {network:?}")))?
-        .clone();
+        .get(network)
+        .ok_or_else(|| ApiError::Unavailable(format!("no Monero node is configured for network {network:?}")))?;
 
     let location = daemon.locate_transaction(&txid).await.map_err(|e| ApiError::Internal(e.to_string()))?;
     let block_height = match location {

@@ -48,7 +48,6 @@ use axum::Router;
 use serde_json::json;
 use tower_http::limit::RequestBodyLimitLayer;
 
-use crate::daemon_fallback::FallbackDaemonClient;
 use crate::key_custody::{KeyCustody, KeyCustodyError, WalletHandle};
 use crate::scanner_status::ScannerStatusMap;
 use crate::status::OrderStatus;
@@ -80,42 +79,20 @@ pub struct AppState {
     /// address for a request without a token) - see `http::rate_limit`'s own
     /// module doc comment for why token-keying is the right shape here.
     pub admin_rate_limiter: Arc<RateLimiter<String>>,
-    /// Which networks this instance can actually scan - i.e. which
-    /// `[monero_node.<network>]` sections are configured. A tenant can only be
-    /// created for a network in this set; otherwise its address would be derived
-    /// but never scanned by anything; see `docs/DESIGN.md` §7 (multi-network) and
-    /// `admin::create_tenant`.
-    pub configured_networks: Arc<std::collections::HashSet<monero::Network>>,
-    /// One `FallbackDaemonClient` per configured network - the same
-    /// instances the chain-scanner loop itself uses (`main.rs` clones the
-    /// `Arc` into both places), so `GET /status` (`status_page.rs` - a JSON
-    /// status *API*; the real, styled status *page* is served by the
-    /// monokulo, which calls this endpoint) reports on the real node
-    /// list scanning is actually happening against, not a second,
-    /// separately-configured view of it. Concrete `Arc<FallbackDaemonClient>`,
-    /// not `Arc<dyn MoneroDaemonClient>` - only `FallbackDaemonClient`
-    /// exposes its own node list (`FallbackDaemonClient::nodes`), which is
-    /// exactly what `/status` needs to report on each node individually
-    /// rather than only the aggregate view `MoneroDaemonClient`'s own trait
-    /// methods give.
-    pub daemons: Arc<HashMap<monero::Network, Arc<FallbackDaemonClient>>>,
+    /// One `FallbackDaemonClient` per configured network, swapped whole when
+    /// node settings are saved (admin_settings_v2.md task 2.1). A network
+    /// is "configured" exactly when it has a client here: a tenant can only
+    /// be created for one (`admin::create_tenant`), otherwise its address
+    /// would be derived but never scanned. The same clients the scan loops
+    /// use, so `GET /status` reports on the nodes scanning really uses.
+    pub daemons: crate::engine_settings::Daemons,
     /// Live scan-tick history per network, updated by `main.rs`'s own scan
     /// loop after every tick - see `scanner_status`'s own module doc
     /// comment.
     pub scanner_status: ScannerStatusMap,
-    /// How often the scan loop sleeps between full sweeps
-    /// (`config.payment.mempool_poll_interval_ms`, converted once at boot) -
-    /// purely so the status page can say *how* overdue a tick that hasn't
-    /// happened in a while actually is, relative to what's actually
-    /// configured, rather than against an arbitrary hardcoded guess.
-    pub scan_poll_interval_secs: u64,
-    /// `docs/order_rescan_wbs.md` Phase 4/5.3 -
-    /// `config.payment.expired_order_grace_period_minutes * 60`, threaded down the
-    /// same way the two lookback-day fields above already are. Needed here (not
-    /// only inside `scanner::run_scan_tick`) because `admin::build_order_view`'s
-    /// `currently_scanning` computation uses the identical widened in-scope
-    /// predicate the live scanner itself uses.
-    pub expired_order_grace_period_seconds: i64,
+    /// Every engine setting, live (admin_settings_v2.md part 1): handlers
+    /// and loops read the current value of what they need on each use.
+    pub settings: Arc<crate::engine_settings::EngineSettings>,
 }
 
 pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
@@ -187,8 +164,36 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         .merge(instance_admin_router)
         .layer(middleware::from_fn_with_state(limits, request_limit_middleware))
         .merge(events_router)
+        .layer(middleware::from_fn_with_state(state.clone(), body_limit_middleware))
+        // A fixed outer ceiling; the live limit above (server.max_body_bytes,
+        // task 2.6) is what normally applies.
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
         .with_state(state)
+}
+
+/// Refuses a request whose body is larger than the current
+/// `server.max_body_bytes`, read on every request so a saved change applies
+/// to the next one (task 2.6). Checked against the declared length (or the
+/// body's exact size when it knows it); a body of unknown length is still
+/// capped by the router's fixed outer limit.
+async fn body_limit_middleware(
+    axum::extract::State(state): axum::extract::State<AppState>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    use http_body::Body as _;
+    let limit = state.settings.limits.load().max_body_bytes as u64;
+    let declared = request
+        .headers()
+        .get(header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<u64>().ok())
+        .or_else(|| request.body().size_hint().exact());
+    if declared.is_some_and(|len| len > limit) {
+        return (StatusCode::PAYLOAD_TOO_LARGE, Json(serde_json::json!({ "error": "request body too large" })))
+            .into_response();
+    }
+    next.run(request).await
 }
 
 /// Longest an ordinary API request may take before it gets `503` (task 7.10).

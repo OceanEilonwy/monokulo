@@ -72,6 +72,55 @@ where
     });
 }
 
+/// `supervise`, until `stop` becomes `true` (or its sender is dropped):
+/// then the running loop is aborted and not restarted. For loops that exist
+/// only while something is configured, such as one network's scanner, which
+/// stops when that network's node setting is cleared (admin_settings_v2.md
+/// task 2.1).
+pub fn supervise_until<F, Fut>(name: &'static str, mut stop: tokio::sync::watch::Receiver<bool>, make_loop: F)
+where
+    F: Fn() -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = ()> + Send + 'static,
+{
+    tokio::spawn(async move {
+        let mut backoff = FIRST_BACKOFF;
+        loop {
+            if *stop.borrow() {
+                return;
+            }
+            let started = tokio::time::Instant::now();
+            let mut running = tokio::spawn(make_loop());
+            tokio::select! {
+                outcome = &mut running => {
+                    match outcome {
+                        Ok(()) => eprintln!("BUG: {name} loop returned; it is not supposed to terminate. Restarting in {backoff:?}."),
+                        Err(e) if e.is_panic() => {
+                            eprintln!("FATAL: {name} loop PANICKED: {e}. No {name} work is happening until it restarts. Restarting in {backoff:?}.");
+                        }
+                        Err(e) => {
+                            eprintln!("{name} loop was cancelled: {e}. Not restarting.");
+                            return;
+                        }
+                    }
+                }
+                _ = stop.wait_for(|stopped| *stopped) => {
+                    running.abort();
+                    return;
+                }
+            }
+            *RESTARTS.lock().entry(name).or_default() += 1;
+            if started.elapsed() >= HEALTHY_RUN {
+                backoff = FIRST_BACKOFF;
+            }
+            tokio::select! {
+                _ = tokio::time::sleep(backoff) => {}
+                _ = stop.wait_for(|stopped| *stopped) => return,
+            }
+            backoff = (backoff * 2).min(MAX_BACKOFF);
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use std::sync::atomic::{AtomicUsize, Ordering};
@@ -124,5 +173,21 @@ mod tests {
         // Capped: it never waits longer than 5 minutes.
         tokio::time::sleep(Duration::from_secs(60 * 60)).await;
         assert!(starts.load(Ordering::SeqCst) >= 5 + 11, "at most 5 minutes between restarts once capped");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_loop_supervised_until_stopped_is_aborted_and_not_restarted() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let counter = starts.clone();
+        let (stop, stopped) = tokio::sync::watch::channel(false);
+        supervise_until("until-test", stopped, move || {
+            counter.fetch_add(1, Ordering::SeqCst);
+            std::future::pending::<()>()
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        stop.send(true).unwrap();
+        tokio::time::sleep(Duration::from_secs(600)).await;
+        assert_eq!(starts.load(Ordering::SeqCst), 1, "stopped for good");
     }
 }

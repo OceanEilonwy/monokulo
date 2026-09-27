@@ -8,6 +8,7 @@ pub mod cli;
 pub mod daemon;
 pub mod daemon_fallback;
 pub mod daemon_rpc;
+pub mod engine_settings;
 pub mod http;
 pub mod key_custody;
 pub mod local_admin;

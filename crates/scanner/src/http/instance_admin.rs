@@ -21,7 +21,7 @@ use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
 
-use crate::settings::{self, MoneroNodeSetting, NETWORKS};
+use crate::engine_settings::NETWORKS;
 use crate::store::Store;
 
 use super::{ApiError, AppState};
@@ -106,193 +106,189 @@ impl FromRequestParts<AppState> for AuthedInstanceAdmin {
     }
 }
 
+/// One setting as the admin page shows it (tasks 4.1, 4.2): its effective
+/// value and where that came from, plus what it's for, what it takes and
+/// when it applies.
 #[derive(Serialize)]
 pub struct ScalarSettingView {
     value: String,
-    /// `"env"`, `"database"`, or `"default"` - see `shared::settings::SettingSource`.
-    /// A plain string over the wire rather than re-deriving `Serialize` for that
-    /// enum: this is the only place it's ever exposed externally, so a one-off
-    /// `match` here is clearer than a second representation to keep in sync.
+    /// `"env"`, `"database"`, or `"default"`.
     source: &'static str,
+    description: &'static str,
+    kind: live_settings::SettingKind,
+    example: Option<&'static str>,
+    /// `"live"` or `"restart"`.
+    applies: live_settings::Applies,
+    /// Saved, but the engine is still running with the value it started
+    /// with (a restart-only setting).
+    pending_restart: bool,
+    /// Why the value in effect isn't the one set, if it isn't.
+    problem: Option<String>,
 }
 
-fn source_str(source: shared::settings::SettingSource) -> &'static str {
+fn source_str(source: live_settings::SettingSource) -> &'static str {
     match source {
-        shared::settings::SettingSource::Env => "env",
-        shared::settings::SettingSource::Database => "database",
-        shared::settings::SettingSource::Default => "default",
+        live_settings::SettingSource::Env => "env",
+        live_settings::SettingSource::Database => "database",
+        live_settings::SettingSource::Default => "default",
     }
+}
+
+/// One network's node setting as the admin page shows it.
+#[derive(Serialize)]
+pub struct NetworkView {
+    description: &'static str,
+    example: Option<&'static str>,
+    source: &'static str,
+    /// Enabled stores on this network (task 4.4's confirmation).
+    tenant_count: u64,
 }
 
 #[derive(Serialize)]
 pub struct SettingsView {
     scalars: HashMap<String, ScalarSettingView>,
-    monero_node: HashMap<String, Option<MoneroNodeSetting>>,
+    monero_node: HashMap<String, Option<serde_json::Value>>,
+    networks: HashMap<String, NetworkView>,
 }
 
-/// `GET /api/v1/admin/settings` - every known setting's current effective
-/// value (and where it actually came from), in one response, so an admin
-/// page can render the whole form from a single call.
-pub async fn get_settings(AuthedInstanceAdmin: AuthedInstanceAdmin, State(state): State<AppState>) -> impl IntoResponse {
-    let store = state.store.lock();
-    let scalars = settings::ALL_SCALAR
-        .iter()
-        .map(|s| {
-            let (value, source) = settings::get_raw(&store, s);
-            (s.key.to_string(), ScalarSettingView { value, source: source_str(source) })
-        })
-        .collect();
-    let monero_node =
-        NETWORKS.iter().map(|&network| (network.to_string(), settings::monero_node_setting(&store, network))).collect();
-    Json(SettingsView { scalars, monero_node })
+fn is_node_key(key: &str) -> Option<&'static str> {
+    NETWORKS.iter().find(|(_, setting)| setting.key == key).map(|(network, _)| *network)
+}
+
+/// `GET /api/v1/admin/settings` - every setting's current effective value,
+/// where it came from, and what it is, in one response, so the admin page
+/// can render the whole form from a single call.
+pub async fn get_settings(
+    AuthedInstanceAdmin: AuthedInstanceAdmin,
+    State(state): State<AppState>,
+) -> Result<Json<SettingsView>, ApiError> {
+    let Some(registry) = state.settings.registry.as_ref() else {
+        return Err(ApiError::Unavailable("settings are not available on this engine".into()));
+    };
+    let tenant_counts = state.store.lock().count_tenants_by_network()?;
+    let mut scalars = HashMap::new();
+    let mut monero_node = HashMap::new();
+    let mut networks = HashMap::new();
+    for view in registry.describe() {
+        if let Some(network) = is_node_key(view.key) {
+            let value = if view.value.trim().is_empty() { None } else { serde_json::from_str(&view.value).ok() };
+            monero_node.insert(network.to_string(), value);
+            networks.insert(
+                network.to_string(),
+                NetworkView {
+                    description: view.description,
+                    example: view.example,
+                    source: source_str(view.source),
+                    tenant_count: tenant_counts.get(network).copied().unwrap_or(0),
+                },
+            );
+            continue;
+        }
+        scalars.insert(
+            view.key.to_string(),
+            ScalarSettingView {
+                value: view.value,
+                source: source_str(view.source),
+                description: view.description,
+                kind: view.kind,
+                example: view.example,
+                applies: view.applies,
+                pending_restart: view.pending_restart,
+                problem: view.problem.map(|p| p.message),
+            },
+        );
+    }
+    Ok(Json(SettingsView { scalars, monero_node, networks }))
 }
 
 #[derive(Deserialize, Default)]
 pub struct UpdateSettingsRequest {
     #[serde(default)]
     scalars: HashMap<String, String>,
-    /// `null` for a network clears its configuration (removes the row)
-    /// rather than being rejected as an invalid `MoneroNodeSetting` - "stop
-    /// watching this network" is a legitimate, explicit choice, not a
-    /// malformed request.
+    /// `null` for a network clears its configuration rather than being
+    /// rejected: "stop watching this network" is a legitimate choice.
     #[serde(default)]
-    monero_node: HashMap<String, Option<MoneroNodeSetting>>,
+    monero_node: HashMap<String, Option<serde_json::Value>>,
 }
 
-/// Range/shape checks mirroring the former `config.rs::Config::validate_bounds`
-/// - the same "a silent failure mode at the wrong value is worse than a loud
-/// rejection" reasoning, applied at *save* time now instead of boot time,
-/// since there is no boot moment for a setting changed at runtime to fail
-/// loudly at instead. Only checks the scalar being saved in isolation; the one
-/// real cross-field rule this instance still has (`key_custody.socket_path`
-/// required when `key_custody.backend = "socket"`) is checked separately in
-/// `update_settings` against the *merged* post-save state, not here.
-fn validate_scalar(key: &str, value: &str) -> Result<(), String> {
-    fn require_range<T: std::str::FromStr + PartialOrd + std::fmt::Display>(
-        key: &str,
-        value: &str,
-        min: T,
-        max: T,
-        expected: &str,
-    ) -> Result<(), String> {
-        let parsed: T = value.parse().map_err(|_| format!("{key} must be a number, got {value:?}"))?;
-        if parsed < min || parsed > max {
-            return Err(format!("{key} is {value}, but must be {expected}"));
-        }
-        Ok(())
-    }
-    match key {
-        "payment.confirmations_required" => {
-            require_range::<u64>(key, value, 0, 720, "at least 0 (native 0-conf: paid off a mempool sighting alone) and at most 720 (~24h)")
-        }
-        "payment.order_expiry_minutes" => {
-            require_range::<i64>(key, value, 1, 60 * 24 * 365, "at least 1 minute and at most a year")
-        }
-        "payment.reorg_check_depth" => require_range::<u64>(key, value, 1, 10_000, "at least 1 block and at most 10000"),
-        "payment.mempool_poll_interval_ms" => {
-            require_range::<u64>(key, value, 100, 3_600_000, "at least 100ms and at most an hour")
-        }
-        "payment.default_rescan_lookback_days" => {
-            require_range::<u32>(key, value, 1, 3650, "at least 1 day and at most 3650 (10 years)")
-        }
-        "payment.max_rescan_lookback_days" => {
-            require_range::<u32>(key, value, 1, 3650, "at least 1 day and at most 3650 (10 years)")
-        }
-        "payment.expired_order_grace_period_minutes" => {
-            require_range::<i64>(key, value, 0, 60 * 24 * 365, "at least 0 and at most a year")
-        }
-        "server.bind" => value
-            .parse::<std::net::SocketAddr>()
-            .map(|_| ())
-            .map_err(|_| format!("server.bind {value:?} is not a valid address:port, e.g. \"127.0.0.1:8443\"")),
-        "server.worker_threads" => require_range::<usize>(key, value, 1, 1024, "at least 1"),
-        "server.rate_limit_per_token_per_min" => require_range::<u32>(
-            key,
-            value,
-            1,
-            1_000_000,
-            "at least 1 (0 rejects every admin API request, including a legitimate tenant's own)",
-        ),
-        "server.max_body_bytes" => {
-            require_range::<usize>(key, value, 256, 16 * 1024 * 1024, "at least 256 bytes and at most 16MiB")
-        }
-        "webhooks.allow_private_urls" => {
-            value.parse::<bool>().map(|_| ()).map_err(|_| format!("{key} must be \"true\" or \"false\", got {value:?}"))
-        }
-        "webhooks.delivery_timeout_ms" => {
-            require_range::<u64>(key, value, 100, 300_000, "at least 100ms and at most 5 minutes")
-        }
-        "webhooks.max_attempts" => require_range::<u32>(key, value, 1, 64, "at least 1 and at most 64"),
-        "key_custody.backend" => {
-            if value == "plain" || value == "socket" {
-                Ok(())
-            } else {
-                Err(format!("key_custody.backend {value:?} is not implemented - only \"plain\" and \"socket\" exist"))
-            }
-        }
-        // key_custody.socket_path has no shape of its own to check here - see
-        // update_settings's own cross-field check against the merged state.
-        _ => Ok(()),
-    }
+/// A network that stores use but that has no node configured after a save
+/// (decision D2): the save is accepted and the admin is told.
+#[derive(Serialize)]
+pub struct UnservedNetwork {
+    network: String,
+    tenants: u64,
 }
 
-/// `POST /api/v1/admin/settings` - persists any subset of scalars and/or
-/// `monero_node.<network>` entries present in the request body. Every
-/// scalar's own range is checked before anything is written (so a request
-/// setting five fields, one of them invalid, changes nothing rather than
-/// four fifths of what was asked); the one cross-field rule left
-/// (`key_custody.socket_path` required under `backend = "socket"`) is
-/// checked against the state this request would actually leave behind -
-/// merging what's being saved now with whatever is already stored for the
-/// half not being touched in this particular call.
+/// `POST /api/v1/admin/settings` - saves any subset of settings through the
+/// registry (admin_settings_v2.md part 1): every value is checked, runtime
+/// pieces that depend on changed settings are prepared, everything is
+/// stored in one transaction, then applied to the running engine. Anything
+/// invalid refuses the whole save and changes nothing. The response lists
+/// what needs a restart, warnings, settings still overridden by the
+/// environment, and networks left without a node that stores use.
 pub async fn update_settings(
     AuthedInstanceAdmin: AuthedInstanceAdmin,
     State(state): State<AppState>,
     Json(req): Json<UpdateSettingsRequest>,
 ) -> axum::response::Response {
-    for (key, value) in &req.scalars {
-        if let Err(message) = validate_scalar(key, value) {
-            return (StatusCode::BAD_REQUEST, Json(json!({ "error": message }))).into_response();
-        }
+    let Some(registry) = state.settings.registry.as_ref() else {
+        return (StatusCode::SERVICE_UNAVAILABLE, Json(json!({ "error": "settings are not available on this engine" })))
+            .into_response();
+    };
+    let mut changes: live_settings::Changes = req.scalars.into_iter().map(|(k, v)| (k, Some(v))).collect();
+    for (network, node) in req.monero_node {
+        let Some((_, setting)) = NETWORKS.iter().find(|(n, _)| *n == network) else {
+            return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("unknown network {network:?}") }))).into_response();
+        };
+        let raw = match node {
+            Some(value) if !value.is_null() => Some(value.to_string()),
+            _ => None,
+        };
+        changes.push((setting.key.to_string(), raw));
     }
 
-    let store = state.store.lock();
-
-    let backend = req
-        .scalars
-        .get("key_custody.backend")
-        .cloned()
-        .unwrap_or_else(|| settings::get::<String>(&store, &settings::KEY_CUSTODY_BACKEND));
-    let socket_path = req
-        .scalars
-        .get("key_custody.socket_path")
-        .cloned()
-        .unwrap_or_else(|| settings::get::<String>(&store, &settings::KEY_CUSTODY_SOCKET_PATH));
-    if backend == "socket" && socket_path.trim().is_empty() {
-        return (
+    match registry.save(changes).await {
+        Ok(report) => {
+            let unserved = {
+                let counts = state.store.lock().count_tenants_by_network().unwrap_or_default();
+                let mut unserved: Vec<UnservedNetwork> = counts
+                    .into_iter()
+                    .filter(|(network, tenants)| {
+                        *tenants > 0
+                            && crate::network::parse_network(network).is_ok_and(|n| !state.daemons.is_configured(n))
+                    })
+                    .map(|(network, tenants)| UnservedNetwork { network, tenants })
+                    .collect();
+                unserved.sort_by(|a, b| a.network.cmp(&b.network));
+                unserved
+            };
+            (
+                StatusCode::OK,
+                Json(json!({
+                    "ok": true,
+                    "changed": report.changed,
+                    "warnings": {
+                        "restart_required": report.restart_required,
+                        "env_overridden": report.env_overridden,
+                        "messages": report.warnings.iter().map(|w| json!({ "key": w.key, "message": w.message })).collect::<Vec<_>>(),
+                        "unserved_networks": unserved,
+                    },
+                })),
+            )
+                .into_response()
+        }
+        Err(live_settings::SaveError::Invalid(errors)) => (
             StatusCode::BAD_REQUEST,
             Json(json!({
-                "error": "key_custody.backend is \"socket\" but key_custody.socket_path is missing (or empty) - \
-                          set it to the Unix socket path a running key-custody-server process is listening on"
+                "error": errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
+                "fields": errors.iter().map(|e| json!({ "key": e.key, "message": e.message })).collect::<Vec<_>>(),
             })),
         )
-            .into_response();
-    }
-
-    for (key, value) in &req.scalars {
-        if let Err(e) = store.set_setting(key, value) {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response();
+            .into_response(),
+        Err(live_settings::SaveError::UnknownKey(key)) => {
+            (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("there is no setting called {key:?}") }))).into_response()
         }
+        Err(e) => (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response(),
     }
-    for (network, node) in &req.monero_node {
-        let result = match node {
-            Some(node) => settings::set_monero_node_setting(&store, network, node),
-            None => store.delete_setting(&format!("monero_node.{network}")),
-        };
-        if let Err(e) = result {
-            return (StatusCode::INTERNAL_SERVER_ERROR, Json(json!({ "error": e.to_string() }))).into_response();
-        }
-    }
-
-    (StatusCode::OK, Json(json!({ "ok": true }))).into_response()
 }
+

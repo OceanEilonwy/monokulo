@@ -134,7 +134,8 @@ fn is_stale(now: i64, last_tick_finished_at: i64, poll_interval_secs: u64) -> bo
 pub async fn status_page(State(state): State<AppState>) -> Response {
     let now = crate::now_unix();
 
-    let mut networks: Vec<(Network, _)> = state.daemons.iter().map(|(n, d)| (*n, d.clone())).collect();
+    let mut networks: Vec<(Network, _)> = state.daemons.snapshot().iter().map(|(n, d)| (*n, d.clone())).collect();
+    let poll_interval_secs = state.settings.scan.load().poll_interval.as_secs();
     networks.sort_by_key(|(network, _)| network_str(*network));
 
     let mut network_views = Vec::with_capacity(networks.len());
@@ -178,7 +179,7 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
                     tenants_scanned: s.tenants_scanned,
                     last_tick_ok: s.last_tick_ok,
                     last_error: s.last_error,
-                    is_stale: is_stale(now, finished_at, state.scan_poll_interval_secs),
+                    is_stale: is_stale(now, finished_at, poll_interval_secs),
                 }
             }
         };
@@ -204,7 +205,7 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
     let (due, oldest) = state.store.lock().webhook_backlog(now).unwrap_or((0, None));
     Json(EngineStatusResponse {
         networks: network_views,
-        poll_interval_secs: state.scan_poll_interval_secs,
+        poll_interval_secs,
         generated_at: now,
         loop_restarts,
         webhook_backlog: WebhookBacklog { due, oldest_waiting_secs: oldest.map(|at| now - at) },

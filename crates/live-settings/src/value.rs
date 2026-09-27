@@ -362,3 +362,45 @@ where
         SettingKind::Json
     }
 }
+
+/// Declares a choice setting's value type: a plain enum whose variants map to
+/// fixed strings, shown on the admin page as a select.
+///
+/// ```
+/// live_settings::choice_value! {
+///     pub enum Mode { Public = "public", InviteOnly = "invite_only" }
+/// }
+/// use live_settings::SettingValue;
+/// assert_eq!(Mode::parse("public"), Ok(Mode::Public));
+/// assert!(Mode::parse("nope").is_err());
+/// ```
+#[macro_export]
+macro_rules! choice_value {
+    ($(#[$attr:meta])* $vis:vis enum $name:ident { $($variant:ident = $text:literal),+ $(,)? }) => {
+        $(#[$attr])*
+        #[derive(Debug, Clone, Copy, PartialEq, Eq)]
+        $vis enum $name { $($variant),+ }
+
+        impl $name {
+            pub const CHOICES: &'static [&'static str] = &[$($text),+];
+            pub fn as_str(&self) -> &'static str {
+                match self { $(Self::$variant => $text),+ }
+            }
+        }
+
+        impl $crate::SettingValue for $name {
+            fn parse(raw: &str) -> ::core::result::Result<Self, ::std::string::String> {
+                match raw.trim() {
+                    $($text => Ok(Self::$variant),)+
+                    other => Err(format!("Choose one of: {} (got {:?}).", Self::CHOICES.join(", "), other)),
+                }
+            }
+            fn render(&self) -> ::std::string::String {
+                self.as_str().to_string()
+            }
+            fn kind() -> $crate::SettingKind {
+                $crate::SettingKind::Choice { choices: Self::CHOICES.to_vec() }
+            }
+        }
+    };
+}

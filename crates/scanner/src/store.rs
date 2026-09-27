@@ -457,6 +457,16 @@ impl Store {
         })
     }
 
+    /// How many enabled tenants each network has, for the admin page (tasks
+    /// 2.2 and 4.4).
+    pub fn count_tenants_by_network(&self) -> Result<std::collections::HashMap<String, u64>> {
+        let mut stmt = self.conn.prepare("SELECT network, COUNT(*) FROM tenants WHERE disabled_at_utc IS NULL GROUP BY network")?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))?
+            .collect::<rusqlite::Result<std::collections::HashMap<_, _>>>()?;
+        Ok(rows)
+    }
+
     /// Every non-disabled tenant - used at boot to eagerly register every wallet
     /// with `KeyCustody` before serving any requests, so the lazy-on-first-use path
     /// in the HTTP layer (`http::resolve_wallet_handle`) is a fallback, not the
