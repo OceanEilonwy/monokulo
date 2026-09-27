@@ -12,6 +12,11 @@ test.afterAll(async () => { await stopCoverageFixture(fixture?.process); });
 test.beforeEach(async ({ context }) => {
   if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);
 });
+// The tests share one store; one that restricts it to its verified domains
+// must not leave the next test's orders refused.
+test.afterEach(async ({ request }) => {
+  await request.post(`${fixture.base_url}/__coverage/embed/unrestricted`);
+});
 
 async function checkoutUrl(request) {
   const response = await request.post(`${fixture.base_url}/__coverage/orders`);
@@ -530,4 +535,25 @@ test('real checkout takes its theme from ?theme=, the embed option, and the sign
   await pick('system');
   await page.goto(`${url}/share`);
   await expect(page.locator('#checkout-frame')).toHaveAttribute('src', `/pay/${fixture.public_key}/orders/${orderId}`);
+});
+
+test('real checkout payment problems as the customer sees them (UI stages)', async ({ page, request }) => {
+  const problems = [
+    ['checkout-underpaid', async id => customerSends(request, id, 0.4, 20), 'partial'],
+    ['checkout-overpaid', async id => customerSends(request, id, 1.5, 20), 'overpaid'],
+    ['checkout-double-spend', async id => {
+      await customerSends(request, id, 1);
+      await request.post(`${fixture.base_url}/__coverage/orders/${id}/double-spend`);
+    }, 'unconfirmed'],
+    ['checkout-expired', async id => request.post(`${fixture.base_url}/__coverage/orders/${id}/expired`), 'expired'],
+  ];
+  for (const [stage, happen, status] of problems) {
+    const url = await checkoutUrl(request);
+    await page.goto(url);
+    await happen(url.split('/').pop());
+    await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', status);
+    if (stage === 'checkout-double-spend') await expect(page.locator('#double-spend-banner')).toBeVisible();
+    else if (stage !== 'checkout-expired') await expect(page.locator('#payment-state')).toBeVisible();
+    await captureCoverageStage(page, stage, test.info());
+  }
 });

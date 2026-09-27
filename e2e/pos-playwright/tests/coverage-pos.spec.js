@@ -223,11 +223,13 @@ test('merchant rings up a sale on a physical keyboard', async ({ page }) => {
   await expect(page.locator('.pos-keypad')).toBeVisible();
   await page.keyboard.type('250000000000');
   await expect(amount).toContainText('0.250000000000');
+  await captureCoverageStage(page, 'pos-keypad', test.info());
   // Typing a reference and pressing Enter there charges too.
   await page.getByPlaceholder('E.g. customer name or note').fill('Table 4');
   await page.getByPlaceholder('E.g. customer name or note').press('Enter');
   await expect(page.locator('.pos-order-heading h1')).toHaveText('Table 4');
   await expect(page.locator('.pos-pay-xmr')).toContainText('0.25');
+  await captureCoverageStage(page, 'pos-awaiting-payment', test.info());
   // An XMR store's order has no "≈" fiat line.
   await expect(page.locator('.pos-pay-fiat')).toHaveCount(0);
   // Digits typed on the payment screen do not leak into a new sale.
@@ -244,10 +246,12 @@ test('customer pays while the order is on screen and the merchant starts the nex
   await expect(page.locator('.pos-pay-detail')).toHaveText('Payment seen. Waiting for its first confirmation.');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
   await expect(page.locator('.pos-pay-caption')).toHaveText('Received');
+  await captureCoverageStage(page, 'pos-unconfirmed', test.info());
   // Then mined into a block: the outcome replaces the card.
   expect((await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/confirm`)).status()).toBe(204);
   await expect(page.locator('.pos-outcome')).toContainText('Payment received and confirmed.');
   await expect(page.locator('.pos-pay-card')).toHaveCount(0);
+  await captureCoverageStage(page, 'pos-paid', test.info());
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Paid');
   await page.getByRole('button', { name: 'New order' }).click();
   await expect(page.locator('.pos-keypad')).toBeVisible();
@@ -261,6 +265,7 @@ test('customer underpays: the card asks for the rest and the order cannot be can
   await expect(page.locator('.pos-pay-card')).toContainText('0.0006');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
   await expect(page.locator('.pos-action-hint')).toContainText('Background keeps this payment open');
+  await captureCoverageStage(page, 'pos-underpaid', test.info());
   // The customer sends the rest.
   await payment(request, fixture.order_id, 0.6, 20);
   await expect(page.locator('.pos-outcome')).toContainText('Payment received and confirmed.');
@@ -271,6 +276,7 @@ test('customer walks away: the order on screen expires', async ({ page, request 
   await expect(page.locator('.pos-pay-card')).toBeVisible();
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/expired`);
   await expect(page.locator('.pos-outcome')).toContainText('This payment expired before it was completed.');
+  await captureCoverageStage(page, 'pos-expired', test.info());
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Expired');
 });
 
@@ -287,6 +293,7 @@ test('counter loses its connection: the order shows connection lost, then recove
   await page.waitForTimeout(3000);
   await expect(badge).toContainText('Awaiting payment');
   await expect(badge).toContainText('Connection lost', { timeout: 8000 });
+  await captureCoverageStage(page, 'pos-connection-lost', test.info());
   // The customer pays meanwhile; back online, the stream reconnects and
   // brings the missed payment in without a reload.
   await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=1`);
@@ -456,6 +463,7 @@ test('payment waiting on the store\'s confirmations shows its progress', async (
   expect(order.confirmations_required).toBe(3);
   await payment(request, order.order_id, 1, 1);
   await expect(page.locator('.pos-pay-detail')).toHaveText('Payment seen · 1 of 3 confirmations');
+  await captureCoverageStage(page, 'pos-confirming', test.info());
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Confirming');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
 });
@@ -469,6 +477,7 @@ test('double spend on the order on screen warns the merchant not to hand over go
   expect(flagged.status()).toBe(204);
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Double spend');
   await expect(page.locator('.pos-pay-detail')).toContainText('Do not treat it as paid');
+  await captureCoverageStage(page, 'pos-double-spend', test.info());
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
 });
 
@@ -580,6 +589,7 @@ test('an order finished at the counter moves to Finished for this session only',
   const note = page.locator('.pos-list-note');
   await expect(note).toContainText('Completed on this device since the POS was opened. They clear after 24 hours or when the page reloads.');
   await expect(note.getByRole('link', { name: 'See all orders →' })).toHaveAttribute('href', `/dashboard/stores/${fixture.connection_id}/orders`);
+  await captureCoverageStage(page, 'pos-finished-tab', test.info());
   await page.getByRole('tab', { name: /Active/ }).click();
   await expect(page.locator('.pos-order-card')).toHaveCount(0);
   // Nothing is loaded into Finished: after a reload it starts empty.

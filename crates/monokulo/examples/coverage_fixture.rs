@@ -96,6 +96,13 @@ async fn restrict_embed(State(control): State<Controls>) -> StatusCode {
     }
 }
 
+async fn unrestrict_embed(State(control): State<Controls>) -> StatusCode {
+    match control.db.lock().unwrap().set_embed_restricted("coverage-store", false) {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+
 async fn mark_browser_created(State(control): State<Controls>, Path(id): Path<String>) -> StatusCode {
     match control.db.lock().unwrap().create_order_currency_metadata(
         "coverage-store", &id, "XMR", "0.001", 1_000_000_000_000, "fixed", 1,
@@ -141,13 +148,22 @@ async fn main() {
         encryption_key: ENCRYPTION_KEY,
         status_cache: status_page::new_status_cache(),
         exchange_rate: Arc::new(ExchangeRateProviders::coingecko_only(url.clone())),
-        abuse: Default::default(),
+        // Every browser test comes from one address, far faster than a real
+        // visitor: generous per-address limits, so no test is sent to the
+        // challenge page by accident (the challenge has its own route).
+        abuse: Arc::new(monokulo::abuse::AbuseProtection::new(monokulo::abuse::AbuseConfig {
+            soft_per_min: 10_000,
+            hard_per_min: 20_000,
+            signed_in_per_min: 10_000,
+            ..Default::default()
+        })),
         dns: Arc::new(UnavailableDns("DNS is unavailable in browser tests".into())),
     };
     let controls = Router::new()
         .route("/__coverage/ready", get(ready))
         .route("/__coverage/challenge", get(challenge))
         .route("/__coverage/embed/restricted", post(restrict_embed))
+        .route("/__coverage/embed/unrestricted", post(unrestrict_embed))
         .route("/__coverage/orders", post(create_order))
         .route("/__coverage/orders/{id}/paid", post(mark_paid))
         .route("/__coverage/orders/{id}/expired", post(mark_expired))
