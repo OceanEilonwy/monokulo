@@ -40,6 +40,27 @@ pub struct CreateTenantRequest {
     network: Option<String>,
     confirmations_required: Option<u64>,
     order_expiry_seconds: Option<i64>,
+    /// Which key custody backend holds this store's keys (part 5); the
+    /// instance's default when absent.
+    key_custody_backend: Option<String>,
+}
+
+/// The backend a new or moving store's keys go to: `requested`, or the
+/// default. Refused if it isn't enabled.
+fn chosen_backend(state: &AppState, requested: Option<&str>) -> Result<String, ApiError> {
+    let enabled = state.key_custody.enabled_backends();
+    if enabled.is_empty() {
+        // A single backend, not a router (some tests): it is the only one.
+        return Ok(requested.map(str::to_string).unwrap_or_else(|| state.key_custody_backend.clone()));
+    }
+    let backend = requested.map(str::to_string).unwrap_or_else(|| state.settings.custody.load().default.as_str().to_string());
+    if !enabled.contains(&backend) {
+        return Err(ApiError::BadRequest(format!(
+            "key custody backend {backend:?} is not enabled on this instance (enabled: {})",
+            enabled.join(", ")
+        )));
+    }
+    Ok(backend)
 }
 
 #[derive(Serialize)]
@@ -64,24 +85,31 @@ pub async fn create_tenant(
     }
 
     validate_tenant_settings(req.confirmations_required, req.order_expiry_seconds)?;
+    let backend = chosen_backend(&state, req.key_custody_backend.as_deref())?;
 
-    let handle =
-        state.key_custody.register_wallet(material.clone()).await.map_err(key_custody_error_for_new_tenant)?;
+    let handle = state
+        .key_custody
+        .register_wallet_in(&backend, material.clone())
+        .await
+        .map_err(key_custody_error_for_new_tenant)?;
     let primary_address = state
         .key_custody
         .derive_subaddress(handle, SubaddressIndex::default(), network)
         .await
         .map_err(key_custody_error_for_new_tenant)?;
-    let sealed = state.key_custody.seal(&material).await.map_err(key_custody_error_for_new_tenant)?;
+    let sealed = match state.key_custody.seal_in(&backend, &material).await {
+        Ok(sealed) => sealed,
+        Err(e) => {
+            let _ = state.key_custody.remove_wallet(handle).await;
+            return Err(key_custody_error_for_new_tenant(e));
+        }
+    };
     let defaults = state.settings.tenant_defaults.load();
 
     let created = state.store.lock().create_tenant(
         NewTenant {
-            // Not hardcoded "plain" - see `AppState::key_custody_backend`'s own
-            // doc comment: this instance may be running with `backend = "socket"`
-            // configured, in which case `sealed` above was genuinely produced by
-            // the remote `key-custody-server`, not this process.
-            key_custody_backend: state.key_custody_backend.clone(),
+            // The backend that sealed these keys and holds them (part 5).
+            key_custody_backend: backend.clone(),
             sealed_key_material: sealed,
             primary_address: primary_address.to_string(),
             network: network_str(network).to_string(),
@@ -172,6 +200,7 @@ pub struct TenantView {
     network: String,
     confirmations_required: u64,
     order_expiry_seconds: i64,
+    key_custody_backend: String,
 }
 
 impl From<crate::store::Tenant> for TenantView {
@@ -183,8 +212,115 @@ impl From<crate::store::Tenant> for TenantView {
             network: t.network,
             confirmations_required: t.confirmations_required,
             order_expiry_seconds: t.order_expiry_seconds,
+            key_custody_backend: t.key_custody_backend,
         }
     }
+}
+
+#[derive(Deserialize)]
+pub struct SwitchKeyCustodyRequest {
+    backend: String,
+    view_key_hex: String,
+    spend_pubkey_hex: String,
+}
+
+/// Whether `material` is the wallet `primary_address` belongs to, on
+/// `network` (task 5.3). Compares keys, not address strings: the stored
+/// address may be in any valid form (the bootstrap CLI stores what was
+/// typed). The public spend key must match, and so must the public view key
+/// derived from the given private view key.
+pub fn is_same_wallet(material: &WalletMaterial, primary_address: &str, network: monero::Network) -> Result<bool, ApiError> {
+    let address: monero::Address = primary_address
+        .parse()
+        .map_err(|_| ApiError::Internal("the store's primary address doesn't parse".to_string()))?;
+    let pair = material.to_view_pair().map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    Ok(address.network == network
+        && address.public_spend == pair.spend
+        && address.public_view == monero::PublicKey::from_private_key(&pair.view))
+}
+
+/// `PUT /api/v1/admin/tenant/key-custody` - moves the authenticated store to
+/// another key custody backend (task 5.3, decision D3). The store's keys are
+/// entered again - nothing is ever copied between backends - and must be
+/// the same wallet as the store's own. They're registered in the new
+/// backend and sealed there, the row is updated in one statement, the live
+/// handle is swapped, and only then is the old registration removed, so
+/// scanning and order creation always have a valid handle.
+pub async fn switch_key_custody(
+    AuthedTenant(tenant): AuthedTenant,
+    State(state): State<AppState>,
+    Json(req): Json<SwitchKeyCustodyRequest>,
+) -> Result<Json<TenantView>, ApiError> {
+    let material = WalletMaterial::from_hex(&req.view_key_hex, &req.spend_pubkey_hex)
+        .map_err(|e| ApiError::BadRequest(e.to_string()))?;
+    let network = parse_network(&tenant.network).map_err(|e| ApiError::Internal(e.to_string()))?;
+    if !is_same_wallet(&material, &tenant.primary_address, network)? {
+        return Err(ApiError::BadRequest("These keys belong to a different wallet from the one this store uses.".to_string()));
+    }
+    let backend = chosen_backend(&state, Some(&req.backend))?;
+
+    let handle = state.key_custody.register_wallet_in(&backend, material.clone()).await.map_err(ApiError::from)?;
+    let sealed = match state.key_custody.seal_in(&backend, &material).await {
+        Ok(sealed) => sealed,
+        Err(e) => {
+            let _ = state.key_custody.remove_wallet(handle).await;
+            return Err(e.into());
+        }
+    };
+    let updated = state.store.lock().update_tenant_key_custody(&tenant.id, &backend, &sealed);
+    if let Err(e) = updated {
+        let _ = state.key_custody.remove_wallet(handle).await;
+        return Err(e.into());
+    }
+    let previous = state.wallet_handles.write().insert(tenant.id.clone(), handle);
+    if let Some(previous) = previous.filter(|p| *p != handle) {
+        let _ = state.key_custody.remove_wallet(previous).await;
+    }
+    let refetched = state.store.lock().get_tenant_by_id(&tenant.id)?.ok_or(ApiError::NotFound)?;
+    Ok(Json(TenantView::from(refetched)))
+}
+
+#[derive(Serialize)]
+pub struct KeyCustodyBackendView {
+    name: &'static str,
+    description: &'static str,
+}
+
+#[derive(Serialize)]
+pub struct KeyCustodyView {
+    enabled: Vec<KeyCustodyBackendView>,
+    default: String,
+}
+
+fn backend_description(name: &str) -> &'static str {
+    match name {
+        "plain" => "In the engine's own memory. Simple; anyone who controls the engine's machine can read the keys.",
+        "socket" => "In a separate key-custody-server process, so the engine itself never holds the keys.",
+        _ => "",
+    }
+}
+
+/// `GET /api/v1/admin/key-custody` - the backends a store can choose from
+/// and the default (task 5.4). Not secret: any caller that reaches the
+/// private engine API may ask.
+pub async fn key_custody_options(State(state): State<AppState>) -> Json<KeyCustodyView> {
+    let mut enabled_names = state.key_custody.enabled_backends();
+    if enabled_names.is_empty() {
+        enabled_names.push(state.key_custody_backend.clone());
+    }
+    let enabled = enabled_names
+        .iter()
+        .filter_map(|name| match name.as_str() {
+            "plain" => Some(KeyCustodyBackendView { name: "plain", description: backend_description("plain") }),
+            "socket" => Some(KeyCustodyBackendView { name: "socket", description: backend_description("socket") }),
+            _ => None,
+        })
+        .collect();
+    let default = match state.key_custody.enabled_backends().is_empty() {
+        true => state.key_custody_backend.clone(),
+        false => state.settings.custody.load().default.as_str().to_string(),
+    };
+    Json(KeyCustodyView { enabled, default })
 }
 
 pub async fn get_own_tenant(AuthedTenant(tenant): AuthedTenant) -> Json<TenantView> {
@@ -570,16 +706,28 @@ pub async fn lookup_payment(
     };
 
     let tx = daemon.get_transaction(&txid).await.map_err(|e| ApiError::Internal(e.to_string()))?;
-    let handle = resolve_wallet_handle(&state, &tenant).await?;
+    let mut handle = resolve_wallet_handle(&state, &tenant).await?;
     let now = now_unix();
 
     // Computed (async, no `&Store` held) then persisted (sync, brief lock) as
     // two separate steps, same as `run_scan_tick`/`scanner::rescan_order`
     // already do everywhere else in this codebase - never a single
     // await-spanning call holding the store's lock.
-    let scan = crate::scanner::scan_transaction(state.key_custody.as_ref(), handle, &tx, 0..tenant.next_minor_index)
-        .await
-        .map_err(|e| ApiError::Internal(e.to_string()))?;
+    let mut retries = 0;
+    let scan = loop {
+        match crate::scanner::scan_transaction(state.key_custody.as_ref(), handle, &tx, 0..tenant.next_minor_index).await {
+            Ok(scan) => break scan,
+            Err(crate::scanner::ScannerError::KeyCustody(crate::key_custody::KeyCustodyError::UnknownWallet))
+                if retries < super::UNKNOWN_WALLET_RETRIES =>
+            {
+                retries += 1;
+                super::forget_wallet_handle(&state, &tenant.id, handle);
+                handle = resolve_wallet_handle(&state, &tenant).await?;
+            }
+            Err(crate::scanner::ScannerError::KeyCustody(e)) => return Err(e.into()),
+            Err(e) => return Err(ApiError::Internal(e.to_string())),
+        }
+    };
     let touched = {
         let store = state.store.lock();
         crate::scanner::record_scan_match(&store, &tenant.id, &scan, now, block_height).map_err(|e| ApiError::Internal(e.to_string()))?

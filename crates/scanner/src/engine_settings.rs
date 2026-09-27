@@ -14,7 +14,7 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use live_settings::{
-    choice_value, settings, BindAddr, FieldError, Json, Live, Registry, Section, Snapshot, AnySetting,
+    choice_value, settings, AnySetting, BindAddr, CommaList, FieldError, Json, Live, Registry, Section, Snapshot,
 };
 
 use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
@@ -51,21 +51,26 @@ settings! {
         description: "The Monero node for testnet, in the same JSON shape as mainnet's. Leave empty to not use testnet.",
         example: r#"{"host":"127.0.0.1","port":28081}"#,
     },
-    KEY_CUSTODY_BACKEND: CustodyBackend {
-        key: "key_custody.backend",
-        env: "SCANNER_KEY_CUSTODY_BACKEND",
+    KEY_CUSTODY_ENABLED_BACKENDS: CommaList<CustodyBackend> {
+        key: "key_custody.enabled_backends",
+        env: "SCANNER_KEY_CUSTODY_ENABLED_BACKENDS",
+        default: live_settings::parsed_default("plain"),
+        description: "Where stores' private view keys may be held, comma-separated: plain (in the engine's own memory) and socket (a separate key-custody-server process). Each store uses one of these; a store whose backend is turned off stops being scanned until it's turned on again or the store moves to another one.",
+        example: "plain,socket",
+    },
+    KEY_CUSTODY_DEFAULT_BACKEND: CustodyBackend {
+        key: "key_custody.default_backend",
+        env: "SCANNER_KEY_CUSTODY_DEFAULT_BACKEND",
         default: CustodyBackend::Plain,
-        description: "Where stores' private view keys are held: plain (in this process's memory) or socket (a separate key-custody-server process). Takes effect after the engine restarts.",
+        description: "The backend new stores get unless they choose another. Must be one of the enabled ones.",
         example: "plain",
-        applies: Restart,
     },
     KEY_CUSTODY_SOCKET_PATH: Option<PathBuf> {
         key: "key_custody.socket_path",
         env: "SCANNER_KEY_CUSTODY_SOCKET_PATH",
         default: None,
-        description: "The Unix socket a running key-custody-server listens on. Required when the backend is socket. Takes effect after the engine restarts.",
+        description: "The Unix socket a running key-custody-server listens on. Required when socket is enabled.",
         example: "/run/key-custody/sock",
-        applies: Restart,
     },
     PAYMENT_CONFIRMATIONS_REQUIRED: u64 {
         key: "payment.confirmations_required",
@@ -308,29 +313,148 @@ impl Section for RuntimeConfig {
     }
 }
 
-/// Key custody, read once at start for now (part 5 makes it per store).
+/// Which key custody backends are enabled, and which new stores get
+/// (task 5.2, decision D3).
 #[derive(Debug, Clone, PartialEq)]
 pub struct CustodyConfig {
-    pub backend: CustodyBackend,
+    pub enabled: Vec<CustodyBackend>,
+    pub default: CustodyBackend,
     pub socket_path: Option<PathBuf>,
 }
 
 impl Section for CustodyConfig {
     const NAME: &'static str = "key custody";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&KEY_CUSTODY_BACKEND, &KEY_CUSTODY_SOCKET_PATH]
+        &[&KEY_CUSTODY_ENABLED_BACKENDS, &KEY_CUSTODY_DEFAULT_BACKEND, &KEY_CUSTODY_SOCKET_PATH]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
-        let backend = snapshot.get(&KEY_CUSTODY_BACKEND);
+        let mut enabled = snapshot.get(&KEY_CUSTODY_ENABLED_BACKENDS).0;
+        enabled.dedup();
+        let default = snapshot.get(&KEY_CUSTODY_DEFAULT_BACKEND);
         let socket_path = snapshot.get(&KEY_CUSTODY_SOCKET_PATH);
-        if backend == CustodyBackend::Socket && socket_path.is_none() {
-            return Err(vec![FieldError::new(
+        let mut errors = Vec::new();
+        if enabled.is_empty() {
+            errors.push(FieldError::new(KEY_CUSTODY_ENABLED_BACKENDS.key, "Enable at least one backend."));
+        } else if !enabled.contains(&default) {
+            errors.push(FieldError::new(
+                KEY_CUSTODY_DEFAULT_BACKEND.key,
+                format!("The default backend ({}) must be one of the enabled ones.", default.as_str()),
+            ));
+        }
+        if enabled.contains(&CustodyBackend::Socket) && socket_path.is_none() {
+            errors.push(FieldError::new(
                 KEY_CUSTODY_SOCKET_PATH.key,
                 "The socket backend needs the path of a running key-custody-server's socket.",
-            )]);
+            ));
         }
-        Ok(CustodyConfig { backend, socket_path })
+        if errors.is_empty() {
+            Ok(CustodyConfig { enabled, default, socket_path })
+        } else {
+            Err(errors)
+        }
     }
+}
+
+/// Applies saved custody settings to the router (task 5.2). Backends that
+/// stay enabled keep their instance, so their wallets stay registered; a
+/// newly enabled socket backend connects now, and if nothing answers yet it
+/// is enabled anyway with a warning, and connects when the server appears.
+/// A disabled backend's stores stop being scanned; their sealed keys stay in
+/// the database, so enabling it again brings them back.
+pub struct CustodyReloadable {
+    pub router: Arc<crate::key_custody::CustodyRouter>,
+}
+
+#[live_settings::async_trait]
+impl live_settings::Reloadable for CustodyReloadable {
+    type Config = CustodyConfig;
+    type Prepared = (HashMap<String, Arc<dyn crate::key_custody::KeyCustody>>, String);
+
+    async fn prepare(&self, new: &CustodyConfig, old: &CustodyConfig) -> Result<(Self::Prepared, Vec<live_settings::Warning>), FieldError> {
+        let current = self.router.backends();
+        let mut backends: HashMap<String, Arc<dyn crate::key_custody::KeyCustody>> = HashMap::new();
+        let mut warnings = Vec::new();
+        for backend in &new.enabled {
+            let name = backend.as_str().to_string();
+            let reuse = current.get(&name).filter(|_| *backend != CustodyBackend::Socket || new.socket_path == old.socket_path);
+            let custody: Arc<dyn crate::key_custody::KeyCustody> = match (reuse, backend) {
+                (Some(existing), _) => existing.clone(),
+                (None, CustodyBackend::Plain) => Arc::new(crate::key_custody::PlainKeyCustody::default()),
+                (None, CustodyBackend::Socket) => {
+                    // `CustodyConfig` guarantees the path when socket is on.
+                    let path = new.socket_path.clone().unwrap_or_default();
+                    let timeout = key_custody_service::client::DEFAULT_CALL_TIMEOUT;
+                    match key_custody_service::client::SocketKeyCustody::connect_with_timeout(&path, timeout).await {
+                        Ok(client) => Arc::new(client),
+                        Err(e) => {
+                            warnings.push(live_settings::Warning::for_key(
+                                KEY_CUSTODY_SOCKET_PATH.key,
+                                format!(
+                                    "Saved, but no key-custody-server answers at {} yet ({e}). Stores on the socket backend aren't scanned until it does; it's picked up by itself.",
+                                    path.display()
+                                ),
+                            ));
+                            Arc::new(key_custody_service::client::SocketKeyCustody::not_connected_yet(&path, timeout))
+                        }
+                    }
+                }
+            };
+            backends.insert(name, custody);
+        }
+        Ok(((backends, new.default.as_str().to_string()), warnings))
+    }
+
+    async fn install(&self, (backends, default): Self::Prepared) {
+        self.router.replace(backends, &default);
+    }
+
+    fn boot_policy(&self) -> live_settings::BootPolicy {
+        live_settings::BootPolicy::StartDegraded
+    }
+}
+
+/// Marks that `migrate_key_custody_setting` has run.
+const KEY_CUSTODY_MIGRATION_MARKER: &str = "migration.key_custody_per_store";
+
+/// Converts the old single `key_custody.backend` setting to per-store
+/// custody (task 5.1), once. The old value that was really in effect wins:
+/// its environment variable, else the saved row, else plain (an invalid
+/// value meant plain, as it always did). It becomes the only enabled
+/// backend and the default, unless those were already saved, and every
+/// tenant row is labelled with it: until now every tenant was registered in
+/// that one backend whatever its row said, and both backends seal keys the
+/// same way, so this moves no key material. A marker row keeps it from
+/// running again, so a still-set old environment variable can't undo stores
+/// switched since. Returns what it did, for the log.
+pub fn migrate_key_custody_setting(store: &crate::store::Store) -> Result<Option<String>, crate::store::StoreError> {
+    if store.get_setting(KEY_CUSTODY_MIGRATION_MARKER)?.is_some() {
+        if shared::settings::env_value("SCANNER_KEY_CUSTODY_BACKEND").is_some_and(|v| !v.trim().is_empty()) {
+            eprintln!(
+                "warning: SCANNER_KEY_CUSTODY_BACKEND is set but no longer used; key custody is chosen per store now \
+                 (key_custody.enabled_backends and key_custody.default_backend)"
+            );
+        }
+        return Ok(None);
+    }
+    let old = shared::settings::env_value("SCANNER_KEY_CUSTODY_BACKEND")
+        .filter(|v| !v.trim().is_empty())
+        .or(store.get_setting("key_custody.backend")?);
+    let backend = match old.as_deref().map(str::trim) {
+        Some("socket") => "socket",
+        _ => "plain",
+    };
+    store.in_transaction(|s| -> Result<(), crate::store::StoreError> {
+        if s.get_setting(KEY_CUSTODY_ENABLED_BACKENDS.key)?.is_none() {
+            s.set_setting(KEY_CUSTODY_ENABLED_BACKENDS.key, backend)?;
+        }
+        if s.get_setting(KEY_CUSTODY_DEFAULT_BACKEND.key)?.is_none() {
+            s.set_setting(KEY_CUSTODY_DEFAULT_BACKEND.key, backend)?;
+        }
+        s.relabel_all_tenants_key_custody(backend)?;
+        s.delete_setting("key_custody.backend")?;
+        s.set_setting(KEY_CUSTODY_MIGRATION_MARKER, "done")
+    })?;
+    Ok(Some(format!("key custody is now per store; existing stores use {backend}")))
 }
 
 /// The engine's settings store, over its own `settings` table.
@@ -524,17 +648,37 @@ impl EngineSettings {
         store: SharedStore,
         daemons: Daemons,
         strict_tls: bool,
+        router: Arc<crate::key_custody::CustodyRouter>,
         rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
     ) -> Result<Arc<Self>, String> {
-        Self::load_with(store, Some(NodesReloadable { daemons, strict_tls }), rate_limiter, live_settings::Env::process()).await
+        Self::load_full(
+            store,
+            Some(NodesReloadable { daemons, strict_tls }),
+            Some(CustodyReloadable { router }),
+            rate_limiter,
+            live_settings::Env::process(),
+        )
+        .await
+    }
+
+    /// `load_full` without applying custody settings to a router (tests
+    /// with a fixed key custody).
+    pub async fn load_with(
+        store: SharedStore,
+        nodes: Option<NodesReloadable>,
+        rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
+        env: live_settings::Env,
+    ) -> Result<Arc<Self>, String> {
+        Self::load_full(store, nodes, None, rate_limiter, env).await
     }
 
     /// `load`, optionally without applying node settings to daemon clients:
     /// for test engines whose daemons are fixed fakes. Node settings are
     /// still saved and described.
-    pub async fn load_with(
+    pub async fn load_full(
         store: SharedStore,
         nodes: Option<NodesReloadable>,
+        custody: Option<CustodyReloadable>,
         rate_limiter: Arc<shared::rate_limit::RateLimiter<String>>,
         env: live_settings::Env,
     ) -> Result<Arc<Self>, String> {
@@ -548,7 +692,10 @@ impl EngineSettings {
         let webhooks = builder.section::<WebhookConfig>();
         let tenant_defaults = builder.section::<TenantDefaults>();
         let runtime = builder.section::<RuntimeConfig>();
-        let custody = builder.section::<CustodyConfig>();
+        let custody = match custody {
+            Some(reloadable) => builder.reloadable(reloadable),
+            None => builder.section::<CustodyConfig>(),
+        };
         let registry = builder.build().map_err(|e| e.to_string())?;
         let report = registry.boot().await.map_err(|e| e.to_string())?;
         for warning in &report.warnings {
@@ -593,6 +740,45 @@ mod tests {
         assert!(PAYMENT_CONFIRMATIONS_REQUIRED.parse("0").is_ok());
         assert!(PAYMENT_CONFIRMATIONS_REQUIRED.parse("721").is_err());
         assert!(SERVER_MAX_BODY_BYTES.parse("255").is_err());
-        assert!(KEY_CUSTODY_BACKEND.parse("enclave").is_err());
+        assert!(KEY_CUSTODY_DEFAULT_BACKEND.parse("enclave").is_err());
+        assert!(KEY_CUSTODY_ENABLED_BACKENDS.parse("plain,enclave").is_err());
+    }
+
+    #[test]
+    fn the_old_backend_setting_becomes_the_enabled_default_and_labels_every_tenant_once() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        store.set_setting("key_custody.backend", "socket").unwrap();
+        let tenant = store
+            .create_tenant(
+                crate::store::NewTenant {
+                    key_custody_backend: "plain".into(),
+                    sealed_key_material: vec![],
+                    primary_address: "4x".into(),
+                    network: "mainnet".into(),
+                    confirmations_required: None,
+                    order_expiry_seconds: None,
+                },
+                1,
+            )
+            .unwrap()
+            .tenant;
+        assert!(migrate_key_custody_setting(&store).unwrap().is_some());
+        assert_eq!(store.get_setting("key_custody.enabled_backends").unwrap().as_deref(), Some("socket"));
+        assert_eq!(store.get_setting("key_custody.default_backend").unwrap().as_deref(), Some("socket"));
+        assert_eq!(store.get_setting("key_custody.backend").unwrap(), None);
+        assert_eq!(store.get_tenant_by_id(&tenant.id).unwrap().unwrap().key_custody_backend, "socket");
+
+        // Once only: a store switched since keeps its backend.
+        store.relabel_all_tenants_key_custody("plain").unwrap();
+        assert!(migrate_key_custody_setting(&store).unwrap().is_none());
+        assert_eq!(store.get_tenant_by_id(&tenant.id).unwrap().unwrap().key_custody_backend, "plain");
+    }
+
+    #[test]
+    fn with_nothing_saved_the_migration_enables_plain() {
+        let store = crate::store::Store::open_in_memory().unwrap();
+        migrate_key_custody_setting(&store).unwrap();
+        assert_eq!(store.get_setting("key_custody.enabled_backends").unwrap().as_deref(), Some("plain"));
+        assert_eq!(store.get_setting("key_custody.default_backend").unwrap().as_deref(), Some("plain"));
     }
 }

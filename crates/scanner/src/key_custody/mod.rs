@@ -31,6 +31,8 @@
 //! isolation is preferred.
 
 mod plain;
+mod router;
+pub use router::CustodyRouter;
 pub use plain::PlainKeyCustody;
 
 pub use shared::key_custody::{

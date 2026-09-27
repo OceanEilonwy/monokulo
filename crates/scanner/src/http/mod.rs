@@ -111,6 +111,7 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
     let unauthenticated_router = Router::new()
         .route("/api/v1/admin/tenants", post(admin::create_tenant))
         .route("/status", get(status_page::status_page))
+        .route("/api/v1/admin/key-custody", get(admin::key_custody_options))
         .layer(middleware::from_fn_with_state(state.clone(), admin_rate_limit_middleware));
 
     // Every route here requires a real `Authorization: Bearer sk_...` (see
@@ -121,6 +122,7 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             get(admin::get_own_tenant).patch(admin::patch_own_tenant).delete(admin::delete_own_tenant),
         )
         .route("/api/v1/admin/tenant/rotate-secret", post(admin::rotate_secret))
+        .route("/api/v1/admin/tenant/key-custody", axum::routing::put(admin::switch_key_custody))
         .route("/api/v1/admin/tenant/orders", get(admin::list_orders).post(orders::create_order_for_admin))
         .route("/api/v1/admin/tenant/orders/{order_id}", get(admin::get_order_detail))
         .route(
@@ -332,9 +334,17 @@ impl FromRequestParts<AppState> for AuthedTenant {
 /// Ensures a tenant has a live `WalletHandle` in this process, registering it with
 /// `KeyCustody` from its sealed material on first use if it doesn't yet.
 pub async fn resolve_wallet_handle(state: &AppState, tenant: &Tenant) -> Result<WalletHandle, ApiError> {
-    if let Some(handle) = state.wallet_handles.read().get(&tenant.id).copied() {
-        return Ok(handle);
+    let known = state.wallet_handles.read().get(&tenant.id).copied();
+    match known {
+        Some(handle) if state.key_custody.handle_is_live(handle) => return Ok(handle),
+        // Its backend lost it (restarted, or was disabled): register again.
+        Some(handle) => forget_wallet_handle(state, &tenant.id, handle),
+        None => {}
     }
+    // The row as it is now, not as it was when the request was
+    // authenticated: the store may have just moved to another backend.
+    let current = state.store.lock().get_tenant_by_id(&tenant.id)?;
+    let tenant = current.as_ref().unwrap_or(tenant);
     // The registration can't happen under the lock (it's `async`, and holding a
     // std `RwLock` across an `.await` would be a deadlock waiting to happen), so two
     // concurrent first-uses of the same tenant can both reach here. Re-check under
@@ -343,7 +353,9 @@ pub async fn resolve_wallet_handle(state: &AppState, tenant: &Tenant) -> Result<
     // stays live in `KeyCustody` forever, unreachable and unremovable - a leaked
     // extra copy of a tenant's private view key, and one that `delete_own_tenant`
     // would then fail to clean up on offboarding.
-    let handle = state.key_custody.unseal_and_register(&tenant.sealed_key_material).await?;
+    // In the tenant's own backend (part 5). A backend that isn't enabled
+    // refuses, so a disabled backend's store isn't quietly brought back.
+    let handle = state.key_custody.unseal_and_register_in(&tenant.key_custody_backend, &tenant.sealed_key_material).await?;
     let winner = {
         let mut handles = state.wallet_handles.write();
         *handles.entry(tenant.id.clone()).or_insert(handle)
@@ -353,6 +365,20 @@ pub async fn resolve_wallet_handle(state: &AppState, tenant: &Tenant) -> Result<
     }
     Ok(winner)
 }
+
+/// Drops `handle` as `tenant_id`'s live handle, if it still is, so the next
+/// `resolve_wallet_handle` registers the store's keys again.
+pub fn forget_wallet_handle(state: &AppState, tenant_id: &str, handle: WalletHandle) {
+    let mut handles = state.wallet_handles.write();
+    if handles.get(tenant_id) == Some(&handle) {
+        handles.remove(tenant_id);
+    }
+}
+
+/// How many times a request re-resolves a store's handle when its backend
+/// says the handle is unknown - it was dropped mid-request by a backend
+/// restart or a key custody switch (task 5.3).
+pub const UNKNOWN_WALLET_RETRIES: usize = 3;
 
 #[derive(Debug)]
 pub enum ApiError {

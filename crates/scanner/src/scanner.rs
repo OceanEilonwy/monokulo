@@ -1466,18 +1466,27 @@ pub async fn register_missing_wallets_checking_state(
                         .compare_exchange(seen, epoch, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
                         .is_ok()
                 {
-                    let dropped = {
-                        let mut handles = wallet_handles.write();
-                        let n = handles.len();
-                        handles.clear();
-                        n
-                    };
-                    eprintln!("key custody lost its wallets: registering all {dropped} again from their sealed keys");
+                    // A single backend can't say which handles it lost, so
+                    // they all go; a router forgets just the lost backend's
+                    // (`handle_is_live` below).
+                    if key_custody.enabled_backends().is_empty() {
+                        let dropped = {
+                            let mut handles = wallet_handles.write();
+                            let n = handles.len();
+                            handles.clear();
+                            n
+                        };
+                        eprintln!("key custody lost its wallets: registering all {dropped} again from their sealed keys");
+                    }
                 }
             }
             Err(e) => eprintln!("checking the key custody backend's state failed (retried later): {e}"),
         }
     }
+    // Handles in a backend that was turned off, or that lost its wallets,
+    // are dropped: the store is registered again below (if its backend is
+    // enabled) or left unserved until it is.
+    wallet_handles.write().retain(|_, handle| key_custody.handle_is_live(*handle));
     let missing: Vec<crate::store::Tenant> = match store.lock().list_active_tenants() {
         Ok(tenants) => {
             let handles = wallet_handles.read();
@@ -1490,7 +1499,11 @@ pub async fn register_missing_wallets_checking_state(
     };
     let mut registered = 0;
     for tenant in missing {
-        match key_custody.unseal_and_register(&tenant.sealed_key_material).await {
+        let enabled = key_custody.enabled_backends();
+        if !enabled.is_empty() && !enabled.contains(&tenant.key_custody_backend) {
+            continue; // its backend is off: left unserved, not an error to log every minute
+        }
+        match key_custody.unseal_and_register_in(&tenant.key_custody_backend, &tenant.sealed_key_material).await {
             Ok(handle) => {
                 let winner = *wallet_handles.write().entry(tenant.id.clone()).or_insert(handle);
                 if winner != handle {
@@ -7077,6 +7090,56 @@ mod tests {
         // A second network's loop noticing the same epoch doesn't clear again.
         assert_eq!(register_missing_wallets_checking_state(&store, &custody, &handles, Some(&handled), "stagenet").await, 0);
         assert_eq!(handles.read().len(), 3);
+    }
+
+    #[tokio::test]
+    async fn stores_on_a_disabled_backend_are_left_alone_and_come_back_when_it_is_enabled_again() {
+        use crate::key_custody::{CustodyRouter, PlainKeyCustody};
+        use std::sync::Arc;
+        let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        let socket: Arc<dyn KeyCustody> = Arc::new(ForgetfulKeyCustody::default());
+        let both = HashMap::from([("plain".to_string(), plain.clone()), ("socket".to_string(), socket.clone())]);
+        let router = CustodyRouter::new(both.clone(), "plain");
+        let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
+        let store = Store::open_in_memory().unwrap();
+        let mut ids = HashMap::new();
+        for backend in ["plain", "socket"] {
+            let sealed = router.seal_in(backend, &material).await.unwrap();
+            let tenant = store
+                .create_tenant(
+                    NewTenant {
+                        key_custody_backend: backend.into(),
+                        sealed_key_material: sealed,
+                        primary_address: "4x".into(),
+                        network: "mainnet".into(),
+                        confirmations_required: None,
+                        order_expiry_seconds: None,
+                    },
+                    1,
+                )
+                .unwrap()
+                .tenant;
+            ids.insert(backend, tenant.id);
+        }
+        let store = store.into_shared();
+        let handles = parking_lot::RwLock::new(HashMap::new());
+        let handled = AtomicU64::new(0);
+        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 2);
+        let plain_handle = handles.read()[&ids["plain"]];
+
+        // The socket backend is turned off: its store drops out, quietly,
+        // and the other store keeps its handle.
+        router.replace(HashMap::from([("plain".to_string(), plain.clone())]), "plain");
+        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 0);
+        assert!(!handles.read().contains_key(&ids["socket"]));
+        assert_eq!(handles.read()[&ids["plain"]], plain_handle);
+
+        // Turned back on: the store is registered again from its sealed keys.
+        router.replace(both, "plain");
+        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 1);
+        let socket_handle = handles.read()[&ids["socket"]];
+        assert!(router.derive_subaddress(socket_handle, SubaddressIndex::default(), Network::Mainnet).await.is_ok());
+        assert_eq!(handles.read()[&ids["plain"]], plain_handle, "never disturbed");
     }
 
     // -- Scale (task 7.12). Ignored by default: run with

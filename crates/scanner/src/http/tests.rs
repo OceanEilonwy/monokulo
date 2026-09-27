@@ -1435,7 +1435,7 @@ async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
 }
 
 #[tokio::test]
-async fn socket_key_custody_backend_without_a_socket_path_is_rejected() {
+async fn enabling_the_socket_key_custody_backend_without_a_socket_path_is_rejected() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
@@ -1444,7 +1444,7 @@ async fn socket_key_custody_backend_without_a_socket_path_is_rejected() {
         .oneshot(settings_request(
             "POST",
             Some("admin_test_token"),
-            Some(serde_json::json!({ "scalars": { "key_custody.backend": "socket" } })),
+            Some(serde_json::json!({ "scalars": { "key_custody.enabled_backends": "plain,socket" } })),
         ))
         .await
         .unwrap();
@@ -1452,7 +1452,7 @@ async fn socket_key_custody_backend_without_a_socket_path_is_rejected() {
 }
 
 #[tokio::test]
-async fn socket_key_custody_backend_with_a_socket_path_in_the_same_request_succeeds() {
+async fn enabling_the_socket_key_custody_backend_with_a_socket_path_in_the_same_request_succeeds() {
     let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
@@ -1463,7 +1463,11 @@ async fn socket_key_custody_backend_with_a_socket_path_in_the_same_request_succe
             "POST",
             Some("admin_test_token"),
             Some(serde_json::json!({
-                "scalars": { "key_custody.backend": "socket", "key_custody.socket_path": "/run/moneropay/key-custody.sock" }
+                "scalars": {
+                    "key_custody.enabled_backends": "plain,socket",
+                    "key_custody.default_backend": "socket",
+                    "key_custody.socket_path": "/run/moneropay/key-custody.sock"
+                }
             })),
         ))
         .await
@@ -1472,13 +1476,14 @@ async fn socket_key_custody_backend_with_a_socket_path_in_the_same_request_succe
 
     let get = router.oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
     let body = body_json(get).await;
-    assert_eq!(body["scalars"]["key_custody.backend"]["value"], "socket");
+    assert_eq!(body["scalars"]["key_custody.default_backend"]["value"], "socket");
+    assert_eq!(body["scalars"]["key_custody.enabled_backends"]["value"], "plain, socket");
 }
 
 #[tokio::test]
-async fn socket_key_custody_backend_using_an_already_saved_socket_path_succeeds() {
+async fn enabling_the_socket_key_custody_backend_using_an_already_saved_socket_path_succeeds() {
     // The cross-field check must consider the *merged* state, not just this one
-    // request's own body - a caller flipping `backend` to "socket" in a request
+    // request's own body - a caller enabling "socket" in a request
     // that doesn't also repeat an already-saved `socket_path` must still succeed.
     let (state, _daemon) = test_app_state_with_real_daemon().await;
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
@@ -1498,7 +1503,7 @@ async fn socket_key_custody_backend_using_an_already_saved_socket_path_succeeds(
         .oneshot(settings_request(
             "POST",
             Some("admin_test_token"),
-            Some(serde_json::json!({ "scalars": { "key_custody.backend": "socket" } })),
+            Some(serde_json::json!({ "scalars": { "key_custody.enabled_backends": "socket", "key_custody.default_backend": "socket" } })),
         ))
         .await
         .unwrap();
@@ -2200,4 +2205,292 @@ async fn saving_nodes_that_dont_answer_for_a_network_stores_use_is_reported() {
 
     let saved = save_settings(&router, node(10)).await;
     assert_eq!(saved["warnings"]["unserved_networks"], serde_json::json!([{ "network": "stagenet", "tenants": 1 }]), "{saved}");
+}
+
+// -- Per-store key custody (admin_settings_v2.md part 5) --------------------
+
+/// Two in-process backends, named as the real ones, so a store can be moved
+/// between them without a key-custody-server running.
+fn test_app_state_with_two_custody_backends() -> (AppState, Arc<dyn KeyCustody>, Arc<dyn KeyCustody>) {
+    let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+    let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+    let router = crate::key_custody::CustodyRouter::new(
+        HashMap::from([("plain".to_string(), plain.clone()), ("socket".to_string(), socket.clone())]),
+        "plain",
+    );
+    let mut state = test_app_state();
+    state.key_custody = Arc::new(router);
+    (state, plain, socket)
+}
+
+async fn own_tenant_view(router: &Router, token: &str) -> serde_json::Value {
+    let request = Request::builder()
+        .method("GET")
+        .uri("/api/v1/admin/tenant")
+        .header("authorization", format!("Bearer {token}"))
+        .body(Body::empty())
+        .unwrap();
+    let response = router.clone().oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    body_json(response).await
+}
+
+async fn create_order_for(router: &Router, token: &str) -> axum::response::Response {
+    router
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/tenant/orders",
+            Some(token),
+            None,
+            serde_json::json!({ "xmr_amount_piconero": 1_000_000_000u64 }),
+        ))
+        .await
+        .unwrap()
+}
+
+fn switch_request(token: &str, backend: &str, seed: u8) -> Request<Body> {
+    json_request(
+        "PUT",
+        "/api/v1/admin/tenant/key-custody",
+        Some(token),
+        None,
+        serde_json::json!({
+            "backend": backend,
+            "view_key_hex": valid_view_key_hex(seed),
+            "spend_pubkey_hex": valid_spend_pubkey_hex(seed.wrapping_add(1)),
+        }),
+    )
+}
+
+#[tokio::test]
+async fn a_new_store_goes_to_the_default_backend_or_the_one_it_asks_for() {
+    let (state, _, _) = test_app_state_with_two_custody_backends();
+    let router = build_router(state, 1_000_000);
+
+    let by_default = create_tenant(&router, 1).await;
+    assert_eq!(own_tenant_view(&router, &by_default.secret_token).await["key_custody_backend"], "plain");
+
+    let response = router
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/tenants",
+            None,
+            None,
+            serde_json::json!({
+                "view_key_hex": valid_view_key_hex(3),
+                "spend_pubkey_hex": valid_spend_pubkey_hex(4),
+                "key_custody_backend": "socket",
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let token = body_json(response).await["secret_token"].as_str().unwrap().to_string();
+    assert_eq!(own_tenant_view(&router, &token).await["key_custody_backend"], "socket");
+    assert_eq!(create_order_for(&router, &token).await.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn a_new_store_can_not_use_a_backend_that_is_not_enabled() {
+    let (state, _, _) = test_app_state_with_two_custody_backends();
+    let router = build_router(state, 1_000_000);
+    let response = router
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/tenants",
+            None,
+            None,
+            serde_json::json!({
+                "view_key_hex": valid_view_key_hex(3),
+                "spend_pubkey_hex": valid_spend_pubkey_hex(4),
+                "key_custody_backend": "hsm",
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}
+
+#[tokio::test]
+async fn moving_a_store_to_another_backend_keeps_it_taking_orders_and_frees_the_old_registration() {
+    let (state, plain, socket) = test_app_state_with_two_custody_backends();
+    let wallet_handles = state.wallet_handles.clone();
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1).await;
+    assert_eq!(create_order_for(&router, &tenant.secret_token).await.status(), StatusCode::OK);
+    let old_handle = wallet_handles.read().values().copied().next().unwrap();
+    let before = own_tenant_view(&router, &tenant.secret_token).await;
+
+    let response = router.clone().oneshot(switch_request(&tenant.secret_token, "socket", 1)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let view = body_json(response).await;
+    assert_eq!(view["key_custody_backend"], "socket");
+    assert!(view.get("view_key_hex").is_none(), "keys are never echoed back");
+
+    let new_handle = wallet_handles.read().values().copied().next().unwrap();
+    assert!(
+        socket.derive_subaddress(new_handle, crate::key_custody::SubaddressIndex::default(), Network::Mainnet).await.is_ok(),
+        "the store's keys are in the new backend"
+    );
+    assert!(
+        plain.derive_subaddress(old_handle, crate::key_custody::SubaddressIndex::default(), Network::Mainnet).await.is_err(),
+        "and no longer in the old one"
+    );
+
+    // Same wallet, so the same addresses: an order made now gets the next one.
+    let response = create_order_for(&router, &tenant.secret_token).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let tenant_row = store.lock().find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap();
+    assert_eq!(tenant_row.key_custody_backend, "socket");
+    assert_eq!(tenant_row.primary_address, before["primary_address"].as_str().unwrap());
+
+    // After a restart the store's keys come back from the new backend.
+    wallet_handles.write().clear();
+    assert_eq!(create_order_for(&router, &tenant.secret_token).await.status(), StatusCode::OK);
+}
+
+#[tokio::test]
+async fn moving_a_store_needs_the_keys_of_its_own_wallet() {
+    let (state, _, _) = test_app_state_with_two_custody_backends();
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1).await;
+
+    let response = router.clone().oneshot(switch_request(&tenant.secret_token, "socket", 7)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body = body_json(response).await;
+    assert!(body.to_string().contains("different wallet"), "{body}");
+    let tenant_row = store.lock().find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap();
+    assert_eq!(tenant_row.key_custody_backend, "plain", "nothing changed");
+    assert_eq!(create_order_for(&router, &tenant.secret_token).await.status(), StatusCode::OK);
+
+    let response = router.clone().oneshot(switch_request(&tenant.secret_token, "hsm", 1)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST, "only an enabled backend");
+}
+
+#[tokio::test]
+async fn an_order_made_while_the_backend_has_just_lost_the_store_still_succeeds() {
+    // The backend restarted and forgot every wallet, but the engine's map
+    // still has the old handle: the order re-registers and goes through.
+    let (state, plain, _) = test_app_state_with_two_custody_backends();
+    let wallet_handles = state.wallet_handles.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1).await;
+    let handle = wallet_handles.read().values().copied().next().unwrap();
+    plain.remove_wallet(handle).await.unwrap();
+
+    assert_eq!(create_order_for(&router, &tenant.secret_token).await.status(), StatusCode::OK);
+    assert_ne!(wallet_handles.read().values().copied().next().unwrap(), handle);
+}
+
+#[tokio::test]
+async fn the_key_custody_options_list_the_enabled_backends_and_the_default() {
+    let (state, _, _) = test_app_state_with_two_custody_backends();
+    let router = build_router(state, 1_000_000);
+    let request = Request::builder().method("GET").uri("/api/v1/admin/key-custody").body(Body::empty()).unwrap();
+    let response = router.oneshot(request).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["default"], "plain");
+    let names: Vec<&str> = body["enabled"].as_array().unwrap().iter().map(|b| b["name"].as_str().unwrap()).collect();
+    assert_eq!(names, vec!["plain", "socket"]);
+    assert!(!body["enabled"][1]["description"].as_str().unwrap().is_empty());
+}
+
+/// A backend that holds wallets but whose health check fails, as a
+/// key-custody-server does once its socket stops answering.
+#[derive(Default)]
+struct UnansweringKeyCustody {
+    inner: PlainKeyCustody,
+}
+
+#[async_trait::async_trait]
+impl KeyCustody for UnansweringKeyCustody {
+    async fn register_wallet(&self, material: crate::key_custody::WalletMaterial) -> Result<crate::key_custody::WalletHandle, crate::key_custody::KeyCustodyError> {
+        self.inner.register_wallet(material).await
+    }
+    async fn remove_wallet(&self, handle: crate::key_custody::WalletHandle) -> Result<(), crate::key_custody::KeyCustodyError> {
+        self.inner.remove_wallet(handle).await
+    }
+    async fn seal(&self, material: &crate::key_custody::WalletMaterial) -> Result<Vec<u8>, crate::key_custody::KeyCustodyError> {
+        self.inner.seal(material).await
+    }
+    async fn unseal_and_register(&self, sealed: &[u8]) -> Result<crate::key_custody::WalletHandle, crate::key_custody::KeyCustodyError> {
+        self.inner.unseal_and_register(sealed).await
+    }
+    async fn derive_subaddress(
+        &self,
+        handle: crate::key_custody::WalletHandle,
+        index: crate::key_custody::SubaddressIndex,
+        network: Network,
+    ) -> Result<monero::Address, crate::key_custody::KeyCustodyError> {
+        self.inner.derive_subaddress(handle, index, network).await
+    }
+    async fn scan_tx_outputs(
+        &self,
+        handle: crate::key_custody::WalletHandle,
+        tx: &monero::Transaction,
+        major_range: std::ops::Range<u32>,
+        minor_range: std::ops::Range<u32>,
+    ) -> Result<Vec<crate::key_custody::MatchedOutput>, crate::key_custody::KeyCustodyError> {
+        self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await
+    }
+    async fn check_state(&self) -> Result<u64, crate::key_custody::KeyCustodyError> {
+        Err(crate::key_custody::KeyCustodyError::BackendUnavailable("connection refused".to_string()))
+    }
+}
+
+#[tokio::test]
+async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() {
+    let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+    let socket: Arc<dyn KeyCustody> = Arc::new(UnansweringKeyCustody::default());
+    let router_custody = Arc::new(crate::key_custody::CustodyRouter::new(
+        HashMap::from([("plain".to_string(), plain.clone()), ("socket".to_string(), socket)]),
+        "plain",
+    ));
+    let mut state = test_app_state();
+    state.key_custody = router_custody.clone();
+    let router = build_router(state, 1_000_000);
+
+    let on_plain = create_tenant(&router, 1).await;
+    let response = router
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/v1/admin/tenants",
+            None,
+            None,
+            serde_json::json!({
+                "view_key_hex": valid_view_key_hex(3),
+                "spend_pubkey_hex": valid_spend_pubkey_hex(4),
+                "key_custody_backend": "socket",
+            }),
+        ))
+        .await
+        .unwrap();
+    let on_socket = body_json(response).await["public_key"].as_str().unwrap().to_string();
+
+    let status = get_status_json(router.clone()).await;
+    assert_eq!(
+        status["key_custody"],
+        serde_json::json!([{ "backend": "plain", "error": null }, { "backend": "socket", "error": "key custody backend unavailable: connection refused" }]),
+        "{status}"
+    );
+    let reasons: Vec<(String, String)> = status["unserved_tenants"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|u| (u["public_key"].as_str().unwrap().to_string(), u["reason"].as_str().unwrap().to_string()))
+        .collect();
+    assert_eq!(reasons, vec![(on_socket.clone(), "custody_unavailable".to_string())], "{status}");
+    assert!(!reasons.iter().any(|(key, _)| key == &on_plain.public_key));
+
+    router_custody.replace(HashMap::from([("plain".to_string(), plain)]), "plain");
+    let status = get_status_json(router.clone()).await;
+    assert_eq!(status["unserved_tenants"][0]["reason"], "custody_disabled", "{status}");
+    assert_eq!(status["unserved_tenants"].as_array().unwrap().len(), 1);
 }

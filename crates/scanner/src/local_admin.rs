@@ -60,7 +60,7 @@ pub async fn bootstrap_wallet(
         return Err(LocalAdminError::AlreadyBootstrapped);
     }
     let material = WalletMaterial::from_hex(&args.view_key_hex, &args.spend_pubkey_hex)?;
-    let sealed = key_custody.seal(&material).await.map_err(LocalAdminError::KeyMaterial)?;
+    let sealed = key_custody.seal_in(key_custody_backend, &material).await.map_err(LocalAdminError::KeyMaterial)?;
 
     let confirmations_required: u64 = crate::settings::get(store, &crate::settings::PAYMENT_CONFIRMATIONS_REQUIRED);
     let order_expiry_minutes: i64 = crate::settings::get(store, &crate::settings::PAYMENT_ORDER_EXPIRY_MINUTES);

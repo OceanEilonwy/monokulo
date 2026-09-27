@@ -347,6 +347,53 @@ pub trait KeyCustody: Send + Sync {
     async fn check_state(&self) -> Result<u64, KeyCustodyError> {
         Ok(0)
     }
+
+    // -- Per-store backends (admin_settings_v2.md part 5) -----------------
+    //
+    // An engine can hold several backends at once, each store's keys in the
+    // backend its row names. These take the backend by name. A single
+    // backend ignores the name (it is the only one there is); a router over
+    // several (`scanner::key_custody::CustodyRouter`) uses it to pick one,
+    // and routes every other call by the handle, which it remembers.
+
+    /// `register_wallet`, in the backend called `backend`.
+    async fn register_wallet_in(&self, backend: &str, material: WalletMaterial) -> Result<WalletHandle, KeyCustodyError> {
+        let _ = backend;
+        self.register_wallet(material).await
+    }
+
+    /// `unseal_and_register`, in the backend called `backend`.
+    async fn unseal_and_register_in(&self, backend: &str, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
+        let _ = backend;
+        self.unseal_and_register(sealed).await
+    }
+
+    /// `seal`, by the backend called `backend`.
+    async fn seal_in(&self, backend: &str, material: &WalletMaterial) -> Result<Vec<u8>, KeyCustodyError> {
+        let _ = backend;
+        self.seal(material).await
+    }
+
+    /// Whether `handle` still refers to a wallet in a backend that is enabled
+    /// and hasn't lost its wallets. A caller holding handles drops the ones
+    /// that aren't, so they get registered again (or, for a disabled
+    /// backend, the store is left unserved).
+    fn handle_is_live(&self, handle: WalletHandle) -> bool {
+        let _ = handle;
+        true
+    }
+
+    /// The backends enabled right now, by name; empty when this isn't a
+    /// router (a single backend, whatever it is called).
+    fn enabled_backends(&self) -> Vec<String> {
+        Vec::new()
+    }
+
+    /// Each enabled backend's health, by name: `None` if it answers, else
+    /// why not. Empty when this isn't a router.
+    async fn backend_health(&self) -> Vec<(String, Option<String>)> {
+        Vec::new()
+    }
 }
 
 /// A set of minor subaddress indices (account 0) to scan for, sorted and

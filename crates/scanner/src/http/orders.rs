@@ -7,10 +7,13 @@ use axum::extract::State;
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::key_custody::SubaddressIndex;
+use crate::key_custody::{KeyCustodyError, SubaddressIndex};
 use crate::store::{NewOrder, Tenant};
 
-use super::{parse_network, AppState, ApiError, AuthedTenant, now_unix, resolve_wallet_handle};
+use super::{
+    forget_wallet_handle, parse_network, resolve_wallet_handle, AppState, ApiError, AuthedTenant, now_unix,
+    UNKNOWN_WALLET_RETRIES,
+};
 
 /// XMR-only, per `docs/fx_refactor.md` Phase 3: this process has no concept of fiat
 /// or exchange rates at all any more. The caller (monokulo) supplies the exact
@@ -56,7 +59,8 @@ async fn create_order_for_tenant(state: AppState, tenant: Tenant, req: CreateOrd
     }
     super::admin::validate_confirmations_required(req.confirmations_required)?;
 
-    let handle = resolve_wallet_handle(&state, &tenant).await?;
+    let mut handle = resolve_wallet_handle(&state, &tenant).await?;
+    let mut retries = 0;
     // tenant.network was validated against a configured node at tenant-creation
     // time - a parse failure here means the stored value is corrupt, not that the
     // customer did anything wrong.
@@ -81,10 +85,18 @@ async fn create_order_for_tenant(state: AppState, tenant: Tenant, req: CreateOrd
     let mut created = None;
     for _ in 0..8 {
         let minor_index = state.store.lock().peek_next_minor_index(&tenant.id)?;
-        let address = state
-            .key_custody
-            .derive_subaddress(handle, SubaddressIndex { major: 0, minor: minor_index }, network)
-            .await?;
+        let index = SubaddressIndex { major: 0, minor: minor_index };
+        let address = loop {
+            match state.key_custody.derive_subaddress(handle, index, network).await {
+                Ok(address) => break address,
+                Err(KeyCustodyError::UnknownWallet) if retries < UNKNOWN_WALLET_RETRIES => {
+                    retries += 1;
+                    forget_wallet_handle(&state, &tenant.id, handle);
+                    handle = resolve_wallet_handle(&state, &tenant).await?;
+                }
+                Err(e) => return Err(e.into()),
+            }
+        };
         let order = state.store.lock().create_order_claiming_minor_index(
             minor_index,
             NewOrder {

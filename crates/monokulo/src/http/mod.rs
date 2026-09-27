@@ -373,18 +373,25 @@ fn store_alerts(state: &AppState, user: &crate::db::UserRow) -> Vec<String> {
     let Ok(stores) = state.db.lock().list_store_connections_for_user(&user.id) else { return Vec::new() };
     let mut alerts = Vec::new();
     for store in stores {
-        let Some(problem) = unserved.iter().find(|u| u.public_key == store.tenant_public_key) else { continue };
         let name = store.site_url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
-        alerts.push(match problem.reason.as_str() {
-            "catching_up" => format!(
-                "{name}: payments are being checked late - the engine is catching up {} block(s) it couldn't check for this store. They'll show up once it has.",
-                problem.blocks_behind.unwrap_or(0)
-            ),
-            _ => format!(
-                "{name}: payments aren't being detected - the {} network has no Monero node that answers. The instance admin needs to set one on the admin settings page.",
-                problem.network
-            ),
-        });
+        for problem in unserved.iter().filter(|u| u.public_key == store.tenant_public_key) {
+            alerts.push(match problem.reason.as_str() {
+                "catching_up" => format!(
+                    "{name}: payments are being checked late - the engine is catching up {} block(s) it couldn't check for this store. They'll show up once it has.",
+                    problem.blocks_behind.unwrap_or(0)
+                ),
+                "custody_disabled" => format!(
+                    "{name}: payments aren't being detected - this store's keys are in a key storage backend the instance admin has turned off. Move the store to another one under Key storage in its settings, or ask the admin to turn it back on."
+                ),
+                "custody_unavailable" => format!(
+                    "{name}: payments aren't being detected - the key storage backend holding this store's keys isn't answering. The instance admin needs to check it; payments are found once it's back."
+                ),
+                _ => format!(
+                    "{name}: payments aren't being detected - the {} network has no Monero node that answers. The instance admin needs to set one on the admin settings page.",
+                    problem.network
+                ),
+            });
+        }
     }
     alerts
 }

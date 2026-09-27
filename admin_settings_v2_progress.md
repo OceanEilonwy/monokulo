@@ -59,7 +59,8 @@ commits. Nothing is pushed.
 | 2.2 unserved networks | done | d7e7883 | |
 | Part 4 admin page | done except Playwright | 66f32ea | view tests; Playwright page tests wait for part 6 |
 | independent review of 8830c92 + 66f32ea | running | | |
-| Part 5 per-store key custody | next | | |
+| Part 5 engine side (5.1 router, 5.2 live settings, 5.3 choose/switch API, 5.5 status) | done | see git log | monokulo side (5.4, 5.6, 5.7) next |
+| Part 5 monokulo side (backend choice, Key storage section) | next | | |
 
 ## Decisions made while working
 
@@ -124,6 +125,32 @@ reported at the end.)
   API gains an index-set scan call plus a protocol version, falling back
   to a min..max range for older sidecars.
 
+- Part 5: the old single `key_custody.backend` setting is replaced by
+  `key_custody.enabled_backends` (list) and `key_custody.default_backend`,
+  both applied live. A one-time migration (marker row
+  `migration.key_custody_per_store`) carries the old effective value over
+  and labels every existing store with it, so nothing changes for an
+  instance that doesn't touch the new settings.
+- Part 5: `CustodyRouter` is itself a `KeyCustody`: every existing caller
+  keeps working, and it routes each handle to the backend that issued it.
+  Disabling a backend drops its stores' handles; they're left unserved
+  (reported as `custody_disabled`) and come back from their sealed keys
+  when it's enabled again. Nothing is ever deleted by disabling.
+- Part 5: a store moves with `PUT /api/v1/admin/tenant/key-custody` and
+  its keys entered again. The keys must match the store's own wallet
+  (spend key, view key and network compared against the primary address);
+  the new registration is made and the row updated before the old one is
+  removed, so there is always a valid handle. A request that finds its
+  handle gone mid-flight re-resolves it up to 3 times (order creation,
+  payment lookup); the scan loop's per-store cursor already covers a
+  skipped tick.
+- Part 5: `/status` gains `key_custody` (each enabled backend and whether
+  it answers, with a 2s deadline) and the unserved reasons
+  `custody_disabled`/`custody_unavailable`; monokulo alerts the owner.
+- Part 5: `GET /api/v1/admin/key-custody` lists enabled backends with a
+  plain description and the default. It's on the private engine API, so
+  monokulo proxies it; no auth needed beyond reaching the engine.
+
 ## Baseline
 
 `cargo test --workspace` on `main` (43d7c53 + dc2d976): 913 passed,
@@ -137,10 +164,14 @@ After 02b0d0f: 994 passed, 0 failed, 20 ignored.
 After c51dc26: 1000 passed, 0 failed, 20 ignored.
 After 8830c92: 1011 passed, 0 failed, 21 ignored.
 After d7e7883: 1018 passed, 0 failed, 21 ignored.
+After part 5 engine side: 1031 passed, 0 failed, 21 ignored.
 
 ## Current step
 
-Part 5 (per-store key custody): 5.1 custody registry + per-tenant
-resolution + migration of key_custody.backend, 5.2 enabled/default
-settings live, 5.3 engine API to choose/switch, 5.4-5.7 monokulo. Apply the
-independent review of 8830c92/66f32ea when it reports.
+Part 5 monokulo side: backend choice when adding/connecting a store (only
+when more than one backend is enabled), a "Key storage" section on the
+store settings page with a no-JS switch form (keys never echoed back),
+bootstrap CLI `--key-custody-backend`. Then the review items of
+8830c92/66f32ea/d7e7883 (2: Limited body; 3: catching_up threshold and
+no_reachable_node from cooldown; 4: loop managers tested; minors), 1.5,
+part 6.

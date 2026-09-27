@@ -94,6 +94,14 @@ pub struct EngineStatusResponse {
     /// Every store that can't be scanned right now, and why (task 3.7):
     /// monokulo shows each one's owner an alert.
     pub unserved_tenants: Vec<UnservedTenant>,
+    /// Each enabled key custody backend and whether it answers (task 5.5).
+    pub key_custody: Vec<CustodyBackendStatus>,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct CustodyBackendStatus {
+    pub backend: String,
+    pub error: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -101,7 +109,9 @@ pub struct UnservedTenant {
     pub public_key: String,
     pub network: String,
     /// `"no_reachable_node"` (its network has no node configured, or none
-    /// answers) or `"catching_up"` (it fell behind and is being caught up).
+    /// answers), `"catching_up"` (it fell behind and is being caught up),
+    /// `"custody_disabled"` (its keys are in a key custody backend that is
+    /// turned off) or `"custody_unavailable"` (that backend doesn't answer).
     pub reason: &'static str,
     /// For `catching_up`: how many blocks behind.
     pub blocks_behind: Option<u64>,
@@ -217,7 +227,15 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
     let loop_restarts =
         shared::supervise::restart_counts().into_iter().map(|(name, restarts)| LoopRestarts { name, restarts }).collect();
     let (due, oldest) = state.store.lock().webhook_backlog(now).unwrap_or((0, None));
-    let unserved_tenants = unserved_tenants(&state, &network_views);
+    let key_custody: Vec<CustodyBackendStatus> = state
+        .key_custody
+        .backend_health()
+        .await
+        .into_iter()
+        .map(|(backend, error)| CustodyBackendStatus { backend, error })
+        .collect();
+    let mut unserved_tenants = unserved_tenants(&state, &network_views);
+    unserved_tenants.extend(custody_unserved_tenants(&state, &key_custody));
     Json(EngineStatusResponse {
         networks: network_views,
         poll_interval_secs,
@@ -225,8 +243,29 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
         loop_restarts,
         webhook_backlog: WebhookBacklog { due, oldest_waiting_secs: oldest.map(|at| now - at) },
         unserved_tenants,
+        key_custody,
     })
     .into_response()
+}
+
+/// Stores whose keys are in a backend that is turned off or not answering
+/// (task 5.5). Only with a router: a single backend has no per-store choice.
+fn custody_unserved_tenants(state: &AppState, health: &[CustodyBackendStatus]) -> Vec<UnservedTenant> {
+    if health.is_empty() {
+        return Vec::new();
+    }
+    let tenants = state.store.lock().tenant_custody_backends().unwrap_or_default();
+    tenants
+        .into_iter()
+        .filter_map(|(public_key, network, backend)| {
+            let reason = match health.iter().find(|h| h.backend == backend) {
+                None => "custody_disabled",
+                Some(h) if h.error.is_some() => "custody_unavailable",
+                Some(_) => return None,
+            };
+            Some(UnservedTenant { public_key, network, reason, blocks_behind: None })
+        })
+        .collect()
 }
 
 /// Stores that can't be scanned right now (task 3.7): those on a network

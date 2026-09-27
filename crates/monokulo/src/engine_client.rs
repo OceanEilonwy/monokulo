@@ -682,7 +682,8 @@ pub struct EngineStatusResponse {
 pub struct UnservedTenant {
     pub public_key: String,
     pub network: String,
-    /// `"no_reachable_node"` or `"catching_up"`.
+    /// `"no_reachable_node"`, `"catching_up"`, `"custody_disabled"` or
+    /// `"custody_unavailable"`.
     pub reason: String,
     #[serde(default)]
     pub blocks_behind: Option<u64>,

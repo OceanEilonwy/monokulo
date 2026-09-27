@@ -21,14 +21,15 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
 
-use key_custody_service::client::SocketKeyCustody;
 use monero::Network;
 use scanner::cli::{self, Action};
-use scanner::engine_settings::{CustodyBackend, CustodyConfig, Daemons, EngineSettings, RuntimeConfig, StoreSettings};
+use scanner::engine_settings::{
+    migrate_key_custody_setting, CustodyConfig, CustodyReloadable, Daemons, EngineSettings, RuntimeConfig, StoreSettings,
+};
 use scanner::http::instance_admin::ensure_admin_token_seeded;
 use scanner::http::rate_limit::RateLimiter;
 use scanner::http::{build_router, now_unix, AppState};
-use scanner::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
+use scanner::key_custody::{CustodyRouter, KeyCustody, WalletHandle};
 use scanner::local_admin;
 use scanner::network::network_str;
 use scanner::scanner::revalidate_recent_double_spend_voids;
@@ -53,9 +54,23 @@ fn open_store() -> Store {
 /// Builds the runtime with `server.worker_threads` threads (task 2.8: read
 /// before the runtime exists, so it applies at the next start), then runs.
 fn main() {
-    let worker_threads = {
-        let store = open_store().into_shared();
-        live_settings::read_sync::<RuntimeConfig>(&StoreSettings(store)).worker_threads
+    let raw: Vec<String> = std::env::args().skip(1).collect();
+    let action = cli::parse_args(&raw).unwrap_or_else(|e| {
+        eprintln!("{e}\n\nRun with --help for usage.");
+        std::process::exit(1);
+    });
+    if matches!(action, Action::Help) {
+        print!("{}", cli::HELP_TEXT);
+        std::process::exit(0);
+    }
+    // Only the server reads its thread count; the one-off commands don't
+    // need more than the default.
+    let worker_threads = match action {
+        Action::RunServer { .. } => {
+            let store = open_store().into_shared();
+            live_settings::read_sync::<RuntimeConfig>(&StoreSettings(store)).worker_threads
+        }
+        _ => 2,
     };
     let runtime = match tokio::runtime::Builder::new_multi_thread().worker_threads(worker_threads).enable_all().build() {
         Ok(runtime) => runtime,
@@ -64,16 +79,11 @@ fn main() {
             std::process::exit(1);
         }
     };
-    runtime.block_on(run());
+    runtime.block_on(run(action));
 }
 
 #[allow(clippy::expect_used, reason = "boot-time: a listener that can't bind or a server that can't start ends the process")]
-async fn run() {
-    let raw: Vec<String> = std::env::args().skip(1).collect();
-    let action = cli::parse_args(&raw).unwrap_or_else(|e| {
-        eprintln!("{e}\n\nRun with --help for usage.");
-        std::process::exit(1);
-    });
+async fn run(action: Action) {
 
     let strict_tls = match action {
         Action::Help => {
@@ -114,9 +124,18 @@ async fn run() {
         }
         Action::BootstrapWallet(args) => {
             let store = open_store().into_shared();
+            if let Err(e) = migrate_key_custody_setting(&store.lock()) {
+                eprintln!("failed to move key custody settings to per-store custody: {e}");
+                std::process::exit(1);
+            }
             let custody = live_settings::read_sync::<CustodyConfig>(&StoreSettings(store.clone()));
-            let backend = custody.backend.as_str().to_string();
-            let key_custody = build_key_custody(&custody).await;
+            let backend = custody.default.as_str().to_string();
+            let router = Arc::new(CustodyRouter::default());
+            if let Err(e) = apply_custody(&router, &custody).await {
+                eprintln!("{e}");
+                std::process::exit(1);
+            }
+            let key_custody: Arc<dyn KeyCustody> = router;
             let bootstrapped = {
                 let store = store.lock();
                 local_admin::bootstrap_wallet(&store, &key_custody, &backend, args).await
@@ -149,12 +168,25 @@ async fn run() {
         );
     }
 
+    match migrate_key_custody_setting(&store.lock()) {
+        Ok(Some(done)) => println!("{done}"),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("failed to move key custody settings to per-store custody: {e}");
+            std::process::exit(1);
+        }
+    }
+
     // Every setting, live (admin_settings_v2.md part 1). Node clients are
     // built into `daemons` from the saved node settings, and rebuilt whenever
-    // they are saved; the rate limiter follows its setting the same way.
+    // they are saved; the rate limiter and the key custody backends (part 5)
+    // follow their settings the same way.
     let daemons = Daemons::default();
     let admin_rate_limiter = Arc::new(RateLimiter::new(1));
-    let engine_settings = match EngineSettings::load(store.clone(), daemons.clone(), strict_tls, admin_rate_limiter.clone()).await {
+    let router = Arc::new(CustodyRouter::default());
+    let engine_settings =
+        match EngineSettings::load(store.clone(), daemons.clone(), strict_tls, router.clone(), admin_rate_limiter.clone()).await
+        {
         Ok(settings) => settings,
         Err(e) => {
             eprintln!("failed to load settings: {e}");
@@ -171,9 +203,8 @@ async fn run() {
         );
     }
 
-    let custody = engine_settings.custody.load();
-    let key_custody: Arc<dyn KeyCustody> = build_key_custody(&custody).await;
-    let key_custody_backend = custody.backend.as_str().to_string();
+    let key_custody: Arc<dyn KeyCustody> = router.clone();
+    let key_custody_backend = router.default_backend();
     let scanner_status = scanner_status::new_scanner_status_map();
     let wallet_handles = Arc::new(RwLock::new(register_all_tenants(&store, &key_custody).await));
 
@@ -249,79 +280,17 @@ async fn run() {
 // scanning/webhook delivery while the HTTP server keeps serving happily,
 // with no signal short of a merchant eventually complaining).
 
-/// Builds the one `Arc<dyn KeyCustody>` this whole process shares - `"plain"`
-/// (the default, unchanged behavior: key material lives in this process) or
-/// `"socket"` (WBS 2.1.3: forwards every call to a separate `key-custody-server`
-/// process). The instance-admin settings API's own save-time validation
-/// (`http::instance_admin::validate_scalar` plus its cross-field check) has
-/// already confirmed `key_custody.backend` is one of these two values, and that
-/// `socket_path` is present under `"socket"`, *for whatever was saved through
-/// it* - but a value reaching this function could still be a stale default or a
-/// hand-edited row that predates that check, so the `expect` below documents the
-/// invariant rather than silently producing a `SocketKeyCustody::connect` call
-/// against an empty path one layer down, with a worse error.
-///
-/// There is exactly one `KeyCustody` for the whole running instance - not one per
-/// tenant. `tenants.key_custody_backend` (a column on each tenant row, unrelated
-/// to this setting despite the similar name) looks at first glance like it might
-/// support per-tenant backend choice instead, but it doesn't - see the (still
-/// accurate) reasoning `docs/DESIGN.md` §8.1 records for why: it exists so a
-/// *future* migration to a different backend can detect a mismatch between a
-/// stored row's sealing backend and the backend actually running, not to select
-/// one. This setting makes the *whole process* pick one backend.
-async fn build_key_custody(custody: &CustodyConfig) -> Arc<dyn KeyCustody> {
-    match (custody.backend, &custody.socket_path) {
-        (CustodyBackend::Socket, Some(socket_path)) => {
-            Arc::new(connect_socket_key_custody(&socket_path.to_string_lossy()).await)
-        }
-        // `CustodyConfig` refuses socket without a path, so this is plain.
-        _ => Arc::new(PlainKeyCustody::default()),
+/// Builds the router's backends from `custody` once, for the one-off CLI
+/// commands (the server applies them through its settings registry).
+async fn apply_custody(router: &Arc<CustodyRouter>, custody: &CustodyConfig) -> Result<(), String> {
+    use live_settings::Reloadable;
+    let reloadable = CustodyReloadable { router: router.clone() };
+    let (prepared, warnings) = reloadable.prepare(custody, custody).await.map_err(|e| e.to_string())?;
+    for warning in warnings {
+        eprintln!("{}", warning.message);
     }
-}
-
-/// How many times [`connect_socket_key_custody`] retries a failed connect before
-/// giving up, and how long it sleeps between attempts. 10 attempts, 500ms apart,
-/// bound the whole retry window to under 5 seconds - generous next to an ordinary
-/// process-startup race, tight next to how long an operator would tolerate a
-/// service hanging at boot before assuming something is actually wrong.
-const KEY_CUSTODY_CONNECT_ATTEMPTS: u32 = 10;
-const KEY_CUSTODY_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(500);
-
-/// Connects to a `key-custody-server` at `socket_path`, retrying briefly before
-/// giving up - never panicking, never hanging indefinitely. See this repo's own
-/// prior art (`key-custody-server/tests/socket_key_custody.rs::connect_with_retry`)
-/// for why a short, bounded retry loop - not a single attempt, and not retrying
-/// forever - is the right shape for this specific startup race between two
-/// independently started processes.
-async fn connect_socket_key_custody(socket_path: &str) -> SocketKeyCustody {
-    let mut last_err = None;
-    for attempt in 1..=KEY_CUSTODY_CONNECT_ATTEMPTS {
-        match SocketKeyCustody::connect(socket_path).await {
-            Ok(client) => return client,
-            Err(e) => {
-                if attempt < KEY_CUSTODY_CONNECT_ATTEMPTS {
-                    eprintln!(
-                        "key-custody-server not reachable yet at {socket_path} (attempt \
-                         {attempt}/{KEY_CUSTODY_CONNECT_ATTEMPTS}): {e} - retrying in \
-                         {KEY_CUSTODY_CONNECT_RETRY_DELAY:?}"
-                    );
-                    tokio::time::sleep(KEY_CUSTODY_CONNECT_RETRY_DELAY).await;
-                }
-                last_err = Some(e);
-            }
-        }
-    }
-    // Start anyway (task 5.8): stores on this backend aren't scanned until
-    // the server is reachable, then the client connects by itself and the
-    // scan loop registers their keys and catches them up. Exiting here would
-    // stop every other store too.
-    eprintln!(
-        "key-custody-server at {socket_path} is not reachable after {KEY_CUSTODY_CONNECT_ATTEMPTS} attempts \
-         ({}); starting anyway and connecting when it appears. Is key-custody-server running, and is this the \
-         socket path it was started with?",
-        last_err.map(|e| e.to_string()).unwrap_or_default()
-    );
-    SocketKeyCustody::not_connected_yet(socket_path, key_custody_service::client::DEFAULT_CALL_TIMEOUT)
+    reloadable.install(prepared).await;
+    Ok(())
 }
 
 /// Eagerly registers every non-disabled tenant's sealed key material with
@@ -343,7 +312,7 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
     };
     let mut handles = HashMap::new();
     for tenant in tenants {
-        match key_custody.unseal_and_register(&tenant.sealed_key_material).await {
+        match key_custody.unseal_and_register_in(&tenant.key_custody_backend, &tenant.sealed_key_material).await {
             Ok(handle) => {
                 handles.insert(tenant.id, handle);
             }

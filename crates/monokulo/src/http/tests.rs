@@ -1081,3 +1081,22 @@ async fn a_store_catching_up_gets_a_gentler_alert_and_it_goes_away_once_it_has()
     crate::http::status_page::seed_status_for_tests(&state, status_with(vec![]));
     assert!(super::page_chrome(&state, Some(&owner), "/dashboard").alerts.is_empty());
 }
+
+#[tokio::test]
+async fn a_store_whose_key_storage_is_off_or_down_gets_an_alert_saying_so() {
+    let (state, owner, _) = state_with_owner_and_store("pk_shop");
+    for (reason, expected) in [("custody_disabled", "turned off"), ("custody_unavailable", "isn't answering")] {
+        crate::http::status_page::seed_status_for_tests(
+            &state,
+            status_with(vec![crate::engine_client::UnservedTenant {
+                public_key: "pk_shop".into(),
+                network: "mainnet".into(),
+                reason: reason.into(),
+                blocks_behind: None,
+            }]),
+        );
+        let alerts = super::page_chrome(&state, Some(&owner), "/dashboard").alerts;
+        assert_eq!(alerts.len(), 1);
+        assert!(alerts[0].contains("shop.example.com") && alerts[0].contains(expected), "{alerts:?}");
+    }
+}

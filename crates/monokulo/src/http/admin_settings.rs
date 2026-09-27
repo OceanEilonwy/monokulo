@@ -679,7 +679,7 @@ mod tests {
     }
 
     /// The scanner half of the same requirement - every one of
-    /// `scanner::settings::ALL_SCALAR`'s 16 keys, saved together through the
+    /// `scanner::engine_settings::ALL`'s keys, saved together through the
     /// real proxy `POST` and confirmed to round-trip via a real, separately
     /// spawned scanner instance (this monokulo page holds none of this state
     /// itself - see this module's own doc comment).
@@ -691,7 +691,8 @@ mod tests {
         let cookie = admin_session_cookie(&router).await;
 
         let new_values: &[(&str, &str)] = &[
-            ("key_custody.backend", "plain"),
+            ("key_custody.enabled_backends", "plain"),
+            ("key_custody.default_backend", "plain"),
             ("key_custody.socket_path", ""),
             ("payment.confirmations_required", "5"),
             ("payment.order_expiry_minutes", "45"),

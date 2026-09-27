@@ -465,6 +465,17 @@ impl Store {
         Ok(rows)
     }
 
+    /// Every active tenant's (public key, network, key custody backend).
+    pub fn tenant_custody_backends(&self) -> Result<Vec<(String, String, String)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT public_key, network, key_custody_backend FROM tenants WHERE disabled_at_utc IS NULL ORDER BY public_key",
+        )?;
+        let rows = stmt
+            .query_map([], |row| Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, String>(2)?)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// `lagging_tenants`, by public key: (public key, cursor).
     pub fn lagging_tenant_keys(&self, network: &str) -> Result<Vec<(String, u64)>> {
         let mut stmt = self.conn.prepare(
@@ -477,6 +488,26 @@ impl Store {
             .query_map(params![network], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Sets every tenant's `key_custody_backend` (the one-time move to
+    /// per-store custody, `engine_settings::migrate_key_custody_setting`).
+    pub fn relabel_all_tenants_key_custody(&self, backend: &str) -> Result<()> {
+        self.conn.execute("UPDATE tenants SET key_custody_backend = ?1", params![backend])?;
+        Ok(())
+    }
+
+    /// Moves one tenant to another key custody backend with its newly sealed
+    /// keys, in one statement (task 5.3).
+    pub fn update_tenant_key_custody(&self, tenant_id: &str, backend: &str, sealed: &[u8]) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE tenants SET key_custody_backend = ?2, sealed_key_material = ?3 WHERE id = ?1",
+            params![tenant_id, backend, sealed],
+        )?;
+        if changed == 0 {
+            return Err(StoreError::NotFound);
+        }
+        Ok(())
     }
 
     /// How many enabled tenants each network has, for the admin page (tasks
