@@ -35,6 +35,8 @@ function shortId(id: string): string {
 const label = (o: Order) => o.merchant_order_id || shortId(o.order_id);
 /** An exact XMR amount without trailing zeros (`0.052431000000` → `0.052431`). */
 const trimXmr = (value: string) => value.includes('.') ? value.replace(/0+$/, '').replace(/\.$/, '') : value;
+/** An order's amount as shown: an XMR amount without trailing zeros. */
+const shownAmount = (o: { amount: string; currency: string }) => o.currency === 'XMR' ? trimXmr(o.amount) : o.amount;
 const plainAmount = (digits: string) => {
   const padded = digits.padStart(config.decimals + 1, '0');
   return config.decimals ? `${padded.slice(0, -config.decimals) || '0'}.${padded.slice(-config.decimals)}` : padded;
@@ -486,14 +488,17 @@ function App() {
       </span>
     </header>
 
-    <Show when={screen() === 'keypad' && background().length > 0}>
-      <section class="pos-stack" aria-label="Background orders">
+    {/* Above the keypad on a phone; a sidebar beside the keypad and the
+        payment view on a tablet or desktop (hidden beside a phone's
+        payment view, which has no room for it). */}
+    <Show when={screen() !== 'list' && background().length > 0}>
+      <section class={['pos-stack', { 'beside-payment': screen() === 'payment' }]} aria-label="Background orders">
         <div class="pos-stack-heading"><strong>Background orders · {background().length}</strong><button type="button" onClick={showList}>View all →</button></div>
         <div class="pos-stack-scroll" tabindex="0" aria-label="Background orders, scroll sideways" onWheel={event => { const el = event.currentTarget; if (el.scrollWidth > el.clientWidth && Math.abs(event.deltaY) > Math.abs(event.deltaX)) { el.scrollLeft += event.deltaY; event.preventDefault(); } }}>
           <For each={background()} keyed={o => o.order_id}>{order => <button type="button" class={['pos-stack-card', `state-${stateOf(order(), offline())}`]}
-            title={`${label(order())} · ${statusName[stateOf(order(), offline())]} · ${order().amount} ${order().currency}`}
-            aria-label={`Open ${label(order())}, ${statusName[stateOf(order(), offline())]}, ${order().amount} ${order().currency}`} onClick={() => void openOrder(order())}>
-            <StatusIcon order={order()} offline={offline()}/><span class="pos-stack-ref">{label(order())}</span><span class="pos-stack-amount">{order().amount}</span>
+            title={`${label(order())} · ${statusName[stateOf(order(), offline())]} · ${shownAmount(order())} ${order().currency}`}
+            aria-label={`Open ${label(order())}, ${statusName[stateOf(order(), offline())]}, ${shownAmount(order())} ${order().currency}`} onClick={() => void openOrder(order())}>
+            <StatusIcon order={order()} offline={offline()}/><span class="pos-stack-ref">{label(order())}</span><span class="pos-stack-amount">{shownAmount(order())}</span>
           </button>}</For>
         </div>
       </section>
@@ -569,7 +574,7 @@ function App() {
             <div><h2>{label(order())}</h2><p>{orderLine(order())}</p></div>
             <StatusBadge order={order()} offline={offline() && !terminal(order())}/>
           </div>
-          <p class="pos-order-sum">{order().amount} <span>{order().currency}</span></p>
+          <p class="pos-order-sum">{shownAmount(order())} <span>{order().currency}</span></p>
           <div class="pos-order-foot"><small>{cardDetail(order())}</small><button type="button" class="pos-link" onClick={() => void openOrder(order())}>Open →</button></div>
         </article>}</For></div>
       </main>

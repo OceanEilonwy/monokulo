@@ -523,6 +523,9 @@ test('payment countdown keeps ticking down while the customer finds their wallet
 
 test('merchant moves between the keypad, the stack and the order list', async ({ page, request }) => {
   await ringUp(request, 12, 'Queue');
+  // A narrow desktop window: the stack is a strip above the keypad (on a
+  // wider screen it is a sidebar), and a mouse wheel scrolls it sideways.
+  await page.setViewportSize({ width: 480, height: 820 });
   await page.goto(posUrl());
   await page.getByRole('button', { name: 'Background order', exact: true }).click();
   // On a desktop till the mouse wheel scrolls the stack of background orders sideways.
@@ -637,4 +640,44 @@ test('a search with no match in this session links to searching all orders', asy
   await expect(page.getByRole('heading', { name: 'Orders' })).toBeVisible();
   await expect(page.getByRole('searchbox', { name: 'Search orders' })).toHaveValue('wc-1042');
   await expect(page.getByText('No orders match “wc-1042”.')).toBeVisible();
+});
+
+test('on a tablet or desktop the POS uses the whole screen, with the open orders beside the keypad and payment', async ({ page, request }) => {
+  await ringUp(request, 2, 'Table');
+  const box = selector => page.locator(selector).first().evaluate(el => { const r = el.getBoundingClientRect(); return { x: r.x, y: r.y, w: r.width, h: r.height, right: r.right }; });
+  const noOuterScroll = () => page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1 && document.documentElement.scrollHeight <= innerHeight + 1);
+  await page.goto(posUrl());
+  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  await expect(page.locator('.pos-stack-card')).toHaveCount(3);
+  for (const [shape, width, height] of [['iPad portrait', 820, 1180], ['iPad landscape', 1180, 820], ['desktop', 1280, 800]]) {
+    await page.setViewportSize({ width, height });
+    await expect(page.locator('.pos-keypad')).toBeVisible();
+    const top = await box('.pos-top');
+    expect(top.w, `${shape}: top bar across the screen`).toBeGreaterThanOrEqual(width - 1);
+    const side = await box('.pos-stack');
+    const keypad = await box('.pos-keypad');
+    expect(side.x, `${shape}: sidebar at the left`).toBeLessThan(1);
+    expect(side.h, `${shape}: sidebar full height`).toBeGreaterThan(height - top.h - 2);
+    expect(keypad.x, `${shape}: keypad beside the sidebar`).toBeGreaterThanOrEqual(side.right - 1);
+    expect(await noOuterScroll(), `${shape}: keypad`).toBe(true);
+    await page.locator('.pos-stack-card').first().click();
+    await expect(page.locator('.pos-pay-card')).toBeVisible();
+    expect((await box('.pos-stack')).x, `${shape}: sidebar beside the payment`).toBeLessThan(1);
+    const card = await box('.pos-pay-card');
+    const heading = await box('.pos-order-heading');
+    if (width >= 1000) expect(heading.x, `${shape}: order and actions beside the card`).toBeGreaterThan(card.right - 1);
+    else expect(heading.y, `${shape}: card under the heading`).toBeLessThan(card.y);
+    expect(await noOuterScroll(), `${shape}: payment`).toBe(true);
+    await captureCoverageStage(page, `pos-tablet-${shape.replace(/ /g, '-').toLowerCase()}`, test.info());
+    await page.getByRole('button', { name: 'Background order', exact: true }).click();
+    await expect(page.locator('.pos-keypad')).toBeVisible();
+  }
+  await page.getByRole('button', { name: 'All orders' }).click();
+  const cards = await page.locator('.pos-order-card').evaluateAll(els => els.map(el => el.getBoundingClientRect().y));
+  expect(new Set(cards.map(Math.round)).size, 'several cards to a row').toBeLessThan(cards.length);
+  // On a phone the payment view has no room for the sidebar.
+  await page.setViewportSize({ width: 390, height: 844 });
+  await page.locator('.pos-order-card').first().getByRole('button', { name: 'Open →' }).click();
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  await expect(page.locator('.pos-stack')).toBeHidden();
 });

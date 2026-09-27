@@ -52,12 +52,7 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
 #pos-root *, #pos-root *::before, #pos-root *::after { box-sizing: border-box; }
 .pos-symbol-defs { position: absolute; width: 0; height: 0; overflow: hidden; }
 
-/* Desktop: the terminal is a column in the middle of the screen, the width
-   of a large phone, rather than stretched across it. */
-@media (min-width: 700px) {
-  body { background: var(--pos-desk); }
-  #pos-root { max-width: 480px; margin: 0 auto; border-inline: 1px solid var(--pos-soft-line); box-shadow: 0 0 40px rgba(0, 0, 0, .08); }
-}
+
 
 /* ---- status colours and symbols (the sketch's status key) ---- */
 .state-pending { --state-bg: #fff6d8; --state-border: #ac7600; --state-ink: #634800; }
@@ -353,8 +348,70 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   }
 }
 
-/* A phone on its side is not a desktop: use the whole screen rather than
-   the desktop's column in the middle. */
+/* Tablets and desktops (at least 700 x 600): the whole screen, the top bar
+   across it, and the background orders as a sidebar beside the keypad and
+   the payment view rather than a strip above them. */
+@media (min-width: 700px) and (min-height: 600px) {
+  #pos-root {
+    display: grid; grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr);
+    grid-template-areas: "top" "main";
+  }
+  #pos-root:has(> .pos-stack) { grid-template-columns: 300px minmax(0, 1fr); grid-template-areas: "top top" "side main"; }
+  #pos-root > .pos-top { grid-area: top; padding-inline: max(24px, env(safe-area-inset-left)) max(24px, env(safe-area-inset-right)); }
+  #pos-root .pos-store { font-size: 13px; max-width: 40%; }
+  #pos-root > main { grid-area: main; min-height: 0; }
+  #pos-root > .pos-stack {
+    grid-area: side; display: flex; flex-direction: column; min-height: 0; padding: 18px 16px;
+    border-bottom: 0; border-right: 1px solid var(--pos-soft-line);
+  }
+  #pos-root .pos-stack-heading { font-size: 13px; margin-bottom: 12px; }
+  #pos-root .pos-stack-scroll {
+    flex: 1; min-height: 0; flex-direction: column; gap: 8px; overflow-x: hidden; overflow-y: auto; scroll-snap-type: none; padding: 0 4px 4px 0;
+  }
+  #pos-root .pos-stack-card { width: 100%; max-width: none; height: 48px; gap: 10px; padding: 0 12px 0 10px; }
+  #pos-root .pos-stack-card .pos-icon { width: 24px; height: 24px; }
+  #pos-root .pos-stack-ref { flex: 1; max-width: none; font-size: 14px; text-align: left; }
+  #pos-root .pos-stack-amount { font-size: 13px; }
+
+  /* The keypad: centred in its space, larger keys. */
+  #pos-root .pos-keypad, #pos-root .pos-keypad.has-stack { max-width: 520px; gap: 14px; padding: 28px 24px 24px; }
+  #pos-root .pos-keypad.has-stack .pos-amount { font-size: 48px; }
+  #pos-root .pos-keypad.has-stack .pos-amount.len-2 { font-size: 36px; }
+  #pos-root .pos-keypad.has-stack .pos-amount.len-3 { font-size: 28px; }
+  #pos-root .pos-keypad.has-stack .pos-amount.len-4 { font-size: 22px; }
+  #pos-root .pos-keys, #pos-root .pos-keypad.has-stack .pos-keys { max-height: 560px; gap: 12px; }
+  #pos-root .pos-keys button { font-size: 34px; }
+
+  #pos-root .pos-payment { max-width: 560px; padding: 24px 24px max(20px, env(safe-area-inset-bottom)); gap: 12px; }
+  #pos-root .pos-qr { width: 200px; }
+
+  /* The order list: a grid of cards across the screen. */
+  #pos-root .pos-list { max-width: 1100px; padding: 28px 24px 24px; }
+  #pos-root .pos-list-items { display: grid; grid-template-columns: repeat(auto-fill, minmax(300px, 1fr)); align-items: start; }
+}
+/* Wide enough (a tablet on its side, a desktop): the payment card and the
+   order's actions side by side, which also keeps both on screen when the
+   height is what is short. */
+@media (min-width: 1000px) and (min-height: 600px) {
+  #pos-root .pos-payment {
+    display: grid; max-width: 960px; column-gap: 28px; align-content: start;
+    grid-template-columns: minmax(0, 1.2fr) minmax(0, 1fr);
+    grid-template-rows: auto auto auto auto 1fr;
+    grid-template-areas: "card heading" "card error" "card primary" "card secondary" "card hint";
+  }
+  #pos-root .pos-order-heading { grid-area: heading; }
+  #pos-root .pos-pay-card, #pos-root .pos-outcome { grid-area: card; align-self: start; }
+  #pos-root .pos-payment > .pos-error { grid-area: error; }
+  #pos-root .pos-payment > .pos-primary { grid-area: primary; }
+  #pos-root .pos-payment > .pos-cancel { grid-area: secondary; }
+  #pos-root .pos-payment > .pos-action-hint { grid-area: hint; align-self: start; }
+}
+/* Beside a phone's payment view there is no room for the stack. */
+@media not ((min-width: 700px) and (min-height: 600px)) {
+  #pos-root > .pos-stack.beside-payment { display: none; }
+}
+
+/* A phone on its side is not a desktop: use the whole screen. */
 @media (min-width: 700px) and (max-height: 480px) and (orientation: landscape) {
   #pos-root { max-width: none; margin: 0; border-inline: 0; box-shadow: none; }
 }

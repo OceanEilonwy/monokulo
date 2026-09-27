@@ -1,10 +1,13 @@
-// A UI stage for the coverage gallery. A whole page is captured in the three
-// shapes it is used in - a phone upright, a phone on its side, a desktop -
+// A UI stage for the coverage gallery. A whole page is captured in the
+// shapes it is used in - a phone upright and on its side, a tablet (iPad Air
+// size) upright and on its side, a desktop -
 // then put back to the size the test had; anything smaller (a frame, one
 // element) is captured once as it is.
 const VIEWPORTS = [
   ['portrait', { width: 390, height: 844 }],
   ['landscape', { width: 844, height: 390 }],
+  ['tablet-portrait', { width: 820, height: 1180 }],
+  ['tablet-landscape', { width: 1180, height: 820 }],
   ['desktop', { width: 1280, height: 800 }],
 ];
 
