@@ -28,9 +28,13 @@ commits. Nothing is pushed.
 | WBS written and reviewed (two passes) | done | 7b1e47a | |
 | Part 7 review, folded into WBS | done | 6cd5432 | D10 redesigned: `closed_at`, index sets in the custody API, catch-up window |
 | 7.1 panics can't take the engine down | done | 97817e1 | parking_lot locks in engine, test support and monokulo; 3 new tests |
-| 5.0 per-store scan cursor | done, under independent review | 6ded980 | 11 new tests incl. randomised outages/reorgs; `/status` lagging report deferred to 3.7 |
+| 5.0 per-store scan cursor | done, reviewed, fixes applied | 6ded980, 6f5e5cc | review found 2 blocking bugs (grace-period payment skipped by snap; disabled tenant orders never expired), fixed with tests |
 | 7.12 load and chaos harness (base) | partly: the randomised outage/reorg test in 5.0 is its seed; scale runs still to do | | |
-| 7.8 fair webhook delivery | in progress | | |
+| 7.8 fair webhook delivery | done | a9dee72 | |
+| 7.9 supervisor backoff + tick deadline | done | 8762803, 6f5e5cc | restart counts on /status |
+| 7.4 fair concurrent scanning | done | 6f5e5cc | per-network loops; per-call 10s deadline; per-network isolation not unit-tested (loops live in main.rs; covered once 1.4 moves boot into the library) |
+| 1.1 live-settings crate | delegated to a sub-agent in a worktree | | verify its work before merging |
+| 7.6 node failures | next | | |
 
 ## Decisions made while working
 
@@ -55,6 +59,16 @@ reported at the end.)
 - 5.0: order of work changed slightly: 7.12's full scale harness comes
   after 7.2/7.3/7.4, which it measures. The randomised correctness test
   landed with 5.0.
+- Review of 5.0 (independent agent): applied all blocking and should-fix
+  items. Not applied: genesis-reorg backlog loss (impossible on a real
+  chain); deep stale hash between the reorg window and the prune window
+  pausing catch-up (recovers by itself once pruned).
+- 7.4: within a tick, tenants are scanned concurrently in one task. That
+  helps slow I/O backends (socket) but gives no CPU parallelism for the
+  in-process backend; that is 7.2.
+- Transactions with no tx public key or with script outputs are treated as
+  "no match" by `PlainKeyCustody` (they can't pay any wallet); other
+  output-check errors still fail the scan for that tenant.
 - D10 design details (after review): orders get `closed_at_utc`; the
   window is "non-terminal, or closed within the grace period"; the custody
   API gains an index-set scan call plus a protocol version, falling back
@@ -67,10 +81,11 @@ reported at the end.)
 (the monokulo build script requires the POS app's node_modules).
 
 After 7.1: 916 passed, 0 failed, 20 ignored.
+After 6f5e5cc: 940 passed, 0 failed, 20 ignored.
 
 ## Current step
 
-5.0 committed (6ded980) and sent to an independent reviewer; apply its
-findings when it reports. Meanwhile 7.8 (fair webhook delivery,
-`crates/scanner/src/webhook_delivery.rs`), then 7.4 (fair, parallel
-scanning).
+7.6 (node cooldown, per-call deadline, one node per tick, response size
+limit) in `daemon_fallback.rs`/`daemon_rpc.rs`. The live-settings crate
+(1.1) is being built by a sub-agent in a separate worktree; when it
+reports, review its diff and tests, then merge into this branch.
