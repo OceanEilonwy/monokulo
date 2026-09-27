@@ -213,5 +213,16 @@ pub async fn dispatch(
                 .map_err(KeyCustodyErrorWire::from);
             KeyCustodyResponse::ScanTxOutputs(result)
         }
+        KeyCustodyRequest::ScanTxOutputsForIndices(req) => {
+            let handle = WalletHandle::try_from(&req.handle)?;
+            let tx = Transaction::try_from(&req.tx)?;
+            let indices = scanner::key_custody::ScanIndices::new(req.minors);
+            let result = custody
+                .scan_tx_outputs_for_indices(handle, &tx, &indices)
+                .await
+                .map(|matches| matches.into_iter().map(MatchedOutputWire::from).collect())
+                .map_err(KeyCustodyErrorWire::from);
+            KeyCustodyResponse::ScanTxOutputsForIndices(result)
+        }
     })
 }

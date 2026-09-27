@@ -359,7 +359,6 @@ const KEY_CUSTODY_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(500);
 /// for why a short, bounded retry loop - not a single attempt, and not retrying
 /// forever - is the right shape for this specific startup race between two
 /// independently started processes.
-#[allow(clippy::expect_used, reason = "the retry loop above always records an error before giving up")]
 async fn connect_socket_key_custody(socket_path: &str) -> SocketKeyCustody {
     let mut last_err = None;
     for attempt in 1..=KEY_CUSTODY_CONNECT_ATTEMPTS {
@@ -378,14 +377,17 @@ async fn connect_socket_key_custody(socket_path: &str) -> SocketKeyCustody {
             }
         }
     }
-    let last_err = last_err.expect("loop always records an error before exiting without returning");
+    // Start anyway (task 5.8): stores on this backend aren't scanned until
+    // the server is reachable, then the client connects by itself and the
+    // scan loop registers their keys and catches them up. Exiting here would
+    // stop every other store too.
     eprintln!(
-        "failed to connect to key-custody-server at {socket_path} after \
-         {KEY_CUSTODY_CONNECT_ATTEMPTS} attempts (~{:?} total): {last_err}\n\
-         is key-custody-server running, and is this the socket path it was started with?",
-        KEY_CUSTODY_CONNECT_RETRY_DELAY * (KEY_CUSTODY_CONNECT_ATTEMPTS - 1)
+        "key-custody-server at {socket_path} is not reachable after {KEY_CUSTODY_CONNECT_ATTEMPTS} attempts \
+         ({}); starting anyway and connecting when it appears. Is key-custody-server running, and is this the \
+         socket path it was started with?",
+        last_err.map(|e| e.to_string()).unwrap_or_default()
     );
-    std::process::exit(1);
+    SocketKeyCustody::not_connected_yet(socket_path, key_custody_service::client::DEFAULT_CALL_TIMEOUT)
 }
 
 /// Eagerly registers every non-disabled tenant's sealed key material with
@@ -533,11 +535,21 @@ async fn run_scanner_loop(
     // (task 7.3). A panic restarts this loop with a fresh one, which only
     // means one full rescan of the pool.
     let mempool_memory = scanner::scanner::MempoolMemory::default();
+    // Shared by every network's loop, so the handle map is cleared once per
+    // lost-state epoch of the key-custody backend, not once per network.
+    static HANDLED_CUSTODY_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+    let handled_custody_epoch = &HANDLED_CUSTODY_EPOCH;
     loop {
         if last_registration_attempt.is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
             last_registration_attempt = Some(tokio::time::Instant::now());
-            let registered =
-                scanner::scanner::register_missing_wallets(&store, key_custody.as_ref(), &wallet_handles, network_str(network)).await;
+            let registered = scanner::scanner::register_missing_wallets_checking_state(
+                &store,
+                key_custody.as_ref(),
+                &wallet_handles,
+                Some(handled_custody_epoch),
+                network_str(network),
+            )
+            .await;
             if registered > 0 {
                 println!("registered the keys of {registered} tenant(s) on {network:?} that had none");
             }

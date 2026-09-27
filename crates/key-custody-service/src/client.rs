@@ -44,23 +44,20 @@
 //! `call_timeout`, or a response arrived but wasn't valid JSON for the
 //! envelope shape expected - surfaces as `Err(KeyCustodyError::
 //! BackendUnavailable(..))`, never a panic and never an indefinite hang. Once
-//! any of those happens the connection is presumed unsafe to keep using (see
-//! `call`'s doc comment for why) and every subsequent call on the same
-//! `SocketKeyCustody` fails immediately without touching the socket again;
-//! there is no automatic reconnect in this step. That's a deliberate,
-//! documented limitation, not an oversight - transparently reconnecting mid-
-//! stream would mean silently losing whatever in-flight semantics a caller was
-//! relying on (e.g. "this call either reached the real backend or it didn't"),
-//! and building that well is its own piece of work `2.1.3`'s real engine
-//! integration is better placed to drive the requirements for than this step
-//! guessing at them.
+//! any of those happens that one connection is closed; the next call that
+//! needs a connection opens a new one (admin_settings_v2.md task 7.5). So a
+//! restarted server is reached again without a new client. A restarted
+//! server has also lost every wallet registered with it: `check_state`
+//! notices that through a canary wallet, so the engine can register its
+//! wallets again (task 5.8).
 
-use std::path::Path;
+use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::time::Duration;
 
 use monero::{Address, Transaction};
 use shared::key_custody::{
-    KeyCustody, KeyCustodyError, MatchedOutput, Network, SubaddressIndex, WalletHandle,
+    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex, WalletHandle,
     WalletMaterial,
 };
 use tokio::net::UnixStream;
@@ -69,88 +66,102 @@ use tokio::sync::Mutex;
 use crate::protocol::{read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse};
 use crate::{
     DeriveSubaddressRequest, MatchedOutputWire, NetworkWire, RangeWire, RegisterWalletRequest,
-    RemoveWalletRequest, ScanTxOutputsRequest, SealRequest, SealedMaterialWire,
+    RemoveWalletRequest, ScanTxOutputsForIndicesRequest, ScanTxOutputsRequest, SealRequest, SealedMaterialWire,
     SubaddressIndexWire, TransactionWire, UnsealAndRegisterRequest, WalletHandleWire,
     WalletMaterialWire,
 };
 
-/// How long one `call` waits for a response before giving up. Without a bound
-/// here, a wedged or malicious `key-custody-service` process that accepts a
-/// connection and then never answers (or answers a valid length prefix and
-/// then withholds the body) would hang the calling `.await` forever - and
-/// because the connection this type holds is shared, mutex-serialized state
-/// (see the module doc comment), one such call would silently stall *every*
-/// other concurrent caller of the same `SocketKeyCustody` too, forever, with
-/// no error and no log line. Thirty seconds is generous for what should always
-/// be a same-host, in-memory-speed round trip - long enough that ordinary GC/
-/// scheduling jitter never trips it, short enough that a genuinely wedged
-/// backend surfaces as a clear, bounded `BackendUnavailable` instead of an
-/// unbounded stall. `connect_with_timeout` exists for a caller (or a test)
-/// that wants a different bound.
 pub const DEFAULT_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 
-/// `KeyCustody` implementation that forwards every call to a real
-/// `PlainKeyCustody` running behind a `crate::server::KeyCustodyServer` on the
-/// other end of a Unix socket. See the module doc comment for the framing,
-/// concurrency, and error-handling decisions behind this type.
+/// Connections kept to the server at most (task 7.5). One is opened at
+/// connect time; more only when calls overlap, so a single-threaded caller
+/// uses one connection, as before.
+pub const DEFAULT_POOL_SIZE: usize = 4;
+
+/// The canary's key material (task 5.8): a fixed, worthless wallet the
+/// client registers so it can later ask whether the server still has it. If
+/// not, the server lost its memory and every handle it issued is gone.
+const CANARY_VIEW_KEY: [u8; 32] = [
+    0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd, 0xee, 0xff, 0x01, 0x02, 0x03, 0x04,
+    0x05, 0x06, 0x07, 0x08, 0x09, 0x0a, 0x0b, 0x0c, 0x0d, 0x0e, 0x0f, 0x10, 0x01,
+];
+
 pub struct SocketKeyCustody {
-    /// `None` once any call has failed for a transport-level reason - see
-    /// `call`'s doc comment. `Some` holds the one persistent connection this
-    /// client reuses across every method.
-    conn: Mutex<Option<UnixStream>>,
+    socket_path: PathBuf,
+    /// Each slot is one connection, used by one call at a time; `None` until
+    /// (re)opened. A connection that fails is dropped and reopened by the next
+    /// call that needs it, so one bad connection never stops the others and a
+    /// restarted server is reached again without a new client.
+    slots: Vec<Mutex<Option<UnixStream>>>,
     call_timeout: Duration,
+    /// Set once the server has shown it doesn't know the index-set request
+    /// (an older server): index-set scans then use the range request.
+    indices_unsupported: AtomicBool,
+    canary: parking_lot::Mutex<Option<WalletHandle>>,
+    epoch: AtomicU64,
+    state_check: Mutex<()>,
 }
 
 impl SocketKeyCustody {
-    /// Connect to `socket_path` with the default call timeout. Fails cleanly
-    /// (no panic) if nothing is listening there yet, matching the WBS's own
-    /// acceptance test for "the socket is unreachable at connect time."
     pub async fn connect(socket_path: impl AsRef<Path>) -> Result<Self, KeyCustodyError> {
         Self::connect_with_timeout(socket_path, DEFAULT_CALL_TIMEOUT).await
     }
 
-    /// As `connect`, with an explicit per-call timeout instead of
-    /// `DEFAULT_CALL_TIMEOUT` - mainly for tests that want to prove the
-    /// "doesn't hang forever" behaviour without actually waiting 30 seconds.
     pub async fn connect_with_timeout(
         socket_path: impl AsRef<Path>,
         call_timeout: Duration,
     ) -> Result<Self, KeyCustodyError> {
-        let path = socket_path.as_ref();
-        let stream = UnixStream::connect(path).await.map_err(|e| {
-            KeyCustodyError::BackendUnavailable(format!(
-                "connecting to key-custody-service at {}: {e}",
-                path.display()
-            ))
-        })?;
-        Ok(SocketKeyCustody { conn: Mutex::new(Some(stream)), call_timeout })
+        Self::connect_with_pool(socket_path, call_timeout, DEFAULT_POOL_SIZE).await
     }
 
-    /// Send one request and wait for its matching response, holding the
-    /// connection mutex for the round trip.
-    ///
-    /// **Why a failed call poisons the connection rather than trying to keep
-    /// using it.** Once a `write_frame`/`read_frame` pair doesn't complete
-    /// cleanly - an I/O error, a timeout, a peer that closed mid-response, or
-    /// a payload that didn't decode - there is no way to know how many bytes
-    /// of a request or response the peer actually saw. A timeout in
-    /// particular is the sharpest version of this: the peer may still be
-    /// about to write a late response for the call that just timed out, and
-    /// if this client tried another call on the same stream afterwards, that
-    /// stale response's bytes would land at the start of the *next* call's
-    /// expected reply and be misread as if they belonged to it - silent
-    /// framing corruption, not a clean error. Closing the connection (setting
-    /// `conn` to `None`) the moment any of this happens turns that whole class
-    /// of bug into a simple, loud "this `SocketKeyCustody` is dead, make a new
-    /// one" - exactly the "clean error, not a hang, not silent corruption"
-    /// bar the WBS's own acceptance tests hold this module to.
+    pub async fn connect_with_pool(
+        socket_path: impl AsRef<Path>,
+        call_timeout: Duration,
+        pool_size: usize,
+    ) -> Result<Self, KeyCustodyError> {
+        let socket_path = socket_path.as_ref().to_path_buf();
+        let first = open(&socket_path).await?;
+        let mut slots: Vec<Mutex<Option<UnixStream>>> = (0..pool_size.max(1)).map(|_| Mutex::new(None)).collect();
+        slots[0] = Mutex::new(Some(first));
+        Ok(SocketKeyCustody {
+            socket_path,
+            slots,
+            call_timeout,
+            indices_unsupported: AtomicBool::new(false),
+            canary: parking_lot::Mutex::new(None),
+            epoch: AtomicU64::new(0),
+            state_check: Mutex::new(()),
+        })
+    }
+
+    /// A client that hasn't connected yet: every call tries to connect, and
+    /// fails with `BackendUnavailable` until the server is there. For an
+    /// engine starting while its key-custody server is down (task 5.8): it
+    /// carries on and picks the server up when it appears.
+    pub fn not_connected_yet(socket_path: impl AsRef<Path>, call_timeout: Duration) -> Self {
+        SocketKeyCustody {
+            socket_path: socket_path.as_ref().to_path_buf(),
+            slots: (0..DEFAULT_POOL_SIZE).map(|_| Mutex::new(None)).collect(),
+            call_timeout,
+            indices_unsupported: AtomicBool::new(false),
+            canary: parking_lot::Mutex::new(None),
+            epoch: AtomicU64::new(0),
+            state_check: Mutex::new(()),
+        }
+    }
+
+    /// Sends one request and waits for its answer on a free connection:
+    /// an idle open one if there is one, else a closed slot (opened now), else
+    /// the first to come free. A transport failure closes that connection
+    /// only.
     async fn call(&self, request: KeyCustodyRequest) -> Result<KeyCustodyResponse, KeyCustodyError> {
-        let mut guard = self.conn.lock().await;
-        let stream = guard.as_mut().ok_or_else(|| {
-            KeyCustodyError::BackendUnavailable(
-                "key-custody-service connection already failed on a previous call".to_string(),
-            )
-        })?;
+        let mut guard = self.acquire().await;
+        if guard.is_none() {
+            *guard = Some(open(&self.socket_path).await?);
+        }
+        let Some(stream) = guard.as_mut() else {
+            return Err(KeyCustodyError::BackendUnavailable("no connection to key-custody-service".to_string()));
+        };
 
         let outcome = tokio::time::timeout(self.call_timeout, async {
             write_frame(stream, &request).await?;
@@ -181,13 +192,51 @@ impl SocketKeyCustody {
             }
         }
     }
+
+    async fn acquire(&self) -> tokio::sync::MutexGuard<'_, Option<UnixStream>> {
+        let mut closed = None;
+        for slot in &self.slots {
+            if let Ok(guard) = slot.try_lock() {
+                if guard.is_some() {
+                    return guard;
+                }
+                if closed.is_none() {
+                    closed = Some(guard);
+                }
+            }
+        }
+        if let Some(guard) = closed {
+            return guard;
+        }
+        // Every connection is busy: wait for one, spreading waiters out.
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        let pick = (NEXT.fetch_add(1, Ordering::Relaxed) as usize) % self.slots.len();
+        self.slots[pick].lock().await
+    }
+
+    /// How many times this client has found the server to have lost its
+    /// wallets. See `KeyCustody::check_state`.
+    pub fn state_epoch(&self) -> u64 {
+        self.epoch.load(Ordering::Relaxed)
+    }
 }
 
-/// A response envelope arrived, but not the variant the request that produced
-/// it should have gotten back - only reachable if this client and the server
-/// it's talking to disagree about the protocol (a version skew, or a server
-/// that isn't actually `crate::server::dispatch` at all). Still a clean error,
-/// never a panic, exactly like every other failure mode in this module.
+async fn open(path: &Path) -> Result<UnixStream, KeyCustodyError> {
+    UnixStream::connect(path).await.map_err(|e| {
+        KeyCustodyError::BackendUnavailable(format!("connecting to key-custody-service at {}: {e}", path.display()))
+    })
+}
+
+fn canary_material() -> WalletMaterial {
+    // The canary's spend public key is the view key's public key: any valid
+    // point does, since nothing is ever paid to it.
+    let view = monero::PrivateKey::from_slice(&CANARY_VIEW_KEY).map(|k| k.to_bytes()).unwrap_or([1u8; 32]);
+    let spend = monero::PrivateKey::from_slice(&view)
+        .map(|k| monero::PublicKey::from_private_key(&k).to_bytes())
+        .unwrap_or([1u8; 32]);
+    WalletMaterial::new(view, spend)
+}
+
 fn mismatched_response(expected: &str, got: &KeyCustodyResponse) -> KeyCustodyError {
     KeyCustodyError::BackendUnavailable(format!(
         "key-custody-service sent a {got:?} response, expected {expected}"
@@ -304,4 +353,79 @@ impl KeyCustody for SocketKeyCustody {
             other => Err(mismatched_response("ScanTxOutputs", &other)),
         }
     }
+    async fn scan_tx_outputs_for_indices(
+        &self,
+        handle: WalletHandle,
+        tx: &Transaction,
+        indices: &ScanIndices,
+    ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
+        let covering_range = |indices: &ScanIndices| indices.bounds().map(|(low, high)| low..high.saturating_add(1));
+        if self.indices_unsupported.load(Ordering::Relaxed) {
+            return match covering_range(indices) {
+                None => Ok(Vec::new()),
+                Some(range) => self.scan_tx_outputs(handle, tx, 0..1, range).await,
+            };
+        }
+        let request = KeyCustodyRequest::ScanTxOutputsForIndices(ScanTxOutputsForIndicesRequest {
+            handle: WalletHandleWire::from(handle),
+            tx: TransactionWire::from(tx),
+            minors: indices.minors().to_vec(),
+        });
+        match self.call(request).await {
+            Ok(KeyCustodyResponse::ScanTxOutputsForIndices(Ok(matches))) => matches
+                .into_iter()
+                .map(|m: MatchedOutputWire| {
+                    MatchedOutput::try_from(m).map_err(|e| {
+                        KeyCustodyError::BackendUnavailable(format!(
+                            "key-custody-service returned a malformed matched output: {e}"
+                        ))
+                    })
+                })
+                .collect(),
+            Ok(KeyCustodyResponse::ScanTxOutputsForIndices(Err(e))) => Err(e.into()),
+            Ok(other) => Err(mismatched_response("ScanTxOutputsForIndices", &other)),
+            // An older server closes the connection on a request it doesn't
+            // know. Assume that's what happened, say so, and use the range
+            // request from now on; if it was really a transient failure, the
+            // range request is still correct, just slower.
+            Err(KeyCustodyError::BackendUnavailable(reason)) => {
+                eprintln!(
+                    "key-custody-service didn't answer an index-set scan ({reason}); assuming an older server and \
+                     using range scans from now on. Upgrade key-custody-server to scan only each store's open orders."
+                );
+                self.indices_unsupported.store(true, Ordering::Relaxed);
+                match covering_range(indices) {
+                    None => Ok(Vec::new()),
+                    Some(range) => self.scan_tx_outputs(handle, tx, 0..1, range).await,
+                }
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Registers a canary wallet the first time, then asks for it: if the
+    /// server no longer knows it, the server lost its wallets (it restarted),
+    /// so the epoch goes up and a new canary is registered.
+    async fn check_state(&self) -> Result<u64, KeyCustodyError> {
+        let _one_at_a_time = self.state_check.lock().await;
+        let existing = *self.canary.lock();
+        match existing {
+            None => {
+                let handle = self.register_wallet(canary_material()).await?;
+                *self.canary.lock() = Some(handle);
+            }
+            Some(handle) => match self.derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet).await {
+                Ok(_) => {}
+                Err(KeyCustodyError::UnknownWallet) => {
+                    let epoch = self.epoch.fetch_add(1, Ordering::Relaxed) + 1;
+                    eprintln!("key-custody-service has lost its wallets (it restarted?); state epoch is now {epoch}");
+                    let handle = self.register_wallet(canary_material()).await?;
+                    *self.canary.lock() = Some(handle);
+                }
+                Err(e) => return Err(e),
+            },
+        }
+        Ok(self.epoch.load(Ordering::Relaxed))
+    }
+
 }

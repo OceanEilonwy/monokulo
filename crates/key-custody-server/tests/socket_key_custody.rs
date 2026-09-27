@@ -791,3 +791,166 @@ async fn garbage_bytes_from_a_raw_connection_are_rejected_cleanly_without_taking
         .expect("server should still serve a well-behaved client after receiving garbage");
     client.remove_wallet(handle).await.unwrap();
 }
+
+// -- Pool, reconnect, index sets and lost-state detection (admin_settings_v2.md
+// -- tasks 7.3, 7.5, 5.8) ------------------------------------------------------
+
+/// A key-custody server on its own runtime and thread, so stopping it really
+/// stops everything, open connections included, like the process dying.
+struct ServerProcess {
+    stop: Option<tokio::sync::oneshot::Sender<()>>,
+    thread: Option<std::thread::JoinHandle<()>>,
+}
+
+impl ServerProcess {
+    fn start(path: &Path) -> Self {
+        let _ = std::fs::remove_file(path);
+        let path = path.to_path_buf();
+        let (stop, stopped) = tokio::sync::oneshot::channel::<()>();
+        let thread = std::thread::spawn(move || {
+            let runtime = tokio::runtime::Builder::new_multi_thread().worker_threads(2).enable_all().build().unwrap();
+            runtime.block_on(async move {
+                let server = KeyCustodyServer::new(PlainKeyCustody::default());
+                tokio::select! {
+                    _ = server.listen(&path) => {}
+                    _ = stopped => {}
+                }
+            });
+            // Dropping the runtime drops every connection task.
+            runtime.shutdown_timeout(Duration::from_secs(1));
+        });
+        ServerProcess { stop: Some(stop), thread: Some(thread) }
+    }
+
+    fn stop(mut self) {
+        if let Some(stop) = self.stop.take() {
+            let _ = stop.send(());
+        }
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+fn fixture_material() -> WalletMaterial {
+    WalletMaterial::new(fixture_view_key().to_bytes(), fixture_spend_pubkey().to_bytes())
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_index_set_scan_over_the_socket_finds_the_payment() {
+    let ts = spawn_server_and_client("indices").await;
+    let handle = ts.client.register_wallet(fixture_material()).await.unwrap();
+    let with_1 = scanner::key_custody::ScanIndices::new([1, 40, 900]);
+    assert_eq!(ts.client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &with_1).await.unwrap().len(), 1);
+    let without = scanner::key_custody::ScanIndices::new([40, 900]);
+    assert!(ts.client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &without).await.unwrap().is_empty());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn an_older_server_without_index_set_scans_is_served_by_range_scans() {
+    // A server that answers everything except the index-set request, which
+    // it doesn't know: like a server built before it, it closes the
+    // connection.
+    let socket_path = temp_socket_path("old-server");
+    let _cleanup = CleanupSocket(socket_path.clone());
+    let listener = UnixListener::bind(&socket_path).unwrap();
+    let custody = Arc::new(PlainKeyCustody::default());
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else { return };
+            let custody = custody.clone();
+            tokio::spawn(async move {
+                loop {
+                    let request: KeyCustodyRequest = match read_frame(&mut stream).await {
+                        Ok(Some(r)) => r,
+                        _ => return,
+                    };
+                    if matches!(request, KeyCustodyRequest::ScanTxOutputsForIndices(_)) {
+                        return;
+                    }
+                    let Ok(response) = key_custody_server::server::dispatch(&custody, request).await else { return };
+                    if write_frame(&mut stream, &response).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+    let client = connect_with_retry(&socket_path).await;
+    let handle = client.register_wallet(fixture_material()).await.unwrap();
+    let window = scanner::key_custody::ScanIndices::new([1, 5]);
+    for _ in 0..3 {
+        let matches = client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &window).await.unwrap();
+        assert_eq!(matches.len(), 1, "found through the covering range instead");
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_client_reconnects_to_a_restarted_server_and_notices_it_lost_its_wallets() {
+    let socket_path = temp_socket_path("restart");
+    let _cleanup = CleanupSocket(socket_path.clone());
+    let server = ServerProcess::start(&socket_path);
+    let client = connect_with_retry(&socket_path).await;
+    assert_eq!(client.check_state().await.unwrap(), 0);
+    let handle = client.register_wallet(fixture_material()).await.unwrap();
+    assert_eq!(client.check_state().await.unwrap(), 0, "nothing lost yet");
+
+    server.stop();
+    assert!(matches!(
+        client.derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet).await,
+        Err(KeyCustodyError::BackendUnavailable(_))
+    ));
+
+    let server = ServerProcess::start(&socket_path);
+    let mut state = None;
+    for _ in 0..200 {
+        if let Ok(epoch) = client.check_state().await {
+            state = Some(epoch);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert_eq!(state, Some(1), "same client, reconnected, and it saw the wallets were gone");
+    assert!(matches!(
+        client.derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet).await,
+        Err(KeyCustodyError::UnknownWallet)
+    ));
+    let again = client.register_wallet(fixture_material()).await.unwrap();
+    client.derive_subaddress(again, SubaddressIndex::default(), Network::Mainnet).await.unwrap();
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_client_made_before_the_server_exists_starts_working_when_it_appears() {
+    let socket_path = temp_socket_path("late-server");
+    let _cleanup = CleanupSocket(socket_path.clone());
+    let client = SocketKeyCustody::not_connected_yet(&socket_path, Duration::from_secs(5));
+    assert!(matches!(client.register_wallet(fixture_material()).await, Err(KeyCustodyError::BackendUnavailable(_))));
+    let server = ServerProcess::start(&socket_path);
+    let mut registered = None;
+    for _ in 0..200 {
+        if let Ok(handle) = client.register_wallet(fixture_material()).await {
+            registered = Some(handle);
+            break;
+        }
+        tokio::time::sleep(Duration::from_millis(10)).await;
+    }
+    assert!(registered.is_some());
+    server.stop();
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn concurrent_calls_use_several_connections_and_all_succeed() {
+    let ts = spawn_server_and_client("pool").await;
+    let client = Arc::new(ts.client);
+    let handle = client.register_wallet(fixture_material()).await.unwrap();
+    let window = scanner::key_custody::ScanIndices::range(0..50);
+    let calls = (0..16).map(|_| {
+        let client = client.clone();
+        let window = window.clone();
+        tokio::spawn(async move { client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &window).await })
+    });
+    for call in calls {
+        assert_eq!(call.await.unwrap().unwrap().len(), 1);
+    }
+}

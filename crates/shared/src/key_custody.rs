@@ -337,6 +337,16 @@ pub trait KeyCustody: Send + Sync {
             Some((low, high)) => self.scan_tx_outputs(handle, tx, 0..1, low..high.saturating_add(1)).await,
         }
     }
+    /// Checks whether the backend still holds the wallets registered with it
+    /// and returns its "state epoch", which goes up each time the backend is
+    /// found to have lost them (a key-custody sidecar restarted with empty
+    /// memory). Every handle issued before the change is then useless, and
+    /// the caller must register all its wallets again from their sealed
+    /// material (admin_settings_v2.md task 5.8). A backend that can't lose
+    /// its wallets independently of this process keeps the default: always 0.
+    async fn check_state(&self) -> Result<u64, KeyCustodyError> {
+        Ok(0)
+    }
 }
 
 /// A set of minor subaddress indices (account 0) to scan for, sorted and

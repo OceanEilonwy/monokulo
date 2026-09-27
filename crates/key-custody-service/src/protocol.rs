@@ -50,7 +50,8 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
     DeriveSubaddressRequest, DeriveSubaddressResponse, RegisterWalletRequest,
-    RegisterWalletResponse, RemoveWalletRequest, RemoveWalletResponse, ScanTxOutputsRequest,
+    RegisterWalletResponse, RemoveWalletRequest, RemoveWalletResponse, ScanTxOutputsForIndicesRequest,
+    ScanTxOutputsForIndicesResponse, ScanTxOutputsRequest,
     ScanTxOutputsResponse, SealRequest, SealResponse, UnsealAndRegisterRequest,
     UnsealAndRegisterResponse,
 };
@@ -65,6 +66,8 @@ pub enum KeyCustodyRequest {
     UnsealAndRegister(UnsealAndRegisterRequest),
     DeriveSubaddress(DeriveSubaddressRequest),
     ScanTxOutputs(ScanTxOutputsRequest),
+    /// Newer than the rest: see `ScanTxOutputsForIndicesRequest`.
+    ScanTxOutputsForIndices(ScanTxOutputsForIndicesRequest),
 }
 
 /// The matching response envelope. Each variant is already a `Result<TWire,
@@ -81,6 +84,7 @@ pub enum KeyCustodyResponse {
     UnsealAndRegister(UnsealAndRegisterResponse),
     DeriveSubaddress(DeriveSubaddressResponse),
     ScanTxOutputs(ScanTxOutputsResponse),
+    ScanTxOutputsForIndices(ScanTxOutputsForIndicesResponse),
 }
 
 /// Ceiling on one frame's declared payload length. Generous relative to

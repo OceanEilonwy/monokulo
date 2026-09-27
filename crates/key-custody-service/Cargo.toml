@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+parking_lot = "0.12.5"
 # WBS 2.1.2: the client (`client.rs`) needs a real async runtime with Unix-socket
 # support - `scanner` itself already depends on `tokio = { features =
 # ["full"] }`, so pulling in anything narrower here would just be a second,

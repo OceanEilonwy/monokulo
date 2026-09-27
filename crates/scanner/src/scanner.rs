@@ -1429,6 +1429,44 @@ pub async fn register_missing_wallets(
     wallet_handles: &parking_lot::RwLock<HashMap<String, WalletHandle>>,
     network: &str,
 ) -> usize {
+    register_missing_wallets_checking_state(store, key_custody, wallet_handles, None, network).await
+}
+
+/// `register_missing_wallets`, first asking the key-custody backend whether
+/// it still holds the wallets registered with it (`KeyCustody::check_state`,
+/// task 5.8). If it has lost them since `handled_epoch` (a sidecar that
+/// restarted with empty memory), every handle in `wallet_handles` is
+/// useless, so the map is cleared (once per epoch, however many network
+/// loops notice) and this network's tenants are registered again from their
+/// sealed material. Nobody has to enter keys again.
+pub async fn register_missing_wallets_checking_state(
+    store: &crate::store::SharedStore,
+    key_custody: &dyn KeyCustody,
+    wallet_handles: &parking_lot::RwLock<HashMap<String, WalletHandle>>,
+    handled_epoch: Option<&std::sync::atomic::AtomicU64>,
+    network: &str,
+) -> usize {
+    if let Some(handled_epoch) = handled_epoch {
+        match key_custody.check_state().await {
+            Ok(epoch) => {
+                let seen = handled_epoch.load(std::sync::atomic::Ordering::SeqCst);
+                if epoch > seen
+                    && handled_epoch
+                        .compare_exchange(seen, epoch, std::sync::atomic::Ordering::SeqCst, std::sync::atomic::Ordering::SeqCst)
+                        .is_ok()
+                {
+                    let dropped = {
+                        let mut handles = wallet_handles.write();
+                        let n = handles.len();
+                        handles.clear();
+                        n
+                    };
+                    eprintln!("key custody lost its wallets: registering all {dropped} again from their sealed keys");
+                }
+            }
+            Err(e) => eprintln!("checking the key custody backend's state failed (retried later): {e}"),
+        }
+    }
     let missing: Vec<crate::store::Tenant> = match store.lock().list_active_tenants() {
         Ok(tenants) => {
             let handles = wallet_handles.read();
@@ -6935,5 +6973,92 @@ mod tests {
         }
         run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
         assert_eq!(custody.scan_calls.load(Ordering::SeqCst), before + 1);
+    }
+
+    // -- Re-registering after the key-custody backend lost its wallets (5.8) ---
+
+    #[derive(Default)]
+    struct ForgetfulKeyCustody {
+        inner: PlainKeyCustody,
+        epoch: AtomicU64,
+    }
+
+    #[async_trait::async_trait]
+    impl KeyCustody for ForgetfulKeyCustody {
+        async fn register_wallet(&self, material: WalletMaterial) -> std::result::Result<WalletHandle, KeyCustodyError> {
+            self.inner.register_wallet(material).await
+        }
+        async fn remove_wallet(&self, handle: WalletHandle) -> std::result::Result<(), KeyCustodyError> {
+            self.inner.remove_wallet(handle).await
+        }
+        async fn seal(&self, material: &WalletMaterial) -> std::result::Result<Vec<u8>, KeyCustodyError> {
+            self.inner.seal(material).await
+        }
+        async fn unseal_and_register(&self, sealed: &[u8]) -> std::result::Result<WalletHandle, KeyCustodyError> {
+            self.inner.unseal_and_register(sealed).await
+        }
+        async fn derive_subaddress(
+            &self,
+            handle: WalletHandle,
+            index: SubaddressIndex,
+            network: Network,
+        ) -> std::result::Result<Address, KeyCustodyError> {
+            self.inner.derive_subaddress(handle, index, network).await
+        }
+        async fn scan_tx_outputs(
+            &self,
+            handle: WalletHandle,
+            tx: &Transaction,
+            major_range: Range<u32>,
+            minor_range: Range<u32>,
+        ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
+            self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await
+        }
+        async fn check_state(&self) -> std::result::Result<u64, KeyCustodyError> {
+            Ok(self.epoch.load(Ordering::SeqCst))
+        }
+    }
+
+    #[tokio::test]
+    async fn when_the_backend_loses_its_wallets_every_tenant_is_registered_again_once() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = ForgetfulKeyCustody::default();
+        let sealed = custody.seal(&WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey())).await.unwrap();
+        let mut ids = vec![];
+        for _ in 0..3 {
+            ids.push(
+                store
+                    .create_tenant(
+                        NewTenant {
+                            key_custody_backend: "socket".into(),
+                            sealed_key_material: sealed.clone(),
+                            primary_address: "4x".into(),
+                            network: "mainnet".into(),
+                            confirmations_required: None,
+                            order_expiry_seconds: None,
+                        },
+                        1,
+                    )
+                    .unwrap()
+                    .tenant
+                    .id,
+            );
+        }
+        let store = store.into_shared();
+        let handles = parking_lot::RwLock::new(HashMap::new());
+        let handled = AtomicU64::new(0);
+        assert_eq!(register_missing_wallets_checking_state(&store, &custody, &handles, Some(&handled), "mainnet").await, 3);
+        let before: Vec<WalletHandle> = ids.iter().map(|id| handles.read()[id]).collect();
+        assert_eq!(register_missing_wallets_checking_state(&store, &custody, &handles, Some(&handled), "mainnet").await, 0);
+
+        // The backend restarts and loses everything.
+        custody.epoch.store(1, Ordering::SeqCst);
+        assert_eq!(register_missing_wallets_checking_state(&store, &custody, &handles, Some(&handled), "mainnet").await, 3);
+        for (id, old) in ids.iter().zip(before) {
+            assert_ne!(handles.read()[id], old, "a fresh handle");
+        }
+        // A second network's loop noticing the same epoch doesn't clear again.
+        assert_eq!(register_missing_wallets_checking_state(&store, &custody, &handles, Some(&handled), "stagenet").await, 0);
+        assert_eq!(handles.read().len(), 3);
     }
 }

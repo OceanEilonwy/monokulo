@@ -570,6 +570,19 @@ pub struct ScanTxOutputsRequest {
 }
 pub type ScanTxOutputsResponse = Result<Vec<MatchedOutputWire>, KeyCustodyErrorWire>;
 
+/// `KeyCustody::scan_tx_outputs_for_indices` (admin_settings_v2.md task
+/// 7.3): a set of minor indices (account 0) and the set's generation, so the
+/// server can keep and incrementally update one table per wallet. Added
+/// after the first protocol version; a server that predates it closes the
+/// connection on it, and the client then falls back to `ScanTxOutputs`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ScanTxOutputsForIndicesRequest {
+    pub handle: WalletHandleWire,
+    pub tx: TransactionWire,
+    pub minors: Vec<u32>,
+}
+pub type ScanTxOutputsForIndicesResponse = Result<Vec<MatchedOutputWire>, KeyCustodyErrorWire>;
+
 #[cfg(test)]
 mod tests {
     use super::*;
