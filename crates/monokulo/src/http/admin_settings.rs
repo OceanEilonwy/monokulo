@@ -705,6 +705,33 @@ mod tests {
         assert!(html.contains("value=\"60\""), "the rejected save must not have changed the default, got: {html}");
     }
 
+    /// The mistakes an operator makes typing into the settings form: each
+    /// is refused with a message naming the setting and what it needs.
+    #[tokio::test]
+    async fn an_operators_typical_mistakes_are_each_refused_with_what_the_setting_needs() {
+        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap());
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        for (key, value, expected) in [
+            ("signup.mode", "open", "must be \"public\" or \"invite_only\""),
+            ("exchange_rate.coingecko_enabled", "yes", "must be \"true\" or \"false\""),
+            ("abuse.under_attack", "on", "must be \"true\" or \"false\""),
+            ("exchange_rate.cache_seconds", "-5", "must be a non-negative integer"),
+            ("http_cache.max_mb", "1.5", "must be a positive integer"),
+            ("abuse.hard_per_min", "0", "must be a positive integer"),
+            ("abuse.challenge_bits", "30", "must be a whole number from 8 to 24"),
+            ("rate_limit.per_store_key_per_min", "0", "must be a whole number of at least 1"),
+            ("abuse.stream_cap", "0", "must be a whole number of at least 1"),
+            ("engine.url", " ", "must not be empty"),
+            ("public_url", "not a url", "public_url:"),
+        ] {
+            let save = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(key, value)])).await.unwrap();
+            assert_eq!(save.status(), StatusCode::OK, "{key}={value:?}");
+            let html = body_text(save).await.replace("&quot;", "\"").replace("&#34;", "\"");
+            assert!(html.contains(key) && html.contains(expected), "{key}={value:?}: expected {expected:?}");
+        }
+    }
+
     #[tokio::test]
     async fn saving_a_scanner_setting_forwards_it_and_the_change_is_visible_on_the_next_load() {
         let engine = spawn_scanner_with_known_admin_token().await;
