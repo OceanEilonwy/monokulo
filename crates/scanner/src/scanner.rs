@@ -867,6 +867,47 @@ pub async fn run_scan_tick(
     reorg_check_depth: u64,
     expired_order_grace_period_seconds: i64,
 ) -> Result<()> {
+    let memory = MempoolMemory::default();
+    run_scan_tick_with(&memory, store, key_custody, daemon, network, tenants, reorg_check_depth, expired_order_grace_period_seconds)
+        .await
+}
+
+/// What one network's scan loop remembers about the mempool between ticks
+/// (task 7.3), so a transaction sitting in the pool is fetched once and
+/// scanned once per store, not every second:
+/// - the bodies of transactions still in the pool;
+/// - which (transaction, store, scan window) have been scanned
+///   *successfully*. A failed scan isn't remembered, so it's retried next
+///   tick; a store whose window changed is scanned again.
+///
+/// Entries go when their transaction leaves the pool.
+#[derive(Default)]
+pub struct MempoolMemory {
+    inner: parking_lot::Mutex<MempoolMemoryInner>,
+}
+
+#[derive(Default)]
+struct MempoolMemoryInner {
+    bodies: HashMap<String, std::sync::Arc<Transaction>>,
+    scanned: HashMap<String, HashMap<String, u64>>,
+}
+
+/// Most mempool transaction bodies remembered; beyond this (a spam wave) new
+/// ones are scanned but not kept.
+const MEMPOOL_MEMORY_MAX_BODIES: usize = 20_000;
+
+/// `run_scan_tick` with mempool memory kept by the caller between ticks.
+#[allow(clippy::too_many_arguments)] // one tick's genuinely independent inputs
+pub async fn run_scan_tick_with(
+    memory: &MempoolMemory,
+    store: &crate::store::SharedStore,
+    key_custody: &dyn KeyCustody,
+    daemon: &dyn MoneroDaemonClient,
+    network: &str,
+    tenants: &[(String, WalletHandle)],
+    reorg_check_depth: u64,
+    expired_order_grace_period_seconds: i64,
+) -> Result<()> {
     let now = crate::now_unix();
 
     // The active watchlist (docs/DESIGN.md §7.3): only tenants with at least one
@@ -928,8 +969,8 @@ pub async fn run_scan_tick(
     // must not be *silent*: if it keeps failing, zero-conf detection is simply off for
     // this network, and an operator whose orders never leave `pending` before a block
     // arrives has nothing anywhere to tell them why.
-    let mempool = match daemon.get_mempool_transactions().await {
-        Ok(txs) => Some(txs),
+    let pool_txids = match daemon.get_mempool_txids().await {
+        Ok(txids) => Some(txids),
         Err(e) => {
             eprintln!("polling the mempool on {network} failed - no zero-conf detection this tick: {e}");
             None
@@ -939,27 +980,73 @@ pub async fn run_scan_tick(
     // sweep below - `None` (a failed poll) makes that sweep skip entirely rather
     // than mistake "we didn't look" for "the pool is empty".
     let mut mempool_txids: Option<HashSet<String>> = None;
-    if let Some(mempool_txs) = mempool {
-        mempool_txids = Some(mempool_txs.iter().map(tx_id_hex).collect());
-        let all: Vec<&(String, WalletHandle, ScanIndices)> = ranges.iter().collect();
-        for tx in &mempool_txs {
+    if let Some(pool_txids) = pool_txids {
+        let in_pool: HashSet<String> = pool_txids.iter().cloned().collect();
+        // Forget what left the pool; fetch only bodies not already held.
+        let missing: Vec<String> = {
+            let mut memory = memory.inner.lock();
+            memory.bodies.retain(|txid, _| in_pool.contains(txid));
+            memory.scanned.retain(|txid, _| in_pool.contains(txid));
+            pool_txids.iter().filter(|txid| !memory.bodies.contains_key(*txid)).cloned().collect()
+        };
+        let mut fresh: Vec<std::sync::Arc<Transaction>> = Vec::new();
+        if !missing.is_empty() {
+            match daemon.get_transactions(&missing).await {
+                Ok(txs) => fresh = txs.into_iter().map(std::sync::Arc::new).collect(),
+                Err(e) => eprintln!("fetching {} new mempool transactions on {network} failed (retried next tick): {e}", missing.len()),
+            }
+        }
+        let pool: Vec<std::sync::Arc<Transaction>> = {
+            let mut memory = memory.inner.lock();
+            for tx in &fresh {
+                if memory.bodies.len() < MEMPOOL_MEMORY_MAX_BODIES {
+                    memory.bodies.insert(tx_id_hex(tx), tx.clone());
+                }
+            }
+            let held: Vec<_> = memory.bodies.values().cloned().collect();
+            let held_ids: HashSet<String> = memory.bodies.keys().cloned().collect();
+            held.into_iter().chain(fresh.into_iter().filter(|tx| !held_ids.contains(&tx_id_hex(tx)))).collect()
+        };
+        mempool_txids = Some(in_pool);
+
+        for tx in &pool {
+            let txid = tx_id_hex(tx);
+            // Only the stores this transaction hasn't been scanned for, with
+            // the store's current window, yet.
+            let due: Vec<&(String, WalletHandle, ScanIndices)> = {
+                let memory = memory.inner.lock();
+                let done = memory.scanned.get(&txid);
+                ranges
+                    .iter()
+                    .filter(|(tenant_id, _, window)| done.and_then(|d| d.get(tenant_id)) != Some(&window.generation()))
+                    .collect()
+            };
+            if due.is_empty() {
+                continue;
+            }
             // Compute (async, no Store - see ScanResult's doc comment) then
             // persist (sync, no .await) as two separate steps, never a single
             // await-spanning call holding a &Store.
             //
             // A failure here is genuinely recoverable by doing nothing: the
-            // mempool is re-polled roughly every second, so the same transaction
-            // comes back around next tick. It still gets logged rather than
-            // silently swallowed - a persistently failing scan or store call
-            // that never surfaces anywhere is indistinguishable from "no
-            // payments are arriving".
-            for (tenant_id, result) in scan_for_tenants(key_custody, tx, &all).await {
+            // transaction isn't marked as scanned for that store, so the next
+            // tick tries again. It still gets logged rather than silently
+            // swallowed - a persistently failing scan or store call that never
+            // surfaces anywhere is indistinguishable from "no payments are
+            // arriving".
+            let generations: HashMap<&String, u64> = due.iter().map(|(id, _, w)| (id, w.generation())).collect();
+            for (tenant_id, result) in scan_for_tenants(key_custody, tx, &due).await {
                 let tenant_id = &tenant_id;
                 match result {
                     Ok(scan) => {
-                        let s = store.lock();
-                        match record_scan_match(&s, tenant_id, &scan, now, None) {
-                            Ok(order_ids) => touched.extend(order_ids),
+                        let recorded = record_scan_match(&store.lock(), tenant_id, &scan, now, None);
+                        match recorded {
+                            Ok(order_ids) => {
+                                touched.extend(order_ids);
+                                if let Some(generation) = generations.get(tenant_id) {
+                                    memory.inner.lock().scanned.entry(txid.clone()).or_default().insert(tenant_id.clone(), *generation);
+                                }
+                            }
                             Err(e) => eprintln!(
                                 "recording a mempool match for tenant {tenant_id} on {network} failed (will retry next tick): {e}"
                             ),
@@ -1922,6 +2009,15 @@ mod tests {
         async fn get_mempool_transactions(&self) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.gate(DaemonCall::Mempool).await?;
             self.inner.get_mempool_transactions().await
+        }
+        /// The pool poll is what `DaemonCall::Mempool` gates; fetching the
+        /// bodies of new txids isn't a second poll, so it passes through.
+        async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
+            self.gate(DaemonCall::Mempool).await?;
+            self.inner.get_mempool_txids().await
+        }
+        async fn get_transactions(&self, txids: &[String]) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            self.inner.get_transactions(txids).await
         }
         async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
             self.gate(DaemonCall::Locate).await?;
@@ -6752,5 +6848,92 @@ mod tests {
         assert_eq!(cursor_of(&store, &a), Some(3), "not left behind by a scan failure");
         assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1);
         assert_eq!(store.lock().scan_window(&a, crate::now_unix(), 0).unwrap(), vec![1], "the window is the open orders");
+    }
+
+    // -- Mempool memory (task 7.3) ---------------------------------------------
+
+    #[tokio::test]
+    async fn an_unchanged_mempool_is_neither_fetched_nor_scanned_again() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = CountingKeyCustody { inner: PlainKeyCustody::default(), scan_calls: AtomicU64::new(0) };
+        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let store = store.into_shared();
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![]);
+        daemon.set_mempool(vec![fixture_tx(), unrelated_tx(1), unrelated_tx(2)]);
+        let memory = MempoolMemory::default();
+        let tenants = [(a.clone(), a_handle)];
+
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1);
+        let after_first = custody.scan_calls.load(Ordering::SeqCst);
+        assert_eq!(after_first, 3);
+
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        assert_eq!(custody.scan_calls.load(Ordering::SeqCst), after_first, "nothing new, nothing scanned");
+
+        // One new transaction: scanned once.
+        daemon.set_mempool(vec![fixture_tx(), unrelated_tx(1), unrelated_tx(2), unrelated_tx(3)]);
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        assert_eq!(custody.scan_calls.load(Ordering::SeqCst), after_first + 1);
+    }
+
+    #[tokio::test]
+    async fn a_failed_mempool_scan_is_retried_next_tick() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = FlakyKeyCustody::default();
+        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let store = store.into_shared();
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![]);
+        daemon.set_mempool(vec![fixture_tx()]);
+        let memory = MempoolMemory::default();
+        let tenants = [(a.clone(), a_handle)];
+
+        custody.fail(a_handle);
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        assert!(store.lock().get_all_payments(&a_order).unwrap().is_empty());
+
+        custody.recover(a_handle);
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1, "not remembered as scanned after failing");
+    }
+
+    #[tokio::test]
+    async fn a_store_whose_window_changed_has_the_pool_scanned_again_for_it() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = CountingKeyCustody { inner: PlainKeyCustody::default(), scan_calls: AtomicU64::new(0) };
+        let (a, a_handle, _) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let store = store.into_shared();
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![]);
+        daemon.set_mempool(vec![unrelated_tx(1)]);
+        let memory = MempoolMemory::default();
+        let tenants = [(a.clone(), a_handle)];
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        let before = custody.scan_calls.load(Ordering::SeqCst);
+
+        // A new order: the window changes, so the pool is checked for it.
+        {
+            let s = store.lock();
+            let index = s.allocate_minor_index(&a).unwrap();
+            s.create_order(NewOrder {
+                confirmations_required_override: None,
+                tenant_id: a.clone(),
+                merchant_order_id: None,
+                minor_index: index,
+                address: "new".into(),
+                xmr_amount_piconero: 1,
+                description: None,
+                created_at: 1000,
+                expires_at: crate::now_unix() + 3600,
+            })
+            .unwrap();
+        }
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        assert_eq!(custody.scan_calls.load(Ordering::SeqCst), before + 1);
     }
 }

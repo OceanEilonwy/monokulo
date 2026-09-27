@@ -69,6 +69,31 @@ pub trait MoneroDaemonClient: Send + Sync {
     }
 
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError>;
+
+    /// The txids in the mempool, without their bodies, so a scanner that
+    /// has already seen most of the pool only fetches what's new (task 7.3).
+    /// The default fetches the whole pool; `RpcDaemonClient` asks monerod
+    /// for hashes only.
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        use monero::cryptonote::hash::Hashable;
+        Ok(self.get_mempool_transactions().await?.iter().map(|tx| hex::encode(tx.hash().to_bytes())).collect())
+    }
+
+    /// Several transactions by txid, in any order; ones the node doesn't
+    /// have are left out. The default fetches the whole pool and picks the
+    /// wanted ones, which is right for every test double; `RpcDaemonClient`
+    /// fetches exactly these.
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
+        use monero::cryptonote::hash::Hashable;
+        let wanted: std::collections::HashSet<&String> = txids.iter().collect();
+        Ok(self
+            .get_mempool_transactions()
+            .await?
+            .into_iter()
+            .filter(|tx| wanted.contains(&hex::encode(tx.hash().to_bytes())))
+            .collect())
+    }
+
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError>;
     /// Fetches one transaction by its hash - `docs/txid_lookup_and_scan_
     /// chunking_wbs.md` Part B's own "look up a payment by txid" action, the

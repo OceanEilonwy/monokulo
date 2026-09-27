@@ -667,6 +667,25 @@ impl MoneroDaemonClient for RpcDaemonClient {
         Ok(decode_pool_best_effort(&resp.transactions))
     }
 
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        #[derive(Deserialize)]
+        struct PoolHashes {
+            #[serde(default)]
+            tx_hashes: Vec<String>,
+        }
+        let resp: PoolHashes = self.post_plain("/get_transaction_pool_hashes", json!({})).await?;
+        Ok(resp.tx_hashes)
+    }
+
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
+        // In batches, so one request never carries an unbounded list.
+        let mut out = Vec::with_capacity(txids.len());
+        for batch in txids.chunks(100) {
+            out.extend(self.fetch_transactions(batch).await?);
+        }
+        Ok(out)
+    }
+
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
         let resp: GetTransactionsResponse = self
             .post_plain("/get_transactions", json!({ "txs_hashes": [txid], "decode_as_json": false }))

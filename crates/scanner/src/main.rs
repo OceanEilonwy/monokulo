@@ -32,7 +32,7 @@ use scanner::http::{build_router, now_unix, AppState};
 use scanner::key_custody::{KeyCustody, PlainKeyCustody, WalletHandle};
 use scanner::local_admin;
 use scanner::network::network_str;
-use scanner::scanner::{revalidate_recent_double_spend_voids, run_scan_tick};
+use scanner::scanner::revalidate_recent_double_spend_voids;
 use scanner::scanner_status::{self, ScannerStatusMap};
 use scanner::settings;
 use scanner::store::{SharedStore, Store};
@@ -529,6 +529,10 @@ async fn run_scanner_loop(
     // most once a minute, so a tenant whose key-custody backend comes back
     // is scanned again without anyone having to call the API for it.
     let mut last_registration_attempt: Option<tokio::time::Instant> = None;
+    // Kept across ticks so the mempool is fetched and scanned incrementally
+    // (task 7.3). A panic restarts this loop with a fresh one, which only
+    // means one full rescan of the pool.
+    let mempool_memory = scanner::scanner::MempoolMemory::default();
     loop {
         if last_registration_attempt.is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
             last_registration_attempt = Some(tokio::time::Instant::now());
@@ -546,7 +550,8 @@ async fn run_scanner_loop(
         let pinned = daemon.pin();
         let result = match tokio::time::timeout(
             tick_deadline(poll_interval),
-            run_scan_tick(
+            scanner::scanner::run_scan_tick_with(
+                &mempool_memory,
                 &store,
                 key_custody.as_ref(),
                 &pinned,

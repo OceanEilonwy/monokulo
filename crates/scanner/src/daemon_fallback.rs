@@ -248,6 +248,12 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
         self.one(|c| c.get_mempool_transactions()).await
     }
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        self.one(|c| c.get_mempool_txids()).await
+    }
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
+        self.one(|c| c.get_transactions(txids)).await
+    }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
         self.one(|c| c.locate_transaction(txid)).await
     }
@@ -288,6 +294,14 @@ impl MoneroDaemonClient for FallbackDaemonClient {
 
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
         self.failover(|c| c.get_mempool_transactions()).await
+    }
+
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        self.failover(|c| c.get_mempool_txids()).await
+    }
+
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
+        self.failover(|c| c.get_transactions(txids)).await
     }
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
