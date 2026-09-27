@@ -37,7 +37,11 @@ commits. Nothing is pushed.
 | 7.6 node failures | done | 130c432 | cooldown, 30s call budget, pinned node per tick, 64MB response cap |
 | 7.10 HTTP limits | done | 242ffba | constants for now; become live settings with part 1.2 |
 | 7.7 database failures | done | 719dc2e | transient store/custody errors are 503 |
-| 7.11 crash safety, SIGTERM | next | | |
+| 7.11 crash safety, SIGTERM | done (in-process); real-process kill -9 variant waits for the 6.0 harness | 3c9e77f | |
+| 7.2 scanning off the async runtime | done | 298b928 | blocking pool, one scan per core |
+| 7.3 window (D10), closed_at, index-set API, no table copy | done | 298b928 | socket backend uses the trait's default (covering range) until its wire protocol gains index sets |
+| 7.3 mempool memory | done | 02b0d0f | |
+| 7.3 socket wire protocol for index sets | todo | | goes with 7.5/5.8 socket work |
 
 ## Decisions made while working
 
@@ -72,6 +76,14 @@ reported at the end.)
 - Transactions with no tx public key or with script outputs are treated as
   "no match" by `PlainKeyCustody` (they can't pay any wallet); other
   output-check errors still fail the scan for that tenant.
+- 7.3: closed_at for an expired order is its deadline (not when expiry was
+  noticed), so held expiry during a store's gap doesn't stretch its window.
+- 7.3: catch-up updates the same per-wallet live table to its (as-of-cursor)
+  window rather than building a separate one; the difference is usually
+  a few indices, so it's cheap, and it keeps one code path.
+- 7.3: a paid order now stays in scan scope for the grace period after it
+  closes (overpayments within it are seen). Three existing tests encoded
+  the old "paid leaves scope at once" rule and were updated.
 - D10 design details (after review): orders get `closed_at_utc`; the
   window is "non-terminal, or closed within the grace period"; the custody
   API gains an index-set scan call plus a protocol version, falling back
@@ -86,10 +98,11 @@ reported at the end.)
 After 7.1: 916 passed, 0 failed, 20 ignored.
 After 6f5e5cc: 940 passed, 0 failed, 20 ignored.
 After 719dc2e: 986 passed, 0 failed, 20 ignored.
+After 02b0d0f: 994 passed, 0 failed, 20 ignored.
 
 ## Current step
 
-7.11 (SIGTERM handling, crash-injection test), then 7.2/7.3 (scan work off
-the runtime, mempool dedupe, scan window with `closed_at`, index-set
-custody API), then 1.2/1.3 (engine and monokulo onto live-settings), then
+Next: socket backend work in one piece (7.5 connection pool, 7.3 index-set
+wire message with protocol version, 5.8 reconnect with canary). Then 7.12
+scale harness, then 1.2/1.3 (engine and monokulo onto live-settings), then
 parts 2 to 6.
