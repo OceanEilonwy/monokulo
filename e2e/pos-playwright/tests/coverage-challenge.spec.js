@@ -49,3 +49,17 @@ test('real challenge continues inside a cross-site checkout frame with and witho
     } finally { await context.close(); }
   }
 });
+
+test('real challenge on a plain-HTTP onion (no Web Crypto) waits ten seconds and continues', async ({ page }) => {
+  // A Tor .onion served over plain HTTP is not a secure context, so
+  // crypto.subtle is missing and the proof cannot be computed in the page.
+  await page.addInitScript(() => { Object.defineProperty(window.crypto, 'subtle', { get: () => undefined }); });
+  await page.clock.install();
+  await page.goto(`${fixture.base_url}/__coverage/challenge`);
+  await expect(page.locator('#challenge-progress')).toHaveText('Checking your connection, this page continues in 10 seconds.');
+  await page.clock.runFor(9000);
+  expect(page.url()).toContain('/__coverage/challenge');
+  await page.clock.runFor(2000);
+  await expect(page.locator('#checkout-root')).toBeVisible();
+  expect(page.url()).toContain('monokulo_wait=');
+});
