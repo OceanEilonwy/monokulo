@@ -179,3 +179,73 @@ test('real dashboard health indicator follows healthy and unavailable polls', as
   await expect(dot).toHaveClass(/status-dot-unknown/);
   await expect(page.locator('#status-indicator')).toHaveAttribute('title', 'could not check status');
 });
+
+async function payment(request, orderId, fraction, inBlock) {
+  const response = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/payment?fraction=${fraction}&in_block=${inBlock}`);
+  expect(response.status()).toBe(204);
+}
+
+test('merchant rings up a sale on a physical keyboard', async ({ page }) => {
+  await page.goto(posUrl());
+  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  const amount = page.locator('.pos-amount');
+  await expect(amount).toContainText('0.000000000000');
+  // A typo, cleared with Backspace; then a wrong amount, cleared with Escape.
+  await page.keyboard.type('129');
+  await page.keyboard.press('Backspace');
+  await expect(amount).toContainText('0.000000000012');
+  await page.keyboard.press('Escape');
+  await expect(amount).toContainText('0.000000000000');
+  // Enter with nothing entered does nothing.
+  await page.keyboard.press('Enter');
+  await expect(page.locator('.pos-keypad')).toBeVisible();
+  await page.keyboard.type('250000000000');
+  await expect(amount).toContainText('0.250000000000');
+  // Typing a reference and pressing Enter there charges too.
+  await page.getByPlaceholder('E.g. customer name or note').fill('Table 4');
+  await page.getByPlaceholder('E.g. customer name or note').press('Enter');
+  await expect(page.locator('.pos-order-heading h1')).toHaveText('Table 4');
+  await expect(page.locator('.pos-pay-xmr')).toContainText('0.25');
+  // Digits typed on the payment screen do not leak into a new sale.
+  await page.keyboard.type('9');
+  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  await expect(amount).toContainText('0.000000000000');
+});
+
+test('customer pays while the order is on screen and the merchant starts the next sale', async ({ page, request }) => {
+  await page.goto(posUrl());
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  // Seen in the mempool first: the card says so and cancelling is no longer offered.
+  await payment(request, fixture.order_id, 1, false);
+  await expect(page.locator('.pos-pay-detail')).toHaveText('Payment seen. Waiting for its first confirmation.');
+  await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
+  await expect(page.locator('.pos-pay-caption')).toHaveText('Received');
+  // Then mined into a block: the outcome replaces the card.
+  expect((await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/confirm`)).status()).toBe(204);
+  await expect(page.locator('.pos-outcome')).toContainText('Payment received and confirmed.');
+  await expect(page.locator('.pos-pay-card')).toHaveCount(0);
+  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Paid');
+  await page.getByRole('button', { name: 'New order' }).click();
+  await expect(page.locator('.pos-keypad')).toBeVisible();
+});
+
+test('customer underpays: the card asks for the rest and the order cannot be cancelled', async ({ page, request }) => {
+  await page.goto(posUrl());
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  await payment(request, fixture.order_id, 0.4, true);
+  await expect(page.locator('.pos-pay-detail')).toContainText('0.0004 of 0.001 XMR received');
+  await expect(page.locator('.pos-pay-card')).toContainText('0.0006');
+  await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
+  await expect(page.locator('.pos-action-hint')).toContainText('Background keeps this payment open');
+  // The customer sends the rest.
+  await payment(request, fixture.order_id, 0.6, true);
+  await expect(page.locator('.pos-outcome')).toContainText('Payment received and confirmed.');
+});
+
+test('customer walks away: the order on screen expires', async ({ page, request }) => {
+  await page.goto(posUrl());
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/expired`);
+  await expect(page.locator('.pos-outcome')).toContainText('This payment expired before it was completed.');
+  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Expired');
+});

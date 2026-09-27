@@ -224,19 +224,50 @@ impl TestEngineHandle {
     /// the chain tip were 100 blocks later, comfortably past any
     /// confirmation requirement a test would configure.
     pub fn mark_order_paid(&self, order_id: &str) -> Result<(), scanner::store::StoreError> {
+        let amount = {
+            let store = self.store.lock().unwrap();
+            let tenant_id = store.get_order_tenant_id(order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
+            store.get_order(&tenant_id, order_id)?.ok_or(scanner::store::StoreError::NotFound)?.xmr_amount_piconero
+        };
+        self.record_order_payment(order_id, amount, true)
+    }
+
+    /// Mines every mempool-only payment to `order_id` into a block (height
+    /// 1000, tip 100 blocks later), as a scan tick would on seeing them
+    /// confirmed, and recomputes its status.
+    pub fn confirm_order_payments(&self, order_id: &str) -> Result<(), scanner::store::StoreError> {
         const PAYMENT_HEIGHT: i64 = 1000;
         let store = self.store.lock().unwrap();
-        let tenant_id = store.get_order_tenant_id(order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
-        let order = store.get_order(&tenant_id, order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
         let now = scanner::now_unix();
+        for payment in store.get_all_payments(order_id)?.into_iter().filter(|p| p.block_height.is_none()) {
+            store.record_payment_match(order_id, &payment.txid, payment.output_index, payment.amount_piconero,
+                &payment.key_images_json, payment.first_seen_at, Some(PAYMENT_HEIGHT))?;
+        }
+        scanner::scanner::recompute_and_notify(&store, order_id, PAYMENT_HEIGHT as u64 + 100, now)
+            .map_err(|e| match e {
+                scanner::scanner::ScannerError::Store(e) => e,
+                other => panic!("recomputing a test order's status failed: {other}"),
+            })
+    }
+
+    /// Records a payment of `piconero` to `order_id` the way a scan would,
+    /// then recomputes its status: `in_block` puts it at height 1000 with the
+    /// chain tip 100 blocks later (fully confirmed); otherwise it is seen in
+    /// the mempool only (`unconfirmed`). Less than the order's amount leaves it
+    /// `partial`. Each call is a separate transaction.
+    pub fn record_order_payment(&self, order_id: &str, piconero: u64, in_block: bool) -> Result<(), scanner::store::StoreError> {
+        const PAYMENT_HEIGHT: i64 = 1000;
+        let store = self.store.lock().unwrap();
+        let now = scanner::now_unix();
+        let existing = store.get_all_payments(order_id).map(|p| p.len()).unwrap_or(0);
         store.record_payment_match(
             order_id,
-            &format!("test-payment-{order_id}"),
+            &format!("test-payment-{order_id}-{existing}"),
             0,
-            order.xmr_amount_piconero,
+            piconero,
             "[]",
             now,
-            Some(PAYMENT_HEIGHT),
+            in_block.then_some(PAYMENT_HEIGHT),
         )?;
         scanner::scanner::recompute_and_notify(&store, order_id, PAYMENT_HEIGHT as u64 + 100, now)
             .map_err(|e| match e {

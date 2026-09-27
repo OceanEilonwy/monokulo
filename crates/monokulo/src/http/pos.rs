@@ -281,6 +281,10 @@ pub struct PosStatusResponse {
     /// a real, error-free success is not an error just because it's also
     /// terminal.
     pub error: Option<String>,
+    /// What has arrived so far and what is still owed, so a live update to
+    /// a partly paid order shows the real amounts.
+    pub received_xmr: String,
+    pub remaining_xmr: String,
 }
 
 #[derive(Serialize)]
@@ -534,6 +538,8 @@ async fn pos_status(state: &AppState, connection_id: &str, sk: &str, order: &Ord
         confirmations_required,
         is_terminal,
         error: derive_payment_error(order),
+        received_xmr: shared::exchange_rate::format_piconero_as_xmr(order.amount_received_piconero),
+        remaining_xmr: shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero.saturating_sub(order.amount_received_piconero)),
     }
 }
 

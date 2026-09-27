@@ -2,7 +2,7 @@
 //! test controls are mounted; the production router has no such endpoints.
 use std::sync::Arc;
 
-use axum::{extract::{Path, State}, http::StatusCode, routing::{get, post}, Json, Router};
+use axum::{extract::{Path, Query, State}, http::StatusCode, routing::{get, post}, Json, Router};
 use monokulo::{
     crypto, db::{Db, SharedDb}, embed_domains::UnavailableDns,
     engine_client::{CreateTenantRequest, EngineClient},
@@ -31,6 +31,33 @@ async fn mark_paid(State(control): State<Controls>, Path(id): Path<String>) -> S
 
 async fn mark_expired(State(control): State<Controls>, Path(id): Path<String>) -> StatusCode {
     match control.engine.mark_order_expired(&id) {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(_) => StatusCode::NOT_FOUND,
+    }
+}
+
+#[derive(serde::Deserialize)]
+struct PaymentQuery {
+    /// Share of the order's amount paid, e.g. 0.5 for an underpayment.
+    fraction: f64,
+    /// false: seen in the mempool only.
+    in_block: bool,
+}
+
+/// A customer's payment arriving: part or all of the amount, confirmed or
+/// only seen in the mempool.
+async fn record_payment(State(control): State<Controls>, Path(id): Path<String>, Query(query): Query<PaymentQuery>) -> StatusCode {
+    let Ok(Some(tenant_id)) = control.engine.store().lock().unwrap().get_order_tenant_id(&id) else { return StatusCode::NOT_FOUND };
+    let Ok(Some(order)) = control.engine.store().lock().unwrap().get_order(&tenant_id, &id) else { return StatusCode::NOT_FOUND };
+    let piconero = (order.xmr_amount_piconero as f64 * query.fraction) as u64;
+    match control.engine.record_order_payment(&id, piconero, query.in_block) {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(_) => StatusCode::NOT_FOUND,
+    }
+}
+
+async fn confirm_payments(State(control): State<Controls>, Path(id): Path<String>) -> StatusCode {
+    match control.engine.confirm_order_payments(&id) {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::NOT_FOUND,
     }
@@ -113,6 +140,8 @@ async fn main() {
         .route("/__coverage/orders", post(create_order))
         .route("/__coverage/orders/{id}/paid", post(mark_paid))
         .route("/__coverage/orders/{id}/expired", post(mark_expired))
+        .route("/__coverage/orders/{id}/payment", post(record_payment))
+        .route("/__coverage/orders/{id}/confirm", post(confirm_payments))
         .route("/__coverage/orders/{id}/browser-created", post(mark_browser_created))
         .with_state(Controls { engine, client: state.engine_client.clone(), token: tenant.secret_token.clone(),
             public_key: tenant.public_key.clone(), order_id: order.order_id.clone(), db: state.db.clone() });
