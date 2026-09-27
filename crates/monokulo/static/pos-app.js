@@ -2265,7 +2265,7 @@ function ui(e) {
 				};
 				o();
 			})().catch((e) => {
-				i(), o(e);
+				r = () => {}, i(), o(e);
 			});
 		}),
 		stop: i

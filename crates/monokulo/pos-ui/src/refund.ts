@@ -82,7 +82,13 @@ export function scanCamera(video: HTMLVideoElement): { result: Promise<string | 
         timer = window.setTimeout(frame, 200);
       };
       frame();
-    })().catch(error => { stop(); reject(error); });
+    })().catch(error => {
+      // Reject before stop() can resolve the scan as cancelled (null), so a
+      // denied or missing camera reaches the caller as a failure.
+      finish = () => {};
+      stop();
+      reject(error);
+    });
   });
   return { result, stop };
 }

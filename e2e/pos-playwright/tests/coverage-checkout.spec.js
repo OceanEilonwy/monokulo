@@ -444,3 +444,13 @@ test('real checkout guides a customer who underpays and then sends too much', as
   await expect(page.locator('#payment-state')).toContainText('(0.000250000000 XMR extra). Do not send more. Contact the merchant about the extra amount.');
   await expect(page.locator('.payments-table tbody tr')).toHaveCount(2);
 });
+
+test('real checkout says so when the chosen refund QR photo cannot be read', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  await page.goto(url);
+  const chooser = page.waitForEvent('filechooser');
+  await page.getByRole('button', { name: 'Choose QR image' }).click();
+  await (await chooser).setFiles(path.join(__dirname, '../fixtures/corrupt-photo.png'));
+  await expect(page.locator('#scan-error')).toHaveText('Could not read that image. Choose another file.');
+  await expect(page.locator('#refund_address')).toHaveValue('');
+});

@@ -520,3 +520,33 @@ test('merchant moves between the keypad, the stack and the order list', async ({
   await page.getByRole('button', { name: 'Back to POS' }).click();
   await expect(page.locator('.pos-keypad')).toBeVisible();
 });
+
+test('merchant denies the camera or picks a broken photo: the card says what to do instead', async ({ page }) => {
+  await page.addInitScript(() => {
+    Object.defineProperty(navigator.mediaDevices, 'getUserMedia', { value: async () => { throw new DOMException('Permission denied', 'NotAllowedError'); } });
+  });
+  await page.goto(posUrl());
+  const card = page.locator('.pos-pay-card');
+  await card.getByRole('button', { name: 'Scan refund QR' }).click();
+  await expect(card.locator('.pos-refund-message')).toHaveText('Camera unavailable. Choose a QR image instead.');
+  await expect(card.getByRole('button', { name: 'Scan refund QR' })).toBeVisible();
+  const chooser = page.waitForEvent('filechooser');
+  await card.getByRole('button', { name: 'Choose QR image' }).click();
+  await (await chooser).setFiles(require('node:path').join(__dirname, '../fixtures/corrupt-photo.png'));
+  await expect(card.locator('.pos-refund-message')).toHaveText('Could not read that image. Choose another file.');
+});
+
+test('clearing a search brings the whole order list back', async ({ page, request }) => {
+  await ringUp(request, 3, 'Table');
+  await page.goto(posUrl());
+  await page.getByRole('button', { name: 'All orders' }).click();
+  const cards = page.locator('.pos-order-card');
+  await expect(cards).toHaveCount(4);
+  const search = page.getByRole('searchbox', { name: 'Search reference or order ID' });
+  await search.fill('Table 2');
+  await expect(cards).toHaveCount(1);
+  await search.fill('nothing like this');
+  await expect(page.locator('.pos-empty')).toHaveText('No matching orders.');
+  await search.fill('');
+  await expect(cards).toHaveCount(4);
+});
