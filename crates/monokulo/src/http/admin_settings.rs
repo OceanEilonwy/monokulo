@@ -258,6 +258,11 @@ pub async fn save_monokulo(
     let changes: live_settings::Changes = crate::settings::ALL
         .iter()
         .filter_map(|setting| {
+            // A secret's field is always empty on the page, so empty means
+            // "keep it"; its "Clear it" box removes it.
+            if secrets.contains(&setting.key()) && form.contains_key(&format!("clear:{}", setting.key())) {
+                return Some((setting.key().to_string(), None));
+            }
             let value = form.get(setting.key())?;
             if secrets.contains(&setting.key()) && value.is_empty() {
                 return None;
@@ -293,7 +298,10 @@ pub async fn save_monokulo(
             let message = errors.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ");
             render_error(&state, &admin_user, message).await
         }
-        Err(_) => render_error(&state, &admin_user, "Something went wrong saving these settings. Please try again.".to_string()).await,
+        Err(e) => {
+            eprintln!("saving monokulo settings failed: {e}");
+            render_error(&state, &admin_user, "Something went wrong saving these settings. Please try again.".to_string()).await
+        }
     }
 }
 
@@ -742,6 +750,33 @@ mod tests {
             || html.contains(&format!("value=\"{value}\" min")) || html.contains(&format!("value=\"{value}\";"))
             || html.contains(&format!("\">{value}</textarea>"))
             || html.contains(&format!("value=\"{value}\"></label>"))
+    }
+
+    #[tokio::test]
+    async fn the_engine_admin_token_is_kept_when_left_empty_and_removed_when_cleared() {
+        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let db = state.db.clone();
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let key = crate::settings::SCANNER_ADMIN_TOKEN.key;
+
+        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        assert!(page.contains(&format!(r#"name="clear:{key}""#)), "a set secret can be cleared: {page}");
+
+        let kept = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(key, "")])).await.unwrap();
+        assert_eq!(kept.status(), StatusCode::OK);
+        assert_eq!(db.lock().get_setting(key).unwrap().as_deref(), Some(SCANNER_ADMIN_TOKEN), "empty keeps it");
+
+        let clear = format!("clear:{key}");
+        let cleared = router
+            .clone()
+            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(key, ""), (clear.as_str(), "on")]))
+            .await
+            .unwrap();
+        assert_eq!(cleared.status(), StatusCode::OK);
+        assert_eq!(db.lock().get_setting(key).unwrap(), None);
+        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        assert!(!page.contains(&format!(r#"name="clear:{key}""#)), "nothing left to clear");
     }
 
     #[tokio::test]

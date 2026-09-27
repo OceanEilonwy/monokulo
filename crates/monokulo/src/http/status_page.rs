@@ -65,12 +65,27 @@ pub struct StatusCacheState {
     /// A background refresh started by [`known_health`] is in flight, so a
     /// burst of page loads starts one, not one each.
     refreshing: bool,
+    /// The engine address `cached` came from: a status cached before the
+    /// engine URL was changed is never shown as the new engine's.
+    base_url: String,
 }
 
 pub type StatusCache = Arc<Mutex<StatusCacheState>>;
 
 pub fn new_status_cache() -> StatusCache {
     Arc::new(Mutex::new(StatusCacheState::default()))
+}
+
+/// The status cache, emptied first if the engine URL changed since it was
+/// filled.
+pub(crate) fn status_cache(state: &AppState) -> parking_lot::MutexGuard<'_, StatusCacheState> {
+    let base_url = state.engine_client.base_url();
+    let mut cache = state.status_cache.lock();
+    if cache.base_url != base_url {
+        cache.cached = None;
+        cache.base_url = base_url;
+    }
+    cache
 }
 
 /// How old a cached status may be and still be rendered into a page as the
@@ -83,7 +98,7 @@ const KNOWN_STATUS_MAX_AGE: Duration = Duration::from_secs(300);
 /// indicator's own poll) sees a fresh answer - which keeps it current for
 /// visitors without JavaScript too.
 pub fn known_health(state: &AppState) -> Option<bool> {
-    let mut cache = state.status_cache.lock();
+    let mut cache = status_cache(&state);
     let age = cache.cached.as_ref().map(|cached| cached.fetched_at.elapsed());
     if age.is_none_or(|age| age >= CACHE_TTL) && !cache.refreshing {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
@@ -91,7 +106,7 @@ pub fn known_health(state: &AppState) -> Option<bool> {
             let state = state.clone();
             runtime.spawn(async move {
                 let _ = get_status_cached(&state).await;
-                state.status_cache.lock().refreshing = false;
+                status_cache(&state).refreshing = false;
             });
         }
     }
@@ -114,7 +129,7 @@ pub fn known_custody_choices(state: &AppState) -> Vec<String> {
 /// Every key custody backend the engine has enabled, the default first.
 /// Empty when the engine offers no choice or its status isn't known.
 pub fn known_enabled_custody_backends(state: &AppState) -> Vec<String> {
-    let cache = state.status_cache.lock();
+    let cache = status_cache(&state);
     let Some(status) = cache
         .cached
         .as_ref()
@@ -161,21 +176,21 @@ pub fn custody_backend_label(backend: &str) -> String {
 /// after a change that the status reflects (a store moving its keys, the
 /// engine address changing).
 pub fn invalidate_status_cache(state: &AppState) {
-    state.status_cache.lock().cached = None;
+    status_cache(&state).cached = None;
 }
 
 /// Puts `status` in the cache as if just fetched, for tests of pages that
 /// read it without waiting on an engine.
 #[cfg(test)]
 pub(crate) fn seed_status_for_tests(state: &AppState, status: EngineStatusResponse) {
-    state.status_cache.lock().cached = Some(CachedStatus { fetched_at: Instant::now(), result: Ok(status) });
+    status_cache(&state).cached = Some(CachedStatus { fetched_at: Instant::now(), result: Ok(status) });
 }
 
 /// The stores the engine last said it can't scan (task 3.7), from the same
 /// cache as [`known_health`], without waiting on the engine. Empty when
 /// nothing is known yet.
 pub fn known_unserved(state: &AppState) -> Vec<crate::engine_client::UnservedTenant> {
-    let cache = state.status_cache.lock();
+    let cache = status_cache(&state);
     cache
         .cached
         .as_ref()
@@ -209,13 +224,18 @@ fn is_healthy(result: &Result<EngineStatusResponse, String>) -> bool {
 /// "occasionally two real fetches instead of one" is a fine outcome for what
 /// this exists to bound (typical page-view volume, not a flood).
 pub(crate) async fn get_status_cached(state: &AppState) -> Result<EngineStatusResponse, String> {
-    if let Some(cached) = state.status_cache.lock().cached.as_ref() {
+    if let Some(cached) = status_cache(&state).cached.as_ref() {
         if cached.fetched_at.elapsed() < CACHE_TTL {
             return cached.result.clone();
         }
     }
+    let asked = state.engine_client.base_url();
     let result = state.engine_client.get_status().await.map_err(|e| describe_engine_error(&e));
-    state.status_cache.lock().cached = Some(CachedStatus { fetched_at: Instant::now(), result: result.clone() });
+    let mut cache = status_cache(state);
+    // Not cached if the engine URL changed while this was being fetched.
+    if cache.base_url == asked {
+        cache.cached = Some(CachedStatus { fetched_at: Instant::now(), result: result.clone() });
+    }
     result
 }
 
@@ -365,7 +385,7 @@ mod tests {
         // Nothing learned yet: unknown, and a background refresh starts.
         assert_eq!(known_health(&state), None);
         let deadline = Instant::now() + Duration::from_secs(5);
-        while state.status_cache.lock().refreshing {
+        while status_cache(&state).refreshing {
             assert!(Instant::now() < deadline, "the background refresh never finished");
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
@@ -373,11 +393,11 @@ mod tests {
         assert_eq!(known_health(&state), Some(false));
 
         // Too old to show as known.
-        state.status_cache.lock().cached = Some(CachedStatus {
+        status_cache(&state).cached = Some(CachedStatus {
             fetched_at: Instant::now() - KNOWN_STATUS_MAX_AGE,
             result: Err("stale".to_string()),
         });
-        state.status_cache.lock().refreshing = true;
+        status_cache(&state).refreshing = true;
         assert_eq!(known_health(&state), None);
     }
 
@@ -413,10 +433,10 @@ mod tests {
             let state = state_with_engine(EngineClient::new(format!("http://{}", engine.addr)));
 
             let first = get_status_cached(&state).await.expect("first fetch should succeed");
-            let fetched_at_after_first = state.status_cache.lock().cached.as_ref().unwrap().fetched_at;
+            let fetched_at_after_first = super::super::status_cache(&state).cached.as_ref().unwrap().fetched_at;
 
             let second = get_status_cached(&state).await.expect("second fetch should succeed");
-            let fetched_at_after_second = state.status_cache.lock().cached.as_ref().unwrap().fetched_at;
+            let fetched_at_after_second = super::super::status_cache(&state).cached.as_ref().unwrap().fetched_at;
 
             assert_eq!(
                 fetched_at_after_first, fetched_at_after_second,

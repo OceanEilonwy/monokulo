@@ -58,7 +58,7 @@ commits. Nothing is pushed.
 | 3.7 merchant alerts | done | d7e7883 | |
 | 2.2 unserved networks | done | d7e7883 | |
 | Part 4 admin page | done except Playwright | 66f32ea | view tests; Playwright page tests wait for part 6 |
-| independent review of 8830c92 + 66f32ea + d7e7883 | reported; items 1-3 applied, 4 and minors next | 5b980b5 | item 1 (--help touching the DB) fixed in part 5 main.rs rework |
+| independent review of 8830c92 + 66f32ea + d7e7883 | all items applied or decided | 5b980b5, e990f7f, see git log | item 1 (--help touching the DB) fixed in part 5 main.rs rework |
 | Part 5 engine side (5.1 router, 5.2 live settings, 5.3 choose/switch API, 5.5 status) | done | 95f5991 | |
 | Part 5 monokulo side (5.4 backend choice, 5.6 Key storage section, 5.7 alerts) and bootstrap CLI flag | done, reviewed, fixes applied | see git log | review found 1 blocking bug (socket path change stranded socket stores), fixed with tests |
 | Review items 2 (chunked body limit) and 3 (alerts don't flap) of 8830c92/66f32ea/d7e7883 | done | 5b980b5 | |
@@ -187,6 +187,33 @@ reported at the end.)
   `GET /api/v1/admin/key-custody` (backend names and fixed descriptions
   only, on the private engine), agreed acceptable by the reviewer.
 
+- Review item 4: the loop manager and the loops moved to
+  `scanner::loops`, tested (loops start and stop with saved node
+  settings; a store is registered again within seconds after its backend
+  is replaced). The manager is now supervised: if it panics, dropping it
+  stops the loops it started (their stop senders go with it), and its
+  restart starts them again.
+- Minor review items: the scanner status re-insert race is fixed (a loop
+  doesn't record a tick for a network whose node was just cleared);
+  save_monokulo errors are logged; the engine admin token (the only secret
+  setting) gets a "Clear it" box, since an empty field has to mean "keep";
+  retarget does nothing when the URL and cache size are what they already
+  are; the status cache remembers which engine URL it came from, so an old
+  engine's status (and its alerts) are never shown for a new one; the
+  unused live handle for the per-request section is removed (the section
+  stays, because every setting must belong to one).
+- Onion listener A-B-A: a real bug, not just a race. The acceptor task
+  kept the socket until the next connection arrived after the listener was
+  dropped, so moving back to an address it had left failed. It now exits
+  as soon as the listener is dropped; binding also retries briefly while
+  the address is still in use.
+- Not changed: retrying NodesReloadable after a boot failure. Its prepare
+  can only fail if the TLS backend can't initialise, which affects every
+  network the same way and needs a fix to the machine, not a retry.
+- Not changed: the test harness's own rate limiter is still separate from
+  the settings' one, on purpose, so tests keep their generous limit
+  (test-only; no behaviour in the product depends on it).
+
 ## Baseline
 
 `cargo test --workspace` on `main` (43d7c53 + dc2d976): 913 passed,
@@ -203,13 +230,11 @@ After d7e7883: 1018 passed, 0 failed, 21 ignored.
 After part 5 engine side: 1031 passed, 0 failed, 21 ignored.
 After part 5 complete: 1036 passed, 0 failed, 21 ignored.
 After part 5 review fixes and review items 2-3: 1044 passed, 0 failed.
+After review item 4 and the minor items: 1050 passed, 0 failed.
 
 ## Current step
 
-Review item 4 of 8830c92/66f32ea/d7e7883 (move manage_network_loops and
-run_scanner_loop out of main.rs into the library and test them), then its
-minor items (scanner_status re-insert race, supervise the manager, retry
-NodesReloadable after a boot failure, scan_chunk_memory_budget_mb through
-the old settings path, test harness rate limiter, log save_monokulo
-errors, clearing the admin token, retarget only on change plus status
-cache invalidation, onion A-B-A, unused PerRequest), then 1.5, then part 6.
+1.5: remove what's left of the old `scanner/src/settings.rs` read path
+(scan chunk memory budget, local_admin's thresholds) so every engine
+setting is read through `EngineSettings`. Then part 6 (dev-run.sh,
+docs, real-binary harness, e2e and Playwright tests).

@@ -55,6 +55,7 @@ pub struct EngineClient {
 /// One engine address with its HTTP client and live-update hub.
 struct EngineTarget {
     base_url: String,
+    max_cache_bytes: u64,
     http: reqwest_middleware::ClientWithMiddleware,
     /// Live order updates from this engine - see `crate::live`. Shared by
     /// every clone, so all handlers watching one store share one upstream
@@ -66,6 +67,7 @@ impl EngineTarget {
     fn new(base_url: String, max_cache_bytes: u64) -> Self {
         EngineTarget {
             base_url,
+            max_cache_bytes,
             http: shared::http_cache::build_client(concat!("monokulo/", env!("CARGO_PKG_VERSION")), max_cache_bytes),
             live: Default::default(),
         }
@@ -104,8 +106,17 @@ impl EngineClient {
     /// cache of `max_cache_bytes` (task 3.2). Live-update streams to the old
     /// engine are ended, so browsers watching orders reconnect and land on
     /// the new one.
+    /// Nothing happens when both are what they already are, so open
+    /// streams aren't cut for no reason.
     pub fn retarget(&self, base_url: impl Into<String>, max_cache_bytes: u64) {
-        let next = std::sync::Arc::new(EngineTarget::new(base_url.into(), max_cache_bytes));
+        let base_url = base_url.into();
+        {
+            let current = self.current.read();
+            if current.base_url == base_url && current.max_cache_bytes == max_cache_bytes {
+                return;
+            }
+        }
+        let next = std::sync::Arc::new(EngineTarget::new(base_url, max_cache_bytes));
         let previous = std::mem::replace(&mut *self.current.write(), next);
         previous.live.shutdown();
     }
@@ -760,6 +771,18 @@ pub struct UnservedTenant {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn retargeting_to_the_same_engine_changes_nothing_and_to_another_one_does() {
+        let client = EngineClient::with_cache_limit("http://127.0.0.1:8443", 1024);
+        let before = client.target();
+        client.retarget("http://127.0.0.1:8443", 1024);
+        assert!(std::sync::Arc::ptr_eq(&before, &client.target()), "same address and cache: kept, streams stay open");
+        client.retarget("http://127.0.0.1:8443", 2048);
+        assert!(!std::sync::Arc::ptr_eq(&before, &client.target()), "a new cache size is a new client");
+        client.retarget("http://127.0.0.1:9443", 2048);
+        assert_eq!(client.base_url(), "http://127.0.0.1:9443");
+    }
 
     /// Same fixed-scalar construction `src/http/tests.rs` (engine crate) uses
     /// for its own `valid_view_key_hex`/`valid_spend_pubkey_hex` helpers,

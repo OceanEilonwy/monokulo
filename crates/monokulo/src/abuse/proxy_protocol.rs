@@ -138,7 +138,14 @@ impl OnionListener {
         let (sender, ready) = mpsc::channel(256);
         tokio::spawn(async move {
             loop {
-                let (mut stream, peer) = match listener.accept().await {
+                // Ends as soon as the `OnionListener` is dropped, which
+                // frees the address for a new listener straight away rather
+                // than after the next connection arrives.
+                let accepted = tokio::select! {
+                    accepted = listener.accept() => accepted,
+                    () = sender.closed() => return,
+                };
+                let (mut stream, peer) = match accepted {
                     Ok(accepted) => accepted,
                     Err(e) => {
                         eprintln!("onion listener: accept failed: {e}");
@@ -156,9 +163,6 @@ impl OnionListener {
                         Err(_) => eprintln!("onion listener: refused a connection from {peer}: no PROXY header within {HEADER_TIMEOUT:?}"),
                     }
                 });
-                if sender.is_closed() {
-                    return;
-                }
             }
         });
         Ok(OnionListener { local_addr, ready })
@@ -199,6 +203,20 @@ impl OnionListener {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_dropped_listener_frees_its_address_without_waiting_for_a_connection() {
+        let first = OnionListener::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+        let address = first.bound_address();
+        drop(first);
+        for _ in 0..20 {
+            if OnionListener::bind(address).await.is_ok() {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(10)).await;
+        }
+        panic!("{address} still in use after its listener was dropped");
+    }
 
     #[test]
     fn tor_headers_parse_and_carry_the_circuit_in_the_source_address() {

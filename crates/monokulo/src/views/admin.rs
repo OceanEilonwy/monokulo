@@ -312,6 +312,12 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
         SettingKindView::Secret => html! {
             input type="password" name=(name) value="" autocomplete="off"
                 placeholder=(if field.value.is_empty() { "not set" } else { "set - leave empty to keep it" });
+            @if !field.value.is_empty() {
+                label class="inline" {
+                    input type="checkbox" name=(format!("clear:{name}")) value="on";
+                    " Clear it"
+                }
+            }
         },
         SettingKindView::Json => html! { textarea name=(name) rows="4" { (field.value) } },
         _ => html! { input type="text" name=(name) value=(field.value); },

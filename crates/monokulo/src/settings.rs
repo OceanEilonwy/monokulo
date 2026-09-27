@@ -22,7 +22,7 @@ use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
 use live_settings::{
-    choice_value, settings, AnySetting, FieldError, HttpUrl, Live, Registry, Secret, Section, Setting, SettingValue,
+    choice_value, settings, AnySetting, FieldError, HttpUrl, Registry, Secret, Section, Setting, SettingValue,
     Snapshot, Warning,
 };
 
@@ -265,7 +265,8 @@ impl Section for EngineConnection {
     }
 }
 
-/// Read per request; grouped so each setting belongs to a section.
+/// Read per request with [`get`]; grouped so each setting belongs to a
+/// section. Nothing holds it live.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PerRequest {
     pub signup_mode: SignupMode,
@@ -529,10 +530,21 @@ impl live_settings::Reloadable for OnionReloadable {
         }
         match new.address {
             None => Ok((OnionChange::Off, Vec::new())),
-            Some(address) => crate::abuse::proxy_protocol::OnionListener::bind(address)
-                .await
-                .map(|listener| (OnionChange::Start(listener), Vec::new()))
-                .map_err(|e| FieldError::new(ABUSE_ONION_LISTENER.key, format!("Can't listen on {address}: {e}."))),
+            Some(address) => {
+                // Moving back to an address this listener just left: the old
+                // one lets go of it moments after it's stopped.
+                let mut attempts = 0;
+                loop {
+                    match crate::abuse::proxy_protocol::OnionListener::bind(address).await {
+                        Ok(listener) => return Ok((OnionChange::Start(listener), Vec::new())),
+                        Err(e) if e.kind() == std::io::ErrorKind::AddrInUse && attempts < 20 => {
+                            attempts += 1;
+                            tokio::time::sleep(Duration::from_millis(100)).await;
+                        }
+                        Err(e) => return Err(FieldError::new(ABUSE_ONION_LISTENER.key, format!("Can't listen on {address}: {e}."))),
+                    }
+                }
+            }
         }
     }
 
@@ -565,18 +577,12 @@ impl OnionReloadable {
 /// live sections the process reads.
 pub struct MonokuloSettings {
     pub registry: Option<Registry>,
-    pub per_request: Live<PerRequest>,
 }
 
 impl MonokuloSettings {
     /// No registry, for tests that don't use the admin settings page.
     pub fn defaults() -> Arc<Self> {
-        let per_request = PerRequest::from_snapshot(&Snapshot::defaults()).unwrap_or(PerRequest {
-            signup_mode: SignupMode::InviteOnly,
-            public_url: String::new(),
-            admin_token: Secret::default(),
-        });
-        Arc::new(MonokuloSettings { registry: None, per_request: Live::new(per_request) })
+        Arc::new(MonokuloSettings { registry: None })
     }
 
     /// Loads every setting and applies it to the given runtime pieces;
@@ -601,7 +607,9 @@ impl MonokuloSettings {
                 builder.section::<OnionListenerConfig>();
             }
         }
-        let per_request = builder.section::<PerRequest>();
+        // Its settings are read per request with `get` (they have no
+        // runtime state to rebuild); the section only groups them.
+        builder.section::<PerRequest>();
         let registry = builder.build().map_err(|e| e.to_string())?;
         let report = registry.boot().await.map_err(|e| e.to_string())?;
         for warning in &report.warnings {
@@ -610,7 +618,7 @@ impl MonokuloSettings {
         for (section, error) in &report.degraded {
             eprintln!("settings: {section} could not be applied at start, carrying on without it: {error}");
         }
-        Ok(Arc::new(MonokuloSettings { registry: Some(registry), per_request }))
+        Ok(Arc::new(MonokuloSettings { registry: Some(registry) }))
     }
 }
 
@@ -738,6 +746,14 @@ mod tests {
         registry.save(change("abuse.onion_listener", &free.to_string())).await.unwrap();
         tokio::time::sleep(Duration::from_millis(50)).await;
         assert!(tokio::net::TcpStream::connect(free).await.is_ok(), "listening straight away");
+
+        // Moved away and straight back: the first address is free again at
+        // once, with no connection needed to let go of it.
+        let other = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        registry.save(change("abuse.onion_listener", &other.to_string())).await.unwrap();
+        registry.save(change("abuse.onion_listener", &free.to_string())).await.expect("moving back to the first address");
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(tokio::net::TcpStream::connect(free).await.is_ok(), "listening on the first address again");
 
         registry.save(change("abuse.onion_listener", "")).await.unwrap();
         let mut closed = false;
