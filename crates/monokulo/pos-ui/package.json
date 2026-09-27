@@ -3,7 +3,8 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "build": "vite build && tsc --noEmit",
+    "typecheck": "tsc --noEmit",
+    "build": "vite build --mode production",
     "dev": "vite --host 127.0.0.1"
   },
   "dependencies": {
@@ -14,5 +15,10 @@
     "@solidjs/vite-plugin": "3.0.0-next.44",
     "typescript": "~5.9.3",
     "vite": "8.3.1"
+  },
+  "overrides": {
+    "@solidjs/signals": "2.0.0-rc.9",
+    "@solidjs/compiler": "2.0.0-rc.9",
+    "@solidjs/babel-plugin": "2.0.0-rc.9"
   }
 }

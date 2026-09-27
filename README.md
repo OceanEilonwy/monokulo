@@ -9,9 +9,12 @@ written over its instance-admin HTTP API (`/api/v1/admin/settings`).
 
 ## Running in production
 
-1. Build release binaries from the repository root:
+1. Build release binaries from the repository root. Building monokulo
+   also builds its POS app, so it needs Node 24 or later and the app's
+   dependencies, installed once from the lockfile:
 
    ```sh
+   (cd crates/monokulo/pos-ui && npm ci)
    cargo build --release -p scanner --bin scanner -p monokulo --bin monokulo
    ```
 
@@ -56,6 +59,10 @@ etc.) - each is a single long-running binary with no daemonization of its
 own.
 
 ## Running in development
+
+Install the POS app's dependencies once (`cd crates/monokulo/pos-ui &&
+npm ci`); a debug build of monokulo then embeds the
+POS with Solid's development diagnostics, a release build the minified one.
 
 `scripts/dev-run.sh` builds and runs both processes locally the same way
 they run in production, with all state kept under `.dev-run/` (gitignored)

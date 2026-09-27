@@ -208,11 +208,11 @@ pub async fn checkout_script() -> impl IntoResponse {
 }
 
 pub async fn pos_script() -> impl IntoResponse {
-    ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/pos-app.js"))
+    ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!(concat!(env!("OUT_DIR"), "/pos-ui/pos-app.js")))
 }
 
 pub async fn pos_style() -> impl IntoResponse {
-    ([(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!("../../static/pos-app.css"))
+    ([(axum::http::header::CONTENT_TYPE, "text/css; charset=utf-8")], include_str!(concat!(env!("OUT_DIR"), "/pos-ui/pos-app.css")))
 }
 
 /// `GET /static/challenge.js` - solves the abuse-protection challenge on

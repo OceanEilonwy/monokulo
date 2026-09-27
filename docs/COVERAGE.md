@@ -26,7 +26,8 @@ later component fails. An unavailable metric is labeled `unavailable`, not
   and the latest unpinned `cargo-llvm-cov` installation. The Rust command
   refreshes both on every run and installs nightly LLVM tools.
 - Browser: Node 24, `npm ci --prefix e2e/pos-playwright`,
-  `npm install --prefix crates/monokulo/pos-ui`, and Chromium from
+  `npm ci --prefix crates/monokulo/pos-ui` (Cargo builds
+  the POS app from it, see `crates/monokulo/build.rs`), and Chromium from
   `cd e2e/pos-playwright && npx playwright install chromium`. The browser
   fixture builds with Cargo `--offline`; fetch Rust dependencies before
   starting if the Cargo cache is empty.

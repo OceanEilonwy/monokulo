@@ -35,7 +35,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y ripgrep
           npm ci --prefix e2e/pos-playwright
-          npm install --prefix crates/monokulo/pos-ui --no-audit --no-fund
+          npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
           cd e2e/pos-playwright
           npx playwright install --with-deps chromium
       - name: Install PHP and Composer

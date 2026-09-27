@@ -1,1 +1,4 @@
 node_modules/
+
+# Built by crates/monokulo/build.rs into OUT_DIR; `npm run build` here writes dist/.
+dist/

@@ -8,7 +8,7 @@ if ! test -f "$playwright/node_modules/@playwright/test/package.json"; then
   echo "missing prerequisite: $playwright/node_modules (run npm ci there)" >&2; exit 2
 fi
 if ! test -f crates/monokulo/pos-ui/node_modules/vite/bin/vite.js; then
-  echo 'missing prerequisite: POS Vite dependencies (run npm install in crates/monokulo/pos-ui)' >&2; exit 2
+  echo 'missing prerequisite: POS Vite dependencies (run npm ci in crates/monokulo/pos-ui)' >&2; exit 2
 fi
 
 # Build the fixture server up front: each spec's beforeAll rebuilds it, and a
