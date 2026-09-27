@@ -496,12 +496,15 @@ async fn run_scanner_loop(
         let tenants: Vec<(String, WalletHandle)> =
             wallet_handles.read().iter().map(|(id, h)| (id.clone(), *h)).collect();
         let started_at = now_unix();
+        // One node for the whole tick (task 7.6), so answers from nodes at
+        // different heights or on different forks are never mixed.
+        let pinned = daemon.pin();
         let result = match tokio::time::timeout(
             tick_deadline(poll_interval),
             run_scan_tick(
                 &store,
                 key_custody.as_ref(),
-                daemon.as_ref(),
+                &pinned,
                 network_str(network),
                 &tenants,
                 reorg_check_depth,

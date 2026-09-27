@@ -23,8 +23,11 @@
 //! again once the chain of calls wraps back around to it.
 
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::time::Duration;
 
 use monero::Transaction;
+use parking_lot::Mutex;
+use tokio::time::Instant;
 
 use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
 
@@ -37,8 +40,29 @@ pub struct FallbackNode {
     pub client: std::sync::Arc<dyn MoneroDaemonClient>,
 }
 
+/// After a node fails it is skipped for a while (task 7.6), so a dead node
+/// doesn't cost a full request timeout on every call: 5s after the first
+/// failure in a row, doubling up to 5 minutes. A node in cooldown is still
+/// tried when every node is in cooldown, so recovery is never blocked.
+const FIRST_COOLDOWN: Duration = Duration::from_secs(5);
+const MAX_COOLDOWN: Duration = Duration::from_secs(5 * 60);
+
+/// Longest one call may take across all the nodes it tries, so a call with
+/// every node dead fails in bounded time rather than one full request
+/// timeout per node.
+pub const CALL_DEADLINE: Duration = Duration::from_secs(30);
+/// Least time one node gets within a call, however many nodes are left.
+const MIN_ATTEMPT: Duration = Duration::from_secs(5);
+
+#[derive(Default)]
+struct NodeHealth {
+    failures_in_a_row: u32,
+    cooldown_until: Option<Instant>,
+}
+
 pub struct FallbackDaemonClient {
     nodes: Vec<FallbackNode>,
+    health: Vec<Mutex<NodeHealth>>,
     /// Index into `nodes` of whichever node most recently answered successfully -
     /// where the *next* call starts trying from. Relaxed ordering is enough: this is
     /// an optimization (skip nodes already known-bad) rather than a correctness
@@ -52,7 +76,8 @@ impl FallbackDaemonClient {
     /// with zero `fallbacks`) - see `note_all_failed`'s doc comment for what happens
     /// if this invariant is ever violated anyway.
     pub fn new(nodes: Vec<FallbackNode>) -> Self {
-        Self { nodes, current: AtomicUsize::new(0) }
+        let health = nodes.iter().map(|_| Mutex::new(NodeHealth::default())).collect();
+        Self { nodes, health, current: AtomicUsize::new(0) }
     }
 
     /// Every configured node, in priority order - for a caller that wants to
@@ -73,7 +98,23 @@ impl FallbackDaemonClient {
         self.current.load(Ordering::Relaxed)
     }
 
+    /// Whether node `idx` is in its post-failure cooldown right now.
+    pub fn in_cooldown(&self, idx: usize) -> bool {
+        self.health.get(idx).is_some_and(|h| h.lock().cooldown_until.is_some_and(|until| Instant::now() < until))
+    }
+
+    /// The order to try nodes in for one call: from `current` round the list,
+    /// nodes out of cooldown first, then (so that recovery is never blocked)
+    /// the ones in cooldown.
+    fn attempt_order(&self) -> Vec<usize> {
+        let start = self.current.load(Ordering::Relaxed);
+        let all: Vec<usize> = (0..self.nodes.len()).map(|offset| (start + offset) % self.nodes.len()).collect();
+        let (ready, cooling): (Vec<usize>, Vec<usize>) = all.into_iter().partition(|&idx| !self.in_cooldown(idx));
+        ready.into_iter().chain(cooling).collect()
+    }
+
     fn note_success(&self, idx: usize) {
+        *self.health[idx].lock() = NodeHealth::default();
         let previous = self.current.swap(idx, Ordering::Relaxed);
         if previous != idx {
             eprintln!(
@@ -84,7 +125,17 @@ impl FallbackDaemonClient {
     }
 
     fn note_failure(&self, idx: usize, error: &DaemonError) {
-        eprintln!("monero daemon fallback: node {idx} ({}) failed, trying next: {error}", self.nodes[idx].label);
+        let cooldown = {
+            let mut health = self.health[idx].lock();
+            health.failures_in_a_row = health.failures_in_a_row.saturating_add(1);
+            let cooldown = FIRST_COOLDOWN.saturating_mul(1 << health.failures_in_a_row.saturating_sub(1).min(16)).min(MAX_COOLDOWN);
+            health.cooldown_until = Some(Instant::now() + cooldown);
+            cooldown
+        };
+        eprintln!(
+            "monero daemon fallback: node {idx} ({}) failed, skipping it for {cooldown:?} and trying the next: {error}",
+            self.nodes[idx].label
+        );
     }
 
     /// Only reachable if `nodes` was constructed empty, which every real call site
@@ -95,179 +146,160 @@ impl FallbackDaemonClient {
     fn note_all_failed() -> DaemonError {
         DaemonError::Request("no Monero daemon nodes configured".to_string())
     }
+
+    /// A handle that sends every call to one node, for the length of one scan
+    /// tick (task 7.6). Different nodes can be at different heights or on
+    /// different forks, and one tick mixing their answers (a height from one,
+    /// blocks from another) can reach wrong conclusions. The pinned node is
+    /// the first one out of cooldown, starting from `current`. If it fails,
+    /// the call fails (the tick ends and retries next time, when another node
+    /// is picked) and the failure counts towards its cooldown here.
+    pub fn pin(&self) -> PinnedDaemon<'_> {
+        let idx = self.attempt_order().first().copied().unwrap_or(0);
+        PinnedDaemon { inner: self, idx }
+    }
+
+    async fn failover<'a, T, F, Fut>(&'a self, call: F) -> Result<T, DaemonError>
+    where
+        F: Fn(&'a dyn MoneroDaemonClient) -> Fut,
+        Fut: std::future::Future<Output = Result<T, DaemonError>> + 'a,
+    {
+        let deadline = Instant::now() + CALL_DEADLINE;
+        let mut last_err = None;
+        let order = self.attempt_order();
+        for (tried, &idx) in order.iter().enumerate() {
+            let remaining = deadline.saturating_duration_since(Instant::now());
+            if remaining.is_zero() {
+                last_err = Some(DaemonError::Request(format!("no node answered within {CALL_DEADLINE:?}")));
+                break;
+            }
+            // A node that hangs gets its share of what's left, not all of it,
+            // so the nodes after it still get a turn.
+            let nodes_left = (order.len() - tried) as u32;
+            let this_attempt = (remaining / nodes_left).max(MIN_ATTEMPT).min(remaining);
+            let outcome = match tokio::time::timeout(this_attempt, call(self.nodes[idx].client.as_ref())).await {
+                Ok(outcome) => outcome,
+                Err(_) => Err(DaemonError::Request(format!("no answer within the call's {CALL_DEADLINE:?} deadline"))),
+            };
+            match outcome {
+                Ok(v) => {
+                    self.note_success(idx);
+                    return Ok(v);
+                }
+                Err(e) => {
+                    self.note_failure(idx, &e);
+                    last_err = Some(e);
+                }
+            }
+        }
+        Err(last_err.unwrap_or_else(Self::note_all_failed))
+    }
+}
+
+/// One scan tick's view of a [`FallbackDaemonClient`]: every call goes to the
+/// same node. See [`FallbackDaemonClient::pin`].
+pub struct PinnedDaemon<'a> {
+    inner: &'a FallbackDaemonClient,
+    idx: usize,
+}
+
+impl PinnedDaemon<'_> {
+    pub fn node_index(&self) -> usize {
+        self.idx
+    }
+
+    async fn one<'b, T, F, Fut>(&'b self, call: F) -> Result<T, DaemonError>
+    where
+        F: FnOnce(&'b dyn MoneroDaemonClient) -> Fut,
+        Fut: std::future::Future<Output = Result<T, DaemonError>> + 'b,
+    {
+        let Some(node) = self.inner.nodes.get(self.idx) else {
+            return Err(FallbackDaemonClient::note_all_failed());
+        };
+        let outcome = match tokio::time::timeout(CALL_DEADLINE, call(node.client.as_ref())).await {
+            Ok(outcome) => outcome,
+            Err(_) => Err(DaemonError::Request(format!("no answer within the call's {CALL_DEADLINE:?} deadline"))),
+        };
+        match &outcome {
+            Ok(_) => self.inner.note_success(self.idx),
+            Err(e) => self.inner.note_failure(self.idx, e),
+        }
+        outcome
+    }
+}
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for PinnedDaemon<'_> {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        self.one(|c| c.get_height()).await
+    }
+    async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+        self.one(|c| c.get_block_hash(height)).await
+    }
+    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
+        self.one(|c| c.get_block_timestamp(height)).await
+    }
+    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        self.one(|c| c.get_block_transactions(height)).await
+    }
+    async fn get_blocks_range(&self, start_height: u64, count: u64) -> Result<Vec<Vec<Transaction>>, DaemonError> {
+        self.one(|c| c.get_blocks_range(start_height, count)).await
+    }
+    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        self.one(|c| c.get_mempool_transactions()).await
+    }
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+        self.one(|c| c.locate_transaction(txid)).await
+    }
+    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
+        self.one(|c| c.get_transaction(txid)).await
+    }
+    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        self.one(|c| c.is_key_image_spent(key_images)).await
+    }
+    /// Deliberately every node, not just the pinned one: see
+    /// `FallbackDaemonClient::is_key_image_spent_corroborated`.
+    async fn is_key_image_spent_corroborated(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        self.inner.is_key_image_spent_corroborated(key_images).await
+    }
 }
 
 #[async_trait::async_trait]
 impl MoneroDaemonClient for FallbackDaemonClient {
     async fn get_height(&self) -> Result<u64, DaemonError> {
-        let start = self.current.load(Ordering::Relaxed);
-        let mut last_err = None;
-        for offset in 0..self.nodes.len() {
-            let idx = (start + offset) % self.nodes.len();
-            match self.nodes[idx].client.get_height().await {
-                Ok(v) => {
-                    self.note_success(idx);
-                    return Ok(v);
-                }
-                Err(e) => {
-                    self.note_failure(idx, &e);
-                    last_err = Some(e);
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(Self::note_all_failed))
+        self.failover(|c| c.get_height()).await
     }
 
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
-        let start = self.current.load(Ordering::Relaxed);
-        let mut last_err = None;
-        for offset in 0..self.nodes.len() {
-            let idx = (start + offset) % self.nodes.len();
-            match self.nodes[idx].client.get_block_hash(height).await {
-                Ok(v) => {
-                    self.note_success(idx);
-                    return Ok(v);
-                }
-                Err(e) => {
-                    self.note_failure(idx, &e);
-                    last_err = Some(e);
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(Self::note_all_failed))
+        self.failover(|c| c.get_block_hash(height)).await
     }
 
     async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
-        let start = self.current.load(Ordering::Relaxed);
-        let mut last_err = None;
-        for offset in 0..self.nodes.len() {
-            let idx = (start + offset) % self.nodes.len();
-            match self.nodes[idx].client.get_block_timestamp(height).await {
-                Ok(v) => {
-                    self.note_success(idx);
-                    return Ok(v);
-                }
-                Err(e) => {
-                    self.note_failure(idx, &e);
-                    last_err = Some(e);
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(Self::note_all_failed))
+        self.failover(|c| c.get_block_timestamp(height)).await
     }
 
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
-        let start = self.current.load(Ordering::Relaxed);
-        let mut last_err = None;
-        for offset in 0..self.nodes.len() {
-            let idx = (start + offset) % self.nodes.len();
-            match self.nodes[idx].client.get_block_transactions(height).await {
-                Ok(v) => {
-                    self.note_success(idx);
-                    return Ok(v);
-                }
-                Err(e) => {
-                    self.note_failure(idx, &e);
-                    last_err = Some(e);
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(Self::note_all_failed))
+        self.failover(|c| c.get_block_transactions(height)).await
     }
 
     async fn get_blocks_range(&self, start_height: u64, count: u64) -> Result<Vec<Vec<Transaction>>, DaemonError> {
-        let start = self.current.load(Ordering::Relaxed);
-        let mut last_err = None;
-        for offset in 0..self.nodes.len() {
-            let idx = (start + offset) % self.nodes.len();
-            match self.nodes[idx].client.get_blocks_range(start_height, count).await {
-                Ok(v) => {
-                    self.note_success(idx);
-                    return Ok(v);
-                }
-                Err(e) => {
-                    self.note_failure(idx, &e);
-                    last_err = Some(e);
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(Self::note_all_failed))
+        self.failover(|c| c.get_blocks_range(start_height, count)).await
     }
 
     async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        let start = self.current.load(Ordering::Relaxed);
-        let mut last_err = None;
-        for offset in 0..self.nodes.len() {
-            let idx = (start + offset) % self.nodes.len();
-            match self.nodes[idx].client.get_mempool_transactions().await {
-                Ok(v) => {
-                    self.note_success(idx);
-                    return Ok(v);
-                }
-                Err(e) => {
-                    self.note_failure(idx, &e);
-                    last_err = Some(e);
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(Self::note_all_failed))
+        self.failover(|c| c.get_mempool_transactions()).await
     }
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
-        let start = self.current.load(Ordering::Relaxed);
-        let mut last_err = None;
-        for offset in 0..self.nodes.len() {
-            let idx = (start + offset) % self.nodes.len();
-            match self.nodes[idx].client.locate_transaction(txid).await {
-                Ok(v) => {
-                    self.note_success(idx);
-                    return Ok(v);
-                }
-                Err(e) => {
-                    self.note_failure(idx, &e);
-                    last_err = Some(e);
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(Self::note_all_failed))
+        self.failover(|c| c.locate_transaction(txid)).await
     }
 
     async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
-        let start = self.current.load(Ordering::Relaxed);
-        let mut last_err = None;
-        for offset in 0..self.nodes.len() {
-            let idx = (start + offset) % self.nodes.len();
-            match self.nodes[idx].client.get_transaction(txid).await {
-                Ok(v) => {
-                    self.note_success(idx);
-                    return Ok(v);
-                }
-                Err(e) => {
-                    self.note_failure(idx, &e);
-                    last_err = Some(e);
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(Self::note_all_failed))
+        self.failover(|c| c.get_transaction(txid)).await
     }
 
     async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
-        let start = self.current.load(Ordering::Relaxed);
-        let mut last_err = None;
-        for offset in 0..self.nodes.len() {
-            let idx = (start + offset) % self.nodes.len();
-            match self.nodes[idx].client.is_key_image_spent(key_images).await {
-                Ok(v) => {
-                    self.note_success(idx);
-                    return Ok(v);
-                }
-                Err(e) => {
-                    self.note_failure(idx, &e);
-                    last_err = Some(e);
-                }
-            }
-        }
-        Err(last_err.unwrap_or_else(Self::note_all_failed))
+        self.failover(|c| c.is_key_image_spent(key_images)).await
     }
 
     /// Polls *every* configured node - not just the currently "sticky" `current`
@@ -642,5 +674,128 @@ mod tests {
         ]);
         let result = client.is_key_image_spent_corroborated(&["ki1".to_string(), "ki2".to_string()]).await.unwrap();
         assert_eq!(result, vec![KeyImageStatus::SpentInBlockchain, KeyImageStatus::Disputed]);
+    }
+
+    // -- Cooldown, call deadline and per-tick pinning (task 7.6) --------------
+
+    /// A node that never answers, the way a node behind a black-holed
+    /// connection behaves.
+    struct HangingDaemonClient;
+
+    #[async_trait::async_trait]
+    impl MoneroDaemonClient for HangingDaemonClient {
+        async fn get_height(&self) -> Result<u64, DaemonError> {
+            std::future::pending().await
+        }
+        async fn get_block_hash(&self, _height: u64) -> Result<String, DaemonError> {
+            std::future::pending().await
+        }
+        async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
+            std::future::pending().await
+        }
+        async fn get_block_transactions(&self, _height: u64) -> Result<Vec<Transaction>, DaemonError> {
+            std::future::pending().await
+        }
+        async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+            std::future::pending().await
+        }
+        async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
+            std::future::pending().await
+        }
+        async fn get_transaction(&self, _txid: &str) -> Result<Transaction, DaemonError> {
+            std::future::pending().await
+        }
+        async fn is_key_image_spent(&self, _key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+            std::future::pending().await
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_node_cools_down_for_longer_each_time_and_recovers() {
+        let (a_node, a) = node("a", Arc::new(FlakyDaemonClient::new(false)));
+        let (b_node, b) = node("b", Arc::new(FlakyDaemonClient::new(false)));
+        let client = FallbackDaemonClient::new(vec![a_node, b_node]);
+
+        assert!(client.get_height().await.is_err());
+        assert!(client.in_cooldown(0) && client.in_cooldown(1));
+        tokio::time::advance(FIRST_COOLDOWN + Duration::from_millis(1)).await;
+        assert!(!client.in_cooldown(0), "the first cooldown is short");
+
+        // A second failure in a row doubles it.
+        assert!(client.get_height().await.is_err());
+        tokio::time::advance(FIRST_COOLDOWN + Duration::from_millis(1)).await;
+        assert!(client.in_cooldown(0), "still cooling down after a second failure");
+        tokio::time::advance(FIRST_COOLDOWN).await;
+        assert!(!client.in_cooldown(0));
+
+        // Once it answers, it's healthy again.
+        a.set_healthy(true);
+        b.set_healthy(true);
+        assert_eq!(client.get_height().await.unwrap(), 1);
+        assert!(!client.in_cooldown(0));
+        let _ = b;
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_node_in_cooldown_is_skipped_while_another_answers() {
+        let (a_node, _a) = node("a", Arc::new(FlakyDaemonClient::new(true)));
+        let (b_node, b) = node("b", Arc::new(FlakyDaemonClient::new(false)));
+        let (c_node, _c) = node("c", Arc::new(FlakyDaemonClient::new(true)));
+        let client = FallbackDaemonClient::new(vec![a_node, b_node, c_node]);
+        // Settle on b, then b dies: the call moves on to c, and b cools down.
+        client.current.store(1, Ordering::Relaxed);
+        assert_eq!(client.get_height().await.unwrap(), 1);
+        assert_eq!(client.current_index(), 2);
+        // Even starting from b again, b isn't tried while it cools down: the
+        // ready nodes come first, and one of them answers.
+        let b_calls = b.call_count();
+        client.current.store(1, Ordering::Relaxed);
+        assert_eq!(client.get_height().await.unwrap(), 1);
+        assert_eq!(b.call_count(), b_calls, "the cooling-down node was skipped");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_hanging_node_gets_only_its_share_of_the_call_deadline() {
+        let hanging = FallbackNode { label: "hanging".into(), client: Arc::new(HangingDaemonClient) };
+        let (ok_node, ok) = node("ok", Arc::new(FlakyDaemonClient::new(true)));
+        let client = FallbackDaemonClient::new(vec![hanging, ok_node]);
+
+        let started = Instant::now();
+        assert_eq!(client.get_height().await.unwrap(), 1, "the second node still got its turn");
+        assert!(started.elapsed() <= CALL_DEADLINE / 2 + Duration::from_millis(10), "took {:?}", started.elapsed());
+        assert_eq!(ok.call_count(), 1);
+
+        // With every node hanging, the call fails within the deadline.
+        let all_hanging = FallbackDaemonClient::new(vec![
+            FallbackNode { label: "h1".into(), client: Arc::new(HangingDaemonClient) },
+            FallbackNode { label: "h2".into(), client: Arc::new(HangingDaemonClient) },
+            FallbackNode { label: "h3".into(), client: Arc::new(HangingDaemonClient) },
+        ]);
+        let started = Instant::now();
+        assert!(all_hanging.get_height().await.is_err());
+        assert!(started.elapsed() <= CALL_DEADLINE + MIN_ATTEMPT, "took {:?}", started.elapsed());
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_pinned_tick_uses_one_node_and_a_failure_moves_the_next_tick_on() {
+        let (a_node, a) = node("a", Arc::new(FlakyDaemonClient::new(true)));
+        let (b_node, b) = node("b", Arc::new(FlakyDaemonClient::new(true)));
+        let client = FallbackDaemonClient::new(vec![a_node, b_node]);
+
+        let pinned = client.pin();
+        assert_eq!(pinned.node_index(), 0);
+        for _ in 0..3 {
+            pinned.get_height().await.unwrap();
+        }
+        assert_eq!((a.call_count(), b.call_count()), (3, 0), "every call of the tick went to one node");
+
+        a.set_healthy(false);
+        assert!(pinned.get_height().await.is_err(), "no failover inside a pinned tick");
+        assert_eq!(b.call_count(), 0);
+
+        let next_tick = client.pin();
+        assert_eq!(next_tick.node_index(), 1, "the failed node is cooling down, so the next tick picks another");
+        next_tick.get_height().await.unwrap();
+        assert_eq!(b.call_count(), 1);
     }
 }

@@ -22,6 +22,30 @@ use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation}
 pub struct RpcDaemonClient {
     client: reqwest::Client,
     base_url: String,
+    /// Largest response body accepted (task 7.6). A node that sends more is
+    /// treated as failing rather than being allowed to exhaust memory.
+    max_response_bytes: usize,
+}
+
+/// Default cap on one response body: comfortably above a full mempool under
+/// load or a `get_blocks.bin` chunk sized by `payment.scan_chunk_memory_budget_mb`,
+/// far below what would hurt the machine.
+pub const MAX_RESPONSE_BYTES: usize = 64 * 1024 * 1024;
+
+/// Reads a response body, refusing one larger than `cap` bytes, whether or
+/// not it declared its length.
+async fn read_capped(mut response: reqwest::Response, cap: usize, what: &str) -> Result<Vec<u8>, DaemonError> {
+    if response.content_length().is_some_and(|len| len > cap as u64) {
+        return Err(DaemonError::Request(format!("response from {what} is larger than the {cap}-byte limit")));
+    }
+    let mut body = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|e| DaemonError::Request(format!("reading response from {what}: {e}")))? {
+        if body.len() + chunk.len() > cap {
+            return Err(DaemonError::Request(format!("response from {what} is larger than the {cap}-byte limit")));
+        }
+        body.extend_from_slice(&chunk);
+    }
+    Ok(body)
 }
 
 impl RpcDaemonClient {
@@ -43,21 +67,27 @@ impl RpcDaemonClient {
             .timeout(Duration::from_secs(15))
             .build()
             .map_err(|e| DaemonError::Request(format!("failed to build HTTP client: {e}")))?;
-        Ok(RpcDaemonClient { client, base_url: format!("{scheme}://{host}:{port}") })
+        Ok(RpcDaemonClient { client, base_url: format!("{scheme}://{host}:{port}"), max_response_bytes: MAX_RESPONSE_BYTES })
+    }
+
+    /// Lowers the response size cap, for tests.
+    pub fn with_max_response_bytes(mut self, max_response_bytes: usize) -> Self {
+        self.max_response_bytes = max_response_bytes;
+        self
     }
 
     async fn post_json_rpc<T: for<'de> Deserialize<'de>>(&self, method: &str, params: Value) -> Result<T, DaemonError> {
         let body = json!({ "jsonrpc": "2.0", "id": "0", "method": method, "params": params });
-        let value: Value = self
+        let response = self
             .client
             .post(format!("{}/json_rpc", self.base_url))
             .json(&body)
             .send()
             .await
-            .map_err(|e| DaemonError::Request(e.to_string()))?
-            .json()
-            .await
-            .map_err(|e| DaemonError::Request(format!("invalid JSON response: {e}")))?;
+            .map_err(|e| DaemonError::Request(e.to_string()))?;
+        let bytes = read_capped(response, self.max_response_bytes, method).await?;
+        let value: Value =
+            serde_json::from_slice(&bytes).map_err(|e| DaemonError::Request(format!("invalid JSON response: {e}")))?;
         if let Some(err) = value.get("error") {
             return Err(DaemonError::Request(format!("daemon RPC error calling {method}: {err}")));
         }
@@ -69,15 +99,15 @@ impl RpcDaemonClient {
     }
 
     async fn post_plain<T: for<'de> Deserialize<'de>>(&self, path: &str, body: Value) -> Result<T, DaemonError> {
-        let value: Value = self
+        let response = self
             .client
             .post(format!("{}{path}", self.base_url))
             .json(&body)
             .send()
             .await
-            .map_err(|e| DaemonError::Request(e.to_string()))?
-            .json()
-            .await
+            .map_err(|e| DaemonError::Request(e.to_string()))?;
+        let bytes = read_capped(response, self.max_response_bytes, path).await?;
+        let value: Value = serde_json::from_slice(&bytes)
             .map_err(|e| DaemonError::Request(format!("invalid JSON response from {path}: {e}")))?;
         if let Some(status) = value.get("status").and_then(|s| s.as_str()) {
             if status != "OK" {
@@ -105,10 +135,9 @@ impl RpcDaemonClient {
     /// (`get_blocks_range`'s own request/response, below) has nothing to do with
     /// `post_json_rpc`/`post_plain`'s JSON envelopes. Relies on the same
     /// `reqwest::Client` (and its 15s timeout, set once in `new`) every other
-    /// call on this client already does - no separate response-size cap, since
-    /// that timeout already bounds how much data an even-adversarial node could
-    /// push through this connection before the call fails, the same real bound
-    /// every other endpoint on this client already lives with.
+    /// call on this client already does, and the same `max_response_bytes`
+    /// cap: a timeout alone doesn't bound size, since a fast node can send a
+    /// lot in 15s.
     async fn post_bin(&self, path: &str, body: Vec<u8>) -> Result<Vec<u8>, DaemonError> {
         let response = self
             .client
@@ -117,11 +146,7 @@ impl RpcDaemonClient {
             .send()
             .await
             .map_err(|e| DaemonError::Request(e.to_string()))?;
-        let bytes = response
-            .bytes()
-            .await
-            .map_err(|e| DaemonError::Request(format!("invalid binary response from {path}: {e}")))?;
-        Ok(bytes.to_vec())
+        read_capped(response, self.max_response_bytes, path).await
     }
 
     async fn fetch_transactions(&self, hashes: &[String]) -> Result<Vec<Transaction>, DaemonError> {
@@ -1228,5 +1253,24 @@ mod live_node_tests {
             .unwrap();
             assert!(touched.is_empty());
         }
+    }
+
+    #[tokio::test]
+    async fn a_response_larger_than_the_cap_is_refused_as_a_node_error() {
+        use axum::routing::post;
+        // Any endpoint: a valid-looking answer padded to 10kB.
+        let app = axum::Router::new().fallback(post(|| async {
+            format!("{{\"status\":\"OK\",\"height\":1,\"count\":1,\"pad\":\"{}\"}}", "x".repeat(10_000))
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let small = RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap().with_max_response_bytes(1_000);
+        let err = small.get_height().await.unwrap_err();
+        assert!(err.to_string().contains("larger than"), "got: {err}");
+
+        let roomy = RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap();
+        assert!(roomy.get_height().await.is_ok(), "the same response is fine under the default cap");
     }
 }
