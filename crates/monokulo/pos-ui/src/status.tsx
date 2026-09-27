@@ -58,7 +58,7 @@ export function StatusSymbols() {
 /** One status symbol, centred in a square box sized by the caller's CSS. */
 export function StatusIcon(props: { order: StatusSource; offline?: boolean }) {
   const state = () => stateOf(props.order, props.offline);
-  return <span class={`pos-icon pos-icon-${state()}`} aria-hidden="true">
+  return <span class={['pos-icon', `pos-icon-${state()}`]} aria-hidden="true">
     <Show when={state() === 'pending'}><span class="pos-spinner"/></Show>
     <Show when={state() === 'unconfirmed'}><span class="pos-disc"/></Show>
     <Show when={state() === 'confirming'}><span class="pos-disc" style={{ '--progress': `${progressPercent(props.order)}%` }}/></Show>
@@ -88,5 +88,5 @@ export function StatusIcon(props: { order: StatusSource; offline?: boolean }) {
 /** A status pill: symbol plus word (payment page and list). */
 export function StatusBadge(props: { order: StatusSource; offline?: boolean }) {
   const state = () => stateOf(props.order, props.offline);
-  return <span class={`pos-badge state-${state()}`}><StatusIcon order={props.order} offline={props.offline}/>{statusName[state()] || props.order.status}</span>;
+  return <span class={['pos-badge', `state-${state()}`]}><StatusIcon order={props.order} offline={props.offline}/>{statusName[state()] || props.order.status}</span>;
 }

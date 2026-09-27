@@ -1,4 +1,4 @@
-import { createMemo, createSignal, flush, For, onCleanup, Show } from 'solid-js';
+import { createEffect, createMemo, createSignal, flush, For, onSettled, Show, untrack } from 'solid-js';
 import { render } from '@solidjs/web';
 import { StatusBadge, StatusIcon, StatusSymbols, stateOf, statusName } from './status';
 import { addressFromQr, decodeImageFile, looksLikeAddress, scanCamera } from './refund';
@@ -73,10 +73,10 @@ const post = (url: string, value?: unknown) => json<void>(url, {
   body: value === undefined ? undefined : JSON.stringify(value),
 });
 
+/** The clock countdowns and the Finished tab read; App ticks it. */
 const [now, setNow] = createSignal(Math.floor(Date.now() / 1000));
 /** How long an order stays in the Finished tab after it finished here. */
 const FINISHED_KEEP_SECONDS = 24 * 60 * 60;
-window.setInterval(() => setNow(Math.floor(Date.now() / 1000)), 15000);
 
 /** Moves the site's own status indicator and theme toggle (rendered by
  * the server into #pos-site-controls) into the top bar, and makes the
@@ -105,16 +105,18 @@ function PaymentCard(props: { order: Order }) {
   // A memo, so an order refresh carrying the same QR doesn't rebuild it.
   const qr = createMemo(() => props.order.qr_svg);
   const [copied, setCopied] = createSignal(false);
-  const [refund, setRefund] = createSignal(props.order.refund_address || '');
-  const [saved, setSaved] = createSignal(props.order.refund_address || '');
-  const [refundState, setRefundState] = createSignal<'idle' | 'saving' | 'saved' | 'invalid'>(props.order.refund_address ? 'saved' : 'idle');
+  // Seeded once from the order: later edits are the merchant's, not the order's.
+  const initialRefund = untrack(() => props.order.refund_address || '');
+  const [refund, setRefund] = createSignal(initialRefund);
+  const [saved, setSaved] = createSignal(initialRefund);
+  const [refundState, setRefundState] = createSignal<'idle' | 'saving' | 'saved' | 'invalid'>(initialRefund ? 'saved' : 'idle');
   const [refundMessage, setRefundMessage] = createSignal('');
   const [scanning, setScanning] = createSignal(false);
   let video: HTMLVideoElement | undefined;
   let fileInput: HTMLInputElement | undefined;
   let stopScan: (() => void) | null = null;
   let saveTimer: number | undefined;
-  onCleanup(() => { stopScan?.(); window.clearTimeout(saveTimer); });
+  onSettled(() => () => { stopScan?.(); window.clearTimeout(saveTimer); });
 
   // Awaiting: the customer still has to pay (all of it, or the rest).
   // Otherwise the payment has been seen and the card says what arrived
@@ -187,7 +189,7 @@ function PaymentCard(props: { order: Order }) {
 
   return <section class="pos-pay-card" aria-label="Payment details">
     <Show when={awaiting()}><p class="pos-expiry">Send payment within {durationUntil(props.order.expires_at, now())}</p></Show>
-    <Show when={detail()}><p class={`pos-pay-detail state-${stateOf(props.order)}`}>{detail()}</p></Show>
+    <Show when={detail()}><p class={['pos-pay-detail', `state-${stateOf(props.order)}`]}>{detail()}</p></Show>
     <Show when={awaiting()} fallback={<>
       <p class="pos-pay-caption">Received</p>
       <p class="pos-pay-xmr">{trimXmr(props.order.received_xmr || props.order.xmr_amount)} <span>XMR</span></p>
@@ -205,7 +207,7 @@ function PaymentCard(props: { order: Order }) {
     </Show>
     <hr/>
     <label class="pos-field-label" for="pos-refund">Refund address <span>(optional)</span></label>
-    <div class={`pos-refund state-${refundState()}`}>
+    <div class={['pos-refund', `state-${refundState()}`]}>
       <input id="pos-refund" type="text" autocomplete="off" spellcheck={false} placeholder="Your Monero refund address"
         value={refund()} onInput={event => onRefundInput(event.currentTarget.value)} onBlur={() => void save(refund().trim())}
         aria-invalid={refundState() === 'invalid' ? 'true' : 'false'} aria-describedby="pos-refund-note"/>
@@ -244,7 +246,7 @@ function Outcome(props: { order: Order }) {
     if (o.status === 'expired') return 'This order expired before it was paid.';
     return statusName[stateOf(o)] || o.status;
   };
-  return <section class={`pos-outcome state-${stateOf(props.order)}`}>
+  return <section class={['pos-outcome', `state-${stateOf(props.order)}`]}>
     <StatusIcon order={props.order}/>
     <p class="pos-outcome-title">{statusName[stateOf(props.order)]}</p>
     <p>{message()}</p>
@@ -284,7 +286,6 @@ function App() {
       .filter(o => !term || o.order_id.toLowerCase().includes(term) || (o.merchant_order_id || '').toLowerCase().includes(term));
   });
   const amountText = createMemo(() => displayAmount(digits()));
-  let stream: EventSource | null = null;
   let lostTimer: number | undefined;
   let listElement: HTMLElement | undefined;
   let pendingRequest: { amount: string; reference: string; key: string } | null = null;
@@ -315,10 +316,6 @@ function App() {
     updateOrders(previous => previous.some(o => o.order_id === order.order_id)
       ? previous.map(o => o.order_id === order.order_id ? merge(o, order) : o) : [order, ...previous]);
   }
-  function onSearch(value: string) {
-    setSearch(value);
-    queueMicrotask(openStream);
-  }
   /** Loads every open order (however old) and keeps this session's
    * finished ones. An order that was open here but is no longer is read
    * once more, so it moves to Finished with its final state. */
@@ -337,7 +334,6 @@ function App() {
         if (foreground) { setActiveId(foreground.order_id); setScreen('payment'); void loadOrder(foreground.order_id).catch(() => {}); }
       }
       setError('');
-      queueMicrotask(openStream);
     } catch (e) { setError((e as Error).message); }
   }
   async function loadOrder(id: string) {
@@ -345,39 +341,42 @@ function App() {
     upsert(order);
     return order;
   }
-  function watchedIds() {
-    const foreground = active() && !terminal(active()!) ? [active()!.order_id] : [];
+  /** The orders the live stream follows: the one on screen, those shown in
+   * the stack or list, every other open one, and recently cancelled unpaid
+   * ones (a payment may still arrive). As a comma-joined key, so the stream
+   * reopens only when the set actually changes. */
+  const watchedIds = createMemo(() => {
+    const current = active();
+    const foreground = current && !terminal(current) ? [current.order_id] : [];
     const onScreen = screen() === 'list' ? visible().filter(o => !terminal(o)).map(o => o.order_id) : background().map(o => o.order_id);
-    const otherActive = orders().filter(o => !terminal(o)).map(o => o.order_id);
+    const otherActive = activeOrders().map(o => o.order_id);
     const cancelled = orders().filter(o => o.cancelled_at && o.status === 'pending').slice(0, 8).map(o => o.order_id);
-    return [...new Set([...foreground, ...onScreen, ...otherActive, ...cancelled])].slice(0, 32);
-  }
-  function openStream() {
-    stream?.close(); stream = null;
-    const ids = watchedIds();
-    if (!ids.length) { window.clearTimeout(lostTimer); lostTimer = undefined; setOffline(false); return; }
-    const source = new EventSource(`${api}/events?orders=${ids.map(encodeURIComponent).join(',')}`);
-    stream = source;
-    // The stream sends every watched order's status when it connects, so
-    // opening it needs no per-order reads of its own (the engine
-    // rate-limits each store).
-    source.addEventListener('open', () => { if (stream !== source) return; window.clearTimeout(lostTimer); lostTimer = undefined; setOffline(false); });
+    return [...new Set([...foreground, ...onScreen, ...otherActive, ...cancelled])].slice(0, 32).join(',');
+  });
+  function markConnected() { window.clearTimeout(lostTimer); lostTimer = undefined; setOffline(false); }
+  // One update stream for the watched orders, reopened whenever they change
+  // and closed when the POS goes away. It sends every watched order's status
+  // when it connects, so opening it needs no per-order reads (the engine
+  // rate-limits each store).
+  createEffect(watchedIds, ids => {
+    if (!ids) { markConnected(); return; }
+    const source = new EventSource(`${api}/events?orders=${ids.split(',').map(encodeURIComponent).join(',')}`);
+    source.addEventListener('open', markConnected);
     source.addEventListener('status', event => {
-      if (stream !== source) return;
-      try {
-        const update = JSON.parse((event as MessageEvent).data) as StatusEvent;
-        updateOrders(previous => previous.map(o => o.order_id === update.order_id ? merge(o, update) : o));
-        if (update.is_terminal) queueMicrotask(openStream);
-      } catch { /* A malformed event is ignored; the next snapshot reconciles. */ }
+      let update: StatusEvent;
+      try { update = JSON.parse((event as MessageEvent).data) as StatusEvent; }
+      catch { return; /* A malformed event is ignored; the next snapshot reconciles. */ }
+      updateOrders(previous => previous.map(o => o.order_id === update.order_id ? merge(o, update) : o));
     });
     // The browser retries a dropped stream every few seconds; the counter is
     // offline once it has failed to reconnect for 6s, however many attempts
-    // that took. Only a successful open clears it.
+    // that took (and however often the watched set changes meanwhile). Only
+    // a successful open clears it.
     source.addEventListener('error', () => {
-      if (stream !== source || lostTimer !== undefined) return;
-      lostTimer = window.setTimeout(() => setOffline(true), 6000);
+      if (lostTimer === undefined) lostTimer = window.setTimeout(() => setOffline(true), 6000);
     });
-  }
+    return () => source.close();
+  });
   function resetKeypad() { setDigits('0'); setReference(''); setActiveId(null); setScreen('keypad'); setError(''); }
   function pushDigit(d: string) { setDigits(value => (value + d).slice(-(config.decimals + 9)).replace(/^0+(?=\d)/, '') || '0'); }
   function backspace() { setDigits(value => value.length > 1 ? value.slice(0, -1) : '0'); }
@@ -396,7 +395,7 @@ function App() {
       });
       await loadOrder(created.order_id);
       pendingRequest = null;
-      setActiveId(created.order_id); setScreen('payment'); queueMicrotask(openStream);
+      setActiveId(created.order_id); setScreen('payment');
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -405,7 +404,7 @@ function App() {
     setBusy(true); setError('');
     try {
       await post(`${api}/orders/${encodeURIComponent(order.order_id)}/background`);
-      upsert({ ...order, backgrounded: true }); resetKeypad(); queueMicrotask(openStream);
+      upsert({ ...order, backgrounded: true }); resetKeypad();
     } catch (e) { setError((e as Error).message); }
     finally { setBusy(false); }
   }
@@ -415,7 +414,7 @@ function App() {
     setBusy(true); setError('');
     try {
       await post(`${api}/orders/${encodeURIComponent(order.order_id)}/cancel`);
-      await loadOrder(order.order_id); queueMicrotask(openStream);
+      await loadOrder(order.order_id);
     } catch (e) {
       setError((e as Error).message);
       // Refused because a payment arrived meanwhile: show it.
@@ -426,9 +425,14 @@ function App() {
   async function openOrder(order: Order) {
     if (screen() === 'list' && listElement) setListScroll(listElement.scrollTop);
     setError(''); setActiveId(order.order_id); setScreen('payment');
-    try { await loadOrder(order.order_id); queueMicrotask(openStream); } catch (e) { setError((e as Error).message); }
+    try { await loadOrder(order.order_id); } catch (e) { setError((e as Error).message); }
   }
-  function showList() { setScreen('list'); queueMicrotask(() => { if (listElement) listElement.scrollTop = listScroll(); openStream(); }); }
+  function showList() {
+    setScreen('list');
+    // Render the list now, so its old scroll position can be restored.
+    flush();
+    if (listElement) listElement.scrollTop = listScroll();
+  }
   function onKey(event: KeyboardEvent) {
     if (screen() !== 'keypad') return;
     if (event.target instanceof HTMLInputElement) { if (event.key === 'Enter') void charge(); return; }
@@ -437,9 +441,12 @@ function App() {
     else if (event.key === 'Escape') setDigits('0');
     else if (event.key === 'Enter') void charge();
   }
-  document.addEventListener('keydown', onKey);
-  queueMicrotask(() => { void refresh(); });
-  onCleanup(() => { document.removeEventListener('keydown', onKey); stream?.close(); window.clearTimeout(lostTimer); });
+  onSettled(() => {
+    void refresh();
+    document.addEventListener('keydown', onKey);
+    const clockTick = window.setInterval(() => setNow(Math.floor(Date.now() / 1000)), 15000);
+    return () => { document.removeEventListener('keydown', onKey); window.clearInterval(clockTick); window.clearTimeout(lostTimer); };
+  });
 
   const orderLine = (o: Order) => `${o.merchant_order_id ? 'Reference · ' : ''}${shortId(o.order_id)} · created ${clock(o.created_at)}`;
   /** The card's one-line state detail (sketch 4): short, never the
@@ -464,7 +471,7 @@ function App() {
       <Show when={screen() === 'list'} fallback={
         <a class="pos-store" href={`/dashboard/stores/${encodeURIComponent(config.connectionId)}`}>{config.storeName}</a>
       }>
-        <button class="pos-back" type="button" onClick={() => { setScreen('keypad'); queueMicrotask(openStream); }} aria-label="Back to POS">
+        <button class="pos-back" type="button" onClick={() => setScreen('keypad')} aria-label="Back to POS">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg>
         </button>
         <strong>POS</strong>
@@ -483,23 +490,23 @@ function App() {
       <section class="pos-stack" aria-label="Background orders">
         <div class="pos-stack-heading"><strong>Background orders · {background().length}</strong><button type="button" onClick={showList}>View all →</button></div>
         <div class="pos-stack-scroll" tabindex="0" aria-label="Background orders, scroll sideways" onWheel={event => { const el = event.currentTarget; if (el.scrollWidth > el.clientWidth && Math.abs(event.deltaY) > Math.abs(event.deltaX)) { el.scrollLeft += event.deltaY; event.preventDefault(); } }}>
-          <For each={background()}>{order => <button type="button" class={`pos-stack-card state-${stateOf(order, offline())}`}
-            title={`${label(order)} · ${statusName[stateOf(order, offline())]} · ${order.amount} ${order.currency}`}
-            aria-label={`Open ${label(order)}, ${statusName[stateOf(order, offline())]}, ${order.amount} ${order.currency}`} onClick={() => void openOrder(order)}>
-            <StatusIcon order={order} offline={offline()}/><span class="pos-stack-ref">{label(order)}</span><span class="pos-stack-amount">{order.amount}</span>
+          <For each={background()} keyed={o => o.order_id}>{order => <button type="button" class={['pos-stack-card', `state-${stateOf(order(), offline())}`]}
+            title={`${label(order())} · ${statusName[stateOf(order(), offline())]} · ${order().amount} ${order().currency}`}
+            aria-label={`Open ${label(order())}, ${statusName[stateOf(order(), offline())]}, ${order().amount} ${order().currency}`} onClick={() => void openOrder(order())}>
+            <StatusIcon order={order()} offline={offline()}/><span class="pos-stack-ref">{label(order())}</span><span class="pos-stack-amount">{order().amount}</span>
           </button>}</For>
         </div>
       </section>
     </Show>
 
     <Show when={screen() === 'keypad'}>
-      <main class={`pos-keypad ${background().length ? 'has-stack' : ''}`}>
-        <p class={`pos-amount len-${Math.min(4, Math.floor(amountText().length / 6))}`} aria-live="polite">
+      <main class={['pos-keypad', { 'has-stack': background().length > 0 }]}>
+        <p class={['pos-amount', `len-${Math.min(4, Math.floor(amountText().length / 6))}`]} aria-live="polite">
           {amountText()}<span>{config.currency}</span>
         </p>
         <div class="pos-keys">
           <For each={['1', '2', '3', '4', '5', '6', '7', '8', '9', 'C', '0', '⌫']}>{key => <button type="button"
-            class={key === 'C' ? 'clear' : key === '⌫' ? 'delete' : ''} aria-label={key === 'C' ? 'Clear' : key === '⌫' ? 'Backspace' : key}
+            class={{ clear: key === 'C', delete: key === '⌫' }} aria-label={key === 'C' ? 'Clear' : key === '⌫' ? 'Backspace' : key}
             onClick={() => key === 'C' ? setDigits('0') : key === '⌫' ? backspace() : pushDigit(key)}>
             {key === '⌫' ? <svg viewBox="0 0 28 20" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linejoin="round" aria-hidden="true"><path d="M9 2h16a1.5 1.5 0 0 1 1.5 1.5v13A1.5 1.5 0 0 1 25 18H9l-7.5-8Z"/><path d="m13 6.5 8 7m0-7-8 7" stroke-linecap="round"/></svg> : key}
           </button>}</For>
@@ -514,25 +521,27 @@ function App() {
       </main>
     </Show>
 
-    <Show when={screen() === 'payment' ? activeId() : null} keyed>{_id => <Show when={active()} fallback={<main class="pos-payment"><p class="pos-loading">Loading order…</p></main>}>
+    {/* Keyed by order id, so each order gets a fresh payment card (a keyed
+        function child must take the value, hence the unused _id). */}
+    <Show when={screen() === 'payment' ? activeId() : null} keyed>{_id => <Show when={active()} fallback={<main class="pos-payment"><p class="pos-loading">Loading order…</p></main>}>{order => (
       <main class="pos-payment">
         <div class="pos-order-heading">
-          <div><h1>{label(active()!)}</h1><p>{active()!.merchant_order_id ? 'Reference · ' : ''}Order {shortId(active()!.order_id)}</p></div>
-          <StatusBadge order={active()!} offline={offline() && !terminal(active()!)}/>
+          <div><h1>{label(order())}</h1><p>{order().merchant_order_id ? 'Reference · ' : ''}Order {shortId(order().order_id)}</p></div>
+          <StatusBadge order={order()} offline={offline() && !terminal(order())}/>
         </div>
-        <Show when={!terminal(active()!)} fallback={<Outcome order={active()!}/>}>
-          <PaymentCard order={active()!}/>
+        <Show when={!terminal(order())} fallback={<Outcome order={order()}/>}>
+          <PaymentCard order={order()}/>
         </Show>
         <Show when={error()}><p class="pos-error" role="alert">{error()}</p></Show>
-        <Show when={!terminal(active()!)} fallback={<button type="button" class="pos-primary" onClick={resetKeypad}>New order</button>}>
+        <Show when={!terminal(order())} fallback={<button type="button" class="pos-primary" onClick={resetKeypad}>New order</button>}>
           <button type="button" class="pos-primary" disabled={busy()} onClick={() => void backgroundOrder()}>Background order</button>
-          <Show when={active()!.status === 'pending' && !active()!.error} fallback={<p class="pos-action-hint">Background keeps this payment open while you serve the next customer</p>}>
+          <Show when={order().status === 'pending' && !order().error} fallback={<p class="pos-action-hint">Background keeps this payment open while you serve the next customer</p>}>
             <button type="button" class="pos-cancel" disabled={busy()} onClick={() => void cancelOrder()}>Cancel order</button>
             <p class="pos-action-hint">Background keeps this payment open · Cancel asks for confirmation</p>
           </Show>
         </Show>
       </main>
-    </Show>}</Show>
+    )}</Show>}</Show>
 
     <Show when={screen() === 'list'}>
       <main class="pos-list" ref={el => { listElement = el; }}>
@@ -540,11 +549,11 @@ function App() {
         <p class="pos-list-subtitle">Choose an order to open.</p>
         <div class="pos-search">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6"/><path d="m15 15 5 5"/></svg>
-          <input class="pos-input" type="search" aria-label="Search reference or order ID" placeholder="Search reference or order ID" value={search()} onInput={event => onSearch(event.currentTarget.value)}/>
+          <input class="pos-input" type="search" aria-label="Search reference or order ID" placeholder="Search reference or order ID" value={search()} onInput={event => setSearch(event.currentTarget.value)}/>
         </div>
         <div class="pos-tabs" role="tablist" aria-label="Order status">
-          <button type="button" role="tab" aria-selected={tab() === 'active' ? 'true' : 'false'} class={tab() === 'active' ? 'selected' : ''} onClick={() => { setTab('active'); queueMicrotask(openStream); }}>Active · {activeOrders().length}</button>
-          <button type="button" role="tab" aria-selected={tab() === 'finished' ? 'true' : 'false'} class={tab() === 'finished' ? 'selected' : ''} onClick={() => { setTab('finished'); queueMicrotask(openStream); }}>Finished · {finishedOrders().length}</button>
+          <button type="button" role="tab" aria-selected={tab() === 'active' ? 'true' : 'false'} class={{ selected: tab() === 'active' }} onClick={() => setTab('active')}>Active · {activeOrders().length}</button>
+          <button type="button" role="tab" aria-selected={tab() === 'finished' ? 'true' : 'false'} class={{ selected: tab() === 'finished' }} onClick={() => setTab('finished')}>Finished · {finishedOrders().length}</button>
         </div>
         <Show when={tab() === 'finished'}>
           <p class="pos-list-note">Completed on this device since the POS was opened. They clear after 24 hours or when the page reloads. <a href={allOrdersUrl()}>See all orders →</a></p>
@@ -555,13 +564,13 @@ function App() {
             <p class="pos-empty">No matches from this session. <a href={allOrdersUrl(search().trim())}>Search all orders →</a></p>
           </Show>
         </Show>
-        <div class="pos-list-items"><For each={visible()}>{order => <article class="pos-order-card">
+        <div class="pos-list-items"><For each={visible()} keyed={o => o.order_id}>{order => <article class="pos-order-card">
           <div class="pos-order-card-head">
-            <div><h2>{label(order)}</h2><p>{orderLine(order)}</p></div>
-            <StatusBadge order={order} offline={offline() && !terminal(order)}/>
+            <div><h2>{label(order())}</h2><p>{orderLine(order())}</p></div>
+            <StatusBadge order={order()} offline={offline() && !terminal(order())}/>
           </div>
-          <p class="pos-order-sum">{order.amount} <span>{order.currency}</span></p>
-          <div class="pos-order-foot"><small>{cardDetail(order)}</small><button type="button" class="pos-link" onClick={() => void openOrder(order)}>Open →</button></div>
+          <p class="pos-order-sum">{order().amount} <span>{order().currency}</span></p>
+          <div class="pos-order-foot"><small>{cardDetail(order())}</small><button type="button" class="pos-link" onClick={() => void openOrder(order())}>Open →</button></div>
         </article>}</For></div>
       </main>
     </Show>
