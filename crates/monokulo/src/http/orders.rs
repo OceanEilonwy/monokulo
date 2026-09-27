@@ -1673,6 +1673,61 @@ mod tests {
         assert!(html.contains("Webhook created"), "expected the webhook actually created, got: {html}");
     }
 
+    /// The merchant's own server receives the payment notification: a
+    /// webhook added on the settings page with a custom Authorization header
+    /// (their endpoint rejects anything without it) gets `order.paid` when the
+    /// customer pays, carrying that header and a signature that verifies with
+    /// the secret the page showed once.
+    #[tokio::test]
+    async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_custom_header_and_a_valid_signature() {
+        use axum::http::HeaderMap;
+        type Received = std::sync::Arc<std::sync::Mutex<Vec<(HeaderMap, String)>>>;
+        let received: Received = Default::default();
+        let app = Router::new().route("/hook", axum::routing::post(|axum::extract::State(received): axum::extract::State<Received>, headers: HeaderMap, body: String| async move {
+            received.lock().unwrap().push((headers, body));
+            StatusCode::OK
+        })).with_state(received.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let hook = format!("http://{}/hook", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let engine = scanner_test_support::TestEngineConfig::new()
+            .with_networks(&[monero::Network::Mainnet]).with_background_loops().without_background_scan_loop().spawn().await;
+        let state = AppState {
+            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
+            engine_client: EngineClient::new(format!("http://{}", engine.addr)),
+            encryption_key: TEST_ENCRYPTION_KEY,
+            status_cache: crate::http::status_page::new_status_cache(),
+            exchange_rate: test_exchange_rate_provider(),
+            abuse: Default::default(),
+            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+        };
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(&router, "webhook-delivery@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let html = body_text(router.clone().oneshot(form_post_request(&format!("/dashboard/stores/{connection_id}/settings/webhooks"),
+            &session_token, &[("url", &hook), ("extra_headers", "Authorization: Bearer shop-endpoint-secret")])).await.unwrap()).await;
+        let secret = html.split("<pre>").nth(1).and_then(|rest| rest.split("</pre>").next()).expect("the signing secret is shown once").to_string();
+
+        let response = router.clone().oneshot(form_post_request(&format!("/dashboard/stores/{connection_id}/orders/new"),
+            &session_token, &[("amount", "0.5"), ("currency", "XMR"), ("merchant_order_id", "wc-1042")])).await.unwrap();
+        let order_id = response.headers()["location"].to_str().unwrap().rsplit('/').next().unwrap().to_string();
+        engine.mark_order_paid(&order_id).unwrap();
+
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
+        let (headers, body) = loop {
+            if let Some(first) = received.lock().unwrap().first().cloned() { break first; }
+            assert!(std::time::Instant::now() < deadline, "no webhook delivered");
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+        };
+        assert_eq!(headers["authorization"], "Bearer shop-endpoint-secret");
+        assert_eq!(headers["x-monokulo-event"], "order.paid");
+        assert_eq!(headers["x-monokulo-signature"].to_str().unwrap(), shared::webhook_sign::sign_payload(&secret, body.as_bytes()));
+        let payload: serde_json::Value = serde_json::from_str(&body).unwrap();
+        assert_eq!(payload["order_id"], order_id.as_str(), "{payload}");
+        assert_eq!(headers["x-monokulo-event-id"].to_str().unwrap(), payload["event_id"].as_str().unwrap());
+    }
+
     #[tokio::test]
     async fn creating_a_webhook_with_a_malformed_header_line_shows_a_clear_error_and_registers_nothing() {
         let (state, _engine) = test_state_with_real_engine().await;
