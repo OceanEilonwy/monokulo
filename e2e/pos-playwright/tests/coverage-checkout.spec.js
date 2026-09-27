@@ -114,14 +114,16 @@ test('real checkout keeps retry and camera upload paths after failures', async (
   await expect(page.locator('#refund-field')).not.toHaveClass(/is-saved/);
 });
 
-test('real checkout copies and selects payment address at narrow and wide widths', async ({ page, request }) => {
+test('real checkout copies and selects payment address at narrow and wide widths', async ({ page, context, request }) => {
   const url = await checkoutUrl(request);
+  await context.grantPermissions(['clipboard-read', 'clipboard-write'], { origin: fixture.base_url });
   await page.goto(url);
   const input = page.locator('#address');
   await input.dblclick();
   expect(await input.evaluate(el => [el.selectionStart, el.selectionEnd])).toEqual([0, (await input.inputValue()).length]);
   await page.getByRole('button', { name: 'Copy payment address' }).click();
-  await expect(page.locator('#copy-address')).toHaveAttribute('aria-label', /Payment address copied|Could not copy/);
+  await expect(page.locator('#copy-address')).toHaveAttribute('aria-label', 'Payment address copied');
+  expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(await input.inputValue());
   for (const width of [320, 700, 1280]) {
     await page.setViewportSize({ width, height: 900 });
     const geometry = await page.evaluate(() => ({ scrollWidth: document.documentElement.scrollWidth, viewport: innerWidth,
@@ -307,4 +309,31 @@ test('real checkout keeps retrying a refused live stream with backoff and then f
   const paid = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/paid`);
   expect(paid.status()).toBe(204);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
+});
+
+test('real checkout copies the payment address without the Clipboard API, as over plain-HTTP onion', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  // A plain-HTTP origin (a Tor .onion service) is not a secure context, so
+  // navigator.clipboard is absent; the legacy copy command still works.
+  await page.addInitScript(() => {
+    Object.defineProperty(Navigator.prototype, 'clipboard', { get: () => undefined });
+    window.__copied = [];
+    document.execCommand = command => {
+      if (command !== 'copy' || window.__copyBlocked) return false;
+      window.__copied.push(document.getSelection().toString() || document.activeElement.value.slice(document.activeElement.selectionStart, document.activeElement.selectionEnd));
+      return true;
+    };
+  });
+  await page.goto(url);
+  const address = await page.locator('#address').inputValue();
+  const copy = page.locator('#copy-address');
+  await copy.click();
+  await expect(copy).toHaveAttribute('aria-label', 'Payment address copied');
+  expect(await page.evaluate(() => window.__copied)).toEqual([address]);
+
+  // Where even that is refused, the address is left selected to copy by hand.
+  await page.evaluate(() => { window.__copyBlocked = true; });
+  await copy.click();
+  await expect(copy).toHaveAttribute('aria-label', 'Could not copy; address selected');
+  expect(await page.locator('#address').evaluate(el => el.value.slice(el.selectionStart, el.selectionEnd))).toBe(address);
 });
