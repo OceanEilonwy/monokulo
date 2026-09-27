@@ -78,6 +78,16 @@ pub struct EngineStatusResponse {
     pub networks: Vec<NetworkStatus>,
     pub poll_interval_secs: u64,
     pub generated_at: i64,
+    /// How many times each background loop has been restarted after a panic
+    /// or an unexpected return since the engine started (task 7.9). Empty
+    /// while nothing has failed.
+    pub loop_restarts: Vec<LoopRestarts>,
+}
+
+#[derive(Serialize)]
+pub struct LoopRestarts {
+    pub name: &'static str,
+    pub restarts: u64,
 }
 
 /// A network's scan loop is considered stale (not just "last tick failed" -
@@ -154,7 +164,15 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
         network_views.push(NetworkStatus { network: network_str(network).to_string(), nodes, scanner });
     }
 
-    Json(EngineStatusResponse { networks: network_views, poll_interval_secs: state.scan_poll_interval_secs, generated_at: now }).into_response()
+    let loop_restarts =
+        shared::supervise::restart_counts().into_iter().map(|(name, restarts)| LoopRestarts { name, restarts }).collect();
+    Json(EngineStatusResponse {
+        networks: network_views,
+        poll_interval_secs: state.scan_poll_interval_secs,
+        generated_at: now,
+        loop_restarts,
+    })
+    .into_response()
 }
 
 #[cfg(test)]

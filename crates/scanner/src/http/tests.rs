@@ -1166,6 +1166,7 @@ async fn status_endpoint_is_reachable_with_no_authentication_at_all() {
     let router = build_router(test_app_state(), 1_000_000);
     let body = get_status_json(router).await;
     assert!(body["networks"].is_array());
+    assert!(body["loop_restarts"].is_array(), "restart counts are reported (task 7.9), got: {body}");
 }
 
 #[tokio::test]
