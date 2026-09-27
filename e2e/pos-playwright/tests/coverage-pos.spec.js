@@ -228,6 +228,8 @@ test('merchant rings up a sale on a physical keyboard', async ({ page }) => {
   await page.getByPlaceholder('E.g. customer name or note').press('Enter');
   await expect(page.locator('.pos-order-heading h1')).toHaveText('Table 4');
   await expect(page.locator('.pos-pay-xmr')).toContainText('0.25');
+  // An XMR store's order has no "≈" fiat line.
+  await expect(page.locator('.pos-pay-fiat')).toHaveCount(0);
   // Digits typed on the payment screen do not leak into a new sale.
   await page.keyboard.type('9');
   await page.getByRole('button', { name: 'Background order', exact: true }).click();

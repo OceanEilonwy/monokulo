@@ -113,12 +113,17 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .expiry-pill.expiry-urgent { border-color: var(--error); color: var(--error); background: var(--tint-error); }
 .pay-grid { display: grid; grid-template-columns: minmax(0, 1fr); gap: 0; text-align: center; }
 .pay-grid > * { min-width: 0; }
+/* The amount sizes itself to this column (`cqi`). */
+.pay-col-primary { container-type: inline-size; }
 @media (min-width: 700px) {
   .pay-grid { grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 2rem; text-align: left; }
   .pay-col-primary { text-align: center; }
   .pay-header { justify-content: space-between; }
 }
-.amount { font-size: 2.2rem; font-weight: 700; margin: 0.2em 0 0.1em; letter-spacing: -0.01em; }
+/* One line, number and unit together: the size follows the column's width
+   (cqi), between a floor that still fits a 280px frame and the full size. */
+.amount { font-size: clamp(1.15rem, 9cqi, 2.2rem); font-weight: 700; margin: 0.2em 0 0.1em; letter-spacing: -0.01em; white-space: nowrap; }
+.amount-unit { font-size: 0.7em; font-weight: 700; color: var(--muted); }
 .amount-label { display: block; color: var(--muted); font-size: 0.8em; }
 .fiat-amount { color: var(--muted); margin-bottom: 1.2em; }
 .qr-wrap { margin: 0 auto 1.2em; display: flex; justify-content: center; }
@@ -200,7 +205,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact .payment-state.is-paid { position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; }
 .checkout-compact .meta, .checkout-compact .payments-table { display: none; }
 .checkout-compact .pay-header { margin-bottom: .4em; }
-.checkout-compact .amount { font-size: 1.8rem; font-weight: 800; margin: .1em 0; }
+.checkout-compact .amount { font-size: clamp(1.1rem, 8cqi, 1.8rem); font-weight: 800; margin: .1em 0; }
 .checkout-compact .fiat-amount { font-size: .8em; margin-bottom: .4em; }
 .checkout-compact .qr-wrap { margin-bottom: .3em; }
 .checkout-compact .qr-wrap svg { width: min(29vh, 158px); height: auto; }
@@ -246,8 +251,15 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
             div class="pay-grid" {
                 div class="pay-col-primary" {
                     (amount_label(data))
-                    div class="amount" id="xmr-amount" aria-labelledby="amount-label" { (data.xmr_amount) " XMR" }
-                    div class="fiat-amount" { "≈ " (data.amount) " " (data.currency) }
+                    // The number and its unit never split; the font shrinks with
+                    // the frame instead (see `.amount`).
+                    div class="amount" id="xmr-amount" aria-labelledby="amount-label" {
+                        span class="amount-value" { (trim_xmr(&data.xmr_amount)) } " " span class="amount-unit" { "XMR" }
+                    }
+                    // A fiat equivalent only for an order priced in fiat.
+                    @if !data.currency.is_empty() && data.currency != "XMR" {
+                        div class="fiat-amount" { "≈ " (data.amount) " " (data.currency) }
+                    }
 
                     div class="qr-wrap" { (PreEscaped(&data.qr_code_svg)) }
 
@@ -379,6 +391,12 @@ fn live_status(data: &CheckoutViewModel) -> Markup {
             }
         }
     }
+}
+
+/// An exact XMR amount without trailing zeros (`0.001000000000` is `0.001`):
+/// the same amount, short enough to sit on one line with its unit.
+fn trim_xmr(amount: &str) -> &str {
+    if amount.contains('.') { amount.trim_end_matches('0').trim_end_matches('.') } else { amount }
 }
 
 fn amount_label(data: &CheckoutViewModel) -> Markup {

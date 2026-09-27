@@ -454,3 +454,40 @@ test('real checkout says so when the chosen refund QR photo cannot be read', asy
   await expect(page.locator('#scan-error')).toHaveText('Could not read that image. Choose another file.');
   await expect(page.locator('#refund_address')).toHaveValue('');
 });
+
+test('real checkout keeps the amount and XMR on one line and shows a fiat equivalent only for fiat orders', async ({ page, request }) => {
+  const xmrOrder = await checkoutUrl(request);
+  const aud = await (await request.post(`${fixture.base_url}/pay/${fixture.public_key}/orders`, { data: { amount: '12.50', currency: 'AUD' } })).json();
+  const audOrder = `${fixture.base_url}/pay/${fixture.public_key}/orders/${aud.order_id}`;
+  const oneLine = () => page.evaluate(() => {
+    const amount = document.getElementById('xmr-amount');
+    const value = amount.querySelector('.amount-value').getBoundingClientRect();
+    const unit = amount.querySelector('.amount-unit').getBoundingClientRect();
+    const column = amount.parentElement.getBoundingClientRect();
+    return { sameLine: Math.abs(value.bottom - unit.bottom) < 4, fits: unit.right <= column.right + 1 && value.left >= column.left - 1 };
+  });
+  for (const view of ['', '?view=compact']) {
+    for (const width of [280, 320, 420, 900]) {
+      await page.setViewportSize({ width, height: 900 });
+      await page.goto(xmrOrder + view);
+      expect(await oneLine(), `${width}px${view}`).toEqual({ sameLine: true, fits: true });
+    }
+  }
+  // The longest an amount gets: all twelve decimals, in the narrowest frame.
+  const long = await (await request.post(`${fixture.base_url}/pay/${fixture.public_key}/orders`, { data: { amount: '0.123456789012', currency: 'XMR' } })).json();
+  for (const view of ['', '?view=compact']) {
+    await page.setViewportSize({ width: 280, height: 900 });
+    await page.goto(`${fixture.base_url}/pay/${fixture.public_key}/orders/${long.order_id}${view}`);
+    await expect(page.locator('#xmr-amount')).toHaveText('0.123456789012 XMR');
+    expect(await oneLine(), `longest amount at 280px${view}`).toEqual({ sameLine: true, fits: true });
+  }
+  await page.goto(xmrOrder);
+  // The fixture order is 0.001 XMR: shown without its trailing zeros, and
+  // with no "≈" line since it is priced in XMR.
+  await expect(page.locator('#xmr-amount')).toHaveText('0.001 XMR');
+  await expect(page.locator('.fiat-amount')).toHaveCount(0);
+  await page.goto(audOrder);
+  await expect(page.locator('.fiat-amount')).toHaveText('≈ 12.50 AUD');
+  // 12.50 AUD at the fixture's 400 AUD per XMR.
+  await expect(page.locator('#xmr-amount')).toHaveText('0.03125 XMR');
+});
