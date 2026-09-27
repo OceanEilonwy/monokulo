@@ -843,4 +843,54 @@ mod tests {
         assert_eq!(send(&router, "POST", &format!("{settings}/domains/{}/delete", row.id), &session, None).await.0, StatusCode::FOUND);
         assert_eq!(state.db.lock().unwrap().list_store_domains(&id).unwrap().len(), 1);
     }
+
+    /// The merchant's DNS provider is having an outage: Verify says the
+    /// lookup failed rather than that the record is missing. A domain already
+    /// verified that hits the outage on its daily re-check is flagged but
+    /// keeps working through the grace period, and clears by itself on the
+    /// next (hourly) re-check once DNS answers again.
+    #[tokio::test]
+    async fn a_dns_outage_is_reported_as_such_and_a_verified_domain_recovers_by_itself() {
+        let dns = Arc::new(FakeDns::default());
+        let (state, _engine) = test_state(dns.clone()).await;
+        let router = build_router(state.clone());
+        let session = session_for(&router, "dns-outage@example.com").await;
+        let id = create_store(&router, &session).await;
+        let settings = format!("/dashboard/stores/{id}/settings");
+        let store_page = format!("/dashboard/stores/{id}");
+        let row = state.db.lock().unwrap().list_store_domains(&id).unwrap().pop().unwrap();
+        let name = "_monokulo.store-home.example";
+
+        dns.fail(name, "timed out");
+        assert_eq!(send(&router, "POST", &format!("{settings}/domains/{}/check", row.id), &session, None).await.0, StatusCode::FOUND);
+        let (_, html) = send(&router, "GET", &settings, &session, None).await;
+        assert!(html.contains("The DNS lookup failed: timed out"), "got: {html}");
+        assert!(!html.contains(">Verified</span>"));
+
+        // DNS is back and the record published: verified; the store is
+        // restricted to it.
+        dns.publish(name, &embed_domains::record_value(&row.token));
+        let now = crate::now_unix();
+        embed_domains::check_and_record(&state.db, dns.as_ref(), &row, now).await.unwrap();
+        state.db.lock().unwrap().set_embed_restricted(&id, true).unwrap();
+
+        // A day later the re-check lands in an outage.
+        dns.fail(name, "SERVFAIL");
+        embed_domains::recheck_due(&state.db, dns.as_ref(), now + RECHECK_EVERY_SECS).await;
+        let failing_since = state.db.lock().unwrap().get_store_domain(&id, &row.id).unwrap().unwrap().failing_since.unwrap();
+        let (_, html) = send(&router, "GET", &store_page, &session, None).await;
+        assert!(html.contains("store-home.example failed its DNS check"), "got: {html}");
+        let warnings = super::store_page_warnings(&state, &id, failing_since + GRACE_SECS - 60);
+        assert!(!warnings.failing[0].lapsed, "within the grace period the domain still counts");
+        assert!(!warnings.shown_nowhere, "the restricted checkout still shows on the site");
+
+        // An hour on, DNS answers again: the failing domain's more frequent
+        // re-check clears it with no action from the merchant.
+        dns.publish(name, &embed_domains::record_value(&row.token));
+        embed_domains::recheck_due(&state.db, dns.as_ref(), crate::now_unix() + embed_domains::FAILING_RECHECK_EVERY_SECS + 1).await;
+        let row = state.db.lock().unwrap().get_store_domain(&id, &row.id).unwrap().unwrap();
+        assert!(row.failing_since.is_none());
+        let (_, html) = send(&router, "GET", &store_page, &session, None).await;
+        assert!(!html.contains("failed its DNS check"), "got: {html}");
+    }
 }
