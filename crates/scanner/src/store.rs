@@ -457,6 +457,28 @@ impl Store {
         })
     }
 
+    /// Public keys of the enabled tenants on `network`, for `/status`'s list
+    /// of stores that can't be scanned (task 3.7).
+    pub fn tenant_public_keys_on_network(&self, network: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare("SELECT public_key FROM tenants WHERE network = ?1 AND disabled_at_utc IS NULL ORDER BY public_key")?;
+        let rows = stmt.query_map(params![network], |row| row.get::<_, String>(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// `lagging_tenants`, by public key: (public key, cursor).
+    pub fn lagging_tenant_keys(&self, network: &str) -> Result<Vec<(String, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT public_key, scanned_through_height FROM tenants
+             WHERE network = ?1 AND disabled_at_utc IS NULL
+               AND scanned_through_height < (SELECT MAX(height) FROM scanned_blocks WHERE network = ?1)
+             ORDER BY public_key",
+        )?;
+        let rows = stmt
+            .query_map(params![network], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// How many enabled tenants each network has, for the admin page (tasks
     /// 2.2 and 4.4).
     pub fn count_tenants_by_network(&self) -> Result<std::collections::HashMap<String, u64>> {

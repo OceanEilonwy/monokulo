@@ -1015,3 +1015,69 @@ async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
         .unwrap();
     assert!(!dashboard.headers().contains_key("access-control-allow-origin"));
 }
+
+// -- Alerts for stores that can't be scanned (admin_settings_v2.md task 3.7) --
+
+fn state_with_owner_and_store(tenant_public_key: &str) -> (AppState, crate::db::UserRow, crate::db::UserRow) {
+    let state = test_app_state();
+    {
+        let db = state.db.lock();
+        db.create_user("u_owner", "owner@example.com", "x", false, 1).unwrap();
+        db.create_user("u_other", "other@example.com", "x", false, 1).unwrap();
+        db.create_store_connection("c1", "u_owner", "woocommerce", "https://shop.example.com", tenant_public_key, "enc", "http://engine", 1, "XMR")
+            .unwrap();
+    }
+    let owner = state.db.lock().get_user_by_email("owner@example.com").unwrap().unwrap();
+    let other = state.db.lock().get_user_by_email("other@example.com").unwrap().unwrap();
+    (state, owner, other)
+}
+
+fn status_with(unserved: Vec<crate::engine_client::UnservedTenant>) -> crate::engine_client::EngineStatusResponse {
+    crate::engine_client::EngineStatusResponse { networks: vec![], poll_interval_secs: 1, generated_at: 0, unserved_tenants: unserved }
+}
+
+#[tokio::test]
+async fn the_owner_of_a_store_on_a_network_without_a_node_is_alerted_on_every_page_but_nobody_else_is() {
+    let (state, owner, other) = state_with_owner_and_store("pk_shop");
+    crate::http::status_page::seed_status_for_tests(
+        &state,
+        status_with(vec![crate::engine_client::UnservedTenant {
+            public_key: "pk_shop".into(),
+            network: "stagenet".into(),
+            reason: "no_reachable_node".into(),
+            blocks_behind: None,
+        }]),
+    );
+
+    let chrome = super::page_chrome(&state, Some(&owner), "/dashboard");
+    assert_eq!(chrome.alerts.len(), 1);
+    assert!(chrome.alerts[0].contains("shop.example.com") && chrome.alerts[0].contains("stagenet"), "{:?}", chrome.alerts);
+
+    assert!(super::page_chrome(&state, Some(&other), "/dashboard").alerts.is_empty(), "not someone else's store");
+    assert!(super::page_chrome(&state, None, "/").alerts.is_empty(), "never for a visitor");
+
+    // Rendered under the nav on normal pages, never in the bare POS layout.
+    let page = crate::views::layout(&chrome, "t", maud::html! { p { "body" } }).into_string();
+    assert!(page.contains(r#"<p class="error" role="alert">shop.example.com"#), "{page}");
+    let pos = crate::views::layout_bare_with_head(&chrome, "t", "width=device-width", maud::html! {}, maud::html! {}).into_string();
+    assert!(!pos.contains("shop.example.com"), "the POS terminal shows no alerts");
+}
+
+#[tokio::test]
+async fn a_store_catching_up_gets_a_gentler_alert_and_it_goes_away_once_it_has() {
+    let (state, owner, _) = state_with_owner_and_store("pk_shop");
+    crate::http::status_page::seed_status_for_tests(
+        &state,
+        status_with(vec![crate::engine_client::UnservedTenant {
+            public_key: "pk_shop".into(),
+            network: "mainnet".into(),
+            reason: "catching_up".into(),
+            blocks_behind: Some(12),
+        }]),
+    );
+    let alerts = super::page_chrome(&state, Some(&owner), "/dashboard").alerts;
+    assert!(alerts[0].contains("catching up 12 block"), "{alerts:?}");
+
+    crate::http::status_page::seed_status_for_tests(&state, status_with(vec![]));
+    assert!(super::page_chrome(&state, Some(&owner), "/dashboard").alerts.is_empty());
+}

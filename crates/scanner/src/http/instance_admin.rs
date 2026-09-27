@@ -249,19 +249,33 @@ pub async fn update_settings(
 
     match registry.save(changes).await {
         Ok(report) => {
-            let unserved = {
-                let counts = state.store.lock().count_tenants_by_network().unwrap_or_default();
-                let mut unserved: Vec<UnservedNetwork> = counts
-                    .into_iter()
-                    .filter(|(network, tenants)| {
-                        *tenants > 0
-                            && crate::network::parse_network(network).is_ok_and(|n| !state.daemons.is_configured(n))
-                    })
-                    .map(|(network, tenants)| UnservedNetwork { network, tenants })
-                    .collect();
-                unserved.sort_by(|a, b| a.network.cmp(&b.network));
-                unserved
-            };
+            // Networks stores use that have no node now, or whose just-saved
+            // nodes don't answer (task 2.2, decision D2). Only saved
+            // networks are probed, each node briefly, all at once.
+            let counts = state.store.lock().count_tenants_by_network().unwrap_or_default();
+            let saved_networks: Vec<&str> =
+                NETWORKS.iter().filter(|(_, setting)| report.changed.contains(&setting.key)).map(|(n, _)| *n).collect();
+            let mut unserved = Vec::new();
+            for (network, tenants) in counts {
+                if tenants == 0 {
+                    continue;
+                }
+                let Ok(parsed) = crate::network::parse_network(&network) else { continue };
+                let reachable = match state.daemons.get(parsed) {
+                    None => false,
+                    Some(_) if !saved_networks.contains(&network.as_str()) => true,
+                    Some(daemon) => {
+                        let probes = daemon.nodes().iter().map(|node| {
+                            tokio::time::timeout(std::time::Duration::from_secs(3), node.client.get_height())
+                        });
+                        futures_util::future::join_all(probes).await.into_iter().any(|r| matches!(r, Ok(Ok(_))))
+                    }
+                };
+                if !reachable {
+                    unserved.push(UnservedNetwork { network, tenants });
+                }
+            }
+            unserved.sort_by(|a, b| a.network.cmp(&b.network));
             (
                 StatusCode::OK,
                 Json(json!({

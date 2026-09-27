@@ -2169,3 +2169,35 @@ async fn an_unknown_setting_is_refused_and_nothing_is_saved() {
     let get = router.clone().oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
     assert_eq!(body_json(get).await["scalars"]["payment.confirmations_required"]["value"], "10");
 }
+
+#[tokio::test]
+async fn status_lists_a_store_whose_network_has_no_answering_node() {
+    let (router, _, _) = engine_that_applies_node_settings().await;
+    // A node where nothing listens: configured, but unreachable.
+    save_settings(
+        &router,
+        serde_json::json!({ "monero_node": { "stagenet": { "host": "127.0.0.1", "port": 9, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] } } }),
+    )
+    .await;
+    let created = router.clone().oneshot(stagenet_tenant_request(7)).await.unwrap();
+    let created = body_json(created).await;
+    let public_key = created["public_key"].as_str().unwrap().to_string();
+
+    let status = get_status_json(router.clone()).await;
+    assert_eq!(
+        status["unserved_tenants"],
+        serde_json::json!([{ "public_key": public_key, "network": "stagenet", "reason": "no_reachable_node", "blocks_behind": null }]),
+        "got: {status}"
+    );
+}
+
+#[tokio::test]
+async fn saving_nodes_that_dont_answer_for_a_network_stores_use_is_reported() {
+    let (router, _, _) = engine_that_applies_node_settings().await;
+    let node = |port: u16| serde_json::json!({ "monero_node": { "stagenet": { "host": "127.0.0.1", "port": port, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] } } });
+    save_settings(&router, node(9)).await;
+    assert_eq!(router.clone().oneshot(stagenet_tenant_request(8)).await.unwrap().status(), StatusCode::OK);
+
+    let saved = save_settings(&router, node(10)).await;
+    assert_eq!(saved["warnings"]["unserved_networks"], serde_json::json!([{ "network": "stagenet", "tenants": 1 }]), "{saved}");
+}

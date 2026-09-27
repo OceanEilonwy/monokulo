@@ -672,6 +672,20 @@ pub struct EngineStatusResponse {
     pub networks: Vec<NetworkStatus>,
     pub poll_interval_secs: u64,
     pub generated_at: i64,
+    /// Stores the engine can't scan right now (admin_settings_v2.md task
+    /// 3.7). Absent from an older engine.
+    #[serde(default)]
+    pub unserved_tenants: Vec<UnservedTenant>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct UnservedTenant {
+    pub public_key: String,
+    pub network: String,
+    /// `"no_reachable_node"` or `"catching_up"`.
+    pub reason: String,
+    #[serde(default)]
+    pub blocks_behind: Option<u64>,
 }
 
 #[cfg(test)]

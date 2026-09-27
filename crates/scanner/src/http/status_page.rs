@@ -91,6 +91,20 @@ pub struct EngineStatusResponse {
     pub loop_restarts: Vec<LoopRestarts>,
     /// Webhook deliveries due and not yet sent (task 7.13).
     pub webhook_backlog: WebhookBacklog,
+    /// Every store that can't be scanned right now, and why (task 3.7):
+    /// monokulo shows each one's owner an alert.
+    pub unserved_tenants: Vec<UnservedTenant>,
+}
+
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct UnservedTenant {
+    pub public_key: String,
+    pub network: String,
+    /// `"no_reachable_node"` (its network has no node configured, or none
+    /// answers) or `"catching_up"` (it fell behind and is being caught up).
+    pub reason: &'static str,
+    /// For `catching_up`: how many blocks behind.
+    pub blocks_behind: Option<u64>,
 }
 
 #[derive(Serialize)]
@@ -203,14 +217,48 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
     let loop_restarts =
         shared::supervise::restart_counts().into_iter().map(|(name, restarts)| LoopRestarts { name, restarts }).collect();
     let (due, oldest) = state.store.lock().webhook_backlog(now).unwrap_or((0, None));
+    let unserved_tenants = unserved_tenants(&state, &network_views);
     Json(EngineStatusResponse {
         networks: network_views,
         poll_interval_secs,
         generated_at: now,
         loop_restarts,
         webhook_backlog: WebhookBacklog { due, oldest_waiting_secs: oldest.map(|at| now - at) },
+        unserved_tenants,
     })
     .into_response()
+}
+
+/// Stores that can't be scanned right now (task 3.7): those on a network
+/// with no node configured or none answering, and those still catching up
+/// after falling behind.
+fn unserved_tenants(state: &AppState, networks: &[NetworkStatus]) -> Vec<UnservedTenant> {
+    let store = state.store.lock();
+    let mut unserved = Vec::new();
+    let with_tenants = store.count_tenants_by_network().unwrap_or_default();
+    for (network, count) in with_tenants {
+        if count == 0 {
+            continue;
+        }
+        let status = networks.iter().find(|n| n.network == network);
+        let reachable = status.is_some_and(|n| n.nodes.iter().any(|node| node.error.is_none()));
+        if !reachable {
+            for public_key in store.tenant_public_keys_on_network(&network).unwrap_or_default() {
+                unserved.push(UnservedTenant { public_key, network: network.clone(), reason: "no_reachable_node", blocks_behind: None });
+            }
+            continue;
+        }
+        let high_water = store.max_scanned_height(&network).ok().flatten().unwrap_or(0);
+        for (public_key, cursor) in store.lagging_tenant_keys(&network).unwrap_or_default() {
+            unserved.push(UnservedTenant {
+                public_key,
+                network: network.clone(),
+                reason: "catching_up",
+                blocks_behind: Some(high_water.saturating_sub(cursor)),
+            });
+        }
+    }
+    unserved
 }
 
 #[cfg(test)]

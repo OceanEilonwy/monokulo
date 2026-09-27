@@ -358,7 +358,35 @@ fn cors_layer_base() -> tower_http::cors::CorsLayer {
 /// indicator): `views::PageChrome::from_user` plus the engine's last known
 /// health (`status_page::known_health`).
 pub(crate) fn page_chrome(state: &AppState, user: Option<&crate::db::UserRow>, current_path: impl Into<String>) -> crate::views::PageChrome {
-    crate::views::PageChrome::from_user(user, current_path).with_health(status_page::known_health(state))
+    let health = status_page::known_health(state);
+    let alerts = user.map(|user| store_alerts(state, user)).unwrap_or_default();
+    crate::views::PageChrome::from_user(user, current_path).with_health(health).with_alerts(alerts)
+}
+
+/// One alert per store of `user` that the engine can't scan right now
+/// (task 3.7, decision D2). Only ever the signed-in owner's own stores.
+fn store_alerts(state: &AppState, user: &crate::db::UserRow) -> Vec<String> {
+    let unserved = status_page::known_unserved(state);
+    if unserved.is_empty() {
+        return Vec::new();
+    }
+    let Ok(stores) = state.db.lock().list_store_connections_for_user(&user.id) else { return Vec::new() };
+    let mut alerts = Vec::new();
+    for store in stores {
+        let Some(problem) = unserved.iter().find(|u| u.public_key == store.tenant_public_key) else { continue };
+        let name = store.site_url.trim_start_matches("https://").trim_start_matches("http://").trim_end_matches('/');
+        alerts.push(match problem.reason.as_str() {
+            "catching_up" => format!(
+                "{name}: payments are being checked late - the engine is catching up {} block(s) it couldn't check for this store. They'll show up once it has.",
+                problem.blocks_behind.unwrap_or(0)
+            ),
+            _ => format!(
+                "{name}: payments aren't being detected - the {} network has no Monero node that answers. The instance admin needs to set one on the admin settings page.",
+                problem.network
+            ),
+        });
+    }
+    alerts
 }
 
 /// The actual "resolve a session to its user" logic [`AuthedUser`]'s

@@ -99,6 +99,27 @@ pub fn known_health(state: &AppState) -> Option<bool> {
     Some(is_healthy(&cached.result))
 }
 
+/// Puts `status` in the cache as if just fetched, for tests of pages that
+/// read it without waiting on an engine.
+#[cfg(test)]
+pub(crate) fn seed_status_for_tests(state: &AppState, status: EngineStatusResponse) {
+    state.status_cache.lock().cached = Some(CachedStatus { fetched_at: Instant::now(), result: Ok(status) });
+}
+
+/// The stores the engine last said it can't scan (task 3.7), from the same
+/// cache as [`known_health`], without waiting on the engine. Empty when
+/// nothing is known yet.
+pub fn known_unserved(state: &AppState) -> Vec<crate::engine_client::UnservedTenant> {
+    let cache = state.status_cache.lock();
+    cache
+        .cached
+        .as_ref()
+        .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)
+        .and_then(|cached| cached.result.as_ref().ok())
+        .map(|status| status.unserved_tenants.clone())
+        .unwrap_or_default()
+}
+
 /// `healthy: false` covers both "the engine is unreachable" and "the engine
 /// answered but reports a real problem" - the indicator only ever needs to
 /// distinguish "everything's fine" from "go look".
@@ -456,6 +477,7 @@ mod tests {
                 ],
                 poll_interval_secs: 2,
                 generated_at: now - 5,
+                unserved_tenants: vec![],
             });
             let labels: Vec<(&str, &str)> = view.networks.iter().map(|n| (n.scanner.status_label.as_str(), n.scanner.status_tag_class.as_str())).collect();
             assert_eq!(labels, vec![("healthy", "tag-ok"), ("stale", "tag-error"), ("tick failing", "tag-error")]);

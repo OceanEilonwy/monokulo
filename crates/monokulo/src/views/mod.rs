@@ -73,6 +73,10 @@ pub struct PageChrome {
     /// `Some(true)` healthy, `Some(false)` a problem, `None` not known yet.
     /// See `crate::http::status_page::known_health`.
     pub health: Option<bool>,
+    /// Problems the signed-in merchant needs to know about on every page
+    /// (task 3.7): their stores that can't be scanned right now. Shown under
+    /// the nav on every page that has one, so never in the POS terminal.
+    pub alerts: Vec<String>,
 }
 
 impl PageChrome {
@@ -84,13 +88,32 @@ impl PageChrome {
     /// `views::status`'s own callers).
     pub fn from_user(user: Option<&UserRow>, current_path: impl Into<String>) -> Self {
         match user {
-            Some(u) => PageChrome { logged_in: true, is_admin: u.is_admin, theme: u.theme, current_path: current_path.into(), health: None },
-            None => PageChrome { logged_in: false, is_admin: false, theme: Theme::System, current_path: current_path.into(), health: None },
+            Some(u) => PageChrome {
+                logged_in: true,
+                is_admin: u.is_admin,
+                theme: u.theme,
+                current_path: current_path.into(),
+                health: None,
+                alerts: Vec::new(),
+            },
+            None => PageChrome {
+                logged_in: false,
+                is_admin: false,
+                theme: Theme::System,
+                current_path: current_path.into(),
+                health: None,
+                alerts: Vec::new(),
+            },
         }
     }
 
     pub fn with_health(mut self, health: Option<bool>) -> Self {
         self.health = health;
+        self
+    }
+
+    pub fn with_alerts(mut self, alerts: Vec<String>) -> Self {
+        self.alerts = alerts;
         self
     }
 }
@@ -154,6 +177,13 @@ fn page_shell(chrome: &PageChrome, title: &str, viewport: &str, extra_head: Opti
             body {
                 @if let Some(nav) = nav {
                     (nav)
+                    @if !chrome.alerts.is_empty() {
+                        div class="wrap site-alerts" {
+                            @for alert in &chrome.alerts {
+                                p class="error" role="alert" { (alert) }
+                            }
+                        }
+                    }
                 }
                 (body)
             }
@@ -312,7 +342,7 @@ mod tests {
 
     #[test]
     fn logged_in_admin_nav_order_is_dashboard_admin_invites_logout_theme_status() {
-        let chrome = PageChrome { logged_in: true, is_admin: true, theme: Theme::Dark, current_path: "/dashboard".to_string(), health: None };
+        let chrome = PageChrome { logged_in: true, is_admin: true, theme: Theme::Dark, current_path: "/dashboard".to_string(), health: None , alerts: Vec::new()};
         let html = nav(&chrome).into_string();
 
         let dashboard = html.find(r#"href="/dashboard""#).expect("dashboard link");
@@ -343,7 +373,7 @@ mod tests {
     #[test]
     fn theme_toggle_renders_a_slider_with_a_thumb_positioned_for_the_current_theme() {
         for (theme, class) in [(Theme::Light, "theme-toggle-light"), (Theme::System, "theme-toggle-system"), (Theme::Dark, "theme-toggle-dark")] {
-            let chrome = PageChrome { logged_in: true, is_admin: false, theme, current_path: "/dashboard".to_string(), health: None };
+            let chrome = PageChrome { logged_in: true, is_admin: false, theme, current_path: "/dashboard".to_string(), health: None , alerts: Vec::new()};
             let html = nav(&chrome).into_string();
             assert!(html.contains(&class.to_string()), "expected {class} on the toggle for {theme:?}, got: {html}");
             assert!(html.contains("theme-toggle-option-light") && html.contains("theme-toggle-option-dark"), "expected both sun and moon options, got: {html}");
