@@ -1965,3 +1965,24 @@ async fn event_streams_outlive_the_request_timeout_and_have_their_own_cap() {
     drop(first);
     assert_eq!(status_of(&router, "/stream").await, StatusCode::OK, "a closed stream frees its place");
 }
+
+// -- Database and backend failures map to 503 (admin_settings_v2.md task 7.7) --
+
+#[test]
+fn a_full_or_locked_database_is_503_but_a_constraint_violation_is_500() {
+    use super::ApiError;
+    use crate::store::StoreError;
+    let sqlite = |code| StoreError::Sqlite(rusqlite::Error::SqliteFailure(rusqlite::ffi::Error::new(code), None));
+    for code in [rusqlite::ffi::SQLITE_FULL, rusqlite::ffi::SQLITE_BUSY, rusqlite::ffi::SQLITE_LOCKED, rusqlite::ffi::SQLITE_IOERR] {
+        assert!(matches!(ApiError::from(sqlite(code)), ApiError::Unavailable(_)), "code {code}");
+    }
+    assert!(matches!(ApiError::from(sqlite(rusqlite::ffi::SQLITE_CONSTRAINT)), ApiError::Internal(_)));
+}
+
+#[test]
+fn a_key_custody_backend_that_is_down_is_503() {
+    use super::ApiError;
+    use crate::key_custody::KeyCustodyError;
+    assert!(matches!(ApiError::from(KeyCustodyError::BackendUnavailable("down".into())), ApiError::Unavailable(_)));
+    assert!(matches!(ApiError::from(KeyCustodyError::UnknownWallet), ApiError::Unavailable(_)));
+}

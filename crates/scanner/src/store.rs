@@ -1884,6 +1884,40 @@ mod tests {
     }
 
     #[test]
+    fn a_full_disk_is_reported_as_a_disk_full_error_and_nothing_is_half_written() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        // Cap the database at its current size, then fill whatever free space
+        // is left, so the next write can't grow it.
+        store.execute_raw_for_test("PRAGMA max_page_count = 1;").unwrap();
+        let mut filled = 0;
+        while store.set_setting(&format!("filler.{filled}"), &"x".repeat(2000)).is_ok() {
+            filled += 1;
+            assert!(filled < 10_000, "the cap didn't take effect");
+        }
+        let err = store.create_order(NewOrder {
+            confirmations_required_override: None,
+            tenant_id: tenant.tenant.id.clone(),
+            merchant_order_id: None,
+            minor_index: 1,
+            address: "x".repeat(4000),
+            xmr_amount_piconero: 1,
+            description: Some("y".repeat(4000)),
+            created_at: 1,
+            expires_at: 2,
+        });
+        match err {
+            Err(StoreError::Sqlite(e)) => assert_eq!(e.sqlite_error_code(), Some(rusqlite::ErrorCode::DiskFull)),
+            other => panic!("expected a disk-full error, got {other:?}"),
+        }
+        assert!(store.find_order_by_minor_index(&tenant.tenant.id, 1).unwrap().is_none());
+
+        // Space comes back: writes work again.
+        store.execute_raw_for_test("PRAGMA max_page_count = 1000000;").unwrap();
+        new_order(&store, &tenant.tenant.id, 1);
+    }
+
+    #[test]
     fn a_setting_that_was_never_saved_reads_as_none() {
         let store = Store::open_in_memory().unwrap();
         assert_eq!(store.get_setting("payment.confirmations_required").unwrap(), None);

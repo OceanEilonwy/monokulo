@@ -356,12 +356,27 @@ pub enum ApiError {
     Forbidden(String),
     BadRequest(String),
     Internal(String),
+    /// Something this request needs is down for now (the database is full
+    /// or locked, a key-custody backend is unreachable): `503`, so callers
+    /// know to retry (task 7.7).
+    Unavailable(String),
+}
+
+/// SQLite failures that are about the environment (disk, locks, I/O) rather
+/// than the request, and so worth a retry later.
+fn is_transient_sqlite(e: &rusqlite::Error) -> bool {
+    use rusqlite::ErrorCode::*;
+    matches!(
+        e.sqlite_error_code(),
+        Some(DiskFull | DatabaseBusy | DatabaseLocked | SystemIoFailure | CannotOpen | OutOfMemory)
+    )
 }
 
 impl From<StoreError> for ApiError {
     fn from(e: StoreError) -> Self {
         match e {
             StoreError::NotFound => ApiError::NotFound,
+            StoreError::Sqlite(e) if is_transient_sqlite(&e) => ApiError::Unavailable(e.to_string()),
             StoreError::Sqlite(e) => ApiError::Internal(e.to_string()),
         }
     }
@@ -370,7 +385,10 @@ impl From<StoreError> for ApiError {
 impl From<KeyCustodyError> for ApiError {
     fn from(e: KeyCustodyError) -> Self {
         match e {
-            KeyCustodyError::UnknownWallet => ApiError::NotFound,
+            // The store exists; its keys just aren't registered in this
+            // process right now (a backend restart, a switch in progress).
+            KeyCustodyError::UnknownWallet => ApiError::Unavailable("this store's keys are not available right now".to_string()),
+            KeyCustodyError::BackendUnavailable(m) => ApiError::Unavailable(m),
             other => ApiError::Internal(other.to_string()),
         }
     }
@@ -384,6 +402,7 @@ impl IntoResponse for ApiError {
             ApiError::Forbidden(m) => (StatusCode::FORBIDDEN, m),
             ApiError::BadRequest(m) => (StatusCode::BAD_REQUEST, m),
             ApiError::Internal(m) => (StatusCode::INTERNAL_SERVER_ERROR, m),
+            ApiError::Unavailable(m) => (StatusCode::SERVICE_UNAVAILABLE, m),
         };
         (status, Json(json!({ "error": message }))).into_response()
     }
