@@ -527,6 +527,45 @@ impl Store {
         Ok(rows)
     }
 
+    /// A page of `tenant_id`'s orders, newest first: only those still open
+    /// (pending, unconfirmed, confirming or partial) when `open_only`, only
+    /// those whose id or merchant order id contains `search` (ignoring case)
+    /// when given, skipping the first `offset`.
+    pub fn list_orders_page(
+        &self,
+        tenant_id: &str,
+        open_only: bool,
+        search: Option<&str>,
+        limit: u32,
+        offset: u32,
+    ) -> Result<Vec<Order>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT * FROM orders
+             WHERE tenant_id = ?1
+               AND (?2 = 0 OR status IN (?3, ?4, ?5, ?6))
+               AND (?7 IS NULL OR instr(lower(id), lower(?7)) > 0 OR instr(lower(coalesce(merchant_order_id, '')), lower(?7)) > 0)
+             ORDER BY created_at_utc DESC, id DESC
+             LIMIT ?8 OFFSET ?9",
+        )?;
+        let rows = stmt
+            .query_map(
+                params![
+                    tenant_id,
+                    open_only,
+                    status_to_str(OrderStatus::Pending),
+                    status_to_str(OrderStatus::Unconfirmed),
+                    status_to_str(OrderStatus::Confirming),
+                    status_to_str(OrderStatus::Partial),
+                    search,
+                    limit,
+                    offset,
+                ],
+                Self::row_to_order,
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// The tenant ids the chain scanner should actually spend scalar-multiplication
     /// effort on this tick: those with at least one order still capable of
     /// receiving a *new* detected payment. See `docs/DESIGN.md` §7.3 for the

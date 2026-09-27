@@ -306,6 +306,13 @@ pub struct ListOrdersQuery {
     /// screen watching many orders does not spend one rate-limited request
     /// per order.
     ids: Option<String>,
+    /// `open=true`: only orders still open (pending, unconfirmed,
+    /// confirming, partial) - what a point of sale is still waiting on.
+    open: Option<bool>,
+    /// Orders whose id or merchant order id contains this, ignoring case.
+    search: Option<String>,
+    /// Orders to skip, for paging with `open`/`search`.
+    offset: Option<u32>,
 }
 
 /// Most order ids one `ids=` request may name.
@@ -333,6 +340,13 @@ pub async fn list_orders(
                 }
             }
             orders
+        }
+        None if q.open.unwrap_or(false) || q.search.is_some() || q.offset.is_some() => {
+            let search = q.search.as_deref().map(str::trim).filter(|term| !term.is_empty());
+            if search.is_some_and(|term| term.chars().count() > 120) {
+                return Err(ApiError::BadRequest("search is too long".into()));
+            }
+            store.list_orders_page(&tenant.id, q.open.unwrap_or(false), search, limit, q.offset.unwrap_or(0))?
         }
         None => store.list_orders(&tenant.id, status_filter, limit, q.cursor)?,
     };

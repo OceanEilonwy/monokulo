@@ -1852,3 +1852,43 @@ async fn listing_orders_by_ids_returns_only_this_tenants_named_orders_in_order()
     let response = router.oneshot(json_request("GET", &format!("/api/v1/admin/tenant/orders?ids={too_many}"), Some(&tenant.secret_token), None, serde_json::Value::Null)).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
 }
+
+#[tokio::test]
+async fn listing_orders_can_page_search_and_keep_to_open_orders() {
+    let state = test_app_state();
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 44).await;
+    let mut ids = Vec::new();
+    for reference in ["Table 1", "Table 2", "wc-1042", "Table 3"] {
+        let req = json_request("POST", "/api/v1/admin/tenant/orders", Some(&tenant.secret_token), None,
+            serde_json::json!({ "xmr_amount_piconero": 1_000u64, "merchant_order_id": reference }));
+        ids.push(body_json(router.clone().oneshot(req).await.unwrap()).await["order_id"].as_str().unwrap().to_string());
+    }
+    // "Table 2" is paid, so no longer open.
+    {
+        let store = store.lock().unwrap();
+        store.record_payment_match(&ids[1], "tx_paid", 0, 1_000, "[]", crate::now_unix(), Some(10)).unwrap();
+        crate::scanner::recompute_and_notify(&store, &ids[1], 100, crate::now_unix()).unwrap();
+    }
+    let list = |query: &str| {
+        let router = router.clone();
+        let uri = format!("/api/v1/admin/tenant/orders?{query}");
+        let token = tenant.secret_token.clone();
+        async move {
+            let response = router.oneshot(json_request("GET", &uri, Some(&token), None, serde_json::Value::Null)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{uri}");
+            body_json(response).await.as_array().unwrap().iter().map(|o| o["merchant_order_id"].as_str().unwrap().to_string()).collect::<Vec<_>>()
+        }
+    };
+    // Made within the same second, so compare as sets; pages follow the
+    // full list's own order.
+    let sorted = |mut v: Vec<String>| { v.sort(); v };
+    assert_eq!(sorted(list("open=true").await), vec!["Table 1", "Table 3", "wc-1042"]);
+    let tables = list("search=table").await;
+    assert_eq!(sorted(tables.clone()), vec!["Table 1", "Table 2", "Table 3"]);
+    assert_eq!(list(&format!("search={}", &ids[2][6..14])).await, vec!["wc-1042"], "by order id");
+    assert_eq!(list("search=table&limit=2").await, tables[..2].to_vec());
+    assert_eq!(list("search=table&limit=2&offset=2").await, tables[2..].to_vec());
+    assert_eq!(list("search=nothing").await, Vec::<String>::new());
+}
