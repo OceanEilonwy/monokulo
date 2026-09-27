@@ -290,7 +290,8 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-order-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
   .pos-order-foot small { display: block; min-width: 0; font-size: 10px; color: var(--muted); }
   .pos-order-foot .pos-link { flex: none; white-space: nowrap; }
-  .pos-load-more { display: block; margin: 14px auto; padding: 8px 14px; border: 1px solid var(--pos-border); border-radius: 4px; font-size: 12px; font-weight: 700; }
+  .pos-list-note { margin: 10px 0 12px; font-size: 11px; line-height: 1.45; color: var(--muted); }
+  .pos-list-note a, .pos-empty a { color: var(--ink); font-weight: 800; white-space: nowrap; }
 
   /* Short screens (landscape phones): keypad beside the amount and actions. */
   @media (max-height: 620px) {

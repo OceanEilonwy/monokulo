@@ -81,17 +81,31 @@ test('real POS shows pending, partial, confirming, and terminal badge symbols', 
     ['partial', 'partial'], ['paid', 'paid'], ['overpaid', 'overpaid'], ['expired', 'expired'],
     ['double', 'pending'], ['cancelled', 'pending'],
   ];
-  const orders = states.map(([id, status], index) => ({
+  // Every order starts open, as the server lists them; the final ones then
+  // arrive over the live stream, as they would at the counter.
+  const orders = states.map(([id], index) => ({
     order_id: id, merchant_order_id: id, address: '86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC',
-    amount: '1.00', currency: 'XMR', xmr_amount: '1.000000000000', status,
+    amount: '1.00', currency: 'XMR', xmr_amount: '1.000000000000', status: ['paid', 'overpaid', 'expired'].includes(id) ? 'pending' : states[index][1],
     confirmations: id === 'confirming' ? 3 : 0, confirmations_required: 10,
     error: id === 'double' ? 'Double-spend detected on this payment.' : null,
-    backgrounded: true, cancelled_at: id === 'cancelled' ? 2000 : null,
+    backgrounded: true, cancelled_at: null,
     created_at: 1000 + index, expires_at: 9999999999, updated_at: 1000 + index,
   }));
-  await page.addInitScript(() => { window.EventSource = class { addEventListener() {} close() {} }; });
+  await page.addInitScript(() => {
+    window.EventSource = class {
+      constructor() { window.__statusListeners = []; }
+      addEventListener(name, listener) { if (name === 'status') window.__statusListeners.push(listener); }
+      close() {}
+    };
+    window.__status = update => window.__statusListeners.forEach(listener => listener({ data: JSON.stringify(update) }));
+  });
   await page.route('**/pos/orders?*', route => route.fulfill({ json: { orders, total: orders.length } }));
   await page.goto(posUrl());
+  await expect(page.locator('.pos-stack-card')).toHaveCount(9);
+  await page.evaluate(() => {
+    for (const status of ['paid', 'overpaid', 'expired']) window.__status({ order_id: status, status, updated_at: 5000, is_terminal: true });
+    window.__status({ order_id: 'cancelled', status: 'pending', cancelled_at: 2000, updated_at: 5000, is_terminal: false });
+  });
   await expect(page.locator('.pos-stack-card')).toHaveCount(5);
   await expect(page.locator('.state-partial .pos-icon use')).toHaveAttribute('href', '#pos-coin-partial');
   await expect(page.locator('.state-confirming .pos-disc')).toHaveAttribute('style', /--progress: 30%/);
@@ -313,45 +327,36 @@ async function ringUp(request, count, prefix) {
   }
 }
 
-test('busy store reviews more orders than one page holds, by list and by search', async ({ page, request }) => {
+test('busy store sees every open order at once and narrows them by search', async ({ page, request }) => {
   test.setTimeout(60000);
   await ringUp(request, 44, 'Table');
   await page.goto(posUrl());
   await page.getByRole('button', { name: 'All orders' }).click();
   const cards = page.locator('.pos-order-card');
-  await expect(cards).toHaveCount(40);
-  await page.getByRole('button', { name: 'Load more orders' }).click();
+  // All 45 open orders (the fixture order and 44 tables): no paging.
   await expect(cards).toHaveCount(45);
-  await expect(page.getByRole('button', { name: 'Load more orders' })).toHaveCount(0);
-  // Search pages the same way.
-  await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('Table');
-  await expect(cards).toHaveCount(40);
-  await page.getByRole('button', { name: 'Load more orders' }).click();
-  await expect(cards).toHaveCount(44);
+  await expect(page.getByRole('tab', { name: /Active · 45/ })).toBeVisible();
+  await expect(page.getByRole('button', { name: /Load more/ })).toHaveCount(0);
   await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('Table 17');
   await expect(cards).toHaveCount(1);
   await cards.getByRole('button', { name: 'Open →' }).click();
   await expect(page.locator('.pos-order-heading h1')).toHaveText('Table 17');
 });
 
-test('loading more orders during an engine hiccup shows the reason and Retry recovers the list', async ({ page, request }) => {
-  test.setTimeout(60000);
-  await ringUp(request, 44, 'Table');
+test('an order list that failed to load when the POS opened comes back with Retry', async ({ page }) => {
   let failures = 1;
-  await page.route('**/pos/orders?offset=40*', route => (failures-- > 0
+  await page.route('**/pos/orders?state=active', route => (failures-- > 0
     ? route.fulfill({ status: 503, json: { error: 'The payment engine is busy or unreachable. Try again in a moment.' } })
     : route.continue()));
   await page.goto(posUrl());
+  await expect(page.locator('.pos-error')).toContainText('The payment engine is busy');
+  // The list is reachable even with nothing loaded, and Retry reloads it.
   await page.getByRole('button', { name: 'All orders' }).click();
-  const cards = page.locator('.pos-order-card');
-  await expect(cards).toHaveCount(40);
-  await page.getByRole('button', { name: 'Load more orders' }).click();
-  await expect(page.locator('.pos-list .pos-error')).toContainText('The payment engine is busy or unreachable.');
   await page.getByRole('button', { name: 'Retry' }).click();
-  await expect(page.locator('.pos-list .pos-error')).toHaveCount(0);
-  await expect(cards).toHaveCount(40);
-  await page.getByRole('button', { name: 'Load more orders' }).click();
-  await expect(cards).toHaveCount(45);
+  await expect(page.locator('.pos-error')).toHaveCount(0);
+  // The sale that was in progress when the POS opened is back on screen.
+  await expect(page.locator('.pos-order-heading h1')).toHaveText('Fixture order');
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
 });
 
 test('merchant records the customer refund address from a QR image, with clear failures', async ({ page }) => {
@@ -512,7 +517,7 @@ test('merchant moves between the keypad, the stack and the order list', async ({
   await page.mouse.wheel(0, 300);
   await expect.poll(() => stack.evaluate(el => el.scrollLeft)).toBeGreaterThan(before);
   await page.getByRole('button', { name: 'View all →' }).click();
-  await expect(page.locator('.pos-list h1')).toHaveText('Background orders');
+  await expect(page.locator('.pos-list h1')).toHaveText('Orders');
   await page.getByRole('tab', { name: /Finished/ }).click();
   await expect(page.locator('.pos-empty')).toHaveText('No finished orders yet.');
   await page.getByRole('tab', { name: /Active/ }).click();
@@ -546,7 +551,73 @@ test('clearing a search brings the whole order list back', async ({ page, reques
   await search.fill('Table 2');
   await expect(cards).toHaveCount(1);
   await search.fill('nothing like this');
-  await expect(page.locator('.pos-empty')).toHaveText('No matching orders.');
+  await expect(page.locator('.pos-empty')).toHaveText('No matches from this session. Search all orders →');
   await search.fill('');
   await expect(cards).toHaveCount(4);
+});
+
+async function openFinishedTab(page) {
+  await page.getByRole('button', { name: 'All orders' }).click();
+  await page.getByRole('tab', { name: /Finished/ }).click();
+}
+
+test('an order finished at the counter moves to Finished for this session only', async ({ page, request }) => {
+  await page.goto(posUrl());
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/paid`);
+  await expect(page.locator('.pos-outcome')).toBeVisible();
+  await page.getByRole('button', { name: 'New order' }).click();
+  await openFinishedTab(page);
+  await expect(page.getByRole('tab', { name: 'Finished · 1' })).toBeVisible();
+  await expect(page.locator('.pos-order-card')).toContainText('Fixture order');
+  const note = page.locator('.pos-list-note');
+  await expect(note).toContainText('Completed on this device since the POS was opened. They clear after 24 hours or when the page reloads.');
+  await expect(note.getByRole('link', { name: 'See all orders →' })).toHaveAttribute('href', `/dashboard/stores/${fixture.connection_id}/orders`);
+  await page.getByRole('tab', { name: /Active/ }).click();
+  await expect(page.locator('.pos-order-card')).toHaveCount(0);
+  // Nothing is loaded into Finished: after a reload it starts empty.
+  await page.reload();
+  await openFinishedTab(page);
+  await expect(page.getByRole('tab', { name: 'Finished · 0' })).toBeVisible();
+  await expect(page.locator('.pos-empty')).toHaveText('No finished orders yet.');
+  await expect(page.locator('.pos-list-note')).toBeVisible();
+});
+
+test('a backgrounded order that is paid while the merchant serves someone else moves to Finished', async ({ page, request }) => {
+  await page.goto(posUrl());
+  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  await expect(page.locator('.pos-stack-card')).toHaveCount(1);
+  await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/paid`);
+  await expect(page.locator('.pos-stack-card')).toHaveCount(0);
+  await openFinishedTab(page);
+  await expect(page.locator('.pos-order-card .pos-badge')).toContainText('Paid');
+});
+
+test('finished orders drop off the tab 24 hours after they finished', async ({ page, request }) => {
+  await page.clock.install();
+  await page.goto(posUrl());
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/paid`);
+  await expect(page.locator('.pos-outcome')).toBeVisible();
+  await page.getByRole('button', { name: 'New order' }).click();
+  await openFinishedTab(page);
+  await expect(page.locator('.pos-order-card')).toHaveCount(1);
+  await page.clock.fastForward((23 * 60 + 58) * 60 * 1000);
+  await expect(page.locator('.pos-order-card')).toHaveCount(1);
+  await page.clock.fastForward(3 * 60 * 1000);
+  await expect(page.locator('.pos-order-card')).toHaveCount(0);
+  await expect(page.getByRole('tab', { name: 'Finished · 0' })).toBeVisible();
+});
+
+test('a search with no match in this session links to searching all orders', async ({ page }) => {
+  await page.goto(posUrl());
+  await page.getByRole('button', { name: 'All orders' }).click();
+  await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('wc-1042');
+  const empty = page.locator('.pos-empty');
+  await expect(empty).toHaveText('No matches from this session. Search all orders →');
+  await expect(empty.getByRole('link', { name: 'Search all orders →' })).toHaveAttribute('href', `/dashboard/stores/${fixture.connection_id}/orders?q=wc-1042`);
+  await empty.getByRole('link', { name: 'Search all orders →' }).click();
+  await expect(page.getByRole('heading', { name: 'Orders' })).toBeVisible();
+  await expect(page.getByRole('searchbox', { name: 'Search orders' })).toHaveValue('wc-1042');
+  await expect(page.getByText('No orders match “wc-1042”.')).toBeVisible();
 });
