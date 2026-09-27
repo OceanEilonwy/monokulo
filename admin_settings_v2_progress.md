@@ -51,7 +51,7 @@ commits. Nothing is pushed.
 | 2.2 unserved networks | partly | 8830c92 | save reports networks with stores but no node; reachability probe and /status list still to do (with 3.7) |
 | 2.3-2.6, 2.8, 2.9 | done | 8830c92 | |
 | 2.7 bind restart-only | done | 8830c92 | |
-| 1.5 remove settings | partly | 8830c92 | unknown keys refused; old settings.rs still used by the scan chunk budget and bootstrap CLI |
+| 1.5 remove settings | done | 8830c92, 266f19a | unknown keys refused; old read path deleted |
 | 1.3 monokulo on live-settings | done | 66f32ea | |
 | 3.1-3.4, 3.6 | done | 66f32ea | engine retarget ends old streams; onion listener live; bind note in the restart banner |
 | 3.5 pin already-live settings | partly | | existing signup/public_url tests cover it; no new ones |
