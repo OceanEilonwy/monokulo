@@ -169,7 +169,7 @@ const STATUS_INDICATOR_SCRIPT: &str = r#"(function () {
   if (!link) return;
   var dot = link.querySelector(".status-dot");
   var POLL_MS = 30000;
-  function show(state, title) { dot.className = "status-dot status-dot-" + state; link.title = title; }
+  function show(state, title) { dot.className = "status-dot status-dot-" + state; link.title = title; link.setAttribute("aria-label", "Status: " + title); }
   function poll() {
     if (document.hidden) { setTimeout(poll, POLL_MS); return; }
     fetch("/status/summary", { cache: "no-store" }).then(function (r) {
@@ -190,17 +190,17 @@ const STATUS_INDICATOR_SCRIPT: &str = r#"(function () {
 /// The status indicator: a dot linking to `/status`, rendered with the
 /// engine's last known health so it is right without JavaScript (every
 /// page load renders it afresh). Its script only adds live updates by
-/// polling. `class` is the link's own class, for where it sits (nav bar,
-/// POS top bar); `label` adds the visible "status" text.
-pub fn status_indicator(health: Option<bool>, class: &str, label: bool) -> Markup {
+/// polling. It is only the glowing dot - the title and aria-label carry the
+/// words. `class` is the link's own class, for where it sits (nav bar, POS
+/// top bar).
+pub fn status_indicator(health: Option<bool>, class: &str) -> Markup {
     let (state, title) = match health {
         Some(true) => ("ok", "all systems healthy"),
         Some(false) => ("error", "an issue was detected - see the status page"),
         None => ("unknown", "status not checked yet"),
     };
     html! {
-        a href="/status" class=(class) id="status-indicator" title=(title) {
-            @if label { span class="nav-status-text" { "status" } }
+        a href="/status" class=(class) id="status-indicator" title=(title) aria-label=(format!("Status: {title}")) {
             span class=(format!("status-dot status-dot-{state}")) {}
         }
         script { (PreEscaped(STATUS_INDICATOR_SCRIPT)) }
@@ -240,7 +240,7 @@ fn nav(chrome: &PageChrome) -> Markup {
                         (theme_toggle(chrome))
                     }
                     // Rightmost on every page.
-                    (status_indicator(chrome.health, "nav-status-link", true))
+                    (status_indicator(chrome.health, "nav-status-link"))
                 }
             }
         }
@@ -296,15 +296,14 @@ mod tests {
 
     #[test]
     fn status_indicator_is_rendered_with_the_known_health_and_polls_only_as_an_enhancement() {
-        let healthy = status_indicator(Some(true), "nav-status-link", true).into_string();
-        assert!(healthy.contains(r#"<a href="/status" class="nav-status-link" id="status-indicator" title="all systems healthy"><span class="nav-status-text">status</span><span class="status-dot status-dot-ok"></span></a>"#), "got: {healthy}");
+        let healthy = status_indicator(Some(true), "nav-status-link").into_string();
+        assert!(healthy.contains(r#"<a href="/status" class="nav-status-link" id="status-indicator" title="all systems healthy" aria-label="Status: all systems healthy"><span class="status-dot status-dot-ok"></span></a>"#), "got: {healthy}");
         assert!(healthy.contains("/status/summary"));
 
-        let problem = status_indicator(Some(false), "pos-status-link", false).into_string();
+        let problem = status_indicator(Some(false), "pos-status-link").into_string();
         assert!(problem.contains(r#"class="status-dot status-dot-error""#), "got: {problem}");
-        assert!(!problem.contains("nav-status-text"));
 
-        let unknown = status_indicator(None, "nav-status-link", true).into_string();
+        let unknown = status_indicator(None, "nav-status-link").into_string();
         assert!(unknown.contains(r#"class="status-dot status-dot-unknown""#), "got: {unknown}");
 
         let chrome = PageChrome::from_user(None, "/").with_health(Some(true));

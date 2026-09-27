@@ -497,8 +497,7 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
   text-decoration-thickness: 1px;
 }
 .site-nav-links .nav-logout-form, .site-nav-links .nav-theme-form { margin: 0; display: inline; }
-.nav-status-link { text-decoration: none !important; }
-.nav-status-text { text-decoration: underline; }
+.nav-status-link { display: inline-flex; align-items: center; align-self: center; text-decoration: none !important; }
 /* The Orders page's search: field and button on one line. */
 .orders-search { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0.5em; margin: 0 0 1em; }
 .orders-search input[type="search"] { flex: 1 1 16em; min-width: 0; padding: 0.5em 0.7em; font: inherit; }
@@ -624,7 +623,6 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
   width: 0.6em;
   height: 0.6em;
   border-radius: 50%;
-  margin-left: 0.3em;
   vertical-align: middle;
   background: var(--muted);
 }
