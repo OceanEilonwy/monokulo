@@ -282,6 +282,76 @@ where
     futures_util::StreamExt::flat_map(batches, |events| futures_util::stream::iter(events.into_iter().map(Ok)))
 }
 
+/// One snapshot per order for [`batch_snapshot_stream`], keyed by order id.
+pub type BatchSnapshot = Vec<(String, LiveSnapshot)>;
+
+/// [`snapshot_stream`] for many orders of one store at once: whenever any
+/// of them changes (or `refresh_every` passes) it takes one snapshot of all
+/// that are still live, rather than one per order, so a screen watching many
+/// orders costs one engine read per change instead of one per order. Each
+/// order's events are sent only when its fingerprint changes; an order stops
+/// being read once terminal, and the stream ends when none are left.
+/// `snapshot` gets the live order ids and returns `None` when it could not
+/// read them, in which case the stream waits for the next change.
+pub fn batch_snapshot_stream<F, Fut>(
+    subscriptions: Vec<OrderSubscription>,
+    refresh_every: Duration,
+    snapshot: F,
+) -> impl Stream<Item = Result<Event, Infallible>> + Send
+where
+    F: FnMut(Vec<String>) -> Fut + Send + 'static,
+    Fut: Future<Output = Option<BatchSnapshot>> + Send + 'static,
+{
+    struct State<F> {
+        subscriptions: Vec<OrderSubscription>,
+        snapshot: F,
+        last: HashMap<String, String>,
+        first: bool,
+    }
+    let state = State { subscriptions, snapshot, last: HashMap::new(), first: true };
+    let batches = futures_util::stream::unfold(state, move |mut state| async move {
+        loop {
+            if state.subscriptions.is_empty() {
+                return None;
+            }
+            if !state.first {
+                let changes = futures_util::future::select_all(
+                    state.subscriptions.iter_mut().map(|s| Box::pin(s.changed.changed())),
+                );
+                tokio::select! {
+                    (changed, _, _) = changes => {
+                        if changed.is_err() {
+                            return None;
+                        }
+                    }
+                    _ = tokio::time::sleep(refresh_every) => {}
+                }
+            }
+            state.first = false;
+            // One read covers every change seen so far.
+            for subscription in &mut state.subscriptions {
+                subscription.changed.mark_unchanged();
+            }
+            let ids = state.subscriptions.iter().map(|s| s.order_id.clone()).collect();
+            let Some(snapshots) = (state.snapshot)(ids).await else { continue };
+            let mut events = Vec::new();
+            for (order_id, snapshot) in snapshots {
+                if snapshot.terminal {
+                    state.subscriptions.retain(|s| s.order_id != order_id);
+                }
+                if state.last.get(&order_id) != Some(&snapshot.fingerprint) {
+                    state.last.insert(order_id, snapshot.fingerprint);
+                    events.extend(snapshot.events);
+                }
+            }
+            if !events.is_empty() {
+                return Some((events, state));
+            }
+        }
+    });
+    futures_util::StreamExt::flat_map(batches, |events| futures_util::stream::iter(events.into_iter().map(Ok)))
+}
+
 /// Reads SSE frames from `body` until one full event arrives, returning its
 /// `(event, data)` - `None` once the stream has ended.
 #[cfg(test)]

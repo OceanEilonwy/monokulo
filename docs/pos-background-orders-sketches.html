@@ -24,9 +24,15 @@
     .screen { display:flex; flex-direction:column; height:100%; min-height:0; }
     .top { min-height:52px; flex:none; display:flex; align-items:center; gap:7px; padding:7px 15px; border-bottom:1px solid #ddd5c8; background:var(--paper); }
     .crumb { color:var(--muted); font-size:11px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:150px; }
-    .chevron { color:var(--muted); font-size:14px; }
     .top strong { font-size:13px; }
-    .status-dot { width:9px; height:9px; border-radius:50%; background:var(--green); margin-left:auto; flex:none; }
+    /* The site's own controls, as on every dashboard page: the status dot
+       (a link to /status) and the System / Light / Dark theme toggle. */
+    .site-controls { margin-left:auto; display:flex; align-items:center; gap:10px; flex:none; }
+    .status-dot { width:9px; height:9px; border-radius:50%; background:var(--green); box-shadow:0 0 6px 2px #1a7f37bf; flex:none; }
+    .theme-pill { position:relative; display:flex; align-items:center; width:70px; height:28px; padding:0 3.5px; border:2px solid #d6cfc2; border-radius:999px; background:#fff; }
+    .theme-pill span { position:relative; z-index:1; width:33.333%; text-align:center; font-size:12px; line-height:1; color:var(--muted); }
+    .theme-pill span:first-child { color:#111; }
+    .theme-pill::before { content:""; position:absolute; top:3.5px; left:14px; width:21px; height:21px; transform:translateX(-50%); border-radius:50%; background:var(--orange); }
     .top-back { font-size:23px; line-height:1; margin-right:4px; }
     .keypad-body { flex:1; min-height:0; display:flex; flex-direction:column; padding:17px 18px 16px; gap:13px; }
     .amount { text-align:center; font-size:48px; font-weight:800; line-height:1.2; letter-spacing:-.035em; }
@@ -219,7 +225,7 @@
       <section class="panel" aria-label="Initial keypad state">
         <div class="panel-title"><span class="step">1</span>Initial keypad</div>
         <div class="phone"><div class="screen">
-          <div class="top"><span class="crumb">rachelshandicrafts.com</span><span class="chevron">›</span><strong>POS</strong><span class="status-dot"></span></div>
+          <div class="top"><span class="crumb">rachelshandicrafts.com</span><span class="site-controls"><span class="status-dot" title="Status - opens /status"></span><span class="theme-pill" title="System / Light / Dark"><span>▭</span><span>☀</span><span>☾</span></span></span></div>
           <div class="keypad-body">
             <div class="amount">12.50<span class="currency">AUD</span></div>
             <div class="keys"><div class="key">1</div><div class="key">2</div><div class="key">3</div><div class="key">4</div><div class="key">5</div><div class="key">6</div><div class="key">7</div><div class="key">8</div><div class="key">9</div><div class="key clear">C</div><div class="key">0</div><div class="key delete">⌫</div></div>
@@ -227,12 +233,12 @@
             <div class="primary">Charge</div><div class="bottom-safe"></div>
           </div>
         </div></div>
-        <p class="flow-note"><strong>Before charging:</strong> 12.50 AUD and “Alex” are entered; Reference is the only descriptive field.</p>
+        <p class="flow-note"><strong>Before charging:</strong> 12.50 AUD and “Alex” are entered; Reference is the only descriptive field. The top bar is the store name (a link back to the store page) and the site's own status dot (opens the status page) and theme toggle.</p>
       </section>
       <section class="panel" aria-label="Payment awaiting state">
         <div class="panel-title"><span class="step">2</span>Awaiting payment</div>
         <div class="phone"><div class="screen payment">
-          <div class="top" style="margin:-15px -16px 0"><span class="crumb">rachelshandicrafts.com</span><span class="chevron">›</span><strong>POS</strong><span class="status-dot"></span></div>
+          <div class="top" style="margin:-15px -16px 0"><span class="crumb">rachelshandicrafts.com</span><span class="site-controls"><span class="status-dot" title="Status - opens /status"></span><span class="theme-pill" title="System / Light / Dark"><span>▭</span><span>☀</span><span>☾</span></span></span></div>
           <div class="order-heading"><div><h2>Alex</h2><p>Reference · Order #8f42…a91c</p></div><span class="badge with-icon"><span class="badge-icon" aria-hidden="true"><span class="pending-spinner"></span></span>Awaiting payment</span></div>
           <div class="payment-card">
             <div class="deadline">Send payment within 28m</div>
@@ -251,7 +257,7 @@
       <section class="panel" aria-label="Keypad with background order stack">
         <div class="panel-title"><span class="step">3</span>Keypad with order stack</div>
         <div class="phone"><div class="screen">
-          <div class="top"><span class="crumb">rachelshandicrafts.com</span><span class="chevron">›</span><strong>POS</strong><span class="status-dot"></span></div>
+          <div class="top"><span class="crumb">rachelshandicrafts.com</span><span class="site-controls"><span class="status-dot" title="Status - opens /status"></span><span class="theme-pill" title="System / Light / Dark"><span>▭</span><span>☀</span><span>☾</span></span></span></div>
           <div class="stack-strip">
             <div class="strip-heading"><strong>Background orders · 4</strong><span>View all →</span></div>
             <div class="stack-cards" role="region" aria-label="Background orders; scroll sideways" tabindex="0">
@@ -272,7 +278,7 @@
       <section class="panel" aria-label="Full page list of background orders">
         <div class="panel-title"><span class="step">4</span>Background orders list</div>
         <div class="phone"><div class="screen">
-          <div class="top"><span class="top-back">‹</span><strong>POS</strong><span class="status-dot"></span></div>
+          <div class="top"><span class="top-back">‹</span><strong>POS</strong><span class="site-controls"><span class="status-dot" title="Status - opens /status"></span><span class="theme-pill" title="System / Light / Dark"><span>▭</span><span>☀</span><span>☾</span></span></span></div>
           <div class="screen list">
             <div><h2>Background orders</h2><p class="list-subtitle">Choose an order to open.</p></div>
             <div class="search">⌕ &nbsp;Search reference or order ID</div>

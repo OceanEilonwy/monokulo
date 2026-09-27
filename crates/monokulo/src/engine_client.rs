@@ -150,6 +150,27 @@ impl EngineClient {
         parse_response(response).await
     }
 
+    /// `GET {base_url}/api/v1/admin/tenant/orders?ids=a,b,...` — the named
+    /// orders of `sk`'s tenant in one request, in the order asked; ids the
+    /// engine does not know for this tenant are left out. At most
+    /// [`MAX_ORDER_IDS_PER_REQUEST`] ids. A screen watching many orders reads
+    /// them this way so it costs one rate-limited engine request, not one per
+    /// order.
+    pub async fn list_orders_by_ids(&self, sk: &str, order_ids: &[String]) -> Result<Vec<OrderView>, EngineClientError> {
+        if order_ids.is_empty() {
+            return Ok(Vec::new());
+        }
+        let url = reqwest::Url::parse_with_params(&format!("{}/api/v1/admin/tenant/orders", self.base_url), [("ids", order_ids.join(","))])
+            .map_err(|e| EngineClientError::EngineError { status: reqwest::StatusCode::BAD_REQUEST, message: e.to_string() })?;
+        let response = self
+            .http
+            .get(url)
+            .bearer_auth(sk)
+            .send()
+            .await?;
+        parse_response(response).await
+    }
+
     /// `GET {base_url}/api/v1/admin/tenant/orders/{order_id}` — fetches one
     /// order's full detail (WBS 1.3.3). The engine returns its own `404` for
     /// an unknown `order_id` or one belonging to a different tenant —
@@ -357,6 +378,9 @@ async fn parse_response<T: serde::de::DeserializeOwned>(response: reqwest::Respo
     let response = check_status(response).await?;
     Ok(response.json::<T>().await?)
 }
+
+/// The engine's own cap on ids per [`EngineClient::list_orders_by_ids`] call.
+pub const MAX_ORDER_IDS_PER_REQUEST: usize = 100;
 
 #[derive(Debug, thiserror::Error)]
 pub enum EngineClientError {

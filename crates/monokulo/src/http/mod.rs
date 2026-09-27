@@ -428,6 +428,9 @@ pub enum ApiError {
     /// admin-only route has a perfectly valid session, they just aren't
     /// allowed here, which is exactly what `403` (not `401`) means.
     Forbidden,
+    /// The engine refused (rate limit) or could not be reached; worth
+    /// retrying, unlike `Internal`.
+    EngineUnavailable,
     Internal,
 }
 
@@ -439,6 +442,10 @@ impl IntoResponse for ApiError {
             ApiError::BadRequest(message) => (StatusCode::BAD_REQUEST, message),
             ApiError::NotFound => (StatusCode::NOT_FOUND, "not found".to_string()),
             ApiError::Forbidden => (StatusCode::FORBIDDEN, "forbidden".to_string()),
+            ApiError::EngineUnavailable => (
+                StatusCode::SERVICE_UNAVAILABLE,
+                "The payment engine is busy or unreachable. Try again in a moment.".to_string(),
+            ),
             ApiError::Internal => (StatusCode::INTERNAL_SERVER_ERROR, "internal error".to_string()),
         };
         (status, Json(json!({ "error": message }))).into_response()

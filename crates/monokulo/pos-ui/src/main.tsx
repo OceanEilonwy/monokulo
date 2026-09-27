@@ -2,7 +2,7 @@ import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js';
 import { render } from '@solidjs/web';
 import { StatusBadge, StatusIcon, StatusSymbols, stateOf, statusName } from './status';
 import { addressFromQr, decodeImageFile, looksLikeAddress, scanCamera } from './refund';
-import { applyTheme, currentTheme, nextTheme, type Theme } from './theme';
+import { applyTheme, type Theme } from './theme';
 import './pos.css';
 
 type Order = {
@@ -76,15 +76,25 @@ const post = (url: string, value?: unknown) => json<void>(url, {
 const [now, setNow] = createSignal(Math.floor(Date.now() / 1000));
 window.setInterval(() => setNow(Math.floor(Date.now() / 1000)), 15000);
 
-function ThemeButton() {
-  const [theme, setTheme] = createSignal<Theme>(currentTheme());
-  const names: Record<Theme, string> = { system: 'System', light: 'Light', dark: 'Dark' };
-  return <button class="pos-theme" type="button" aria-label={`Theme: ${names[theme()]}. Switch to ${names[nextTheme(theme())]}`}
-    title={`Theme: ${names[theme()]}`} onClick={() => { const next = nextTheme(theme()); setTheme(next); void applyTheme(next); }}>
-    <Show when={theme() === 'system'}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><circle cx="12" cy="12" r="8"/><path d="M12 4a8 8 0 0 1 0 16Z" fill="currentColor"/></svg></Show>
-    <Show when={theme() === 'light'}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4"/></svg></Show>
-    <Show when={theme() === 'dark'}><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"><path d="M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z"/></svg></Show>
-  </button>;
+/** Moves the site's own status indicator and theme toggle (rendered by
+ * the server into #pos-site-controls) into the top bar, and makes the
+ * toggle apply a theme in place instead of reloading the terminal. */
+function adoptSiteControls(slot: HTMLElement) {
+  const controls = document.getElementById('pos-site-controls');
+  if (!controls) return;
+  const toggle = controls.querySelector<HTMLElement>('.theme-toggle');
+  const form = controls.querySelector<HTMLFormElement>('.nav-theme-form');
+  form?.addEventListener('submit', event => {
+    const button = (event as SubmitEvent).submitter as HTMLButtonElement | null;
+    const theme = button?.value as Theme | undefined;
+    if (!theme || !toggle) return;
+    event.preventDefault();
+    toggle.className = `theme-toggle theme-toggle-${theme}`;
+    toggle.querySelectorAll('button[name="theme"]').forEach(b => b.setAttribute('aria-pressed', String((b as HTMLButtonElement).value === theme)));
+    void applyTheme(theme);
+  });
+  slot.append(...Array.from(controls.children));
+  controls.remove();
 }
 
 /** Sketch 2's payment card: what the customer pays, where, and where a
@@ -343,7 +353,10 @@ function App() {
     if (!ids.length) { setOffline(false); return; }
     const source = new EventSource(`${api}/events?orders=${ids.map(encodeURIComponent).join(',')}`);
     stream = source;
-    source.addEventListener('open', () => { if (stream !== source) return; window.clearTimeout(lostTimer); setOffline(false); void refreshStatuses(); });
+    // The stream sends every watched order's status when it connects, so
+    // opening it needs no per-order reads of its own (the engine
+    // rate-limits each store).
+    source.addEventListener('open', () => { if (stream !== source) return; window.clearTimeout(lostTimer); setOffline(false); });
     source.addEventListener('status', event => {
       if (stream !== source) return;
       try {
@@ -358,10 +371,6 @@ function App() {
       window.clearTimeout(lostTimer);
       lostTimer = window.setTimeout(() => setOffline(true), 6000);
     });
-  }
-  async function refreshStatuses() {
-    const results = await Promise.allSettled(watchedIds().map(loadOrder));
-    if (results.some(r => r.status === 'rejected')) setOffline(true);
   }
   function resetKeypad() { setDigits('0'); setReference(''); setActiveId(null); setScreen('keypad'); setError(''); }
   function pushDigit(d: string) { setDigits(value => (value + d).slice(-(config.decimals + 9)).replace(/^0+(?=\d)/, '') || '0'); }
@@ -442,10 +451,9 @@ function App() {
 
   return <><StatusSymbols/>
     <header class="pos-top">
-      <Show when={screen() === 'list'} fallback={<>
+      <Show when={screen() === 'list'} fallback={
         <a class="pos-store" href={`/dashboard/stores/${encodeURIComponent(config.connectionId)}`}>{config.storeName}</a>
-        <span class="pos-chevron" aria-hidden="true">›</span><strong>POS</strong>
-      </>}>
+      }>
         <button class="pos-back" type="button" onClick={() => { setScreen('keypad'); queueMicrotask(openStream); }} aria-label="Back to POS">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg>
         </button>
@@ -457,8 +465,7 @@ function App() {
             <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M9 6h11M9 12h11M9 18h11"/><circle cx="4.5" cy="6" r="1" fill="currentColor"/><circle cx="4.5" cy="12" r="1" fill="currentColor"/><circle cx="4.5" cy="18" r="1" fill="currentColor"/></svg>
           </button>
         </Show>
-        <ThemeButton/>
-        <span class={`pos-health ${offline() ? 'is-offline' : ''}`} role="img" aria-label={offline() ? 'Connection lost' : 'Connected'} title={offline() ? 'Connection lost' : 'Connected'}/>
+        <span class="pos-site-controls" ref={adoptSiteControls}/>
       </span>
     </header>
 

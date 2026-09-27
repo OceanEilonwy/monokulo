@@ -142,6 +142,9 @@ pub struct TestEngineHandle {
     store: scanner::store::SharedStore,
     key_custody: Arc<dyn KeyCustody>,
     wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
+    /// How many tenant admin API requests (`/api/v1/admin/tenant/...`) this
+    /// engine has received - the requests its per-token rate limit counts.
+    tenant_requests: Arc<std::sync::atomic::AtomicUsize>,
 }
 
 impl TestEngineHandle {
@@ -198,6 +201,13 @@ impl TestEngineHandle {
     /// built method per caller" reasoning as `run_scan_tick_now` above.
     pub fn store(&self) -> &scanner::store::SharedStore {
         &self.store
+    }
+
+    /// Tenant admin API requests received so far, including rate-limited
+    /// ones - for a caller asserting how many engine requests its own work
+    /// costs against the engine's per-store rate limit.
+    pub fn tenant_request_count(&self) -> usize {
+        self.tenant_requests.load(std::sync::atomic::Ordering::SeqCst)
     }
 
     /// Pays `order_id` in full, the way a real scan would record it: a
@@ -271,9 +281,19 @@ pub struct TestEngineConfig {
     /// `true` when [`TestEngineConfig::with_admin_lookup_daemon`] has been used -
     /// see that method's own doc comment.
     admin_lookup_daemon: bool,
+    /// `Some(n)` when [`TestEngineConfig::with_rate_limit`] has been used.
+    rate_limit_per_minute: Option<u32>,
 }
 
 impl TestEngineConfig {
+    /// Limits each tenant token to `per_minute` admin requests, like a
+    /// production engine (whose default is 120), instead of this harness's
+    /// effectively unlimited default.
+    pub fn with_rate_limit(mut self, per_minute: u32) -> Self {
+        self.rate_limit_per_minute = Some(per_minute);
+        self
+    }
+
     /// Starts from the same defaults `spawn_test_engine` has always used: no
     /// configured networks, no exchange rates.
     pub fn new() -> Self {
@@ -458,7 +478,7 @@ impl TestEngineConfig {
             key_custody: key_custody.clone(),
             key_custody_backend: key_custody_backend.to_string(),
             wallet_handles: wallet_handles.clone(),
-            admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
+            admin_rate_limiter: Arc::new(RateLimiter::new(self.rate_limit_per_minute.unwrap_or(10_000))),
             configured_networks: Arc::new(
                 self.networks.iter().copied().collect::<HashSet<Network>>(),
             ),
@@ -492,7 +512,16 @@ impl TestEngineConfig {
             // method's own doc comment).
             expired_order_grace_period_seconds: 0,
         };
-        let router = build_router(app_state, MAX_BODY_BYTES);
+        let tenant_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = tenant_requests.clone();
+        let router = build_router(app_state, MAX_BODY_BYTES).layer(axum::middleware::from_fn(
+            move |request: axum::extract::Request, next: axum::middleware::Next| {
+                if request.uri().path().starts_with("/api/v1/admin/tenant/") {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
+                next.run(request)
+            },
+        ));
 
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
@@ -585,6 +614,7 @@ impl TestEngineConfig {
             store,
             key_custody,
             wallet_handles,
+            tenant_requests,
         }
     }
 }

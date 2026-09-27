@@ -120,22 +120,39 @@ test('real POS payment card copies the address and saves a refund address', asyn
   await expect(page.locator('.pos-refund-state')).toHaveAttribute('aria-label', 'Refund address saved');
 });
 
-test('real POS theme toggle switches and remembers light and dark', async ({ page }) => {
+test('real POS uses the site theme toggle, applies it in place and remembers it', async ({ page }) => {
   await page.goto(posUrl());
-  const toggle = page.locator('.pos-theme');
-  await expect(toggle).toHaveAttribute('title', 'Theme: System');
-  await toggle.click();
+  const toggle = page.locator('.pos-top .theme-toggle');
+  await expect(toggle).toHaveClass(/theme-toggle-system/);
+  await page.getByRole('button', { name: 'Light theme' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'light');
-  await toggle.click();
+  await expect(toggle).toHaveClass(/theme-toggle-light/);
+  // Applied in place: the terminal is not reloaded, so the order on screen stays.
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  await page.getByRole('button', { name: 'Dark theme' }).click();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  await expect(page.getByRole('button', { name: 'Dark theme' })).toHaveAttribute('aria-pressed', 'true');
   const paper = await page.evaluate(() => getComputedStyle(document.getElementById('pos-root')).backgroundColor);
   expect(paper).toBe('rgb(30, 30, 30)');
   await page.waitForTimeout(300);
   await page.reload();
   await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
-  await expect(page.locator('.pos-theme')).toHaveAttribute('title', 'Theme: Dark');
-  await page.locator('.pos-theme').click();
+  await expect(toggle).toHaveClass(/theme-toggle-dark/);
+  await page.getByRole('button', { name: 'System theme' }).click();
   await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
+});
+
+test('real POS header links back to the store and shows the site status indicator', async ({ page }) => {
+  await page.route('**/status/summary', route => route.fulfill({ json: { healthy: true } }));
+  await page.goto(posUrl());
+  const top = page.locator('.pos-top');
+  await expect(top.locator('.pos-store')).toHaveAttribute('href', `/dashboard/stores/${fixture.connection_id}`);
+  await expect(top).not.toContainText('POS');
+  const status = top.locator('#status-indicator');
+  await expect(status).toHaveAttribute('href', '/status');
+  await expect(status.locator('.status-dot')).toHaveClass(/status-dot-ok/);
+  await status.click();
+  await expect(page).toHaveURL(/\/status$/);
 });
 
 test('real dashboard health indicator follows healthy and unavailable polls', async ({ page }) => {

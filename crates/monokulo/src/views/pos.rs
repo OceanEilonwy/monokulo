@@ -4,7 +4,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout_bare_with_head, PageChrome};
+use super::{layout_bare_with_head, status_indicator, theme_toggle, PageChrome};
 
 pub struct PosViewModel {
     pub connection_id: String,
@@ -24,6 +24,13 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
             data-store-name=(data.display_name)
             data-currency=(data.base_currency)
             data-decimals=(data.base_currency_decimals) {}
+        // The site's own status indicator and theme toggle, rendered here so
+        // the POS uses exactly the controls every other page does; the POS
+        // app moves them into its top bar.
+        div id="pos-site-controls" hidden {
+            (status_indicator(chrome.health, "pos-status-link", false))
+            (theme_toggle(chrome))
+        }
         noscript { p class="error" { "POS requires JavaScript. Use Create an order on the store page instead." } }
         script type="module" src="/static/pos-app.js" {}
     };

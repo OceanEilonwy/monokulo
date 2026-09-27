@@ -2273,14 +2273,7 @@ function ui(e) {
 }
 //#endregion
 //#region src/theme.ts
-function di() {
-	let e = document.documentElement.dataset.theme;
-	return e === "light" || e === "dark" ? e : "system";
-}
-function fi(e) {
-	return e === "system" ? "light" : e === "light" ? "dark" : "system";
-}
-async function pi(e) {
+async function di(e) {
 	e === "system" ? delete document.documentElement.dataset.theme : document.documentElement.dataset.theme = e;
 	let t = new URLSearchParams({
 		theme: e,
@@ -2299,45 +2292,45 @@ async function pi(e) {
 }
 //#endregion
 //#region src/main.tsx
-var mi = /* @__PURE__ */ q("<svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=1.8><circle cx=12 cy=12 r=8></circle><path d=\"M12 4a8 8 0 0 1 0 16Z\"fill=currentColor>"), hi = /* @__PURE__ */ q("<svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=1.8 stroke-linecap=round><circle cx=12 cy=12 r=4></circle><path d=\"M12 2.5v2M12 19.5v2M2.5 12h2M19.5 12h2M5.3 5.3l1.4 1.4M17.3 17.3l1.4 1.4M5.3 18.7l1.4-1.4M17.3 6.7l1.4-1.4\">"), gi = /* @__PURE__ */ q("<svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=1.8 stroke-linejoin=round><path d=\"M20 14.5A8 8 0 0 1 9.5 4a8 8 0 1 0 10.5 10.5Z\">"), _i = /* @__PURE__ */ q("<button class=pos-theme type=button><!><!><!>"), vi = /* @__PURE__ */ q("<p class=pos-expiry>Send payment within "), yi = /* @__PURE__ */ q("<p>"), bi = /* @__PURE__ */ q("<p class=pos-pay-caption>"), xi = /* @__PURE__ */ q("<p class=pos-pay-xmr> <span>XMR"), Si = /* @__PURE__ */ q("<p class=pos-pay-fiat>≈ <!> <!>"), Ci = /* @__PURE__ */ q("<div class=pos-qr>"), wi = /* @__PURE__ */ q("<p class=pos-quiet-label>Payment address"), Ti = /* @__PURE__ */ q("<div class=pos-address><code></code><button type=button aria-label=\"Copy payment address\">"), Ei = /* @__PURE__ */ q("<svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=3 stroke-linecap=round stroke-linejoin=round><path d=\"m5 12 5 5L19 7\">"), Di = /* @__PURE__ */ q("<span class=\"pos-spinner pos-spinner-small\">"), Oi = /* @__PURE__ */ q("<button type=button><svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=2 aria-hidden=true><path d=\"M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5M7 7h3v3H7zM14 7h3v3h-3zM7 14h3v3H7zM14 14h3v3h-3z\">"), ki = /* @__PURE__ */ q("<p class=pos-refund-message role=alert>"), Ai = /* @__PURE__ */ q("<section class=pos-pay-card aria-label=\"Payment details\"><!><!><hr><label class=pos-field-label for=pos-refund>Refund address <span>(optional)</span></label><div><input id=pos-refund type=text autocomplete=off placeholder=\"Your Monero refund address\"aria-describedby=pos-refund-note><span class=pos-refund-state role=status><!><!></span></div><div class=pos-refund-tools><button type=button><svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=2 stroke-linejoin=round aria-hidden=true><rect x=3 y=4 width=18 height=16 rx=1.5></rect><circle cx=9 cy=10 r=1.6></circle><path d=\"m3 17 5-5 4 4 3-3 6 6\"></path></svg>Choose QR image</button><input type=file accept=image/* hidden></div><video class=pos-camera autoplay playsinline muted></video><p class=pos-note id=pos-refund-note>Recorded for the merchant if a refund is needed. Refunds are not sent automatically."), ji = /* @__PURE__ */ q("<p class=pos-pay-caption>Received"), Mi = /* @__PURE__ */ q("<p class=pos-pay-fiat>for <!> <!>"), Ni = /* @__PURE__ */ q("<section><p class=pos-outcome-title></p><p></p><p class=pos-outcome-amount> XMR<!>"), Pi = /* @__PURE__ */ q("<button class=pos-back type=button aria-label=\"Back to POS\"><svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=2.2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"m15 5-7 7 7 7\">"), Fi = /* @__PURE__ */ q("<strong>POS"), Ii = /* @__PURE__ */ q("<button class=pos-orders-link type=button aria-label=\"All orders\"title=\"All orders\"><svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=2 stroke-linecap=round aria-hidden=true><path d=\"M9 6h11M9 12h11M9 18h11\"></path><circle cx=4.5 cy=6 r=1 fill=currentColor></circle><circle cx=4.5 cy=12 r=1 fill=currentColor></circle><circle cx=4.5 cy=18 r=1 fill=currentColor>"), Li = /* @__PURE__ */ q("<header class=pos-top><span class=pos-top-end><!><span role=img>"), Ri = /* @__PURE__ */ q("<section class=pos-stack aria-label=\"Background orders\"><div class=pos-stack-heading><strong>Background orders · </strong><button type=button>View all →</button></div><div class=pos-stack-scroll tabindex=0 aria-label=\"Background orders, scroll sideways\">"), zi = /* @__PURE__ */ q("<p class=pos-error role=alert>"), Bi = /* @__PURE__ */ q("<main><p aria-live=polite><span></span></p><div class=pos-keys></div><div class=pos-field><label class=pos-field-label for=pos-reference>Reference <span>(optional)</span></label><input id=pos-reference class=pos-input type=text maxlength=120 placeholder=\"E.g. customer name or note\"autocomplete=off></div><button type=button class=pos-primary>"), Vi = /* @__PURE__ */ q("<p class=pos-empty>Loading orders…"), Hi = /* @__PURE__ */ q("<p class=pos-empty>Searching orders…"), Ui = /* @__PURE__ */ q("<p class=pos-error role=alert> <button type=button class=pos-link>Retry"), Wi = /* @__PURE__ */ q("<p class=pos-empty>"), Gi = /* @__PURE__ */ q("<button type=button class=pos-load-more>Load more orders"), Ki = /* @__PURE__ */ q("<main class=pos-list><h1>Background orders</h1><p class=pos-list-subtitle>Choose an order to open.</p><div class=pos-search><svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=10.5 cy=10.5 r=6></circle><path d=\"m15 15 5 5\"></path></svg><input class=pos-input type=search aria-label=\"Search reference or order ID\"placeholder=\"Search reference or order ID\"></div><div class=pos-tabs role=tablist aria-label=\"Order status\"><button type=button role=tab>Active · <!><!></button><button type=button role=tab>Finished · <!><!></button></div><!><!><!><div class=pos-list-items></div><!>"), qi = /* @__PURE__ */ q("<a class=pos-store>"), Ji = /* @__PURE__ */ q("<span class=pos-chevron aria-hidden=true>›"), Yi = /* @__PURE__ */ q("<button type=button><span class=pos-stack-ref></span><span class=pos-stack-amount>"), Xi = /* @__PURE__ */ q("<button type=button>"), Zi = /* @__PURE__ */ q("<svg viewBox=\"0 0 28 20\"fill=none stroke=currentColor stroke-width=2.4 stroke-linejoin=round aria-hidden=true><path d=\"M9 2h16a1.5 1.5 0 0 1 1.5 1.5v13A1.5 1.5 0 0 1 25 18H9l-7.5-8Z\"></path><path d=\"m13 6.5 8 7m0-7-8 7\"stroke-linecap=round>"), Qi = /* @__PURE__ */ q("<button type=button class=pos-primary>Background order"), $i = /* @__PURE__ */ q("<button type=button class=pos-cancel>Cancel order"), ea = /* @__PURE__ */ q("<p class=pos-action-hint>Background keeps this payment open · Cancel asks for confirmation"), ta = /* @__PURE__ */ q("<main class=pos-payment><div class=pos-order-heading><div><h1></h1><p>Order <!></p></div></div><!><!><!>"), na = /* @__PURE__ */ q("<main class=pos-payment><p class=pos-loading>Loading order…"), ra = /* @__PURE__ */ q("<button type=button class=pos-primary>New order"), ia = /* @__PURE__ */ q("<p class=pos-action-hint>Background keeps this payment open while you serve the next customer"), aa = /* @__PURE__ */ q("<article class=pos-order-card><div class=pos-order-card-head><div><h2></h2><p></p></div></div><p class=pos-order-sum> <span></span></p><div class=pos-order-foot><small></small><button type=button class=pos-link>Open →"), oa = document.getElementById("pos-root");
-if (!oa) throw Error("POS root missing");
+var fi = /* @__PURE__ */ q("<p class=pos-expiry>Send payment within "), pi = /* @__PURE__ */ q("<p>"), mi = /* @__PURE__ */ q("<p class=pos-pay-caption>"), hi = /* @__PURE__ */ q("<p class=pos-pay-xmr> <span>XMR"), gi = /* @__PURE__ */ q("<p class=pos-pay-fiat>≈ <!> <!>"), _i = /* @__PURE__ */ q("<div class=pos-qr>"), vi = /* @__PURE__ */ q("<p class=pos-quiet-label>Payment address"), yi = /* @__PURE__ */ q("<div class=pos-address><code></code><button type=button aria-label=\"Copy payment address\">"), bi = /* @__PURE__ */ q("<svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=3 stroke-linecap=round stroke-linejoin=round><path d=\"m5 12 5 5L19 7\">"), xi = /* @__PURE__ */ q("<span class=\"pos-spinner pos-spinner-small\">"), Si = /* @__PURE__ */ q("<button type=button><svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=2 aria-hidden=true><path d=\"M3 8V3h5M16 3h5v5M21 16v5h-5M8 21H3v-5M7 7h3v3H7zM14 7h3v3h-3zM7 14h3v3H7zM14 14h3v3h-3z\">"), Ci = /* @__PURE__ */ q("<p class=pos-refund-message role=alert>"), wi = /* @__PURE__ */ q("<section class=pos-pay-card aria-label=\"Payment details\"><!><!><hr><label class=pos-field-label for=pos-refund>Refund address <span>(optional)</span></label><div><input id=pos-refund type=text autocomplete=off placeholder=\"Your Monero refund address\"aria-describedby=pos-refund-note><span class=pos-refund-state role=status><!><!></span></div><div class=pos-refund-tools><button type=button><svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=2 stroke-linejoin=round aria-hidden=true><rect x=3 y=4 width=18 height=16 rx=1.5></rect><circle cx=9 cy=10 r=1.6></circle><path d=\"m3 17 5-5 4 4 3-3 6 6\"></path></svg>Choose QR image</button><input type=file accept=image/* hidden></div><video class=pos-camera autoplay playsinline muted></video><p class=pos-note id=pos-refund-note>Recorded for the merchant if a refund is needed. Refunds are not sent automatically."), Ti = /* @__PURE__ */ q("<p class=pos-pay-caption>Received"), Ei = /* @__PURE__ */ q("<p class=pos-pay-fiat>for <!> <!>"), Di = /* @__PURE__ */ q("<section><p class=pos-outcome-title></p><p></p><p class=pos-outcome-amount> XMR<!>"), Oi = /* @__PURE__ */ q("<button class=pos-back type=button aria-label=\"Back to POS\"><svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=2.2 stroke-linecap=round stroke-linejoin=round aria-hidden=true><path d=\"m15 5-7 7 7 7\">"), ki = /* @__PURE__ */ q("<strong>POS"), Ai = /* @__PURE__ */ q("<button class=pos-orders-link type=button aria-label=\"All orders\"title=\"All orders\"><svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=2 stroke-linecap=round aria-hidden=true><path d=\"M9 6h11M9 12h11M9 18h11\"></path><circle cx=4.5 cy=6 r=1 fill=currentColor></circle><circle cx=4.5 cy=12 r=1 fill=currentColor></circle><circle cx=4.5 cy=18 r=1 fill=currentColor>"), ji = /* @__PURE__ */ q("<header class=pos-top><span class=pos-top-end><span class=pos-site-controls>"), Mi = /* @__PURE__ */ q("<section class=pos-stack aria-label=\"Background orders\"><div class=pos-stack-heading><strong>Background orders · </strong><button type=button>View all →</button></div><div class=pos-stack-scroll tabindex=0 aria-label=\"Background orders, scroll sideways\">"), Ni = /* @__PURE__ */ q("<p class=pos-error role=alert>"), Pi = /* @__PURE__ */ q("<main><p aria-live=polite><span></span></p><div class=pos-keys></div><div class=pos-field><label class=pos-field-label for=pos-reference>Reference <span>(optional)</span></label><input id=pos-reference class=pos-input type=text maxlength=120 placeholder=\"E.g. customer name or note\"autocomplete=off></div><button type=button class=pos-primary>"), Fi = /* @__PURE__ */ q("<p class=pos-empty>Loading orders…"), Ii = /* @__PURE__ */ q("<p class=pos-empty>Searching orders…"), Li = /* @__PURE__ */ q("<p class=pos-error role=alert> <button type=button class=pos-link>Retry"), Ri = /* @__PURE__ */ q("<p class=pos-empty>"), zi = /* @__PURE__ */ q("<button type=button class=pos-load-more>Load more orders"), Bi = /* @__PURE__ */ q("<main class=pos-list><h1>Background orders</h1><p class=pos-list-subtitle>Choose an order to open.</p><div class=pos-search><svg viewBox=\"0 0 24 24\"fill=none stroke=currentColor stroke-width=2 stroke-linecap=round aria-hidden=true><circle cx=10.5 cy=10.5 r=6></circle><path d=\"m15 15 5 5\"></path></svg><input class=pos-input type=search aria-label=\"Search reference or order ID\"placeholder=\"Search reference or order ID\"></div><div class=pos-tabs role=tablist aria-label=\"Order status\"><button type=button role=tab>Active · <!><!></button><button type=button role=tab>Finished · <!><!></button></div><!><!><!><div class=pos-list-items></div><!>"), Vi = /* @__PURE__ */ q("<a class=pos-store>"), Hi = /* @__PURE__ */ q("<button type=button><span class=pos-stack-ref></span><span class=pos-stack-amount>"), Ui = /* @__PURE__ */ q("<button type=button>"), Wi = /* @__PURE__ */ q("<svg viewBox=\"0 0 28 20\"fill=none stroke=currentColor stroke-width=2.4 stroke-linejoin=round aria-hidden=true><path d=\"M9 2h16a1.5 1.5 0 0 1 1.5 1.5v13A1.5 1.5 0 0 1 25 18H9l-7.5-8Z\"></path><path d=\"m13 6.5 8 7m0-7-8 7\"stroke-linecap=round>"), Gi = /* @__PURE__ */ q("<button type=button class=pos-primary>Background order"), Ki = /* @__PURE__ */ q("<button type=button class=pos-cancel>Cancel order"), qi = /* @__PURE__ */ q("<p class=pos-action-hint>Background keeps this payment open · Cancel asks for confirmation"), Ji = /* @__PURE__ */ q("<main class=pos-payment><div class=pos-order-heading><div><h1></h1><p>Order <!></p></div></div><!><!><!>"), Yi = /* @__PURE__ */ q("<main class=pos-payment><p class=pos-loading>Loading order…"), Xi = /* @__PURE__ */ q("<button type=button class=pos-primary>New order"), Zi = /* @__PURE__ */ q("<p class=pos-action-hint>Background keeps this payment open while you serve the next customer"), Qi = /* @__PURE__ */ q("<article class=pos-order-card><div class=pos-order-card-head><div><h2></h2><p></p></div></div><p class=pos-order-sum> <span></span></p><div class=pos-order-foot><small></small><button type=button class=pos-link>Open →"), $i = document.getElementById("pos-root");
+if (!$i) throw Error("POS root missing");
 var Q = {
-	connectionId: oa.dataset.connectionId || "",
-	publicKey: oa.dataset.publicKey || "",
-	currency: oa.dataset.currency || "AUD",
-	decimals: Number(oa.dataset.decimals || "2"),
-	storeName: oa.dataset.storeName || "Store"
-}, sa = `/dashboard/stores/${encodeURIComponent(Q.connectionId)}/pos`, $ = (e) => !!e.cancelled_at || [
+	connectionId: $i.dataset.connectionId || "",
+	publicKey: $i.dataset.publicKey || "",
+	currency: $i.dataset.currency || "AUD",
+	decimals: Number($i.dataset.decimals || "2"),
+	storeName: $i.dataset.storeName || "Store"
+}, ea = `/dashboard/stores/${encodeURIComponent(Q.connectionId)}/pos`, $ = (e) => !!e.cancelled_at || [
 	"paid",
 	"overpaid",
 	"expired"
 ].includes(e.status);
-function ca(e) {
+function ta(e) {
 	let t = e.replace(/^order_/, "");
 	return t.length <= 10 ? `#${t}` : `#${t.slice(0, 4)}…${t.slice(-4)}`;
 }
-var la = (e) => e.merchant_order_id || ca(e.order_id), ua = (e) => e.includes(".") ? e.replace(/0+$/, "").replace(/\.$/, "") : e, da = (e) => {
+var na = (e) => e.merchant_order_id || ta(e.order_id), ra = (e) => e.includes(".") ? e.replace(/0+$/, "").replace(/\.$/, "") : e, ia = (e) => {
 	let t = e.padStart(Q.decimals + 1, "0");
 	return Q.decimals ? `${t.slice(0, -Q.decimals) || "0"}.${t.slice(-Q.decimals)}` : t;
-}, fa = (e) => {
-	let [t, n] = da(e).split("."), r = t.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
+}, aa = (e) => {
+	let [t, n] = ia(e).split("."), r = t.replace(/\B(?=(\d{3})+(?!\d))/g, ",");
 	return n === void 0 ? r : `${r}.${n}`;
 };
-function pa(e, t) {
+function oa(e, t) {
 	let n = Math.max(0, e - t), r = Math.floor(n / 86400), i = Math.floor(n % 86400 / 3600), a = Math.floor(n % 3600 / 60);
 	return r ? i ? `${r}d ${i}h` : `${r}d` : i ? a ? `${i}h ${a}m` : `${i}h` : a ? `${a}m` : "less than a minute";
 }
-var ma = (e) => (/* @__PURE__ */ new Date(e * 1e3)).toLocaleTimeString([], {
+var sa = (e) => (/* @__PURE__ */ new Date(e * 1e3)).toLocaleTimeString([], {
 	hour: "2-digit",
 	minute: "2-digit",
 	hourCycle: "h23"
 });
-function ha(e) {
+function ca(e) {
 	if (e.length < 40) return e;
 	let t = Math.floor(e.length / 2);
 	return `${e.slice(0, 5)}…${e.slice(t - 9, t + 9)}…${e.slice(-4)}`;
 }
-async function ga(e, t) {
+async function la(e, t) {
 	let n = await fetch(e, t);
 	if (!n.ok) {
 		let e = await n.json().catch(() => ({}));
@@ -2345,51 +2338,22 @@ async function ga(e, t) {
 	}
 	return n.status === 204 ? void 0 : n.json();
 }
-var _a = (e, t) => ga(e, {
+var ua = (e, t) => la(e, {
 	method: "POST",
 	headers: t === void 0 ? void 0 : { "content-type": "application/json" },
 	body: t === void 0 ? void 0 : JSON.stringify(t)
-}), [va, ya] = V(Math.floor(Date.now() / 1e3));
-window.setInterval(() => ya(Math.floor(Date.now() / 1e3)), 15e3);
-function ba() {
-	let [e, t] = V(di()), n = {
-		system: "System",
-		light: "Light",
-		dark: "Dark"
-	};
-	var r = _i(), i = r.firstChild, a = i.nextSibling, o = a.nextSibling;
-	return r._$$click = () => {
-		let n = fi(e());
-		t(n), pi(n);
-	}, X(r, H(U, {
-		get when() {
-			return e() === "system";
-		},
-		get children() {
-			return mi();
-		}
-	}), i), X(r, H(U, {
-		get when() {
-			return e() === "light";
-		},
-		get children() {
-			return hi();
-		}
-	}), a), X(r, H(U, {
-		get when() {
-			return e() === "dark";
-		},
-		get children() {
-			return gi();
-		}
-	}), o), G(() => ({
-		e: `Theme: ${n[e()]}. Switch to ${n[fi(e())]}`,
-		t: `Theme: ${n[e()]}`
-	}), ({ e, t }, n) => {
-		e !== n?.e && J(r, "aria-label", e), t !== n?.t && J(r, "title", t);
-	}), r;
+}), [da, fa] = V(Math.floor(Date.now() / 1e3));
+window.setInterval(() => fa(Math.floor(Date.now() / 1e3)), 15e3);
+function pa(e) {
+	let t = document.getElementById("pos-site-controls");
+	if (!t) return;
+	let n = t.querySelector(".theme-toggle");
+	t.querySelector(".nav-theme-form")?.addEventListener("submit", (e) => {
+		let t = e.submitter?.value;
+		t && n && (e.preventDefault(), n.className = `theme-toggle theme-toggle-${t}`, n.querySelectorAll("button[name=\"theme\"]").forEach((e) => e.setAttribute("aria-pressed", String(e.value === t))), di(t));
+	}), e.append(...Array.from(t.children)), t.remove();
 }
-function xa(e) {
+function ma(e) {
 	let t = $n(() => e.order.qr_svg), [n, r] = V(!1), [i, a] = V(e.order.refund_address || ""), [o, s] = V(e.order.refund_address || ""), [c, l] = V(e.order.refund_address ? "saved" : "idle"), [u, d] = V(""), [f, p] = V(!1), m, h, g = null, _;
 	Tn(() => {
 		g?.(), window.clearTimeout(_);
@@ -2400,7 +2364,7 @@ function xa(e) {
 			case "double-spend": return t.error || "Double spend detected. Do not treat this payment as paid.";
 			case "unconfirmed": return "Payment seen. Waiting for its first confirmation.";
 			case "confirming": return `Payment seen · ${t.confirmations} of ${t.confirmations_required} confirmations`;
-			case "partial": return `${ua(t.received_xmr || "0")} of ${ua(t.xmr_amount)} XMR received`;
+			case "partial": return `${ra(t.received_xmr || "0")} of ${ra(t.xmr_amount)} XMR received`;
 			default: return "";
 		}
 	};
@@ -2481,21 +2445,21 @@ function xa(e) {
 			h && (h.value = "");
 		}
 	}
-	var C = Ai(), w = C.firstChild, T = w.nextSibling, E = T.nextSibling, D = E.nextSibling.nextSibling, O = D.firstChild, ie = O.nextSibling, ae = ie.firstChild, oe = ae.nextSibling, k = D.nextSibling, A = k.firstChild, se = A.nextSibling, ce = k.nextSibling, le = ce.nextSibling;
+	var C = wi(), w = C.firstChild, T = w.nextSibling, E = T.nextSibling, D = E.nextSibling.nextSibling, O = D.firstChild, ie = O.nextSibling, ae = ie.firstChild, oe = ae.nextSibling, k = D.nextSibling, A = k.firstChild, se = A.nextSibling, ce = k.nextSibling, le = ce.nextSibling;
 	return X(C, H(U, {
 		get when() {
 			return v();
 		},
 		get children() {
-			var t = vi();
-			return t.firstChild, X(t, () => pa(e.order.expires_at, va()), null), t;
+			var t = fi();
+			return t.firstChild, X(t, () => oa(e.order.expires_at, da()), null), t;
 		}
 	}), w), X(C, H(U, {
 		get when() {
 			return b();
 		},
 		get children() {
-			var t = yi();
+			var t = pi();
 			return X(t, b), G(() => `pos-pay-detail state-${Z(e.order)}`, (e, n) => {
 				Y(t, e, n);
 			}), t;
@@ -2506,17 +2470,17 @@ function xa(e) {
 		},
 		get fallback() {
 			return [
-				ji(),
+				Ti(),
 				(() => {
-					var t = xi(), n = t.firstChild;
-					return X(t, () => ua(e.order.received_xmr || e.order.xmr_amount), n), t;
+					var t = hi(), n = t.firstChild;
+					return X(t, () => ra(e.order.received_xmr || e.order.xmr_amount), n), t;
 				})(),
 				H(U, {
 					get when() {
 						return e.order.currency !== "XMR";
 					},
 					get children() {
-						var t = Mi(), n = t.firstChild.nextSibling, r = n.nextSibling.nextSibling;
+						var t = Ei(), n = t.firstChild.nextSibling, r = n.nextSibling.nextSibling;
 						return X(t, () => e.order.amount, n), X(t, () => e.order.currency, r), t;
 					}
 				})
@@ -2525,19 +2489,19 @@ function xa(e) {
 		get children() {
 			return [
 				(() => {
-					var e = bi();
+					var e = mi();
 					return X(e, () => y() ? "Send the remaining amount" : "Send exactly this amount"), e;
 				})(),
 				(() => {
-					var t = xi(), n = t.firstChild;
-					return X(t, () => ua(y() && e.order.remaining_xmr || e.order.xmr_amount), n), t;
+					var t = hi(), n = t.firstChild;
+					return X(t, () => ra(y() && e.order.remaining_xmr || e.order.xmr_amount), n), t;
 				})(),
 				H(U, {
 					get when() {
 						return K(() => e.order.currency !== "XMR")() && !y();
 					},
 					get children() {
-						var t = Si(), n = t.firstChild.nextSibling, r = n.nextSibling.nextSibling;
+						var t = gi(), n = t.firstChild.nextSibling, r = n.nextSibling.nextSibling;
 						return X(t, () => e.order.amount, n), X(t, () => e.order.currency, r), t;
 					}
 				}),
@@ -2546,16 +2510,16 @@ function xa(e) {
 						return t();
 					},
 					get children() {
-						var e = Ci();
+						var e = _i();
 						return G(() => t(), (t) => {
 							e.innerHTML = t;
 						}), e;
 					}
 				}),
-				wi(),
+				vi(),
 				(() => {
-					var t = Ti(), r = t.firstChild, i = r.nextSibling;
-					return X(r, () => ha(e.order.address)), i._$$click = () => void ee(), X(i, () => n() ? "Copied" : "Copy"), G(() => e.order.address, (e) => {
+					var t = yi(), r = t.firstChild, i = r.nextSibling;
+					return X(r, () => ca(e.order.address)), i._$$click = () => void ee(), X(i, () => n() ? "Copied" : "Copy"), G(() => e.order.address, (e) => {
 						J(r, "title", e);
 					}), t;
 				})()
@@ -2566,21 +2530,21 @@ function xa(e) {
 			return c() === "saved";
 		},
 		get children() {
-			return Ei();
+			return bi();
 		}
 	}), ae), X(ie, H(U, {
 		get when() {
 			return c() === "saving";
 		},
 		get children() {
-			return Di();
+			return xi();
 		}
 	}), oe), X(k, H(U, {
 		get when() {
 			return navigator.mediaDevices?.getUserMedia;
 		},
 		get children() {
-			var e = Oi();
+			var e = Si();
 			return e.firstChild, e._$$click = () => void x(), X(e, () => f() ? "Stop camera" : "Scan refund QR", null), e;
 		}
 	}), A), A._$$click = () => h?.click(), se.addEventListener("change", (e) => void S(e.currentTarget.files?.[0])), Dr(() => (e) => {
@@ -2592,7 +2556,7 @@ function xa(e) {
 			return u();
 		},
 		get children() {
-			var e = ki();
+			var e = Ci();
 			return X(e, u), e;
 		}
 	}), le), G(() => ({
@@ -2605,15 +2569,15 @@ function xa(e) {
 		Y(D, e, a?.e), O.value = t ?? "", n !== a?.a && J(O, "aria-invalid", n), r !== a?.o && J(ie, "aria-label", r), i !== a?.i && J(ce, "hidden", i);
 	}), C;
 }
-function Sa(e) {
+function ha(e) {
 	let t = () => {
 		let t = e.order;
 		return t.cancelled_at ? t.status === "pending" ? "This order was cancelled. If money still arrives at its address, it will show in the order for review." : "Payment activity arrived after this order was cancelled. Review it in the order details." : t.error ? t.error : t.status === "paid" ? "Payment received and confirmed." : t.status === "expired" ? "This order expired before it was paid." : $r[Z(t)] || t.status;
 	};
-	var n = Ni(), r = n.firstChild, i = r.nextSibling, a = i.nextSibling, o = a.firstChild, s = o.nextSibling;
+	var n = Di(), r = n.firstChild, i = r.nextSibling, a = i.nextSibling, o = a.firstChild, s = o.nextSibling;
 	return X(n, H(ni, { get order() {
 		return e.order;
-	} }), r), X(r, () => $r[Z(e.order)]), X(i, t), X(a, () => ua(e.order.xmr_amount), o), X(a, H(U, {
+	} }), r), X(r, () => $r[Z(e.order)]), X(i, t), X(a, () => ra(e.order.xmr_amount), o), X(a, H(U, {
 		get when() {
 			return e.order.currency !== "XMR";
 		},
@@ -2629,8 +2593,8 @@ function Sa(e) {
 		Y(n, e, t);
 	}), n;
 }
-function Ca() {
-	let [e, t] = V([]), [n, r] = V("keypad"), [i, a] = V(null), [o, s] = V("0"), [c, l] = V(""), [u, d] = V(""), [f, p] = V(!1), [m, h] = V(!0), [g, _] = V(!1), [v, y] = V(""), [b, ee] = V([]), [te, ne] = V(0), [re, x] = V(0), [S, C] = V(!1), [w, T] = V("active"), [E, D] = V(0), [O, ie] = V(0), [ae, oe] = V(0), k = $n(() => e().find((e) => e.order_id === i()) || null), A = $n(() => e().filter((e) => !$(e) && e.order_id !== i())), se = $n(() => e().filter((e) => !$(e)).length), ce = $n(() => e().filter($).length), le = $n(() => (v().trim() ? b() : e()).filter((e) => w() === "active" !== $(e))), j = $n(() => fa(o())), M = null, ue, de, fe = 0, pe, me = null;
+function ga() {
+	let [e, t] = V([]), [n, r] = V("keypad"), [i, a] = V(null), [o, s] = V("0"), [c, l] = V(""), [u, d] = V(""), [f, p] = V(!1), [m, h] = V(!0), [g, _] = V(!1), [v, y] = V(""), [b, ee] = V([]), [te, ne] = V(0), [re, x] = V(0), [S, C] = V(!1), [w, T] = V("active"), [E, D] = V(0), [O, ie] = V(0), [ae, oe] = V(0), k = $n(() => e().find((e) => e.order_id === i()) || null), A = $n(() => e().filter((e) => !$(e) && e.order_id !== i())), se = $n(() => e().filter((e) => !$(e)).length), ce = $n(() => e().filter($).length), le = $n(() => (v().trim() ? b() : e()).filter((e) => w() === "active" !== $(e))), j = $n(() => aa(o())), M = null, ue, de, fe = 0, pe, me = null;
 	function he(e, t) {
 		return e.updated_at !== void 0 && t.updated_at !== void 0 && t.updated_at < e.updated_at ? e : {
 			...e,
@@ -2649,7 +2613,7 @@ function Ca() {
 		C(!0);
 		let r = e ? re() : 0;
 		try {
-			let i = await ga(`${sa}/orders?offset=${r}&limit=40&search=${encodeURIComponent(t)}`);
+			let i = await la(`${ea}/orders?offset=${r}&limit=40&search=${encodeURIComponent(t)}`);
 			if (n !== fe) return;
 			ne(i.total), x(r + i.orders.length), ee((t) => e ? [...t, ...i.orders.filter((e) => !t.some((t) => t.order_id === e.order_id))] : i.orders), d(""), queueMicrotask(P);
 		} catch (e) {
@@ -2663,7 +2627,7 @@ function Ca() {
 	}
 	async function ve(e = !1) {
 		try {
-			let n = e ? O() : 0, o = await ga(`${sa}/orders?offset=${n}&limit=40`);
+			let n = e ? O() : 0, o = await la(`${ea}/orders?offset=${n}&limit=40`);
 			if (D(o.total), ie(n + o.orders.length), t((t) => e ? [...t, ...o.orders.filter((e) => !t.some((t) => t.order_id === e.order_id))] : o.orders.map((e) => {
 				let n = t.find((t) => t.order_id === e.order_id);
 				return n ? he(n, e) : e;
@@ -2679,7 +2643,7 @@ function Ca() {
 		}
 	}
 	async function ye(e) {
-		let t = await ga(`${sa}/orders/${encodeURIComponent(e)}`);
+		let t = await la(`${ea}/orders/${encodeURIComponent(e)}`);
 		return ge(t), t;
 	}
 	function be() {
@@ -2698,9 +2662,9 @@ function Ca() {
 			_(!1);
 			return;
 		}
-		let n = new EventSource(`${sa}/events?orders=${e.map(encodeURIComponent).join(",")}`);
+		let n = new EventSource(`${ea}/events?orders=${e.map(encodeURIComponent).join(",")}`);
 		M = n, n.addEventListener("open", () => {
-			M === n && (window.clearTimeout(ue), _(!1), xe());
+			M === n && (window.clearTimeout(ue), _(!1));
 		}), n.addEventListener("status", (e) => {
 			if (M === n) try {
 				let n = JSON.parse(e.data);
@@ -2710,29 +2674,26 @@ function Ca() {
 			M === n && (window.clearTimeout(ue), ue = window.setTimeout(() => _(!0), 6e3));
 		});
 	}
-	async function xe() {
-		(await Promise.allSettled(be().map(ye))).some((e) => e.status === "rejected") && _(!0);
-	}
-	function Se() {
+	function xe() {
 		s("0"), l(""), a(null), r("keypad"), d("");
 	}
-	function Ce(e) {
+	function Se(e) {
 		s((t) => (t + e).slice(-(Q.decimals + 9)).replace(/^0+(?=\d)/, "") || "0");
 	}
-	function we() {
+	function Ce() {
 		s((e) => e.length > 1 ? e.slice(0, -1) : "0");
 	}
-	async function Te() {
+	async function we() {
 		if (f() || /^0+$/.test(o())) return;
 		p(!0), d("");
-		let e = da(o()), t = c().trim();
+		let e = ia(o()), t = c().trim();
 		(!me || me.amount !== e || me.reference !== t) && (me = {
 			amount: e,
 			reference: t,
 			key: crypto.randomUUID()
 		});
 		try {
-			let n = await ga(`${sa}/orders`, {
+			let n = await la(`${ea}/orders`, {
 				method: "POST",
 				headers: { "content-type": "application/json" },
 				body: JSON.stringify({
@@ -2748,15 +2709,15 @@ function Ca() {
 			p(!1);
 		}
 	}
-	async function Ee() {
+	async function Te() {
 		let e = k();
 		if (e && !f()) {
 			p(!0), d("");
 			try {
-				await _a(`${sa}/orders/${encodeURIComponent(e.order_id)}/background`), ge({
+				await ua(`${ea}/orders/${encodeURIComponent(e.order_id)}/background`), ge({
 					...e,
 					backgrounded: !0
-				}), Se(), queueMicrotask(P);
+				}), xe(), queueMicrotask(P);
 			} catch (e) {
 				d(e.message);
 			} finally {
@@ -2764,12 +2725,12 @@ function Ca() {
 			}
 		}
 	}
-	async function De() {
+	async function Ee() {
 		let e = k();
-		if (e && !f() && window.confirm(`Cancel ${la(e)}? The payment address has already been issued; any later payment will still need review.`)) {
+		if (e && !f() && window.confirm(`Cancel ${na(e)}? The payment address has already been issued; any later payment will still need review.`)) {
 			p(!0), d("");
 			try {
-				await _a(`${sa}/orders/${encodeURIComponent(e.order_id)}/cancel`), await ye(e.order_id), queueMicrotask(P);
+				await ua(`${ea}/orders/${encodeURIComponent(e.order_id)}/cancel`), await ye(e.order_id), queueMicrotask(P);
 			} catch (e) {
 				d(e.message);
 			} finally {
@@ -2777,7 +2738,7 @@ function Ca() {
 			}
 		}
 	}
-	async function Oe(e) {
+	async function De(e) {
 		n() === "list" && pe && oe(pe.scrollTop), d(""), a(e.order_id), r("payment");
 		try {
 			await ye(e.order_id), queueMicrotask(P);
@@ -2785,29 +2746,29 @@ function Ca() {
 			d(e.message);
 		}
 	}
-	function ke() {
+	function Oe() {
 		r("list"), queueMicrotask(() => {
 			pe && (pe.scrollTop = ae()), P();
 		});
 	}
-	function Ae(e) {
+	function ke(e) {
 		if (n() === "keypad") {
 			if (e.target instanceof HTMLInputElement) {
-				e.key === "Enter" && Te();
+				e.key === "Enter" && we();
 				return;
 			}
-			/^[0-9]$/.test(e.key) ? Ce(e.key) : e.key === "Backspace" ? we() : e.key === "Escape" ? s("0") : e.key === "Enter" && Te();
+			/^[0-9]$/.test(e.key) ? Se(e.key) : e.key === "Backspace" ? Ce() : e.key === "Escape" ? s("0") : e.key === "Enter" && we();
 		}
 	}
-	document.addEventListener("keydown", Ae), queueMicrotask(() => {
+	document.addEventListener("keydown", ke), queueMicrotask(() => {
 		ve();
 	}), Tn(() => {
-		document.removeEventListener("keydown", Ae), M?.close(), window.clearTimeout(ue), window.clearTimeout(de);
+		document.removeEventListener("keydown", ke), M?.close(), window.clearTimeout(ue), window.clearTimeout(de);
 	});
-	let F = (e) => `${e.merchant_order_id ? "Reference · " : ""}${ca(e.order_id)} · created ${ma(e.created_at)}`, je = (e) => {
+	let Ae = (e) => `${e.merchant_order_id ? "Reference · " : ""}${ta(e.order_id)} · created ${sa(e.created_at)}`, F = (e) => {
 		if (e.cancelled_at) return e.status === "pending" ? "Cancelled before payment" : "Payment after cancellation · review";
 		switch (Z(e)) {
-			case "pending": return `Expires in ${pa(e.expires_at, va())}`;
+			case "pending": return `Expires in ${oa(e.expires_at, da())}`;
 			case "unconfirmed": return "Payment seen, not yet confirmed";
 			case "confirming": return `${e.confirmations} of ${e.confirmations_required} confirmations`;
 			case "partial": return "Waiting for remaining amount";
@@ -2821,56 +2782,46 @@ function Ca() {
 	return [
 		H(ti, {}),
 		(() => {
-			var t = Li(), i = t.firstChild, a = i.firstChild, o = a.nextSibling;
-			return X(t, H(U, {
+			var t = ji(), i = t.firstChild, a = i.firstChild;
+			X(t, H(U, {
 				get when() {
 					return n() === "list";
 				},
 				get fallback() {
-					return [
-						(() => {
-							var e = qi();
-							return Cr(e), X(e, () => Q.storeName), G(() => `/dashboard/stores/${encodeURIComponent(Q.connectionId)}`, (t) => {
-								J(e, "href", t);
-							}), e;
-						})(),
-						Ji(),
-						Fi()
-					];
+					var e = Vi();
+					return Cr(e), X(e, () => Q.storeName), G(() => `/dashboard/stores/${encodeURIComponent(Q.connectionId)}`, (t) => {
+						J(e, "href", t);
+					}), e;
 				},
 				get children() {
 					return [(() => {
-						var e = Pi();
+						var e = Oi();
 						return e._$$click = () => {
 							r("keypad"), queueMicrotask(P);
 						}, e;
-					})(), Fi()];
+					})(), ki()];
 				}
 			}), i), X(i, H(U, {
 				get when() {
 					return K(() => n() !== "list")() && e().length > 0;
 				},
 				get children() {
-					var e = Ii();
-					return e._$$click = ke, e;
+					var e = Ai();
+					return e._$$click = Oe, e;
 				}
-			}), a), X(i, H(ba, {}), o), G(() => ({
-				e: `pos-health ${g() ? "is-offline" : ""}`,
-				t: g() ? "Connection lost" : "Connected",
-				a: g() ? "Connection lost" : "Connected"
-			}), ({ e, t, a: n }, r) => {
-				Y(o, e, r?.e), t !== r?.t && J(o, "aria-label", t), n !== r?.a && J(o, "title", n);
-			}), t;
+			}), a);
+			var o = pa;
+			return typeof o == "function" || Array.isArray(o) ? Dr(() => o, a) : pa = a, t;
 		})(),
 		H(U, {
 			get when() {
 				return K(() => n() === "keypad")() && A().length > 0;
 			},
 			get children() {
-				var e = Ri(), t = e.firstChild, n = t.firstChild;
+				var e = Mi(), t = e.firstChild, n = t.firstChild;
 				n.firstChild;
 				var r = n.nextSibling, i = t.nextSibling;
-				return X(n, () => A().length, null), r._$$click = ke, i.addEventListener("wheel", (e) => {
+				return X(n, () => A().length, null), r._$$click = Oe, i.addEventListener("wheel", (e) => {
 					let t = e.currentTarget;
 					t.scrollWidth > t.clientWidth && Math.abs(e.deltaY) > Math.abs(e.deltaX) && (t.scrollLeft += e.deltaY, e.preventDefault());
 				}), X(i, H(rr, {
@@ -2878,16 +2829,16 @@ function Ca() {
 						return A();
 					},
 					children: (e) => (() => {
-						var t = Yi(), n = t.firstChild, r = n.nextSibling;
-						return t._$$click = () => void Oe(e), X(t, H(ni, {
+						var t = Hi(), n = t.firstChild, r = n.nextSibling;
+						return t._$$click = () => void De(e), X(t, H(ni, {
 							order: e,
 							get offline() {
 								return g();
 							}
-						}), n), X(n, () => la(e)), X(r, () => e.amount), G(() => ({
+						}), n), X(n, () => na(e)), X(r, () => e.amount), G(() => ({
 							e: `pos-stack-card state-${Z(e, g())}`,
-							t: `${la(e)} · ${$r[Z(e, g())]} · ${e.amount} ${e.currency}`,
-							a: `Open ${la(e)}, ${$r[Z(e, g())]}, ${e.amount} ${e.currency}`
+							t: `${na(e)} · ${$r[Z(e, g())]} · ${e.amount} ${e.currency}`,
+							a: `Open ${na(e)}, ${$r[Z(e, g())]}, ${e.amount} ${e.currency}`
 						}), ({ e, t: n, a: r }, i) => {
 							Y(t, e, i?.e), n !== i?.t && J(t, "title", n), r !== i?.a && J(t, "aria-label", r);
 						}), t;
@@ -2900,7 +2851,7 @@ function Ca() {
 				return n() === "keypad";
 			},
 			get children() {
-				var e = Bi(), t = e.firstChild, n = t.firstChild, r = t.nextSibling, i = r.nextSibling, a = i.firstChild.nextSibling, d = i.nextSibling;
+				var e = Pi(), t = e.firstChild, n = t.firstChild, r = t.nextSibling, i = r.nextSibling, a = i.firstChild.nextSibling, d = i.nextSibling;
 				return X(t, j, n), X(n, () => Q.currency), X(r, H(rr, {
 					each: [
 						"1",
@@ -2917,8 +2868,8 @@ function Ca() {
 						"⌫"
 					],
 					children: (e) => (() => {
-						var t = Xi();
-						return t._$$click = () => e === "C" ? s("0") : e === "⌫" ? we() : Ce(e), J(t, "aria-label", e === "C" ? "Clear" : e === "⌫" ? "Backspace" : e), X(t, e === "⌫" ? Zi() : e), G(() => wr(e === "C" ? "clear" : e === "⌫" ? "delete" : ""), (e, n) => {
+						var t = Ui();
+						return t._$$click = () => e === "C" ? s("0") : e === "⌫" ? Ce() : Se(e), J(t, "aria-label", e === "C" ? "Clear" : e === "⌫" ? "Backspace" : e), X(t, e === "⌫" ? Wi() : e), G(() => wr(e === "C" ? "clear" : e === "⌫" ? "delete" : ""), (e, n) => {
 							Y(t, e, n);
 						}), t;
 					})()
@@ -2927,10 +2878,10 @@ function Ca() {
 						return u();
 					},
 					get children() {
-						var e = zi();
+						var e = Ni();
 						return X(e, u), e;
 					}
-				}), d), d._$$click = () => void Te(), X(d, () => f() ? "Creating order…" : "Charge"), G(() => ({
+				}), d), d._$$click = () => void we(), X(d, () => f() ? "Creating order…" : "Charge"), G(() => ({
 					e: `pos-keypad ${A().length ? "has-stack" : ""}`,
 					t: `pos-amount len-${Math.min(4, Math.floor(j().length / 6))}`,
 					a: c(),
@@ -2950,11 +2901,11 @@ function Ca() {
 					return k();
 				},
 				get fallback() {
-					return na();
+					return Yi();
 				},
 				get children() {
-					var e = ta(), t = e.firstChild, n = t.firstChild.firstChild, r = n.nextSibling, i = r.firstChild, a = i.nextSibling, o = t.nextSibling, s = o.nextSibling, c = s.nextSibling;
-					return X(n, () => la(k())), X(r, () => k().merchant_order_id ? "Reference · " : "", i), X(r, () => ca(k().order_id), a), X(t, H(ri, {
+					var e = Ji(), t = e.firstChild, n = t.firstChild.firstChild, r = n.nextSibling, i = r.firstChild, a = i.nextSibling, o = t.nextSibling, s = o.nextSibling, c = s.nextSibling;
+					return X(n, () => na(k())), X(r, () => k().merchant_order_id ? "Reference · " : "", i), X(r, () => ta(k().order_id), a), X(t, H(ri, {
 						get order() {
 							return k();
 						},
@@ -2966,12 +2917,12 @@ function Ca() {
 							return !$(k());
 						},
 						get fallback() {
-							return H(Sa, { get order() {
+							return H(ha, { get order() {
 								return k();
 							} });
 						},
 						get children() {
-							return H(xa, { get order() {
+							return H(ma, { get order() {
 								return k();
 							} });
 						}
@@ -2980,7 +2931,7 @@ function Ca() {
 							return u();
 						},
 						get children() {
-							var e = zi();
+							var e = Ni();
 							return X(e, u), e;
 						}
 					}), s), X(e, H(U, {
@@ -2988,13 +2939,13 @@ function Ca() {
 							return !$(k());
 						},
 						get fallback() {
-							var e = ra();
-							return e._$$click = Se, e;
+							var e = Xi();
+							return e._$$click = xe, e;
 						},
 						get children() {
 							return [(() => {
-								var e = Qi();
-								return e._$$click = () => void Ee(), G(() => f(), (t) => {
+								var e = Gi();
+								return e._$$click = () => void Te(), G(() => f(), (t) => {
 									J(e, "disabled", t);
 								}), e;
 							})(), H(U, {
@@ -3002,15 +2953,15 @@ function Ca() {
 									return K(() => k().status === "pending")() && !k().error;
 								},
 								get fallback() {
-									return ia();
+									return Zi();
 								},
 								get children() {
 									return [(() => {
-										var e = $i();
-										return e._$$click = () => void De(), G(() => f(), (t) => {
+										var e = Ki();
+										return e._$$click = () => void Ee(), G(() => f(), (t) => {
 											J(e, "disabled", t);
 										}), e;
-									})(), ea()];
+									})(), qi()];
 								}
 							})];
 						}
@@ -3023,7 +2974,7 @@ function Ca() {
 				return n() === "list";
 			},
 			get children() {
-				var e = Ki(), t = e.firstChild.nextSibling.nextSibling, n = t.firstChild.nextSibling, r = t.nextSibling, i = r.firstChild, a = i.firstChild.nextSibling, o = a.nextSibling, s = i.nextSibling, c = s.firstChild.nextSibling, l = c.nextSibling, d = r.nextSibling, f = d.nextSibling, p = f.nextSibling, h = p.nextSibling, _ = h.nextSibling;
+				var e = Bi(), t = e.firstChild.nextSibling.nextSibling, n = t.firstChild.nextSibling, r = t.nextSibling, i = r.firstChild, a = i.firstChild.nextSibling, o = a.nextSibling, s = i.nextSibling, c = s.firstChild.nextSibling, l = c.nextSibling, d = r.nextSibling, f = d.nextSibling, p = f.nextSibling, h = p.nextSibling, _ = h.nextSibling;
 				return Dr(() => (e) => {
 					pe = e;
 				}, e), n._$$input = (e) => _e(e.currentTarget.value), i._$$click = () => {
@@ -3035,21 +2986,21 @@ function Ca() {
 						return m();
 					},
 					get children() {
-						return Vi();
+						return Fi();
 					}
 				}), d), X(e, H(U, {
 					get when() {
 						return S();
 					},
 					get children() {
-						return Hi();
+						return Ii();
 					}
 				}), f), X(e, H(U, {
 					get when() {
 						return u();
 					},
 					get children() {
-						var e = Ui(), t = e.firstChild, n = t.nextSibling;
+						var e = Li(), t = e.firstChild, n = t.nextSibling;
 						return X(e, u, t), n._$$click = () => void ve(), e;
 					}
 				}), p), X(e, H(U, {
@@ -3057,7 +3008,7 @@ function Ca() {
 						return K(() => !(m() || S() || u()))() ? le().length === 0 : !m() && !S() && !u();
 					},
 					get children() {
-						var e = Wi();
+						var e = Ri();
 						return X(e, (() => {
 							var e = K(() => !!v());
 							return () => e() ? "No matching orders." : `No ${w()} orders yet.`;
@@ -3068,20 +3019,20 @@ function Ca() {
 						return le();
 					},
 					children: (e) => (() => {
-						var t = aa(), n = t.firstChild, r = n.firstChild.firstChild, i = r.nextSibling, a = n.nextSibling, o = a.firstChild, s = o.nextSibling, c = a.nextSibling.firstChild, l = c.nextSibling;
-						return X(r, () => la(e)), X(i, () => F(e)), X(n, H(ri, {
+						var t = Qi(), n = t.firstChild, r = n.firstChild.firstChild, i = r.nextSibling, a = n.nextSibling, o = a.firstChild, s = o.nextSibling, c = a.nextSibling.firstChild, l = c.nextSibling;
+						return X(r, () => na(e)), X(i, () => Ae(e)), X(n, H(ri, {
 							order: e,
 							get offline() {
 								return K(() => !!g())() ? !$(e) : g();
 							}
-						}), null), X(a, () => e.amount, o), X(s, () => e.currency), X(c, () => je(e)), l._$$click = () => void Oe(e), t;
+						}), null), X(a, () => e.amount, o), X(s, () => e.currency), X(c, () => F(e)), l._$$click = () => void De(e), t;
 					})()
 				})), X(e, H(U, {
 					get when() {
 						return K(() => !!v().trim())() ? re() < te() : O() < E();
 					},
 					get children() {
-						var e = Gi();
+						var e = zi();
 						return e._$$click = () => void (v().trim() ? N(!0) : ve(!0)), e;
 					}
 				}), _), G(() => ({
@@ -3097,5 +3048,5 @@ function Ca() {
 		})
 	];
 }
-pr(() => H(Ca, {}), oa), hr(["click", "input"]);
+pr(() => H(ga, {}), $i), hr(["click", "input"]);
 //#endregion

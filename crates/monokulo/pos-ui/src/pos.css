@@ -33,8 +33,9 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
 
 /* The site stylesheet styles bare elements (headings get rules, buttons turn
    orange on hover, inputs get a thick focus outline); none of that belongs in
-   the terminal, so its own elements start from nothing. */
-#pos-root :where(h1, h2, p, button, input, label, hr, code, small) {
+   the terminal, so its own elements start from nothing. The site's own
+   status indicator and theme toggle keep the site's styling. */
+#pos-root :where(h1, h2, p, button, input, label, hr, code, small):not(:where(.pos-site-controls *)) {
   all: unset; box-sizing: border-box; font-family: inherit; color: inherit;
 }
 #pos-root :where(h1, h2, p, hr, label) { display: block; }
@@ -100,16 +101,15 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-top strong { font-weight: 800; }
   .pos-store { color: var(--muted); font-size: 11px; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
   .pos-store:hover { text-decoration: underline; }
-  .pos-chevron { color: var(--muted); font-size: 13px; }
   .pos-back { display: grid; place-items: center; width: 28px; height: 28px; margin-left: -6px; color: var(--ink); }
   .pos-back svg { width: 18px; height: 18px; }
   .pos-top-end { margin-left: auto; display: flex; align-items: center; gap: 6px; }
-  .pos-health { margin-left: 6px; }
-  .pos-orders-link, .pos-theme { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: var(--muted); }
-  .pos-orders-link:hover, .pos-theme:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 8%, transparent); }
-  .pos-orders-link svg, .pos-theme svg { width: 17px; height: 17px; }
-  .pos-health { width: 9px; height: 9px; border-radius: 50%; background: var(--success); flex: none; }
-  .pos-health.is-offline { background: var(--error); }
+  .pos-orders-link { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: var(--muted); }
+  .pos-orders-link:hover { color: var(--ink); background: color-mix(in srgb, var(--ink) 8%, transparent); }
+  .pos-orders-link svg { width: 17px; height: 17px; }
+  .pos-site-controls { display: flex; align-items: center; gap: 10px; }
+  .pos-site-controls .theme-toggle { margin: 0; font-size: 14px; }
+  .pos-status-link { display: flex; align-items: center; text-decoration: none; }
 
   /* ---- shared controls ---- */
   .pos-field { display: grid; gap: 5px; }

@@ -249,7 +249,7 @@ fn nav(chrome: &PageChrome) -> Markup {
 /// Three submit buttons select Light, System, or Dark directly without JS.
 /// CSS previews each option on hover/focus and animates the indicator across
 /// the form navigation in browsers that support view transitions.
-fn theme_toggle(chrome: &PageChrome) -> Markup {
+pub fn theme_toggle(chrome: &PageChrome) -> Markup {
     html! {
         form method="post" action="/dashboard/theme" class="nav-theme-form" {
             input type="hidden" name="next" value=(chrome.current_path);

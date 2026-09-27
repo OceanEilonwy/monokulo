@@ -1829,3 +1829,26 @@ async fn order_events_stream_reports_only_the_authenticated_tenants_changes() {
     assert_eq!(event, "order");
     assert_eq!(serde_json::from_str::<serde_json::Value>(&data).unwrap()["order_id"], order_id.as_str());
 }
+
+#[tokio::test]
+async fn listing_orders_by_ids_returns_only_this_tenants_named_orders_in_order() {
+    let router = test_router();
+    let tenant = create_tenant(&router, 40).await;
+    let other = create_tenant(&router, 42).await;
+    async fn create(router: &Router, token: &str) -> String {
+        let req = json_request("POST", "/api/v1/admin/tenant/orders", Some(token), None, serde_json::json!({ "xmr_amount_piconero": 1_000u64 }));
+        body_json(router.clone().oneshot(req).await.unwrap()).await["order_id"].as_str().unwrap().to_string()
+    }
+    let (a, b, _c) = (create(&router, &tenant.secret_token).await, create(&router, &tenant.secret_token).await, create(&router, &tenant.secret_token).await);
+    let foreign = create(&router, &other.secret_token).await;
+
+    let uri = format!("/api/v1/admin/tenant/orders?ids={b},order_unknown,{foreign},{a}");
+    let response = router.clone().oneshot(json_request("GET", &uri, Some(&tenant.secret_token), None, serde_json::Value::Null)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let ids: Vec<String> = body_json(response).await.as_array().unwrap().iter().map(|o| o["order_id"].as_str().unwrap().to_string()).collect();
+    assert_eq!(ids, vec![b, a], "only this tenant's named orders, in the order asked");
+
+    let too_many = (0..=super::admin::MAX_LIST_ORDER_IDS).map(|i| format!("order_{i}")).collect::<Vec<_>>().join(",");
+    let response = router.oneshot(json_request("GET", &format!("/api/v1/admin/tenant/orders?ids={too_many}"), Some(&tenant.secret_token), None, serde_json::Value::Null)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+}

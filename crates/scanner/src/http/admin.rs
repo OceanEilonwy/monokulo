@@ -300,7 +300,16 @@ pub struct ListOrdersQuery {
     status: Option<String>,
     cursor: Option<i64>,
     limit: Option<u32>,
+    /// Comma-separated order ids: returns exactly those orders (this
+    /// tenant's only, in the order asked, unknown ids left out) instead of a
+    /// page. One request for a set of orders a caller already knows, so a
+    /// screen watching many orders does not spend one rate-limited request
+    /// per order.
+    ids: Option<String>,
 }
+
+/// Most order ids one `ids=` request may name.
+pub const MAX_LIST_ORDER_IDS: usize = 100;
 
 pub async fn list_orders(
     AuthedTenant(tenant): AuthedTenant,
@@ -310,8 +319,23 @@ pub async fn list_orders(
     let status_filter: Option<OrderStatus> = q.status.as_deref().map(parse_status_query).transpose()?;
     let limit = q.limit.unwrap_or(50).min(200);
     let now = now_unix();
+    let ids: Option<Vec<&str>> = q.ids.as_deref().map(|ids| ids.split(',').map(str::trim).filter(|id| !id.is_empty()).collect());
+    if ids.as_ref().is_some_and(|ids| ids.len() > MAX_LIST_ORDER_IDS) {
+        return Err(ApiError::BadRequest(format!("ids may name at most {MAX_LIST_ORDER_IDS} orders")));
+    }
     let store = state.store.lock().unwrap();
-    let orders = store.list_orders(&tenant.id, status_filter, limit, q.cursor)?;
+    let orders = match ids {
+        Some(ids) => {
+            let mut orders = Vec::with_capacity(ids.len());
+            for id in ids {
+                if let Some(order) = store.get_order(&tenant.id, id)? {
+                    orders.push(order);
+                }
+            }
+            orders
+        }
+        None => store.list_orders(&tenant.id, status_filter, limit, q.cursor)?,
+    };
     let views: std::result::Result<Vec<OrderView>, _> = orders
         .into_iter()
         .map(|o| build_order_view(&store, o, now, state.expired_order_grace_period_seconds))

@@ -37,10 +37,11 @@
 //! client already has to handle "the connection failed" separately from
 //! "the status says there's a problem".
 
+use std::collections::HashMap;
+
 use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Json, Response};
-use futures_util::StreamExt;
 use serde::{Deserialize, Serialize};
 
 use crate::engine_client::{EngineClientError, OrderView};
@@ -314,31 +315,58 @@ pub struct PosOrderData {
 
 async fn pos_order_data(state: &AppState, connection_id: &str, sk: &str, row: crate::db::PosOrderRow) -> Result<PosOrderData, EngineClientError> {
     let detail = state.engine_client.get_order_detail(sk, &row.order_id).await?;
+    Ok(pos_order_view(state, connection_id, row, &detail.order))
+}
+
+/// One POS order as the terminal shows it, from its local row and the
+/// engine's view of it (read singly or in a batch).
+fn pos_order_view(state: &AppState, connection_id: &str, row: crate::db::PosOrderRow, order: &OrderView) -> PosOrderData {
     let metadata = state.db.lock().unwrap().get_order_currency_metadata(connection_id, &row.order_id).ok().flatten();
     let confirmations_required = metadata.as_ref().and_then(|m| m.confirmations_required_applied).unwrap_or(10);
-    Ok(PosOrderData {
+    PosOrderData {
         order_id: row.order_id,
-        merchant_order_id: detail.order.merchant_order_id.clone(),
-        address: detail.order.address.clone(),
-        xmr_amount: shared::exchange_rate::format_piconero_as_xmr(detail.order.xmr_amount_piconero),
-        amount: metadata.as_ref().map(|m| m.amount.clone()).unwrap_or_else(|| shared::exchange_rate::format_piconero_as_xmr(detail.order.xmr_amount_piconero)),
+        merchant_order_id: order.merchant_order_id.clone(),
+        address: order.address.clone(),
+        xmr_amount: shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero),
+        amount: metadata.as_ref().map(|m| m.amount.clone()).unwrap_or_else(|| shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero)),
         currency: metadata.as_ref().map(|m| m.currency.clone()).unwrap_or_else(|| "XMR".to_string()),
-        status: detail.order.status.clone(),
-        updated_at: detail.order.updated_at,
-        confirmations: detail.order.confirmations,
+        status: order.status.clone(),
+        updated_at: order.updated_at,
+        confirmations: order.confirmations,
         confirmations_required,
-        error: derive_payment_error(&detail.order),
+        error: derive_payment_error(order),
         backgrounded: row.backgrounded,
         cancelled_at: row.cancelled_at,
         created_at: row.created_at,
-        expires_at: detail.order.expires_at,
-        received_xmr: shared::exchange_rate::format_piconero_as_xmr(detail.order.amount_received_piconero),
-        remaining_xmr: shared::exchange_rate::format_piconero_as_xmr(
-            detail.order.xmr_amount_piconero.saturating_sub(detail.order.amount_received_piconero),
-        ),
-        refund_address: detail.order.refund_address.clone(),
+        expires_at: order.expires_at,
+        received_xmr: shared::exchange_rate::format_piconero_as_xmr(order.amount_received_piconero),
+        remaining_xmr: shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero.saturating_sub(order.amount_received_piconero)),
+        refund_address: order.refund_address.clone(),
         qr_svg: None,
-    })
+    }
+}
+
+/// The engine's views of `order_ids`, keyed by id, in as few requests as its
+/// per-request cap allows. The engine rate-limits each store, so a terminal
+/// watching many orders must not spend one request per order.
+async fn engine_orders(state: &AppState, sk: &str, order_ids: &[String]) -> Result<HashMap<String, OrderView>, EngineClientError> {
+    let mut orders = HashMap::with_capacity(order_ids.len());
+    for chunk in order_ids.chunks(crate::engine_client::MAX_ORDER_IDS_PER_REQUEST) {
+        for order in state.engine_client.list_orders_by_ids(sk, chunk).await? {
+            orders.insert(order.order_id.clone(), order);
+        }
+    }
+    Ok(orders)
+}
+
+/// The response for an engine call that failed: an order the engine does
+/// not know is `404`; anything else (its rate limit, or no answer at all)
+/// is a retryable `503`, not an opaque internal error.
+fn engine_failure(error: &EngineClientError) -> Response {
+    match error {
+        EngineClientError::EngineError { status, .. } if *status == reqwest::StatusCode::NOT_FOUND => ApiError::NotFound.into_response(),
+        _ => ApiError::EngineUnavailable.into_response(),
+    }
 }
 
 #[derive(Deserialize)]
@@ -363,16 +391,15 @@ pub async fn list_orders(
             (Ok(rows), Ok(total)) => (rows, total), _ => return ApiError::Internal.into_response(),
         },
     };
-    let snapshots = futures_util::stream::iter(rows.into_iter().map(|pos_row| pos_order_data(&state, &id, &sk, pos_row)))
-        .buffered(8).collect::<Vec<_>>().await;
-    let mut orders = Vec::with_capacity(snapshots.len());
-    for snapshot in snapshots {
-        match snapshot {
-            Ok(order) => orders.push(order),
-            Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {},
-            Err(_) => return ApiError::Internal.into_response(),
-        }
-    }
+    let ids: Vec<String> = rows.iter().map(|row| row.order_id.clone()).collect();
+    let mut views = match engine_orders(&state, &sk, &ids).await {
+        Ok(views) => views,
+        Err(error) => return engine_failure(&error),
+    };
+    // An order the engine no longer knows is left out, as before.
+    let orders: Vec<PosOrderData> = rows.into_iter()
+        .filter_map(|row| views.remove(&row.order_id).map(|view| pos_order_view(&state, &id, row, &view)))
+        .collect();
     Json(serde_json::json!({"orders": orders, "total": total, "offset": offset, "limit": limit})).into_response()
 }
 
@@ -392,8 +419,7 @@ pub async fn order_detail(
             data.qr_svg = super::checkout::qr_svg_for_html(&data.address).ok();
             Json(data).into_response()
         }
-        Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => ApiError::NotFound.into_response(),
-        Err(_) => ApiError::Internal.into_response(),
+        Err(error) => engine_failure(&error),
     }
 }
 
@@ -422,7 +448,7 @@ pub async fn cancel_order(
     if pos_row.cancelled_at.is_some() { return StatusCode::NO_CONTENT.into_response(); }
     let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
     let detail = match state.engine_client.get_order_detail(&sk, &order_id).await {
-        Ok(detail) => detail, Err(_) => return ApiError::Internal.into_response(),
+        Ok(detail) => detail, Err(error) => return engine_failure(&error),
     };
     if detail.order.amount_received_piconero > 0 || detail.order.status != "pending" {
         return ApiError::BadRequest("This order has payment activity and cannot be cancelled. Background it for review instead.".to_string()).into_response();
@@ -487,33 +513,28 @@ pub async fn order_status(
         Err(()) => return ApiError::Internal.into_response(),
     };
 
-    match load_pos_status(&state, &row.id, &sk, &order_id).await {
-        Ok(status) => Json(status).into_response(),
-        Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
-            ApiError::NotFound.into_response()
-        }
-        Err(_) => ApiError::Internal.into_response(),
+    match state.engine_client.get_order_detail(&sk, &order_id).await {
+        Ok(detail) => Json(pos_status(&state, &row.id, &sk, &detail.order).await).into_response(),
+        Err(error) => engine_failure(&error),
     }
 }
 
-async fn load_pos_status(state: &AppState, connection_id: &str, sk: &str, order_id: &str) -> Result<PosStatusResponse, EngineClientError> {
-    let detail = state.engine_client.get_order_detail(sk, order_id).await?;
-    let confirmations_required = resolve_confirmations_required(state, connection_id, sk, order_id).await;
+async fn pos_status(state: &AppState, connection_id: &str, sk: &str, order: &OrderView) -> PosStatusResponse {
+    let confirmations_required = resolve_confirmations_required(state, connection_id, sk, &order.order_id).await;
     // `status_label`'s own `is_terminal` already accounts for a
     // 0-conf-trusted order: the engine only ever reports `"paid"`
     // once *that order's own* `confirmations_required` (however it
     // was resolved at creation - possibly `0`) has actually been
     // met, so there's no separate threshold check to fold in here.
-    let (_, _, is_terminal) = status_label(&detail.order.status);
-    let error = derive_payment_error(&detail.order);
-    Ok(PosStatusResponse {
-        status: detail.order.status,
-        updated_at: detail.order.updated_at,
-        confirmations: detail.order.confirmations,
+    let (_, _, is_terminal) = status_label(&order.status);
+    PosStatusResponse {
+        status: order.status.clone(),
+        updated_at: order.updated_at,
+        confirmations: order.confirmations,
         confirmations_required,
         is_terminal,
-        error,
-    })
+        error: derive_payment_error(order),
+    }
 }
 
 /// More than any real counter has in flight at once; bounds how many
@@ -558,33 +579,34 @@ pub async fn order_events(
         return ApiError::BadRequest(format!("orders must list between 1 and {MAX_WATCHED_ORDERS} order ids")).into_response();
     }
 
-    let streams = order_ids.into_iter().map(|order_id| {
-        let subscription = state.engine_client.subscribe_order(&row.id, &sk, &order_id);
-        let (state, connection_id, sk) = (state.clone(), row.id.clone(), sk.clone());
-        Box::pin(crate::live::snapshot_stream(subscription, std::time::Duration::from_secs(60), move || {
-            let (state, connection_id, sk, order_id) = (state.clone(), connection_id.clone(), sk.clone(), order_id.clone());
-            async move {
-                match load_pos_status(&state, &connection_id, &sk, &order_id).await {
-                    Ok(status) => {
-                        let mut json = serde_json::to_value(&status).ok()?;
-                        json["order_id"] = serde_json::Value::String(order_id);
-                        let data = json.to_string();
-                        Some(crate::live::LiveSnapshot {
-                            events: vec![axum::response::sse::Event::default().event("status").data(data.clone())],
-                            fingerprint: data,
-                            terminal: status.is_terminal,
-                        })
-                    }
+    let subscriptions = order_ids.iter().map(|order_id| state.engine_client.subscribe_order(&row.id, &sk, order_id)).collect();
+    let connection_id = row.id.clone();
+    // One engine read per change for every watched order together: the
+    // engine rate-limits each store, and a busy counter watches many orders.
+    crate::live::sse(crate::live::batch_snapshot_stream(subscriptions, std::time::Duration::from_secs(60), move |ids| {
+        let (state, connection_id, sk) = (state.clone(), connection_id.clone(), sk.clone());
+        async move {
+            let mut views = engine_orders(&state, &sk, &ids).await.ok()?;
+            let mut snapshots = Vec::with_capacity(ids.len());
+            for order_id in ids {
+                let Some(order) = views.remove(&order_id) else {
                     // Not this store's order: nothing to watch.
-                    Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
-                        Some(crate::live::LiveSnapshot { events: Vec::new(), fingerprint: String::new(), terminal: true })
-                    }
-                    Err(_) => None,
-                }
+                    snapshots.push((order_id, crate::live::LiveSnapshot { events: Vec::new(), fingerprint: String::new(), terminal: true }));
+                    continue;
+                };
+                let status = pos_status(&state, &connection_id, &sk, &order).await;
+                let mut json = serde_json::to_value(&status).ok()?;
+                json["order_id"] = serde_json::Value::String(order_id.clone());
+                let data = json.to_string();
+                snapshots.push((order_id, crate::live::LiveSnapshot {
+                    events: vec![axum::response::sse::Event::default().event("status").data(data.clone())],
+                    fingerprint: data,
+                    terminal: status.is_terminal,
+                }));
             }
-        }))
-    });
-    crate::live::sse(futures_util::stream::select_all(streams))
+            Some(snapshots)
+        }
+    }))
 }
 
 #[cfg(test)]
@@ -609,7 +631,11 @@ mod tests {
     }
 
     async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
-        let engine = scanner_test_support::TestEngineConfig::new().with_networks(&[monero::Network::Mainnet]).spawn().await;
+        test_state_with_engine(scanner_test_support::TestEngineConfig::new()).await
+    }
+
+    async fn test_state_with_engine(config: scanner_test_support::TestEngineConfig) -> (AppState, scanner_test_support::TestEngineHandle) {
+        let engine = config.with_networks(&[monero::Network::Mainnet]).spawn().await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
             db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
@@ -1142,6 +1168,87 @@ mod tests {
         let data: serde_json::Value = serde_json::from_str(&data).unwrap();
         assert_eq!(data["order_id"], order_ids[1].as_str());
         assert!(data["error"].as_str().unwrap().to_lowercase().contains("double-spend"), "got: {data}");
+    }
+
+    async fn create_pos_orders(router: &Router, session_token: &str, id: &str, count: usize) -> Vec<String> {
+        let mut order_ids = Vec::with_capacity(count);
+        for _ in 0..count {
+            let create = router.clone().oneshot(
+                Request::builder().method("POST").uri(format!("/dashboard/stores/{id}/pos/orders"))
+                    .header("content-type", "application/json").header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::from(serde_json::json!({ "amount": "2.0" }).to_string())).unwrap(),
+            ).await.unwrap();
+            assert_eq!(create.status(), StatusCode::OK);
+            order_ids.push(body_json(create).await["order_id"].as_str().unwrap().to_string());
+        }
+        order_ids
+    }
+
+    /// Regression: the engine rate-limits each store (120 requests a minute
+    /// by default), and the terminal used to spend one engine request per
+    /// order on its list and again per order on its live stream, so a store
+    /// with a few dozen open orders ran out after a reload or two and every
+    /// screen showed "internal error". Both now cost one read per batch.
+    #[tokio::test]
+    async fn the_order_list_and_events_stream_read_many_orders_in_one_engine_request() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(&router, "pos-batch@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let order_ids = create_pos_orders(&router, &session_token, &id, 30).await;
+
+        let before = engine.tenant_request_count();
+        let list = router.clone().oneshot(
+            Request::builder().uri(format!("/dashboard/stores/{id}/pos/orders?limit=40"))
+                .header("authorization", format!("Bearer {session_token}")).body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(list.status(), StatusCode::OK);
+        assert_eq!(body_json(list).await["orders"].as_array().unwrap().len(), 30);
+        assert_eq!(engine.tenant_request_count() - before, 1, "listing 30 orders reads them in one engine request");
+
+        let before = engine.tenant_request_count();
+        let events = router.clone().oneshot(
+            Request::builder().uri(format!("/dashboard/stores/{id}/pos/events?orders={}", order_ids.join(",")))
+                .header("authorization", format!("Bearer {session_token}")).body(Body::empty()).unwrap(),
+        ).await.unwrap();
+        assert_eq!(events.status(), StatusCode::OK);
+        let mut body = events.into_body();
+        let (mut pending, mut parser) = (Vec::new(), crate::live::SseTestParser::default());
+        let mut seen = std::collections::HashSet::new();
+        while seen.len() < order_ids.len() {
+            let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+            assert_eq!(event, "status");
+            let data: serde_json::Value = serde_json::from_str(&data).unwrap();
+            seen.insert(data["order_id"].as_str().unwrap().to_string());
+        }
+        // One read for all 30 snapshots, and at most the store's one shared
+        // upstream event stream plus its first resync read beside it.
+        let spent = engine.tenant_request_count() - before;
+        assert!(spent <= 3, "watching 30 orders cost {spent} engine requests");
+    }
+
+    #[tokio::test]
+    async fn a_rate_limited_engine_is_a_retryable_503_not_an_internal_error() {
+        let (state, _engine) = test_state_with_engine(scanner_test_support::TestEngineConfig::new().with_rate_limit(20)).await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(&router, "pos-limited@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let order_id = create_pos_orders(&router, &session_token, &id, 1).await.remove(0);
+
+        for _ in 0..40 {
+            let response = router.clone().oneshot(
+                Request::builder().uri(format!("/dashboard/stores/{id}/pos/orders/{order_id}"))
+                    .header("authorization", format!("Bearer {session_token}")).body(Body::empty()).unwrap(),
+            ).await.unwrap();
+            if response.status() == StatusCode::OK {
+                continue;
+            }
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let error = body_json(response).await["error"].as_str().unwrap().to_string();
+            assert!(error.contains("busy"), "got: {error}");
+            return;
+        }
+        panic!("the engine's rate limit was never reached");
     }
 
     #[tokio::test]
