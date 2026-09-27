@@ -1167,6 +1167,7 @@ async fn status_endpoint_is_reachable_with_no_authentication_at_all() {
     let body = get_status_json(router).await;
     assert!(body["networks"].is_array());
     assert!(body["loop_restarts"].is_array(), "restart counts are reported (task 7.9), got: {body}");
+    assert_eq!(body["webhook_backlog"]["due"], 0, "got: {body}");
 }
 
 #[tokio::test]
@@ -1181,6 +1182,7 @@ async fn status_endpoint_shows_the_real_configured_network_and_node_with_its_liv
     // not a placeholder, and must not be confused with "unknown" (null).
     assert_eq!(node["height"], 0, "expected the node's real live height shown, got: {body}");
     assert!(node["error"].is_null(), "a reachable node must have no error, got: {body}");
+    assert_eq!(node["in_cooldown"], false, "got: {body}");
     assert!(!network["scanner"]["ever_ticked"].as_bool().unwrap(), "no scan tick has happened in this test, got: {body}");
     assert_eq!(network["lagging_tenants"], 0, "got: {body}");
     assert_eq!(network["max_blocks_behind"], 0, "got: {body}");

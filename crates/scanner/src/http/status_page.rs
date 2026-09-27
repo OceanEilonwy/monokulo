@@ -47,6 +47,8 @@ const NODE_HEIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 pub struct NodeStatus {
     pub label: String,
     pub is_active: bool,
+    /// Skipped for now after failing (task 7.6).
+    pub in_cooldown: bool,
     pub height: Option<u64>,
     pub error: Option<String>,
 }
@@ -87,6 +89,15 @@ pub struct EngineStatusResponse {
     /// or an unexpected return since the engine started (task 7.9). Empty
     /// while nothing has failed.
     pub loop_restarts: Vec<LoopRestarts>,
+    /// Webhook deliveries due and not yet sent (task 7.13).
+    pub webhook_backlog: WebhookBacklog,
+}
+
+#[derive(Serialize)]
+pub struct WebhookBacklog {
+    pub due: u64,
+    /// How long the oldest due delivery has been waiting, in seconds.
+    pub oldest_waiting_secs: Option<i64>,
 }
 
 #[derive(Serialize)]
@@ -136,7 +147,13 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
                 Ok(Err(e)) => (None, Some(e.to_string())),
                 Err(_) => (None, Some(format!("timed out after {}s", NODE_HEIGHT_TIMEOUT.as_secs()))),
             };
-            nodes.push(NodeStatus { label: node.label.clone(), is_active: i == current_index, height, error });
+            nodes.push(NodeStatus {
+                label: node.label.clone(),
+                is_active: i == current_index,
+                in_cooldown: daemon.in_cooldown(i),
+                height,
+                error,
+            });
         }
 
         let scan_status = state.scanner_status.read().get(&network).cloned();
@@ -184,11 +201,13 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
 
     let loop_restarts =
         shared::supervise::restart_counts().into_iter().map(|(name, restarts)| LoopRestarts { name, restarts }).collect();
+    let (due, oldest) = state.store.lock().webhook_backlog(now).unwrap_or((0, None));
     Json(EngineStatusResponse {
         networks: network_views,
         poll_interval_secs: state.scan_poll_interval_secs,
         generated_at: now,
         loop_restarts,
+        webhook_backlog: WebhookBacklog { due, oldest_waiting_secs: oldest.map(|at| now - at) },
     })
     .into_response()
 }

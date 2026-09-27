@@ -972,7 +972,10 @@ pub async fn run_scan_tick_with(
     let pool_txids = match daemon.get_mempool_txids().await {
         Ok(txids) => Some(txids),
         Err(e) => {
-            eprintln!("polling the mempool on {network} failed - no zero-conf detection this tick: {e}");
+            shared::log::throttled(
+                &format!("mempool-poll:{network}"),
+                format!("polling the mempool on {network} failed - no zero-conf detection this tick: {e}"),
+            );
             None
         }
     };
@@ -1052,7 +1055,12 @@ pub async fn run_scan_tick_with(
                             ),
                         }
                     }
-                    Err(e) => eprintln!("scanning a mempool tx for tenant {tenant_id} on {network} failed: {e}"),
+                    Err(e) => {
+                        shared::log::throttled(
+                            &format!("mempool-scan:{tenant_id}"),
+                            format!("scanning a mempool tx for tenant {tenant_id} on {network} failed: {e}"),
+                        );
+                    }
                 }
             }
         }
@@ -1194,11 +1202,14 @@ pub async fn run_scan_tick_with(
                         let scan = match result {
                             Ok(scan) => scan,
                             Err(e) => {
-                                eprintln!(
-                                    "scanning a tx in block {height} on {network} for tenant {tenant_id} failed - \
-                                     leaving that tenant behind at block {} to be caught up later, the rest of the \
-                                     network carries on: {e}",
-                                    height - 1
+                                shared::log::throttled(
+                                    &format!("block-scan:{tenant_id}"),
+                                    format!(
+                                        "scanning a tx in block {height} on {network} for tenant {tenant_id} failed - \
+                                         leaving that tenant behind at block {} to be caught up later, the rest of the \
+                                         network carries on: {e}",
+                                        height - 1
+                                    ),
                                 );
                                 left_behind.insert(tenant_id.clone());
                                 continue;
@@ -1603,7 +1614,10 @@ async fn catch_up_lagging_tenants(
                 Ok(chunk) if !chunk.is_empty() => chunk,
                 Ok(_) => break 'group,
                 Err(e) => {
-                    eprintln!("catch-up on {network}: fetching blocks from {height} failed (retried next tick): {e}");
+                    shared::log::throttled(
+                        &format!("catch-up-fetch:{network}"),
+                        format!("catch-up on {network}: fetching blocks from {height} failed (retried next tick): {e}"),
+                    );
                     break 'group;
                 }
             };
@@ -1644,10 +1658,13 @@ async fn catch_up_lagging_tenants(
                                 }
                             }
                             Err(e) => {
-                                eprintln!(
-                                    "catch-up on {network}: scanning block {height} for tenant {tenant_id} failed, it stays \
-                                     at block {} for now: {e}",
-                                    height - 1
+                                shared::log::throttled(
+                                    &format!("catch-up-scan:{tenant_id}"),
+                                    format!(
+                                        "catch-up on {network}: scanning block {height} for tenant {tenant_id} failed, it \
+                                         stays at block {} for now: {e}",
+                                        height - 1
+                                    ),
                                 );
                                 failed.insert(tenant_id);
                             }

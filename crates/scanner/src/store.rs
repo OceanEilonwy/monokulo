@@ -1719,6 +1719,19 @@ impl Store {
         Ok(rows)
     }
 
+    /// How many webhook deliveries are due and waiting, and since when the
+    /// oldest has been (task 7.13). Given-up deliveries aren't counted.
+    pub fn webhook_backlog(&self, now: i64) -> Result<(u64, Option<i64>)> {
+        self.conn
+            .query_row(
+                "SELECT COUNT(*), MIN(next_attempt_at_utc) FROM webhook_deliveries
+                 WHERE delivered_at_utc IS NULL AND next_attempt_at_utc <= ?1",
+                params![now],
+                |row| Ok((row.get::<_, i64>(0)? as u64, row.get::<_, Option<i64>>(1)?)),
+            )
+            .map_err(Into::into)
+    }
+
     pub fn due_webhook_deliveries(&self, now: i64, limit: u32) -> Result<Vec<DueDelivery>> {
         let mut stmt = self.conn.prepare(
             "SELECT d.id, d.webhook_id, d.order_id, d.event_type, d.payload_json, d.attempt_count,

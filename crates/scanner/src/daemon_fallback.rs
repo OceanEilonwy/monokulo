@@ -132,9 +132,12 @@ impl FallbackDaemonClient {
             health.cooldown_until = Some(Instant::now() + cooldown);
             cooldown
         };
-        eprintln!(
-            "monero daemon fallback: node {idx} ({}) failed, skipping it for {cooldown:?} and trying the next: {error}",
-            self.nodes[idx].label
+        shared::log::throttled(
+            &format!("node-failed:{}", self.nodes[idx].label),
+            format!(
+                "monero daemon fallback: node {idx} ({}) failed, skipping it for {cooldown:?} and trying the next: {error}",
+                self.nodes[idx].label
+            ),
         );
     }
 
