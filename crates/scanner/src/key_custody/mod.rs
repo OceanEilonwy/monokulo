@@ -1,5 +1,9 @@
 //! The `KeyCustody` boundary.
 //!
+//! Each store's keys live in one backend of its own choosing (`plain` or
+//! `socket`); [`CustodyRouter`] holds the enabled ones and routes each call to
+//! the backend that issued its handle (`router.rs`, `docs/DESIGN.md` §6.4).
+//!
 //! [`PlainKeyCustody`] is the only *in-process* implementation, and stays defined
 //! here - it keeps view pairs in ordinary process memory with no encryption and no
 //! isolation from the host process, appropriate for a self-hosted, single-tenant

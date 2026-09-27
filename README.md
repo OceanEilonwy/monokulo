@@ -5,7 +5,11 @@ tenants, webhooks, admin API) and `monokulo` (the control plane - the merchant
 dashboard and checkout-facing HTTP surface) run as two separate processes,
 `monokulo` talking to `scanner` over its own admin API. There is no config
 file - every runtime setting lives in the engine's `settings` table, read/
-written over its instance-admin HTTP API (`/api/v1/admin/settings`).
+written over its instance-admin HTTP API (`/api/v1/admin/settings`) or the
+admin settings page in monokulo, and applies to the running engine as soon
+as it's saved (only the listen address and worker threads need a
+restart). Key custody is chosen per store: the admin enables backends and a
+default, and each store can move by entering its keys again.
 
 ## Running in production
 

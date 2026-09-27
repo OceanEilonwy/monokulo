@@ -224,6 +224,17 @@ reported at the end.)
   bind check and the environment access with its test overrides. The test
   count went down by 12 with it: those tests covered the deleted code.
 
+- 6.1: dev-run.sh enables only the `plain` key custody backend, and its
+  comment says settings apply on save. Checked on the real engine binary
+  with a scratch database and port rather than by wiping `.dev-run/`
+  (which may hold the user's own dev state): a fresh engine, the dev
+  stagenet node saved over the API, stagenet ticking healthy within 5s,
+  no restart.
+- 6.2: DESIGN.md gains 6.4 "Key custody per store" and an updated 8.1
+  note; README and both KeyCustody module docs describe per-store custody
+  and settings applied on save. The engine's no-node boot warning already
+  said "applies without a restart", so it was left as it is.
+
 ## Baseline
 
 `cargo test --workspace` on `main` (43d7c53 + dc2d976): 913 passed,

@@ -8,6 +8,11 @@
 //! physically lives (this process's heap, a sealed enclave, a remote HSM) without
 //! touching the scanner, the tenant model, or the API layer at all.
 //!
+//! Custody is chosen per store: the engine runs several backends at once
+//! behind a router (`scanner`'s `key_custody::CustodyRouter`), which is itself
+//! a `KeyCustody`. The `*_in` methods below name the backend for a new
+//! registration; everything else follows the handle.
+//!
 //! `PlainKeyCustody` (`scanner`'s `src/key_custody/plain.rs`) is the only
 //! in-process implementation. It keeps view pairs in ordinary process memory with
 //! no encryption and no isolation from the host process — appropriate for a

@@ -148,10 +148,14 @@ build() {
 # Provisions the same dev-friendly stagenet node + payment thresholds the
 # old TOML config gave the engine, over its own instance-admin HTTP API -
 # see this script's own header comment on why this replaces a config
-# file. Safe (and cheap) to re-run on every `start`: every value here is
-# fixed, so re-POSTing it just re-saves the same thing. Retries briefly
-# since this runs right after the server process is spawned - `is_running`
-# only proves the process exists, not that it's finished binding yet.
+# file. Every setting applies to the running engine as soon as it's saved
+# (no restart): the stagenet node starts being scanned straight away.
+# Key custody is per store; this enables only the in-process `plain`
+# backend, the right choice for a dev stack with no key-custody-server.
+# Safe (and cheap) to re-run on every `start`: every value here is fixed,
+# so re-POSTing it just re-saves the same thing. Retries briefly since this
+# runs right after the server process is spawned - `is_running` only proves
+# the process exists, not that it's finished binding yet.
 ensure_engine_settings() {
     local token url attempt
     token="$(cat "$ENGINE_ADMIN_TOKEN_FILE")"
@@ -163,7 +167,9 @@ ensure_engine_settings() {
     "payment.confirmations_required": "$PAYMENT_CONFIRMATIONS_REQUIRED",
     "payment.order_expiry_minutes": "$PAYMENT_ORDER_EXPIRY_MINUTES",
     "payment.reorg_check_depth": "$PAYMENT_REORG_CHECK_DEPTH",
-    "payment.mempool_poll_interval_ms": "$PAYMENT_MEMPOOL_POLL_INTERVAL_MS"
+    "payment.mempool_poll_interval_ms": "$PAYMENT_MEMPOOL_POLL_INTERVAL_MS",
+    "key_custody.enabled_backends": "plain",
+    "key_custody.default_backend": "plain"
   },
   "monero_node": {
     "stagenet": {

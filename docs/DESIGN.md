@@ -225,7 +225,8 @@ simply no longer any part of what it does.
 ## 6. The `KeyCustody` Boundary
 
 **Status: implemented** (`src/key_custody/`). This section describes its role and
-contract; see the module doc comments for full rationale.
+contract; see the module doc comments for full rationale. Key custody is chosen
+per store (§6.4).
 
 ### 6.1 Why it exists
 
@@ -298,9 +299,35 @@ Invariants every implementation (including future ones) must uphold:
 
 ### 6.3 `PlainKeyCustody`
 
-The only implementation in v1. In-process `RwLock<HashMap<WalletHandle, WalletEntry>>`,
+The in-process backend (`plain`); `socket` forwards the same calls to a separate
+`key-custody-server`. In-process `RwLock<HashMap<WalletHandle, WalletEntry>>`,
 where `WalletEntry` holds the `ViewPair` plus a `Mutex<Option<CachedTable>>` for the
 per-range table cache described above. No encryption at rest, no process isolation.
+
+### 6.4 Key custody per store
+
+Each store's keys live in one backend, named on its row (`tenants.key_custody_backend`):
+`plain` (in the engine's memory) or `socket` (a separate `key-custody-server` process).
+The engine's custody is a `CustodyRouter` over the enabled backends, itself a
+`KeyCustody`, which routes every call on a handle to the backend that issued it.
+
+- **Settings** (applied as soon as they're saved): `key_custody.enabled_backends`,
+  `key_custody.default_backend` (where new stores go unless they ask for another) and
+  `key_custody.socket_path`. Turning a backend off leaves its stores unscanned, and
+  reported as such to their owners, until it's turned on again or they move; nothing
+  is deleted.
+- **Moving a store** (`PUT /api/v1/admin/tenant/key-custody`, and the store settings
+  page): the keys are entered again and must be the store's own wallet (spend key,
+  view key and network checked against its primary address). Nothing is ever copied
+  between backends. The new registration and the row update happen before the old
+  registration is removed, so the store always has a live handle.
+- **Recovery**: a backend that loses a store's handle (it restarted, or it was
+  replaced by pointing the socket backend elsewhere) is noticed on the next call, and
+  the scan loop registers the store again from its sealed keys within seconds. While
+  a store has no handle its scan cursor stays put, and catch-up scans the blocks it
+  missed once it's back, so no payment is lost.
+- **Reporting**: `/status` lists each backend's health and the stores left unserved
+  (`custody_disabled`, `custody_unavailable`); monokulo alerts each owner.
 
 ## 7. Chain Scanning & Payment Detection
 
@@ -776,9 +803,11 @@ CREATE INDEX webhook_deliveries_due_idx ON webhook_deliveries (next_attempt_at) 
 ### 8.1 Design notes
 
 - **Money is never a float.** `fiat_amount` and `exchange_rate` are decimal strings.
-- **`key_custody_backend`** lets a future migration to a different `KeyCustody`
-  implementation fail loudly on a format mismatch rather than silently
-  misinterpreting `sealed_key_material` bytes.
+- **`key_custody_backend`** names the key custody backend that holds this store's
+  keys and sealed `sealed_key_material` (§6.4). Each store has its own: the instance
+  admin chooses which backends are enabled and the default for new stores, and a
+  store moves by entering its keys again. Its sealed bytes are only ever unsealed by
+  the backend the row names.
 - **`order_payments` is append-mostly, never deleted.** Voided rows are kept
   (`voided_at` set) as the audit trail for "why does this order show partial" or "when
   was this order double-spent" — both answerable without reading logs.
