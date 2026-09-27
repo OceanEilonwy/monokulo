@@ -12,6 +12,7 @@ pub mod engine_settings;
 pub mod http;
 pub mod key_custody;
 pub mod local_admin;
+pub mod loops;
 pub mod network;
 pub mod scanner;
 pub mod scanner_status;

@@ -21,22 +21,19 @@ use parking_lot::RwLock;
 use std::sync::Arc;
 use std::time::Duration;
 
-use monero::Network;
 use scanner::cli::{self, Action};
 use scanner::engine_settings::{
     migrate_key_custody_setting, CustodyConfig, CustodyReloadable, Daemons, EngineSettings, RuntimeConfig, StoreSettings,
 };
 use scanner::http::instance_admin::ensure_admin_token_seeded;
 use scanner::http::rate_limit::RateLimiter;
-use scanner::http::{build_router, now_unix, AppState};
+use scanner::http::{build_router, AppState};
 use scanner::key_custody::{CustodyRouter, KeyCustody, WalletHandle};
 use scanner::local_admin;
-use scanner::network::network_str;
-use scanner::scanner::revalidate_recent_double_spend_voids;
-use scanner::scanner_status::{self, ScannerStatusMap};
+use scanner::loops;
+use scanner::scanner_status;
 use scanner::store::{SharedStore, Store};
-use scanner::webhook_delivery::run_delivery_tick;
-use shared::supervise::{supervise, supervise_until};
+use shared::supervise::supervise;
 
 /// A fixed outer ceiling on request bodies; `server.max_body_bytes` (the
 /// live limit, task 2.6) is what normally applies, and its own range tops
@@ -239,18 +236,30 @@ async fn run(action: Action) {
 
     let delivery_store = store.clone();
     let delivery_settings = engine_settings.clone();
-    supervise("webhook delivery", move || run_webhook_delivery_loop(delivery_store.clone(), delivery_settings.clone()));
+    supervise("webhook delivery", move || loops::run_webhook_delivery_loop(delivery_store.clone(), delivery_settings.clone()));
 
     // One scanner loop and one revalidation loop per configured network
     // (task 7.4), started and stopped as node settings are saved (task 2.1).
-    tokio::spawn(manage_network_loops(
+    // Supervised like the loops it starts: if it panics, dropping it stops
+    // them, and its restart starts them again.
+    let (loops_store, loops_custody, loops_daemons, loops_handles, loops_status, loops_settings) = (
         store.clone(),
         key_custody.clone(),
         daemons.clone(),
         wallet_handles.clone(),
         scanner_status.clone(),
         engine_settings.clone(),
-    ));
+    );
+    supervise("network loop manager", move || {
+        loops::manage_network_loops(
+            loops_store.clone(),
+            loops_custody.clone(),
+            loops_daemons.clone(),
+            loops_handles.clone(),
+            loops_status.clone(),
+            loops_settings.clone(),
+        )
+    });
 
     // Read once: the listen address is restart-only (decision D8).
     let bind = engine_settings.runtime.load().bind;
@@ -340,50 +349,6 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
     handles
 }
 
-async fn run_webhook_delivery_loop(store: SharedStore, settings: Arc<EngineSettings>) {
-    // Building the client can only fail if the TLS backend can't initialise.
-    // Retry rather than panic, so the supervisor isn't left in a crash loop.
-    let client = loop {
-        match reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build() {
-            Ok(client) => break client,
-            Err(e) => {
-                eprintln!("failed to build the webhook HTTP client, retrying in 30s: {e}");
-                tokio::time::sleep(Duration::from_secs(30)).await;
-            }
-        }
-    };
-
-    loop {
-        // Read every tick, so saved webhook settings apply to the next
-        // attempt (task 2.4).
-        let config = settings.webhooks.load();
-        // `run_delivery_tick` locks the store only around its own brief synchronous
-        // sections, never across the outbound HTTP `.await`s it performs per
-        // delivery - see its doc comment for why that matters.
-        let sent = match run_delivery_tick(
-            &store,
-            &client,
-            config.allow_private_urls,
-            config.delivery_timeout,
-            config.max_attempts,
-            now_unix(),
-        )
-        .await
-        {
-            Ok(sent) => sent,
-            Err(e) => {
-                eprintln!("webhook delivery tick failed: {e}");
-                0
-            }
-        };
-        // A full batch means a backlog: carry on straight away rather than
-        // waiting, so it drains steadily.
-        if sent < scanner::webhook_delivery::DELIVERY_BATCH as usize {
-            tokio::time::sleep(Duration::from_secs(5)).await;
-        }
-    }
-}
-
 /// How long requests in flight get to finish after SIGTERM or Ctrl-C.
 const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 
@@ -412,196 +377,5 @@ async fn shutdown_signal() {
     tokio::select! {
         () = ctrl_c => {}
         () = terminate => {}
-    }
-}
-
-/// A `'static` name per (loop, network) for `supervise`, which labels logs
-/// and restart counts with it.
-fn loop_name(kind: &'static str, network: Network) -> &'static str {
-    match (kind, network) {
-        ("chain scanner", Network::Mainnet) => "chain scanner (mainnet)",
-        ("chain scanner", Network::Stagenet) => "chain scanner (stagenet)",
-        ("chain scanner", Network::Testnet) => "chain scanner (testnet)",
-        (_, Network::Mainnet) => "double-spend revalidation (mainnet)",
-        (_, Network::Stagenet) => "double-spend revalidation (stagenet)",
-        (_, Network::Testnet) => "double-spend revalidation (testnet)",
-    }
-}
-
-/// Longest one scan tick may run before it is abandoned and the next one
-/// starts (task 7.9): a tick stuck on a call that never returns would
-/// otherwise stop payment detection on its network without any error. Well
-/// above a normal tick, which the per-call deadlines keep short.
-fn tick_deadline(poll_interval: Duration) -> Duration {
-    (poll_interval * 20).max(Duration::from_secs(120))
-}
-
-/// Starts a scanner loop and a revalidation loop for each network that has
-/// a node configured, and stops them for a network whose node setting is
-/// cleared, whenever node settings are saved (task 2.1). Runs for the life of
-/// the process.
-async fn manage_network_loops(
-    store: SharedStore,
-    key_custody: Arc<dyn KeyCustody>,
-    daemons: Daemons,
-    wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
-    scanner_status: ScannerStatusMap,
-    settings: Arc<EngineSettings>,
-) {
-    let mut changed = settings.nodes.subscribe();
-    let mut running: HashMap<Network, tokio::sync::watch::Sender<bool>> = HashMap::new();
-    loop {
-        let wanted: std::collections::HashSet<Network> = daemons.networks().into_iter().collect();
-        running.retain(|network, stop| {
-            let keep = wanted.contains(network);
-            if !keep {
-                let _ = stop.send(true);
-                scanner_status.write().remove(network);
-                println!("stopped scanning {network:?}: its node setting was cleared");
-            }
-            keep
-        });
-        for network in wanted {
-            if running.contains_key(&network) {
-                continue;
-            }
-            let (stop, stopped) = tokio::sync::watch::channel(false);
-            let (revalidation_store, revalidation_daemons) = (store.clone(), daemons.clone());
-            supervise_until(loop_name("double-spend revalidation", network), stopped.clone(), move || {
-                run_double_spend_revalidation_loop(revalidation_store.clone(), network, revalidation_daemons.clone())
-            });
-            let (store, key_custody, daemons, wallet_handles, scanner_status, settings) = (
-                store.clone(),
-                key_custody.clone(),
-                daemons.clone(),
-                wallet_handles.clone(),
-                scanner_status.clone(),
-                settings.clone(),
-            );
-            supervise_until(loop_name("chain scanner", network), stopped, move || {
-                run_scanner_loop(
-                    store.clone(),
-                    key_custody.clone(),
-                    network,
-                    daemons.clone(),
-                    wallet_handles.clone(),
-                    scanner_status.clone(),
-                    settings.clone(),
-                )
-            });
-            println!("scanning {network:?}");
-            running.insert(network, stop);
-        }
-        if changed.changed().await.is_err() {
-            return;
-        }
-    }
-}
-
-/// Runs `run_scan_tick` for one network, over and over. Re-reads
-/// `wallet_handles`, the network's node client and the scan settings every
-/// round, so new tenants, saved node settings and saved scan settings all
-/// apply from the next tick (tasks 2.1, 2.3). Each network has its own
-/// loop (task 7.4), so a slow node on one never delays another.
-async fn run_scanner_loop(
-    store: SharedStore,
-    key_custody: Arc<dyn KeyCustody>,
-    network: Network,
-    daemons: Daemons,
-    wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
-    scanner_status: ScannerStatusMap,
-    settings: Arc<EngineSettings>,
-) {
-    // Keys that failed to register (at boot, or since) are retried here at
-    // most once a minute, so a tenant whose key-custody backend comes back
-    // is scanned again without anyone having to call the API for it.
-    let mut last_registration_attempt: Option<tokio::time::Instant> = None;
-    // Kept across ticks so the mempool is fetched and scanned incrementally
-    // (task 7.3). A panic restarts this loop with a fresh one, which only
-    // means one full rescan of the pool.
-    let mempool_memory = scanner::scanner::MempoolMemory::default();
-    // Shared by every network's loop, so the handle map is cleared once per
-    // lost-state epoch of the key-custody backend, not once per network.
-    static HANDLED_CUSTODY_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
-    loop {
-        let scan = settings.scan.load();
-        let Some(daemon) = daemons.get(network) else {
-            // Being stopped: the node setting was just cleared.
-            tokio::time::sleep(scan.poll_interval).await;
-            continue;
-        };
-        if last_registration_attempt.is_none_or(|at| at.elapsed() >= Duration::from_secs(60)) {
-            last_registration_attempt = Some(tokio::time::Instant::now());
-            let registered = scanner::scanner::register_missing_wallets_checking_state(
-                &store,
-                key_custody.as_ref(),
-                &wallet_handles,
-                Some(&HANDLED_CUSTODY_EPOCH),
-                network_str(network),
-            )
-            .await;
-            if registered > 0 {
-                println!("registered the keys of {registered} tenant(s) on {network:?} that had none");
-            }
-        }
-        let tenants: Vec<(String, WalletHandle)> =
-            wallet_handles.read().iter().map(|(id, h)| (id.clone(), *h)).collect();
-        let started_at = now_unix();
-        // One node for the whole tick (task 7.6), so answers from nodes at
-        // different heights or on different forks are never mixed.
-        let pinned = daemon.pin();
-        let result = match tokio::time::timeout(
-            tick_deadline(scan.poll_interval),
-            scanner::scanner::run_scan_tick_with(
-                &mempool_memory,
-                &store,
-                key_custody.as_ref(),
-                &pinned,
-                network_str(network),
-                &tenants,
-                scan.reorg_check_depth,
-                scan.expired_order_grace_period_seconds,
-            ),
-        )
-        .await
-        {
-            Ok(result) => result,
-            Err(_) => Err(scanner::scanner::ScannerError::Internal(format!(
-                "scan tick did not finish within {:?} and was abandoned",
-                tick_deadline(scan.poll_interval)
-            ))),
-        };
-        let finished_at = now_unix();
-        if let Err(e) = &result {
-            shared::log::throttled(&format!("tick-failed:{network:?}"), format!("scan tick failed for {network:?}: {e}"));
-        }
-        scanner_status::record_tick(&scanner_status, network, started_at, finished_at, tenants.len(), &result);
-        tokio::time::sleep(scan.poll_interval).await;
-    }
-}
-
-/// How often [`revalidate_recent_double_spend_voids`] sweeps each network - much
-/// slower than the scan-tick/webhook-delivery loops above, since it exists to catch
-/// a rare event (a wrongly-voided payment) within a wide, forgiving window
-/// (`scanner::DOUBLE_SPEND_RECHECK_WINDOW_SECS`), not to react quickly. See that
-/// function's own doc comment for why this is deliberately not folded into
-/// `run_scanner_loop`'s tight per-second cadence.
-const DOUBLE_SPEND_REVALIDATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
-
-async fn run_double_spend_revalidation_loop(store: SharedStore, network: Network, daemons: Daemons) {
-    loop {
-        if let Some(daemon) = daemons.get(network) {
-            match revalidate_recent_double_spend_voids(&store, daemon.as_ref(), network_str(network), now_unix()).await {
-                Ok(recovered) if !recovered.is_empty() => {
-                    println!(
-                        "double-spend revalidation on {network:?} reversed {} previously-voided payment(s): {recovered:?}",
-                        recovered.len()
-                    );
-                }
-                Ok(_) => {}
-                Err(e) => eprintln!("double-spend revalidation failed for {network:?}: {e}"),
-            }
-        }
-        tokio::time::sleep(DOUBLE_SPEND_REVALIDATION_INTERVAL).await;
     }
 }
