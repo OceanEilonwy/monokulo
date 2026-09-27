@@ -7061,4 +7061,50 @@ mod tests {
         assert_eq!(register_missing_wallets_checking_state(&store, &custody, &handles, Some(&handled), "stagenet").await, 0);
         assert_eq!(handles.read().len(), 3);
     }
+
+    // -- Scale (task 7.12). Ignored by default: run with
+    // `cargo test -p scanner --release --lib scale_ -- --ignored --nocapture`.
+
+    #[tokio::test(flavor = "multi_thread")]
+    #[ignore]
+    async fn scale_many_stores_a_busy_mempool_and_a_block_with_payments_for_all_of_them() {
+        let stores: usize = std::env::var("SCALE_STORES").ok().and_then(|v| v.parse().ok()).unwrap_or(1000);
+        let pool_size: u8 = 200;
+        let store = Store::open_in_memory().unwrap();
+        let custody = PlainKeyCustody::default();
+        let mut tenants = vec![];
+        let mut orders = vec![];
+        for _ in 0..stores {
+            let (id, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+            tenants.push((id, handle));
+            orders.push(order);
+        }
+        let store = store.into_shared();
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![]);
+        daemon.set_mempool((0..pool_size).map(unrelated_tx).collect());
+        let memory = MempoolMemory::default();
+
+        let started = std::time::Instant::now();
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        let cold = started.elapsed();
+
+        let started = std::time::Instant::now();
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        let warm = started.elapsed();
+
+        daemon.push_block("h3", vec![fixture_tx(), unrelated_tx(250)]);
+        let started = std::time::Instant::now();
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        let block = started.elapsed();
+
+        let paid = orders.iter().filter(|o| store.lock().get_all_payments(o).unwrap().len() == 1).count();
+        println!(
+            "scale: {stores} stores, {pool_size}-tx mempool: cold tick {cold:?}, warm tick {warm:?}, \
+             block with a payment for every store {block:?}, {paid}/{stores} paid"
+        );
+        assert_eq!(paid, stores, "every store's payment detected in the tick after its block");
+        assert!(warm < Duration::from_secs(2), "an unchanged pool costs almost nothing: {warm:?}");
+    }
 }
