@@ -467,4 +467,61 @@ mod tests {
         assert!(is_safe_redirect_path("/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&nonce=abc"));
         assert!(is_safe_redirect_path("/dashboard/connect"));
     }
+
+    /// A merchant picks Light, Dark or System from any page's theme toggle
+    /// and lands back on that page; the choice is kept on their account, so
+    /// every later page (and the POS) renders in it without JavaScript. A
+    /// crafted off-site `next` falls back to the dashboard.
+    #[tokio::test]
+    async fn the_theme_a_merchant_picks_is_kept_and_they_return_to_their_page() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
+        let state = crate::http::AppState {
+            db: { let db = crate::db::Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
+            engine_client: crate::engine_client::EngineClient::new(format!("http://{}", engine.addr)),
+            encryption_key: [7u8; 32],
+            status_cache: crate::http::status_page::new_status_cache(),
+            exchange_rate: std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
+            abuse: Default::default(),
+            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+        };
+        let router = crate::http::build_router(state);
+        let json = |uri: &str, body: serde_json::Value| Request::builder().method("POST").uri(uri)
+            .header("content-type", "application/json").body(Body::from(body.to_string())).unwrap();
+        let credentials = serde_json::json!({ "email": "theme@example.com", "password": "correct horse battery staple" });
+        assert_eq!(router.clone().oneshot(json("/signup", credentials.clone())).await.unwrap().status(), StatusCode::CREATED);
+        let login = router.clone().oneshot(json("/login", credentials)).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&login.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let session = body["session_token"].as_str().unwrap().to_string();
+
+        let pick = |theme: &str, next: &str| Request::builder().method("POST").uri("/dashboard/theme")
+            .header("authorization", format!("Bearer {session}")).header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(format!("theme={theme}&next={}", next.replace('/', "%2F").replace(':', "%3A")))).unwrap();
+        let page_theme = |router: axum::Router| {
+            let session = session.clone();
+            async move {
+                let response = router.oneshot(Request::builder().uri("/dashboard").header("authorization", format!("Bearer {session}"))
+                    .body(Body::empty()).unwrap()).await.unwrap();
+                let html = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+                html.split("<html").nth(1).unwrap().split('>').next().unwrap().to_string()
+            }
+        };
+
+        for (theme, attribute) in [("dark", Some("data-theme=\"dark\"")), ("light", Some("data-theme=\"light\"")), ("system", None)] {
+            let response = router.clone().oneshot(pick(theme, "/dashboard/stores")).await.unwrap();
+            assert_eq!(response.status(), StatusCode::FOUND);
+            assert_eq!(response.headers()["location"], "/dashboard/stores", "{theme}: back to the page it was picked on");
+            let html_tag = page_theme(router.clone()).await;
+            match attribute {
+                Some(attribute) => assert!(html_tag.contains(attribute), "{theme}: {html_tag}"),
+                None => assert!(!html_tag.contains("data-theme"), "system follows the device: {html_tag}"),
+            }
+        }
+        let response = router.clone().oneshot(pick("dark", "https://evil.example/phish")).await.unwrap();
+        assert_eq!(response.headers()["location"], "/dashboard");
+    }
 }
