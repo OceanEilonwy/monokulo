@@ -254,6 +254,7 @@ async fn start_monokulo(engine_addr: SocketAddr) -> (AppState, SocketAddr, Store
             network: Some("mainnet".to_string()),
             confirmations_required: None,
             order_expiry_seconds: Some(3600),
+            key_custody_backend: None,
         })
         .await
         .expect("creating the test tenant");

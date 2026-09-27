@@ -123,6 +123,7 @@ async fn main() {
         network: Some("mainnet".to_string()),
         confirmations_required: Some(1),
         order_expiry_seconds: Some(3600),
+        key_custody_backend: None,
     }).await.expect("create fixture tenant");
     let order = engine_client.create_order(&tenant.secret_token, 1_000_000_000, Some("Fixture order".into()), None)
         .await.expect("create fixture order");

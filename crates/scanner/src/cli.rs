@@ -32,7 +32,8 @@ scanner - a self-hosted Monero payment gateway
 USAGE:
     scanner [--strict-tls]
     scanner --bootstrap-wallet --primary-address <ADDR> --view-key <HEX> \
---spend-pubkey <HEX> [--network mainnet|stagenet|testnet]
+--spend-pubkey <HEX> [--network mainnet|stagenet|testnet] \
+[--key-custody-backend plain|socket]
     scanner --rotate-secret [--pk <PK>]
     scanner --show-tenant [--pk <PK>]
 
@@ -67,6 +68,11 @@ OPTIONS:
     --spend-pubkey         The wallet's public spend key, hex-encoded
                           (bootstrap only) - the public half only, never the
                           private spend key.
+    --key-custody-backend  Where the wallet's keys are kept (bootstrap only):
+                          one of the enabled key_custody.enabled_backends;
+                          key_custody.default_backend when not given. The
+                          primary address must be the wallet of the given
+                          keys on the given network, or nothing is created.
     --network              Which network the bootstrap tenant watches -
                           mainnet (default), stagenet, or testnet.
     --rotate-secret        Mint a fresh admin secret (sk_...) for a tenant,
@@ -142,6 +148,7 @@ fn parse_bootstrap_wallet_args(args: &[String]) -> Result<BootstrapWalletArgs, S
     let mut view_key_hex = None;
     let mut spend_pubkey_hex = None;
     let mut network = "mainnet".to_string();
+    let mut key_custody_backend = None;
     let mut iter = args.iter();
     while let Some(arg) = iter.next() {
         match arg.as_str() {
@@ -149,6 +156,9 @@ fn parse_bootstrap_wallet_args(args: &[String]) -> Result<BootstrapWalletArgs, S
             "--view-key" => view_key_hex = Some(iter.next().ok_or("--view-key needs a value")?.clone()),
             "--spend-pubkey" => spend_pubkey_hex = Some(iter.next().ok_or("--spend-pubkey needs a value")?.clone()),
             "--network" => network = iter.next().ok_or("--network needs a value")?.clone(),
+            "--key-custody-backend" => {
+                key_custody_backend = Some(iter.next().ok_or("--key-custody-backend needs a value")?.clone())
+            }
             "--bootstrap-wallet" => {}
             other => return Err(format!("unrecognized argument {other:?} for --bootstrap-wallet")),
         }
@@ -158,6 +168,7 @@ fn parse_bootstrap_wallet_args(args: &[String]) -> Result<BootstrapWalletArgs, S
         view_key_hex: view_key_hex.ok_or("--bootstrap-wallet requires --view-key")?,
         spend_pubkey_hex: spend_pubkey_hex.ok_or("--bootstrap-wallet requires --spend-pubkey")?,
         network,
+        key_custody_backend,
     })
 }
 

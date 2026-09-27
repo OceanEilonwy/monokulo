@@ -138,6 +138,9 @@ pub struct ConnectForm {
     pub base_currency: String,
     #[serde(default)]
     pub confirmations_required: Option<u64>,
+    /// Only sent when the form offered a choice (part 5).
+    #[serde(default)]
+    pub key_custody_backend: Option<String>,
 }
 
 /// `chrome.logged_in` is always `false` here, not a real per-request
@@ -184,6 +187,7 @@ fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&
         network_stagenet_selected,
         network_testnet_selected,
         currency_options,
+        custody_choices: super::status_page::custody_choice_views(state, resubmit.and_then(|f| f.key_custody_backend.as_deref())),
     };
     views::connect::page(&chrome, &data).into_response()
 }
@@ -202,6 +206,7 @@ fn render_connect_success(state: &AppState, connection_id: &str, public_key: &st
         network_stagenet_selected: false,
         network_testnet_selected: false,
         currency_options: Vec::new(),
+        custody_choices: vec![],
     };
     views::connect::page(&chrome, &data).into_response()
 }
@@ -409,6 +414,7 @@ pub async fn connect_submit(
         confirmations_required: form.confirmations_required,
         order_expiry_seconds: None,
         base_currency: form.base_currency.clone(),
+        key_custody_backend: form.key_custody_backend.clone().filter(|b| !b.is_empty()),
     };
 
     match connections::create_connection_for_user(&state, &user, fields).await {

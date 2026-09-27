@@ -1033,7 +1033,7 @@ fn state_with_owner_and_store(tenant_public_key: &str) -> (AppState, crate::db::
 }
 
 fn status_with(unserved: Vec<crate::engine_client::UnservedTenant>) -> crate::engine_client::EngineStatusResponse {
-    crate::engine_client::EngineStatusResponse { networks: vec![], poll_interval_secs: 1, generated_at: 0, unserved_tenants: unserved }
+    crate::engine_client::EngineStatusResponse { networks: vec![], poll_interval_secs: 1, generated_at: 0, unserved_tenants: unserved, key_custody: vec![], key_custody_default: None }
 }
 
 #[tokio::test]

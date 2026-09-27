@@ -90,6 +90,55 @@ pub struct StoreSettingsData {
     pub embed_restricted: bool,
     /// At least one domain counts as verified, so it can be turned on.
     pub embed_can_restrict: bool,
+    /// Where the store's keys are kept and where they could move (part 5);
+    /// `None` when there's nowhere else to move them.
+    pub key_storage: Option<KeyStorageView>,
+}
+
+pub struct KeyStorageView {
+    /// A description of the backend holding the keys now.
+    pub current: String,
+    /// The current backend is turned off: the store isn't being scanned.
+    pub current_disabled: bool,
+    /// The backends the keys could move to (never the current one).
+    pub move_to: Vec<super::connect::CustodyChoice>,
+}
+
+/// "Key storage": where the store's view key is kept, and a form to move it
+/// (task 5.6). The keys are entered again - they're never read back from
+/// anywhere - and the fields are always empty on render.
+fn key_storage_section(connection_id: &str, key_storage: &KeyStorageView) -> Markup {
+    html! {
+        h2 id="key-storage" { "Key storage" }
+        p { strong { "Kept: " } (key_storage.current) }
+        @if key_storage.current_disabled {
+            p class="error" {
+                "This way of storing keys has been turned off on this instance, so payments to this store aren't "
+                "being detected. Move the keys below to start again."
+            }
+        }
+        form method="post" action=(format!("/dashboard/stores/{connection_id}/settings/key-custody")) {
+            label {
+                "Move to"
+                select name="backend" {
+                    @for choice in &key_storage.move_to {
+                        option value=(choice.backend) selected[choice.selected] { (choice.label) }
+                    }
+                }
+            }
+            label {
+                "View key (hex)"
+                input type="password" name="view_key_hex" value="" required pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters";
+                span class="field-help" { "This store's private view key, entered again: keys are never copied between storage backends." }
+            }
+            label {
+                "Spend public key (hex)"
+                input type="text" name="spend_pubkey_hex" value="" required pattern="[0-9a-fA-F]{64}" autocomplete="off" placeholder="64 hex characters";
+                span class="field-help" { "They must be the same wallet this store already uses - it's checked before anything moves." }
+            }
+            button type="submit" { "Move keys" }
+        }
+    }
 }
 
 pub struct StoreSettingsViewModel {
@@ -211,6 +260,10 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                         }
                         button type="submit" { "Update" }
                     }
+                }
+
+                @if let Some(key_storage) = &store.key_storage {
+                    (key_storage_section(&store.connection_id, key_storage))
                 }
 
                 (verified_domains(store))
@@ -398,6 +451,7 @@ mod tests {
             embed_domains: vec![],
             embed_restricted: false,
             embed_can_restrict: false,
+            key_storage: None,
         }
     }
 

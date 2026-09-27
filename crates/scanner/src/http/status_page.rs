@@ -96,6 +96,9 @@ pub struct EngineStatusResponse {
     pub unserved_tenants: Vec<UnservedTenant>,
     /// Each enabled key custody backend and whether it answers (task 5.5).
     pub key_custody: Vec<CustodyBackendStatus>,
+    /// The backend a new store's keys go to unless it asks for another;
+    /// `None` when there's no choice (a single backend).
+    pub key_custody_default: Option<String>,
 }
 
 #[derive(Serialize, Clone, Debug, PartialEq)]
@@ -243,6 +246,7 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
         loop_restarts,
         webhook_backlog: WebhookBacklog { due, oldest_waiting_secs: oldest.map(|at| now - at) },
         unserved_tenants,
+        key_custody_default: (!key_custody.is_empty()).then(|| state.settings.custody.load().default.as_str().to_string()),
         key_custody,
     })
     .into_response()

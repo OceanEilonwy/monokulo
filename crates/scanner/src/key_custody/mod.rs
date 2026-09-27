@@ -33,6 +33,19 @@
 mod plain;
 mod router;
 pub use router::CustodyRouter;
+
+/// Whether `material` is the wallet `address` belongs to, on `network`:
+/// the public spend key must match, and so must the public view key derived
+/// from the private view key. Compares keys, not strings, so any valid
+/// spelling of the address works. `Err` if the address doesn't parse or the
+/// keys are malformed.
+pub fn wallet_matches_address(material: &WalletMaterial, address: &str, network: Network) -> Result<bool, String> {
+    let address: monero::Address = address.parse().map_err(|_| format!("{address:?} is not a Monero address"))?;
+    let pair = material.to_view_pair().map_err(|e| e.to_string())?;
+    Ok(address.network == network
+        && address.public_spend == pair.spend
+        && address.public_view == monero::PublicKey::from_private_key(&pair.view))
+}
 pub use plain::PlainKeyCustody;
 
 pub use shared::key_custody::{

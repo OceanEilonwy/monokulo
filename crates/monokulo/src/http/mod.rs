@@ -152,6 +152,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/stores/{id}/settings/domains/{domain_id}/check", post(embed_domains::check_domain))
         .route("/dashboard/stores/{id}/settings/domains/{domain_id}/delete", post(embed_domains::delete_domain))
         .route("/dashboard/stores/{id}/settings/embed-restriction", post(embed_domains::set_embed_restriction))
+        .route("/dashboard/stores/{id}/settings/key-custody", post(orders::move_key_storage))
         .route("/dashboard/stores/{id}/embed-warning/dismiss", post(embed_domains::dismiss_embed_warning))
         .route(
             "/dashboard/stores/{id}/orders/new",

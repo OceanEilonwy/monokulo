@@ -27,6 +27,10 @@ pub enum LocalAdminError {
     AlreadyBootstrapped,
     #[error("invalid wallet key material: {0}")]
     KeyMaterial(#[from] crate::key_custody::KeyCustodyError),
+    #[error("the key custody backend {0:?} is not enabled (enabled: {1})")]
+    BackendNotEnabled(String, String),
+    #[error("--primary-address doesn't belong to these keys on {0}: {1}")]
+    AddressMismatch(String, String),
 }
 
 /// `--bootstrap-wallet`'s own arguments - the explicit-flags replacement for what
@@ -40,6 +44,8 @@ pub struct BootstrapWalletArgs {
     pub view_key_hex: String,
     pub spend_pubkey_hex: String,
     pub network: String,
+    /// Where the keys are kept; the instance's default when `None`.
+    pub key_custody_backend: Option<String>,
 }
 
 /// Creates the one tenant a self-hosted deployment needs - but only if none
@@ -60,6 +66,23 @@ pub async fn bootstrap_wallet(
         return Err(LocalAdminError::AlreadyBootstrapped);
     }
     let material = WalletMaterial::from_hex(&args.view_key_hex, &args.spend_pubkey_hex)?;
+    let network = crate::http::parse_network(&args.network)
+        .map_err(|e| LocalAdminError::AddressMismatch(args.network.clone(), e.to_string()))?;
+    match crate::key_custody::wallet_matches_address(&material, &args.primary_address, network) {
+        Ok(true) => {}
+        Ok(false) => {
+            return Err(LocalAdminError::AddressMismatch(
+                args.network.clone(),
+                "it is a different wallet, or a different network".to_string(),
+            ))
+        }
+        Err(e) => return Err(LocalAdminError::AddressMismatch(args.network.clone(), e)),
+    }
+    let key_custody_backend = args.key_custody_backend.as_deref().unwrap_or(key_custody_backend);
+    let enabled = key_custody.enabled_backends();
+    if !enabled.is_empty() && !enabled.iter().any(|b| b == key_custody_backend) {
+        return Err(LocalAdminError::BackendNotEnabled(key_custody_backend.to_string(), enabled.join(", ")));
+    }
     let sealed = key_custody.seal_in(key_custody_backend, &material).await.map_err(LocalAdminError::KeyMaterial)?;
 
     let confirmations_required: u64 = crate::settings::get(store, &crate::settings::PAYMENT_CONFIRMATIONS_REQUIRED);
@@ -273,13 +296,57 @@ mod tests {
         }
     }
 
+    /// A real stagenet wallet's keys and matching address.
     fn bootstrap_args() -> BootstrapWalletArgs {
+        let scalar = |seed: u8| {
+            let mut b = [seed; 32];
+            b[31] &= 0x0f;
+            monero::PrivateKey::from_slice(&b).unwrap()
+        };
+        let (view, spend) = (scalar(0xaa), scalar(0xbb));
+        let spend_pub = monero::PublicKey::from_private_key(&spend);
+        let address = monero::Address::standard(monero::Network::Stagenet, spend_pub, monero::PublicKey::from_private_key(&view));
         BootstrapWalletArgs {
-            primary_address: "4abc".to_string(),
-            view_key_hex: "aa".repeat(32),
-            spend_pubkey_hex: "bb".repeat(32),
+            primary_address: address.to_string(),
+            view_key_hex: hex::encode(view.to_bytes()),
+            spend_pubkey_hex: hex::encode(spend_pub.to_bytes()),
             network: "stagenet".to_string(),
+            key_custody_backend: None,
         }
+    }
+
+    #[tokio::test]
+    async fn bootstrap_wallet_refuses_an_address_that_is_not_the_wallet_of_the_keys() {
+        let store = Store::open_in_memory().unwrap();
+        let key_custody: std::sync::Arc<dyn KeyCustody> = std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default());
+        let mut args = bootstrap_args();
+        args.network = "mainnet".to_string();
+        let err = bootstrap_wallet(&store, &key_custody, "plain", args).await.unwrap_err();
+        assert!(matches!(err, LocalAdminError::AddressMismatch(..)), "a stagenet address on mainnet: {err}");
+        let mut args = bootstrap_args();
+        args.primary_address = "4abc".to_string();
+        let err = bootstrap_wallet(&store, &key_custody, "plain", args).await.unwrap_err();
+        assert!(err.to_string().contains("not a Monero address"), "{err}");
+        assert_eq!(store.count_tenants().unwrap(), 0);
+    }
+
+    #[tokio::test]
+    async fn bootstrap_wallet_keeps_the_keys_in_the_backend_asked_for_if_it_is_enabled() {
+        let store = Store::open_in_memory().unwrap();
+        let backends: std::collections::HashMap<String, std::sync::Arc<dyn KeyCustody>> = std::collections::HashMap::from([
+            ("plain".to_string(), std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default()) as std::sync::Arc<dyn KeyCustody>),
+            ("socket".to_string(), std::sync::Arc::new(crate::key_custody::PlainKeyCustody::default()) as std::sync::Arc<dyn KeyCustody>),
+        ]);
+        let key_custody: std::sync::Arc<dyn KeyCustody> = std::sync::Arc::new(crate::key_custody::CustodyRouter::new(backends, "plain"));
+        let mut args = bootstrap_args();
+        args.key_custody_backend = Some("hsm".to_string());
+        let err = bootstrap_wallet(&store, &key_custody, "plain", args).await.unwrap_err();
+        assert!(matches!(err, LocalAdminError::BackendNotEnabled(..)), "{err}");
+
+        let mut args = bootstrap_args();
+        args.key_custody_backend = Some("socket".to_string());
+        let created = bootstrap_wallet(&store, &key_custody, "plain", args).await.unwrap();
+        assert_eq!(created.tenant.key_custody_backend, "socket");
     }
 
     #[tokio::test]

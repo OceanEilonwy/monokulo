@@ -608,6 +608,24 @@ pub(super) async fn render_store_settings_page(
     };
 
     let tenant_result = state.engine_client.get_tenant(&sk).await;
+    let key_storage = tenant_result.as_ref().ok().and_then(|t| t.key_custody_backend.clone()).and_then(|current| {
+        let enabled = super::status_page::known_enabled_custody_backends(state);
+        let move_to: Vec<views::connect::CustodyChoice> = enabled
+            .iter()
+            .filter(|b| **b != current)
+            .enumerate()
+            .map(|(i, backend)| views::connect::CustodyChoice {
+                backend: backend.clone(),
+                label: super::status_page::custody_backend_label(backend),
+                selected: i == 0,
+            })
+            .collect();
+        (!move_to.is_empty()).then(|| views::store_settings::KeyStorageView {
+            current: super::status_page::custody_backend_label(&current),
+            current_disabled: !enabled.contains(&current),
+            move_to,
+        })
+    });
     let confirmations_required = tenant_result.as_ref().map(|t| t.confirmations_required).unwrap_or(10);
     // Native 0-conf: the Default row's own checkbox is checked exactly when the
     // tenant's default confirmations count already is 0 - no separate engine
@@ -671,6 +689,7 @@ pub(super) async fn render_store_settings_page(
             embed_domains,
             embed_restricted,
             embed_can_restrict,
+            key_storage,
         }),
     };
     views::store_settings::page(&chrome, &view_model).into_response()
@@ -915,6 +934,53 @@ pub async fn update_confirmations_required(
         }
         Err(_) => {
             render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct MoveKeyStorageForm {
+    pub backend: String,
+    pub view_key_hex: String,
+    pub spend_pubkey_hex: String,
+}
+
+/// `POST /dashboard/stores/{id}/settings/key-custody` - moves the store's
+/// keys to another key custody backend (task 5.6). The engine checks the
+/// keys are this store's own wallet's before anything moves; a rejection
+/// re-renders the page with the reason and empty key fields.
+pub async fn move_key_storage(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path(id): Path<String>,
+    Form(form): Form<MoveKeyStorageForm>,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    match state
+        .engine_client
+        .switch_key_custody(&sk, form.backend.trim(), form.view_key_hex.trim(), form.spend_pubkey_hex.trim())
+        .await
+    {
+        Ok(_) => {
+            // The engine's status (and so any "keys unavailable" alert) is
+            // re-read on the next page rather than waiting out the cache.
+            super::status_page::invalidate_status_cache(&state);
+            redirect_302(&format!("/dashboard/stores/{id}/settings#key-storage"))
+        }
+        Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
+            render_store_settings_page(&state, row, &user, Some(message), None).await
+        }
+        Err(_) => {
+            render_store_settings_page(&state, row, &user, Some("Something went wrong moving the keys. Check where they are kept below, and try again if they haven't moved.".to_string()), None)
+                .await
         }
     }
 }
@@ -2095,6 +2161,145 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A real engine offering two key custody backends, with monokulo's
+    /// status cache already holding its status (as it would after any page
+    /// load), so forms know the choices.
+    async fn test_state_with_two_custody_backends() -> (AppState, scanner_test_support::TestEngineHandle) {
+        let engine = scanner_test_support::TestEngineConfig::new()
+            .with_networks(&[monero::Network::Mainnet])
+            .with_two_custody_backends()
+            .spawn()
+            .await;
+        let (mut state, _unused_engine) = test_state_with_real_engine().await;
+        state.engine_client = EngineClient::new(format!("http://{}", engine.addr));
+        crate::http::status_page::get_status_cached(&state).await.expect("engine status");
+        (state, engine)
+    }
+
+    async fn get_page(router: &Router, session_token: &str, uri: &str) -> String {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri(uri)
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap()
+    }
+
+    async fn engine_backend_of(state: &AppState, public_key: &str) -> Option<String> {
+        let row = state.db.lock().get_store_connection_by_public_key(public_key).unwrap().unwrap();
+        let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
+        state.engine_client.get_tenant(&sk).await.unwrap().key_custody_backend
+    }
+
+    #[tokio::test]
+    async fn a_store_can_move_its_keys_to_another_backend_from_its_settings_page_without_js() {
+        let (state, _engine) = test_state_with_two_custody_backends().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(&router, "key-storage@example.com", "correct horse battery staple").await;
+        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        assert_eq!(engine_backend_of(&state, &public_key).await.as_deref(), Some("plain"));
+
+        let settings_uri = format!("/dashboard/stores/{connection_id}/settings");
+        let html = get_page(&router, &session_token, &settings_uri).await;
+        assert!(html.contains(r#"<h2 id="key-storage">Key storage</h2>"#), "{html}");
+        assert!(html.contains("In the engine (simplest)"), "the current place is described: {html}");
+        assert!(html.contains(r#"<option value="socket" selected>"#), "the other backend is offered: {html}");
+        assert!(!html.contains(TEST_VIEW_KEY_HEX), "keys are never echoed back");
+
+        // Keys of another wallet are refused, and nothing moves.
+        let wrong_view_key = format!("01{}", "0".repeat(62));
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("{settings_uri}/key-custody"),
+                &session_token,
+                &[("backend", "socket"), ("view_key_hex", wrong_view_key.as_str()), ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX)],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        assert!(html.contains("different wallet"), "{html}");
+        assert!(!html.contains(&wrong_view_key), "keys are never echoed back, even on an error");
+        assert_eq!(engine_backend_of(&state, &public_key).await.as_deref(), Some("plain"));
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                &format!("{settings_uri}/key-custody"),
+                &session_token,
+                &[("backend", "socket"), ("view_key_hex", TEST_VIEW_KEY_HEX), ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX)],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        assert_eq!(response.headers().get("location").unwrap(), &format!("{settings_uri}#key-storage"));
+        assert_eq!(engine_backend_of(&state, &public_key).await.as_deref(), Some("socket"));
+
+        crate::http::status_page::get_status_cached(&state).await.unwrap();
+        let html = get_page(&router, &session_token, &settings_uri).await;
+        assert!(html.contains("In a separate key storage service"), "{html}");
+        assert!(html.contains(r#"<option value="plain" selected>"#), "and it can move back: {html}");
+
+        // Still takes orders from its new place.
+        let order_id = seed_real_order(&state, _engine.addr, &public_key).await;
+        assert!(!order_id.is_empty());
+    }
+
+    #[tokio::test]
+    async fn a_new_store_can_choose_where_its_keys_are_kept_when_there_is_a_choice() {
+        let (state, _engine) = test_state_with_two_custody_backends().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(&router, "key-choice@example.com", "correct horse battery staple").await;
+
+        let html = get_page(&router, &session_token, "/dashboard/connect").await;
+        assert!(html.contains(r#"<select name="key_custody_backend">"#), "{html}");
+        assert!(html.contains(r#"<option value="plain" selected>"#), "the default is preselected: {html}");
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(
+                "/dashboard/connect",
+                &session_token,
+                &[
+                    ("site_url", "https://kept-apart.example.com"),
+                    ("view_key_hex", TEST_VIEW_KEY_HEX),
+                    ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                    ("network", "mainnet"),
+                    ("base_currency", "XMR"),
+                    ("key_custody_backend", "socket"),
+                ],
+            ))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let public_key = {
+            let db = state.db.lock();
+            let user = db.get_user_by_email("key-choice@example.com").unwrap().unwrap();
+            db.list_store_connections_for_user(&user.id).unwrap()[0].tenant_public_key.clone()
+        };
+        assert_eq!(engine_backend_of(&state, &public_key).await.as_deref(), Some("socket"));
+    }
+
+    #[tokio::test]
+    async fn with_a_single_key_storage_backend_no_choice_is_shown() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        crate::http::status_page::get_status_cached(&state).await.unwrap();
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(&router, "no-choice@example.com", "correct horse battery staple").await;
+        let (connection_id, _) = create_connection(&router, &session_token).await;
+        assert!(!get_page(&router, &session_token, "/dashboard/connect").await.contains("key_custody_backend"));
+        assert!(!get_page(&router, &session_token, &format!("/dashboard/stores/{connection_id}/settings")).await.contains("Key storage"));
     }
 
     #[tokio::test]

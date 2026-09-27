@@ -60,7 +60,7 @@ commits. Nothing is pushed.
 | Part 4 admin page | done except Playwright | 66f32ea | view tests; Playwright page tests wait for part 6 |
 | independent review of 8830c92 + 66f32ea | running | | |
 | Part 5 engine side (5.1 router, 5.2 live settings, 5.3 choose/switch API, 5.5 status) | done | see git log | monokulo side (5.4, 5.6, 5.7) next |
-| Part 5 monokulo side (backend choice, Key storage section) | next | | |
+| Part 5 monokulo side (5.4 backend choice, 5.6 Key storage section, 5.7 alerts) and bootstrap CLI flag | done | see git log | |
 
 ## Decisions made while working
 
@@ -151,6 +151,21 @@ reported at the end.)
   plain description and the default. It's on the private engine API, so
   monokulo proxies it; no auth needed beyond reaching the engine.
 
+- Part 5 (monokulo): the backend choice appears on the add-store forms only
+  when the engine offers more than one; the list comes from the cached
+  engine status (`/status` now carries `key_custody` and
+  `key_custody_default`), so forms stay synchronous and work with no JS.
+  Labels describe where keys live rather than naming backends.
+- Part 5 (monokulo): "Key storage" on a store's settings page shows where
+  the keys are and a plain form to move them, with the keys typed again.
+  The fields are always empty on render, including after an error. It is
+  shown whenever there is somewhere else to move to, including when the
+  store's own backend was turned off (then with a red notice).
+- Part 5: `--bootstrap-wallet` takes `--key-custody-backend` and now
+  checks that `--primary-address` is the wallet of the given keys on the
+  given network. Verified on the real binary with dev-run.sh's stagenet
+  wallet (accepted) and the same keys on mainnet (refused, nothing made).
+
 ## Baseline
 
 `cargo test --workspace` on `main` (43d7c53 + dc2d976): 913 passed,
@@ -165,13 +180,11 @@ After c51dc26: 1000 passed, 0 failed, 20 ignored.
 After 8830c92: 1011 passed, 0 failed, 21 ignored.
 After d7e7883: 1018 passed, 0 failed, 21 ignored.
 After part 5 engine side: 1031 passed, 0 failed, 21 ignored.
+After part 5 complete: 1036 passed, 0 failed, 21 ignored.
 
 ## Current step
 
-Part 5 monokulo side: backend choice when adding/connecting a store (only
-when more than one backend is enabled), a "Key storage" section on the
-store settings page with a no-JS switch form (keys never echoed back),
-bootstrap CLI `--key-custody-backend`. Then the review items of
+Review items of
 8830c92/66f32ea/d7e7883 (2: Limited body; 3: catching_up threshold and
 no_reachable_node from cooldown; 4: loop managers tested; minors), 1.5,
 part 6.

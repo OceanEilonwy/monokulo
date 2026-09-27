@@ -158,6 +158,35 @@ impl EngineClient {
         parse_response(response).await
     }
 
+    /// `GET {base_url}/api/v1/admin/key-custody` — the key custody backends
+    /// a store can choose from, and the default (part 5).
+    pub async fn key_custody_options(&self) -> Result<KeyCustodyOptions, EngineClientError> {
+        let target = self.target();
+        let response = target.http.get(format!("{}/api/v1/admin/key-custody", target.base_url)).send().await?;
+        parse_response(response).await
+    }
+
+    /// `PUT {base_url}/api/v1/admin/tenant/key-custody` — moves `sk`'s store
+    /// to another key custody backend. The keys must be the store's own
+    /// wallet's; the engine checks.
+    pub async fn switch_key_custody(
+        &self,
+        sk: &str,
+        backend: &str,
+        view_key_hex: &str,
+        spend_pubkey_hex: &str,
+    ) -> Result<TenantView, EngineClientError> {
+        let target = self.target();
+        let response = target
+            .http
+            .put(format!("{}/api/v1/admin/tenant/key-custody", target.base_url))
+            .bearer_auth(sk)
+            .json(&SwitchKeyCustodyRequest { backend, view_key_hex, spend_pubkey_hex })
+            .send()
+            .await?;
+        parse_response(response).await
+    }
+
     /// `GET {base_url}/api/v1/admin/tenant` — fetches the tenant that owns
     /// `sk`, authenticated as that tenant via `Authorization: Bearer sk_...`.
     pub async fn get_tenant(&self, sk: &str) -> Result<TenantView, EngineClientError> {
@@ -472,6 +501,29 @@ pub struct CreateTenantRequest {
     pub network: Option<String>,
     pub confirmations_required: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
+    /// The engine's default when `None` (part 5).
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub key_custody_backend: Option<String>,
+}
+
+/// Mirrors the engine's `KeyCustodyView`: the backends a store may choose.
+#[derive(Debug, Deserialize, Clone)]
+pub struct KeyCustodyOptions {
+    pub enabled: Vec<KeyCustodyBackendOption>,
+    pub default: String,
+}
+
+#[derive(Debug, Deserialize, Clone)]
+pub struct KeyCustodyBackendOption {
+    pub name: String,
+    pub description: String,
+}
+
+#[derive(Serialize)]
+struct SwitchKeyCustodyRequest<'a> {
+    backend: &'a str,
+    view_key_hex: &'a str,
+    spend_pubkey_hex: &'a str,
 }
 
 /// Mirrors the engine's own `CreateTenantResponse`.
@@ -491,6 +543,10 @@ pub struct TenantView {
     pub network: String,
     pub confirmations_required: u64,
     pub order_expiry_seconds: i64,
+    /// Which key custody backend holds this store's keys. Absent from an
+    /// engine older than part 5.
+    #[serde(default)]
+    pub key_custody_backend: Option<String>,
 }
 
 /// Mirrors the engine's own `OrderView` (`src/http/admin.rs` at the repo
@@ -676,6 +732,18 @@ pub struct EngineStatusResponse {
     /// 3.7). Absent from an older engine.
     #[serde(default)]
     pub unserved_tenants: Vec<UnservedTenant>,
+    /// Each enabled key custody backend and whether it answers (part 5).
+    /// Empty from an older engine, or one with a single backend.
+    #[serde(default)]
+    pub key_custody: Vec<CustodyBackendStatus>,
+    #[serde(default)]
+    pub key_custody_default: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize, PartialEq)]
+pub struct CustodyBackendStatus {
+    pub backend: String,
+    pub error: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, PartialEq)]
@@ -712,6 +780,7 @@ mod tests {
             network: Some("mainnet".to_string()),
             confirmations_required: None,
             order_expiry_seconds: None,
+            key_custody_backend: None,
         }
     }
 

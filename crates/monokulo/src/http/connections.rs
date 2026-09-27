@@ -55,6 +55,10 @@ pub struct CreateConnectionRequest {
     /// canonical code or ticker - see that module's own doc comment on why
     /// this never depends on which exchange-rate provider is enabled).
     pub base_currency: String,
+    /// Which key custody backend keeps the store's keys; the instance's
+    /// default when absent (part 5).
+    #[serde(default)]
+    pub key_custody_backend: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -79,6 +83,8 @@ pub(super) struct CreateConnectionFields {
     pub confirmations_required: Option<u64>,
     pub order_expiry_seconds: Option<i64>,
     pub base_currency: String,
+    /// The engine's default when `None` (part 5).
+    pub key_custody_backend: Option<String>,
 }
 
 /// What a successful connection creation hands back to either caller - the
@@ -129,6 +135,7 @@ pub(super) async fn create_connection_for_user(
             network: req.network,
             confirmations_required: req.confirmations_required,
             order_expiry_seconds: req.order_expiry_seconds,
+            key_custody_backend: req.key_custody_backend,
         })
         .await
         .map_err(|e| match e {
@@ -188,6 +195,7 @@ pub async fn create_connection(
         confirmations_required: req.confirmations_required,
         order_expiry_seconds: req.order_expiry_seconds,
         base_currency: req.base_currency,
+        key_custody_backend: req.key_custody_backend,
     };
 
     let outcome = create_connection_for_user(&state, &user, fields).await.map_err(|e| match e {

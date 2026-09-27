@@ -230,13 +230,9 @@ pub struct SwitchKeyCustodyRequest {
 /// typed). The public spend key must match, and so must the public view key
 /// derived from the given private view key.
 pub fn is_same_wallet(material: &WalletMaterial, primary_address: &str, network: monero::Network) -> Result<bool, ApiError> {
-    let address: monero::Address = primary_address
-        .parse()
-        .map_err(|_| ApiError::Internal("the store's primary address doesn't parse".to_string()))?;
-    let pair = material.to_view_pair().map_err(|e| ApiError::BadRequest(e.to_string()))?;
-    Ok(address.network == network
-        && address.public_spend == pair.spend
-        && address.public_view == monero::PublicKey::from_private_key(&pair.view))
+    // The keys were already parsed by `WalletMaterial::from_hex`, so an
+    // error here is the stored address.
+    crate::key_custody::wallet_matches_address(material, primary_address, network).map_err(ApiError::Internal)
 }
 
 /// `PUT /api/v1/admin/tenant/key-custody` - moves the authenticated store to

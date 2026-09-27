@@ -396,6 +396,7 @@ pub struct TestEngineConfig {
     /// `Some(path)` when [`TestEngineConfig::with_socket_key_custody`] has been
     /// used - see that method's own doc comment.
     key_custody_socket_path: Option<String>,
+    two_custody_backends: bool,
     /// `true` when [`TestEngineConfig::with_admin_lookup_daemon`] has been used -
     /// see that method's own doc comment.
     admin_lookup_daemon: bool,
@@ -545,6 +546,15 @@ impl TestEngineConfig {
     /// the spawned engine," not a different kind of thing.
     ///
     /// [`spawn`]: TestEngineConfig::spawn
+    /// Per-store key custody with two backends enabled, `plain` (the
+    /// default) and one named `socket` - both in-process, so a store can be
+    /// created in either and moved between them without a
+    /// key-custody-server (admin_settings_v2.md part 5).
+    pub fn with_two_custody_backends(mut self) -> Self {
+        self.two_custody_backends = true;
+        self
+    }
+
     pub fn with_socket_key_custody(mut self, socket_path: impl Into<String>) -> Self {
         self.key_custody_socket_path = Some(socket_path.into());
         self
@@ -580,6 +590,13 @@ impl TestEngineConfig {
                         )
                     });
                     (Arc::new(client), "socket")
+                }
+                None if self.two_custody_backends => {
+                    let backends: HashMap<String, Arc<dyn KeyCustody>> = HashMap::from([
+                        ("plain".to_string(), Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>),
+                        ("socket".to_string(), Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>),
+                    ]);
+                    (Arc::new(scanner::key_custody::CustodyRouter::new(backends, "plain")), "plain")
                 }
                 None => (Arc::new(PlainKeyCustody::default()), "plain"),
             };

@@ -99,6 +99,71 @@ pub fn known_health(state: &AppState) -> Option<bool> {
     Some(is_healthy(&cached.result))
 }
 
+/// The key custody backends a new store may choose from, with the default
+/// first, from the same cache as [`known_health`] (part 5). Empty unless
+/// the engine offers more than one, so forms only show the choice when
+/// there is one to make.
+pub fn known_custody_choices(state: &AppState) -> Vec<String> {
+    let choices = known_enabled_custody_backends(state);
+    if choices.len() < 2 {
+        return Vec::new();
+    }
+    choices
+}
+
+/// Every key custody backend the engine has enabled, the default first.
+/// Empty when the engine offers no choice or its status isn't known.
+pub fn known_enabled_custody_backends(state: &AppState) -> Vec<String> {
+    let cache = state.status_cache.lock();
+    let Some(status) = cache
+        .cached
+        .as_ref()
+        .filter(|cached| cached.fetched_at.elapsed() < KNOWN_STATUS_MAX_AGE)
+        .and_then(|cached| cached.result.as_ref().ok())
+    else {
+        return Vec::new();
+    };
+    let mut choices: Vec<String> = status.key_custody.iter().map(|b| b.backend.clone()).collect();
+    if let Some(default) = &status.key_custody_default {
+        if let Some(at) = choices.iter().position(|b| b == default) {
+            let default = choices.remove(at);
+            choices.insert(0, default);
+        }
+    }
+    choices
+}
+
+/// [`known_custody_choices`] as form options, `selected` (or the default)
+/// selected.
+pub fn custody_choice_views(state: &AppState, selected: Option<&str>) -> Vec<crate::views::connect::CustodyChoice> {
+    let choices = known_custody_choices(state);
+    let selected = selected.filter(|s| choices.iter().any(|c| c == s)).or(choices.first().map(String::as_str)).map(str::to_string);
+    choices
+        .iter()
+        .map(|backend| crate::views::connect::CustodyChoice {
+            backend: backend.clone(),
+            label: custody_backend_label(backend),
+            selected: selected.as_deref() == Some(backend.as_str()),
+        })
+        .collect()
+}
+
+/// What a key custody backend is, for a store owner choosing one.
+pub fn custody_backend_label(backend: &str) -> String {
+    match backend {
+        "plain" => "In the engine (simplest)".to_string(),
+        "socket" => "In a separate key storage service (the engine never holds the keys)".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// Forgets the cached status, so the next page reads the engine's again:
+/// after a change that the status reflects (a store moving its keys, the
+/// engine address changing).
+pub fn invalidate_status_cache(state: &AppState) {
+    state.status_cache.lock().cached = None;
+}
+
 /// Puts `status` in the cache as if just fetched, for tests of pages that
 /// read it without waiting on an engine.
 #[cfg(test)]
@@ -143,7 +208,7 @@ fn is_healthy(result: &Result<EngineStatusResponse, String>) -> bool {
 /// simpler than a mutex-held-across-await or a dedicated refresh task, and
 /// "occasionally two real fetches instead of one" is a fine outcome for what
 /// this exists to bound (typical page-view volume, not a flood).
-async fn get_status_cached(state: &AppState) -> Result<EngineStatusResponse, String> {
+pub(crate) async fn get_status_cached(state: &AppState) -> Result<EngineStatusResponse, String> {
     if let Some(cached) = state.status_cache.lock().cached.as_ref() {
         if cached.fetched_at.elapsed() < CACHE_TTL {
             return cached.result.clone();
@@ -478,6 +543,8 @@ mod tests {
                 poll_interval_secs: 2,
                 generated_at: now - 5,
                 unserved_tenants: vec![],
+                key_custody: vec![],
+                key_custody_default: None,
             });
             let labels: Vec<(&str, &str)> = view.networks.iter().map(|n| (n.scanner.status_label.as_str(), n.scanner.status_tag_class.as_str())).collect();
             assert_eq!(labels, vec![("healthy", "tag-ok"), ("stale", "tag-error"), ("tick failing", "tag-error")]);

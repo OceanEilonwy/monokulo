@@ -29,6 +29,15 @@ pub struct ConnectViewModel {
     pub network_stagenet_selected: bool,
     pub network_testnet_selected: bool,
     pub currency_options: Vec<crate::currencies::CurrencyOptionView>,
+    /// Where the store's keys can be kept; empty unless there's a choice.
+    pub custody_choices: Vec<CustodyChoice>,
+}
+
+/// One key custody backend a new store can choose (part 5).
+pub struct CustodyChoice {
+    pub backend: String,
+    pub label: String,
+    pub selected: bool,
 }
 
 /// The same wallet-connection fields [`ConnectViewModel`] has, plus the
@@ -48,6 +57,7 @@ pub struct PlatformConnectViewModel {
     pub network_stagenet_selected: bool,
     pub network_testnet_selected: bool,
     pub currency_options: Vec<crate::currencies::CurrencyOptionView>,
+    pub custody_choices: Vec<CustodyChoice>,
     /// Every store this user already has connected (any platform) - lets
     /// the confirm screen offer "use an existing store" instead of always
     /// forcing a brand-new tenant to be provisioned.
@@ -70,6 +80,27 @@ fn network_select(mainnet: bool, stagenet: bool, testnet: bool) -> Markup {
             option value="mainnet" selected[mainnet] { "mainnet" }
             option value="stagenet" selected[stagenet] { "stagenet" }
             option value="testnet" selected[testnet] { "testnet" }
+        }
+    }
+}
+
+/// The key storage choice, shown only when this instance offers more than
+/// one backend.
+fn custody_select(choices: &[CustodyChoice]) -> Markup {
+    html! {
+        @if choices.len() > 1 {
+            label {
+                "Key storage"
+                select name="key_custody_backend" {
+                    @for choice in choices {
+                        option value=(choice.backend) selected[choice.selected] { (choice.label) }
+                    }
+                }
+                span class="field-help" {
+                    "Where this store's view key is kept. You can move it later from the store's settings, "
+                    "by entering the keys again."
+                }
+            }
         }
     }
 }
@@ -145,6 +176,7 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
                         (network_select(data.network_mainnet_selected, data.network_stagenet_selected, data.network_testnet_selected))
                         span class="field-help" { "Leave on " code { "mainnet" } " unless this is a test wallet." }
                     }
+                    (custody_select(&data.custody_choices))
                     label {
                         "Base currency"
                         (currency_select(&data.currency_options))
@@ -228,6 +260,7 @@ pub fn platform_page(chrome: &PageChrome, data: &PlatformConnectViewModel) -> Ma
                     "Network"
                     (network_select(data.network_mainnet_selected, data.network_stagenet_selected, data.network_testnet_selected))
                 }
+                (custody_select(&data.custody_choices))
                 label {
                     "Base currency"
                     (currency_select(&data.currency_options))
@@ -291,6 +324,7 @@ mod tests {
             network_stagenet_selected: false,
             network_testnet_selected: false,
             currency_options: vec![],
+            custody_choices: vec![],
         }
     }
 
@@ -364,6 +398,7 @@ mod tests {
             network_stagenet_selected: false,
             network_testnet_selected: false,
             currency_options: vec![],
+            custody_choices: vec![],
             existing_stores: vec![],
             unavailable: None,
         }

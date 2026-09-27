@@ -116,6 +116,7 @@ fn render_confirm_form(
         network_stagenet_selected,
         network_testnet_selected,
         currency_options,
+        custody_choices: super::status_page::custody_choice_views(state, resubmit.and_then(|f| f.key_custody_backend.as_deref())),
         existing_stores,
         unavailable,
     };
@@ -232,6 +233,9 @@ pub struct ConfirmForm {
     /// `crate::currencies` in `connections::create_connection_for_user`.
     #[serde(default)]
     pub base_currency: Option<String>,
+    /// Only sent when the form offered a choice (part 5).
+    #[serde(default)]
+    pub key_custody_backend: Option<String>,
 }
 
 /// `POST /connect/{platform}` (behind [`AuthedUser`], WBS 1.4.1 step 4): the
@@ -271,6 +275,7 @@ async fn confirm_new_store(state: &AppState, user: &UserRow, platform: &str, for
         confirmations_required: form.confirmations_required,
         order_expiry_seconds: form.order_expiry_seconds,
         base_currency: form.base_currency.clone().unwrap_or_default(),
+        key_custody_backend: form.key_custody_backend.clone().filter(|b| !b.is_empty()),
     };
 
     let outcome = match connections::create_connection_for_user(state, user, fields).await {
