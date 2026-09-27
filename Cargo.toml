@@ -3,6 +3,7 @@ resolver = "2"
 members = [
     "crates/scanner",
     "crates/shared",
+    "crates/live-settings",
     "crates/monokulo",
     "crates/mock-woocommerce",
     "crates/scanner-test-support",

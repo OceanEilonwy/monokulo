@@ -1,0 +1,25 @@
+[package]
+name = "live-settings"
+version = "0.1.0"
+edition = "2021"
+description = "Typed settings that resolve env > stored > default and can be applied to a running process"
+
+[dependencies]
+# `Reloadable` is an async trait used behind `dyn`, like `KeyCustody` in `shared`.
+async-trait = "0.1.92"
+# `join_all`, so every changed reloadable prepares at the same time without
+# spawning: dropping a save future then drops its unfinished prepares too.
+futures-util = { version = "0.3.34", default-features = false, features = ["alloc"] }
+parking_lot = "0.12.5"
+serde = { version = "1.0.229", features = ["derive"] }
+# `Json<T>` settings (`monero_node.<network>`).
+serde_json = "1.0.151"
+thiserror = "2.0.20"
+# `sync` for `watch` and the save mutex, `rt` for the task that finishes an
+# install even when the caller of `save` goes away.
+tokio = { version = "1.53.1", features = ["sync", "rt"] }
+# `HttpUrl`.
+url = "2.5.8"
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["sync", "rt", "rt-multi-thread", "macros", "time"] }
