@@ -60,10 +60,10 @@ function readyLine(child, marker) {
 }
 
 module.exports = async function globalSetup() {
-  console.log('[real-binaries] building scanner, monokulo and fake-monerod...');
+  console.log('[real-binaries] building scanner, monokulo, fake-monerod and key-custody-server...');
   execFileSync(
     'cargo',
-    ['build', '-p', 'scanner', '--bin', 'scanner', '-p', 'monokulo', '--bin', 'monokulo', '-p', 'scanner-test-support', '--bin', 'fake-monerod'],
+    ['build', '-p', 'scanner', '--bin', 'scanner', '-p', 'monokulo', '--bin', 'monokulo', '-p', 'scanner-test-support', '--bin', 'fake-monerod', '-p', 'key-custody-server', '--bin', 'key-custody-server'],
     { cwd: REPO_ROOT, stdio: 'inherit' },
   );
 

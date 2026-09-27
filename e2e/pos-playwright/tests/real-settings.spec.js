@@ -5,25 +5,7 @@
 // can then be connected, and the warnings for restart-only settings and
 // for clearing a network stores use work.
 const { test, expect } = require('@playwright/test');
-const fs = require('node:fs');
-const path = require('node:path');
-
-const fixture = () => JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.real-binaries-fixture.json'), 'utf8'));
-
-// The dev stagenet wallet (scripts/dev-run.sh): a watch-only key pair.
-const VIEW_KEY = 'fcdc7998f003928b3f409b94d54f690d16ca6df3689de4da4803c5a9c792fb0e';
-const SPEND_PUBKEY = '3fa2161d4e2cc7722288d33e46a4cc37e92629d7e45939ec67cc42e8f144b335';
-
-// monokulo caches the engine's status for up to 10s, so a page reflects a
-// change within a few reloads.
-async function reloadUntil(page, url, check) {
-  await expect
-    .poll(async () => {
-      await page.goto(url);
-      return check(await page.content());
-    }, { timeout: 30_000, intervals: [1000] })
-    .toBe(true);
-}
+const { fixture, reloadUntil, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
 
 test('a node saved on a fresh instance applies straight away, and the warnings work', async ({ page }) => {
   const { monokulo_url: base, fake_monerod: fakeAddress } = fixture();

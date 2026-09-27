@@ -885,6 +885,63 @@ async fn an_older_server_without_index_set_scans_is_served_by_range_scans() {
     }
 }
 
+/// A server that closes the connection on any request `reject` picks, and
+/// serves the rest - standing in for a server of another version.
+fn spawn_server_rejecting(socket_path: &Path, reject: fn(&KeyCustodyRequest) -> bool) {
+    let _ = std::fs::remove_file(socket_path);
+    let listener = UnixListener::bind(socket_path).unwrap();
+    let custody = Arc::new(PlainKeyCustody::default());
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut stream, _)) = listener.accept().await else { return };
+            let custody = custody.clone();
+            tokio::spawn(async move {
+                loop {
+                    let request: KeyCustodyRequest = match read_frame(&mut stream).await {
+                        Ok(Some(r)) => r,
+                        _ => return,
+                    };
+                    if reject(&request) {
+                        return;
+                    }
+                    let Ok(response) = key_custody_server::server::dispatch(&custody, request).await else { return };
+                    if write_frame(&mut stream, &response).await.is_err() {
+                        return;
+                    }
+                }
+            });
+        }
+    });
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_that_is_down_during_an_index_set_scan_is_not_mistaken_for_an_older_one() {
+    let socket_path = temp_socket_path("down-not-old");
+    let _cleanup = CleanupSocket(socket_path.clone());
+    let server = ServerProcess::start(&socket_path);
+    let client = connect_with_retry(&socket_path).await;
+    let handle = client.register_wallet(fixture_material()).await.unwrap();
+    let window = scanner::key_custody::ScanIndices::new([1, 5]);
+    assert_eq!(client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &window).await.unwrap().len(), 1);
+
+    server.stop();
+    assert!(
+        client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &window).await.is_err(),
+        "an outage is an error, not a quiet switch to range scans"
+    );
+
+    // Back, as a server that only takes index-set scans: the client still
+    // uses them.
+    spawn_server_rejecting(&socket_path, |request| matches!(request, KeyCustodyRequest::ScanTxOutputs(_)));
+    let handle = loop {
+        match client.register_wallet(fixture_material()).await {
+            Ok(handle) => break handle,
+            Err(_) => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    };
+    assert_eq!(client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &window).await.unwrap().len(), 1);
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn the_client_reconnects_to_a_restarted_server_and_notices_it_lost_its_wallets() {
     let socket_path = temp_socket_path("restart");

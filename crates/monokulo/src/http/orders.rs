@@ -608,6 +608,11 @@ pub(super) async fn render_store_settings_page(
     };
 
     let tenant_result = state.engine_client.get_tenant(&sk).await;
+    if tenant_result.as_ref().is_ok_and(|t| t.key_custody_backend.is_some()) {
+        // The backends come from the engine's status: fetched now if it
+        // isn't cached (it was just invalidated by a move, for one).
+        let _ = super::status_page::get_status_cached(state).await;
+    }
     let key_storage = tenant_result.as_ref().ok().and_then(|t| t.key_custody_backend.clone()).and_then(|current| {
         let enabled = super::status_page::known_enabled_custody_backends(state);
         let move_to: Vec<views::connect::CustodyChoice> = enabled
@@ -2246,7 +2251,8 @@ mod tests {
         assert_eq!(response.headers().get("location").unwrap(), &format!("{settings_uri}#key-storage"));
         assert_eq!(engine_backend_of(&state, &public_key).await.as_deref(), Some("socket"));
 
-        crate::http::status_page::get_status_cached(&state).await.unwrap();
+        // Straight after the move (which empties the status cache), as the
+        // redirect lands.
         let html = get_page(&router, &session_token, &settings_uri).await;
         assert!(html.contains("In a separate key storage service"), "{html}");
         assert!(html.contains(r#"<option value="plain" selected>"#), "and it can move back: {html}");

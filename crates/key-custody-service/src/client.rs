@@ -150,6 +150,13 @@ impl SocketKeyCustody {
         }
     }
 
+    /// Whether the server answers a request every version knows: removing a
+    /// handle nobody has (answered "unknown wallet", and harmless).
+    async fn answers_a_known_request(&self) -> bool {
+        let request = KeyCustodyRequest::RemoveWallet(RemoveWalletRequest { handle: WalletHandleWire::from(WalletHandle::new()) });
+        matches!(self.call(request).await, Ok(KeyCustodyResponse::RemoveWallet(_)))
+    }
+
     /// Sends one request and waits for its answer on a free connection:
     /// an idle open one if there is one, else a closed slot (opened now), else
     /// the first to come free. A transport failure closes that connection
@@ -385,10 +392,12 @@ impl KeyCustody for SocketKeyCustody {
             Ok(KeyCustodyResponse::ScanTxOutputsForIndices(Err(e))) => Err(e.into()),
             Ok(other) => Err(mismatched_response("ScanTxOutputsForIndices", &other)),
             // An older server closes the connection on a request it doesn't
-            // know. Assume that's what happened, say so, and use the range
-            // request from now on; if it was really a transient failure, the
-            // range request is still correct, just slower.
-            Err(KeyCustodyError::BackendUnavailable(reason)) => {
+            // know - but so does a server that is going down. Ask it
+            // something every version understands: only if it answers is it
+            // really an older server, and then the range request is used
+            // from now on. Otherwise it's an outage, and the index-set
+            // request is tried again once it's back.
+            Err(KeyCustodyError::BackendUnavailable(reason)) if self.answers_a_known_request().await => {
                 eprintln!(
                     "key-custody-service didn't answer an index-set scan ({reason}); assuming an older server and \
                      using range scans from now on. Upgrade key-custody-server to scan only each store's open orders."

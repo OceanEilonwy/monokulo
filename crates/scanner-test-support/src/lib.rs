@@ -245,6 +245,19 @@ impl TestEngineHandle {
         .await
     }
 
+    /// Registers every store on `network` that has no live handle, as the
+    /// scan loop does on its own (within seconds of a handle being lost).
+    pub async fn register_missing_wallets_now(&self, network: &str) -> usize {
+        scanner::scanner::register_missing_wallets_checking_state(
+            &self.store,
+            self.key_custody.as_ref(),
+            &self.wallet_handles,
+            None,
+            network,
+        )
+        .await
+    }
+
     /// This engine's own real, live `SharedStore` - for a caller that needs to
     /// force state a plain HTTP call against the engine can't reach directly
     /// (e.g. `docs/order_rescan_wbs.md` Phase 3's own tests driving an order
@@ -397,6 +410,9 @@ pub struct TestEngineConfig {
     /// used - see that method's own doc comment.
     key_custody_socket_path: Option<String>,
     two_custody_backends: bool,
+    /// With `two_custody_backends`: the `socket` backend is a real
+    /// `SocketKeyCustody` dialing this path instead of an in-process one.
+    router_socket_path: Option<String>,
     /// `true` when [`TestEngineConfig::with_admin_lookup_daemon`] has been used -
     /// see that method's own doc comment.
     admin_lookup_daemon: bool,
@@ -555,6 +571,16 @@ impl TestEngineConfig {
         self
     }
 
+    /// As [`with_two_custody_backends`](Self::with_two_custody_backends), but
+    /// the `socket` backend is a real key-custody-server at `socket_path`,
+    /// connected lazily (it may not be listening yet, or may go away and
+    /// come back).
+    pub fn with_plain_and_socket_backends(mut self, socket_path: impl Into<String>) -> Self {
+        self.two_custody_backends = true;
+        self.router_socket_path = Some(socket_path.into());
+        self
+    }
+
     pub fn with_socket_key_custody(mut self, socket_path: impl Into<String>) -> Self {
         self.key_custody_socket_path = Some(socket_path.into());
         self
@@ -592,9 +618,16 @@ impl TestEngineConfig {
                     (Arc::new(client), "socket")
                 }
                 None if self.two_custody_backends => {
+                    let socket: Arc<dyn KeyCustody> = match &self.router_socket_path {
+                        Some(path) => Arc::new(SocketKeyCustody::not_connected_yet(
+                            path,
+                            key_custody_service::client::DEFAULT_CALL_TIMEOUT,
+                        )),
+                        None => Arc::new(PlainKeyCustody::default()),
+                    };
                     let backends: HashMap<String, Arc<dyn KeyCustody>> = HashMap::from([
                         ("plain".to_string(), Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>),
-                        ("socket".to_string(), Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>),
+                        ("socket".to_string(), socket),
                     ]);
                     (Arc::new(scanner::key_custody::CustodyRouter::new(backends, "plain")), "plain")
                 }
@@ -1225,6 +1258,125 @@ mod tests {
     /// through the real HTTP API twice - once per backend - via
     /// [`run_order_creation_and_scan_scenario`], and asserts the two runs are
     /// pixel-for-pixel identical, not just individually plausible.
+    /// A key-custody-server on its own runtime, so shutting that runtime down
+    /// is a real outage: its listener and every open connection go at once.
+    fn start_key_custody_server(socket_path: &std::path::Path) -> tokio::runtime::Runtime {
+        let _ = std::fs::remove_file(socket_path);
+        let runtime = tokio::runtime::Runtime::new().expect("key-custody-server runtime");
+        let path = socket_path.to_path_buf();
+        runtime.spawn(async move {
+            let server = key_custody_server::server::KeyCustodyServer::new(scanner::key_custody::PlainKeyCustody::default());
+            if let Err(e) = server.listen(&path).await {
+                eprintln!("test key-custody-server on {}: {e}", path.display());
+            }
+        });
+        runtime
+    }
+
+    async fn order_status(base_url: &str, secret_token: &str, order_id: &str) -> String {
+        let status: serde_json::Value = reqwest::Client::new()
+            .get(format!("{base_url}/api/v1/admin/tenant/orders/{order_id}"))
+            .bearer_auth(secret_token)
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        status["status"].as_str().unwrap().to_string()
+    }
+
+    /// admin_settings_v2.md task 6.4, the part a browser can't show: a store
+    /// that moved to the socket backend has payments to an order made before
+    /// the move matched, and a payment that arrives while the key-custody
+    /// server is down is matched once it's back (even though it comes back
+    /// empty), with nobody calling the API for it. The loop's own steps are
+    /// run by hand here: register stores whose handle is gone, then scan.
+    #[tokio::test]
+    async fn a_payment_is_matched_after_a_store_moves_backends_and_after_a_key_custody_outage() {
+        let socket_path = temp_socket_path();
+        let server = start_key_custody_server(&socket_path);
+        wait_for_unix_socket(&socket_path).await;
+        let engine = TestEngineConfig::new()
+            .with_networks(&[Network::Mainnet])
+            .with_plain_and_socket_backends(socket_path.to_string_lossy().to_string())
+            .spawn()
+            .await;
+        let base_url = format!("http://{}", engine.addr);
+        let client = reqwest::Client::new();
+
+        let created: serde_json::Value = client
+            .post(format!("{base_url}/api/v1/admin/tenants"))
+            .json(&serde_json::json!({
+                "view_key_hex": FIXTURE_VIEW_KEY_HEX,
+                "spend_pubkey_hex": fixture_spend_pubkey_hex(),
+                "network": "mainnet",
+            }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let secret_token = created["secret_token"].as_str().unwrap().to_string();
+        let backend = || async {
+            let me: serde_json::Value =
+                client.get(format!("{base_url}/api/v1/admin/tenant")).bearer_auth(&secret_token).send().await.unwrap().json().await.unwrap();
+            me["key_custody_backend"].as_str().unwrap().to_string()
+        };
+        assert_eq!(backend().await, "plain", "the default");
+        // Minor index 1: the subaddress the fixture transaction pays.
+        let order: serde_json::Value = client
+            .post(format!("{base_url}/api/v1/admin/tenant/orders"))
+            .bearer_auth(&secret_token)
+            .json(&serde_json::json!({ "xmr_amount_piconero": 1_000u64 }))
+            .send()
+            .await
+            .unwrap()
+            .json()
+            .await
+            .unwrap();
+        let order_id = order["order_id"].as_str().unwrap().to_string();
+
+        let moved = client
+            .put(format!("{base_url}/api/v1/admin/tenant/key-custody"))
+            .bearer_auth(&secret_token)
+            .json(&serde_json::json!({
+                "backend": "socket",
+                "view_key_hex": FIXTURE_VIEW_KEY_HEX,
+                "spend_pubkey_hex": fixture_spend_pubkey_hex(),
+            }))
+            .send()
+            .await
+            .unwrap();
+        assert_eq!(moved.status(), reqwest::StatusCode::OK);
+        assert_eq!(backend().await, "socket");
+
+        // The key-custody server goes down just as the payment shows up.
+        server.shutdown_background();
+        let _ = std::fs::remove_file(&socket_path);
+        engine.run_scan_tick_now(&FixtureTxDaemonClient, Network::Mainnet, 20).await.expect("the tick carries on without that store");
+        assert_eq!(order_status(&base_url, &secret_token, &order_id).await, "pending", "nothing could be scanned for it");
+
+        // It comes back, empty. The first scan finds the store's handle
+        // unknown, the next registration puts it back, and the payment is
+        // matched - all as the scan loop would do on its own.
+        let server = start_key_custody_server(&socket_path);
+        wait_for_unix_socket(&socket_path).await;
+        let mut matched = false;
+        for _ in 0..3 {
+            engine.register_missing_wallets_now("mainnet").await;
+            engine.run_scan_tick_now(&FixtureTxDaemonClient, Network::Mainnet, 20).await.unwrap();
+            if order_status(&base_url, &secret_token, &order_id).await == "unconfirmed" {
+                matched = true;
+                break;
+            }
+        }
+        server.shutdown_background();
+        let _ = std::fs::remove_file(&socket_path);
+        assert!(matched, "the payment made during the outage was matched once the key-custody server was back");
+    }
+
     #[tokio::test]
     async fn order_creation_and_chain_scanning_behave_identically_through_the_socket_backed_key_custody_path(
     ) {

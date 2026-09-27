@@ -247,6 +247,26 @@ reported at the end.)
   against the engine from before 8830c92 at step 3 (status never shows
   the saved node), checked once with a worktree build via E2E_SCANNER_BIN.
 
+- 6.4: `tests/real-store-key-storage.spec.js` (real binaries plus a real
+  key-custody-server process) covers choosing a backend for a new store,
+  moving it with its keys, orders before and after, the service going down
+  and coming back (alert shown then gone, orders work again), and the
+  socket backend being turned off (alert, and the settings page offering
+  the move back). The Rust half in scanner-test-support proves a payment
+  to an order made before a move is matched after it, and a payment that
+  arrives during a key-custody outage is matched once the (restarted,
+  empty) server is back.
+- 6.4 found two real bugs, both fixed with tests:
+  - Straight after a move the settings page lost its Key storage section,
+    because the move emptied the status cache and the page only read the
+    cache. The page now fetches the status when it isn't cached. The
+    monokulo test had hidden this by refreshing the cache by hand; it no
+    longer does.
+  - The socket client treated any failed index-set scan as "an older
+    server" and switched to range scans for good, so a key-custody outage
+    permanently slowed scanning. It now asks the server something every
+    version understands first, and only falls back if that's answered.
+
 ## Baseline
 
 `cargo test --workspace` on `main` (43d7c53 + dc2d976): 913 passed,
@@ -265,10 +285,10 @@ After part 5 complete: 1036 passed, 0 failed, 21 ignored.
 After part 5 review fixes and review items 2-3: 1044 passed, 0 failed.
 After review item 4 and the minor items: 1050 passed, 0 failed.
 After 1.5 (old settings code deleted with its 12 tests): 1038 passed, 0 failed.
+After 6.4: 1040 passed, 0 failed; e2e real-binaries suite 2 passed.
 
 ## Current step
 
-6.4 (key custody switch end to end: Playwright on the real binaries with a
-real key-custody-server, plus a Rust integration test that a payment is
-matched after a switch and after a custody outage), then the kill -9
-test and Playwright admin-page tests on the coverage fixture.
+The kill -9 real-process test (7.x item listed in the WBS near line 1875)
+and Playwright admin-page tests on the coverage fixture; then a final
+review pass and the report.
