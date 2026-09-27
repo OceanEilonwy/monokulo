@@ -499,6 +499,13 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .site-nav-links .nav-logout-form, .site-nav-links .nav-theme-form { margin: 0; display: inline; }
 .nav-status-link { text-decoration: none !important; }
 .nav-status-text { text-decoration: underline; }
+/* The Orders page's search: field and button on one line. */
+.orders-search { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0.5em; margin: 0 0 1em; }
+.orders-search input[type="search"] { flex: 1 1 16em; min-width: 0; padding: 0.5em 0.7em; font: inherit; }
+.orders-search button { margin: 0; }
+.orders-search a { align-self: center; }
+.orders-table td:nth-child(2) { max-width: 14em; overflow-wrap: anywhere; }
+.orders-pages { display: flex; gap: 0.5em; }
 /* Visually hidden but still readable by assistive tech - used by the theme
    toggle below, whose visible content is icons/a thumb, not text. */
 .sr-only {

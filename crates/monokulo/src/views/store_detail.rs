@@ -3,7 +3,7 @@
 
 use maud::{html, Markup};
 
-use super::orders::{lookup_payment_card, OrderRowViewModel};
+use super::orders::{lookup_payment_card, orders_table, OrderRowViewModel};
 use super::{layout, PageChrome};
 
 pub struct StoreDetailData {
@@ -193,23 +193,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 @if store.recent_orders.is_empty() {
                     p class="muted" { "No orders yet." }
                 } @else {
-                    table {
-                        thead { tr { th { "Order ID" } th { "Status" } th { "Amount" } th { "Created" } } }
-                        tbody {
-                            @for order in &store.recent_orders {
-                                tr {
-                                    td {
-                                        a href=(format!("/dashboard/stores/{}/orders/{}", store.connection_id, order.order_id)) {
-                                            (order.order_id)
-                                        }
-                                    }
-                                    td { (order.status) }
-                                    td { (order.amount) " " (order.currency) }
-                                    td { (order.created_at) }
-                                }
-                            }
-                        }
-                    }
+                    (orders_table(&store.connection_id, &store.recent_orders))
                 }
                 p {
                     a href=(format!("/dashboard/stores/{}/orders", store.connection_id)) { "all orders →" }

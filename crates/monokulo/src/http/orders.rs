@@ -22,7 +22,7 @@
 
 use std::collections::HashMap;
 
-use axum::extract::{Form, Path, State};
+use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Response};
 use serde::Deserialize;
@@ -62,36 +62,85 @@ async fn build_orders_view_model(
     state: &AppState,
     row: &StoreConnectionRow,
     sk: &str,
+    search: &str,
+    page: u32,
 ) -> Result<OrdersViewModel, ()> {
-    let orders = state.engine_client.list_orders(sk).await.map_err(|_| ())?;
-    // The engine has no concept of fiat any more (`docs/fx_refactor.md` Phase
-    // 3) - fiat display comes entirely from monokulo's own local
-    // `order_currency_metadata`, keyed by order_id, fetched once for the whole
-    // list rather than per-row.
-    let fiat_metadata = state.db.lock().unwrap().list_order_currency_metadata_for_connection(&row.id).unwrap_or_default();
-
+    use views::orders::ORDERS_PER_PAGE;
+    let term = Some(search.trim()).filter(|term| !term.is_empty());
+    // One more than a page, to know whether there is an older page.
+    let mut orders = state.engine_client.list_orders_page(sk, false, term, ORDERS_PER_PAGE + 1, page * ORDERS_PER_PAGE).await.map_err(|_| ())?;
+    let has_more = orders.len() > ORDERS_PER_PAGE as usize;
+    orders.truncate(ORDERS_PER_PAGE as usize);
     Ok(OrdersViewModel {
         connection_id: row.id.clone(),
         display_name: display_name_for(&row.site_url),
-        orders: orders
-            .into_iter()
-            .map(|o| {
-                let (amount, currency) = match fiat_metadata.get(&o.order_id) {
-                    Some(m) => (m.amount.clone(), m.currency.clone()),
-                    None => ("—".to_string(), "".to_string()),
-                };
-                OrderRowViewModel { order_id: o.order_id, status: o.status, amount, currency, created_at: o.created_at }
-            })
-            .collect(),
+        orders: order_rows(state, row, orders),
+        search: search.trim().to_string(),
+        page,
+        has_more,
     })
 }
 
-/// `GET /dashboard/stores/{id}/orders` - a simple table of the
-/// connection's tenant's orders on the engine.
+/// The orders table's rows: the engine's view of each order, with what only
+/// monokulo knows - its fiat amount, where it came from, and whether the
+/// POS cancelled it.
+pub(super) fn order_rows(state: &AppState, row: &StoreConnectionRow, orders: Vec<crate::engine_client::OrderView>) -> Vec<OrderRowViewModel> {
+    let ids: Vec<String> = orders.iter().map(|o| o.order_id.clone()).collect();
+    let (fiat_metadata, details) = {
+        let db = state.db.lock().unwrap();
+        (db.list_order_currency_metadata_for_connection(&row.id).unwrap_or_default(), db.order_listing_details(&row.id, &ids).unwrap_or_default())
+    };
+    orders
+        .into_iter()
+        .map(|o| {
+            let (amount, currency) = match fiat_metadata.get(&o.order_id) {
+                Some(m) => (m.amount.clone(), m.currency.clone()),
+                None => ("—".to_string(), "".to_string()),
+            };
+            let detail = details.get(&o.order_id).cloned().unwrap_or_default();
+            // A POS cancellation only matters while nothing was paid: a
+            // payment that arrived anyway keeps the engine's status.
+            let status = if detail.pos_cancelled_at.is_some() && matches!(o.status.as_str(), "pending" | "expired") {
+                "cancelled".to_string()
+            } else {
+                o.status
+            };
+            OrderRowViewModel {
+                order_id: o.order_id,
+                reference: o.merchant_order_id,
+                source: source_label(detail.source.as_deref(), &row.platform).to_string(),
+                status,
+                amount,
+                currency,
+                created_at: o.created_at,
+            }
+        })
+        .collect()
+}
+
+/// How an order's source reads in the orders table.
+fn source_label(source: Option<&str>, platform: &str) -> &'static str {
+    match source {
+        Some("pos") => "POS",
+        Some("dashboard") => "Dashboard",
+        Some("api") if platform == "woocommerce" => "WooCommerce",
+        Some("api") => "Store API",
+        Some("website") => "Website",
+        _ => "—",
+    }
+}
+
+#[derive(Deserialize)]
+pub struct OrdersListQuery {
+    q: Option<String>,
+    page: Option<u32>,
+}
+
 pub async fn orders_list(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<String>,
+    Query(query): Query<OrdersListQuery>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
@@ -102,7 +151,8 @@ pub async fn orders_list(
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let view_model = match build_orders_view_model(&state, &row, &sk).await {
+    let search: String = query.q.unwrap_or_default().chars().take(120).collect();
+    let view_model = match build_orders_view_model(&state, &row, &sk, &search, query.page.unwrap_or(0).min(10_000)).await {
         Ok(vm) => vm,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -492,23 +542,8 @@ async fn render_store_detail_page(
     // A store whose engine is currently unreachable still gets a real page -
     // just with no order data available, rather than a hard error. The
     // health tag above is what actually communicates the problem.
-    let recent_orders = match state.engine_client.list_orders(&sk).await {
-        Ok(mut orders) => {
-            orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-            let fiat_metadata =
-                state.db.lock().unwrap().list_order_currency_metadata_for_connection(&row.id).unwrap_or_default();
-            orders
-                .into_iter()
-                .take(10)
-                .map(|o| {
-                    let (amount, currency) = match fiat_metadata.get(&o.order_id) {
-                        Some(m) => (m.amount.clone(), m.currency.clone()),
-                        None => ("—".to_string(), "".to_string()),
-                    };
-                    views::orders::OrderRowViewModel { order_id: o.order_id, status: o.status, amount, currency, created_at: o.created_at }
-                })
-                .collect()
-        }
+    let recent_orders = match state.engine_client.list_orders_page(&sk, false, None, 10, 0).await {
+        Ok(orders) => order_rows(&state, &row, orders),
         Err(_) => Vec::new(),
     };
 
@@ -810,6 +845,7 @@ pub async fn create_order(
                     order.order_id, row.id
                 );
             }
+            let _ = state.db.lock().unwrap().set_order_source(&row.id, &order.order_id, "dashboard");
             redirect_302(&format!("/dashboard/stores/{id}/orders/{}", order.order_id))
         }
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
@@ -3010,6 +3046,83 @@ mod tests {
     /// which is real, deterministic behavior to assert against rather than a
     /// guess - the real-match/no-match cases are already exhaustively covered
     /// at the engine's own `http/tests.rs` level.
+    /// The store's Orders page is the full history: every order with its
+    /// reference and where it came from (POS, dashboard, the WooCommerce
+    /// plugin with the store key, a browser on the website), a POS
+    /// cancellation shown as cancelled, a search by reference or order id,
+    /// and pages of 50 newest first.
+    #[tokio::test]
+    async fn the_orders_page_lists_sources_and_cancellations_searches_and_pages() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(&router, "orders-page@example.com", "correct horse battery staple").await;
+        let (id, pk) = create_connection(&router, &session_token).await;
+        let bearer = format!("Bearer {session_token}");
+        let json_post = |uri: String, auth: Option<String>, body: serde_json::Value| {
+            let mut builder = Request::builder().method("POST").uri(uri).header("content-type", "application/json");
+            if let Some(auth) = auth { builder = builder.header("authorization", auth); }
+            builder.body(Body::from(body.to_string())).unwrap()
+        };
+        let created_id = |response: axum::response::Response| async move { body_json(response).await["order_id"].as_str().unwrap().to_string() };
+
+        let pos = created_id(router.clone().oneshot(json_post(format!("/dashboard/stores/{id}/pos/orders"), Some(bearer.clone()),
+            serde_json::json!({ "amount": "0.3", "merchant_order_id": "Table 4" }))).await.unwrap()).await;
+        let cancelled = created_id(router.clone().oneshot(json_post(format!("/dashboard/stores/{id}/pos/orders"), Some(bearer.clone()),
+            serde_json::json!({ "amount": "0.2", "merchant_order_id": "Table 9" }))).await.unwrap()).await;
+        router.clone().oneshot(Request::builder().method("POST").uri(format!("/dashboard/stores/{id}/pos/orders/{cancelled}/cancel"))
+            .header("authorization", bearer.clone()).body(Body::empty()).unwrap()).await.unwrap();
+        let dashboard = router.clone().oneshot(form_post_request(&format!("/dashboard/stores/{id}/orders/new"), &session_token,
+            &[("amount", "1.00"), ("currency", "XMR"), ("merchant_order_id", "invoice-7")])).await.unwrap();
+        let dashboard = dashboard.headers()["location"].to_str().unwrap().rsplit('/').next().unwrap().to_string();
+        let row = state.db.lock().unwrap().get_store_connection_by_id(&id).unwrap().unwrap();
+        let secret = crate::crypto::decrypt(&TEST_ENCRYPTION_KEY, &row.tenant_secret_token_encrypted).unwrap();
+        let plugin = created_id(router.clone().oneshot(json_post(format!("/pay/{pk}/orders"), Some(format!("Bearer {secret}")),
+            serde_json::json!({ "amount": "2.00", "currency": "XMR", "merchant_order_id": "wc-1042" }))).await.unwrap()).await;
+        let website = created_id(router.clone().oneshot(json_post(format!("/pay/{pk}/orders"), None,
+            serde_json::json!({ "amount": "3.00", "currency": "XMR" }))).await.unwrap()).await;
+
+        let page = |query: &str| {
+            let (router, bearer, uri) = (router.clone(), bearer.clone(), format!("/dashboard/stores/{id}/orders{query}"));
+            async move { body_text(router.oneshot(Request::builder().uri(uri).header("authorization", bearer).body(Body::empty()).unwrap()).await.unwrap()).await }
+        };
+        let row_of = |html: &str, order_id: &str| -> String {
+            let start = html.find(&format!("/orders/{order_id}\"")).unwrap_or_else(|| panic!("{order_id} not listed"));
+            html[start..].split("</tr>").next().unwrap().to_string()
+        };
+        let html = page("").await;
+        for (order_id, source, reference, status) in [
+            (&pos, "POS", "Table 4", "pending"),
+            (&cancelled, "POS", "Table 9", "cancelled"),
+            (&dashboard, "Dashboard", "invoice-7", "pending"),
+            (&plugin, "WooCommerce", "wc-1042", "pending"),
+            (&website, "Website", "—", "pending"),
+        ] {
+            let row = row_of(&html, order_id);
+            for expected in [source, reference, status] {
+                assert!(row.contains(&format!(">{expected}<")), "{order_id}: expected {expected} in {row}");
+            }
+        }
+
+        let html = page("?q=table").await;
+        assert!(html.contains(&pos) && html.contains(&cancelled) && !html.contains(&plugin), "search by reference");
+        assert!(html.contains(r#"value="table""#), "the search stays in the box");
+        let html = page(&format!("?q={}", &plugin[6..16])).await;
+        assert!(html.contains(&plugin) && !html.contains(&pos), "search by order id");
+        let html = page("?q=nothing-like-this").await;
+        assert!(html.contains("No orders match “nothing-like-this”."));
+
+        // 5 so far; 46 more make 51: the first page has 50 and an Older link.
+        for i in 0..46 {
+            router.clone().oneshot(json_post(format!("/pay/{pk}/orders"), None, serde_json::json!({ "amount": format!("0.{i:02}1"), "currency": "XMR" }))).await.unwrap();
+        }
+        let first = page("").await;
+        assert_eq!(first.matches("<tr><td><a href").count(), 50);
+        assert!(first.contains(&format!(r#"href="/dashboard/stores/{id}/orders?page=1" rel="next""#)) && !first.contains(r#"rel="prev""#));
+        let second = page("?page=1").await;
+        assert_eq!(second.matches("<tr><td><a href").count(), 1);
+        assert!(second.contains(r#"rel="prev""#) && !second.contains(r#"rel="next""#));
+    }
+
     #[tokio::test]
     async fn lookup_payment_reshows_the_orders_page_with_a_not_found_message() {
         let (state, _engine) = test_state_with_real_engine_and_admin_lookup_daemon().await;

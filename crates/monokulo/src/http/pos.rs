@@ -246,6 +246,7 @@ pub async fn create_order(
                     order.order_id, row.id
                 );
             }
+            let _ = state.db.lock().unwrap().set_order_source(&row.id, &order.order_id, "pos");
 
             let xmr_amount = shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero);
 
@@ -374,7 +375,36 @@ fn engine_failure(error: &EngineClientError) -> Response {
 }
 
 #[derive(Deserialize)]
-pub struct PosListQuery { offset: Option<i64>, limit: Option<i64>, search: Option<String> }
+pub struct PosListQuery {
+    offset: Option<i64>,
+    limit: Option<i64>,
+    search: Option<String>,
+    /// `active`: every POS order still open, however old, in one list (no
+    /// paging) - what the terminal's Active tab and background stack show.
+    state: Option<String>,
+}
+
+/// Most open orders one engine page holds; the terminal reads pages until
+/// a short one.
+const OPEN_ORDERS_PAGE: u32 = 200;
+
+/// Every POS order of this store that is still open: the engine's open
+/// orders (web orders included) narrowed to the POS's own, not cancelled.
+async fn active_pos_orders(state: &AppState, connection_id: &str, sk: &str) -> Result<Vec<PosOrderData>, EngineClientError> {
+    let mut open = Vec::new();
+    loop {
+        let page = state.engine_client.list_orders_page(sk, true, None, OPEN_ORDERS_PAGE, open.len() as u32).await?;
+        let short = (page.len() as u32) < OPEN_ORDERS_PAGE;
+        open.extend(page);
+        if short {
+            break;
+        }
+    }
+    let ids: Vec<String> = open.iter().map(|order| order.order_id.clone()).collect();
+    let rows = state.db.lock().unwrap().get_pos_orders(connection_id, &ids).unwrap_or_default();
+    let mut rows: HashMap<String, crate::db::PosOrderRow> = rows.into_iter().filter(|row| row.cancelled_at.is_none()).map(|row| (row.order_id.clone(), row)).collect();
+    Ok(open.into_iter().filter_map(|order| rows.remove(&order.order_id).map(|row| pos_order_view(state, connection_id, row, &order))).collect())
+}
 
 pub async fn list_orders(
     State(state): State<AppState>, AuthedUser(user, _): AuthedUser,
@@ -384,6 +414,12 @@ pub async fn list_orders(
         Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(()) => return ApiError::Internal.into_response(),
     };
     let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
+    if query.state.as_deref() == Some("active") {
+        return match active_pos_orders(&state, &id, &sk).await {
+            Ok(orders) => Json(serde_json::json!({"orders": orders, "total": orders.len()})).into_response(),
+            Err(error) => engine_failure(&error),
+        };
+    }
     let offset = query.offset.unwrap_or(0).max(0);
     let limit = query.limit.unwrap_or(40).clamp(1, 100);
     let search = query.search.as_deref().map(str::trim).filter(|term| !term.is_empty());
@@ -1231,6 +1267,38 @@ mod tests {
         // upstream event stream plus its first resync read beside it.
         let spent = engine.tenant_request_count() - before;
         assert!(spent <= 3, "watching 30 orders cost {spent} engine requests");
+    }
+
+    /// The terminal's Active tab and background stack come from
+    /// `?state=active`: every POS order still open, however many newer
+    /// orders have finished since; never a paid one, one the POS cancelled,
+    /// or an order that did not come from the POS.
+    #[tokio::test]
+    async fn the_active_list_has_every_open_pos_order_however_many_newer_ones_finished() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(&router, "pos-active@example.com", "correct horse battery staple").await;
+        let id = create_connection_with_base_currency(&router, &session_token, "XMR").await;
+        let waiting = create_pos_orders(&router, &session_token, &id, 1).await.remove(0);
+        for paid in create_pos_orders(&router, &session_token, &id, 45).await {
+            engine.mark_order_paid(&paid).unwrap();
+        }
+        let cancelled = create_pos_orders(&router, &session_token, &id, 1).await.remove(0);
+        let cancel = router.clone().oneshot(Request::builder().method("POST").uri(format!("/dashboard/stores/{id}/pos/orders/{cancelled}/cancel"))
+            .header("authorization", format!("Bearer {session_token}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(cancel.status(), StatusCode::NO_CONTENT);
+        // An order from somewhere else (the store's website), still open.
+        let pk = state.db.lock().unwrap().get_store_connection_by_id(&id).unwrap().unwrap().tenant_public_key;
+        let web = router.clone().oneshot(Request::builder().method("POST").uri(format!("/pay/{pk}/orders"))
+            .header("content-type", "application/json")
+            .body(Body::from(serde_json::json!({ "amount": "1.0", "currency": "XMR" }).to_string())).unwrap()).await.unwrap();
+        assert_eq!(web.status(), StatusCode::OK);
+
+        let response = router.oneshot(Request::builder().uri(format!("/dashboard/stores/{id}/pos/orders?state=active"))
+            .header("authorization", format!("Bearer {session_token}")).body(Body::empty()).unwrap()).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let ids: Vec<String> = body_json(response).await["orders"].as_array().unwrap().iter().map(|o| o["order_id"].as_str().unwrap().to_string()).collect();
+        assert_eq!(ids, vec![waiting]);
     }
 
     #[tokio::test]

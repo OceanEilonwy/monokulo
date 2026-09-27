@@ -43,6 +43,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (20, include_str!("../migrations/0020_embed_restriction.sql")),
     (21, include_str!("../migrations/0021_order_created_with_key.sql")),
     (22, include_str!("../migrations/0022_pos_orders.sql")),
+    (23, include_str!("../migrations/0023_order_source.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -65,6 +66,16 @@ pub struct PosOrderRow {
     pub backgrounded: bool,
     pub cancelled_at: Option<i64>,
     pub created_at: i64,
+}
+
+/// What monokulo knows about an order beyond the engine's view, for the
+/// store's orders list.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct OrderListingDetail {
+    /// `pos`, `dashboard`, `api`, `website`, or `None` when unknown.
+    pub source: Option<String>,
+    /// Set when the order was cancelled on the POS.
+    pub pos_cancelled_at: Option<i64>,
 }
 
 impl Db {
@@ -106,6 +117,51 @@ impl Db {
 
     pub fn count_pos_orders(&self, connection_id: &str, search: Option<&str>) -> Result<i64> {
         self.conn.query_row("SELECT count(*) FROM pos_orders WHERE connection_id = ?1 AND (?2 IS NULL OR instr(lower(order_id), lower(?2)) > 0 OR instr(lower(coalesce(reference, '')), lower(?2)) > 0)", params![connection_id, search], |row| row.get(0)).map_err(DbError::from)
+    }
+
+    /// The POS rows among `order_ids`, in no particular order.
+    pub fn get_pos_orders(&self, connection_id: &str, order_ids: &[String]) -> Result<Vec<PosOrderRow>> {
+        let mut rows = Vec::with_capacity(order_ids.len());
+        let mut stmt = self.conn.prepare(
+            "SELECT order_id, backgrounded, cancelled_at_utc, created_at_utc FROM pos_orders WHERE connection_id = ?1 AND order_id = ?2",
+        )?;
+        for order_id in order_ids {
+            if let Some(row) = stmt.query_row(params![connection_id, order_id], |row| Ok(PosOrderRow {
+                order_id: row.get(0)?, backgrounded: row.get(1)?, cancelled_at: row.get(2)?, created_at: row.get(3)?,
+            })).optional()? {
+                rows.push(row);
+            }
+        }
+        Ok(rows)
+    }
+
+    /// Records where an order was created (see migration 0023).
+    pub fn set_order_source(&self, connection_id: &str, order_id: &str, source: &str) -> Result<()> {
+        self.conn.execute(
+            "UPDATE order_currency_metadata SET source = ?3 WHERE connection_id = ?1 AND order_id = ?2",
+            params![connection_id, order_id, source],
+        )?;
+        Ok(())
+    }
+
+    /// Source and POS cancellation for each of `order_ids` monokulo knows
+    /// anything about; orders it knows nothing about are left out.
+    pub fn order_listing_details(&self, connection_id: &str, order_ids: &[String]) -> Result<std::collections::HashMap<String, OrderListingDetail>> {
+        let mut details = std::collections::HashMap::new();
+        let mut source = self.conn.prepare("SELECT source FROM order_currency_metadata WHERE connection_id = ?1 AND order_id = ?2")?;
+        let mut pos = self.conn.prepare("SELECT cancelled_at_utc FROM pos_orders WHERE connection_id = ?1 AND order_id = ?2")?;
+        for order_id in order_ids {
+            let known_source: Option<Option<String>> = source.query_row(params![connection_id, order_id], |row| row.get(0)).optional()?;
+            let pos_row: Option<Option<i64>> = pos.query_row(params![connection_id, order_id], |row| row.get(0)).optional()?;
+            if known_source.is_none() && pos_row.is_none() {
+                continue;
+            }
+            details.insert(order_id.clone(), OrderListingDetail {
+                source: known_source.flatten().or_else(|| pos_row.map(|_| "pos".to_string())),
+                pos_cancelled_at: pos_row.flatten(),
+            });
+        }
+        Ok(details)
     }
 
     pub fn background_pos_order(&self, connection_id: &str, order_id: &str) -> Result<bool> {

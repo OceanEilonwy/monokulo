@@ -150,6 +150,24 @@ impl EngineClient {
         parse_response(response).await
     }
 
+    /// `GET {base_url}/api/v1/admin/tenant/orders?open=&search=&limit=&offset=`
+    /// — a page of `sk`'s tenant's orders, newest first: only still-open
+    /// ones when `open`, only those whose id or merchant order id contains
+    /// `search`. At most 200 per page.
+    pub async fn list_orders_page(&self, sk: &str, open: bool, search: Option<&str>, limit: u32, offset: u32) -> Result<Vec<OrderView>, EngineClientError> {
+        let mut params = vec![("limit", limit.to_string()), ("offset", offset.to_string())];
+        if open {
+            params.push(("open", "true".to_string()));
+        }
+        if let Some(search) = search {
+            params.push(("search", search.to_string()));
+        }
+        let url = reqwest::Url::parse_with_params(&format!("{}/api/v1/admin/tenant/orders", self.base_url), params)
+            .map_err(|e| EngineClientError::EngineError { status: reqwest::StatusCode::BAD_REQUEST, message: e.to_string() })?;
+        let response = self.http.get(url).bearer_auth(sk).send().await?;
+        parse_response(response).await
+    }
+
     /// `GET {base_url}/api/v1/admin/tenant/orders?ids=a,b,...` — the named
     /// orders of `sk`'s tenant in one request, in the order asked; ids the
     /// engine does not know for this tenant are left out. At most

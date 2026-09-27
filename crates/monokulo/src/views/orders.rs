@@ -10,6 +10,13 @@ use super::{layout, layout_with_head, PageChrome};
 /// the full engine `OrderView`.
 pub struct OrderRowViewModel {
     pub order_id: String,
+    /// The shop's own reference (a POS note, a WooCommerce order number) -
+    /// caller-supplied text, always escaped.
+    pub reference: Option<String>,
+    /// Where the order came from: "POS", "WooCommerce", "Website", ...
+    pub source: String,
+    /// The engine's status, or "cancelled" for an unpaid order the POS
+    /// cancelled (the engine does not know about POS cancellations).
     pub status: String,
     pub amount: String,
     pub currency: String,
@@ -20,6 +27,35 @@ pub struct OrdersViewModel {
     pub connection_id: String,
     pub display_name: String,
     pub orders: Vec<OrderRowViewModel>,
+    /// The search as typed (empty for none).
+    pub search: String,
+    /// Zero-based page of `ORDERS_PER_PAGE`.
+    pub page: u32,
+    pub has_more: bool,
+}
+
+pub const ORDERS_PER_PAGE: u32 = 50;
+
+/// The orders table shared by the Orders page and the store page's
+/// "Recent orders".
+pub fn orders_table(connection_id: &str, orders: &[OrderRowViewModel]) -> Markup {
+    html! {
+        table class="orders-table" {
+            thead { tr { th { "Order" } th { "Reference" } th { "Source" } th { "Status" } th { "Amount" } th { "Created" } } }
+            tbody {
+                @for order in orders {
+                    tr {
+                        td { a href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (order.order_id) } }
+                        td { @if let Some(reference) = &order.reference { (reference) } @else { span class="muted" { "—" } } }
+                        td { (order.source) }
+                        td { (order.status) }
+                        td { (order.amount) " " (order.currency) }
+                        td { (order.created_at) }
+                    }
+                }
+            }
+        }
+    }
 }
 
 /// The "Look up a transaction" card - a customer's transaction id, looked up
@@ -64,32 +100,52 @@ pub fn lookup_payment_card(
 }
 
 pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
+    let base = format!("/dashboard/stores/{}/orders", data.connection_id);
+    let page_link = |page: u32| {
+        let mut query = Vec::new();
+        if !data.search.is_empty() {
+            query.push(format!("q={}", urlencoding(&data.search)));
+        }
+        if page > 0 {
+            query.push(format!("page={page}"));
+        }
+        if query.is_empty() { base.clone() } else { format!("{base}?{}", query.join("&")) }
+    };
     let body = html! {
         div class="wrap" {
             (super::store_breadcrumb(&data.connection_id, &data.display_name, false))
             h1 { "Orders" }
-            table {
-                thead {
-                    tr { th { "Order ID" } th { "Status" } th { "Amount" } th { "Created" } }
+            form method="get" action=(base) class="orders-search" role="search" {
+                label for="orders-search" class="sr-only" { "Search orders" }
+                input type="search" id="orders-search" name="q" value=(data.search) placeholder="Search by reference or order ID" maxlength="120";
+                button type="submit" { "Search" }
+                @if !data.search.is_empty() { " " a href=(base) { "Clear" } }
+            }
+            @if data.orders.is_empty() {
+                p class="muted" {
+                    @if data.search.is_empty() { "No orders yet." } @else { "No orders match “" (data.search) "”." }
                 }
-                tbody {
-                    @for order in &data.orders {
-                        tr {
-                            td {
-                                a href=(format!("/dashboard/stores/{}/orders/{}", data.connection_id, order.order_id)) {
-                                    (order.order_id)
-                                }
-                            }
-                            td { (order.status) }
-                            td { (order.amount) " " (order.currency) }
-                            td { (order.created_at) }
-                        }
-                    }
+            } @else {
+                (orders_table(&data.connection_id, &data.orders))
+            }
+            @if data.page > 0 || data.has_more {
+                p class="orders-pages" {
+                    @if data.page > 0 { a href=(page_link(data.page - 1)) rel="prev" { "← Newer" } }
+                    @if data.page > 0 && data.has_more { " · " }
+                    @if data.has_more { a href=(page_link(data.page + 1)) rel="next" { "Older →" } }
                 }
             }
         }
     };
     layout(chrome, &format!("Orders - {} - Monokulo", data.display_name), body)
+}
+
+/// Percent-encodes a query value (a search term).
+fn urlencoding(value: &str) -> String {
+    value.bytes().map(|b| match b {
+        b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => (b as char).to_string(),
+        _ => format!("%{b:02X}"),
+    }).collect()
 }
 
 /// One payment row inside the order detail page's `payments` table - mirrors
@@ -299,11 +355,16 @@ mod tests {
             display_name: "shop.example.com".to_string(),
             orders: vec![OrderRowViewModel {
                 order_id: "pay_xyz".to_string(),
+                reference: Some("wc-1042".to_string()),
+                source: "WooCommerce".to_string(),
                 status: "paid".to_string(),
                 amount: "25.00".to_string(),
                 currency: "USD".to_string(),
                 created_at: 1000,
             }],
+            search: String::new(),
+            page: 0,
+            has_more: false,
         };
         let html = list_page(&chrome(), &data).into_string();
         assert!(html.contains("pay_xyz"));

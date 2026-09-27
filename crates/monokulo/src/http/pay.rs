@@ -164,6 +164,8 @@ pub async fn create_order(
                     order.order_id, row.id
                 );
             }
+            let source = if created_with_key { "api" } else { "website" };
+            let _ = state.db.lock().unwrap().set_order_source(&row.id, &order.order_id, source);
 
             Json(CreateOrderResponse {
                 order_id: order.order_id,
