@@ -146,3 +146,23 @@ test('a visitor past the rate limit, or asked for proof on a plain-HTTP shop, ge
   answer = () => ({ status: 429, headers: cors, json: { error: 'Too many requests', challenge: { challenge: 'c0ffee', difficulty: 8 } } });
   expect(await attempt()).toContain("can't solve monokulo's challenge");
 });
+
+test('a merchant wiring up the library wrongly gets an error saying what to fix', async ({ page }) => {
+  await openShop(page);
+  const problems = await page.evaluate(({ publicKey, endpoint }) => {
+    const attempt = fn => { try { fn(); return 'mounted'; } catch (error) { return error.message; } };
+    return {
+      // The container id was mistyped.
+      missing: attempt(() => window.Monokulo.mount('#paymnet', { orderId: 'order_x', endpoint, publicKey })),
+      // An order id kept from a previous visit, without its store's key.
+      noKey: attempt(() => window.Monokulo.mount('#pay', 'order_from_last_visit')),
+      // With the key it mounts: the endpoint comes from the script tag.
+      withKey: attempt(() => window.Monokulo.mount('#pay', 'order_from_last_visit', { publicKey })),
+    };
+  }, { publicKey: fixture.public_key, endpoint: fixture.base_url });
+  expect(problems.missing).toBe('Monokulo.mount: target element not found: #paymnet');
+  expect(problems.noKey).toContain('could not resolve orderId/endpoint/publicKey');
+  expect(problems.noKey).toContain('{endpoint, publicKey} in options for an orderId from a previous visit');
+  expect(problems.withKey).toBe('mounted');
+  await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${fixture.base_url}/pay/${fixture.public_key}/orders/order_from_last_visit`);
+});
