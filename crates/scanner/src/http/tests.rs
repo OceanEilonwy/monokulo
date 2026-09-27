@@ -2527,3 +2527,50 @@ async fn a_store_a_block_or_two_behind_is_not_reported_but_one_further_behind_is
     assert_eq!(status["unserved_tenants"][0]["reason"], "catching_up", "{status}");
     assert_eq!(status["unserved_tenants"][0]["blocks_behind"], 3);
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_overlapping_moves_of_one_store_leave_its_row_and_its_live_keys_in_the_same_backend() {
+    let custody = Arc::new(crate::key_custody::CustodyRouter::new(
+        HashMap::from([
+            ("plain".to_string(), Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>),
+            ("socket".to_string(), Arc::new(PlainKeyCustody::default()) as Arc<dyn KeyCustody>),
+        ]),
+        "plain",
+    ));
+    let mut state = test_app_state();
+    state.key_custody = custody.clone();
+    let wallet_handles = state.wallet_handles.clone();
+    let store = state.store.clone();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1).await;
+    for _ in 0..10 {
+        let a = tokio::spawn(router.clone().oneshot(switch_request(&tenant.secret_token, "socket", 1)));
+        let b = tokio::spawn(router.clone().oneshot(switch_request(&tenant.secret_token, "plain", 1)));
+        assert_eq!(a.await.unwrap().unwrap().status(), StatusCode::OK);
+        assert_eq!(b.await.unwrap().unwrap().status(), StatusCode::OK);
+        let row = store.lock().find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap();
+        let handle = wallet_handles.read()[&row.id];
+        assert_eq!(custody.backend_of(handle).as_deref(), Some(row.key_custody_backend.as_str()));
+    }
+}
+
+#[test]
+fn a_disabled_store_can_not_be_moved() {
+    let store = Store::open_in_memory().unwrap();
+    let tenant = store
+        .create_tenant(
+            crate::store::NewTenant {
+                key_custody_backend: "plain".into(),
+                sealed_key_material: vec![1],
+                primary_address: "4x".into(),
+                network: "mainnet".into(),
+                confirmations_required: None,
+                order_expiry_seconds: None,
+            },
+            1,
+        )
+        .unwrap()
+        .tenant;
+    store.disable_tenant(&tenant.id, 2).unwrap();
+    assert!(matches!(store.update_tenant_key_custody(&tenant.id, "socket", &[2]), Err(crate::store::StoreError::NotFound)));
+}

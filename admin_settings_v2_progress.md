@@ -60,7 +60,8 @@ commits. Nothing is pushed.
 | Part 4 admin page | done except Playwright | 66f32ea | view tests; Playwright page tests wait for part 6 |
 | independent review of 8830c92 + 66f32ea | running | | |
 | Part 5 engine side (5.1 router, 5.2 live settings, 5.3 choose/switch API, 5.5 status) | done | see git log | monokulo side (5.4, 5.6, 5.7) next |
-| Part 5 monokulo side (5.4 backend choice, 5.6 Key storage section, 5.7 alerts) and bootstrap CLI flag | done | see git log | |
+| Part 5 monokulo side (5.4 backend choice, 5.6 Key storage section, 5.7 alerts) and bootstrap CLI flag | done, reviewed, fixes applied | see git log | review found 1 blocking bug (socket path change stranded socket stores), fixed with tests |
+| Review items 2 (chunked body limit) and 3 (alerts don't flap) of 8830c92/66f32ea/d7e7883 | done | 5b980b5 | |
 
 ## Decisions made while working
 
@@ -166,6 +167,26 @@ reported at the end.)
   given network. Verified on the real binary with dev-run.sh's stagenet
   wallet (accepted) and the same keys on mainnet (refused, nothing made).
 
+- Review of part 5 (independent agent): one blocking finding, fixed.
+  Changing `key_custody.socket_path` built a new socket client but kept
+  the old handles, which the new server never knew, so socket stores were
+  never scanned again until a restart. Now the router drops (and frees, in
+  the background) the handles of any backend instance that is replaced or
+  removed, and any `UnknownWallet` from a backend makes the router forget
+  that handle, so the scan loop registers the store again on its next tick
+  whatever made the backend lose it. A mutation check confirmed the new
+  scanner test fails without the fix.
+- Review of part 5, should-fix items applied: switches are serialised (one
+  lock, since switches are rare) so the row and the live handle always
+  name the same backend; a disabled store can't be moved (the UPDATE
+  checks `disabled_at_utc`); handles dropped after a backend restart are
+  freed there too; a failed removal from the old backend is logged; the
+  engine logs a loud warning at boot for stores whose backend isn't
+  enabled.
+- Review of part 5, not changed: the unauthenticated
+  `GET /api/v1/admin/key-custody` (backend names and fixed descriptions
+  only, on the private engine), agreed acceptable by the reviewer.
+
 ## Baseline
 
 `cargo test --workspace` on `main` (43d7c53 + dc2d976): 913 passed,
@@ -181,10 +202,14 @@ After 8830c92: 1011 passed, 0 failed, 21 ignored.
 After d7e7883: 1018 passed, 0 failed, 21 ignored.
 After part 5 engine side: 1031 passed, 0 failed, 21 ignored.
 After part 5 complete: 1036 passed, 0 failed, 21 ignored.
+After part 5 review fixes and review items 2-3: 1044 passed, 0 failed.
 
 ## Current step
 
-Review items of
-8830c92/66f32ea/d7e7883 (2: Limited body; 3: catching_up threshold and
-no_reachable_node from cooldown; 4: loop managers tested; minors), 1.5,
-part 6.
+Review item 4 of 8830c92/66f32ea/d7e7883 (move manage_network_loops and
+run_scanner_loop out of main.rs into the library and test them), then its
+minor items (scanner_status re-insert race, supervise the manager, retry
+NodesReloadable after a boot failure, scan_chunk_memory_budget_mb through
+the old settings path, test harness rate limiter, log save_monokulo
+errors, clearing the admin token, retarget only on change plus status
+cache invalidation, onion A-B-A, unused PerRequest), then 1.5, then part 6.

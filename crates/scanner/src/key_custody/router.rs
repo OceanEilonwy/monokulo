@@ -62,21 +62,48 @@ impl CustodyRouter {
     }
 
     /// Installs a new set of backends (task 5.2). Handles issued by a
-    /// backend that is gone are forgotten: those stores stop being scanned
-    /// until the backend is enabled again or they move to another one.
-    /// Backends kept from the previous set must be passed in as the same
-    /// `Arc`, so their wallets stay registered.
-    pub fn replace(&self, backends: HashMap<String, Arc<dyn KeyCustody>>, default: &str) {
-        {
-            let mut handles = self.handles.write();
-            handles.retain(|_, backend| backends.contains_key(backend));
-        }
-        {
-            let mut epochs = self.epochs.write();
-            epochs.retain(|backend, _| backends.contains_key(backend));
-        }
-        *self.backends.write() = backends;
+    /// backend that is gone, or replaced by a new instance under the same
+    /// name (a socket backend pointed at another server), are forgotten: a
+    /// replaced backend's stores are registered again in the new instance
+    /// by the scan loop, and a removed backend's stores wait until it is
+    /// enabled again or they move. Backends kept from the previous set must
+    /// be passed in as the same `Arc`, so their wallets stay registered.
+    ///
+    /// Returns the forgotten handles with the instance that issued them, so
+    /// the caller can free them there (best effort - see `free_handles`).
+    pub fn replace(
+        &self,
+        backends: HashMap<String, Arc<dyn KeyCustody>>,
+        default: &str,
+    ) -> Vec<(Arc<dyn KeyCustody>, WalletHandle)> {
+        let old = std::mem::replace(&mut *self.backends.write(), backends.clone());
+        let kept = |name: &str| match (old.get(name), backends.get(name)) {
+            (Some(before), Some(after)) => same_instance(before, after),
+            _ => false,
+        };
+        let mut dropped = Vec::new();
+        self.handles.write().retain(|handle, name| {
+            if kept(name) {
+                return true;
+            }
+            if let Some(before) = old.get(name.as_str()) {
+                dropped.push((before.clone(), *handle));
+            }
+            false
+        });
+        self.epochs.write().retain(|name, _| kept(name));
         *self.default_backend.write() = default.to_string();
+        dropped
+    }
+
+    /// Forgets `handle` if its backend says it doesn't know it, so every
+    /// liveness check (`handle_is_live`) sees it gone and the store is
+    /// registered again - whatever made the backend lose it.
+    fn forget_if_unknown<T>(&self, handle: WalletHandle, result: Result<T, KeyCustodyError>) -> Result<T, KeyCustodyError> {
+        if matches!(result, Err(KeyCustodyError::UnknownWallet)) {
+            self.handles.write().remove(&handle);
+        }
+        result
     }
 
     /// The backends as they are now, for building the next set from.
@@ -136,7 +163,8 @@ impl KeyCustody for CustodyRouter {
         index: SubaddressIndex,
         network: Network,
     ) -> Result<Address, KeyCustodyError> {
-        self.for_handle(handle)?.derive_subaddress(handle, index, network).await
+        let result = self.for_handle(handle)?.derive_subaddress(handle, index, network).await;
+        self.forget_if_unknown(handle, result)
     }
 
     async fn scan_tx_outputs(
@@ -146,7 +174,8 @@ impl KeyCustody for CustodyRouter {
         major_range: Range<u32>,
         minor_range: Range<u32>,
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
-        self.for_handle(handle)?.scan_tx_outputs(handle, tx, major_range, minor_range).await
+        let result = self.for_handle(handle)?.scan_tx_outputs(handle, tx, major_range, minor_range).await;
+        self.forget_if_unknown(handle, result)
     }
 
     async fn scan_tx_outputs_for_indices(
@@ -155,7 +184,8 @@ impl KeyCustody for CustodyRouter {
         tx: &Transaction,
         indices: &ScanIndices,
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
-        self.for_handle(handle)?.scan_tx_outputs_for_indices(handle, tx, indices).await
+        let result = self.for_handle(handle)?.scan_tx_outputs_for_indices(handle, tx, indices).await;
+        self.forget_if_unknown(handle, result)
     }
 
     /// Asks every backend. A backend whose epoch went up has lost its
@@ -172,7 +202,18 @@ impl KeyCustody for CustodyRouter {
                     total += epoch;
                     let previous = self.epochs.write().insert(name.clone(), epoch).unwrap_or(0);
                     if epoch > previous {
-                        self.handles.write().retain(|_, backend| backend != &name);
+                        // Some handles may have been registered since the
+                        // restart and still be live there: free them all
+                        // (freeing one the restart already lost is harmless).
+                        let mut lost = Vec::new();
+                        self.handles.write().retain(|handle, backend| {
+                            let keep = backend != &name;
+                            if !keep {
+                                lost.push((custody.clone(), *handle));
+                            }
+                            keep
+                        });
+                        free_handles(lost);
                     }
                 }
                 Err(e) => {
@@ -232,6 +273,27 @@ impl KeyCustody for CustodyRouter {
     }
 }
 
+/// Whether two `Arc`s are the same backend instance.
+fn same_instance(a: &Arc<dyn KeyCustody>, b: &Arc<dyn KeyCustody>) -> bool {
+    std::ptr::eq(Arc::as_ptr(a) as *const (), Arc::as_ptr(b) as *const ())
+}
+
+/// Removes forgotten handles from the backend instance that issued them, in
+/// the background and best effort: a backend that is down keeps them only
+/// until it restarts, which loses them anyway. Leaving them would keep a
+/// copy of a store's view key in a backend it no longer uses.
+pub fn free_handles(handles: Vec<(Arc<dyn KeyCustody>, WalletHandle)>) {
+    if handles.is_empty() {
+        return;
+    }
+    let Ok(runtime) = tokio::runtime::Handle::try_current() else { return };
+    runtime.spawn(async move {
+        for (custody, handle) in handles {
+            let _ = tokio::time::timeout(std::time::Duration::from_secs(5), custody.remove_wallet(handle)).await;
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -272,12 +334,106 @@ mod tests {
         let in_b = router.register_wallet_in("socket", material(3)).await.unwrap();
         let mut only_plain: HashMap<String, Arc<dyn KeyCustody>> = HashMap::new();
         only_plain.insert("plain".to_string(), a);
-        router.replace(only_plain, "plain");
+        let dropped = router.replace(only_plain, "plain");
+        assert_eq!(dropped.len(), 1);
         assert!(!router.handle_is_live(in_b));
         assert!(matches!(
             router.register_wallet_in("socket", material(5)).await,
             Err(KeyCustodyError::BackendUnavailable(_))
         ));
         assert_eq!(router.enabled_backends(), vec!["plain".to_string()]);
+    }
+
+    #[tokio::test]
+    async fn a_backend_replaced_by_a_new_instance_under_the_same_name_drops_its_handles_and_frees_them() {
+        let (router, a, b) = two_backends();
+        let in_a = router.register_wallet_in("plain", material(1)).await.unwrap();
+        let in_b = router.register_wallet_in("socket", material(3)).await.unwrap();
+        let new_socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        let dropped = router.replace(HashMap::from([("plain".to_string(), a.clone()), ("socket".to_string(), new_socket)]), "plain");
+        assert!(router.handle_is_live(in_a), "the kept backend's stores are untouched");
+        assert!(!router.handle_is_live(in_b), "so the scan loop registers the store in the new instance");
+        assert_eq!(dropped.len(), 1);
+        assert!(same_instance(&dropped[0].0, &b) && dropped[0].1 == in_b, "freed in the instance that issued it");
+        free_handles(dropped);
+        for _ in 0..100 {
+            if b.derive_subaddress(in_b, SubaddressIndex::default(), Network::Mainnet).await.is_err() {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("the old instance still holds the store's keys");
+    }
+
+    #[tokio::test]
+    async fn a_handle_its_backend_no_longer_knows_stops_being_live() {
+        let (router, a, _) = two_backends();
+        let handle = router.register_wallet_in("plain", material(1)).await.unwrap();
+        a.remove_wallet(handle).await.unwrap(); // lost behind the router's back
+        assert!(router.handle_is_live(handle), "not known yet");
+        assert!(matches!(
+            router.derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet).await,
+            Err(KeyCustodyError::UnknownWallet)
+        ));
+        assert!(!router.handle_is_live(handle), "now it is, so it gets registered again");
+    }
+
+    /// A backend that restarts (its epoch goes up) and forgets its wallets.
+    #[derive(Default)]
+    struct Restartable {
+        inner: PlainKeyCustody,
+        epoch: std::sync::atomic::AtomicU64,
+    }
+
+    #[async_trait::async_trait]
+    impl KeyCustody for Restartable {
+        async fn register_wallet(&self, material: WalletMaterial) -> Result<WalletHandle, KeyCustodyError> {
+            self.inner.register_wallet(material).await
+        }
+        async fn remove_wallet(&self, handle: WalletHandle) -> Result<(), KeyCustodyError> {
+            self.inner.remove_wallet(handle).await
+        }
+        async fn seal(&self, material: &WalletMaterial) -> Result<Vec<u8>, KeyCustodyError> {
+            self.inner.seal(material).await
+        }
+        async fn unseal_and_register(&self, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
+            self.inner.unseal_and_register(sealed).await
+        }
+        async fn derive_subaddress(&self, handle: WalletHandle, index: SubaddressIndex, network: Network) -> Result<Address, KeyCustodyError> {
+            self.inner.derive_subaddress(handle, index, network).await
+        }
+        async fn scan_tx_outputs(
+            &self,
+            handle: WalletHandle,
+            tx: &Transaction,
+            major_range: Range<u32>,
+            minor_range: Range<u32>,
+        ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
+            self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await
+        }
+        async fn check_state(&self) -> Result<u64, KeyCustodyError> {
+            Ok(self.epoch.load(std::sync::atomic::Ordering::SeqCst))
+        }
+    }
+
+    #[tokio::test]
+    async fn a_restarted_backend_loses_only_its_own_handles() {
+        let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        let restartable = Arc::new(Restartable::default());
+        let socket: Arc<dyn KeyCustody> = restartable.clone();
+        let router = CustodyRouter::new(HashMap::from([("plain".to_string(), plain), ("socket".to_string(), socket)]), "plain");
+        let in_plain = router.register_wallet_in("plain", material(1)).await.unwrap();
+        let in_socket = router.register_wallet_in("socket", material(3)).await.unwrap();
+        router.check_state().await.unwrap();
+        assert!(router.handle_is_live(in_socket), "nothing restarted yet");
+
+        restartable.epoch.store(1, std::sync::atomic::Ordering::SeqCst);
+        router.check_state().await.unwrap();
+        assert!(!router.handle_is_live(in_socket));
+        assert!(router.handle_is_live(in_plain), "the other backend's stores are untouched");
+        router.check_state().await.unwrap();
+        let again = router.register_wallet_in("socket", material(3)).await.unwrap();
+        router.check_state().await.unwrap();
+        assert!(router.handle_is_live(again), "the same epoch seen twice drops nothing");
     }
 }

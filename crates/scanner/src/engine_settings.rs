@@ -405,7 +405,8 @@ impl live_settings::Reloadable for CustodyReloadable {
     }
 
     async fn install(&self, (backends, default): Self::Prepared) {
-        self.router.replace(backends, &default);
+        let dropped = self.router.replace(backends, &default);
+        crate::key_custody::router::free_handles(dropped);
     }
 
     fn boot_policy(&self) -> live_settings::BootPolicy {

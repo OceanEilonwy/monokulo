@@ -31,7 +31,7 @@
 //! isolation is preferred.
 
 mod plain;
-mod router;
+pub mod router;
 pub use router::CustodyRouter;
 
 /// Whether `material` is the wallet `address` belongs to, on `network`:

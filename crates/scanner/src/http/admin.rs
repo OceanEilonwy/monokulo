@@ -255,6 +255,12 @@ pub async fn switch_key_custody(
     }
     let backend = chosen_backend(&state, Some(&req.backend))?;
 
+    // One switch at a time: two overlapping switches of the same store could
+    // otherwise leave its row saying one backend while its live handle is
+    // in the other. Switches are rare, so one lock for all of them is fine.
+    static SWITCHING: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+    let _switching = SWITCHING.lock().await;
+
     let handle = state.key_custody.register_wallet_in(&backend, material.clone()).await.map_err(ApiError::from)?;
     let sealed = match state.key_custody.seal_in(&backend, &material).await {
         Ok(sealed) => sealed,
@@ -270,7 +276,10 @@ pub async fn switch_key_custody(
     }
     let previous = state.wallet_handles.write().insert(tenant.id.clone(), handle);
     if let Some(previous) = previous.filter(|p| *p != handle) {
-        let _ = state.key_custody.remove_wallet(previous).await;
+        if let Err(e) = state.key_custody.remove_wallet(previous).await {
+            // The old backend is down: it loses the copy when it restarts.
+            eprintln!("moved a store's keys, but removing them from its old key custody backend failed: {e}");
+        }
     }
     let refetched = state.store.lock().get_tenant_by_id(&tenant.id)?.ok_or(ApiError::NotFound)?;
     Ok(Json(TenantView::from(refetched)))

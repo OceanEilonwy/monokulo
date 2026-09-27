@@ -203,6 +203,24 @@ async fn run(action: Action) {
         );
     }
 
+    let enabled = router.enabled_backends();
+    let stranded: Vec<(String, usize)> = {
+        let tenants = store.lock().tenant_custody_backends().unwrap_or_default();
+        let mut counts: std::collections::BTreeMap<String, usize> = Default::default();
+        for (_, _, backend) in tenants.into_iter().filter(|(_, _, backend)| !enabled.contains(backend)) {
+            *counts.entry(backend).or_default() += 1;
+        }
+        counts.into_iter().collect()
+    };
+    for (backend, count) in stranded {
+        eprintln!(
+            "WARNING: {count} store(s) keep their keys in the {backend:?} key custody backend, which is not enabled \
+             (key_custody.enabled_backends = {}). Their payments are NOT being detected until it is enabled again \
+             or they move their keys to an enabled backend.",
+            enabled.join(",")
+        );
+    }
+
     let key_custody: Arc<dyn KeyCustody> = router.clone();
     let key_custody_backend = router.default_backend();
     let scanner_status = scanner_status::new_scanner_status_map();

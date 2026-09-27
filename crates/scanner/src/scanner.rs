@@ -7142,6 +7142,58 @@ mod tests {
         assert_eq!(handles.read()[&ids["plain"]], plain_handle, "never disturbed");
     }
 
+    #[tokio::test]
+    async fn a_store_whose_backend_lost_it_or_was_replaced_is_registered_again_by_the_scan_loop_alone() {
+        use crate::key_custody::{CustodyRouter, PlainKeyCustody};
+        use std::sync::Arc;
+        let plain: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        let socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        let router = CustodyRouter::new(
+            HashMap::from([("plain".to_string(), plain.clone()), ("socket".to_string(), socket.clone())]),
+            "plain",
+        );
+        let material = WalletMaterial::new(fixture_view_key(), fixture_spend_pubkey());
+        let store = Store::open_in_memory().unwrap();
+        let tenant = store
+            .create_tenant(
+                NewTenant {
+                    key_custody_backend: "socket".into(),
+                    sealed_key_material: router.seal_in("socket", &material).await.unwrap(),
+                    primary_address: "4x".into(),
+                    network: "mainnet".into(),
+                    confirmations_required: None,
+                    order_expiry_seconds: None,
+                },
+                1,
+            )
+            .unwrap()
+            .tenant;
+        let store = store.into_shared();
+        let handles = parking_lot::RwLock::new(HashMap::new());
+        let handled = AtomicU64::new(0);
+        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 1);
+
+        // The backend loses the store without saying so (no epoch change):
+        // the next scan call finds out, and the next tick registers it again.
+        let handle = handles.read()[&tenant.id];
+        socket.remove_wallet(handle).await.unwrap();
+        let tx = unrelated_tx(1);
+        let window = ScanIndices::range(0..1);
+        assert!(scan_transaction_in_window(&router, handle, &tx, &window).await.is_err());
+        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 1);
+        let handle = handles.read()[&tenant.id];
+        assert!(scan_transaction_in_window(&router, handle, &tx, &window).await.is_ok());
+
+        // The socket backend is pointed at another server (a new instance
+        // under the same name): the store is registered there on the next tick.
+        let new_socket: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        router.replace(HashMap::from([("plain".to_string(), plain), ("socket".to_string(), new_socket.clone())]), "plain");
+        assert_eq!(register_missing_wallets_checking_state(&store, &router, &handles, Some(&handled), "mainnet").await, 1);
+        let handle = handles.read()[&tenant.id];
+        assert!(new_socket.derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet).await.is_ok());
+        assert!(scan_transaction_in_window(&router, handle, &tx, &window).await.is_ok());
+    }
+
     // -- Scale (task 7.12). Ignored by default: run with
     // `cargo test -p scanner --release --lib scale_ -- --ignored --nocapture`.
 

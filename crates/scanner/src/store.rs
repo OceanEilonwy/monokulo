@@ -501,7 +501,7 @@ impl Store {
     /// keys, in one statement (task 5.3).
     pub fn update_tenant_key_custody(&self, tenant_id: &str, backend: &str, sealed: &[u8]) -> Result<()> {
         let changed = self.conn.execute(
-            "UPDATE tenants SET key_custody_backend = ?2, sealed_key_material = ?3 WHERE id = ?1",
+            "UPDATE tenants SET key_custody_backend = ?2, sealed_key_material = ?3 WHERE id = ?1 AND disabled_at_utc IS NULL",
             params![tenant_id, backend, sealed],
         )?;
         if changed == 0 {
