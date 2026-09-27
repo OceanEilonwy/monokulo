@@ -2612,38 +2612,35 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_sixth_custom_threshold_is_rejected() {
+    async fn a_sixth_custom_threshold_is_rejected_until_one_is_deleted_in_the_same_save() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-
+        let router = build_router(state.clone());
         let session_token =
             signed_up_and_logged_in_session_token(&router, "threshold-max-five@example.com", "correct horse battery staple").await;
         let (connection_id, _public_key) = create_connection(&router, &session_token).await;
-
-        for i in 0..5 {
-            let response = router
-                .clone()
-                .oneshot(form_post_request(
-                    &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
-                    &session_token,
-                    &[("unit_amount", &format!("{i}.00")), ("confirmations_required", "15")],
-                ))
-                .await
-                .unwrap();
+        // The settings page's one form: its "new threshold" fields, and a
+        // delete checkbox per existing row.
+        let save = format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save");
+        for i in 1..=5 {
+            let response = router.clone().oneshot(form_post_request(&save, &session_token,
+                &[("new_unit_amount", &format!("{i}0.00")), ("new_confirmations_required", "15")])).await.unwrap();
             assert_eq!(response.status(), StatusCode::FOUND, "expected threshold {i} to be accepted");
         }
 
-        let response = router
-            .oneshot(form_post_request(
-                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
-                &session_token,
-                &[("unit_amount", "999.00"), ("confirmations_required", "15")],
-            ))
-            .await
-            .unwrap();
+        let response = router.clone().oneshot(form_post_request(&save, &session_token,
+            &[("new_unit_amount", "999.00"), ("new_confirmations_required", "15")])).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK, "a rejected sixth threshold re-renders the page, it doesn't redirect");
         let html = body_text(response).await;
         assert!(html.contains("at most 5 custom thresholds"), "expected a clear rejection message, got: {html}");
+
+        // Ticking one row's delete box while adding the new one fits.
+        let doomed = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap()[0].clone();
+        let response = router.oneshot(form_post_request(&save, &session_token,
+            &[(&format!("delete_{}", doomed.id), "on"), ("new_unit_amount", "999.00"), ("new_confirmations_required", "15")])).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let amounts: Vec<String> = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap().into_iter().map(|t| t.unit_amount).collect();
+        assert_eq!(amounts.len(), 5);
+        assert!(amounts.contains(&"999".to_string()) && !amounts.contains(&doomed.unit_amount), "{amounts:?}");
     }
 
     #[tokio::test]
@@ -2679,25 +2676,26 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_negative_unit_amount_is_rejected() {
+    async fn a_negative_or_out_of_range_new_threshold_is_rejected() {
         let (state, _engine) = test_state_with_real_engine().await;
-        let router = build_router(state);
-
+        let router = build_router(state.clone());
         let session_token =
             signed_up_and_logged_in_session_token(&router, "threshold-negative@example.com", "correct horse battery staple").await;
         let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let save = format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save");
 
-        let response = router
-            .oneshot(form_post_request(
-                &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds"),
-                &session_token,
-                &[("unit_amount", "-5.00"), ("confirmations_required", "20")],
-            ))
-            .await
-            .unwrap();
-        assert_eq!(response.status(), StatusCode::OK, "a negative amount re-renders the page, it doesn't redirect");
-        let html = body_text(response).await;
-        assert!(html.contains("non-negative"), "expected a clear rejection message, got: {html}");
+        for (amount, confirmations, message) in [
+            ("-5.00", "20", "non-negative"),
+            ("50.00", "721", "from 0 to 720"),
+            ("50.00", "", "from 0 to 720"),
+        ] {
+            let response = router.clone().oneshot(form_post_request(&save, &session_token,
+                &[("new_unit_amount", amount), ("new_confirmations_required", confirmations)])).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{amount}/{confirmations} re-renders the page, it doesn't redirect");
+            let html = body_text(response).await;
+            assert!(html.contains(message), "{amount}/{confirmations}: expected {message:?}, got: {html}");
+        }
+        assert_eq!(state.db.lock().unwrap().count_confirmation_thresholds(&connection_id).unwrap(), 0);
     }
 
     /// Proves the whole resolution chain end to end, against the real
