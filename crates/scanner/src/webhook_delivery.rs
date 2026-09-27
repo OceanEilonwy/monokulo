@@ -216,6 +216,20 @@ pub async fn attempt_delivery(
 /// slow or hanging merchant endpoint takes to respond - exactly the kind of
 /// lock-across-await mistake caught once already in `http::admin::delete_own_tenant`
 /// during development.
+/// Most deliveries picked per tick, and most sent at once.
+pub const DELIVERY_BATCH: u32 = 50;
+const DELIVERY_CONCURRENCY: usize = 16;
+/// Most deliveries one store gets in a batch, so one store's backlog or slow
+/// endpoint can't hold up the others.
+const DELIVERY_PER_TENANT: u32 = 4;
+
+/// Sends one batch of due deliveries, concurrently, picked fairly across
+/// stores (`Store::due_webhook_deliveries_fair`), and records each outcome.
+/// Returns how many were attempted; a full batch means more may be due now.
+///
+/// `now` picks what is due. Each outcome is recorded at `now` plus the time
+/// elapsed since the tick began, so a retry after a slow batch is scheduled
+/// from when its attempt actually happened.
 pub async fn run_delivery_tick(
     store: &SharedStore,
     client: &reqwest::Client,
@@ -224,38 +238,57 @@ pub async fn run_delivery_tick(
     max_attempts: u32,
     now: i64,
 ) -> Result<usize, crate::store::StoreError> {
-    let due = store.lock().due_webhook_deliveries(now, 50)?;
-    let count = due.len();
+    use futures_util::stream::{self, StreamExt};
 
-    for delivery in &due {
-        let outcome = attempt_delivery(client, delivery, allow_private, timeout).await;
+    let due = store.lock().due_webhook_deliveries_fair(now, DELIVERY_PER_TENANT, DELIVERY_BATCH)?;
+    let count = due.len();
+    let started = std::time::Instant::now();
+
+    let outcomes: Vec<(DueDelivery, DeliveryOutcome, i64)> = stream::iter(due)
+        .map(|delivery| async move {
+            let outcome = attempt_delivery(client, &delivery, allow_private, timeout).await;
+            let attempted_at = now + started.elapsed().as_secs() as i64;
+            (delivery, outcome, attempted_at)
+        })
+        .buffer_unordered(DELIVERY_CONCURRENCY)
+        .collect()
+        .await;
+
+    // Every outcome is recorded even if an earlier one fails to write: a
+    // delivery that went out but wasn't marked would be sent again.
+    let mut first_error = None;
+    for (delivery, outcome, at) in outcomes {
         let store = store.lock();
-        if outcome.delivered {
-            store.mark_webhook_delivered(delivery.delivery_id, outcome.response_status.unwrap_or(0), now)?;
+        let written = if outcome.delivered {
+            store.mark_webhook_delivered(delivery.delivery_id, outcome.response_status.unwrap_or(0), at)
         } else if delivery.attempt_count + 1 >= max_attempts {
             // Give up: record the final failure but stop scheduling retries by
             // pushing next_attempt_at far into the future rather than leaving it
             // due forever. The row itself is never deleted - see docs/DESIGN.md §11.
             store.schedule_webhook_retry(
                 delivery.delivery_id,
-                now + 100 * 365 * 24 * 60 * 60, // effectively "never again"
+                at + 100 * 365 * 24 * 60 * 60, // effectively "never again"
                 outcome.response_status,
                 outcome.error.as_deref(),
-                now,
-            )?;
+                at,
+            )
         } else {
-            let next_attempt_at = now + backoff_seconds(delivery.attempt_count);
             store.schedule_webhook_retry(
                 delivery.delivery_id,
-                next_attempt_at,
+                at + backoff_seconds(delivery.attempt_count),
                 outcome.response_status,
                 outcome.error.as_deref(),
-                now,
-            )?;
+                at,
+            )
+        };
+        if let Err(e) = written {
+            first_error.get_or_insert(e);
         }
     }
-
-    Ok(count)
+    match first_error {
+        Some(e) => Err(e),
+        None => Ok(count),
+    }
 }
 
 #[cfg(test)]
@@ -614,5 +647,143 @@ mod tests {
             0,
             "retries must stop at the *configured* ceiling, not at the module's fallback constant"
         );
+    }
+
+    // -- Fair, concurrent delivery (admin_settings_v2.md task 7.8) ------------
+
+    /// A local endpoint that waits `delay` then answers `status`, counting hits.
+    async fn spawn_endpoint(delay: Duration, status: u16) -> (String, Arc<std::sync::atomic::AtomicU64>) {
+        let hits = Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let counter = hits.clone();
+        let app = Router::new().route(
+            "/hook",
+            post(move |_body: String| {
+                let counter = counter.clone();
+                async move {
+                    counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::time::sleep(delay).await;
+                    axum::http::StatusCode::from_u16(status).unwrap()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}/hook"), hits)
+    }
+
+    /// A store with a webhook at `url` and `orders` orders, each with one due
+    /// delivery. Returns the webhook id and the order ids.
+    fn store_with_deliveries(store: &Store, url: &str, orders: usize, due_at: i64) -> (String, Vec<String>) {
+        use crate::store::{NewOrder, NewTenant};
+        let tenant = store
+            .create_tenant(
+                NewTenant {
+                    key_custody_backend: "plain".into(),
+                    sealed_key_material: vec![],
+                    primary_address: "4x".into(),
+                    network: "mainnet".into(),
+                    confirmations_required: None,
+                    order_expiry_seconds: None,
+                },
+                1,
+            )
+            .unwrap()
+            .tenant;
+        let webhook = store.create_webhook(&tenant.id, url, "{}", "whsec", 1).unwrap();
+        let mut order_ids = vec![];
+        for _ in 0..orders {
+            let index = store.allocate_minor_index(&tenant.id).unwrap();
+            let order = store
+                .create_order(NewOrder {
+                    confirmations_required_override: None,
+                    tenant_id: tenant.id.clone(),
+                    merchant_order_id: None,
+                    minor_index: index,
+                    address: format!("a{index}"),
+                    xmr_amount_piconero: 1,
+                    description: None,
+                    created_at: 1,
+                    expires_at: 10_000_000_000,
+                })
+                .unwrap();
+            store.enqueue_webhook_delivery(&webhook.id, &order.id, "order.paid", "{}", due_at).unwrap();
+            order_ids.push(order.id);
+        }
+        (webhook.id, order_ids)
+    }
+
+    fn pending_for(store: &SharedStore, webhook_id: &str) -> usize {
+        store.lock().due_webhook_deliveries(i64::MAX / 2, 10_000).unwrap().iter().filter(|d| d.webhook_id == webhook_id).count()
+    }
+
+    #[tokio::test]
+    async fn one_stores_slow_endpoint_and_backlog_do_not_hold_up_another_store() {
+        let (slow_url, slow_hits) = spawn_endpoint(Duration::from_millis(800), 200).await;
+        let (fast_url, _) = spawn_endpoint(Duration::ZERO, 200).await;
+        let store = Store::open_in_memory().unwrap();
+        let (slow_webhook, _) = store_with_deliveries(&store, &slow_url, 40, 100);
+        // Queued after all of the slow store's, so plain oldest-first order
+        // would put it behind them.
+        let (fast_webhook, _) = store_with_deliveries(&store, &fast_url, 1, 101);
+        let store = store.into_shared();
+
+        let started = std::time::Instant::now();
+        run_delivery_tick(&store, &test_client(), true, Duration::from_secs(5), 8, 1000).await.unwrap();
+        assert!(started.elapsed() < Duration::from_secs(4), "sent concurrently, not one after another: {:?}", started.elapsed());
+
+        assert_eq!(pending_for(&store, &fast_webhook), 0, "the other store's webhook went out in the first tick");
+        assert_eq!(
+            slow_hits.load(std::sync::atomic::Ordering::SeqCst),
+            DELIVERY_PER_TENANT as u64,
+            "the busy store got its fair share, not the whole batch"
+        );
+        assert_eq!(pending_for(&store, &slow_webhook), 40 - DELIVERY_PER_TENANT as usize);
+    }
+
+    #[tokio::test]
+    async fn many_stores_are_all_served_within_a_couple_of_ticks() {
+        let (url, _) = spawn_endpoint(Duration::ZERO, 200).await;
+        let store = Store::open_in_memory().unwrap();
+        let webhooks: Vec<String> = (0..60).map(|i| store_with_deliveries(&store, &url, 1, 100 + i).0).collect();
+        let store = store.into_shared();
+
+        let first = run_delivery_tick(&store, &test_client(), true, Duration::from_secs(5), 8, 1000).await.unwrap();
+        assert_eq!(first, DELIVERY_BATCH as usize, "a full batch, so the loop goes again straight away");
+        run_delivery_tick(&store, &test_client(), true, Duration::from_secs(5), 8, 1000).await.unwrap();
+        for webhook in &webhooks {
+            assert_eq!(pending_for(&store, webhook), 0);
+        }
+    }
+
+    #[tokio::test]
+    async fn two_events_for_one_order_are_never_in_flight_together() {
+        let (url, hits) = spawn_endpoint(Duration::ZERO, 200).await;
+        let store = Store::open_in_memory().unwrap();
+        let (webhook, orders) = store_with_deliveries(&store, &url, 1, 100);
+        store.enqueue_webhook_delivery(&webhook, &orders[0], "order.confirming", "{}", 101).unwrap();
+        let store = store.into_shared();
+
+        run_delivery_tick(&store, &test_client(), true, Duration::from_secs(5), 8, 1000).await.unwrap();
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 1, "the older one first, alone");
+        run_delivery_tick(&store, &test_client(), true, Duration::from_secs(5), 8, 1000).await.unwrap();
+        assert_eq!(hits.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(pending_for(&store, &webhook), 0);
+    }
+
+    #[tokio::test]
+    async fn a_retry_is_scheduled_from_when_its_attempt_happened() {
+        let (url, _) = spawn_endpoint(Duration::from_millis(2100), 500).await;
+        let store = Store::open_in_memory().unwrap();
+        let (webhook, _) = store_with_deliveries(&store, &url, 1, 100);
+        let store = store.into_shared();
+
+        run_delivery_tick(&store, &test_client(), true, Duration::from_secs(5), 8, 1000).await.unwrap();
+        // The attempt took over 2s; its first retry comes 60s after that.
+        let due_at = |t: i64| store.lock().due_webhook_deliveries(t, 10).unwrap().iter().filter(|d| d.webhook_id == webhook).count();
+        assert_eq!(due_at(1000 + 60 + 1), 0, "not 60s from the start of the tick");
+        assert_eq!(due_at(1000 + 2 + 60), 1);
     }
 }

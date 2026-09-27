@@ -1626,6 +1626,46 @@ impl Store {
     /// One delivery attempt's worth of everything the delivery worker needs,
     /// joined from `webhook_deliveries` and `webhooks` in one query so the worker
     /// never has to look up the owning webhook separately per row.
+    /// Due deliveries, oldest first, picked fairly for concurrent sending
+    /// (`webhook_delivery::run_delivery_tick`):
+    /// - at most one per (webhook, order), the oldest, so two events for the
+    ///   same order are never in flight at once and can't overtake each other;
+    /// - at most `per_tenant` per store, so one store with a big backlog (or a
+    ///   slow endpoint) can't fill the batch and hold up every other store.
+    pub fn due_webhook_deliveries_fair(&self, now: i64, per_tenant: u32, limit: u32) -> Result<Vec<DueDelivery>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, webhook_id, order_id, event_type, payload_json, attempt_count, url, extra_headers, signing_secret
+             FROM (
+                SELECT d.id, d.webhook_id, d.order_id, d.event_type, d.payload_json, d.attempt_count,
+                       w.url, w.extra_headers, w.signing_secret, d.next_attempt_at_utc AS due_at,
+                       ROW_NUMBER() OVER (PARTITION BY d.webhook_id, d.order_id ORDER BY d.next_attempt_at_utc, d.id) AS per_order,
+                       ROW_NUMBER() OVER (PARTITION BY w.tenant_id ORDER BY d.next_attempt_at_utc, d.id) AS per_tenant_rank
+                FROM webhook_deliveries d
+                JOIN webhooks w ON w.id = d.webhook_id
+                WHERE d.delivered_at_utc IS NULL AND w.enabled = 1 AND d.next_attempt_at_utc <= ?1
+             )
+             WHERE per_order = 1 AND per_tenant_rank <= ?2
+             ORDER BY due_at, id
+             LIMIT ?3",
+        )?;
+        let rows = stmt
+            .query_map(params![now, per_tenant, limit], |row| {
+                Ok(DueDelivery {
+                    delivery_id: row.get(0)?,
+                    webhook_id: row.get(1)?,
+                    order_id: row.get(2)?,
+                    event_type: row.get(3)?,
+                    payload_json: row.get(4)?,
+                    attempt_count: row.get::<_, i64>(5)? as u32,
+                    url: row.get(6)?,
+                    extra_headers_json: row.get(7)?,
+                    signing_secret: row.get(8)?,
+                })
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     pub fn due_webhook_deliveries(&self, now: i64, limit: u32) -> Result<Vec<DueDelivery>> {
         let mut stmt = self.conn.prepare(
             "SELECT d.id, d.webhook_id, d.order_id, d.event_type, d.payload_json, d.attempt_count,

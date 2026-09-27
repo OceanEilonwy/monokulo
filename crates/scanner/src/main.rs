@@ -416,12 +416,18 @@ async fn run_webhook_delivery_loop(
         // `run_delivery_tick` locks the store only around its own brief synchronous
         // sections, never across the outbound HTTP `.await`s it performs per
         // delivery - see its doc comment for why that matters.
-        if let Err(e) =
-            run_delivery_tick(&store, &client, allow_private_urls, timeout, max_attempts, now_unix()).await
-        {
-            eprintln!("webhook delivery tick failed: {e}");
+        let sent = match run_delivery_tick(&store, &client, allow_private_urls, timeout, max_attempts, now_unix()).await {
+            Ok(sent) => sent,
+            Err(e) => {
+                eprintln!("webhook delivery tick failed: {e}");
+                0
+            }
+        };
+        // A full batch means a backlog: carry on straight away rather than
+        // waiting, so it drains steadily.
+        if sent < scanner::webhook_delivery::DELIVERY_BATCH as usize {
+            tokio::time::sleep(Duration::from_secs(5)).await;
         }
-        tokio::time::sleep(Duration::from_secs(5)).await;
     }
 }
 
