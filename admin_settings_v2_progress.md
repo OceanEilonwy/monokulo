@@ -33,8 +33,11 @@ commits. Nothing is pushed.
 | 7.8 fair webhook delivery | done | a9dee72 | |
 | 7.9 supervisor backoff + tick deadline | done | 8762803, 6f5e5cc | restart counts on /status |
 | 7.4 fair concurrent scanning | done | 6f5e5cc | per-network loops; per-call 10s deadline; per-network isolation not unit-tested (loops live in main.rs; covered once 1.4 moves boot into the library) |
-| 1.1 live-settings crate | delegated to a sub-agent in a worktree | | verify its work before merging |
-| 7.6 node failures | next | | |
+| 1.1 live-settings crate | done | efef6bf | built by a sub-agent (it stopped at a usage limit after finishing the code); reviewed, 34 tests, clippy clean, merged |
+| 7.6 node failures | done | 130c432 | cooldown, 30s call budget, pinned node per tick, 64MB response cap |
+| 7.10 HTTP limits | done | 242ffba | constants for now; become live settings with part 1.2 |
+| 7.7 database failures | done | 719dc2e | transient store/custody errors are 503 |
+| 7.11 crash safety, SIGTERM | next | | |
 
 ## Decisions made while working
 
@@ -82,10 +85,11 @@ reported at the end.)
 
 After 7.1: 916 passed, 0 failed, 20 ignored.
 After 6f5e5cc: 940 passed, 0 failed, 20 ignored.
+After 719dc2e: 986 passed, 0 failed, 20 ignored.
 
 ## Current step
 
-7.6 (node cooldown, per-call deadline, one node per tick, response size
-limit) in `daemon_fallback.rs`/`daemon_rpc.rs`. The live-settings crate
-(1.1) is being built by a sub-agent in a separate worktree; when it
-reports, review its diff and tests, then merge into this branch.
+7.11 (SIGTERM handling, crash-injection test), then 7.2/7.3 (scan work off
+the runtime, mempool dedupe, scan window with `closed_at`, index-set
+custody API), then 1.2/1.3 (engine and monokulo onto live-settings), then
+parts 2 to 6.
