@@ -6508,4 +6508,130 @@ mod tests {
         assert_eq!(cursor_of(&store, &a), Some(2), "stopped at the block that differs");
         assert!(store.lock().get_all_payments(&a_order).unwrap().is_empty(), "nothing recorded from it");
     }
+
+    // -- Crash safety (task 7.11) ----------------------------------------------
+
+    /// A daemon that yields to the executor before every call, so a tick has
+    /// an await point wherever it talks to the node.
+    struct YieldingDaemon(FakeDaemonClient);
+
+    #[async_trait::async_trait]
+    impl MoneroDaemonClient for YieldingDaemon {
+        async fn get_height(&self) -> std::result::Result<u64, DaemonError> {
+            tokio::task::yield_now().await;
+            self.0.get_height().await
+        }
+        async fn get_block_hash(&self, height: u64) -> std::result::Result<String, DaemonError> {
+            tokio::task::yield_now().await;
+            self.0.get_block_hash(height).await
+        }
+        async fn get_block_timestamp(&self, height: u64) -> std::result::Result<u64, DaemonError> {
+            tokio::task::yield_now().await;
+            self.0.get_block_timestamp(height).await
+        }
+        async fn get_block_transactions(&self, height: u64) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            tokio::task::yield_now().await;
+            self.0.get_block_transactions(height).await
+        }
+        async fn get_blocks_range(&self, start: u64, count: u64) -> std::result::Result<Vec<Vec<Transaction>>, DaemonError> {
+            tokio::task::yield_now().await;
+            self.0.get_blocks_range(start, count).await
+        }
+        async fn get_mempool_transactions(&self) -> std::result::Result<Vec<Transaction>, DaemonError> {
+            tokio::task::yield_now().await;
+            self.0.get_mempool_transactions().await
+        }
+        async fn locate_transaction(&self, txid: &str) -> std::result::Result<TxLocation, DaemonError> {
+            tokio::task::yield_now().await;
+            self.0.locate_transaction(txid).await
+        }
+        async fn get_transaction(&self, txid: &str) -> std::result::Result<Transaction, DaemonError> {
+            tokio::task::yield_now().await;
+            self.0.get_transaction(txid).await
+        }
+        async fn is_key_image_spent(&self, key_images: &[String]) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
+            tokio::task::yield_now().await;
+            self.0.is_key_image_spent(key_images).await
+        }
+    }
+
+    /// Polls `future` at most `polls` times, then drops it where it stands:
+    /// the in-process equivalent of the engine being killed at that point.
+    /// Everything written before the cut stays written; nothing after it
+    /// happens.
+    async fn run_until_killed<F: std::future::Future>(future: F, polls: usize) -> Option<F::Output> {
+        let mut future = Box::pin(future);
+        let mut left = polls;
+        std::future::poll_fn(move |cx| {
+            if left == 0 {
+                return std::task::Poll::Ready(None);
+            }
+            left -= 1;
+            future.as_mut().poll(cx).map(Some)
+        })
+        .await
+    }
+
+    #[tokio::test]
+    async fn killing_the_engine_at_any_point_in_a_tick_never_loses_or_duplicates_a_payment_or_its_webhook() {
+        for seed in 1..=12u64 {
+            let mut rng = seed;
+            let mut next = move |n: u64| {
+                rng = rng.wrapping_mul(6364136223846793005).wrapping_add(1442695040888963407);
+                (rng >> 33) % n
+            };
+            let store = Store::open_in_memory().unwrap();
+            let custody = PlainKeyCustody::default();
+            let mut tenants = vec![];
+            let mut orders = vec![];
+            for _ in 0..3 {
+                let (id, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+                store.create_webhook(&id, "https://shop.example/hook", "{}", "whsec", 1).unwrap();
+                tenants.push((id, handle));
+                orders.push(order);
+            }
+            let store = store.into_shared();
+            let daemon = YieldingDaemon(FakeDaemonClient::new());
+            daemon.0.push_block("b1", vec![]);
+            daemon.0.push_block("b2", vec![]);
+            let mut paid_at = None;
+
+            for step in 0..20u64 {
+                if paid_at.is_none() && next(4) == 0 {
+                    if next(2) == 0 {
+                        daemon.0.set_mempool(vec![fixture_tx()]);
+                    }
+                    let h = daemon.0.push_block(&format!("b{}", step + 3), vec![fixture_tx()]);
+                    daemon.0.set_mempool(vec![]);
+                    paid_at = Some(h);
+                } else {
+                    daemon.0.push_block(&format!("b{}", step + 3), vec![unrelated_tx(step as u8 + 60)]);
+                }
+                let polls = 1 + next(60) as usize;
+                let _ = run_until_killed(run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0), polls).await;
+            }
+            for _ in 0..5 {
+                run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+            }
+
+            let high_water = store.lock().max_scanned_height("mainnet").unwrap();
+            let events = store.lock().due_webhook_deliveries(i64::MAX / 2, 10_000).unwrap();
+            for ((tenant_id, _), order_id) in tenants.iter().zip(&orders) {
+                assert_eq!(cursor_of(&store, tenant_id), high_water, "seed {seed}");
+                let payments = store.lock().get_all_payments(order_id).unwrap();
+                match paid_at {
+                    Some(h) => {
+                        assert_eq!(payments.len(), 1, "seed {seed}: exactly one payment");
+                        assert_eq!(payments[0].block_height, Some(h as i64), "seed {seed}");
+                        let status = order_status(&store, order_id);
+                        assert!(
+                            events.iter().any(|d| &d.order_id == order_id && d.event_type == format!("order.{status}")),
+                            "seed {seed}: the webhook for the order's current status ({status}) was enqueued"
+                        );
+                    }
+                    None => assert!(payments.is_empty(), "seed {seed}"),
+                }
+            }
+        }
+    }
 }

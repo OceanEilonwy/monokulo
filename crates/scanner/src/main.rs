@@ -246,9 +246,23 @@ async fn main() {
             );
         }
     }
-    axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
-        .await
-        .expect("server error");
+    // On SIGTERM or Ctrl-C (task 7.11): stop accepting connections and let
+    // requests in flight finish, for up to SHUTDOWN_GRACE, then exit. The
+    // background loops simply stop with the process: every step they take is
+    // safe to interrupt (payments are recorded idempotently, a block is only
+    // marked scanned after everything in it is recorded, webhooks are marked
+    // delivered only after they went out), so the next start carries on.
+    let server = axum::serve(listener, router.into_make_service_with_connect_info::<std::net::SocketAddr>())
+        .with_graceful_shutdown(shutdown_signal());
+    let served = tokio::spawn(async move { server.await });
+    let _ = shutdown_signal().await;
+    println!("shutting down: finishing requests in flight (up to {SHUTDOWN_GRACE:?})");
+    match tokio::time::timeout(SHUTDOWN_GRACE, served).await {
+        Ok(Ok(Ok(()))) => println!("shut down cleanly"),
+        Ok(Ok(Err(e))) => eprintln!("server error while shutting down: {e}"),
+        Ok(Err(e)) => eprintln!("server task failed while shutting down: {e}"),
+        Err(_) => eprintln!("requests still running after {SHUTDOWN_GRACE:?}, exiting anyway"),
+    }
 }
 
 /// Builds one `FallbackDaemonClient` per configured `[monero_node.<network>]`
@@ -438,6 +452,37 @@ async fn run_webhook_delivery_loop(
         if sent < scanner::webhook_delivery::DELIVERY_BATCH as usize {
             tokio::time::sleep(Duration::from_secs(5)).await;
         }
+    }
+}
+
+/// How long requests in flight get to finish after SIGTERM or Ctrl-C.
+const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
+
+/// Resolves on SIGTERM (what a service manager sends) or Ctrl-C.
+async fn shutdown_signal() {
+    let ctrl_c = async {
+        if let Err(e) = tokio::signal::ctrl_c().await {
+            eprintln!("could not listen for Ctrl-C: {e}");
+            std::future::pending::<()>().await;
+        }
+    };
+    #[cfg(unix)]
+    let terminate = async {
+        match tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()) {
+            Ok(mut signal) => {
+                signal.recv().await;
+            }
+            Err(e) => {
+                eprintln!("could not listen for SIGTERM: {e}");
+                std::future::pending::<()>().await;
+            }
+        }
+    };
+    #[cfg(not(unix))]
+    let terminate = std::future::pending::<()>();
+    tokio::select! {
+        () = ctrl_c => {}
+        () = terminate => {}
     }
 }
 
