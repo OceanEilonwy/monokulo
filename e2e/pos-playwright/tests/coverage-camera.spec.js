@@ -59,3 +59,36 @@ test('real checkout camera can be stopped by the customer before it finds a code
   await expect(page.locator('#refund-camera')).toBeHidden();
   await expect(page.locator('#refund_address')).toHaveValue('');
 });
+
+test('merchant scans the customer refund QR with the POS tablet camera', async ({ page, context }) => {
+  await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
+  await page.goto(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/pos`);
+  const card = page.locator('.pos-pay-card');
+  await card.getByRole('button', { name: 'Scan refund QR' }).click();
+  await expect(card.locator('#pos-refund')).toHaveValue(address);
+  await expect(card.locator('.pos-refund-state')).toHaveAttribute('aria-label', 'Refund address saved');
+  // The scan ends by itself: camera hidden and released.
+  await expect(card.locator('.pos-camera')).toBeHidden();
+  await expect(card.getByRole('button', { name: 'Scan refund QR' })).toBeVisible();
+  expect(await card.locator('.pos-camera').evaluate(el => el.srcObject)).toBeNull();
+});
+
+test('POS tablet camera stopped before it finds a code leaves the field as it was', async ({ page, context }) => {
+  await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
+  // Hold off the decoder so the camera is still looking when they tap Stop.
+  await page.addInitScript(() => {
+    let real;
+    Object.defineProperty(window, 'jsQR', { configurable: true, get: () => (real ? () => null : undefined), set: value => { real = value; } });
+  });
+  await page.goto(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/pos`);
+  const card = page.locator('.pos-pay-card');
+  await expect(card).toBeVisible();
+  const before = await card.locator('#pos-refund').inputValue();
+  await card.getByRole('button', { name: 'Scan refund QR' }).click();
+  await expect(card.getByRole('button', { name: 'Stop camera' })).toBeVisible();
+  await expect(card.locator('.pos-camera')).toBeVisible();
+  await card.getByRole('button', { name: 'Stop camera' }).click();
+  await expect(card.locator('.pos-camera')).toBeHidden();
+  await expect(card.locator('#pos-refund')).toHaveValue(before);
+  await expect(card.locator('.pos-refund-message')).toHaveCount(0);
+});
