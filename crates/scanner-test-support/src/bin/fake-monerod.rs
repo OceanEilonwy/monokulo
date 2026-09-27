@@ -35,25 +35,25 @@ fn block_hash(height: u64) -> String {
 }
 
 impl Chain {
-    fn check(&self) -> Result<(), Response> {
+    fn check(&self) -> Result<(), Box<Response>> {
         if self.online.load(Ordering::SeqCst) {
             Ok(())
         } else {
-            Err((StatusCode::SERVICE_UNAVAILABLE, "offline").into_response())
+            Err(Box::new((StatusCode::SERVICE_UNAVAILABLE, "offline").into_response()))
         }
     }
 }
 
 async fn get_height(State(chain): State<Chain>) -> Response {
     if let Err(r) = chain.check() {
-        return r;
+        return *r;
     }
     Json(json!({ "height": chain.count.load(Ordering::SeqCst), "status": "OK" })).into_response()
 }
 
 async fn json_rpc(State(chain): State<Chain>, Json(request): Json<Value>) -> Response {
     if let Err(r) = chain.check() {
-        return r;
+        return *r;
     }
     let id = request.get("id").cloned().unwrap_or(json!("0"));
     let method = request.get("method").and_then(Value::as_str).unwrap_or_default();
@@ -84,21 +84,21 @@ async fn json_rpc(State(chain): State<Chain>, Json(request): Json<Value>) -> Res
 
 async fn empty_pool_hashes(State(chain): State<Chain>) -> Response {
     if let Err(r) = chain.check() {
-        return r;
+        return *r;
     }
     Json(json!({ "tx_hashes": [], "status": "OK" })).into_response()
 }
 
 async fn empty_pool(State(chain): State<Chain>) -> Response {
     if let Err(r) = chain.check() {
-        return r;
+        return *r;
     }
     Json(json!({ "transactions": [], "status": "OK" })).into_response()
 }
 
 async fn no_transactions(State(chain): State<Chain>) -> Response {
     if let Err(r) = chain.check() {
-        return r;
+        return *r;
     }
     Json(json!({ "txs": [], "missed_tx": [], "status": "OK" })).into_response()
 }

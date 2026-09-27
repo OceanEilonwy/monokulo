@@ -1,7 +1,7 @@
 //! The one place settings read the process environment, and per-thread
-//! environment overrides for tests. The settings themselves (env > database
-//! > default, validation, saving) are declared and resolved with the
-//! `live-settings` crate in each service.
+//! environment overrides for tests. The settings themselves (environment,
+//! then database, then default; validation; saving) are declared and
+//! resolved with the `live-settings` crate in each service.
 
 /// The one place settings read the environment. With the `test-support`
 /// feature (tests only), a [`test_env::EnvOverride`] on the current thread

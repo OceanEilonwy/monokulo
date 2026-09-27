@@ -328,7 +328,9 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
     // backoff until the store answers, logging each failure.
     let mut delay = Duration::from_millis(500);
     let tenants = loop {
-        match store.lock().list_active_tenants() {
+        // Bound first: the lock must not be held through the retry's sleep.
+        let listed = store.lock().list_active_tenants();
+        match listed {
             Ok(tenants) => break tenants,
             Err(e) => {
                 eprintln!("failed to list tenants at boot, retrying in {delay:?}: {e}");
