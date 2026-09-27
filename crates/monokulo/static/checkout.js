@@ -154,11 +154,13 @@
     return true;
   }
 
+  // true: a Monero address was used; false: a QR code without one (already
+  // explained); null: no QR code found.
   function decode(width, height) {
-    if (!context || typeof window.jsQR !== 'function') return false;
+    if (!context || typeof window.jsQR !== 'function') return null;
     var image = context.getImageData(0, 0, width, height);
     var result = window.jsQR(image.data, width, height, { inversionAttempts: 'attemptBoth' });
-    return result ? useResult(result.data) : false;
+    return result ? useResult(result.data) : null;
   }
 
   function drawImage(source, width, height) {
@@ -201,7 +203,7 @@
             drawImage(picture, picture.naturalWidth, picture.naturalHeight);
           } finally { URL.revokeObjectURL(url); }
         }
-        if (!decode(canvas.width, canvas.height)) error('No QR code found in that image.');
+        if (decode(canvas.width, canvas.height) === null) error('No QR code found in that image.');
       } catch (_) { error('Could not read that image. Choose another file.'); }
       fileInput.value = '';
     });

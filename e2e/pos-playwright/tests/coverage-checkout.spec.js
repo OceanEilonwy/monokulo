@@ -382,3 +382,28 @@ test('real checkout saves on Enter without leaving the page', async ({ page, req
   expect(await page.evaluate(() => window.__samePage)).toBe(true);
   expect(page.url()).toBe(url);
 });
+
+test('real checkout reads a wallet payment-URI QR and explains images it cannot use', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  await page.goto(url);
+  const input = page.locator('#refund_address');
+  const scanError = page.locator('#scan-error');
+  async function choose(file) {
+    const chooser = page.waitForEvent('filechooser');
+    await page.getByRole('button', { name: 'Choose QR image' }).click();
+    await (await chooser).setFiles(path.join(__dirname, '../fixtures', file));
+  }
+  // A photo that happens to contain no QR code at all.
+  await choose('receipt-photo-no-qr.png');
+  await expect(scanError).toHaveText('No QR code found in that image.');
+  // A QR code, but not a Monero one (a shop's menu link).
+  await choose('menu-link-qr.png');
+  await expect(scanError).toHaveText('This QR code does not contain a Monero address.');
+  await expect(input).toHaveValue('');
+  // A wallet's "receive" QR is a monero: URI with an amount and a label;
+  // only the address is the refund address.
+  await choose('refund-qr-wallet-uri.png');
+  await expect(input).toHaveValue(address);
+  await expect(scanError).toBeHidden();
+  await expect(page.locator('#refund-field')).toHaveClass(/is-saved/);
+});
