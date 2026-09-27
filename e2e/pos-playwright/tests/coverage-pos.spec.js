@@ -384,3 +384,41 @@ test('merchant records the customer refund address from a QR image, with clear f
   await expect(card.locator('.pos-refund-state')).toHaveAttribute('aria-label', 'Refund address saved');
   await expect(message).toHaveCount(0);
 });
+
+test('charge whose response is lost is retried without creating a second order', async ({ page, request }) => {
+  const created = [];
+  let dropResponse = true;
+  await page.route('**/pos/orders', async route => {
+    if (route.request().method() !== 'POST') return route.continue();
+    const body = JSON.parse(route.request().postData());
+    // The server creates the order, but the till's connection drops before
+    // the answer arrives.
+    const response = await route.fetch();
+    created.push({ key: body.request_key, id: (await response.json()).order_id });
+    if (dropResponse) { dropResponse = false; return route.abort('connectionreset'); }
+    return route.fulfill({ response });
+  });
+  await page.goto(posUrl());
+  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  await expect(page.locator('.pos-keypad')).toBeVisible();
+  await page.keyboard.type('70000000000');
+  await page.getByPlaceholder('E.g. customer name or note').fill('Walk-in');
+  await page.getByRole('button', { name: 'Charge' }).click();
+  await expect(page.locator('.pos-keypad .pos-error')).toBeVisible();
+  // The merchant taps Charge again for the same sale.
+  await page.getByRole('button', { name: 'Charge' }).click();
+  await expect(page.locator('.pos-order-heading h1')).toHaveText('Walk-in');
+  expect(created).toHaveLength(2);
+  expect(created[1].key).toBe(created[0].key);
+  expect(created[1].id).toBe(created[0].id);
+  const list = await (await request.get(`${posUrl()}/orders?search=Walk-in`, { headers: { cookie: `session=${fixture.session}` } })).json();
+  expect(list.total).toBe(1);
+  // A different sale afterwards gets its own order.
+  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  await expect(page.locator('.pos-keypad')).toBeVisible();
+  await page.keyboard.type('5');
+  await page.getByPlaceholder('E.g. customer name or note').fill('Walk-in 2');
+  await page.getByRole('button', { name: 'Charge' }).click();
+  await expect(page.locator('.pos-order-heading h1')).toHaveText('Walk-in 2');
+  expect(created[2].key).not.toBe(created[0].key);
+});
