@@ -557,3 +557,35 @@ test('real checkout payment problems as the customer sees them (UI stages)', asy
     await captureCoverageStage(page, stage, test.info());
   }
 });
+
+test('real checkout centres its status and time-left badges and turns the QR and progress green once paid', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  const orderId = url.split('/').pop();
+  for (const width of [390, 1280]) {
+    await page.setViewportSize({ width, height: 900 });
+    await page.goto(url);
+    const layout = await page.evaluate(() => {
+      const header = document.querySelector('.pay-header').getBoundingClientRect();
+      const status = document.getElementById('status-badge').getBoundingClientRect();
+      const expiry = document.querySelector('.expiry-pill').getBoundingClientRect();
+      const style = getComputedStyle(document.getElementById('status-badge'));
+      return {
+        sameRow: Math.abs(status.top - expiry.top) < 2, sameHeight: Math.abs(status.height - expiry.height) < 1,
+        centred: Math.abs((status.left + expiry.right) / 2 - (header.left + header.right) / 2) < 2,
+        height: status.height, paddingX: parseFloat(style.paddingLeft),
+      };
+    });
+    expect(layout, `${width}px`).toMatchObject({ sameRow: true, sameHeight: true, centred: true });
+    expect(layout.height, `${width}px badge height`).toBeGreaterThanOrEqual(24);
+    expect(layout.paddingX, `${width}px badge padding`).toBeGreaterThanOrEqual(9);
+  }
+  const colours = () => page.evaluate(() => ({
+    qr: getComputedStyle(document.querySelector('.qr-wrap svg path')).fill,
+    progress: getComputedStyle(document.getElementById('progress-fill')).backgroundColor,
+  }));
+  expect((await colours()).qr).toBe('rgb(0, 0, 0)');
+  await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/paid`);
+  await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
+  await expect.poll(colours).toEqual({ qr: 'rgb(22, 102, 58)', progress: 'rgb(22, 102, 58)' });
+  await captureCoverageStage(page, 'checkout-paid-green', test.info());
+});

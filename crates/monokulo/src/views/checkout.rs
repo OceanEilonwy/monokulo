@@ -93,6 +93,8 @@ const CHECKOUT_STYLE: &str = r#"
 html { background: var(--paper-raised); }
 body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(--paper-raised); }
 .pay-wrap { max-width: 720px; margin: 0 auto; }
+/* The same dark green in both themes: it colours a QR code on white. */
+:root { --paid-green: #16663a; }
 .pay-header { display: flex; align-items: center; justify-content: center; gap: 0.6em; flex-wrap: wrap; margin-bottom: 0.8em; }
 .status-pending, .status-unconfirmed, .status-confirming, .status-partial, .status-overpaid { background: var(--tint-warning); }
 .status-paid { background: var(--tint-success); }
@@ -108,6 +110,12 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
   font-size: 0.8em;
   font-weight: 700;
 }
+/* The status and the time left: one centred pair of badges, the same height,
+   with room around their text (as the POS's badges have). */
+.pay-header .tag, .pay-header .expiry-pill {
+  display: inline-flex; align-items: center; gap: .4em; min-height: 2.15em; padding: .25em .8em;
+  border-radius: 5px; font-size: .78em; font-weight: 800; line-height: 1.2;
+}
 .expiry-pill svg { flex: none; width: 1em; height: 1em; }
 .expiry-pill.expiry-soon { border-color: var(--warning); color: var(--warning); background: var(--tint-warning); }
 .expiry-pill.expiry-urgent { border-color: var(--error); color: var(--error); background: var(--tint-error); }
@@ -118,7 +126,6 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 @media (min-width: 700px) {
   .pay-grid { grid-template-columns: minmax(0, 300px) minmax(0, 1fr); gap: 2rem; text-align: left; }
   .pay-col-primary { text-align: center; }
-  .pay-header { justify-content: space-between; }
 }
 /* One line, number and unit together: the size follows the column's width
    (cqi), between a floor that still fits a 280px frame and the full size. */
@@ -163,6 +170,10 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .progress-row { display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 0.4em; }
 .progress-bar { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; height: 1em; background: var(--paper); }
 .progress-fill { height: 100%; background: var(--accent); }
+/* Confirmed: the QR code and the progress bar turn the paid green (the QR
+   stays dark on white, so it still scans). Follows the live status. */
+#checkout-root:is([data-status="paid"], [data-status="overpaid"]) .qr-wrap svg path { fill: var(--paid-green); }
+#checkout-root:is([data-status="paid"], [data-status="overpaid"]) .progress-fill { background: var(--paid-green); }
 .payments-table { font-size: 0.8em; margin-top: 1.2em; }
 .meta { margin-top: 1.4em; font-size: 0.8em; color: var(--muted); text-align: left; }
 .visually-hidden {
