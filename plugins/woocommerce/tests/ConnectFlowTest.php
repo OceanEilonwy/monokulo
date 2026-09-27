@@ -399,4 +399,53 @@ class ConnectFlowTest extends WP_UnitTestCase {
 		$this->assertStringContainsString( 'monokulo_connect_error=nonce', $result );
 		$this->assertNull( $this->captured_request );
 	}
+
+	/**
+	 * A logged-in customer (any WordPress account without WooCommerce
+	 * rights) who opens the connect-return URL is refused before anything
+	 * is looked at or saved.
+	 */
+	public function test_a_customer_account_opening_the_connect_return_url_is_refused() {
+		$seed = new WC_Gateway_Monokulo();
+		$seed->update_option( 'public_key', 'pk_existing' );
+		wp_set_current_user( self::factory()->user->create( array( 'role' => 'customer' ) ) );
+		$_GET = array( 'token' => 'conn_forged', 'nonce' => 'guessed' );
+		try {
+			( new WC_Gateway_Monokulo() )->handle_connect_return();
+			$this->fail( 'A customer account must not reach the connect return.' );
+		} catch ( WPDieException $e ) {
+			$this->assertStringContainsString( 'You do not have permission to do this.', $e->getMessage() );
+		} finally {
+			$_GET = array();
+		}
+		$this->assertNull( $this->captured_request, 'Nothing is sent to Monokulo.' );
+		$this->assertSame( 'pk_existing', ( new WC_Gateway_Monokulo() )->get_option( 'public_key' ) );
+	}
+
+	/**
+	 * Finishing the connection when Monokulo cannot be reached, or when
+	 * something other than Monokulo answers, leaves the store as it was and
+	 * sends the merchant back with the connect-failed notice.
+	 */
+	public function test_an_unreachable_or_garbled_finish_saves_nothing() {
+		$answers = array(
+			'unreachable' => new WP_Error( 'http_request_failed', 'cURL error 28: Operation timed out' ),
+			'garbled'     => array(
+				'headers'  => array(),
+				'body'     => '<html>502 Bad Gateway</html>',
+				'response' => array( 'code' => 200, 'message' => 'OK' ),
+				'cookies'  => array(),
+			),
+		);
+		foreach ( $answers as $case => $answer ) {
+			remove_all_filters( 'pre_http_request' );
+			list( , $nonce ) = $this->render_connect_button_and_capture_nonce();
+			add_filter( 'pre_http_request', function () use ( $answer ) { return $answer; } );
+			$redirect_url = ( new WC_Gateway_Monokulo() )->process_connect_return( array( 'token' => 'conn_' . $case, 'nonce' => $nonce ) );
+			$this->assertStringContainsString( 'monokulo_connect_error=finish', $redirect_url, $case );
+			$after = new WC_Gateway_Monokulo();
+			$this->assertSame( '', $after->get_option( 'public_key' ), $case );
+			$this->assertSame( '', $after->get_option( 'secret_token' ), $case );
+		}
+	}
 }
