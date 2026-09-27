@@ -224,7 +224,12 @@
     }
 
     var checkoutUrl = endpoint + "/pay/" + encodeURIComponent(publicKey) + "/orders/" + encodeURIComponent(orderId);
-    var iframeSrc = checkoutUrl + (options.refund === false ? "?refund=false" : "");
+    // `theme: "light" | "dark"` pins the checkout's theme to match the
+    // merchant's site; left out, it follows the customer's device.
+    var query = [];
+    if (options.refund === false) query.push("refund=false");
+    if (options.theme === "light" || options.theme === "dark") query.push("theme=" + options.theme);
+    var iframeSrc = checkoutUrl + (query.length ? "?" + query.join("&") : "");
     var statusUrl = checkoutUrl + "/status";
     try {
       new URL(iframeSrc, global.location.href);

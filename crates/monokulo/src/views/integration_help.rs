@@ -49,6 +49,7 @@ pub fn fragment(public_key: &str, public_url: Option<&str>, is_woocommerce: bool
                 "    merchantOrderId: 'order-1234',            // optional - your own order/cart id, shown on the order's dashboard page\n"
                 "  }).then(function (order) {\n"
                 "    Monokulo.mount('#monokulo-checkout', order, {\n"
+                "      theme: 'light',                          // optional - 'light' or 'dark' to match your site; left out, it follows the customer's device\n"
                 "      onPaid: function () { /* e.g. window.location = '/thank-you.html'; */ },\n"
                 "    });\n"
                 "  });\n"
@@ -87,6 +88,10 @@ pub fn fragment(public_key: &str, public_url: Option<&str>, is_woocommerce: bool
                 "needs no secret while your store accepts orders from any website. If you restrict it to your "
                 "verified domains, orders must come from a page on one of them, or from a plugin (which uses your "
                 "store's secret key)."
+            }
+            p class="hint" {
+                "Add " code { "?theme=light" } " or " code { "?theme=dark" } " to the checkout link to match your site; "
+                "without it the checkout follows the customer's device."
             }
         }
     }

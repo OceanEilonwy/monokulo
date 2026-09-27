@@ -491,3 +491,43 @@ test('real checkout keeps the amount and XMR on one line and shows a fiat equiva
   // 12.50 AUD at the fixture's 400 AUD per XMR.
   await expect(page.locator('#xmr-amount')).toHaveText('0.03125 XMR');
 });
+
+test('real checkout takes its theme from ?theme=, the embed option, and the signed-in viewer on the share page', async ({ page, context, request }) => {
+  const url = await checkoutUrl(request);
+  const orderId = url.split('/').pop();
+  const streams = [];
+  page.on('request', sent => { if (sent.url().includes('/events?')) streams.push(sent.url()); });
+  const background = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  await page.goto(`${url}?theme=light`);
+  const light = await background();
+  await page.goto(`${url}?theme=dark`);
+  await expect(page.locator('html')).toHaveAttribute('data-theme', 'dark');
+  expect(await background(), 'the dark theme actually applies').not.toBe(light);
+  // The page's own form and live stream keep the theme.
+  await expect(page.locator('#refund-form')).toHaveAttribute('action', /theme=dark/);
+  await expect.poll(() => streams.some(u => u.includes('theme=dark'))).toBe(true);
+  // Anything but light or dark follows the device.
+  await page.goto(`${url}?theme=neon`);
+  await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
+
+  // An integrator's page picks it with the embed option.
+  await page.goto(`${fixture.base_url.replace('127.0.0.1', 'localhost')}/__coverage/ready`);
+  await page.setContent('<div id="pay"></div>');
+  await page.addScriptTag({ url: `${fixture.base_url}/static/monokulo-client.js` });
+  await page.evaluate(({ base_url, public_key, order_id }) => {
+    window.Monokulo.mount('#pay', order_id, { endpoint: base_url, publicKey: public_key, theme: 'light' });
+  }, { base_url: fixture.base_url, public_key: fixture.public_key, order_id: orderId });
+  await expect(page.locator('#pay iframe')).toHaveAttribute('src', `${url}?theme=light`);
+  await expect(page.frameLocator('#pay iframe').locator('html')).toHaveAttribute('data-theme', 'light');
+
+  // Monokulo's share page frames the checkout in a signed-in merchant's theme.
+  await context.addCookies([{ name: 'session', value: fixture.session, url: fixture.base_url }]);
+  const pick = theme => page.request.post(`${fixture.base_url}/dashboard/theme`, { form: { theme, next: '/dashboard' }, maxRedirects: 0 });
+  await pick('dark');
+  await page.goto(`${url}/share`);
+  await expect(page.locator('#checkout-frame')).toHaveAttribute('src', `/pay/${fixture.public_key}/orders/${orderId}?theme=dark`);
+  await expect(page.frameLocator('#checkout-frame').locator('html')).toHaveAttribute('data-theme', 'dark');
+  await pick('system');
+  await page.goto(`${url}/share`);
+  await expect(page.locator('#checkout-frame')).toHaveAttribute('src', `/pay/${fixture.public_key}/orders/${orderId}`);
+});

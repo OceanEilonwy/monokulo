@@ -488,6 +488,17 @@ pub fn open_from_shop_page(chrome: &PageChrome) -> Markup {
 
 /// The view model [`share_page`] takes - unlike [`CheckoutViewModel`] this
 /// page *does* carry the site nav (via [`super::layout`]).
+/// The checkout the share page frames, in the viewer's own theme when they
+/// are signed in and chose one (the framed page can't see their account).
+fn share_frame_src(chrome: &PageChrome, data: &CheckoutShareViewModel) -> String {
+    let theme = match chrome.theme {
+        crate::db::Theme::System => "",
+        crate::db::Theme::Light => "?theme=light",
+        crate::db::Theme::Dark => "?theme=dark",
+    };
+    format!("/pay/{}/orders/{}{theme}", data.pk, data.order_id)
+}
+
 pub struct CheckoutShareViewModel {
     pub pk: String,
     pub order_id: String,
@@ -542,7 +553,7 @@ pub fn share_page(chrome: &PageChrome, data: &CheckoutShareViewModel) -> Markup 
             @if data.found {
                 h1 { "Pay with Monero" }
                 p class="hint" { "Complete the payment below - this page stays up to date on its own, so it's safe to bookmark or come back to later." }
-                iframe class="share-frame" id="checkout-frame" src=(format!("/pay/{}/orders/{}", data.pk, data.order_id)) title="Monero payment" {}
+                iframe class="share-frame" id="checkout-frame" src=(share_frame_src(chrome, data)) title="Monero payment" {}
                 script { (PreEscaped(SHARE_SCRIPT)) }
             } @else {
                 h1 { "Order not found" }

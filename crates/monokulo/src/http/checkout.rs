@@ -152,9 +152,15 @@ pub struct CheckoutOptions {
     /// customer can type a refund address without the page reloading under
     /// them. Set by the page's own "Auto Refresh" toggle link.
     refresh: Option<bool>,
+    /// `light` or `dark` pins the page's theme; anything else (or none)
+    /// follows the customer's device. For an integrator matching their own
+    /// site, and for monokulo's share page passing a signed-in viewer's
+    /// choice.
+    theme: Option<String>,
 }
 
 impl CheckoutOptions {
+    fn theme(&self) -> crate::db::Theme { crate::db::Theme::from_db_str(self.theme.as_deref().unwrap_or("")) }
     fn is_compact(&self) -> bool { self.view.as_deref() == Some("compact") }
     fn refund_enabled(&self) -> bool { self.refund != Some(false) }
     fn auto_refresh(&self) -> bool { self.refresh != Some(false) }
@@ -163,6 +169,11 @@ impl CheckoutOptions {
         if self.is_compact() { params.push("view=compact"); }
         if !self.refund_enabled() { params.push("refund=false"); }
         if !self.auto_refresh() { params.push("refresh=false"); }
+        match self.theme() {
+            crate::db::Theme::Light => params.push("theme=light"),
+            crate::db::Theme::Dark => params.push("theme=dark"),
+            crate::db::Theme::System => {}
+        }
         if params.is_empty() { String::new() } else { format!("?{}", params.join("&")) }
     }
     /// The same page's query string with auto refresh flipped.
@@ -256,7 +267,8 @@ async fn render_checkout_page(
     let order_id = detail.order.order_id.clone();
     let mut view = build_checkout_view(state, &pk, &row, &sk, detail, refund_address_error, options).await;
     view.qr_code_svg = qr_code_svg;
-    let chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{order_id}"));
+    let mut chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{order_id}"));
+    chrome.theme = options.theme();
     views::checkout::checkout_page(&chrome, &view).into_response()
 }
 
