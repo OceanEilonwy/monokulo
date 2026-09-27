@@ -131,12 +131,16 @@ async fn main() {
         .expect("create fixture store");
     db.insert_pos_order("coverage-store", &order.order_id, None, Some("Fixture order"), 1)
         .expect("create fixture POS order");
+    // Bound first so the exchange rate stand-in below can live on this same
+    // server: a store priced in AUD then converts at a fixed, known rate.
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind fixture");
+    let url = format!("http://{}", listener.local_addr().unwrap());
     let state = AppState {
         db: db.into_shared(),
         engine_client,
         encryption_key: ENCRYPTION_KEY,
         status_cache: status_page::new_status_cache(),
-        exchange_rate: Arc::new(ExchangeRateProviders::xmr_only()),
+        exchange_rate: Arc::new(ExchangeRateProviders::coingecko_only(url.clone())),
         abuse: Default::default(),
         dns: Arc::new(UnavailableDns("DNS is unavailable in browser tests".into())),
     };
@@ -153,9 +157,11 @@ async fn main() {
         .route("/__coverage/orders/{id}/browser-created", post(mark_browser_created))
         .with_state(Controls { engine, client: state.engine_client.clone(), token: tenant.secret_token.clone(),
             public_key: tenant.public_key.clone(), order_id: order.order_id.clone(), db: state.db.clone() });
-    let app = build_router(state).merge(controls);
-    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind fixture");
-    let url = format!("http://{}", listener.local_addr().unwrap());
+    // Coingecko's two endpoints, answering 1 XMR = 400 AUD (or USD).
+    let prices = Router::new()
+        .route("/api/v3/simple/price", get(|| async { Json(serde_json::json!({"monero": {"aud": 400.0, "usd": 250.0}})) }))
+        .route("/api/v3/simple/supported_vs_currencies", get(|| async { Json(serde_json::json!(["aud", "usd"])) }));
+    let app = build_router(state).merge(controls).merge(prices);
     println!("COVERAGE_FIXTURE={}", Json(serde_json::json!({
         "base_url":url,
         "connection_id":"coverage-store",

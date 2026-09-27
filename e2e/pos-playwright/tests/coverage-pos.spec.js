@@ -459,3 +459,31 @@ test('double spend on the order on screen warns the merchant not to hand over go
   await expect(page.locator('.pos-pay-detail')).toContainText('Do not treat it as paid');
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
 });
+
+test('store priced in AUD: the merchant keys in dollars and cents and sees both amounts throughout', async ({ page, request }) => {
+  // The merchant switches the store to Australian dollars on its settings page.
+  const saved = await request.post(`${fixture.base_url}/dashboard/stores/${fixture.connection_id}/settings/base-currency`,
+    { headers: { cookie: `session=${fixture.session}` }, form: { base_currency: 'AUD' }, maxRedirects: 0 });
+  expect(saved.status()).toBeLessThan(400);
+  await page.goto(posUrl());
+  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  const amount = page.locator('.pos-amount');
+  await expect(amount).toContainText('0.00');
+  await expect(amount).toContainText('AUD');
+  await page.keyboard.type('1250');
+  await expect(amount).toContainText('12.50');
+  await page.getByRole('button', { name: 'Charge' }).click();
+  const card = page.locator('.pos-pay-card');
+  // 12.50 AUD at 400 AUD per XMR.
+  await expect(card.locator('.pos-pay-xmr')).toContainText('0.03125');
+  await expect(card.locator('.pos-pay-fiat')).toHaveText('≈ 12.50 AUD');
+  const list = await (await request.get(`${posUrl()}/orders`, { headers: { cookie: `session=${fixture.session}` } })).json();
+  const order = list.orders.find(o => o.currency === 'AUD');
+  expect(order.amount).toBe('12.50');
+  // Seen in the mempool: what arrived, and what it was for.
+  await request.post(`${fixture.base_url}/__coverage/orders/${order.order_id}/payment?fraction=1`);
+  await expect(card.locator('.pos-pay-caption')).toHaveText('Received');
+  await expect(card.locator('.pos-pay-fiat')).toHaveText('for 12.50 AUD');
+  await request.post(`${fixture.base_url}/__coverage/orders/${order.order_id}/confirm`);
+  await expect(page.locator('.pos-outcome-amount')).toContainText('0.03125 XMR · 12.50 AUD');
+});
