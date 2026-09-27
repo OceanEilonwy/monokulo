@@ -1243,6 +1243,7 @@ mod tests {
             exchange_rate: test_exchange_rate_provider(),
             abuse: Default::default(),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+            settings: crate::settings::MonokuloSettings::defaults(),
         };
         (state, engine)
     }
@@ -1267,6 +1268,7 @@ mod tests {
             exchange_rate: test_exchange_rate_provider(),
             abuse: Default::default(),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+            settings: crate::settings::MonokuloSettings::defaults(),
         };
         (state, engine)
     }
@@ -1737,6 +1739,7 @@ mod tests {
             exchange_rate: test_exchange_rate_provider(),
             abuse: Default::default(),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+            settings: crate::settings::MonokuloSettings::defaults(),
         };
         let router = build_router(state);
         let session_token = signed_up_and_logged_in_session_token(&router, "webhook-delivery@example.com", "correct horse battery staple").await;

@@ -346,6 +346,7 @@ mod tests {
             exchange_rate: Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             abuse: Default::default(),
             dns,
+            settings: crate::settings::MonokuloSettings::defaults(),
         };
         (state, engine)
     }

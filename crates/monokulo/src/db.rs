@@ -539,6 +539,20 @@ impl Db {
         Ok(())
     }
 
+    /// Stores and deletes several settings in one transaction (the
+    /// settings registry's save): either all of them land or none do.
+    pub fn write_settings(&self, changes: &[(&str, Option<String>)]) -> Result<()> {
+        let tx = self.conn.unchecked_transaction()?;
+        for (key, value) in changes {
+            match value {
+                Some(value) => self.set_setting(key, value)?,
+                None => self.delete_setting(key)?,
+            }
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
     /// Every stored setting at once - the admin settings page's `GET` reads
     /// the whole table in one query rather than one `get_setting` call per
     /// known key.

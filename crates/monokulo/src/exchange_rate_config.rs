@@ -79,7 +79,7 @@ const DEFAULT_COINGECKO_BASE_URL: &str = "https://api.coingecko.com";
 
 /// Already-validated, ready-to-build configuration - `main.rs` calls
 /// `ExchangeRateProviders::build` on this once, at boot.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ExchangeRateConfig {
     pub coingecko_enabled: bool,
     pub coingecko_base_url: String,
@@ -138,6 +138,13 @@ pub enum ExchangeRateLookupError {
 #[derive(Debug)]
 pub struct ExchangeRateProviders {
     xmr: XmrIdentityProvider,
+    /// Replaced whole when exchange-rate settings are saved
+    /// (admin_settings_v2.md task 3.3).
+    fiat: parking_lot::RwLock<Arc<FiatProviders>>,
+}
+
+#[derive(Debug)]
+struct FiatProviders {
     coingecko: Option<Arc<CoingeckoRateProvider>>,
     cache_seconds: u64,
 }
@@ -157,11 +164,10 @@ impl ExchangeRateProviders {
     /// non-XMR fiat quote uses, so it can exercise that path without a real
     /// network call.
     pub fn coingecko_only(base_url: impl Into<String>) -> Self {
-        ExchangeRateProviders {
-            xmr: XmrIdentityProvider,
+        ExchangeRateProviders::with(FiatProviders {
             coingecko: Some(Arc::new(CoingeckoRateProvider::new(base_url))),
             cache_seconds: DEFAULT_CACHE_SECONDS,
-        }
+        })
     }
 
     /// Builds a dispatcher with no fiat provider configured at all - only
@@ -171,13 +177,31 @@ impl ExchangeRateProviders {
     /// tests just use `currency = "XMR"`, per
     /// `docs/fx_refactor.md`'s follow-up).
     pub fn xmr_only() -> Self {
-        ExchangeRateProviders { xmr: XmrIdentityProvider, coingecko: None, cache_seconds: DEFAULT_CACHE_SECONDS }
+        ExchangeRateProviders::with(FiatProviders { coingecko: None, cache_seconds: DEFAULT_CACHE_SECONDS })
+    }
+
+    fn with(fiat: FiatProviders) -> Self {
+        ExchangeRateProviders { xmr: XmrIdentityProvider, fiat: parking_lot::RwLock::new(Arc::new(fiat)) }
+    }
+
+    fn fiat_for(config: &ExchangeRateConfig) -> FiatProviders {
+        let coingecko =
+            if config.coingecko_enabled { Some(Arc::new(CoingeckoRateProvider::new(config.coingecko_base_url.clone()))) } else { None };
+        FiatProviders { coingecko, cache_seconds: config.cache_seconds }
     }
 
     pub fn build(config: &ExchangeRateConfig) -> Self {
-        let coingecko =
-            if config.coingecko_enabled { Some(Arc::new(CoingeckoRateProvider::new(config.coingecko_base_url.clone()))) } else { None };
-        ExchangeRateProviders { xmr: XmrIdentityProvider, coingecko, cache_seconds: config.cache_seconds }
+        ExchangeRateProviders::with(Self::fiat_for(config))
+    }
+
+    /// Applies saved exchange-rate settings from the next lookup on (task
+    /// 3.3). A changed provider starts with an empty rate cache.
+    pub fn reconfigure(&self, config: &ExchangeRateConfig) {
+        *self.fiat.write() = Arc::new(Self::fiat_for(config));
+    }
+
+    fn fiat(&self) -> Arc<FiatProviders> {
+        self.fiat.read().clone()
     }
 
     /// Piconero per one whole unit of `currency`, plus the name of whichever
@@ -198,10 +222,11 @@ impl ExchangeRateProviders {
         if currency.eq_ignore_ascii_case("XMR") {
             return Ok(Some((self.xmr.piconero_per_unit(), "xmr")));
         }
+        let fiat = self.fiat();
         match store.fx_provider.as_str() {
-            COINGECKO => match &self.coingecko {
+            COINGECKO => match &fiat.coingecko {
                 Some(provider) => {
-                    let rate = provider.piconero_per_unit_cached(currency, Duration::from_secs(self.cache_seconds)).await?;
+                    let rate = provider.piconero_per_unit_cached(currency, Duration::from_secs(fiat.cache_seconds)).await?;
                     Ok(rate.map(|r| (r, COINGECKO)))
                 }
                 None => Err(ExchangeRateLookupError::ProviderNotConfigured(COINGECKO.to_string())),
@@ -218,8 +243,9 @@ impl ExchangeRateProviders {
     pub async fn supported_currencies_for(&self, store: &StoreConnectionRow) -> Result<Vec<String>, ExchangeRateLookupError> {
         let mut currencies = vec!["XMR".to_string()];
         if store.fx_provider == COINGECKO {
-            if let Some(provider) = &self.coingecko {
-                let mut fiat = provider.supported_currencies_cached(Duration::from_secs(self.cache_seconds)).await?;
+            let providers = self.fiat();
+            if let Some(provider) = &providers.coingecko {
+                let mut fiat = provider.supported_currencies_cached(Duration::from_secs(providers.cache_seconds)).await?;
                 currencies.append(&mut fiat);
             }
         }
@@ -233,7 +259,7 @@ impl ExchangeRateProviders {
     /// page renders.
     pub fn available_providers(&self) -> Vec<&'static str> {
         let mut providers = Vec::new();
-        if self.coingecko.is_some() {
+        if self.fiat().coingecko.is_some() {
             providers.push(COINGECKO);
         }
         providers

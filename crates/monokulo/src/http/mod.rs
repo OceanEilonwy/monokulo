@@ -116,6 +116,9 @@ pub struct AppState {
     /// TXT lookups for verified embed domains (`crate::embed_domains`) -
     /// the machine's own resolver in the real binary, a fake in tests.
     pub dns: Arc<dyn crate::embed_domains::TxtLookup>,
+    /// monokulo's settings registry (admin_settings_v2.md part 1): saves from
+    /// the admin page go through it and apply to the running process.
+    pub settings: Arc<crate::settings::MonokuloSettings>,
 }
 
 pub fn build_router(state: AppState) -> Router {

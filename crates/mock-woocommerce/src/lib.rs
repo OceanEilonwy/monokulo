@@ -922,6 +922,7 @@ mod tests {
             exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             abuse: Default::default(),
             dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+            settings: monokulo::settings::MonokuloSettings::defaults(),
         };
         let router = build_router(state);
 

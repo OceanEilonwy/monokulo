@@ -46,12 +46,30 @@ use serde::{Deserialize, Serialize};
 /// cacheable endpoint needs no client-side plumbing changes to benefit.
 #[derive(Clone)]
 pub struct EngineClient {
+    /// Swapped whole when `engine.url` or `http_cache.max_mb` is saved
+    /// (admin_settings_v2.md task 3.2); every clone sees the change, since
+    /// they share this handle.
+    current: std::sync::Arc<parking_lot::RwLock<std::sync::Arc<EngineTarget>>>,
+}
+
+/// One engine address with its HTTP client and live-update hub.
+struct EngineTarget {
     base_url: String,
     http: reqwest_middleware::ClientWithMiddleware,
     /// Live order updates from this engine - see `crate::live`. Shared by
     /// every clone, so all handlers watching one store share one upstream
     /// connection.
     live: std::sync::Arc<crate::live::LiveHub>,
+}
+
+impl EngineTarget {
+    fn new(base_url: String, max_cache_bytes: u64) -> Self {
+        EngineTarget {
+            base_url,
+            http: shared::http_cache::build_client(concat!("monokulo/", env!("CARGO_PKG_VERSION")), max_cache_bytes),
+            live: Default::default(),
+        }
+    }
 }
 
 impl EngineClient {
@@ -71,31 +89,47 @@ impl EngineClient {
     /// sites compiling unchanged.
     pub fn with_cache_limit(base_url: impl Into<String>, max_cache_bytes: u64) -> Self {
         EngineClient {
-            base_url: base_url.into(),
-            http: shared::http_cache::build_client(concat!("monokulo/", env!("CARGO_PKG_VERSION")), max_cache_bytes),
-            live: Default::default(),
+            current: std::sync::Arc::new(parking_lot::RwLock::new(std::sync::Arc::new(EngineTarget::new(
+                base_url.into(),
+                max_cache_bytes,
+            )))),
         }
+    }
+
+    fn target(&self) -> std::sync::Arc<EngineTarget> {
+        self.current.read().clone()
+    }
+
+    /// Points every clone of this client at `base_url` with a fresh HTTP
+    /// cache of `max_cache_bytes` (task 3.2). Live-update streams to the old
+    /// engine are ended, so browsers watching orders reconnect and land on
+    /// the new one.
+    pub fn retarget(&self, base_url: impl Into<String>, max_cache_bytes: u64) {
+        let next = std::sync::Arc::new(EngineTarget::new(base_url.into(), max_cache_bytes));
+        let previous = std::mem::replace(&mut *self.current.write(), next);
+        previous.live.shutdown();
     }
 
     /// Watches one order for changes - see `crate::live::LiveHub::subscribe`.
     /// `connection_id` keys the shared upstream stream; `sk` must be that
     /// connection's own secret.
     pub fn subscribe_order(&self, connection_id: &str, sk: &str, order_id: &str) -> crate::live::OrderSubscription {
-        self.live.subscribe(self, connection_id, sk, order_id)
+        self.target().live.clone().subscribe(self, connection_id, sk, order_id)
     }
 
     /// How many stores currently hold an open engine event stream.
     pub fn live_upstream_count(&self) -> usize {
-        self.live.upstream_count()
+        self.target().live.upstream_count()
     }
 
     /// `GET {base_url}/api/v1/admin/tenant/events` — opens `sk`'s tenant's
     /// order-change event stream. The returned response's body is the
     /// never-ending SSE stream itself; the caller reads it chunk by chunk.
     pub async fn open_order_events(&self, sk: &str) -> Result<reqwest::Response, EngineClientError> {
-        let response = self
+        let target = self.target();
+        let response = target
             .http
-            .get(format!("{}/api/v1/admin/tenant/events", self.base_url))
+            .get(format!("{}/api/v1/admin/tenant/events", target.base_url))
             .bearer_auth(sk)
             .header(reqwest::header::ACCEPT, "text/event-stream")
             .send()
@@ -107,16 +141,17 @@ impl EngineClient {
     /// caller storing a `store_connections` row can record which engine
     /// endpoint a tenant lives on without threading the URL through
     /// separately.
-    pub fn base_url(&self) -> &str {
-        &self.base_url
+    pub fn base_url(&self) -> String {
+        self.target().base_url.clone()
     }
 
     /// `POST {base_url}/api/v1/admin/tenants` — provisions a new tenant on
     /// the engine. No auth header (see module doc comment).
     pub async fn create_tenant(&self, req: CreateTenantRequest) -> Result<CreateTenantResponse, EngineClientError> {
-        let response = self
+        let target = self.target();
+        let response = target
             .http
-            .post(format!("{}/api/v1/admin/tenants", self.base_url))
+            .post(format!("{}/api/v1/admin/tenants", target.base_url))
             .json(&req)
             .send()
             .await?;
@@ -126,9 +161,10 @@ impl EngineClient {
     /// `GET {base_url}/api/v1/admin/tenant` — fetches the tenant that owns
     /// `sk`, authenticated as that tenant via `Authorization: Bearer sk_...`.
     pub async fn get_tenant(&self, sk: &str) -> Result<TenantView, EngineClientError> {
-        let response = self
+        let target = self.target();
+        let response = target
             .http
-            .get(format!("{}/api/v1/admin/tenant", self.base_url))
+            .get(format!("{}/api/v1/admin/tenant", target.base_url))
             .bearer_auth(sk)
             .send()
             .await?;
@@ -141,9 +177,10 @@ impl EngineClient {
     /// `src/http/admin.rs::ListOrdersQuery` at the repo root for what a
     /// later enhancement could add).
     pub async fn list_orders(&self, sk: &str) -> Result<Vec<OrderView>, EngineClientError> {
-        let response = self
+        let target = self.target();
+        let response = target
             .http
-            .get(format!("{}/api/v1/admin/tenant/orders", self.base_url))
+            .get(format!("{}/api/v1/admin/tenant/orders", target.base_url))
             .bearer_auth(sk)
             .send()
             .await?;
@@ -155,6 +192,7 @@ impl EngineClient {
     /// ones when `open`, only those whose id or merchant order id contains
     /// `search`. At most 200 per page.
     pub async fn list_orders_page(&self, sk: &str, open: bool, search: Option<&str>, limit: u32, offset: u32) -> Result<Vec<OrderView>, EngineClientError> {
+        let target = self.target();
         let mut params = vec![("limit", limit.to_string()), ("offset", offset.to_string())];
         if open {
             params.push(("open", "true".to_string()));
@@ -162,9 +200,9 @@ impl EngineClient {
         if let Some(search) = search {
             params.push(("search", search.to_string()));
         }
-        let url = reqwest::Url::parse_with_params(&format!("{}/api/v1/admin/tenant/orders", self.base_url), params)
+        let url = reqwest::Url::parse_with_params(&format!("{}/api/v1/admin/tenant/orders", target.base_url), params)
             .map_err(|e| EngineClientError::EngineError { status: reqwest::StatusCode::BAD_REQUEST, message: e.to_string() })?;
-        let response = self.http.get(url).bearer_auth(sk).send().await?;
+        let response = target.http.get(url).bearer_auth(sk).send().await?;
         parse_response(response).await
     }
 
@@ -175,12 +213,13 @@ impl EngineClient {
     /// them this way so it costs one rate-limited engine request, not one per
     /// order.
     pub async fn list_orders_by_ids(&self, sk: &str, order_ids: &[String]) -> Result<Vec<OrderView>, EngineClientError> {
+        let target = self.target();
         if order_ids.is_empty() {
             return Ok(Vec::new());
         }
-        let url = reqwest::Url::parse_with_params(&format!("{}/api/v1/admin/tenant/orders", self.base_url), [("ids", order_ids.join(","))])
+        let url = reqwest::Url::parse_with_params(&format!("{}/api/v1/admin/tenant/orders", target.base_url), [("ids", order_ids.join(","))])
             .map_err(|e| EngineClientError::EngineError { status: reqwest::StatusCode::BAD_REQUEST, message: e.to_string() })?;
-        let response = self
+        let response = target
             .http
             .get(url)
             .bearer_auth(sk)
@@ -197,9 +236,10 @@ impl EngineClient {
     /// real internal error the same way `http/connections.rs` already
     /// distinguishes the engine's `400` from everything else.
     pub async fn get_order_detail(&self, sk: &str, order_id: &str) -> Result<OrderDetailResponse, EngineClientError> {
-        let response = self
+        let target = self.target();
+        let response = target
             .http
-            .get(format!("{}/api/v1/admin/tenant/orders/{order_id}", self.base_url))
+            .get(format!("{}/api/v1/admin/tenant/orders/{order_id}", target.base_url))
             .bearer_auth(sk)
             .send()
             .await?;
@@ -214,9 +254,10 @@ impl EngineClient {
     /// .. }`) - this method does no client-side validation of its own, the
     /// engine's is the one source of truth for what a valid txid looks like.
     pub async fn lookup_payment(&self, sk: &str, txid: &str) -> Result<PaymentLookupView, EngineClientError> {
-        let response = self
+        let target = self.target();
+        let response = target
             .http
-            .post(format!("{}/api/v1/admin/tenant/payments/lookup", self.base_url))
+            .post(format!("{}/api/v1/admin/tenant/payments/lookup", target.base_url))
             .bearer_auth(sk)
             .json(&LookupPaymentRequest { txid: txid.to_string() })
             .send()
@@ -228,9 +269,10 @@ impl EngineClient {
     /// registered webhooks (WBS 1.3.3). Read-only: this task builds no
     /// create/delete client methods, per its own scope.
     pub async fn list_webhooks(&self, sk: &str) -> Result<Vec<WebhookView>, EngineClientError> {
-        let response = self
+        let target = self.target();
+        let response = target
             .http
-            .get(format!("{}/api/v1/admin/tenant/webhooks", self.base_url))
+            .get(format!("{}/api/v1/admin/tenant/webhooks", target.base_url))
             .bearer_auth(sk)
             .send()
             .await?;
@@ -255,14 +297,15 @@ impl EngineClient {
         url: &str,
         extra_headers: &std::collections::BTreeMap<String, String>,
     ) -> Result<(String, String), EngineClientError> {
+        let target = self.target();
         let extra_headers = if extra_headers.is_empty() {
             None
         } else {
             Some(serde_json::to_value(extra_headers).expect("a BTreeMap<String, String> always serializes to a JSON object"))
         };
-        let response = self
+        let response = target
             .http
-            .post(format!("{}/api/v1/admin/tenant/webhooks", self.base_url))
+            .post(format!("{}/api/v1/admin/tenant/webhooks", target.base_url))
             .bearer_auth(sk)
             .json(&CreateWebhookRequest { url: url.to_string(), extra_headers })
             .send()
@@ -278,9 +321,10 @@ impl EngineClient {
     /// `webhook_id` - `parse_response` isn't used here since it assumes a
     /// JSON body to deserialize, which a `204` never has.
     pub async fn delete_webhook(&self, sk: &str, webhook_id: &str) -> Result<(), EngineClientError> {
-        let response = self
+        let target = self.target();
+        let response = target
             .http
-            .delete(format!("{}/api/v1/admin/tenant/webhooks/{webhook_id}", self.base_url))
+            .delete(format!("{}/api/v1/admin/tenant/webhooks/{webhook_id}", target.base_url))
             .bearer_auth(sk)
             .send()
             .await?;
@@ -308,9 +352,10 @@ impl EngineClient {
     /// `EngineClientError::EngineError` with status `400`, same as every
     /// other caller-facing engine validation error in this client.
     pub async fn set_confirmations_required(&self, sk: &str, confirmations_required: u64) -> Result<TenantView, EngineClientError> {
-        let response = self
+        let target = self.target();
+        let response = target
             .http
-            .patch(format!("{}/api/v1/admin/tenant", self.base_url))
+            .patch(format!("{}/api/v1/admin/tenant", target.base_url))
             .bearer_auth(sk)
             .json(&PatchTenantRequest { confirmations_required: Some(confirmations_required) })
             .send()
@@ -332,9 +377,10 @@ impl EngineClient {
         merchant_order_id: Option<String>,
         confirmations_required: Option<u64>,
     ) -> Result<CreateOrderResponse, EngineClientError> {
-        let response = self
+        let target = self.target();
+        let response = target
             .http
-            .post(format!("{}/api/v1/admin/tenant/orders", self.base_url))
+            .post(format!("{}/api/v1/admin/tenant/orders", target.base_url))
             .bearer_auth(sk)
             .json(&CreateOrderRequest { xmr_amount_piconero, merchant_order_id, confirmations_required })
             .send()
@@ -349,9 +395,10 @@ impl EngineClient {
     /// the address parses for the order's network before calling this; a
     /// human reviews it before ever sending anything back to it.
     pub async fn set_refund_address(&self, sk: &str, order_id: &str, refund_address: &str) -> Result<(), EngineClientError> {
-        let response = self
+        let target = self.target();
+        let response = target
             .http
-            .post(format!("{}/api/v1/admin/tenant/orders/{order_id}/refund-address", self.base_url))
+            .post(format!("{}/api/v1/admin/tenant/orders/{order_id}/refund-address", target.base_url))
             .bearer_auth(sk)
             .json(&SetRefundAddressRequest { refund_address: refund_address.to_string() })
             .send()
@@ -366,7 +413,8 @@ impl EngineClient {
     /// tenant. This is data only; the control plane's own `GET /status`
     /// (`monokulo/src/http/status_page.rs`) is what renders it.
     pub async fn get_status(&self) -> Result<EngineStatusResponse, EngineClientError> {
-        let response = self.http.get(format!("{}/status", self.base_url)).send().await?;
+        let target = self.target();
+        let response = target.http.get(format!("{}/status", target.base_url)).send().await?;
         parse_response(response).await
     }
 }

@@ -94,7 +94,7 @@ pub fn source(env_var: &str, db_value: Option<&str>) -> SettingSource {
 /// The one place settings read the environment. With the `test-support`
 /// feature (tests only), a [`test_env::EnvOverride`] on the current thread
 /// takes precedence over the real process environment.
-fn env_value(env_var: &str) -> Option<String> {
+pub fn env_value(env_var: &str) -> Option<String> {
     #[cfg(any(test, feature = "test-support"))]
     if let Some(value) = test_env::overridden(env_var) {
         return value;

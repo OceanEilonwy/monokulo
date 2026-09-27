@@ -1,11 +1,10 @@
 //! Every runtime-configurable monokulo setting the admin settings page
 //! exposes (`http/admin_settings.rs`), resolved via the same
-//! `env > database > default` precedence (`shared::settings`) the scanner's
-//! own equivalent module (`scanner::settings`) uses. Deliberately mirrors
-//! that module's shape - one `ScalarSetting` per knob (a stable `key`, the
-//! environment variable that overrides it, and a code default), declared
-//! once via the `scalar_settings!` macro so the admin HTTP handler and every
-//! boot-time reader agree on exactly the same key/env-var/default triple.
+//! `env > database > default` precedence as the engine's, declared once
+//! with the `live-settings` library (admin_settings_v2.md part 1): each
+//! setting's type, range, description and example live in its declaration,
+//! and saving through the registry applies the change to the running
+//! process (part 3).
 //!
 //! **`MONOKULO_ENCRYPTION_KEY` is deliberately not here.** Every other
 //! setting below can be changed at any time with no lasting consequence
@@ -18,57 +17,193 @@
 //! read once at boot (`main.rs::encryption_key_from_env`), with no database
 //! fallback and no admin-page field.
 
-use shared::settings::{resolve_parsed, resolve_raw, SettingSource};
+use std::net::SocketAddr;
+use std::sync::{Arc, OnceLock};
+use std::time::Duration;
 
-use crate::db::Db;
+use live_settings::{
+    choice_value, settings, AnySetting, FieldError, HttpUrl, Live, Registry, Secret, Section, Setting, SettingValue,
+    Snapshot, Warning,
+};
 
-/// One scalar setting's identity - see `scanner::settings::ScalarSetting`'s
-/// own doc comment for why this is a plain data triple rather than an enum
-/// or a trait.
-pub struct ScalarSetting {
-    pub key: &'static str,
-    pub env_var: &'static str,
-    pub default: &'static str,
+use crate::abuse::{AbuseConfig, AbuseProtection, TrustedProxies};
+use crate::db::{Db, SharedDb};
+use crate::engine_client::EngineClient;
+use crate::exchange_rate_config::{ExchangeRateConfig, ExchangeRateProviders};
+
+choice_value! {
+    /// Who may sign up.
+    pub enum SignupMode { Public = "public", InviteOnly = "invite_only" }
 }
 
-macro_rules! scalar_settings {
-    ($($name:ident => { key: $key:expr, env: $env:expr, default: $default:expr }),+ $(,)?) => {
-        $(pub const $name: ScalarSetting = ScalarSetting { key: $key, env_var: $env, default: $default };)+
-        /// Every monokulo setting the admin settings page shows and can save.
-        pub const ALL_SCALAR: &[ScalarSetting] = &[$($name),+];
-    };
+fn check_public_url(value: &String) -> Result<(), String> {
+    if value.trim().is_empty() {
+        Ok(())
+    } else {
+        validate_public_url(value).map(|_| ())
+    }
 }
 
-scalar_settings! {
-    SIGNUP_MODE => { key: "signup.mode", env: "MONOKULO_SIGNUP_MODE", default: "invite_only" },
-    ENGINE_URL => { key: "engine.url", env: "MONOKULO_ENGINE_URL", default: "http://127.0.0.1:8443" },
-    SCANNER_ADMIN_TOKEN => { key: "engine.admin_token", env: "MONOKULO_SCANNER_ADMIN_TOKEN", default: "" },
-    EXCHANGE_RATE_COINGECKO_ENABLED => { key: "exchange_rate.coingecko_enabled", env: "MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED", default: "true" },
-    EXCHANGE_RATE_COINGECKO_BASE_URL => { key: "exchange_rate.coingecko_base_url", env: "MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL", default: "https://api.coingecko.com" },
-    EXCHANGE_RATE_CACHE_SECONDS => { key: "exchange_rate.cache_seconds", env: "MONOKULO_EXCHANGE_RATE_CACHE_SECONDS", default: "30" },
-    HTTP_CACHE_MAX_MB => { key: "http_cache.max_mb", env: "MONOKULO_HTTP_CACHE_MAX_MB", default: "16" },
-    RATE_LIMIT_PER_STORE_KEY_PER_MIN => { key: "rate_limit.per_store_key_per_min", env: "MONOKULO_RATE_LIMIT_PER_STORE_KEY_PER_MIN", default: "600" },
-    PUBLIC_URL => { key: "public_url", env: "MONOKULO_PUBLIC_URL", default: "" },
-    ABUSE_TRUSTED_PROXIES => { key: "abuse.trusted_proxies", env: "MONOKULO_ABUSE_TRUSTED_PROXIES", default: "" },
-    ABUSE_ONION_LISTENER => { key: "abuse.onion_listener", env: "MONOKULO_ABUSE_ONION_LISTENER", default: "" },
-    ABUSE_STREAM_CAP => { key: "abuse.stream_cap", env: "MONOKULO_ABUSE_STREAM_CAP", default: "16" },
-    ABUSE_SOFT_PER_MIN => { key: "abuse.soft_per_min", env: "MONOKULO_ABUSE_SOFT_PER_MIN", default: "60" },
-    ABUSE_HARD_PER_MIN => { key: "abuse.hard_per_min", env: "MONOKULO_ABUSE_HARD_PER_MIN", default: "300" },
-    ABUSE_SIGNED_IN_PER_MIN => { key: "abuse.signed_in_per_min", env: "MONOKULO_ABUSE_SIGNED_IN_PER_MIN", default: "600" },
-    ABUSE_CHALLENGE_BITS => { key: "abuse.challenge_bits", env: "MONOKULO_ABUSE_CHALLENGE_BITS", default: "16" },
-    ABUSE_UNDER_ATTACK => { key: "abuse.under_attack", env: "MONOKULO_ABUSE_UNDER_ATTACK", default: "false" },
+fn check_trusted_proxies(value: &String) -> Result<(), String> {
+    TrustedProxies::parse(value).map(|_| ()).map_err(|e| e.to_string())
 }
 
-pub fn get<T: std::str::FromStr>(db: &Db, setting: &ScalarSetting) -> T {
-    let db_value = db.get_setting(setting.key).ok().flatten();
-    resolve_parsed(setting.env_var, db_value.as_deref(), setting.default.parse().unwrap_or_else(|_| {
-        panic!("{}'s own hardcoded default {:?} does not parse as the type it's requested as - a bug in this module, not a runtime input", setting.key, setting.default)
-    }))
+fn check_onion_listener(value: &String) -> Result<(), String> {
+    crate::abuse::proxy_protocol::validate_onion_listener(value).map(|_| ())
 }
 
-pub fn get_raw(db: &Db, setting: &ScalarSetting) -> (String, SettingSource) {
-    let db_value = db.get_setting(setting.key).ok().flatten();
-    resolve_raw(setting.env_var, db_value.as_deref(), setting.default)
+settings! {
+    SIGNUP_MODE: SignupMode {
+        key: "signup.mode",
+        env: "MONOKULO_SIGNUP_MODE",
+        default: SignupMode::InviteOnly,
+        description: "Who can create an account: public (anyone) or invite_only (only people with an invite link from the admin).",
+        example: "invite_only",
+    },
+    ENGINE_URL: HttpUrl {
+        key: "engine.url",
+        env: "MONOKULO_ENGINE_URL",
+        default: live_settings::parsed_default("http://127.0.0.1:8443"),
+        description: "The engine's address, as monokulo reaches it. It must match the engine's server.bind (for example http://127.0.0.1:8443 for 127.0.0.1:8443). Saved even if the engine doesn't answer, with a warning.",
+        example: "http://127.0.0.1:8443",
+    },
+    SCANNER_ADMIN_TOKEN: Secret {
+        key: "engine.admin_token",
+        env: "MONOKULO_SCANNER_ADMIN_TOKEN",
+        default: Secret::default(),
+        description: "The engine's instance admin token, printed by the engine the first time it starts (or its SCANNER_ADMIN_TOKEN). Lets this page show and save the engine's settings.",
+    },
+    EXCHANGE_RATE_COINGECKO_ENABLED: bool {
+        key: "exchange_rate.coingecko_enabled",
+        env: "MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED",
+        default: true,
+        description: "Whether stores can price orders in fiat currencies using Coingecko's rates. Off, only XMR prices work.",
+        example: "true",
+    },
+    EXCHANGE_RATE_COINGECKO_BASE_URL: HttpUrl {
+        key: "exchange_rate.coingecko_base_url",
+        env: "MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL",
+        default: live_settings::parsed_default("https://api.coingecko.com"),
+        description: "Where Coingecko's API is reached. Change it only to use a proxy or mirror.",
+        example: "https://api.coingecko.com",
+    },
+    EXCHANGE_RATE_CACHE_SECONDS: u64 {
+        key: "exchange_rate.cache_seconds",
+        env: "MONOKULO_EXCHANGE_RATE_CACHE_SECONDS",
+        default: 30,
+        check: range(0, 86_400),
+        description: "Seconds a fetched exchange rate is reused before asking Coingecko again.",
+        example: "30",
+    },
+    HTTP_CACHE_MAX_MB: u64 {
+        key: "http_cache.max_mb",
+        env: "MONOKULO_HTTP_CACHE_MAX_MB",
+        default: 16,
+        check: range(1, 4096),
+        description: "Megabytes of memory for monokulo's cache of engine responses.",
+        example: "16",
+    },
+    RATE_LIMIT_PER_STORE_KEY_PER_MIN: u32 {
+        key: "rate_limit.per_store_key_per_min",
+        env: "MONOKULO_RATE_LIMIT_PER_STORE_KEY_PER_MIN",
+        default: 600,
+        check: range(1, 10_000_000),
+        description: "Requests a minute a shop's server may make with its store's secret key (for example the WooCommerce plugin creating orders). These are never challenged.",
+        example: "600",
+    },
+    PUBLIC_URL: String {
+        key: "public_url",
+        env: "MONOKULO_PUBLIC_URL",
+        default: String::new(),
+        check: check_public_url,
+        description: "This instance's public address, e.g. https://pay.example.com or an http://....onion address. Plugins such as WooCommerce are given it when they connect, and send customers to its checkout. Plugins can't connect until it is set.",
+        example: "https://pay.example.com",
+    },
+    ABUSE_TRUSTED_PROXIES: String {
+        key: "abuse.trusted_proxies",
+        env: "MONOKULO_ABUSE_TRUSTED_PROXIES",
+        default: String::new(),
+        check: check_trusted_proxies,
+        description: "Addresses and CIDR ranges of reverse proxies in front of this instance, comma-separated. A request from one of these is identified by the last address in its X-Forwarded-For header that isn't a trusted proxy. Leave empty if clients connect directly.",
+        example: "127.0.0.1, 10.0.0.0/8",
+    },
+    ABUSE_ONION_LISTENER: String {
+        key: "abuse.onion_listener",
+        env: "MONOKULO_ABUSE_ONION_LISTENER",
+        default: String::new(),
+        check: check_onion_listener,
+        description: "A loopback address:port for tor's onion service to connect to, with HiddenServiceExportCircuitID haproxy set in torrc, so each Tor circuit is its own client. Empty turns it off. Only loopback is accepted.",
+        example: "127.0.0.1:8082",
+    },
+    ABUSE_STREAM_CAP: usize {
+        key: "abuse.stream_cap",
+        env: "MONOKULO_ABUSE_STREAM_CAP",
+        default: 16,
+        check: range(1, 100_000),
+        description: "Live-update streams one client may hold open at once to one store.",
+        example: "16",
+    },
+    ABUSE_SOFT_PER_MIN: u32 {
+        key: "abuse.soft_per_min",
+        env: "MONOKULO_ABUSE_SOFT_PER_MIN",
+        default: 60,
+        check: range(1, 10_000_000),
+        description: "Requests a minute one visitor (a Tor circuit, or an address) may make to the checkout and public pages before being asked to solve a short challenge. Signed-in merchants and shops using their secret key are never challenged.",
+        example: "60",
+    },
+    ABUSE_HARD_PER_MIN: u32 {
+        key: "abuse.hard_per_min",
+        env: "MONOKULO_ABUSE_HARD_PER_MIN",
+        default: 300,
+        check: range(1, 10_000_000),
+        description: "Requests a minute past which a visitor is refused outright (429) until the minute is up. Must be above the soft limit.",
+        example: "300",
+    },
+    ABUSE_SIGNED_IN_PER_MIN: u32 {
+        key: "abuse.signed_in_per_min",
+        env: "MONOKULO_ABUSE_SIGNED_IN_PER_MIN",
+        default: 600,
+        check: range(1, 10_000_000),
+        description: "Requests a minute a signed-in merchant may make (dashboard, POS). Never challenged.",
+        example: "600",
+    },
+    ABUSE_CHALLENGE_BITS: u32 {
+        key: "abuse.challenge_bits",
+        env: "MONOKULO_ABUSE_CHALLENGE_BITS",
+        default: 16,
+        check: range(8, 24),
+        description: "How hard the challenge is, in leading zero bits of a SHA-256 hash. Each extra bit doubles the work; 16 takes a phone about a second.",
+        example: "16",
+    },
+    ABUSE_UNDER_ATTACK: bool {
+        key: "abuse.under_attack",
+        env: "MONOKULO_ABUSE_UNDER_ATTACK",
+        default: false,
+        description: "When true, every visitor who isn't signed in must pass a challenge before using the checkout or public pages (live updates are not affected). A pass lasts 10 minutes.",
+        example: "false",
+    },
+}
+
+/// A setting's effective value for a per-request read: environment, else
+/// saved, else default. A value that doesn't parse (possible only from an
+/// environment variable or a hand-edited row; the admin page refuses them)
+/// falls through to the next source.
+pub fn get<T: SettingValue>(db: &Db, setting: &Setting<T>) -> T {
+    if let Some(raw) = shared::settings::env_value(setting.env_var) {
+        if !raw.trim().is_empty() {
+            match setting.parse(&raw) {
+                Ok(value) => return value,
+                Err(e) => eprintln!("settings: {} from {} is invalid ({e}); ignoring it", setting.key, setting.env_var),
+            }
+        }
+    }
+    if let Some(raw) = db.get_setting(setting.key).ok().flatten() {
+        match setting.parse(&raw) {
+            Ok(value) => return value,
+            Err(e) => eprintln!("settings: the saved {} is invalid ({e}); using the default", setting.key),
+        }
+    }
+    setting.default_value()
 }
 
 /// Checks a `public_url` value: this instance's external base URL, the one
@@ -96,111 +231,392 @@ pub fn validate_public_url(value: &str) -> Result<String, String> {
 }
 
 /// This instance's public base URL (no trailing `/`), or `None` while it
-/// isn't set (or holds a value that doesn't validate, which the admin page
-/// refuses to save but an environment variable could still carry).
+/// isn't set.
 pub fn public_url(db: &Db) -> Option<String> {
-    let value: String = get(db, &PUBLIC_URL);
+    let value = get(db, &PUBLIC_URL);
     if value.trim().is_empty() {
         return None;
     }
-    match validate_public_url(&value) {
-        Ok(url) => Some(url),
-        Err(_) => {
-            eprintln!("settings: public_url {value:?} is not a valid public address; treating it as unset");
-            None
+    validate_public_url(&value).ok()
+}
+
+/// This instance's current signup mode.
+pub fn signup_mode(db: &Db) -> SignupMode {
+    get(db, &SIGNUP_MODE)
+}
+
+/// The engine connection (task 3.2).
+#[derive(Debug, Clone, PartialEq)]
+pub struct EngineConnection {
+    pub url: String,
+    pub http_cache_bytes: u64,
+}
+
+impl Section for EngineConnection {
+    const NAME: &'static str = "engine connection";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&ENGINE_URL, &HTTP_CACHE_MAX_MB]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(EngineConnection {
+            url: snapshot.get(&ENGINE_URL).as_str().to_string(),
+            http_cache_bytes: snapshot.get(&HTTP_CACHE_MAX_MB) * 1024 * 1024,
+        })
+    }
+}
+
+/// Read per request; grouped so each setting belongs to a section.
+#[derive(Debug, Clone, PartialEq)]
+pub struct PerRequest {
+    pub signup_mode: SignupMode,
+    pub public_url: String,
+    pub admin_token: Secret,
+}
+
+impl Section for PerRequest {
+    const NAME: &'static str = "per request";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&SIGNUP_MODE, &PUBLIC_URL, &SCANNER_ADMIN_TOKEN]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(PerRequest {
+            signup_mode: snapshot.get(&SIGNUP_MODE),
+            public_url: snapshot.get(&PUBLIC_URL),
+            admin_token: snapshot.get(&SCANNER_ADMIN_TOKEN),
+        })
+    }
+}
+
+impl Section for ExchangeRateConfig {
+    const NAME: &'static str = "exchange rates";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&EXCHANGE_RATE_COINGECKO_ENABLED, &EXCHANGE_RATE_COINGECKO_BASE_URL, &EXCHANGE_RATE_CACHE_SECONDS]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(ExchangeRateConfig {
+            coingecko_enabled: snapshot.get(&EXCHANGE_RATE_COINGECKO_ENABLED),
+            coingecko_base_url: snapshot.get(&EXCHANGE_RATE_COINGECKO_BASE_URL).as_str().to_string(),
+            cache_seconds: snapshot.get(&EXCHANGE_RATE_CACHE_SECONDS),
+        })
+    }
+}
+
+impl Section for AbuseConfig {
+    const NAME: &'static str = "abuse protection";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[
+            &ABUSE_TRUSTED_PROXIES,
+            &ABUSE_STREAM_CAP,
+            &ABUSE_SOFT_PER_MIN,
+            &ABUSE_HARD_PER_MIN,
+            &ABUSE_SIGNED_IN_PER_MIN,
+            &ABUSE_CHALLENGE_BITS,
+            &ABUSE_UNDER_ATTACK,
+            &RATE_LIMIT_PER_STORE_KEY_PER_MIN,
+        ]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        let soft = snapshot.get(&ABUSE_SOFT_PER_MIN);
+        let hard = snapshot.get(&ABUSE_HARD_PER_MIN);
+        if hard <= soft {
+            return Err(vec![FieldError::new(
+                ABUSE_HARD_PER_MIN.key,
+                format!("abuse.hard_per_min ({hard}) must be above abuse.soft_per_min ({soft})."),
+            )]);
+        }
+        Ok(AbuseConfig {
+            trusted_proxies: TrustedProxies::parse(&snapshot.get(&ABUSE_TRUSTED_PROXIES)).unwrap_or_default(),
+            soft_per_min: soft,
+            hard_per_min: hard,
+            signed_in_per_min: snapshot.get(&ABUSE_SIGNED_IN_PER_MIN),
+            per_store_key_per_min: snapshot.get(&RATE_LIMIT_PER_STORE_KEY_PER_MIN),
+            stream_cap: snapshot.get(&ABUSE_STREAM_CAP),
+            challenge_bits: snapshot.get(&ABUSE_CHALLENGE_BITS),
+            under_attack: snapshot.get(&ABUSE_UNDER_ATTACK),
+        })
+    }
+}
+
+/// The onion listener's address (task 3.4); `None` when off.
+#[derive(Debug, Clone, PartialEq)]
+pub struct OnionListenerConfig {
+    pub address: Option<SocketAddr>,
+}
+
+impl Section for OnionListenerConfig {
+    const NAME: &'static str = "onion listener";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&ABUSE_ONION_LISTENER]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        crate::abuse::proxy_protocol::validate_onion_listener(&snapshot.get(&ABUSE_ONION_LISTENER))
+            .map(|address| OnionListenerConfig { address })
+            .map_err(|e| vec![FieldError::new(ABUSE_ONION_LISTENER.key, e)])
+    }
+}
+
+/// monokulo's settings store, over its own `settings` table.
+pub struct DbSettings(pub SharedDb);
+
+impl live_settings::SettingsStore for DbSettings {
+    fn read_all(&self) -> Result<std::collections::HashMap<String, String>, live_settings::StoreError> {
+        self.0.lock().list_settings().map_err(live_settings::StoreError::new)
+    }
+
+    fn write_all(&self, changes: &[(&str, Option<String>)]) -> Result<(), live_settings::StoreError> {
+        self.0.lock().write_settings(changes).map_err(live_settings::StoreError::new)
+    }
+}
+
+/// Points the engine client at a saved engine URL and cache size (task 3.2).
+/// If the new URL doesn't answer, the save still goes ahead, with a warning
+/// (decision D4).
+pub struct EngineConnectionReloadable {
+    pub engine_client: EngineClient,
+}
+
+#[live_settings::async_trait]
+impl live_settings::Reloadable for EngineConnectionReloadable {
+    type Config = EngineConnection;
+    type Prepared = EngineConnection;
+
+    async fn prepare(&self, new: &EngineConnection, old: &EngineConnection) -> Result<(EngineConnection, Vec<Warning>), FieldError> {
+        let mut warnings = Vec::new();
+        if new.url != old.url {
+            let probe = EngineClient::with_cache_limit(new.url.clone(), 1024 * 1024);
+            match tokio::time::timeout(Duration::from_secs(3), probe.get_status()).await {
+                Ok(Ok(_)) => {}
+                Ok(Err(e)) => warnings.push(Warning::for_key(
+                    ENGINE_URL.key,
+                    format!("Saved, but the engine at {} didn't answer: {e}", new.url),
+                )),
+                Err(_) => warnings.push(Warning::for_key(
+                    ENGINE_URL.key,
+                    format!("Saved, but the engine at {} didn't answer within 3 seconds.", new.url),
+                )),
+            }
+        }
+        Ok((new.clone(), warnings))
+    }
+
+    async fn install(&self, connection: EngineConnection) {
+        self.engine_client.retarget(connection.url, connection.http_cache_bytes);
+    }
+
+    fn boot_policy(&self) -> live_settings::BootPolicy {
+        live_settings::BootPolicy::StartDegraded
+    }
+}
+
+/// Applies saved exchange-rate settings (task 3.3).
+pub struct ExchangeRatesReloadable {
+    pub providers: Arc<ExchangeRateProviders>,
+}
+
+#[live_settings::async_trait]
+impl live_settings::Reloadable for ExchangeRatesReloadable {
+    type Config = ExchangeRateConfig;
+    type Prepared = ExchangeRateConfig;
+
+    async fn prepare(&self, new: &ExchangeRateConfig, _old: &ExchangeRateConfig) -> Result<(ExchangeRateConfig, Vec<Warning>), FieldError> {
+        Ok((new.clone(), Vec::new()))
+    }
+
+    async fn install(&self, config: ExchangeRateConfig) {
+        self.providers.reconfigure(&config);
+    }
+
+    fn boot_policy(&self) -> live_settings::BootPolicy {
+        live_settings::BootPolicy::StartDegraded
+    }
+}
+
+/// Applies saved abuse-protection settings.
+pub struct AbuseReloadable {
+    pub abuse: Arc<AbuseProtection>,
+}
+
+#[live_settings::async_trait]
+impl live_settings::Reloadable for AbuseReloadable {
+    type Config = AbuseConfig;
+    type Prepared = AbuseConfig;
+
+    async fn prepare(&self, new: &AbuseConfig, _old: &AbuseConfig) -> Result<(AbuseConfig, Vec<Warning>), FieldError> {
+        Ok((new.clone(), Vec::new()))
+    }
+
+    async fn install(&self, config: AbuseConfig) {
+        self.abuse.reload(config);
+    }
+
+    fn boot_policy(&self) -> live_settings::BootPolicy {
+        live_settings::BootPolicy::StartDegraded
+    }
+}
+
+/// Starts, moves or stops the onion listener when its address is saved
+/// (task 3.4). A new address is bound before anything is stored, so one
+/// that can't be bound refuses the save. The old listener stops accepting
+/// at once; its open connections finish on their own. At start-up the
+/// router doesn't exist yet when settings are applied, so a listener bound
+/// then waits until `router_ready`.
+#[derive(Clone, Default)]
+pub struct OnionReloadable {
+    inner: Arc<OnionInner>,
+}
+
+#[derive(Default)]
+struct OnionInner {
+    router: OnceLock<axum::Router>,
+    running: parking_lot::Mutex<Option<tokio::sync::watch::Sender<bool>>>,
+    waiting: parking_lot::Mutex<Option<crate::abuse::proxy_protocol::OnionListener>>,
+}
+
+impl OnionReloadable {
+    /// Gives the listener the router to serve, starting one that was
+    /// waiting for it.
+    pub fn router_ready(&self, router: axum::Router) {
+        let _ = self.inner.router.set(router);
+        let waiting = self.inner.waiting.lock().take();
+        if let Some(listener) = waiting {
+            self.start(listener);
         }
     }
-}
 
-/// A short explanation shown under a setting on the admin settings page,
-/// for the settings that need one.
-pub fn help(key: &str) -> Option<&'static str> {
-    match key {
-        "public_url" => Some(
-            "This instance's public address, e.g. https://pay.example.com or an http://....onion address. Plugins \
-             such as WooCommerce are given it when they connect, and send customers to its checkout. Plugins can't \
-             connect until it is set.",
-        ),
-        "rate_limit.per_store_key_per_min" => Some(
-            "Requests a minute a shop's server may make with its store's secret key (for example the WooCommerce plugin \
-             creating orders). These are never challenged.",
-        ),
-        "abuse.trusted_proxies" => Some(
-            "Addresses and CIDR ranges of reverse proxies in front of this instance, comma-separated (e.g. \
-             127.0.0.1, 10.0.0.0/8). A request from one of these is identified by the last address in its \
-             X-Forwarded-For header that isn't a trusted proxy. Leave empty if clients connect directly.",
-        ),
-        "abuse.onion_listener" => Some(
-            "A loopback address:port (e.g. 127.0.0.1:8082) for tor's onion service to connect to, with \
-             HiddenServiceExportCircuitID haproxy set in torrc, so each Tor circuit is its own client. Empty turns \
-             it off. Only loopback is accepted. Read at startup.",
-        ),
-        "abuse.stream_cap" => Some("Live-update streams one client may hold open at once to one store (at least 1)."),
-        "abuse.soft_per_min" => Some(
-            "Requests a minute one visitor (a Tor circuit, or an address) may make to the checkout and public pages \
-             before being asked to solve a short challenge. Signed-in merchants and shops using their secret key are \
-             never challenged.",
-        ),
-        "abuse.hard_per_min" => Some("Requests a minute past which a visitor is refused outright (429) until the minute is up. Must be above the soft limit."),
-        "abuse.signed_in_per_min" => Some("Requests a minute a signed-in merchant may make (dashboard, POS). Never challenged."),
-        "abuse.challenge_bits" => Some(
-            "How hard the challenge is, in leading zero bits of a SHA-256 hash (8 to 24). Each extra bit doubles the \
-             work; 16 takes a phone about a second.",
-        ),
-        "abuse.under_attack" => Some(
-            "true or false. When true, every visitor who isn't signed in must pass a challenge before using the \
-             checkout or public pages (live updates are not affected). A pass lasts 10 minutes.",
-        ),
-        _ => None,
+    fn start(&self, listener: crate::abuse::proxy_protocol::OnionListener) {
+        let Some(router) = self.inner.router.get().cloned() else {
+            *self.inner.waiting.lock() = Some(listener);
+            return;
+        };
+        let (stop, mut stopped) = tokio::sync::watch::channel(false);
+        let address = listener.bound_address();
+        tokio::spawn(async move {
+            let serve = axum::serve(
+                listener,
+                router.into_make_service_with_connect_info::<crate::abuse::proxy_protocol::OnionPeer>(),
+            )
+            .with_graceful_shutdown(async move {
+                let _ = stopped.wait_for(|s| *s).await;
+            });
+            if let Err(e) = serve.await {
+                eprintln!("onion listener on {address} stopped: {e}");
+            }
+        });
+        println!("monokulo onion listener (PROXY protocol, for tor) on {address}");
+        *self.inner.running.lock() = Some(stop);
     }
 }
 
-/// `SIGNUP_MODE`'s two valid values - a real enum rather than every caller
-/// matching on the raw string, so a typo'd or otherwise malformed stored
-/// value has exactly one place (here) that decides what it means.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SignupMode {
-    Public,
-    InviteOnly,
+/// What saving the onion listener's address does.
+pub enum OnionChange {
+    /// Same address as before: leave the listener as it is.
+    Keep,
+    /// Cleared: stop it.
+    Off,
+    /// A new address, already bound.
+    Start(crate::abuse::proxy_protocol::OnionListener),
 }
 
-/// This instance's currently effective signup mode - anything other than
-/// the literal `"public"` is treated as `InviteOnly`, the same
-/// fail-closed-by-default posture `SIGNUP_MODE`'s own `"invite_only"`
-/// default already has (a malformed or unrecognized stored value should
-/// never accidentally open public signup).
-pub fn signup_mode(db: &Db) -> SignupMode {
-    match get::<String>(db, &SIGNUP_MODE).as_str() {
-        "public" => SignupMode::Public,
-        _ => SignupMode::InviteOnly,
+#[live_settings::async_trait]
+impl live_settings::Reloadable for OnionReloadable {
+    type Config = OnionListenerConfig;
+    type Prepared = OnionChange;
+
+    async fn prepare(&self, new: &OnionListenerConfig, old: &OnionListenerConfig) -> Result<(OnionChange, Vec<Warning>), FieldError> {
+        let active = self.inner.running.lock().is_some() || self.inner.waiting.lock().is_some();
+        if new == old && (active || new.address.is_none()) {
+            return Ok((OnionChange::Keep, Vec::new()));
+        }
+        match new.address {
+            None => Ok((OnionChange::Off, Vec::new())),
+            Some(address) => crate::abuse::proxy_protocol::OnionListener::bind(address)
+                .await
+                .map(|listener| (OnionChange::Start(listener), Vec::new()))
+                .map_err(|e| FieldError::new(ABUSE_ONION_LISTENER.key, format!("Can't listen on {address}: {e}."))),
+        }
+    }
+
+    async fn install(&self, change: OnionChange) {
+        match change {
+            OnionChange::Keep => {}
+            OnionChange::Off => self.stop(),
+            OnionChange::Start(listener) => {
+                self.stop();
+                self.start(listener);
+            }
+        }
+    }
+
+    fn boot_policy(&self) -> live_settings::BootPolicy {
+        live_settings::BootPolicy::Exit
+    }
+}
+
+impl OnionReloadable {
+    fn stop(&self) {
+        if let Some(stop) = self.inner.running.lock().take() {
+            let _ = stop.send(true);
+        }
+        self.inner.waiting.lock().take();
+    }
+}
+
+/// monokulo's settings: the registry that saves and describes them, and the
+/// live sections the process reads.
+pub struct MonokuloSettings {
+    pub registry: Option<Registry>,
+    pub per_request: Live<PerRequest>,
+}
+
+impl MonokuloSettings {
+    /// No registry, for tests that don't use the admin settings page.
+    pub fn defaults() -> Arc<Self> {
+        let per_request = PerRequest::from_snapshot(&Snapshot::defaults()).unwrap_or(PerRequest {
+            signup_mode: SignupMode::InviteOnly,
+            public_url: String::new(),
+            admin_token: Secret::default(),
+        });
+        Arc::new(MonokuloSettings { registry: None, per_request: Live::new(per_request) })
+    }
+
+    /// Loads every setting and applies it to the given runtime pieces;
+    /// later saves through the registry apply the same way.
+    pub async fn load(
+        db: SharedDb,
+        engine_client: EngineClient,
+        exchange_rates: Arc<ExchangeRateProviders>,
+        abuse: Arc<AbuseProtection>,
+        onion: Option<OnionReloadable>,
+        env: live_settings::Env,
+    ) -> Result<Arc<Self>, String> {
+        let mut builder = Registry::builder_with_env(Arc::new(DbSettings(db)), ALL, env);
+        builder.reloadable(EngineConnectionReloadable { engine_client });
+        builder.reloadable(ExchangeRatesReloadable { providers: exchange_rates });
+        builder.reloadable(AbuseReloadable { abuse });
+        match onion {
+            Some(onion) => {
+                builder.reloadable(onion);
+            }
+            None => {
+                builder.section::<OnionListenerConfig>();
+            }
+        }
+        let per_request = builder.section::<PerRequest>();
+        let registry = builder.build().map_err(|e| e.to_string())?;
+        let report = registry.boot().await.map_err(|e| e.to_string())?;
+        for warning in &report.warnings {
+            eprintln!("settings: {}", warning.message);
+        }
+        for (section, error) in &report.degraded {
+            eprintln!("settings: {section} could not be applied at start, carrying on without it: {error}");
+        }
+        Ok(Arc::new(MonokuloSettings { registry: Some(registry), per_request }))
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn every_scalar_settings_own_default_parses_as_the_type_boot_code_actually_requests_it_as() {
-        let db = Db::open_in_memory().unwrap();
-        let _: String = get(&db, &SIGNUP_MODE);
-        let _: String = get(&db, &ENGINE_URL);
-        let _: String = get(&db, &SCANNER_ADMIN_TOKEN);
-        let _: bool = get(&db, &EXCHANGE_RATE_COINGECKO_ENABLED);
-        let _: String = get(&db, &EXCHANGE_RATE_COINGECKO_BASE_URL);
-        let _: u64 = get(&db, &EXCHANGE_RATE_CACHE_SECONDS);
-        let _: u64 = get(&db, &HTTP_CACHE_MAX_MB);
-        let _: u32 = get(&db, &ABUSE_SOFT_PER_MIN);
-        let _: u32 = get(&db, &ABUSE_HARD_PER_MIN);
-        let _: u32 = get(&db, &ABUSE_SIGNED_IN_PER_MIN);
-        let _: u32 = get(&db, &ABUSE_CHALLENGE_BITS);
-        let _: bool = get(&db, &ABUSE_UNDER_ATTACK);
-        let _: u32 = get(&db, &RATE_LIMIT_PER_STORE_KEY_PER_MIN);
-        let _: String = get(&db, &PUBLIC_URL);
-        let _: String = get(&db, &ABUSE_TRUSTED_PROXIES);
-        let _: String = get(&db, &ABUSE_ONION_LISTENER);
-        let _: usize = get(&db, &ABUSE_STREAM_CAP);
-    }
 
     #[test]
     fn a_public_url_must_be_an_http_base_url_with_nothing_after_it() {
@@ -237,29 +653,106 @@ mod tests {
     }
 
     #[test]
-    fn a_saved_scalar_setting_is_read_back_over_the_default() {
+    fn a_saved_setting_is_read_back_over_the_default_and_an_env_var_wins() {
         let db = Db::open_in_memory().unwrap();
+        assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 30);
         db.set_setting(EXCHANGE_RATE_CACHE_SECONDS.key, "3").unwrap();
-        let value: u64 = get(&db, &EXCHANGE_RATE_CACHE_SECONDS);
-        assert_eq!(value, 3);
-    }
-
-    #[test]
-    fn an_env_var_overrides_a_saved_setting() {
-        let db = Db::open_in_memory().unwrap();
-        db.set_setting(EXCHANGE_RATE_CACHE_SECONDS.key, "3").unwrap();
+        assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 3);
         let _env = shared::settings::test_env::set(EXCHANGE_RATE_CACHE_SECONDS.env_var, Some("9"));
-        let value: u64 = get(&db, &EXCHANGE_RATE_CACHE_SECONDS);
-        assert_eq!(value, 9);
+        assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 9);
     }
 
     #[test]
-    fn get_raw_reports_which_source_actually_won() {
-        let db = Db::open_in_memory().unwrap();
-        assert_eq!(get_raw(&db, &ENGINE_URL).1, SettingSource::Default);
-        db.set_setting(ENGINE_URL.key, "http://scanner.internal:8443").unwrap();
-        assert_eq!(get_raw(&db, &ENGINE_URL), ("http://scanner.internal:8443".to_string(), SettingSource::Database));
-        let _env = shared::settings::test_env::set(ENGINE_URL.env_var, Some("http://env-wins.example"));
-        assert_eq!(get_raw(&db, &ENGINE_URL).1, SettingSource::Env);
+    fn every_section_builds_from_the_defaults_and_every_setting_is_in_one() {
+        let snapshot = Snapshot::defaults();
+        assert!(EngineConnection::from_snapshot(&snapshot).is_ok());
+        assert!(PerRequest::from_snapshot(&snapshot).is_ok());
+        assert!(ExchangeRateConfig::from_snapshot(&snapshot).is_ok());
+        assert!(AbuseConfig::from_snapshot(&snapshot).is_ok());
+        assert!(OnionListenerConfig::from_snapshot(&snapshot).is_ok());
+        let covered: usize = [
+            EngineConnection::keys().len(),
+            PerRequest::keys().len(),
+            ExchangeRateConfig::keys().len(),
+            AbuseConfig::keys().len(),
+            OnionListenerConfig::keys().len(),
+        ]
+        .iter()
+        .sum();
+        assert_eq!(covered, ALL.len());
+    }
+
+    async fn loaded(onion: Option<OnionReloadable>) -> (Arc<MonokuloSettings>, EngineClient, Arc<ExchangeRateProviders>, Arc<AbuseProtection>) {
+        let db = Db::open_in_memory().unwrap().into_shared();
+        let engine = EngineClient::with_cache_limit("http://127.0.0.1:1", 1024 * 1024);
+        let rates = Arc::new(ExchangeRateProviders::xmr_only());
+        let abuse: Arc<AbuseProtection> = Default::default();
+        let settings = MonokuloSettings::load(
+            db,
+            engine.clone(),
+            rates.clone(),
+            abuse.clone(),
+            onion,
+            live_settings::Env::fixed(Vec::<(String, String)>::new()),
+        )
+        .await
+        .unwrap();
+        (settings, engine, rates, abuse)
+    }
+
+    fn change(key: &str, value: &str) -> live_settings::Changes {
+        vec![(key.to_string(), Some(value.to_string()))]
+    }
+
+    #[tokio::test]
+    async fn saved_settings_reach_the_engine_client_exchange_rates_and_abuse_protection() {
+        let (settings, engine, rates, abuse) = loaded(None).await;
+        let registry = settings.registry.as_ref().unwrap();
+        // Loading applied the saved (here: default) settings.
+        assert_eq!(engine.base_url(), "http://127.0.0.1:8443");
+        assert_eq!(rates.available_providers(), vec!["coingecko"]);
+
+        let report = registry.save(change("engine.url", "http://127.0.0.1:2")).await.unwrap();
+        assert_eq!(engine.base_url(), "http://127.0.0.1:2", "the next engine call goes to the new address");
+        assert_eq!(report.warnings.len(), 1, "nothing answers there, and the save says so (D4)");
+
+        registry.save(change("exchange_rate.coingecko_enabled", "false")).await.unwrap();
+        assert!(rates.available_providers().is_empty());
+
+        registry.save(change("abuse.soft_per_min", "7")).await.unwrap();
+        assert_eq!(abuse.config().soft_per_min, 7);
+
+        let refused = registry.save(change("abuse.hard_per_min", "5")).await;
+        assert!(refused.is_err(), "hard must stay above soft");
+        assert_eq!(abuse.config().hard_per_min, 300, "nothing applied");
+    }
+
+    #[tokio::test]
+    async fn the_onion_listener_starts_moves_and_stops_when_saved() {
+        let onion = OnionReloadable::default();
+        let (settings, ..) = loaded(Some(onion.clone())).await;
+        onion.router_ready(axum::Router::new().route("/", axum::routing::get(|| async { "ok" })));
+        let registry = settings.registry.as_ref().unwrap();
+
+        let free = std::net::TcpListener::bind("127.0.0.1:0").unwrap().local_addr().unwrap();
+        registry.save(change("abuse.onion_listener", &free.to_string())).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+        assert!(tokio::net::TcpStream::connect(free).await.is_ok(), "listening straight away");
+
+        registry.save(change("abuse.onion_listener", "")).await.unwrap();
+        let mut closed = false;
+        for _ in 0..50 {
+            if tokio::net::TcpStream::connect(free).await.is_err() {
+                closed = true;
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(20)).await;
+        }
+        assert!(closed, "cleared: no longer listening");
+
+        let taken = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let refused = registry.save(change("abuse.onion_listener", &taken.local_addr().unwrap().to_string())).await;
+        assert!(refused.is_err(), "an address that can't be bound refuses the save");
+        assert_eq!(registry.describe().iter().find(|v| v.key == "abuse.onion_listener").unwrap().value, "");
     }
 }

@@ -27,6 +27,7 @@ fn state(soft_per_min: u32) -> AppState {
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         abuse: Arc::new(AbuseProtection::new(AbuseConfig { soft_per_min, ..Default::default() })),
         dns: Arc::new(monokulo::embed_domains::UnavailableDns("no DNS in tests".to_string())),
+        settings: monokulo::settings::MonokuloSettings::defaults(),
     }
 }
 

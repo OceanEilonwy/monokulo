@@ -281,6 +281,7 @@ async fn start_monokulo(engine_addr: SocketAddr) -> (AppState, SocketAddr, Store
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         abuse: Arc::new(AbuseProtection::new(config)),
         dns: Arc::new(monokulo::embed_domains::UnavailableDns("no DNS in tests".to_string())),
+        settings: monokulo::settings::MonokuloSettings::defaults(),
     };
     let listener = OnionListener::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
     let addr = listener.bound_address();

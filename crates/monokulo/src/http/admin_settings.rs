@@ -19,7 +19,7 @@
 //! multi-tenant "one monokulo, many engines" design - see this crate's own
 //! `EngineClient`, which already assumes exactly one engine base URL.
 //!
-//! Every field on both forms always carries its *current effective* value
+//! Every field on both forms always carries its *current effective* value (secrets excepted: they are never echoed back, and an empty secret field keeps the current one)
 //! (`value="..."`, `env > database > default`) - per the explicit "the
 //! settings should have a value='' that corresponds to the active setting"
 //! requirement - and the save button can always be clicked: submitting the
@@ -40,72 +40,23 @@ use std::collections::{BTreeMap, HashMap};
 
 use axum::extract::{Form, State};
 use axum::response::{IntoResponse, Response};
-use serde::{Deserialize, Serialize};
-
-use shared::settings::SettingSource;
+use serde::Deserialize;
 
 use crate::db::{Db, UserRow};
-use crate::settings::{ScalarSetting, ALL_SCALAR};
 use crate::views;
-use crate::views::admin::{AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel};
+use crate::views::admin::{AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel, Notice, SettingKindView};
 
 use super::{AppState, AuthedAdmin};
 
 /// `"exchange_rate.coingecko_enabled"` -> `"exchange rate coingecko enabled"` -
 /// a plain, mechanical label derived straight from a settings key so no
-/// separate label table can ever drift out of sync with
-/// `crate::settings::ALL_SCALAR` (or, for the scanner half, with whatever
-/// keys that instance happens to report).
+/// separate label table can ever drift out of sync with the declarations
+/// (or, for the engine half, with whatever keys that instance reports).
 fn humanize_key(key: &str) -> String {
     key.replace(['.', '_'], " ")
 }
 
-fn source_label(source: SettingSource) -> &'static str {
-    match source {
-        SettingSource::Env => "environment variable",
-        SettingSource::Database => "saved value",
-        SettingSource::Default => "default",
-    }
-}
-
-/// Every monokulo setting's current effective value - a plain, synchronous
-/// read, safe to call with the database lock held.
-fn monokulo_fields(db: &Db) -> Vec<AdminScalarFieldView> {
-    ALL_SCALAR
-        .iter()
-        .map(|setting| {
-            let (value, source) = crate::settings::get_raw(db, setting);
-            AdminScalarFieldView {
-                key: setting.key.to_string(),
-                label: humanize_key(setting.key),
-                value,
-                source_label: source_label(source).to_string(),
-                help: crate::settings::help(setting.key).map(str::to_string),
-            }
-        })
-        .collect()
-}
-
-/// This instance's configured scanner connection, read synchronously with
-/// the lock held - the two owned `String`s are then free to travel across an
-/// `.await` on their own.
-fn engine_connection(db: &Db) -> (String, String) {
-    (crate::settings::get::<String>(db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(db, &crate::settings::SCANNER_ADMIN_TOKEN))
-}
-
-#[derive(Deserialize)]
-struct RemoteScalarSetting {
-    value: String,
-    source: String,
-}
-
-#[derive(Deserialize)]
-struct RemoteSettingsResponse {
-    scalars: BTreeMap<String, RemoteScalarSetting>,
-    monero_node: BTreeMap<String, Option<serde_json::Value>>,
-}
-
-fn remote_source_label(source: &str) -> String {
+fn source_label(source: &str) -> String {
     match source {
         "env" => "environment variable".to_string(),
         "database" => "saved value".to_string(),
@@ -114,13 +65,93 @@ fn remote_source_label(source: &str) -> String {
     }
 }
 
-/// Fetches the configured scanner's own settings over HTTP - `Ok(None)` when
-/// no scanner connection is configured at all (an empty `engine_url` or
-/// `admin_token`, the state a fresh instance starts in), `Err` for a real
-/// reachability/auth/parse failure worth showing the operator. Takes owned
-/// strings, not a `&Db` - see this module's own doc comment on lock
-/// discipline.
-async fn fetch_scanner_settings(engine_url: &str, admin_token: &str) -> Result<Option<(Vec<AdminScalarFieldView>, Vec<AdminNetworkFieldView>)>, String> {
+fn live_source(source: live_settings::SettingSource) -> &'static str {
+    match source {
+        live_settings::SettingSource::Env => "env",
+        live_settings::SettingSource::Database => "database",
+        live_settings::SettingSource::Default => "default",
+    }
+}
+
+/// Every monokulo setting as the page shows it, from the registry's
+/// description of them (tasks 4.1, 4.6). Without a registry (a test state),
+/// nothing is listed.
+fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
+    let Some(registry) = state.settings.registry.as_ref() else { return Vec::new() };
+    registry
+        .describe()
+        .into_iter()
+        .map(|view| AdminScalarFieldView {
+            key: view.key.to_string(),
+            label: humanize_key(view.key),
+            value: view.value,
+            source_label: source_label(live_source(view.source)),
+            help: Some(view.description.to_string()),
+            kind: SettingKindView::from(view.kind),
+            example: view.example.map(str::to_string),
+            restart_only: view.applies == live_settings::Applies::Restart,
+            pending_restart: view.pending_restart,
+            problem: view.problem.map(|p| p.message),
+        })
+        .collect()
+}
+
+/// This instance's engine connection, read synchronously with the lock
+/// held - the two owned `String`s are then free to travel across an
+/// `.await` on their own.
+fn engine_connection(db: &Db) -> (String, String) {
+    (
+        crate::settings::get(db, &crate::settings::ENGINE_URL).as_str().to_string(),
+        crate::settings::get(db, &crate::settings::SCANNER_ADMIN_TOKEN).expose().to_string(),
+    )
+}
+
+#[derive(Deserialize)]
+struct RemoteScalarSetting {
+    value: String,
+    source: String,
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    kind: SettingKindView,
+    #[serde(default)]
+    example: Option<String>,
+    #[serde(default)]
+    applies: Option<String>,
+    #[serde(default)]
+    pending_restart: bool,
+    #[serde(default)]
+    problem: Option<String>,
+}
+
+#[derive(Deserialize, Default)]
+struct RemoteNetwork {
+    #[serde(default)]
+    description: Option<String>,
+    #[serde(default)]
+    example: Option<String>,
+    #[serde(default)]
+    tenant_count: u64,
+}
+
+#[derive(Deserialize)]
+struct RemoteSettingsResponse {
+    scalars: BTreeMap<String, RemoteScalarSetting>,
+    monero_node: BTreeMap<String, Option<serde_json::Value>>,
+    /// Added with the engine's setting descriptions (task 4.2); an older
+    /// engine doesn't send it.
+    #[serde(default)]
+    networks: BTreeMap<String, RemoteNetwork>,
+}
+
+/// Fetches the engine's own settings over HTTP - `Ok(None)` when no engine
+/// connection is configured at all, `Err` for a real reachability, auth or
+/// parse failure worth showing. Takes owned strings, never a `&Db`, since it
+/// awaits.
+async fn fetch_scanner_settings(
+    engine_url: &str,
+    admin_token: &str,
+) -> Result<Option<(Vec<AdminScalarFieldView>, Vec<AdminNetworkFieldView>)>, String> {
     if engine_url.trim().is_empty() || admin_token.trim().is_empty() {
         return Ok(None);
     }
@@ -133,39 +164,50 @@ async fn fetch_scanner_settings(engine_url: &str, admin_token: &str) -> Result<O
         .await
         .map_err(|e| format!("request failed: {e}"))?;
     if !response.status().is_success() {
-        return Err(format!("scanner responded with {}", response.status()));
+        return Err(format!("the engine responded with {}", response.status()));
     }
-    let parsed: RemoteSettingsResponse = response.json().await.map_err(|e| format!("could not parse scanner's response: {e}"))?;
+    let parsed: RemoteSettingsResponse = response.json().await.map_err(|e| format!("could not parse the engine's response: {e}"))?;
 
     let fields = parsed
         .scalars
         .into_iter()
-        .map(|(key, s)| AdminScalarFieldView { label: humanize_key(&key), key, value: s.value, source_label: remote_source_label(&s.source), help: None })
+        .map(|(key, s)| AdminScalarFieldView {
+            label: humanize_key(&key),
+            key,
+            value: s.value,
+            source_label: source_label(&s.source),
+            help: s.description,
+            kind: s.kind,
+            example: s.example,
+            restart_only: s.applies.as_deref() == Some("restart"),
+            pending_restart: s.pending_restart,
+            problem: s.problem,
+        })
         .collect();
+    let mut networks_meta = parsed.networks;
     let networks = parsed
         .monero_node
         .into_iter()
-        .map(|(network, value)| AdminNetworkFieldView {
-            network,
-            value_json: value.map(|v| serde_json::to_string_pretty(&v).unwrap_or_default()).unwrap_or_default(),
+        .map(|(network, value)| {
+            let meta = networks_meta.remove(&network).unwrap_or_default();
+            AdminNetworkFieldView {
+                value_json: value.map(|v| serde_json::to_string_pretty(&v).unwrap_or_default()).unwrap_or_default(),
+                network,
+                description: meta.description,
+                example: meta.example,
+                tenant_count: meta.tenant_count,
+            }
         })
         .collect();
     Ok(Some((fields, networks)))
 }
 
-/// Assembles the whole page's view model from already-read, owned pieces -
-/// `monokulo_fields`/`engine_url`/`admin_token` are read synchronously by
-/// each caller (with the database lock held only for that read, then
-/// dropped) before this is ever called, so this function itself never
-/// touches the lock and is free to `.await` throughout.
-async fn build_view_model(
-    monokulo_fields: Vec<AdminScalarFieldView>,
-    engine_url: String,
-    admin_token: String,
-    error: Option<String>,
-    success: Option<String>,
-) -> AdminSettingsViewModel {
-    let mut view = AdminSettingsViewModel { error, success, monokulo_fields, ..Default::default() };
+/// Assembles the whole page's view model: monokulo's fields from its
+/// registry, the engine's fetched over HTTP.
+async fn build_view_model(state: &AppState, error: Option<String>, success: Option<String>, notices: Vec<Notice>) -> AdminSettingsViewModel {
+    let monokulo_fields = monokulo_fields(state);
+    let (engine_url, admin_token) = engine_connection(&state.db.lock());
+    let mut view = AdminSettingsViewModel { error, success, notices, monokulo_fields, ..Default::default() };
     match fetch_scanner_settings(&engine_url, &admin_token).await {
         Ok(Some((fields, networks))) => {
             view.scanner_configured = true;
@@ -192,179 +234,163 @@ fn render(state: &AppState, admin_user: &UserRow, view: AdminSettingsViewModel) 
 
 /// `GET /dashboard/admin/settings`.
 pub async fn page(State(state): State<AppState>, AuthedAdmin(admin_user, _): AuthedAdmin) -> Response {
-    let (fields, engine_url, admin_token) = {
-        let db = state.db.lock();
-        (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
-    };
-    let view = build_view_model(fields, engine_url, admin_token, None, None).await;
+    let view = build_view_model(&state, None, None, Vec::new()).await;
     render(&state, &admin_user, view)
 }
 
-/// Validates one monokulo scalar's submitted raw value against the type its
-/// own boot-time reader (`crate::settings::get::<T>`) actually parses it as -
-/// the same "reject loudly at save time rather than silently misbehave
-/// later" discipline scanner's own `validate_scalar` applies, scaled down to
-/// monokulo's much shorter, non-range-checked setting list (nothing here has
-/// a meaningful numeric range beyond "not negative"; a nonsensical value
-/// like `0` rate-limit is caught the same way an operator hand-editing an
-/// env var would ever catch it - by the effect being obviously wrong, not by
-/// a bound enforced here).
-fn validate_monokulo_scalar(setting: &ScalarSetting, value: &str) -> Result<(), String> {
-    match setting.key {
-        "signup.mode" => {
-            if value == "public" || value == "invite_only" {
-                Ok(())
-            } else {
-                Err(format!("{} must be \"public\" or \"invite_only\", got {value:?}", setting.key))
-            }
-        }
-        "exchange_rate.coingecko_enabled" => value
-            .parse::<bool>()
-            .map(|_| ())
-            .map_err(|_| format!("{} must be \"true\" or \"false\", got {value:?}", setting.key)),
-        "exchange_rate.cache_seconds" => {
-            value.parse::<u64>().map(|_| ()).map_err(|_| format!("{} must be a non-negative integer, got {value:?}", setting.key))
-        }
-        "rescan.default_lookback_days" | "rescan.max_lookback_days" => value
-            .parse::<u32>()
-            .map(|_| ())
-            .map_err(|_| format!("{} must be a positive integer, got {value:?}", setting.key)),
-        "http_cache.max_mb" => {
-            value.parse::<u64>().map(|_| ()).map_err(|_| format!("{} must be a positive integer, got {value:?}", setting.key))
-        }
-        "abuse.soft_per_min" | "abuse.hard_per_min" | "abuse.signed_in_per_min" => match value.parse::<u32>() {
-            Ok(n) if n >= 1 => Ok(()),
-            _ => Err(format!("{} must be a positive integer, got {value:?}", setting.key)),
-        },
-        "abuse.challenge_bits" => match value.parse::<u32>() {
-            Ok(n) if (8..=24).contains(&n) => Ok(()),
-            _ => Err(format!("{} must be a whole number from 8 to 24, got {value:?}", setting.key)),
-        },
-        "abuse.under_attack" => value
-            .parse::<bool>()
-            .map(|_| ())
-            .map_err(|_| format!("{} must be \"true\" or \"false\", got {value:?}", setting.key)),
-        "rate_limit.per_store_key_per_min" => match value.parse::<u32>() {
-            Ok(n) if n >= 1 => Ok(()),
-            _ => Err(format!("{} must be a whole number of at least 1, got {value:?}", setting.key)),
-        },
-        "public_url" => {
-            if value.trim().is_empty() {
-                Ok(())
-            } else {
-                crate::settings::validate_public_url(value).map(|_| ()).map_err(|problem| format!("{}: {problem}", setting.key))
-            }
-        }
-        "abuse.trusted_proxies" => crate::abuse::TrustedProxies::parse(value).map(|_| ()).map_err(|e| format!("{}: {e}", setting.key)),
-        "abuse.onion_listener" => {
-            crate::abuse::proxy_protocol::validate_onion_listener(value).map(|_| ()).map_err(|e| format!("{}: {e}", setting.key))
-        }
-        "abuse.stream_cap" => match value.parse::<usize>() {
-            Ok(n) if n >= 1 => Ok(()),
-            _ => Err(format!("{} must be a whole number of at least 1, got {value:?}", setting.key)),
-        },
-        "engine.url" => {
-            if value.trim().is_empty() {
-                Err(format!("{} must not be empty", setting.key))
-            } else {
-                Ok(())
-            }
-        }
-        // engine.admin_token has no shape requirement of its own - an empty
-        // value just means "no scanner connection configured yet".
-        _ => Ok(()),
-    }
-}
-
 /// `POST /dashboard/admin/settings` - saves every monokulo setting the form
-/// submitted. All-or-nothing: one invalid field re-renders the whole page
-/// with an error and changes nothing, the same policy scanner's own
-/// `update_settings` applies to its scalars.
+/// submitted, through the registry (admin_settings_v2.md part 1): all
+/// checked first, then applied to the running process and stored together,
+/// or nothing at all. A secret field left empty keeps its current value.
 pub async fn save_monokulo(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
-    for setting in ALL_SCALAR {
-        if let Some(value) = form.get(setting.key) {
-            if let Err(message) = validate_monokulo_scalar(setting, value) {
-                return render_error(&state, &admin_user, message).await;
+    let Some(registry) = state.settings.registry.as_ref() else {
+        return render_error(&state, &admin_user, "Settings can't be saved on this instance.".to_string()).await;
+    };
+    let secrets: Vec<&str> = crate::settings::ALL
+        .iter()
+        .filter(|s| matches!(s.kind(), live_settings::SettingKind::Secret))
+        .map(|s| s.key())
+        .collect();
+    let changes: live_settings::Changes = crate::settings::ALL
+        .iter()
+        .filter_map(|setting| {
+            let value = form.get(setting.key())?;
+            if secrets.contains(&setting.key()) && value.is_empty() {
+                return None;
             }
-        }
-    }
-    // The hard limit must sit above the soft one, or the challenge tier
-    // would never be reached.
-    let (soft, hard) = {
-        let db = state.db.lock();
-        let effective = |setting: &ScalarSetting| -> u32 {
-            form.get(setting.key).and_then(|v| v.parse().ok()).unwrap_or_else(|| crate::settings::get(&db, setting))
-        };
-        (effective(&crate::settings::ABUSE_SOFT_PER_MIN), effective(&crate::settings::ABUSE_HARD_PER_MIN))
-    };
-    if hard <= soft {
-        let message = format!("abuse.hard_per_min ({hard}) must be above abuse.soft_per_min ({soft}).");
-        return render_error(&state, &admin_user, message).await;
-    }
-
-    let save_error = {
-        let db = state.db.lock();
-        ALL_SCALAR.iter().find_map(|setting| {
-            let value = form.get(setting.key)?;
-            db.set_setting(setting.key, value).err().map(|_| ())
+            Some((setting.key().to_string(), Some(value.clone())))
         })
-    };
+        .collect();
 
-    if save_error.is_some() {
-        return render_error(&state, &admin_user, "Something went wrong saving these settings. Please try again.".to_string()).await;
+    match registry.save(changes).await {
+        Ok(report) => {
+            let mut notices = Vec::new();
+            for warning in &report.warnings {
+                // The only monokulo warning today: the engine didn't answer
+                // at the saved URL (decision D4). It's an error-level banner.
+                notices.push(Notice::Error(warning.message.clone()));
+            }
+            if !report.env_overridden.is_empty() {
+                notices.push(Notice::Info(format!(
+                    "Saved, but these are set by an environment variable, which wins while it is set: {}.",
+                    report.env_overridden.join(", ")
+                )));
+            }
+            if !report.restart_required.is_empty() {
+                notices.push(Notice::Warning(format!(
+                    "Saved. These take effect after monokulo restarts: {}.",
+                    report.restart_required.join(", ")
+                )));
+            }
+            let view = build_view_model(&state, None, Some("Monokulo settings saved and applied.".to_string()), notices).await;
+            render(&state, &admin_user, view)
+        }
+        Err(live_settings::SaveError::Invalid(errors)) => {
+            let message = errors.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ");
+            render_error(&state, &admin_user, message).await
+        }
+        Err(_) => render_error(&state, &admin_user, "Something went wrong saving these settings. Please try again.".to_string()).await,
     }
-    // Rate limits, trusted proxies and the stream cap take effect straight
-    // away (`crate::abuse::AbuseProtection::reload`).
-    let abuse_config = crate::abuse::AbuseConfig::from_settings(&state.db.lock());
-    state.abuse.reload(abuse_config);
-
-    let (fields, engine_url, admin_token) = {
-        let db = state.db.lock();
-        (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
-    };
-    let view = build_view_model(fields, engine_url, admin_token, None, Some("Monokulo settings saved.".to_string())).await;
-    render(&state, &admin_user, view)
 }
 
 /// Re-reads the current state fresh and re-renders the page with `message`
 /// as the error banner - the common "a submission was rejected, show the
 /// whole page again with nothing changed" path both `POST` handlers use.
 async fn render_error(state: &AppState, admin_user: &UserRow, message: String) -> Response {
-    let (fields, engine_url, admin_token) = {
-        let db = state.db.lock();
-        (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
-    };
-    let view = build_view_model(fields, engine_url, admin_token, Some(message), None).await;
+    let view = build_view_model(state, Some(message), None, Vec::new()).await;
     render(state, admin_user, view)
 }
 
-#[derive(Serialize, Default)]
+#[derive(serde::Serialize, Default)]
 struct RemoteUpdateRequest {
     scalars: HashMap<String, String>,
     monero_node: HashMap<String, Option<serde_json::Value>>,
 }
 
-/// `POST /dashboard/admin/scanner-settings` - forwards the submitted scanner
-/// fields to the configured scanner instance's own
-/// `POST /api/v1/admin/settings`. This page does no validation of its own on
-/// these fields (it doesn't know scanner's own rules, and shouldn't have to
-/// duplicate them) - whatever the scanner instance itself rejects comes back
-/// as this page's own error banner, verbatim.
+#[derive(Deserialize, Default)]
+struct RemoteSaveWarnings {
+    #[serde(default)]
+    restart_required: Vec<String>,
+    #[serde(default)]
+    env_overridden: Vec<String>,
+    #[serde(default)]
+    messages: Vec<RemoteMessage>,
+    #[serde(default)]
+    unserved_networks: Vec<RemoteUnserved>,
+}
+
+#[derive(Deserialize)]
+struct RemoteMessage {
+    message: String,
+}
+
+#[derive(Deserialize)]
+struct RemoteUnserved {
+    network: String,
+    tenants: u64,
+}
+
+#[derive(Deserialize, Default)]
+struct RemoteSaveResponse {
+    #[serde(default)]
+    warnings: RemoteSaveWarnings,
+}
+
+/// The banners for an accepted engine save (tasks 3.6, 4.5, decisions D1,
+/// D2, D8): restart-only settings, networks stores use that no longer have
+/// a node, environment overrides and anything else the engine said.
+fn scanner_save_notices(warnings: RemoteSaveWarnings, submitted_bind: Option<&str>) -> Vec<Notice> {
+    let mut notices = Vec::new();
+    for unserved in &warnings.unserved_networks {
+        let stores = if unserved.tenants == 1 { "1 store uses".to_string() } else { format!("{} stores use", unserved.tenants) };
+        notices.push(Notice::Error(format!(
+            "{stores} the {} network, which no longer has any reachable nodes. Their payments won't be detected until a node is set.",
+            unserved.network
+        )));
+    }
+    if !warnings.restart_required.is_empty() {
+        let mut text = format!(
+            "Saved. These settings take effect after the engine restarts: {}.",
+            warnings.restart_required.join(", ")
+        );
+        if warnings.restart_required.iter().any(|k| k == "server.bind") {
+            if let Some(bind) = submitted_bind {
+                text.push_str(&format!(
+                    " After restarting it, set monokulo's engine.url to http://{bind} so monokulo can reach it."
+                ));
+            }
+        }
+        notices.push(Notice::Warning(text));
+    }
+    for message in warnings.messages {
+        notices.push(Notice::Warning(message.message));
+    }
+    if !warnings.env_overridden.is_empty() {
+        notices.push(Notice::Info(format!(
+            "Saved, but these are set by an environment variable on the engine, which wins while it is set: {}.",
+            warnings.env_overridden.join(", ")
+        )));
+    }
+    notices
+}
+
+/// `POST /dashboard/admin/scanner-settings` - forwards the submitted engine
+/// fields to the engine's own `POST /api/v1/admin/settings`, which checks
+/// them. Whatever the engine refuses comes back as this page's error
+/// banner, verbatim; what it accepts comes back with its warnings as
+/// banners.
 pub async fn save_scanner(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
-    let (engine_url, admin_token) = {
-        let db = state.db.lock();
-        engine_connection(&db)
-    };
+    let (engine_url, admin_token) = engine_connection(&state.db.lock());
     if engine_url.trim().is_empty() || admin_token.trim().is_empty() {
-        return render_error(&state, &admin_user, "No scanner connection is configured.".to_string()).await;
+        return render_error(&state, &admin_user, "No engine connection is configured.".to_string()).await;
     }
 
     let mut req = RemoteUpdateRequest::default();
@@ -389,21 +415,25 @@ pub async fn save_scanner(
 
     let url = format!("{}/api/v1/admin/settings", engine_url.trim_end_matches('/'));
     let result = reqwest::Client::new().post(&url).bearer_auth(&admin_token).json(&req).send().await;
-    let (error, success) = match result {
-        Ok(response) if response.status().is_success() => (None, Some("Scanner settings saved.".to_string())),
+    let (error, success, notices) = match result {
+        Ok(response) if response.status().is_success() => {
+            let saved: RemoteSaveResponse = response.json().await.unwrap_or_default();
+            let notices = scanner_save_notices(saved.warnings, form.get("server.bind").map(String::as_str));
+            (None, Some("Engine settings saved and applied.".to_string()), notices)
+        }
         Ok(response) => {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
-            (Some(format!("Scanner rejected the request ({status}): {body}")), None)
+            let message = serde_json::from_str::<serde_json::Value>(&body)
+                .ok()
+                .and_then(|v| v["error"].as_str().map(str::to_string))
+                .unwrap_or(body);
+            (Some(format!("The engine refused the change ({status}): {message}")), None, Vec::new())
         }
-        Err(e) => (Some(format!("Could not reach the configured scanner: {e}")), None),
+        Err(e) => (Some(format!("Could not reach the configured engine: {e}")), None, Vec::new()),
     };
 
-    let (fields, engine_url, admin_token) = {
-        let db = state.db.lock();
-        (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
-    };
-    let view = build_view_model(fields, engine_url, admin_token, error, success).await;
+    let view = build_view_model(&state, error, success, notices).await;
     render(&state, &admin_user, view)
 }
 
@@ -446,19 +476,34 @@ mod tests {
     /// scanner connection already configured (`engine.url`/`engine.admin_token`)
     /// - what most tests in this module want, since the whole point of this
     /// page is proxying that connection.
-    fn test_app_state_connected_to(scanner_addr: std::net::SocketAddr) -> AppState {
+    async fn test_app_state_connected_to(scanner_addr: std::net::SocketAddr) -> AppState {
         let db = Db::open_in_memory().unwrap();
         db.seed_test_admin();
         db.set_setting(crate::settings::ENGINE_URL.key, &format!("http://{scanner_addr}")).unwrap();
         db.set_setting(crate::settings::SCANNER_ADMIN_TOKEN.key, SCANNER_ADMIN_TOKEN).unwrap();
+        let db = db.into_shared();
+        let engine_client = EngineClient::new(format!("http://{scanner_addr}"));
+        let exchange_rate = test_exchange_rate_provider();
+        let abuse: std::sync::Arc<crate::abuse::AbuseProtection> = Default::default();
+        let settings = crate::settings::MonokuloSettings::load(
+            db.clone(),
+            engine_client.clone(),
+            exchange_rate.clone(),
+            abuse.clone(),
+            None,
+            live_settings::Env::fixed(Vec::<(String, String)>::new()),
+        )
+        .await
+        .unwrap();
         AppState {
-            db: db.into_shared(),
-            engine_client: EngineClient::new(format!("http://{scanner_addr}")),
+            db,
+            engine_client,
             encryption_key: TEST_ENCRYPTION_KEY,
             status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: test_exchange_rate_provider(),
-            abuse: Default::default(),
+            exchange_rate,
+            abuse,
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+            settings,
         }
     }
 
@@ -511,7 +556,7 @@ mod tests {
 
     #[tokio::test]
     async fn the_settings_page_is_unreachable_without_a_session_at_all() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap());
+        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let response = router
             .oneshot(Request::builder().method("GET").uri("/dashboard/admin/settings").body(Body::empty()).unwrap())
@@ -524,7 +569,7 @@ mod tests {
     /// isn't the admin account gets `403`, not a redirect or a `401`.
     #[tokio::test]
     async fn a_non_admin_session_is_forbidden_from_the_settings_page() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap());
+        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
 
         let signup = router
@@ -547,7 +592,7 @@ mod tests {
     #[tokio::test]
     async fn the_admin_can_reach_the_settings_page_and_see_the_reachable_scanner_settings() {
         let engine = spawn_scanner_with_known_admin_token().await;
-        let state = test_app_state_connected_to(engine.addr);
+        let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -561,7 +606,7 @@ mod tests {
 
     #[tokio::test]
     async fn a_saved_monokulo_setting_round_trips_on_the_next_load() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap());
+        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -572,7 +617,7 @@ mod tests {
             .unwrap();
         assert_eq!(save.status(), StatusCode::OK);
         let html = body_text(save).await;
-        assert!(html.contains("Monokulo settings saved."), "expected a success banner, got: {html}");
+        assert!(html.contains("Monokulo settings saved and applied."), "expected a success banner, got: {html}");
         assert!(html.contains("value=\"5\""), "expected the just-saved value reflected immediately, got: {html}");
 
         let reload = get_settings_page(&router, &cookie).await;
@@ -589,7 +634,7 @@ mod tests {
     /// every one individually confirmed to have taken effect.
     #[tokio::test]
     async fn every_monokulo_setting_on_the_admin_page_saves_correctly() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap());
+        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -612,20 +657,24 @@ mod tests {
             ("abuse.onion_listener", "127.0.0.1:8082"),
             ("abuse.stream_cap", "9"),
         ];
-        // Every one of `ALL_SCALAR`'s own keys must be covered here, or this
-        // test would silently stop proving anything about a setting added
-        // later without its own new_values entry.
-        assert_eq!(new_values.len(), crate::settings::ALL_SCALAR.len(), "this test must cover every known monokulo setting");
+        // Every monokulo setting must be covered here, or this test would
+        // silently stop proving anything about a setting added later.
+        assert_eq!(new_values.len(), crate::settings::ALL.len(), "this test must cover every known monokulo setting");
 
         let save = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, new_values)).await.unwrap();
         assert_eq!(save.status(), StatusCode::OK);
         let html = body_text(save).await;
-        assert!(html.contains("Monokulo settings saved."), "expected a success banner, got: {html}");
+        assert!(html.contains("Monokulo settings saved and applied."), "expected a success banner, got: {html}");
+        assert!(html.contains("didn&#39;t answer") || html.contains("didn't answer"), "the new engine URL doesn't answer, and the page says so (D4): {html}");
 
         let reload = get_settings_page(&router, &cookie).await;
         let html = body_text(reload).await;
-        for (_, value) in new_values {
-            assert!(html.contains(&format!("value=\"{value}\"")), "expected {value:?} to have round-tripped, got: {html}");
+        for (key, value) in new_values {
+            if *key == "engine.admin_token" {
+                assert!(!html.contains(value), "a secret is never echoed back");
+                continue;
+            }
+            assert!(shows_value(&html, value), "expected {key}={value:?} to have round-tripped, got: {html}");
         }
     }
 
@@ -637,7 +686,7 @@ mod tests {
     #[tokio::test]
     async fn every_scanner_setting_on_the_admin_page_saves_correctly() {
         let engine = spawn_scanner_with_known_admin_token().await;
-        let state = test_app_state_connected_to(engine.addr);
+        let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -660,14 +709,16 @@ mod tests {
         ];
         assert_eq!(
             new_values.len(),
-            scanner::settings::ALL_SCALAR.len(),
-            "this test must cover every known scanner setting (scanner::settings::ALL_SCALAR)"
+            scanner::engine_settings::ALL.len() - scanner::engine_settings::NETWORKS.len(),
+            "this test must cover every known engine setting apart from the node ones"
         );
 
         let save = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/scanner-settings", &cookie, new_values)).await.unwrap();
         assert_eq!(save.status(), StatusCode::OK);
         let html = body_text(save).await;
-        assert!(html.contains("Scanner settings saved."), "expected a success banner, got: {html}");
+        assert!(html.contains("Engine settings saved and applied."), "expected a success banner, got: {html}");
+        assert!(html.contains("take effect after the engine restarts"), "worker threads and bind are restart-only: {html}");
+        assert!(html.contains("set monokulo&#39;s engine.url to http://127.0.0.1:9443") || html.contains("set monokulo's engine.url to http://127.0.0.1:9443"), "{html}");
 
         let reload = get_settings_page(&router, &cookie).await;
         let html = body_text(reload).await;
@@ -680,13 +731,21 @@ mod tests {
             if value.is_empty() {
                 continue;
             }
-            assert!(html.contains(&format!("value=\"{value}\"")), "expected {key}={value:?} to have round-tripped, got: {html}");
+            assert!(shows_value(&html, value), "expected {key}={value:?} to have round-tripped, got: {html}");
         }
+    }
+
+    /// A value shown in a text or number input, or selected in a select.
+    fn shows_value(html: &str, value: &str) -> bool {
+        html.contains(&format!("value=\"{value}\" selected")) || html.contains(&format!("value=\"{value}\">"))
+            || html.contains(&format!("value=\"{value}\" min")) || html.contains(&format!("value=\"{value}\";"))
+            || html.contains(&format!("\">{value}</textarea>"))
+            || html.contains(&format!("value=\"{value}\"></label>"))
     }
 
     #[tokio::test]
     async fn an_invalid_monokulo_setting_is_rejected_and_nothing_is_saved() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap());
+        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -697,7 +756,7 @@ mod tests {
             .unwrap();
         assert_eq!(save.status(), StatusCode::OK);
         let html = body_text(save).await;
-        assert!(html.contains("must be a positive integer"), "expected a clear validation error, got: {html}");
+        assert!(html.contains("abuse.soft_per_min: Enter a whole number"), "expected a clear validation error, got: {html}");
 
         let reload = get_settings_page(&router, &cookie).await;
         let html = body_text(reload).await;
@@ -708,33 +767,33 @@ mod tests {
     /// is refused with a message naming the setting and what it needs.
     #[tokio::test]
     async fn an_operators_typical_mistakes_are_each_refused_with_what_the_setting_needs() {
-        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap());
+        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         for (key, value, expected) in [
-            ("signup.mode", "open", "must be \"public\" or \"invite_only\""),
-            ("exchange_rate.coingecko_enabled", "yes", "must be \"true\" or \"false\""),
-            ("abuse.under_attack", "on", "must be \"true\" or \"false\""),
-            ("exchange_rate.cache_seconds", "-5", "must be a non-negative integer"),
-            ("http_cache.max_mb", "1.5", "must be a positive integer"),
-            ("abuse.hard_per_min", "0", "must be a positive integer"),
-            ("abuse.challenge_bits", "30", "must be a whole number from 8 to 24"),
-            ("rate_limit.per_store_key_per_min", "0", "must be a whole number of at least 1"),
-            ("abuse.stream_cap", "0", "must be a whole number of at least 1"),
-            ("engine.url", " ", "must not be empty"),
-            ("public_url", "not a url", "public_url:"),
+            ("signup.mode", "open", "Choose one of: public, invite_only"),
+            ("exchange_rate.coingecko_enabled", "yes", "Enter true or false."),
+            ("abuse.under_attack", "on", "Enter true or false."),
+            ("exchange_rate.cache_seconds", "-5", "Enter a whole number, 0 or more."),
+            ("http_cache.max_mb", "1.5", "Enter a whole number"),
+            ("abuse.hard_per_min", "0", "Enter a whole number from 1 to 10000000."),
+            ("abuse.challenge_bits", "30", "Enter a whole number from 8 to 24."),
+            ("rate_limit.per_store_key_per_min", "0", "Enter a whole number from 1 to 10000000."),
+            ("abuse.stream_cap", "0", "Enter a whole number from 1 to 100000."),
+            ("engine.url", " ", "Enter a full web address"),
+            ("public_url", "not a url", "Enter this instance's public address"),
         ] {
             let save = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(key, value)])).await.unwrap();
             assert_eq!(save.status(), StatusCode::OK, "{key}={value:?}");
-            let html = body_text(save).await.replace("&quot;", "\"").replace("&#34;", "\"");
-            assert!(html.contains(key) && html.contains(expected), "{key}={value:?}: expected {expected:?}");
+            let html = body_text(save).await.replace("&quot;", "\"").replace("&#34;", "\"").replace("&#39;", "'");
+            assert!(html.contains(key) && html.contains(expected), "{key}={value:?}: expected {expected:?}, got: {}", html.split("role=\"alert\">").nth(1).unwrap_or("").split("<").next().unwrap_or(""));
         }
     }
 
     #[tokio::test]
     async fn saving_a_scanner_setting_forwards_it_and_the_change_is_visible_on_the_next_load() {
         let engine = spawn_scanner_with_known_admin_token().await;
-        let state = test_app_state_connected_to(engine.addr);
+        let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -745,7 +804,7 @@ mod tests {
             .unwrap();
         assert_eq!(save.status(), StatusCode::OK);
         let html = body_text(save).await;
-        assert!(html.contains("Scanner settings saved."), "expected a success banner, got: {html}");
+        assert!(html.contains("Engine settings saved and applied."), "expected a success banner, got: {html}");
         assert!(html.contains("value=\"5\""), "expected the scanner's own just-saved value reflected, got: {html}");
 
         let reload = get_settings_page(&router, &cookie).await;
@@ -756,7 +815,7 @@ mod tests {
     #[tokio::test]
     async fn an_invalid_scanner_setting_is_rejected_by_the_scanner_and_surfaced_as_an_error() {
         let engine = spawn_scanner_with_known_admin_token().await;
-        let state = test_app_state_connected_to(engine.addr);
+        let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
@@ -767,7 +826,7 @@ mod tests {
             .unwrap();
         assert_eq!(save.status(), StatusCode::OK);
         let html = body_text(save).await;
-        assert!(html.contains("Scanner rejected the request"), "expected the scanner's own rejection surfaced, got: {html}");
+        assert!(html.contains("The engine refused the change"), "expected the engine's own rejection surfaced, got: {html}");
     }
 
     #[tokio::test]
@@ -783,6 +842,7 @@ mod tests {
                 exchange_rate: test_exchange_rate_provider(),
                 abuse: Default::default(),
                 dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+                settings: crate::settings::MonokuloSettings::defaults(),
             }
         };
         let router = build_router(state);

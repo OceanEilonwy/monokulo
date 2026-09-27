@@ -600,6 +600,7 @@ mod tests {
             exchange_rate: test_exchange_rate_provider(),
             abuse: Default::default(),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+            settings: crate::settings::MonokuloSettings::defaults(),
         };
         (state, engine)
     }

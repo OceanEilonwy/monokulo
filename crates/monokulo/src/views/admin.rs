@@ -185,34 +185,98 @@ pub fn admin_invites_page(chrome: &PageChrome, data: &AdminInvitesViewModel) -> 
     layout(chrome, "Invites - Monokulo", body)
 }
 
+/// What kind of value a setting takes, which decides its input control
+/// (task 4.6). Mirrors `live_settings::SettingKind`, owned, so the engine's
+/// settings (fetched as JSON) and monokulo's own share one renderer.
+#[derive(Debug, Clone, PartialEq, Default, serde::Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+pub enum SettingKindView {
+    Integer { min: Option<i64>, max: Option<i64> },
+    Bool,
+    Choice { choices: Vec<String> },
+    ChoiceList { choices: Vec<String> },
+    Url,
+    Address,
+    Path,
+    #[default]
+    Text,
+    Secret,
+    Json,
+}
+
+impl From<live_settings::SettingKind> for SettingKindView {
+    fn from(kind: live_settings::SettingKind) -> Self {
+        use live_settings::SettingKind as K;
+        let owned = |choices: Vec<&'static str>| choices.into_iter().map(str::to_string).collect();
+        match kind {
+            K::Integer { min, max } => SettingKindView::Integer { min, max },
+            K::Bool => SettingKindView::Bool,
+            K::Choice { choices } => SettingKindView::Choice { choices: owned(choices) },
+            K::ChoiceList { choices } => SettingKindView::ChoiceList { choices: owned(choices) },
+            K::Url => SettingKindView::Url,
+            K::Address => SettingKindView::Address,
+            K::Path => SettingKindView::Path,
+            K::Text => SettingKindView::Text,
+            K::Secret => SettingKindView::Secret,
+            K::Json => SettingKindView::Json,
+        }
+    }
+}
+
 /// One editable field on the admin settings page - either one of monokulo's
-/// own settings or one of the *proxied* scanner settings, fetched live over
-/// HTTP from whichever scanner instance is configured.
+/// own settings or one of the engine's, fetched live over HTTP.
+#[derive(Debug, Clone, Default)]
 pub struct AdminScalarFieldView {
     /// The stable settings-table key (also the form field's `name`).
     pub key: String,
     pub label: String,
     /// The field's current *effective* value - what wins under
-    /// `env > database > default`.
+    /// `env > database > default`. Masked for secrets.
     pub value: String,
     /// `"environment variable"`, `"saved value"`, or `"default"`.
     pub source_label: String,
-    /// A short explanation shown under the field, when it needs one.
+    /// What the setting is for (task 4.1).
     pub help: Option<String>,
+    pub kind: SettingKindView,
+    pub example: Option<String>,
+    /// Only applies after a restart.
+    pub restart_only: bool,
+    /// Saved, but still waiting for that restart.
+    pub pending_restart: bool,
+    /// Why the value in effect isn't the one set, if it isn't.
+    pub problem: Option<String>,
 }
 
-/// One `monero_node.<network>` entry on the scanner-settings half of the
-/// admin page - shown/edited as a single JSON text field.
+/// One `monero_node.<network>` entry on the engine half of the page - shown
+/// and edited as a single JSON text field.
+#[derive(Debug, Clone, Default)]
 pub struct AdminNetworkFieldView {
     pub network: String,
     /// Empty when this network has no node configured yet.
     pub value_json: String,
+    pub description: Option<String>,
+    pub example: Option<String>,
+    /// Stores on this network, for the confirmation before clearing it.
+    pub tenant_count: u64,
+}
+
+/// A banner shown at the top of the page after a save (task 4.5).
+#[derive(Debug, Clone, PartialEq)]
+pub enum Notice {
+    /// Saved and applied, but something needs attention (a restart).
+    Warning(String),
+    /// Saved, but something is now broken (stores without a node, an
+    /// engine that doesn't answer).
+    Error(String),
+    /// For information (an environment variable still wins).
+    Info(String),
 }
 
 #[derive(Default)]
 pub struct AdminSettingsViewModel {
     pub error: Option<String>,
     pub success: Option<String>,
+    pub notices: Vec<Notice>,
     pub monokulo_fields: Vec<AdminScalarFieldView>,
     /// `true` once `engine.url`/`engine.admin_token` are both non-empty.
     pub scanner_configured: bool,
@@ -224,35 +288,131 @@ pub struct AdminSettingsViewModel {
     pub scanner_networks: Vec<AdminNetworkFieldView>,
 }
 
+fn scalar_input(field: &AdminScalarFieldView) -> Markup {
+    let name = field.key.as_str();
+    match &field.kind {
+        SettingKindView::Integer { min, max } => html! {
+            input type="number" name=(name) value=(field.value) min=[min] max=[max] step="1";
+        },
+        SettingKindView::Bool => html! {
+            select name=(name) {
+                option value="true" selected[field.value == "true"] { "true" }
+                option value="false" selected[field.value == "false"] { "false" }
+            }
+        },
+        SettingKindView::Choice { choices } => html! {
+            select name=(name) {
+                @for choice in choices {
+                    option value=(choice) selected[&field.value == choice] { (choice) }
+                }
+            }
+        },
+        SettingKindView::Url => html! { input type="url" name=(name) value=(field.value); },
+        // Never echoed back: left empty means "keep the current one".
+        SettingKindView::Secret => html! {
+            input type="password" name=(name) value="" autocomplete="off"
+                placeholder=(if field.value.is_empty() { "not set" } else { "set - leave empty to keep it" });
+        },
+        SettingKindView::Json => html! { textarea name=(name) rows="4" { (field.value) } },
+        _ => html! { input type="text" name=(name) value=(field.value); },
+    }
+}
+
 fn scalar_field(field: &AdminScalarFieldView) -> Markup {
     html! {
-        label { (field.label) " " input type="text" name=(field.key) value=(field.value); }
-        span class="setting-source" { "(" (field.source_label) ")" }
-        @if let Some(help) = &field.help {
-            span class="field-help" { (help) }
+        div class="setting-field" {
+            label {
+                (field.label) " "
+                (scalar_input(field))
+            }
+            @if let Some(help) = &field.help {
+                span class="field-help" { (help) }
+            }
+            @if let Some(example) = &field.example {
+                span class="field-help" { "Example: " code { (example) } }
+            }
+            span class="setting-source" {
+                "(" (field.source_label)
+                @if field.restart_only { ", applies after a restart" }
+                ")"
+            }
+            @if field.pending_restart {
+                span class="setting-pending" { "Saved - restart needed for it to take effect." }
+            }
+            @if let Some(problem) = &field.problem {
+                span class="setting-problem" { (problem) }
+            }
         }
     }
 }
+
+fn notices(items: &[Notice]) -> Markup {
+    html! {
+        @for notice in items {
+            @match notice {
+                Notice::Error(text) => p class="error" role="alert" { (text) },
+                Notice::Warning(text) => p class="warning" role="status" { (text) },
+                Notice::Info(text) => p class="notice" { (text) },
+            }
+        }
+    }
+}
+
+/// With JavaScript, confirm before saving an engine settings form that
+/// clears a network stores still use (task 4.4). Without it, the form posts
+/// and the red banner after the save says what happened.
+const CONFIRM_CLEARED_NETWORK_SCRIPT: &str = r#"(function () {
+  var form = document.getElementById("scanner-settings-form");
+  if (!form) return;
+  form.addEventListener("submit", function (event) {
+    var fields = form.querySelectorAll("textarea[data-tenant-count]");
+    for (var i = 0; i < fields.length; i++) {
+      var field = fields[i];
+      var count = parseInt(field.getAttribute("data-tenant-count"), 10) || 0;
+      if (count > 0 && field.value.trim() === "" && field.defaultValue.trim() !== "") {
+        var network = field.getAttribute("data-network");
+        var stores = count === 1 ? "1 store uses" : count + " stores use";
+        if (!window.confirm(stores + " the " + network + " network. Without a node, their payments won't be detected. Save anyway?")) {
+          event.preventDefault();
+          return;
+        }
+      }
+    }
+  });
+})();"#;
 
 /// Settings shown under "Abuse protection" (`crate::abuse`).
 fn is_abuse_field(key: &str) -> bool {
     key.starts_with("abuse.") || key.starts_with("rate_limit.")
 }
 
+/// The engine's settings, grouped (task 4.7).
+fn engine_group(key: &str) -> &'static str {
+    match key.split('.').next().unwrap_or("") {
+        "key_custody" => "Key custody",
+        "payment" => "Payments",
+        "server" => "Server",
+        "webhooks" => "Webhooks",
+        _ => "Other",
+    }
+}
+
 pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -> Markup {
+    let groups = ["Key custody", "Payments", "Server", "Webhooks", "Other"];
     let body = html! {
         div class="wrap" {
             nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
             h1 { "Admin settings" }
             @if let Some(error) = &data.error {
-                p class="error" { (error) }
+                p class="error" role="alert" { (error) }
             }
             @if let Some(success) = &data.success {
                 p class="success" { (success) }
             }
+            (notices(&data.notices))
 
             h2 { "Monokulo" }
-            p { "An environment variable, where set, always wins over the value saved here - saving still works, it just won't take effect until that variable is unset." }
+            p class="hint" { "Saved settings apply straight away. An environment variable, where set, always wins over the value saved here - saving still works, it just won't take effect until that variable is unset." }
             form method="post" action="/dashboard/admin/settings" {
                 @for field in data.monokulo_fields.iter().filter(|f| !is_abuse_field(&f.key)) {
                     (scalar_field(field))
@@ -262,8 +422,7 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
                     "How this instance tells visitors apart and slows down anyone sending too many requests. A visitor "
                     "past the soft limit is asked to pass a short check (automatic with JavaScript, a 10-second wait "
                     "without); past the hard limit they're refused until the minute is up. Signed-in merchants and "
-                    "plugins using their store's secret key are never checked. Changes apply straight away, except "
-                    "the onion listener, which is read at startup."
+                    "plugins using their store's secret key are never checked."
                 }
                 @for field in data.monokulo_fields.iter().filter(|f| is_abuse_field(&f.key)) {
                     (scalar_field(field))
@@ -271,26 +430,53 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
                 button type="submit" { "Save monokulo settings" }
             }
 
-            h2 { "Scanner" }
+            h2 { "Engine" }
             @if !data.scanner_configured {
-                p { "Set " code { "engine.url" } " and " code { "engine.admin_token" } " above and save to manage this instance's scanner settings from here." }
+                p { "Set " code { "engine.url" } " and " code { "engine.admin_token" } " above and save to manage this instance's engine settings from here." }
             } @else if data.scanner_reachable {
-                form method="post" action="/dashboard/admin/scanner-settings" {
-                    @for field in &data.scanner_fields {
-                        (scalar_field(field))
-                    }
+                form method="post" action="/dashboard/admin/scanner-settings" id="scanner-settings-form" {
+                    h3 { "Monero nodes" }
                     @for network in &data.scanner_networks {
-                        label {
-                            "Monero node (" (network.network) ") "
-                            textarea name=(format!("monero_node_{}", network.network)) rows="4" { (network.value_json) }
+                        div class="setting-field" {
+                            label {
+                                "Monero node (" (network.network) ") "
+                                textarea name=(format!("monero_node_{}", network.network)) rows="4"
+                                    data-network=(network.network) data-tenant-count=(network.tenant_count) { (network.value_json) }
+                            }
+                            @if let Some(description) = &network.description {
+                                span class="field-help" { (description) }
+                            }
+                            span class="setting-source" {
+                                @if network.tenant_count == 1 { "Used by 1 store." } @else { "Used by " (network.tenant_count) " stores." }
+                            }
+                            @if let Some(example) = &network.example {
+                                details class="field-help" {
+                                    summary { "Example" }
+                                    pre { code { (example) } }
+                                    p {
+                                        code { "host" } " and " code { "port" } ": the node's address. "
+                                        code { "ssl" } " (default false): connect with TLS. "
+                                        code { "accept_self_signed_certs" } " (default true): accept a self-signed TLS certificate. "
+                                        code { "fallbacks" } ": more nodes in the same shape, tried in order when the one before fails; a fallback can't have fallbacks of its own."
+                                    }
+                                }
+                            }
                         }
-                        span class="setting-source" { "JSON, or leave empty to leave this network unconfigured" }
                     }
-                    button type="submit" { "Save scanner settings" }
+                    @for group in groups {
+                        @if data.scanner_fields.iter().any(|f| engine_group(&f.key) == group) {
+                            h3 { (group) }
+                            @for field in data.scanner_fields.iter().filter(|f| engine_group(&f.key) == group) {
+                                (scalar_field(field))
+                            }
+                        }
+                    }
+                    button type="submit" { "Save engine settings" }
                 }
+                script { (maud::PreEscaped(CONFIRM_CLEARED_NETWORK_SCRIPT)) }
             } @else {
-                p class="error" {
-                    "Could not reach the configured scanner: "
+                p class="error" role="alert" {
+                    "Could not reach the configured engine: "
                     @if let Some(scanner_error) = &data.scanner_error { (scanner_error) }
                 }
             }
@@ -422,7 +608,7 @@ mod tests {
             ..Default::default()
         };
         let html = admin_settings_page(&chrome(), &data).into_string();
-        assert!(html.contains("Could not reach the configured scanner"));
+        assert!(html.contains("Could not reach the configured engine"));
         assert!(html.contains("connection refused"));
     }
 
@@ -435,6 +621,8 @@ mod tests {
                 value: "http://scanner.internal".to_string(),
                 source_label: "saved value".to_string(),
                 help: Some("Where the engine listens.".to_string()),
+                kind: SettingKindView::Url,
+                ..Default::default()
             }],
             scanner_configured: true,
             scanner_reachable: true,
@@ -443,19 +631,80 @@ mod tests {
                 label: "payment confirmations required".to_string(),
                 value: "10".to_string(),
                 source_label: "default".to_string(),
-                help: None,
+                kind: SettingKindView::Integer { min: Some(0), max: Some(720) },
+                example: Some("10".to_string()),
+                ..Default::default()
             }],
-            scanner_networks: vec![AdminNetworkFieldView { network: "mainnet".to_string(), value_json: "{}".to_string() }],
+            scanner_networks: vec![AdminNetworkFieldView {
+                network: "mainnet".to_string(),
+                value_json: "{}".to_string(),
+                description: Some("The mainnet node.".to_string()),
+                example: Some(r#"{"host":"node.example.com","port":18089}"#.to_string()),
+                tenant_count: 2,
+            }],
             ..Default::default()
         };
         let html = admin_settings_page(&chrome(), &data).into_string();
         assert!(html.contains("engine url"));
         assert!(html.contains(r#"<span class="field-help">Where the engine listens.</span>"#));
         assert!(html.contains("Abuse protection"));
-        assert!(html.contains(r#"value="http://scanner.internal""#));
+        assert!(html.contains(r#"type="url" name="engine.url" value="http://scanner.internal""#), "{html}");
         assert!(html.contains("payment confirmations required"));
-        assert!(html.contains(r#"value="10""#));
+        assert!(html.contains(r#"type="number" name="payment.confirmations_required" value="10" min="0" max="720""#), "{html}");
+        assert!(html.contains("Example: <code>10</code>"));
         assert!(html.contains("Monero node (mainnet)"));
         assert!(html.contains(r#"name="monero_node_mainnet""#));
+        assert!(html.contains(r#"data-tenant-count="2""#));
+        assert!(html.contains("Used by 2 stores."));
+        assert!(html.contains("fallbacks"), "the node field explains its shape");
+        assert!(html.contains("window.confirm"), "confirms before clearing a network in use");
     }
+
+    #[test]
+    fn inputs_follow_the_kind_of_value_and_secrets_are_never_echoed() {
+        let field = |kind: SettingKindView, value: &str| AdminScalarFieldView {
+            key: "k".to_string(),
+            label: "k".to_string(),
+            value: value.to_string(),
+            kind,
+            ..Default::default()
+        };
+        let choice = scalar_field(&field(SettingKindView::Choice { choices: vec!["public".into(), "invite_only".into()] }, "public")).into_string();
+        assert!(choice.contains(r#"<option value="public" selected>"#), "{choice}");
+        let boolean = scalar_field(&field(SettingKindView::Bool, "false")).into_string();
+        assert!(boolean.contains(r#"<option value="false" selected>"#), "{boolean}");
+        let secret = scalar_field(&field(SettingKindView::Secret, "\u{2022}\u{2022}\u{2022}\u{2022}")).into_string();
+        assert!(secret.contains(r#"type="password""#) && secret.contains(r#"value="""#), "{secret}");
+        assert!(!secret.contains('\u{2022}'));
+    }
+
+    #[test]
+    fn notices_render_with_their_level_and_restart_only_fields_say_so() {
+        let data = AdminSettingsViewModel {
+            notices: vec![
+                Notice::Error("2 stores use the stagenet network, which no longer has any reachable nodes.".into()),
+                Notice::Warning("Saved. These settings take effect after the engine restarts: server.worker_threads.".into()),
+                Notice::Info("Saved, but set by an environment variable.".into()),
+            ],
+            scanner_configured: true,
+            scanner_reachable: true,
+            scanner_fields: vec![AdminScalarFieldView {
+                key: "server.worker_threads".into(),
+                label: "server worker threads".into(),
+                value: "4".into(),
+                source_label: "saved value".into(),
+                restart_only: true,
+                pending_restart: true,
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let html = admin_settings_page(&chrome(), &data).into_string();
+        assert!(html.contains(r#"<p class="error" role="alert">2 stores use the stagenet network"#));
+        assert!(html.contains(r#"<p class="warning" role="status">Saved. These settings take effect after the engine restarts"#));
+        assert!(html.contains(r#"<p class="notice">Saved, but set by an environment variable."#));
+        assert!(html.contains("applies after a restart"));
+        assert!(html.contains("restart needed"));
+    }
+
 }

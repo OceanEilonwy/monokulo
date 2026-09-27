@@ -326,6 +326,7 @@ mod tests {
             exchange_rate: Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             abuse: Arc::new(AbuseProtection::new(config)),
             dns: Arc::new(crate::embed_domains::UnavailableDns("no DNS in tests".to_string())),
+            settings: crate::settings::MonokuloSettings::defaults(),
         }
     }
 

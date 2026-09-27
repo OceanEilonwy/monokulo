@@ -33,6 +33,7 @@ futures-util = { version = "0.3.34", default-features = false, features = ["std"
 tower-http = { version = "0.7.1", features = ["cors"] }
 tokio = { version = "1.53.1", features = ["full"] }
 url = "2.5.8"
+live-settings = { path = "../live-settings" }
 uuid = { version = "1.26.0", features = ["v4"] }
 hickory-resolver = "0.26.3"
 

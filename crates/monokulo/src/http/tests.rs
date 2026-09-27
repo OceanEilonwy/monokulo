@@ -31,6 +31,7 @@ pub(super) fn test_app_state() -> AppState {
         exchange_rate: test_exchange_rate_provider(),
         abuse: Default::default(),
         dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+        settings: crate::settings::MonokuloSettings::defaults(),
     }
 }
 
@@ -623,6 +624,7 @@ async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestE
         exchange_rate: test_exchange_rate_provider(),
         abuse: Default::default(),
         dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+        settings: crate::settings::MonokuloSettings::defaults(),
     };
     (state, engine)
 }

@@ -235,6 +235,29 @@ pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-br
   margin: 1em 0;
 }
 .hint { color: var(--muted); font-size: 0.9em; }
+/* Admin settings banners after a save (admin_settings_v2.md task 4.5). */
+.warning {
+  border: 2px solid var(--warning);
+  border-radius: var(--radius-md);
+  color: var(--warning);
+  background: var(--tint-warning);
+  padding: var(--space-sm) var(--space-md);
+  font-weight: 700;
+  margin: 1em 0;
+}
+.notice {
+  border: 1px solid var(--line);
+  border-radius: var(--radius-md);
+  padding: var(--space-sm) var(--space-md);
+  margin: 1em 0;
+}
+.setting-field { margin: 0 0 1.1em; }
+.setting-field label { display: block; }
+.setting-field input, .setting-field select, .setting-field textarea { max-width: 100%; }
+.setting-field textarea { width: 100%; font-family: ui-monospace, monospace; }
+.setting-field details pre { margin: 0.4em 0; }
+.setting-pending { display: block; color: var(--warning); font-weight: 700; margin-top: 0.15em; }
+.setting-problem { display: block; color: var(--error); margin-top: 0.15em; }
 /* Store page embed warnings (`views::store_detail::embed_warnings`). */
 .embed-warning {
   display: grid;

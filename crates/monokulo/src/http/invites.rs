@@ -308,6 +308,7 @@ mod tests {
             exchange_rate: test_exchange_rate_provider(),
             abuse: Default::default(),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+            settings: crate::settings::MonokuloSettings::defaults(),
         }
     }
 
@@ -470,7 +471,9 @@ mod tests {
 
     #[tokio::test]
     async fn a_standalone_invite_link_is_shown_once_and_actually_works_for_signup() {
-        let router = build_router(test_state());
+        let state = test_state();
+        let db = state.db.clone();
+        let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
         let create = router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/invites/create-link", &cookie, &[])).await.unwrap();
@@ -481,11 +484,7 @@ mod tests {
         // Switch to invite-only mode to actually prove the token is real -
         // "public" mode (this crate's own test default) would let anyone
         // sign up regardless, which wouldn't prove anything about the token.
-        router
-            .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("signup.mode", "invite_only")]))
-            .await
-            .unwrap();
+        db.lock().set_setting(crate::settings::SIGNUP_MODE.key, "invite_only").unwrap();
 
         let signup = signed_up_session_cookie(&router, "newcomer@example.com", "correct horse battery staple", &[("invite", &token)]).await;
         assert_eq!(signup.status(), StatusCode::FOUND, "a valid invite token must let a real signup through");

@@ -111,6 +111,17 @@ impl LiveHub {
         }
     }
 
+    /// Ends every stream from this hub (task 3.2: `engine.url` changed).
+    /// Upstream connections to the old engine are aborted and every order
+    /// watch is dropped, so each browser's stream ends and its reconnect is
+    /// served by the client's new hub.
+    pub fn shutdown(&self) {
+        let stores = std::mem::take(&mut *self.stores.lock());
+        for (_, store) in stores {
+            store.upstream.abort();
+        }
+    }
+
     /// How many stores currently hold an upstream connection - for tests.
     pub fn upstream_count(&self) -> usize {
         self.stores.lock().len()
@@ -414,4 +425,15 @@ mod tests {
         assert!(a.changed.has_changed().unwrap());
         assert!(!b.changed.has_changed().unwrap());
     }
+    #[tokio::test]
+    async fn changing_the_engine_url_ends_live_streams_to_the_old_engine() {
+        let engine = crate::engine_client::EngineClient::with_cache_limit("http://127.0.0.1:1", 1024 * 1024);
+        let mut subscription = engine.subscribe_order("conn", "sk_test", "order");
+        assert_eq!(engine.live_upstream_count(), 1);
+        engine.retarget("http://127.0.0.1:2", 1024 * 1024);
+        assert_eq!(engine.live_upstream_count(), 0, "the new hub has no streams yet");
+        let ended = tokio::time::timeout(std::time::Duration::from_secs(2), subscription.changed.changed()).await;
+        assert!(matches!(ended, Ok(Err(_))), "the old stream ends, so the browser reconnects to the new engine");
+    }
+
 }

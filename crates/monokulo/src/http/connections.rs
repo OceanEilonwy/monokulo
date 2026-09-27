@@ -156,7 +156,7 @@ pub(super) async fn create_connection_for_user(
             &req.site_url,
             &created.public_key,
             &encrypted_secret_token,
-            state.engine_client.base_url(),
+            &state.engine_client.base_url(),
             now_unix(),
             &base_currency,
         )
@@ -245,6 +245,7 @@ mod tests {
             exchange_rate: test_exchange_rate_provider(),
             abuse: Default::default(),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+            settings: crate::settings::MonokuloSettings::defaults(),
         };
         (state, engine)
     }

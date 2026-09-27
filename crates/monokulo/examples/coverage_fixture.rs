@@ -158,6 +158,7 @@ async fn main() {
             ..Default::default()
         })),
         dns: Arc::new(UnavailableDns("DNS is unavailable in browser tests".into())),
+        settings: monokulo::settings::MonokuloSettings::defaults(),
     };
     let controls = Router::new()
         .route("/__coverage/ready", get(ready))

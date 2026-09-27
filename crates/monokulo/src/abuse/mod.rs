@@ -56,19 +56,15 @@ impl Default for AbuseConfig {
     fn default() -> Self {
         AbuseConfig {
             trusted_proxies: TrustedProxies::default(),
-            soft_per_min: parse_default(&settings::ABUSE_SOFT_PER_MIN),
-            hard_per_min: parse_default(&settings::ABUSE_HARD_PER_MIN),
-            signed_in_per_min: parse_default(&settings::ABUSE_SIGNED_IN_PER_MIN),
-            per_store_key_per_min: parse_default(&settings::RATE_LIMIT_PER_STORE_KEY_PER_MIN),
-            stream_cap: parse_default(&settings::ABUSE_STREAM_CAP),
-            challenge_bits: parse_default(&settings::ABUSE_CHALLENGE_BITS),
-            under_attack: parse_default(&settings::ABUSE_UNDER_ATTACK),
+            soft_per_min: settings::ABUSE_SOFT_PER_MIN.default_value(),
+            hard_per_min: settings::ABUSE_HARD_PER_MIN.default_value(),
+            signed_in_per_min: settings::ABUSE_SIGNED_IN_PER_MIN.default_value(),
+            per_store_key_per_min: settings::RATE_LIMIT_PER_STORE_KEY_PER_MIN.default_value(),
+            stream_cap: settings::ABUSE_STREAM_CAP.default_value(),
+            challenge_bits: settings::ABUSE_CHALLENGE_BITS.default_value(),
+            under_attack: settings::ABUSE_UNDER_ATTACK.default_value(),
         }
     }
-}
-
-fn parse_default<T: std::str::FromStr>(setting: &settings::ScalarSetting) -> T {
-    setting.default.parse().unwrap_or_else(|_| panic!("{}'s default doesn't parse", setting.key))
 }
 
 impl AbuseConfig {
@@ -88,7 +84,7 @@ impl AbuseConfig {
             signed_in_per_min: settings::get(db, &settings::ABUSE_SIGNED_IN_PER_MIN),
             per_store_key_per_min: settings::get(db, &settings::RATE_LIMIT_PER_STORE_KEY_PER_MIN),
             stream_cap: settings::get(db, &settings::ABUSE_STREAM_CAP),
-            challenge_bits: settings::get::<u32>(db, &settings::ABUSE_CHALLENGE_BITS).clamp(1, 32),
+            challenge_bits: settings::get(db, &settings::ABUSE_CHALLENGE_BITS).clamp(1, 32),
             under_attack: settings::get(db, &settings::ABUSE_UNDER_ATTACK),
         }
     }
