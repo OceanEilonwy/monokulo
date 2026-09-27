@@ -150,7 +150,6 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             "/api/v1/admin/tenant/orders/{order_id}/refund-address",
             post(admin::set_order_refund_address),
         )
-        .route("/api/v1/admin/tenant/events", get(admin::order_events))
         .route("/api/v1/admin/tenant/payments/lookup", post(admin::lookup_payment))
         .route(
             "/api/v1/admin/tenant/webhooks",
@@ -173,11 +172,114 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         )
         .layer(middleware::from_fn_with_state(state.clone(), admin_rate_limit_middleware));
 
+    // The long-lived order-event stream (one per store monokulo is watching)
+    // is kept out of the request limits below: a request timeout would cut
+    // streams off, and a shared concurrency limit would fill up with them.
+    // Streams get a cap of their own instead (task 7.10).
+    let limits = RequestLimits::default();
+    let events_router = Router::new()
+        .route("/api/v1/admin/tenant/events", get(admin::order_events))
+        .layer(middleware::from_fn_with_state(state.clone(), admin_rate_limit_middleware))
+        .layer(middleware::from_fn_with_state(limits.clone(), stream_limit_middleware));
+
     unauthenticated_router
         .merge(admin_router)
         .merge(instance_admin_router)
+        .layer(middleware::from_fn_with_state(limits, request_limit_middleware))
+        .merge(events_router)
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
         .with_state(state)
+}
+
+/// Longest an ordinary API request may take before it gets `503` (task 7.10).
+pub const REQUEST_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+/// Most ordinary API requests handled at once; more get `503` straight away
+/// rather than queueing without bound.
+pub const MAX_CONCURRENT_REQUESTS: usize = 256;
+/// Most order-event streams open at once.
+pub const MAX_OPEN_STREAMS: usize = 4096;
+
+/// Shared limits for one router (task 7.10). The engine degrades under
+/// pressure by refusing work with `503`, never by piling requests up.
+#[derive(Clone)]
+pub struct RequestLimits {
+    requests: Arc<tokio::sync::Semaphore>,
+    streams: Arc<tokio::sync::Semaphore>,
+    timeout: std::time::Duration,
+}
+
+impl Default for RequestLimits {
+    fn default() -> Self {
+        RequestLimits::new(MAX_CONCURRENT_REQUESTS, MAX_OPEN_STREAMS, REQUEST_TIMEOUT)
+    }
+}
+
+impl RequestLimits {
+    pub fn new(max_requests: usize, max_streams: usize, timeout: std::time::Duration) -> Self {
+        RequestLimits {
+            requests: Arc::new(tokio::sync::Semaphore::new(max_requests)),
+            streams: Arc::new(tokio::sync::Semaphore::new(max_streams)),
+            timeout,
+        }
+    }
+}
+
+fn service_unavailable(message: &str) -> axum::response::Response {
+    (StatusCode::SERVICE_UNAVAILABLE, Json(serde_json::json!({ "error": message }))).into_response()
+}
+
+async fn request_limit_middleware(
+    axum::extract::State(limits): axum::extract::State<RequestLimits>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    let Ok(_permit) = limits.requests.clone().try_acquire_owned() else {
+        return service_unavailable("the engine is busy, try again shortly");
+    };
+    match tokio::time::timeout(limits.timeout, next.run(request)).await {
+        Ok(response) => response,
+        Err(_) => service_unavailable("the request took too long"),
+    }
+}
+
+async fn stream_limit_middleware(
+    axum::extract::State(limits): axum::extract::State<RequestLimits>,
+    request: axum::extract::Request,
+    next: middleware::Next,
+) -> axum::response::Response {
+    let Ok(permit) = limits.streams.clone().try_acquire_owned() else {
+        return service_unavailable("too many open event streams, try again shortly");
+    };
+    let (parts, body) = next.run(request).await.into_parts();
+    // The permit lives as long as the stream's body, and is released when
+    // the client disconnects and the body is dropped.
+    axum::response::Response::from_parts(parts, axum::body::Body::new(PermitBody { inner: body, _permit: permit }))
+}
+
+/// A response body that holds a semaphore permit until it is dropped.
+struct PermitBody {
+    inner: axum::body::Body,
+    _permit: tokio::sync::OwnedSemaphorePermit,
+}
+
+impl http_body::Body for PermitBody {
+    type Data = axum::body::Bytes;
+    type Error = axum::Error;
+
+    fn poll_frame(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Result<http_body::Frame<Self::Data>, Self::Error>>> {
+        std::pin::Pin::new(&mut self.get_mut().inner).poll_frame(cx)
+    }
+
+    fn is_end_stream(&self) -> bool {
+        self.inner.is_end_stream()
+    }
+
+    fn size_hint(&self) -> http_body::SizeHint {
+        self.inner.size_hint()
+    }
 }
 
 pub use crate::now_unix;

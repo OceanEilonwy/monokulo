@@ -14,6 +14,7 @@ hmac = "0.13.0"
 # `src/http/tests.rs` (a plain, always-run lib test, hence unconditional here
 # rather than dev-only/feature-gated) and, later in this file, the `e2e`-gated
 # `e2e-harness` binary's real signup/login/connect setup calls.
+http-body = "1.1.0"
 http-body-util = "0.1.5"
 # WBS 2.1.3: `main.rs` needs `SocketKeyCustody` to wire the `[key_custody]
 # backend = "socket"]` config option to a real out-of-process `KeyCustody`. This

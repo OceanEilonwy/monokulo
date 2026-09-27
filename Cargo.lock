@@ -2930,6 +2930,7 @@ dependencies = [
  "handlebars",
  "hex",
  "hmac 0.13.0",
+ "http-body",
  "http-body-util",
  "key-custody-service",
  "monero",

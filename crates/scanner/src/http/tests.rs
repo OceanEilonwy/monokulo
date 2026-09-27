@@ -24,7 +24,7 @@ use crate::scanner_status::new_scanner_status_map;
 use crate::store::Store;
 
 use super::rate_limit::RateLimiter;
-use super::{AppState, build_router};
+use super::{AppState, build_router, request_limit_middleware, stream_limit_middleware, RequestLimits};
 
 fn valid_scalar_bytes(seed: u8) -> [u8; 32] {
     let mut b = [seed; 32];
@@ -1895,4 +1895,73 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
     assert_eq!(list("search=table&limit=2").await, tables[..2].to_vec());
     assert_eq!(list("search=table&limit=2&offset=2").await, tables[2..].to_vec());
     assert_eq!(list("search=nothing").await, Vec::<String>::new());
+}
+
+// -- Request and stream limits (admin_settings_v2.md task 7.10) ---------------
+
+fn limited_router(limits: RequestLimits, notify: Arc<tokio::sync::Notify>) -> axum::Router {
+    use axum::routing::get;
+    let slow = get(|| async {
+        tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+        "slow"
+    });
+    let wait = get(move || {
+        let notify = notify.clone();
+        async move {
+            notify.notified().await;
+            "released"
+        }
+    });
+    let stream = get(|| async {
+        let body = futures_util::stream::pending::<Result<axum::body::Bytes, std::convert::Infallible>>();
+        axum::body::Body::from_stream(body)
+    });
+    axum::Router::new()
+        .route("/slow", slow)
+        .route("/wait", wait)
+        .route("/fast", get(|| async { "fast" }))
+        .layer(axum::middleware::from_fn_with_state(limits.clone(), request_limit_middleware))
+        .merge(axum::Router::new().route("/stream", stream).layer(axum::middleware::from_fn_with_state(limits, stream_limit_middleware)))
+}
+
+async fn status_of(router: &axum::Router, path: &str) -> StatusCode {
+    router.clone().oneshot(Request::builder().uri(path).body(Body::empty()).unwrap()).await.unwrap().status()
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_request_that_takes_too_long_gets_503() {
+    let limits = RequestLimits::new(10, 10, std::time::Duration::from_millis(100));
+    let router = limited_router(limits, Arc::new(tokio::sync::Notify::new()));
+    assert_eq!(status_of(&router, "/slow").await, StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn requests_beyond_the_concurrency_limit_get_503_at_once_instead_of_queueing() {
+    let notify = Arc::new(tokio::sync::Notify::new());
+    let limits = RequestLimits::new(1, 10, std::time::Duration::from_secs(60));
+    let router = limited_router(limits, notify.clone());
+    let held = tokio::spawn({
+        let router = router.clone();
+        async move { status_of(&router, "/wait").await }
+    });
+    tokio::task::yield_now().await;
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    assert_eq!(status_of(&router, "/wait").await, StatusCode::SERVICE_UNAVAILABLE);
+    notify.notify_waiters();
+    assert_eq!(held.await.unwrap(), StatusCode::OK);
+}
+
+#[tokio::test(start_paused = true)]
+async fn event_streams_outlive_the_request_timeout_and_have_their_own_cap() {
+    let limits = RequestLimits::new(1, 1, std::time::Duration::from_millis(100));
+    let router = limited_router(limits, Arc::new(tokio::sync::Notify::new()));
+    let first = router.clone().oneshot(Request::builder().uri("/stream").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(first.status(), StatusCode::OK);
+    tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+    // Still open well past the request timeout, and not using up the request
+    // limit: an ordinary request still gets through.
+    assert_eq!(status_of(&router, "/fast").await, StatusCode::OK);
+    assert_eq!(status_of(&router, "/stream").await, StatusCode::SERVICE_UNAVAILABLE, "stream cap reached");
+    drop(first);
+    assert_eq!(status_of(&router, "/stream").await, StatusCode::OK, "a closed stream frees its place");
 }
