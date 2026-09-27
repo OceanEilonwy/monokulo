@@ -45,6 +45,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (12, include_str!("../migrations/0012_drop_order_rescans.sql")),
     (13, include_str!("../migrations/0013_drop_zero_conf_max_piconero.sql")),
     (14, include_str!("../migrations/0014_drop_tenant_allowed_origins.sql")),
+    (15, include_str!("../migrations/0015_tenant_scan_cursor.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -144,6 +145,9 @@ pub struct Tenant {
     pub order_expiry_seconds: i64,
     pub created_at: i64,
     pub disabled_at: Option<i64>,
+    /// Highest block on this tenant's network fully scanned for it
+    /// (migration 0015). `None` until the network is first seeded.
+    pub scanned_through_height: Option<u64>,
 }
 
 pub struct NewTenant {
@@ -403,8 +407,9 @@ impl Store {
         self.conn.execute(
             "INSERT INTO tenants (id, public_key, secret_token_hash, key_custody_backend,
                 sealed_key_material, primary_address, network, next_minor_index,
-                confirmations_required, order_expiry_seconds, created_at_utc)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10)",
+                confirmations_required, order_expiry_seconds, created_at_utc, scanned_through_height)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 1, ?8, ?9, ?10,
+                (SELECT MAX(height) FROM scanned_blocks WHERE network = ?7))",
             params![
                 id,
                 public_key,
@@ -436,6 +441,7 @@ impl Store {
             order_expiry_seconds: row.get("order_expiry_seconds")?,
             created_at: row.get("created_at_utc")?,
             disabled_at: row.get("disabled_at_utc")?,
+            scanned_through_height: row.get::<_, Option<i64>>("scanned_through_height")?.map(|h| h as u64),
         })
     }
 
@@ -1200,7 +1206,7 @@ impl Store {
         let total: u64 = views.iter().map(|v| v.amount_piconero).sum();
         let min_confirmations = views.iter().map(|v| v.confirmations).min().unwrap_or(0);
 
-        let new_status = derive_status(
+        let mut new_status = derive_status(
             &views,
             StatusInputs {
                 xmr_amount_piconero: order.xmr_amount_piconero,
@@ -1209,6 +1215,13 @@ impl Store {
                 expires_at: order.expires_at,
             },
         );
+        // While the tenant is behind the network, an order mustn't become
+        // expired: its payment may be in a block not yet scanned for it, and an
+        // `order.expired` webhook can make a shop cancel an order that turns
+        // out to be paid. It expires once the tenant has caught up.
+        if new_status == OrderStatus::Expired && order.status != OrderStatus::Expired && self.is_tenant_lagging(&tenant)? {
+            new_status = order.status;
+        }
 
         self.conn.execute(
             "UPDATE orders SET status = ?2, confirmations = ?3, amount_received_piconero = ?4, updated_at_utc = ?5
@@ -1329,6 +1342,109 @@ impl Store {
             params![network, min_height as i64],
         )?;
         Ok(())
+    }
+
+    // -- Per-tenant scan cursors (admin_settings_v2.md task 5.0) ---------
+    //
+    // A tenant's cursor is the highest block on its network fully scanned for
+    // it. The network's high-water mark (`max_scanned_height`) only moves when
+    // every caught-up tenant has been scanned for a block; a tenant that fails
+    // is left behind with its cursor where it was, and caught up later.
+
+    /// Gives every tenant on `network` whose cursor was never set the
+    /// network's height. Called when a network is first seeded.
+    pub fn anchor_unset_cursors(&self, network: &str, height: u64) -> Result<()> {
+        self.conn.execute(
+            "UPDATE tenants SET scanned_through_height = ?2 WHERE network = ?1 AND scanned_through_height IS NULL",
+            params![network, height as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Moves every tenant on `network` that was caught up to `height - 1` on to
+    /// `height`, except those in `left_behind` (tenants whose scan failed on
+    /// this block). Called in the same transaction as `set_scanned_block`, so
+    /// the network and its caught-up tenants always move together.
+    pub fn advance_caught_up_cursors(&self, network: &str, height: u64, left_behind: &[String]) -> Result<()> {
+        let left_behind = serde_json::to_string(left_behind).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "UPDATE tenants SET scanned_through_height = ?2
+             WHERE network = ?1 AND scanned_through_height = ?2 - 1
+               AND id NOT IN (SELECT value FROM json_each(?3))",
+            params![network, height as i64, left_behind],
+        )?;
+        Ok(())
+    }
+
+    /// Sets one tenant's cursor, for catch-up. Never moves it backwards: a
+    /// catch-up step that raced a reorg clamp mustn't undo the clamp's work
+    /// by writing an older value, and mustn't push a clamped cursor forward
+    /// past blocks the reorg made it rescan either, so the caller only calls
+    /// this for the block it just scanned, and the `= ?3` guard makes it a
+    /// no-op if the cursor moved in between.
+    pub fn advance_tenant_cursor(&self, tenant_id: &str, from: u64, to: u64) -> Result<bool> {
+        let changed = self.conn.execute(
+            "UPDATE tenants SET scanned_through_height = ?2 WHERE id = ?1 AND scanned_through_height = ?3",
+            params![tenant_id, to as i64, from as i64],
+        )?;
+        Ok(changed > 0)
+    }
+
+    /// After a reorg rewinds `network` to `height`, no tenant can be ahead of
+    /// it. `None` (the reorg reached genesis) un-anchors every cursor.
+    pub fn clamp_cursors(&self, network: &str, height: Option<u64>) -> Result<()> {
+        match height {
+            Some(h) => self.conn.execute(
+                "UPDATE tenants SET scanned_through_height = ?2 WHERE network = ?1 AND scanned_through_height > ?2",
+                params![network, h as i64],
+            )?,
+            None => self.conn.execute(
+                "UPDATE tenants SET scanned_through_height = NULL WHERE network = ?1",
+                params![network],
+            )?,
+        };
+        Ok(())
+    }
+
+    /// A lagging tenant with nothing that could be paid (no order in scope)
+    /// has nothing to catch up on: moves it straight to `height` so it isn't
+    /// reported as lagging for ever.
+    pub fn snap_idle_lagging_cursors(&self, network: &str, height: u64, active_tenant_ids: &[String]) -> Result<()> {
+        let active = serde_json::to_string(active_tenant_ids).map_err(|e| {
+            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
+        })?;
+        self.conn.execute(
+            "UPDATE tenants SET scanned_through_height = ?2
+             WHERE network = ?1 AND scanned_through_height < ?2
+               AND id NOT IN (SELECT value FROM json_each(?3))",
+            params![network, height as i64, active],
+        )?;
+        Ok(())
+    }
+
+    /// Tenants on `network` whose cursor is below the network's high-water
+    /// mark, with their cursors, lowest first.
+    pub fn lagging_tenants(&self, network: &str) -> Result<Vec<(String, u64)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, scanned_through_height FROM tenants
+             WHERE network = ?1 AND disabled_at_utc IS NULL
+               AND scanned_through_height < (SELECT MAX(height) FROM scanned_blocks WHERE network = ?1)
+             ORDER BY scanned_through_height, id",
+        )?;
+        let rows = stmt
+            .query_map(params![network], |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u64)))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Whether `tenant` hasn't been scanned up to its network's high-water
+    /// mark. While it is, its orders mustn't expire: a payment may be sitting
+    /// in a block it hasn't been checked against yet.
+    fn is_tenant_lagging(&self, tenant: &Tenant) -> Result<bool> {
+        let Some(cursor) = tenant.scanned_through_height else { return Ok(false) };
+        Ok(self.max_scanned_height(&tenant.network)?.is_some_and(|high_water| cursor < high_water))
     }
 
     // -- Scanned block range (`docs/order_rescan_wbs.md` Phase 5.1) -------
