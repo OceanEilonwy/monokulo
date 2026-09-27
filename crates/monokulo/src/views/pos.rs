@@ -28,8 +28,8 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
         // the POS uses exactly the controls every other page does; the POS
         // app moves them into its top bar.
         div id="pos-site-controls" hidden {
-            (status_indicator(chrome.health, "pos-status-link", false))
             (theme_toggle(chrome))
+            (status_indicator(chrome.health, "pos-status-link", false))
         }
         noscript { p class="error" { "POS requires JavaScript. Use Create an order on the store page instead." } }
         script type="module" src="/static/pos-app.js" {}

@@ -164,6 +164,11 @@ test('real POS header links back to the store and shows the site status indicato
   await expect(top).not.toContainText('POS');
   const status = top.locator('#status-indicator');
   await expect(status).toHaveAttribute('href', '/status');
+  // Rightmost in the bar, after the theme toggle, as on every page.
+  expect(await page.evaluate(() => {
+    const items = [...document.querySelectorAll('.pos-top a, .pos-top button, .pos-top .theme-toggle')].filter(el => el.getBoundingClientRect().width);
+    return items.sort((a, b) => a.getBoundingClientRect().right - b.getBoundingClientRect().right).pop().id;
+  })).toBe('status-indicator');
   await expect(status.locator('.status-dot')).toHaveClass(/status-dot-ok/);
   await status.click();
   await expect(page).toHaveURL(/\/status$/);

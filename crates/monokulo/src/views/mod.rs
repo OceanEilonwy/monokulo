@@ -236,10 +236,11 @@ fn nav(chrome: &PageChrome) -> Markup {
                         a href="/dashboard/login" { "log in" }
                         a href="/dashboard/signup" { "sign up" }
                     }
-                    (status_indicator(chrome.health, "nav-status-link", true))
                     @if chrome.logged_in {
                         (theme_toggle(chrome))
                     }
+                    // Rightmost on every page.
+                    (status_indicator(chrome.health, "nav-status-link", true))
                 }
             }
         }
@@ -311,7 +312,7 @@ mod tests {
     }
 
     #[test]
-    fn logged_in_admin_nav_order_is_dashboard_admin_invites_logout_status_theme() {
+    fn logged_in_admin_nav_order_is_dashboard_admin_invites_logout_theme_status() {
         let chrome = PageChrome { logged_in: true, is_admin: true, theme: Theme::Dark, current_path: "/dashboard".to_string(), health: None };
         let html = nav(&chrome).into_string();
 
@@ -325,8 +326,8 @@ mod tests {
         assert!(dashboard < admin, "dashboard must come before admin, got: {html}");
         assert!(admin < invites, "admin must come before invites, got: {html}");
         assert!(invites < logout, "invites must come before log out, got: {html}");
-        assert!(logout < status, "log out must come before status, got: {html}");
-        assert!(status < theme, "status must come before the theme toggle (rightmost), got: {html}");
+        assert!(logout < theme, "log out must come before the theme toggle, got: {html}");
+        assert!(theme < status, "the status indicator must be rightmost, after the theme toggle, got: {html}");
     }
 
     #[test]
