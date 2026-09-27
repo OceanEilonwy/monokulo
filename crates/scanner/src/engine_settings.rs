@@ -495,6 +495,25 @@ pub struct EngineSettings {
     pub custody: Live<CustodyConfig>,
 }
 
+/// One section as saved in `store` right now (environment overrides
+/// included), for the one-off CLI commands that hold a plain `Store`. A
+/// section whose saved values don't make sense falls back to its defaults,
+/// with a message, as at boot.
+pub fn read_section<S: Section>(store: &crate::store::Store) -> S {
+    let stored = store.list_settings().unwrap_or_else(|e| {
+        eprintln!("settings: couldn't read saved settings ({e}), so {} uses its defaults", S::NAME);
+        HashMap::new()
+    });
+    match S::from_snapshot(&Snapshot::new(stored, live_settings::Env::process())) {
+        Ok(section) => section,
+        Err(errors) => {
+            let reasons: Vec<String> = errors.iter().map(ToString::to_string).collect();
+            eprintln!("settings: {} is using its defaults, because {}", S::NAME, reasons.join("; "));
+            defaults_of()
+        }
+    }
+}
+
 fn defaults_of<S: Section>() -> S {
     // Every default is valid (checked by `Registry::build` in the tests), so
     // a section built from defaults alone can't fail; fall back per field

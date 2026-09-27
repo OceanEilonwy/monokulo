@@ -85,8 +85,7 @@ pub async fn bootstrap_wallet(
     }
     let sealed = key_custody.seal_in(key_custody_backend, &material).await.map_err(LocalAdminError::KeyMaterial)?;
 
-    let confirmations_required: u64 = crate::settings::get(store, &crate::settings::PAYMENT_CONFIRMATIONS_REQUIRED);
-    let order_expiry_minutes: i64 = crate::settings::get(store, &crate::settings::PAYMENT_ORDER_EXPIRY_MINUTES);
+    let defaults: crate::engine_settings::TenantDefaults = crate::engine_settings::read_section(store);
 
     let created = store.create_tenant(
         NewTenant {
@@ -94,8 +93,8 @@ pub async fn bootstrap_wallet(
             sealed_key_material: sealed,
             primary_address: args.primary_address,
             network: args.network,
-            confirmations_required: Some(confirmations_required),
-            order_expiry_seconds: Some(order_expiry_minutes * 60),
+            confirmations_required: Some(defaults.confirmations_required),
+            order_expiry_seconds: Some(defaults.order_expiry_seconds),
         },
         crate::now_unix(),
     )?;

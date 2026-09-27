@@ -1611,9 +1611,8 @@ impl Store {
     }
 
     /// One runtime-configurable setting's stored value (§`migrations/0010_settings.sql`),
-    /// or `None` if nothing has ever been saved for `key` - the caller (`shared::
-    /// settings::resolve_parsed`) treats that the same as "fall through to the code
-    /// default", after first checking whether an environment variable overrides it.
+    /// or `None` if nothing has ever been saved for `key`. Settings themselves are
+    /// resolved by `engine_settings` (environment, then this, then the default).
     pub fn get_setting(&self, key: &str) -> Result<Option<String>> {
         self.conn.query_row("SELECT value FROM settings WHERE key = ?1", params![key], |row| row.get(0)).optional().map_err(Into::into)
     }

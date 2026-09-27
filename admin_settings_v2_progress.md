@@ -214,6 +214,16 @@ reported at the end.)
   the settings' one, on purpose, so tests keep their generous limit
   (test-only; no behaviour in the product depends on it).
 
+- 1.5: every engine setting is now read through `EngineSettings`. The
+  scan tick gets the chunk memory budget from the live scan settings
+  (passed in, so a saved change applies to the next tick); bootstrap reads
+  the tenant defaults through a new `engine_settings::read_section`, the
+  same validation and fallback as boot. The old scalar machinery in
+  `scanner::settings` (and `shared::settings`'s env/db/default resolver)
+  is deleted; what's left there is the saved node's shape, the private
+  bind check and the environment access with its test overrides. The test
+  count went down by 12 with it: those tests covered the deleted code.
+
 ## Baseline
 
 `cargo test --workspace` on `main` (43d7c53 + dc2d976): 913 passed,
@@ -231,10 +241,11 @@ After part 5 engine side: 1031 passed, 0 failed, 21 ignored.
 After part 5 complete: 1036 passed, 0 failed, 21 ignored.
 After part 5 review fixes and review items 2-3: 1044 passed, 0 failed.
 After review item 4 and the minor items: 1050 passed, 0 failed.
+After 1.5 (old settings code deleted with its 12 tests): 1038 passed, 0 failed.
 
 ## Current step
 
-1.5: remove what's left of the old `scanner/src/settings.rs` read path
-(scan chunk memory budget, local_admin's thresholds) so every engine
-setting is read through `EngineSettings`. Then part 6 (dev-run.sh,
-docs, real-binary harness, e2e and Playwright tests).
+Part 6: dev-run.sh (key_custody.enabled_backends, comments), docs
+(DESIGN.md 8.1, README, KeyCustody module docs), 6.0 real-binary harness,
+6.3/6.4 end-to-end tests, Playwright admin page tests on the
+coverage_fixture, real-process kill -9 test.

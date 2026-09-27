@@ -868,7 +868,8 @@ pub async fn run_scan_tick(
     expired_order_grace_period_seconds: i64,
 ) -> Result<()> {
     let memory = MempoolMemory::default();
-    run_scan_tick_with(&memory, store, key_custody, daemon, network, tenants, reorg_check_depth, expired_order_grace_period_seconds)
+    let budget = crate::engine_settings::EngineSettings::defaults().scan.load().scan_chunk_memory_budget_mb;
+    run_scan_tick_with(&memory, store, key_custody, daemon, network, tenants, reorg_check_depth, expired_order_grace_period_seconds, budget)
         .await
 }
 
@@ -907,6 +908,7 @@ pub async fn run_scan_tick_with(
     tenants: &[(String, WalletHandle)],
     reorg_check_depth: u64,
     expired_order_grace_period_seconds: i64,
+    scan_chunk_memory_budget_mb: u32,
 ) -> Result<()> {
     let now = crate::now_unix();
 
@@ -1124,9 +1126,8 @@ pub async fn run_scan_tick_with(
         active_ids.iter().filter(|tenant_id| !in_ranges.contains(tenant_id)).cloned().collect();
     if let Some((scan_from, scan_to)) = scan_range {
         // Fetches transactions in `get_blocks_range` chunks sized against
-        // `payment.scan_chunk_memory_budget_mb` (read fresh from the store each
-        // tick - a live, no-restart-needed knob, same as every other setting a
-        // handler reads via `settings::get` at the point it's used) rather than
+        // `payment.scan_chunk_memory_budget_mb` (passed in each tick from the
+        // live scan settings, so a saved change applies to the next) rather than
         // one `get_block_transactions` call per height - the catch-up walk after
         // real downtime can span thousands of blocks, and each one used to cost
         // its own daemon round trip. `avg_bytes_per_block` is a per-tick-local
@@ -1136,8 +1137,6 @@ pub async fn run_scan_tick_with(
         // batching `get_block_hash` below - see `docs/txid_lookup_and_scan_
         // chunking_wbs.md`'s "scope limit" for why real block-hash computation
         // stays out of this change entirely.
-        let scan_chunk_memory_budget_mb: u32 =
-            crate::settings::get(&store.lock(), &crate::settings::PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB);
         let budget_bytes = (scan_chunk_memory_budget_mb as u64).saturating_mul(1024 * 1024);
         let mut avg_bytes_per_block = SCAN_CHUNK_INITIAL_AVG_BYTES;
 
@@ -6933,17 +6932,17 @@ mod tests {
         let memory = MempoolMemory::default();
         let tenants = [(a.clone(), a_handle)];
 
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
         assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1);
         let after_first = custody.scan_calls.load(Ordering::SeqCst);
         assert_eq!(after_first, 3);
 
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
         assert_eq!(custody.scan_calls.load(Ordering::SeqCst), after_first, "nothing new, nothing scanned");
 
         // One new transaction: scanned once.
         daemon.set_mempool(vec![fixture_tx(), unrelated_tx(1), unrelated_tx(2), unrelated_tx(3)]);
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
         assert_eq!(custody.scan_calls.load(Ordering::SeqCst), after_first + 1);
     }
 
@@ -6961,11 +6960,11 @@ mod tests {
         let tenants = [(a.clone(), a_handle)];
 
         custody.fail(a_handle);
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
         assert!(store.lock().get_all_payments(&a_order).unwrap().is_empty());
 
         custody.recover(a_handle);
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
         assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1, "not remembered as scanned after failing");
     }
 
@@ -6981,7 +6980,7 @@ mod tests {
         daemon.set_mempool(vec![unrelated_tx(1)]);
         let memory = MempoolMemory::default();
         let tenants = [(a.clone(), a_handle)];
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
         let before = custody.scan_calls.load(Ordering::SeqCst);
 
         // A new order: the window changes, so the pool is checked for it.
@@ -7001,7 +7000,7 @@ mod tests {
             })
             .unwrap();
         }
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
         assert_eq!(custody.scan_calls.load(Ordering::SeqCst), before + 1);
     }
 
@@ -7219,16 +7218,16 @@ mod tests {
         let memory = MempoolMemory::default();
 
         let started = std::time::Instant::now();
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
         let cold = started.elapsed();
 
         let started = std::time::Instant::now();
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
         let warm = started.elapsed();
 
         daemon.push_block("h3", vec![fixture_tx(), unrelated_tx(250)]);
         let started = std::time::Instant::now();
-        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
         let block = started.elapsed();
 
         let paid = orders.iter().filter(|o| store.lock().get_all_payments(o).unwrap().len() == 1).count();

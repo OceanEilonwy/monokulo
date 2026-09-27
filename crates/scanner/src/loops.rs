@@ -221,6 +221,7 @@ pub async fn run_scanner_loop(
                 &tenants,
                 scan.reorg_check_depth,
                 scan.expired_order_grace_period_seconds,
+                scan.scan_chunk_memory_budget_mb,
             ),
         )
         .await
