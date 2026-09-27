@@ -246,6 +246,23 @@ impl TestEngineHandle {
     }
 }
 
+impl TestEngineHandle {
+    /// Expires `order_id` the way a scan tick after its deadline would: the
+    /// same status recompute, run as if the clock were past `expires_at`, so
+    /// the order reads `expired` and an `order.expired` webhook is queued.
+    /// For tests of a customer who never pays.
+    pub fn mark_order_expired(&self, order_id: &str) -> Result<(), scanner::store::StoreError> {
+        let store = self.store.lock().unwrap();
+        let tenant_id = store.get_order_tenant_id(order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
+        let order = store.get_order(&tenant_id, order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
+        scanner::scanner::recompute_and_notify(&store, order_id, 1000, order.expires_at + 1)
+            .map_err(|e| match e {
+                scanner::scanner::ScannerError::Store(e) => e,
+                other => panic!("recomputing a test order's status failed: {other}"),
+            })
+    }
+}
+
 impl Drop for TestEngineHandle {
     /// Aborts the background `axum::serve` task (and, if spawned, the scanner/
     /// webhook-delivery loops) so the port and tasks don't outlive the test. A hard

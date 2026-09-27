@@ -29,6 +29,13 @@ async fn mark_paid(State(control): State<Controls>, Path(id): Path<String>) -> S
     }
 }
 
+async fn mark_expired(State(control): State<Controls>, Path(id): Path<String>) -> StatusCode {
+    match control.engine.mark_order_expired(&id) {
+        Ok(()) => StatusCode::NO_CONTENT,
+        Err(_) => StatusCode::NOT_FOUND,
+    }
+}
+
 async fn create_order(State(control): State<Controls>) -> Result<Json<serde_json::Value>, StatusCode> {
     let order = control.client.create_order(&control.token, 1_000_000_000, None, None)
         .await.map_err(|_| StatusCode::BAD_GATEWAY)?;
@@ -105,6 +112,7 @@ async fn main() {
         .route("/__coverage/embed/restricted", post(restrict_embed))
         .route("/__coverage/orders", post(create_order))
         .route("/__coverage/orders/{id}/paid", post(mark_paid))
+        .route("/__coverage/orders/{id}/expired", post(mark_expired))
         .route("/__coverage/orders/{id}/browser-created", post(mark_browser_created))
         .with_state(Controls { engine, client: state.engine_client.clone(), token: tenant.secret_token.clone(),
             public_key: tenant.public_key.clone(), order_id: order.order_id.clone(), db: state.db.clone() });
