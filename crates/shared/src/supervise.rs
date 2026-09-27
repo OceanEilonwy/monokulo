@@ -42,3 +42,38 @@ where
         }
     });
 }
+
+#[cfg(test)]
+mod tests {
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::Arc;
+
+    use super::*;
+
+    /// A background loop (the scanner's, webhook delivery's, the rate
+    /// refresh) that panics is started again after the backoff, and one that
+    /// returns is too: nothing stays silently stopped.
+    #[tokio::test(start_paused = true)]
+    async fn a_loop_that_panics_or_returns_is_started_again() {
+        let starts = Arc::new(AtomicUsize::new(0));
+        let counter = starts.clone();
+        supervise("test", move || {
+            let run = counter.fetch_add(1, Ordering::SeqCst);
+            async move {
+                match run {
+                    0 => panic!("first run fails"),
+                    1 => {}
+                    _ => std::future::pending::<()>().await,
+                }
+            }
+        });
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(starts.load(Ordering::SeqCst), 1);
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(starts.load(Ordering::SeqCst), 2, "restarted after the panic");
+        tokio::time::sleep(Duration::from_secs(5)).await;
+        assert_eq!(starts.load(Ordering::SeqCst), 3, "restarted after returning");
+        tokio::time::sleep(Duration::from_secs(60)).await;
+        assert_eq!(starts.load(Ordering::SeqCst), 3, "a loop that keeps running is left alone");
+    }
+}

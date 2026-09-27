@@ -51,6 +51,8 @@ uuid = { version = "1.26.0", features = ["v4"] }
 zeroize = { version = "1.9.0", features = ["derive"] }
 
 [dev-dependencies]
+# Paused time, so supervise's restart backoff is tested without waiting it out.
+tokio = { version = "1.53.1", features = ["full", "test-util"] }
 # `exchange_rate`'s own `coingecko` test module spins up a real local HTTP
 # server standing in for Coingecko (`spawn_price_server`) - needs a real
 # router, test-only (the runtime itself is now a real dependency above).
