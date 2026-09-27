@@ -407,3 +407,40 @@ test('real checkout reads a wallet payment-URI QR and explains images it cannot 
   await expect(scanError).toBeHidden();
   await expect(page.locator('#refund-field')).toHaveClass(/is-saved/);
 });
+
+async function customerSends(request, orderId, fraction, confirmations) {
+  const depth = confirmations === undefined ? '' : `&confirmations=${confirmations}`;
+  const sent = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/payment?fraction=${fraction}${depth}`);
+  expect(sent.status()).toBe(204);
+}
+
+test('real checkout follows the customer payment from the mempool to confirmed and lists it', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  const orderId = url.split('/').pop();
+  await page.goto(url);
+  await expect(page.locator('#status-badge')).toHaveText('Waiting for payment');
+  await customerSends(request, orderId, 1);
+  await expect(page.locator('#status-badge')).toHaveText('Payment seen, unconfirmed');
+  // The payment is listed by a shortened txid, not yet confirmed.
+  await expect(page.locator('.payments-table')).toContainText(`test-pay…`);
+  await expect(page.locator('.progress-fill')).toHaveAttribute('style', /width: 0%/);
+  await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/confirm`);
+  await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
+  await expect(page.locator('.progress-fill')).toHaveAttribute('style', /width: 100%/);
+  await captureCoverageStage(page, 'checkout-paid-live', test.info());
+});
+
+test('real checkout guides a customer who underpays and then sends too much', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  const orderId = url.split('/').pop();
+  await page.goto(url);
+  await customerSends(request, orderId, 0.25, 20);
+  await expect(page.locator('#status-badge')).toHaveText('Partial payment received');
+  await expect(page.locator('#payment-state')).toContainText('0.000250000000 XMR received of 0.001000000000 XMR. Send the remaining 0.000750000000 XMR to the address below.');
+  // They send the full amount again instead of the rest.
+  await customerSends(request, orderId, 1, 20);
+  await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'overpaid');
+  await expect(page.locator('#status-badge')).toHaveText('Overpaid');
+  await expect(page.locator('#payment-state')).toContainText('(0.000250000000 XMR extra). Do not send more. Contact the merchant about the extra amount.');
+  await expect(page.locator('.payments-table tbody tr')).toHaveCount(2);
+});
