@@ -13,7 +13,7 @@ use monero::cryptonote::hash::Hashable;
 use monero::Transaction;
 
 use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
-use crate::key_custody::{KeyCustody, KeyCustodyError, WalletHandle};
+use crate::key_custody::{KeyCustody, KeyCustodyError, ScanIndices, WalletHandle};
 use crate::store::{Store, StoreError};
 
 #[derive(Debug, thiserror::Error)]
@@ -95,6 +95,22 @@ pub async fn scan_transaction(
     })
 }
 
+/// `scan_transaction` for a store's scan window (task 7.3): only the indices
+/// of its open and recently closed orders.
+pub async fn scan_transaction_in_window(
+    key_custody: &dyn KeyCustody,
+    handle: WalletHandle,
+    tx: &Transaction,
+    window: &ScanIndices,
+) -> Result<ScanResult> {
+    let matches = key_custody.scan_tx_outputs_for_indices(handle, tx, window).await?;
+    Ok(ScanResult {
+        matches,
+        txid: tx_id_hex(tx),
+        key_images_json: serde_json::to_string(&key_images_of(tx)).map_err(|e| ScannerError::Internal(e.to_string()))?,
+    })
+}
+
 /// Longest one tenant's scan of one transaction may take before it counts as
 /// a failure for that tenant (task 7.4). A key-custody backend that answers,
 /// but slowly, is then treated like one that is down: that tenant is left
@@ -110,13 +126,13 @@ const SCAN_CONCURRENCY: usize = 32;
 async fn scan_for_tenants(
     key_custody: &dyn KeyCustody,
     tx: &Transaction,
-    tenants: &[&(String, WalletHandle, Range<u32>)],
+    tenants: &[&(String, WalletHandle, ScanIndices)],
 ) -> Vec<(String, Result<ScanResult>)> {
     use futures_util::stream::{self, StreamExt};
-    let owned: Vec<(String, WalletHandle, Range<u32>)> = tenants.iter().map(|t| (*t).clone()).collect();
+    let owned: Vec<(String, WalletHandle, ScanIndices)> = tenants.iter().map(|t| (*t).clone()).collect();
     stream::iter(owned)
-        .map(|(tenant_id, handle, range)| async move {
-            let result = match tokio::time::timeout(SCAN_CALL_DEADLINE, scan_transaction(key_custody, handle, tx, range)).await {
+        .map(|(tenant_id, handle, window)| async move {
+            let result = match tokio::time::timeout(SCAN_CALL_DEADLINE, scan_transaction_in_window(key_custody, handle, tx, &window)).await {
                 Ok(result) => result,
                 Err(_) => Err(ScannerError::KeyCustody(KeyCustodyError::BackendUnavailable(format!(
                     "scan took longer than {SCAN_CALL_DEADLINE:?}"
@@ -880,7 +896,7 @@ pub async fn run_scan_tick(
     // a reorg's rewind and its cursor clamp, or a tenant created before the
     // network was seeded): no cursor may be ahead of the network, and an
     // unset one is anchored to it.
-    let (ranges, cursors, active_ids): (Vec<(String, WalletHandle, Range<u32>)>, HashMap<String, Option<u64>>, Vec<String>) = {
+    let (ranges, cursors, active_ids): (Vec<(String, WalletHandle, ScanIndices)>, HashMap<String, Option<u64>>, Vec<String>) = {
         let s = store.lock();
         if let Some(high_water) = s.max_scanned_height(network)? {
             s.clamp_cursors(network, Some(high_water))?;
@@ -898,7 +914,9 @@ pub async fn run_scan_tick(
                     return None;
                 }
                 cursors.insert(tenant_id.clone(), t.scanned_through_height);
-                Some((tenant_id.clone(), *handle, 0..t.next_minor_index))
+                // Only the store's open and recently closed orders (D10).
+                let window = s.scan_window(tenant_id, now, expired_order_grace_period_seconds).ok()?;
+                Some((tenant_id.clone(), *handle, ScanIndices::new(window)))
             })
             .collect();
         (ranges, cursors, active_ids)
@@ -923,7 +941,7 @@ pub async fn run_scan_tick(
     let mut mempool_txids: Option<HashSet<String>> = None;
     if let Some(mempool_txs) = mempool {
         mempool_txids = Some(mempool_txs.iter().map(tx_id_hex).collect());
-        let all: Vec<&(String, WalletHandle, Range<u32>)> = ranges.iter().collect();
+        let all: Vec<&(String, WalletHandle, ScanIndices)> = ranges.iter().collect();
         for tx in &mempool_txs {
             // Compute (async, no Store - see ScanResult's doc comment) then
             // persist (sync, no .await) as two separate steps, never a single
@@ -1034,7 +1052,7 @@ pub async fn run_scan_tick(
         // everyone; catch-up below brings it back. Failures that affect every
         // tenant (fetching blocks, reading a hash, a store write) still stop
         // the pass, as before.
-        let live: Vec<&(String, WalletHandle, Range<u32>)> = ranges
+        let live: Vec<&(String, WalletHandle, ScanIndices)> = ranges
             .iter()
             .filter(|(tenant_id, _, _)| cursors.get(tenant_id).copied().flatten().is_none_or(|c| c + 1 >= scan_from))
             .collect();
@@ -1082,7 +1100,7 @@ pub async fn run_scan_tick(
             for (offset, block_txs) in chunk.iter().enumerate() {
                 let height = height + offset as u64;
                 for tx in block_txs {
-                    let still_live: Vec<&(String, WalletHandle, Range<u32>)> =
+                    let still_live: Vec<&(String, WalletHandle, ScanIndices)> =
                         live.iter().copied().filter(|(tenant_id, _, _)| !left_behind.contains(tenant_id)).collect();
                     for (tenant_id, result) in scan_for_tenants(key_custody, tx, &still_live).await {
                         let tenant_id = &tenant_id;
@@ -1409,7 +1427,7 @@ async fn catch_up_lagging_tenants(
 
     let handles: HashMap<&String, &WalletHandle> = tenants.iter().map(|(id, handle)| (id, handle)).collect();
     let mut cursor_times: HashMap<u64, i64> = HashMap::new();
-    let mut groups: std::collections::BTreeMap<u64, Vec<(String, WalletHandle, Range<u32>)>> = Default::default();
+    let mut groups: std::collections::BTreeMap<u64, Vec<(String, WalletHandle, ScanIndices)>> = Default::default();
     for (tenant_id, cursor) in &lagging {
         // A tenant with no order that could be paid at any time at all needs
         // no block time to decide: it has nothing to find.
@@ -1432,21 +1450,18 @@ async fn catch_up_lagging_tenants(
                 }
             },
         };
-        let (in_scope, next_minor_index) = {
-            let s = store.lock();
-            let in_scope = s.tenant_has_orders_in_scope_since(tenant_id, cursor_time.min(now), expired_order_grace_period_seconds)?;
-            let next_minor_index = s.get_tenant_by_id(tenant_id)?.map(|t| t.next_minor_index);
-            (in_scope, next_minor_index)
-        };
-        if !in_scope {
+        // The window as it was since the gap began: orders that closed
+        // during the gap are still looked for (D10).
+        let window = store.lock().scan_window(tenant_id, cursor_time.min(now), expired_order_grace_period_seconds)?;
+        if window.is_empty() {
             store.lock().snap_cursor(tenant_id, high_water)?;
             continue;
         }
         if left_behind.contains(tenant_id) {
             continue;
         }
-        if let (Some(handle), Some(next_minor_index)) = (handles.get(tenant_id), next_minor_index) {
-            groups.entry(*cursor).or_default().push((tenant_id.clone(), **handle, 0..next_minor_index));
+        if let Some(handle) = handles.get(tenant_id) {
+            groups.entry(*cursor).or_default().push((tenant_id.clone(), **handle, ScanIndices::new(window)));
         }
     }
     if groups.is_empty() {
@@ -1489,7 +1504,7 @@ async fn catch_up_lagging_tenants(
                 }
                 let mut failed: HashSet<String> = HashSet::new();
                 for tx in block_txs {
-                    let refs: Vec<&(String, WalletHandle, Range<u32>)> =
+                    let refs: Vec<&(String, WalletHandle, ScanIndices)> =
                         group.iter().filter(|(tenant_id, _, _)| !failed.contains(tenant_id)).collect();
                     for (tenant_id, result) in scan_for_tenants(key_custody, tx, &refs).await {
                         match result {
@@ -2188,6 +2203,9 @@ mod tests {
             settled.status
         );
         assert_eq!(settled.last_scanned_height, Some(160));
+        // A paid order stays in scope for the grace period after it closes
+        // (D10); move its close time back so that period is over.
+        store.lock().execute_raw_for_test(&format!("UPDATE orders SET closed_at_utc = 1 WHERE id = '{order_id}'")).unwrap();
 
         for h in 161..=200 {
             daemon.push_block(&format!("blk_{h}"), vec![]);
@@ -6633,5 +6651,106 @@ mod tests {
                 }
             }
         }
+    }
+
+    // -- Scan window (task 7.3, decision D10) ----------------------------------
+
+    #[tokio::test]
+    async fn a_payment_to_a_recently_closed_order_is_seen_but_one_closed_before_the_grace_period_is_left_to_lookup() {
+        for (closed_ago, grace, expect_scanned) in [(100, 3600, true), (7200, 3600, false)] {
+            let store = Store::open_in_memory().unwrap();
+            let custody = PlainKeyCustody::default();
+            let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+            // Paid (by some earlier payment) and closed `closed_ago` seconds ago.
+            store
+                .execute_raw_for_test(&format!(
+                    "UPDATE orders SET status = 'paid', closed_at_utc = {} WHERE id = '{a_order}'",
+                    crate::now_unix() - closed_ago
+                ))
+                .unwrap();
+            // Another open order keeps the store active either way.
+            let index = store.allocate_minor_index(&a).unwrap();
+            store
+                .create_order(NewOrder {
+                    confirmations_required_override: None,
+                    tenant_id: a.clone(),
+                    merchant_order_id: None,
+                    minor_index: index,
+                    address: "other".into(),
+                    xmr_amount_piconero: 1,
+                    description: None,
+                    created_at: 1000,
+                    expires_at: crate::now_unix() + 3600,
+                })
+                .unwrap();
+            let store = store.into_shared();
+            let daemon = FakeDaemonClient::new();
+            daemon.push_block("h1", vec![]);
+            daemon.push_block("h2", vec![]);
+            run_scan_tick(&store, &custody, &daemon, "mainnet", &[(a.clone(), a_handle)], 20, grace).await.unwrap();
+            daemon.push_block("h3", vec![fixture_tx()]);
+            run_scan_tick(&store, &custody, &daemon, "mainnet", &[(a.clone(), a_handle)], 20, grace).await.unwrap();
+
+            let payments = store.lock().get_all_payments(&a_order).unwrap();
+            assert_eq!(payments.len() == 1, expect_scanned, "closed {closed_ago}s ago, grace {grace}s");
+            if !expect_scanned {
+                // The merchant's payment lookup scans every index the store has
+                // ever issued, and records it.
+                let next = store.lock().get_tenant_by_id(&a).unwrap().unwrap().next_minor_index;
+                let scan = scan_transaction(&custody, a_handle, &fixture_tx(), 0..next).await.unwrap();
+                record_scan_match(&store.lock(), &a, &scan, crate::now_unix(), Some(3)).unwrap();
+                assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1);
+            }
+        }
+    }
+
+    #[tokio::test]
+    async fn catch_up_after_a_gap_longer_than_the_grace_period_still_finds_a_payment_to_an_order_that_closed_since() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = FlakyKeyCustody::default();
+        let now = crate::now_unix();
+        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, now + 3600).await;
+        let store = store.into_shared();
+        let tenants = [(a.clone(), a_handle)];
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![]);
+        daemon.set_block_timestamp(2, (now - 1000) as u64);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60).await.unwrap();
+
+        custody.fail(a_handle);
+        daemon.push_block("h3", vec![fixture_tx()]);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60).await.unwrap();
+        assert_eq!(cursor_of(&store, &a), Some(2));
+        // While it was behind, the order closed (say it was cancelled and
+        // expired) 500s ago, well past a 60s grace period by now.
+        store
+            .lock()
+            .execute_raw_for_test(&format!("UPDATE orders SET status = 'expired', closed_at_utc = {} WHERE id = '{a_order}'", now - 500))
+            .unwrap();
+
+        custody.recover(a_handle);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60).await.unwrap();
+        assert_eq!(cursor_of(&store, &a), Some(3));
+        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1, "it was open when the gap began");
+    }
+
+    #[tokio::test]
+    async fn a_store_with_over_a_million_orders_but_few_open_is_scanned_normally() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = PlainKeyCustody::default();
+        let (a, a_handle, a_order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        // Its index counter is far past the old 1M-entry table limit.
+        store.execute_raw_for_test(&format!("UPDATE tenants SET next_minor_index = 1200000 WHERE id = '{a}'")).unwrap();
+        let store = store.into_shared();
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![]);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &[(a.clone(), a_handle)], 20, 0).await.unwrap();
+        daemon.push_block("h3", vec![fixture_tx()]);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &[(a.clone(), a_handle)], 20, 0).await.unwrap();
+        assert_eq!(cursor_of(&store, &a), Some(3), "not left behind by a scan failure");
+        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1);
+        assert_eq!(store.lock().scan_window(&a, crate::now_unix(), 0).unwrap(), vec![1], "the window is the open orders");
     }
 }

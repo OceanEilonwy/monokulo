@@ -75,6 +75,10 @@ pub fn lookup_payment_card(
         div class="card" {
             h2 { "Look up a transaction" }
             p { "Have a customer's transaction ID? Look it up directly - no need to know which order it belongs to." }
+            p class="hint" {
+                "Payments are watched for while an order is open and for a while after it's paid or expires. "
+                "A payment sent later than that isn't picked up by itself: look it up here to record it."
+            }
             form method="post" action=(action) {
                 input
                     type="text"

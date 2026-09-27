@@ -34,6 +34,6 @@ mod plain;
 pub use plain::PlainKeyCustody;
 
 pub use shared::key_custody::{
-    KeyCustody, KeyCustodyError, MatchedOutput, Network, SubaddressIndex, WalletHandle,
+    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex, WalletHandle,
     WalletMaterial,
 };

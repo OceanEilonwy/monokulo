@@ -46,6 +46,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (13, include_str!("../migrations/0013_drop_zero_conf_max_piconero.sql")),
     (14, include_str!("../migrations/0014_drop_tenant_allowed_origins.sql")),
     (15, include_str!("../migrations/0015_tenant_scan_cursor.sql")),
+    (16, include_str!("../migrations/0016_order_closed_at.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -248,6 +249,17 @@ pub struct Webhook {
 fn status_to_str(s: OrderStatus) -> &'static str {
     s.as_str()
 }
+
+/// Paid, overpaid and expired orders are closed: nothing more is expected.
+fn is_terminal(s: OrderStatus) -> bool {
+    matches!(s, OrderStatus::Paid | OrderStatus::Overpaid | OrderStatus::Expired)
+}
+
+/// The scan window (task 7.3, decision D10) as an SQL condition on an
+/// `orders` row aliased `o`: open (not terminal), or closed no earlier than
+/// `?since` minus the grace period. Parameters: `:since_minus_grace`.
+const IN_SCAN_WINDOW: &str = "(o.status IN ('pending', 'unconfirmed', 'confirming', 'partial')
+     OR (o.closed_at_utc IS NOT NULL AND o.closed_at_utc >= :since_minus_grace))";
 
 /// An unknown value can only come from a hand-edited or corrupted row (the
 /// schema's CHECK constraint rejects it otherwise). It is reported as a row
@@ -628,24 +640,33 @@ impl Store {
     /// the manual rescan (`scanner::rescan_order`) which exists for after
     /// this window has already elapsed.
     pub fn active_tenant_ids(&self, network: &str, now: i64, grace_period_seconds: i64) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
+        let mut stmt = self.conn.prepare(&format!(
             "SELECT DISTINCT o.tenant_id FROM orders o
              JOIN tenants t ON t.id = o.tenant_id
-             WHERE (o.status IN (?1, ?2, ?3, ?4) OR (o.status = ?5 AND o.expires_at_utc >= ?6)) AND t.network = ?7
-               AND t.disabled_at_utc IS NULL",
-        )?;
+             WHERE {IN_SCAN_WINDOW} AND t.network = :network AND t.disabled_at_utc IS NULL"
+        ))?;
         let rows = stmt
             .query_map(
-                params![
-                    status_to_str(OrderStatus::Pending),
-                    status_to_str(OrderStatus::Unconfirmed),
-                    status_to_str(OrderStatus::Confirming),
-                    status_to_str(OrderStatus::Partial),
-                    status_to_str(OrderStatus::Expired),
-                    now - grace_period_seconds,
-                    network,
-                ],
+                rusqlite::named_params! { ":since_minus_grace": now - grace_period_seconds, ":network": network },
                 |row| row.get::<_, String>(0),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// The minor indices of `tenant_id`'s orders in its scan window as of
+    /// `since` (task 7.3, decision D10): open, or closed no earlier than
+    /// `since` minus the grace period. The live scan passes now; catch-up
+    /// passes the time of the tenant's cursor block, so orders that closed
+    /// during its gap are still looked for.
+    pub fn scan_window(&self, tenant_id: &str, since: i64, grace_period_seconds: i64) -> Result<Vec<u32>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT o.minor_index FROM orders o WHERE o.tenant_id = :tenant AND {IN_SCAN_WINDOW} ORDER BY o.minor_index"
+        ))?;
+        let rows = stmt
+            .query_map(
+                rusqlite::named_params! { ":tenant": tenant_id, ":since_minus_grace": since - grace_period_seconds },
+                |row| Ok(row.get::<_, i64>(0)? as u32),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -659,18 +680,8 @@ impl Store {
     pub fn tenant_has_orders_in_scope_since(&self, tenant_id: &str, since: i64, grace_period_seconds: i64) -> Result<bool> {
         self.conn
             .query_row(
-                "SELECT EXISTS (SELECT 1 FROM orders
-                 WHERE tenant_id = ?1
-                   AND (status IN (?2, ?3, ?4, ?5) OR (status = ?6 AND expires_at_utc >= ?7)))",
-                params![
-                    tenant_id,
-                    status_to_str(OrderStatus::Pending),
-                    status_to_str(OrderStatus::Unconfirmed),
-                    status_to_str(OrderStatus::Confirming),
-                    status_to_str(OrderStatus::Partial),
-                    status_to_str(OrderStatus::Expired),
-                    since - grace_period_seconds,
-                ],
+                &format!("SELECT EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = :tenant AND {IN_SCAN_WINDOW})"),
+                rusqlite::named_params! { ":tenant": tenant_id, ":since_minus_grace": since.saturating_sub(grace_period_seconds) },
                 |row| row.get(0),
             )
             .map_err(Into::into)
@@ -1249,10 +1260,24 @@ impl Store {
             new_status = order.status;
         }
 
+        // `closed_at_utc` (migration 0016): set the first time the order is
+        // terminal, kept while it stays terminal, cleared if it reopens. An
+        // expired order closed at its deadline, however late expiry was
+        // noticed (its store may have been catching up).
+        let closed_at = if new_status == OrderStatus::Expired { order.expires_at.min(now) } else { now };
         self.conn.execute(
-            "UPDATE orders SET status = ?2, confirmations = ?3, amount_received_piconero = ?4, updated_at_utc = ?5
+            "UPDATE orders SET status = ?2, confirmations = ?3, amount_received_piconero = ?4, updated_at_utc = ?5,
+                closed_at_utc = CASE WHEN ?6 THEN COALESCE(closed_at_utc, ?7) ELSE NULL END
              WHERE id = ?1",
-            params![order_id, status_to_str(new_status), min_confirmations as i64, total as i64, now],
+            params![
+                order_id,
+                status_to_str(new_status),
+                min_confirmations as i64,
+                total as i64,
+                now,
+                is_terminal(new_status),
+                closed_at
+            ],
         )?;
         if order.status != new_status || order.confirmations != min_confirmations || order.amount_received_piconero != total {
             self.publish_order_change(&order.tenant_id, order_id);
@@ -1508,19 +1533,16 @@ impl Store {
         grace_period_seconds: i64,
     ) -> Result<()> {
         self.conn.execute(
-            "UPDATE orders
-             SET last_scanned_height = ?2, first_scanned_height = COALESCE(first_scanned_height, ?2)
-             WHERE tenant_id = ?1 AND (status IN (?3, ?4, ?5, ?6) OR (status = ?7 AND expires_at_utc >= ?8))",
-            params![
-                tenant_id,
-                height as i64,
-                status_to_str(OrderStatus::Pending),
-                status_to_str(OrderStatus::Unconfirmed),
-                status_to_str(OrderStatus::Confirming),
-                status_to_str(OrderStatus::Partial),
-                status_to_str(OrderStatus::Expired),
-                now - grace_period_seconds,
-            ],
+            &format!(
+                "UPDATE orders AS o
+                 SET last_scanned_height = :height, first_scanned_height = COALESCE(first_scanned_height, :height)
+                 WHERE o.tenant_id = :tenant AND {IN_SCAN_WINDOW}"
+            ),
+            rusqlite::named_params! {
+                ":tenant": tenant_id,
+                ":height": height as i64,
+                ":since_minus_grace": now - grace_period_seconds,
+            },
         )?;
         Ok(())
     }
@@ -1575,19 +1597,8 @@ impl Store {
     pub fn is_order_currently_scanning(&self, order_id: &str, now: i64, grace_period_seconds: i64) -> Result<bool> {
         self.conn
             .query_row(
-                "SELECT EXISTS(
-                     SELECT 1 FROM orders
-                     WHERE id = ?1 AND (status IN (?2, ?3, ?4, ?5) OR (status = ?6 AND expires_at_utc >= ?7))
-                 )",
-                params![
-                    order_id,
-                    status_to_str(OrderStatus::Pending),
-                    status_to_str(OrderStatus::Unconfirmed),
-                    status_to_str(OrderStatus::Confirming),
-                    status_to_str(OrderStatus::Partial),
-                    status_to_str(OrderStatus::Expired),
-                    now - grace_period_seconds,
-                ],
+                &format!("SELECT EXISTS(SELECT 1 FROM orders o WHERE o.id = :order AND {IN_SCAN_WINDOW})"),
+                rusqlite::named_params! { ":order": order_id, ":since_minus_grace": now - grace_period_seconds },
                 |row| row.get(0),
             )
             .map_err(Into::into)
@@ -2391,7 +2402,8 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let tenant = new_tenant(&store);
         let order = new_order(&store, &tenant.tenant.id, 1); // expires_at = 2000
-        store.conn.execute("UPDATE orders SET status = 'expired' WHERE id = ?1", params![order.id]).unwrap();
+        // Closed at its deadline, as `recompute_order_status` records it.
+        store.conn.execute("UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1", params![order.id]).unwrap();
 
         // Exactly at the boundary (`expires_at >= now - grace`) - inclusive.
         assert!(store.active_tenant_ids("mainnet", 2000, 0).unwrap().contains(&tenant.tenant.id));
@@ -2426,14 +2438,14 @@ mod tests {
         );
 
         let expired_in_grace = new_order(&store, &tenant.tenant.id, 2);
-        store.conn.execute("UPDATE orders SET status = 'expired' WHERE id = ?1", params![expired_in_grace.id]).unwrap();
+        store.conn.execute("UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1", params![expired_in_grace.id]).unwrap();
         assert!(
             store.is_order_currently_scanning(&expired_in_grace.id, 2500, 600).unwrap(),
             "an expired order still inside its grace window must be currently scanning"
         );
 
         let expired_past_grace = new_order(&store, &tenant.tenant.id, 3);
-        store.conn.execute("UPDATE orders SET status = 'expired' WHERE id = ?1", params![expired_past_grace.id]).unwrap();
+        store.conn.execute("UPDATE orders SET status = 'expired', closed_at_utc = expires_at_utc WHERE id = ?1", params![expired_past_grace.id]).unwrap();
         assert!(
             !store.is_order_currently_scanning(&expired_past_grace.id, 2601, 600).unwrap(),
             "an expired order past its grace window must not be currently scanning"

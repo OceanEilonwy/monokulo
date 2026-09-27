@@ -1,14 +1,14 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::atomic::{compiler_fence, Ordering};
-use parking_lot::{Mutex, RwLock};
+use parking_lot::RwLock;
 
 use monero::cryptonote::onetime_key::SubKeyChecker;
 use monero::{Address, PrivateKey, PublicKey, Transaction, ViewPair};
 use zeroize::Zeroize;
 
 use super::{
-    KeyCustody, KeyCustodyError, MatchedOutput, Network, SubaddressIndex, WalletHandle,
+    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex, WalletHandle,
     WalletMaterial,
 };
 
@@ -24,70 +24,106 @@ use super::{
 /// issues.
 const MAX_SCAN_TABLE_ENTRIES: u64 = 1_000_000;
 
-/// The output of [`SubKeyChecker::new`] worth keeping around: a table of every
-/// derived spend key across some `(major_range, minor_range)`, built by doing one
-/// scalar multiplication per candidate index. That construction cost is what makes
-/// re-deriving it on every single mempool transaction wasteful - the table itself
-/// has no lifetime tied to the view pair, so it can outlive the call that built it
-/// and be reused as long as the caller keeps asking about the same range.
-struct CachedTable {
-    major_range: Range<u32>,
-    minor_range: Range<u32>,
+/// A table of derived spend keys worth keeping between scans: building it
+/// costs one scalar multiplication per index, which is what makes rebuilding
+/// it for every transaction wasteful.
+#[derive(Default)]
+struct KeyTable {
+    /// What the table covers, as a generation (`ScanIndices::generation`);
+    /// `None` while empty.
+    generation: Option<u64>,
+    indices: std::collections::BTreeSet<u32>,
     table: HashMap<PublicKey, SubaddressIndex>,
+}
+
+impl KeyTable {
+    /// Makes the table cover exactly `indices`, deriving only indices it
+    /// didn't have and dropping ones no longer wanted (task 7.3: a store's
+    /// scan window changes by an order or two at a time).
+    fn update_to(&mut self, view_pair: &ViewPair, indices: &ScanIndices) -> u64 {
+        if self.generation == Some(indices.generation()) {
+            return 0;
+        }
+        let wanted: std::collections::BTreeSet<u32> = indices.minors().iter().copied().collect();
+        self.table.retain(|_, index| wanted.contains(&index.minor) && index.major == 0);
+        let mut derived = 0;
+        for &minor in wanted.difference(&self.indices) {
+            let index = SubaddressIndex { major: 0, minor };
+            self.table.insert(monero::cryptonote::subaddress::get_spend_public_key(view_pair, index), index);
+            derived += 1;
+        }
+        self.indices = wanted;
+        self.generation = Some(indices.generation());
+        derived
+    }
 }
 
 struct WalletEntry {
     view_pair: ViewPair,
-    /// Rebuilt only when a scan asks about a range that doesn't match what's
-    /// cached. A tenant with a stable set of active orders - the common case,
-    /// since the range only needs to widen when a new order is created and can
-    /// shrink again as completed orders' indices are recycled - pays the
-    /// scalar-multiplication cost once, not once per transaction scanned.
-    cached_table: Mutex<Option<CachedTable>>,
+    /// The table for this wallet's live scan window, updated incrementally.
+    /// An async mutex: the table is moved into a blocking scan and back, so
+    /// scans of one wallet run one at a time (different wallets in parallel)
+    /// and no table is ever copied.
+    live: tokio::sync::Mutex<KeyTable>,
+    /// Derivations done so far, for tests that check nothing is rebuilt.
     #[cfg(test)]
-    rebuild_count: std::sync::atomic::AtomicU64,
+    derivations: std::sync::atomic::AtomicU64,
 }
 
 impl WalletEntry {
     fn new(view_pair: ViewPair) -> Self {
         WalletEntry {
             view_pair,
-            cached_table: Mutex::new(None),
+            live: tokio::sync::Mutex::new(KeyTable::default()),
             #[cfg(test)]
-            rebuild_count: std::sync::atomic::AtomicU64::new(0),
+            derivations: std::sync::atomic::AtomicU64::new(0),
         }
     }
+}
 
-    /// Returns a lookup table covering exactly `major_range`/`minor_range`,
-    /// rebuilding it only if the cached one (if any) covers a different range.
-    #[allow(clippy::unwrap_used, reason = "the cache was filled just above when it was empty or stale")]
-    fn table_for_range(
-        &self,
-        major_range: Range<u32>,
-        minor_range: Range<u32>,
-    ) -> HashMap<PublicKey, SubaddressIndex> {
-        let mut cached = self.cached_table.lock();
-        let stale = match &*cached {
-            Some(c) => c.major_range != major_range || c.minor_range != minor_range,
-            None => true,
+/// Scans are elliptic-curve work. They run on the blocking pool (task 7.2),
+/// never on the async workers that serve requests, and at most one per core
+/// at a time.
+static SCAN_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> = std::sync::LazyLock::new(|| {
+    let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
+    std::sync::Arc::new(tokio::sync::Semaphore::new(cores))
+});
+
+/// Runs one scan of `tx` against `table` on the blocking pool and hands the
+/// table back, so it is reused rather than copied.
+async fn scan_on_blocking_pool(
+    view_pair: ViewPair,
+    table: HashMap<PublicKey, SubaddressIndex>,
+    tx: &Transaction,
+) -> (HashMap<PublicKey, SubaddressIndex>, Result<Vec<MatchedOutput>, KeyCustodyError>) {
+    let permit = SCAN_SLOTS.clone().acquire_owned().await;
+    let tx = tx.clone();
+    let joined = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        let checker = SubKeyChecker { table, keys: &view_pair };
+        let result = match tx.check_outputs_with(&checker) {
+            Ok(owned) => Ok(owned
+                .into_iter()
+                .map(|o| MatchedOutput {
+                    output_index: o.index(),
+                    subaddress_index: o.sub_index(),
+                    amount_piconero: o.amount().map(|a| a.as_pico()),
+                })
+                .collect()),
+            // A transaction with no transaction public key, or with script
+            // outputs, can't pay any wallet: it's "no match", not a failure.
+            // Reporting it as a failure would make every tenant fail on it and
+            // retry the same block for ever.
+            Err(monero::blockdata::transaction::Error::NoTxPublicKey)
+            | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Ok(Vec::new()),
+            Err(e) => Err(KeyCustodyError::ScanFailed(e.to_string())),
         };
-        if stale {
-            let checker =
-                SubKeyChecker::new(&self.view_pair, major_range.clone(), minor_range.clone());
-            #[cfg(test)]
-            self.rebuild_count
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            *cached = Some(CachedTable {
-                major_range,
-                minor_range,
-                table: checker.table,
-            });
-        }
-        // SubKeyChecker owns its table by value (no lifetime tying it to the view
-        // pair), so reusing the cache still costs one HashMap clone per call - but
-        // that's a plain memory copy, nowhere near the cost of the scalar
-        // multiplications it replaces.
-        cached.as_ref().unwrap().table.clone()
+        (checker.table, result)
+    })
+    .await;
+    match joined {
+        Ok(done) => done,
+        Err(e) => (HashMap::new(), Err(KeyCustodyError::ScanFailed(format!("scan task failed: {e}")))),
     }
 }
 
@@ -122,7 +158,7 @@ impl Drop for WalletEntry {
 /// self-hosted, single-tenant deployment and not for a multi-tenant hosted one.
 #[derive(Default)]
 pub struct PlainKeyCustody {
-    wallets: RwLock<HashMap<WalletHandle, WalletEntry>>,
+    wallets: RwLock<HashMap<WalletHandle, std::sync::Arc<WalletEntry>>>,
 }
 
 #[async_trait::async_trait]
@@ -135,7 +171,7 @@ impl KeyCustody for PlainKeyCustody {
         let handle = WalletHandle::new();
         self.wallets
             .write()
-            .insert(handle, WalletEntry::new(view_pair));
+            .insert(handle, std::sync::Arc::new(WalletEntry::new(view_pair)));
         Ok(handle)
     }
 
@@ -219,33 +255,70 @@ impl KeyCustody for PlainKeyCustody {
                 minor_range.end.saturating_sub(minor_range.start),
             )));
         }
+        let entry = self.entry(handle)?;
+        // A one-off range (payment lookup, catch-up over old blocks): its own
+        // table, built on the blocking pool, never replacing the live one.
+        let view_pair = entry.view_pair;
+        let permit = SCAN_SLOTS.clone().acquire_owned().await;
+        let table = tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            SubKeyChecker::new(&view_pair, major_range, minor_range).table
+        })
+        .await
+        .map_err(|e| KeyCustodyError::ScanFailed(format!("building the scan table failed: {e}")))?;
+        #[cfg(test)]
+        entry.derivations.fetch_add(table.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        scan_on_blocking_pool(view_pair, table, tx).await.1
+    }
 
-        let wallets = self.wallets.read();
-        let entry = wallets.get(&handle).ok_or(KeyCustodyError::UnknownWallet)?;
-
-        let table = entry.table_for_range(major_range, minor_range);
-        let checker = SubKeyChecker {
-            table,
-            keys: &entry.view_pair,
-        };
-        let owned = match tx.check_outputs_with(&checker) {
-            Ok(owned) => owned,
-            // A transaction with no transaction public key, or with script
-            // outputs, can't pay any wallet: it's "no match", not a failure.
-            // Reporting it as a failure would make every tenant fail on it and
-            // retry the same block for ever.
-            Err(monero::blockdata::transaction::Error::NoTxPublicKey)
-            | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Vec::new(),
-            Err(e) => return Err(KeyCustodyError::ScanFailed(e.to_string())),
-        };
-        Ok(owned
-            .into_iter()
-            .map(|o| MatchedOutput {
-                output_index: o.index(),
-                subaddress_index: o.sub_index(),
-                amount_piconero: o.amount().map(|a| a.as_pico()),
+    async fn scan_tx_outputs_for_indices(
+        &self,
+        handle: WalletHandle,
+        tx: &Transaction,
+        indices: &ScanIndices,
+    ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
+        if indices.len() as u64 > MAX_SCAN_TABLE_ENTRIES {
+            return Err(KeyCustodyError::ScanFailed(format!(
+                "{} indices exceed the {MAX_SCAN_TABLE_ENTRIES}-entry scan limit",
+                indices.len()
+            )));
+        }
+        let entry = self.entry(handle)?;
+        let mut live = entry.live.lock().await;
+        if live.generation != Some(indices.generation()) {
+            // Update on the blocking pool too: adding indices is EC work.
+            let mut table = std::mem::take(&mut *live);
+            let view_pair = entry.view_pair;
+            let indices = indices.clone();
+            let permit = SCAN_SLOTS.clone().acquire_owned().await;
+            let (table, derived) = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                let derived = table.update_to(&view_pair, &indices);
+                (table, derived)
             })
-            .collect())
+            .await
+            .map_err(|e| KeyCustodyError::ScanFailed(format!("updating the scan table failed: {e}")))?;
+            #[cfg(test)]
+            entry.derivations.fetch_add(derived, std::sync::atomic::Ordering::Relaxed);
+            #[cfg(not(test))]
+            let _ = derived;
+            *live = table;
+        }
+        let table = std::mem::take(&mut live.table);
+        let (table, result) = scan_on_blocking_pool(entry.view_pair, table, tx).await;
+        live.table = table;
+        if live.table.is_empty() && !live.indices.is_empty() {
+            // The scan task failed and lost the table: rebuild next time.
+            live.generation = None;
+            live.indices.clear();
+        }
+        result
+    }
+}
+
+impl PlainKeyCustody {
+    fn entry(&self, handle: WalletHandle) -> Result<std::sync::Arc<WalletEntry>, KeyCustodyError> {
+        self.wallets.read().get(&handle).cloned().ok_or(KeyCustodyError::UnknownWallet)
     }
 }
 
@@ -353,7 +426,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn repeated_scans_over_same_range_reuse_the_cached_table() {
+    async fn the_live_table_is_updated_incrementally_and_never_rebuilt_for_the_same_set() {
         let raw_tx = hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap();
         let tx: Transaction = deserialize(&raw_tx).unwrap();
         let view_key = PrivateKey::from_slice(
@@ -377,28 +450,59 @@ mod tests {
             .await
             .unwrap();
 
-        // Three scans, same wallet, same range - as the chain scanner would issue
-        // while polling the mempool for a tenant with a stable set of pending
-        // orders. Only the first should pay the table-construction cost.
+        // The fixture pays minor index 1. Three scans with the same window: the
+        // three keys are derived once.
+        let window = ScanIndices::new([1, 5, 9]);
         for _ in 0..3 {
-            custody
-                .scan_tx_outputs(handle, &tx, 0..2, 0..3)
-                .await
-                .unwrap();
+            let matches = custody.scan_tx_outputs_for_indices(handle, &tx, &window).await.unwrap();
+            assert_eq!(matches.len(), 1);
         }
-        assert_eq!(
-            rebuild_count(&custody, handle),
-            1,
-            "same range should rebuild the table once, not once per scan"
-        );
+        assert_eq!(derivations(&custody, handle), 3, "same set, no rebuild");
 
-        // A genuinely wider range (e.g. a new order just issued a fresh minor
-        // index) must trigger exactly one more rebuild.
-        custody
-            .scan_tx_outputs(handle, &tx, 0..2, 0..4)
-            .await
-            .unwrap();
-        assert_eq!(rebuild_count(&custody, handle), 2);
+        // One order opens and one closes: one new derivation, not a rebuild.
+        let window = ScanIndices::new([1, 9, 12]);
+        custody.scan_tx_outputs_for_indices(handle, &tx, &window).await.unwrap();
+        assert_eq!(derivations(&custody, handle), 4);
+
+        // An index no longer in the window no longer matches.
+        let without = ScanIndices::new([9, 12]);
+        assert!(custody.scan_tx_outputs_for_indices(handle, &tx, &without).await.unwrap().is_empty());
+
+        // A one-off range scan (payment lookup) builds its own table and leaves
+        // the live one alone: scanning the live window again derives nothing.
+        let before = derivations(&custody, handle);
+        assert_eq!(custody.scan_tx_outputs(handle, &tx, 0..1, 0..3).await.unwrap().len(), 1);
+        let after_lookup = derivations(&custody, handle);
+        assert_eq!(after_lookup - before, 3, "the lookup's own table");
+        custody.scan_tx_outputs_for_indices(handle, &tx, &without).await.unwrap();
+        assert_eq!(derivations(&custody, handle), after_lookup, "the live table survived the lookup");
+    }
+
+    #[tokio::test]
+    async fn scans_of_different_wallets_run_in_parallel_off_the_async_workers() {
+        let raw_tx = hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap();
+        let tx: Transaction = deserialize(&raw_tx).unwrap();
+        let custody = std::sync::Arc::new(PlainKeyCustody::default());
+        let mut handles = vec![];
+        for seed in 10..18u8 {
+            let view = PrivateKey::from_slice(&random_scalar_bytes(seed)).unwrap();
+            let spend = PublicKey::from_private_key(&PrivateKey::from_slice(&random_scalar_bytes(seed + 40)).unwrap());
+            handles.push(custody.register_wallet(WalletMaterial::new(view.to_bytes(), spend.to_bytes())).await.unwrap());
+        }
+        // All at once on a current-thread runtime: if scans ran on the async
+        // worker they would still complete, but this checks nothing deadlocks
+        // when many wallets scan concurrently through the shared slots.
+        let window = ScanIndices::range(0..200);
+        let scans = handles.iter().map(|h| {
+            let custody = custody.clone();
+            let tx = tx.clone();
+            let window = window.clone();
+            let h = *h;
+            async move { custody.scan_tx_outputs_for_indices(h, &tx, &window).await }
+        });
+        for result in futures_util::future::join_all(scans).await {
+            assert!(result.unwrap().is_empty(), "none of these wallets is paid by the fixture");
+        }
     }
 
     #[tokio::test]
@@ -721,13 +825,7 @@ mod tests {
         }
     }
 
-    fn rebuild_count(custody: &PlainKeyCustody, handle: WalletHandle) -> u64 {
-        custody
-            .wallets
-            .read()
-            .get(&handle)
-            .unwrap()
-            .rebuild_count
-            .load(Ordering::Relaxed)
+    fn derivations(custody: &PlainKeyCustody, handle: WalletHandle) -> u64 {
+        custody.wallets.read().get(&handle).unwrap().derivations.load(Ordering::Relaxed)
     }
 }

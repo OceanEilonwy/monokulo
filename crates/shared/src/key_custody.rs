@@ -316,6 +316,79 @@ pub trait KeyCustody: Send + Sync {
         major_range: Range<u32>,
         minor_range: Range<u32>,
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError>;
+
+    /// Check every output of `tx` against a set of minor indices (account 0),
+    /// not necessarily contiguous: the indices of one store's orders that are
+    /// open or recently closed (admin_settings_v2.md task 7.3). The set's
+    /// `generation` changes whenever its contents do, so an implementation can
+    /// keep a table per wallet and update it only when the set changes.
+    ///
+    /// The default covers the set with one contiguous range (`min..=max`),
+    /// which is correct but builds a bigger table than needed; backends that
+    /// can do better override it.
+    async fn scan_tx_outputs_for_indices(
+        &self,
+        handle: WalletHandle,
+        tx: &Transaction,
+        indices: &ScanIndices,
+    ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
+        match indices.bounds() {
+            None => Ok(Vec::new()),
+            Some((low, high)) => self.scan_tx_outputs(handle, tx, 0..1, low..high.saturating_add(1)).await,
+        }
+    }
+}
+
+/// A set of minor subaddress indices (account 0) to scan for, sorted and
+/// without duplicates, with a generation that identifies its contents. Cheap
+/// to clone.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ScanIndices {
+    minors: std::sync::Arc<Vec<u32>>,
+    generation: u64,
+}
+
+impl ScanIndices {
+    pub fn new(minors: impl IntoIterator<Item = u32>) -> Self {
+        let mut minors: Vec<u32> = minors.into_iter().collect();
+        minors.sort_unstable();
+        minors.dedup();
+        // FNV-1a over the indices: equal sets always get equal generations.
+        let mut generation: u64 = 0xcbf29ce484222325;
+        for minor in &minors {
+            for byte in minor.to_le_bytes() {
+                generation ^= u64::from(byte);
+                generation = generation.wrapping_mul(0x100000001b3);
+            }
+        }
+        ScanIndices { minors: std::sync::Arc::new(minors), generation }
+    }
+
+    /// Every index in `range`.
+    pub fn range(range: Range<u32>) -> Self {
+        ScanIndices::new(range)
+    }
+
+    pub fn minors(&self) -> &[u32] {
+        &self.minors
+    }
+
+    pub fn generation(&self) -> u64 {
+        self.generation
+    }
+
+    pub fn len(&self) -> usize {
+        self.minors.len()
+    }
+
+    pub fn is_empty(&self) -> bool {
+        self.minors.is_empty()
+    }
+
+    /// Lowest and highest index, if any.
+    pub fn bounds(&self) -> Option<(u32, u32)> {
+        Some((*self.minors.first()?, *self.minors.last()?))
+    }
 }
 
 #[cfg(test)]
