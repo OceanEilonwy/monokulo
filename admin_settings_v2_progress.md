@@ -29,15 +29,15 @@ commits. Nothing is pushed.
 | Part 7 review, folded into WBS | done | 6cd5432 | D10 redesigned: `closed_at`, index sets in the custody API, catch-up window |
 | 7.1 panics can't take the engine down | done | 97817e1 | parking_lot locks in engine, test support and monokulo; 3 new tests |
 | 5.0 per-store scan cursor | done, reviewed, fixes applied | 6ded980, 6f5e5cc | review found 2 blocking bugs (grace-period payment skipped by snap; disabled tenant orders never expired), fixed with tests |
-| 7.12 load and chaos harness (base) | partly: the randomised outage/reorg test in 5.0 is its seed; scale runs still to do | | |
+| 7.12 load and chaos harness (base) | done, see the scale row below | | |
 | 7.8 fair webhook delivery | done | a9dee72 | |
 | 7.9 supervisor backoff + tick deadline | done | 8762803, 6f5e5cc | restart counts on /status |
-| 7.4 fair concurrent scanning | done | 6f5e5cc | per-network loops; per-call 10s deadline; per-network isolation not unit-tested (loops live in main.rs; covered once 1.4 moves boot into the library) |
+| 7.4 fair concurrent scanning | done | 6f5e5cc, e990f7f | per-network loops; per-call 10s deadline; loops moved to scanner::loops and tested |
 | 1.1 live-settings crate | done | efef6bf | built by a sub-agent (it stopped at a usage limit after finishing the code); reviewed, 34 tests, clippy clean, merged |
 | 7.6 node failures | done | 130c432 | cooldown, 30s call budget, pinned node per tick, 64MB response cap |
 | 7.10 HTTP limits | done | 242ffba | constants for now; become live settings with part 1.2 |
 | 7.7 database failures | done | 719dc2e | transient store/custody errors are 503 |
-| 7.11 crash safety, SIGTERM | done (in-process); real-process kill -9 variant waits for the 6.0 harness | 3c9e77f | |
+| 7.11 crash safety, SIGTERM | done | 3c9e77f, fedef4f | in-process crash injection, plus kill -9 of the real binary (real-4-crash.spec.js) |
 | 7.2 scanning off the async runtime | done | 298b928 | blocking pool, one scan per core |
 | 7.3 window (D10), closed_at, index-set API, no table copy | done | 298b928 | socket backend uses the trait's default (covering range) until its wire protocol gains index sets |
 | 7.3 mempool memory | done | 02b0d0f | |
@@ -48,20 +48,27 @@ commits. Nothing is pushed.
 | 7.13 status and logging | done (partly) | 40dbbc5 | status fields + throttled logs; no move to structured logging |
 | 1.2 engine on live-settings | done | 8830c92 | |
 | 2.1 nodes live (the reported bug) | done | 8830c92 | verified on the real binary |
-| 2.2 unserved networks | partly | 8830c92 | save reports networks with stores but no node; reachability probe and /status list still to do (with 3.7) |
+| 2.2 unserved networks (first half) | done | 8830c92 | completed with 3.7 below |
 | 2.3-2.6, 2.8, 2.9 | done | 8830c92 | |
 | 2.7 bind restart-only | done | 8830c92 | |
 | 1.5 remove settings | done | 8830c92, 266f19a | unknown keys refused; old read path deleted |
 | 1.3 monokulo on live-settings | done | 66f32ea | |
 | 3.1-3.4, 3.6 | done | 66f32ea | engine retarget ends old streams; onion listener live; bind note in the restart banner |
-| 3.5 pin already-live settings | partly | | existing signup/public_url tests cover it; no new ones |
+| 3.5 pin already-live settings | done | see git log | one test each for signup.mode, public_url, engine.admin_token |
 | 3.7 merchant alerts | done | d7e7883 | |
 | 2.2 unserved networks | done | d7e7883 | |
-| Part 4 admin page | done except Playwright | 66f32ea | view tests; Playwright page tests wait for part 6 |
+| Part 4 admin page | done | 66f32ea, fedef4f | Playwright checks on the real binaries (real-3-admin-page.spec.js); gallery screenshots not added |
 | independent review of 8830c92 + 66f32ea + d7e7883 | all items applied or decided | 5b980b5, e990f7f, see git log | item 1 (--help touching the DB) fixed in part 5 main.rs rework |
 | Part 5 engine side (5.1 router, 5.2 live settings, 5.3 choose/switch API, 5.5 status) | done | 95f5991 | |
 | Part 5 monokulo side (5.4 backend choice, 5.6 Key storage section, 5.7 alerts) and bootstrap CLI flag | done, reviewed, fixes applied | see git log | review found 1 blocking bug (socket path change stranded socket stores), fixed with tests |
 | Review items 2 (chunked body limit) and 3 (alerts don't flap) of 8830c92/66f32ea/d7e7883 | done | 5b980b5 | |
+| Review item 4 and minor items | done | e990f7f, f4f3232 | |
+| 1.5 old settings code removed | done | 266f19a | |
+| 6.1 dev script, 6.2 docs | done | 5c475d7 | |
+| 6.0 real-binaries harness, 6.3 e2e | done | 2568174 | fails against the pre-fix engine, checked once |
+| 6.4 key custody switch e2e | done | 3ba78bc | found and fixed 2 bugs |
+| Admin page Playwright, kill -9 test | done | fedef4f | |
+| Final independent review | running | | |
 
 ## Decisions made while working
 

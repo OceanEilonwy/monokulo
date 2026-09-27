@@ -752,6 +752,85 @@ mod tests {
             || html.contains(&format!("value=\"{value}\"></label>"))
     }
 
+    // -- Task 3.5: settings that were already live stay live --------------
+
+    async fn get(router: &Router, uri: &str, cookie: Option<&str>) -> axum::response::Response {
+        let mut request = Request::builder().method("GET").uri(uri);
+        if let Some(cookie) = cookie {
+            request = request.header("cookie", cookie);
+        }
+        router.clone().oneshot(request.body(Body::empty()).unwrap()).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn a_saved_signup_mode_applies_to_the_next_signup() {
+        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let signup = |email: &'static str| {
+            Request::builder()
+                .method("POST")
+                .uri("/signup")
+                .header("content-type", "application/json")
+                .body(Body::from(serde_json::json!({ "email": email, "password": "correct horse battery staple" }).to_string()))
+                .unwrap()
+        };
+        // The test instance starts with public signup (`Db::seed_test_admin`).
+        assert_eq!(router.clone().oneshot(signup("first@example.com")).await.unwrap().status(), StatusCode::CREATED);
+
+        let saved =
+            router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("signup.mode", "invite_only")])).await.unwrap();
+        assert_eq!(saved.status(), StatusCode::OK);
+        assert_ne!(router.clone().oneshot(signup("second@example.com")).await.unwrap().status(), StatusCode::CREATED, "needs an invite now");
+
+        router.clone().oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("signup.mode", "public")])).await.unwrap();
+        assert_eq!(router.clone().oneshot(signup("third@example.com")).await.unwrap().status(), StatusCode::CREATED, "and back");
+    }
+
+    #[tokio::test]
+    async fn a_saved_public_url_applies_to_the_next_plugin_connection() {
+        let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let confirm = "/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fshop.example.com%2Fdone&nonce=n1";
+        let before = body_text(get(&router, confirm, Some(&cookie)).await).await;
+        assert!(before.contains("can't connect plugins yet") || before.contains("can&#39;t connect plugins yet"), "{before}");
+
+        let saved = router
+            .clone()
+            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("public_url", "https://pay.example.com")]))
+            .await
+            .unwrap();
+        assert_eq!(saved.status(), StatusCode::OK);
+        let after = body_text(get(&router, confirm, Some(&cookie)).await).await;
+        assert!(!after.contains("connect plugins yet"), "the next request sees it: {after}");
+        assert!(after.contains(r#"name="view_key_hex""#), "{after}");
+    }
+
+    #[tokio::test]
+    async fn a_saved_engine_admin_token_is_what_the_next_page_uses() {
+        let engine = spawn_scanner_with_known_admin_token().await;
+        let state = test_app_state_connected_to(engine.addr).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        assert!(body_text(get_settings_page(&router, &cookie).await).await.contains("Save engine settings"), "the right token");
+
+        router
+            .clone()
+            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(crate::settings::SCANNER_ADMIN_TOKEN.key, "wrong-token")]))
+            .await
+            .unwrap();
+        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        assert!(page.contains("Could not reach the configured engine"), "the wrong one, used at once: {page}");
+
+        router
+            .clone()
+            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(crate::settings::SCANNER_ADMIN_TOKEN.key, SCANNER_ADMIN_TOKEN)]))
+            .await
+            .unwrap();
+        assert!(body_text(get_settings_page(&router, &cookie).await).await.contains("Save engine settings"), "and back");
+    }
+
     #[tokio::test]
     async fn the_engine_admin_token_is_kept_when_left_empty_and_removed_when_cleared() {
         let state = test_app_state_connected_to("127.0.0.1:1".parse().unwrap()).await;
