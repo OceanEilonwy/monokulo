@@ -58,8 +58,8 @@ commits. Nothing is pushed.
 | 3.7 merchant alerts | done | d7e7883 | |
 | 2.2 unserved networks | done | d7e7883 | |
 | Part 4 admin page | done except Playwright | 66f32ea | view tests; Playwright page tests wait for part 6 |
-| independent review of 8830c92 + 66f32ea | running | | |
-| Part 5 engine side (5.1 router, 5.2 live settings, 5.3 choose/switch API, 5.5 status) | done | see git log | monokulo side (5.4, 5.6, 5.7) next |
+| independent review of 8830c92 + 66f32ea + d7e7883 | reported; items 1-3 applied, 4 and minors next | 5b980b5 | item 1 (--help touching the DB) fixed in part 5 main.rs rework |
+| Part 5 engine side (5.1 router, 5.2 live settings, 5.3 choose/switch API, 5.5 status) | done | 95f5991 | |
 | Part 5 monokulo side (5.4 backend choice, 5.6 Key storage section, 5.7 alerts) and bootstrap CLI flag | done, reviewed, fixes applied | see git log | review found 1 blocking bug (socket path change stranded socket stores), fixed with tests |
 | Review items 2 (chunked body limit) and 3 (alerts don't flap) of 8830c92/66f32ea/d7e7883 | done | 5b980b5 | |
 
