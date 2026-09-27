@@ -1,7 +1,7 @@
 use std::collections::HashMap;
 use std::ops::Range;
 use std::sync::atomic::{compiler_fence, Ordering};
-use std::sync::{Mutex, RwLock};
+use parking_lot::{Mutex, RwLock};
 
 use monero::cryptonote::onetime_key::SubKeyChecker;
 use monero::{Address, PrivateKey, PublicKey, Transaction, ViewPair};
@@ -60,12 +60,13 @@ impl WalletEntry {
 
     /// Returns a lookup table covering exactly `major_range`/`minor_range`,
     /// rebuilding it only if the cached one (if any) covers a different range.
+    #[allow(clippy::unwrap_used, reason = "the cache was filled just above when it was empty or stale")]
     fn table_for_range(
         &self,
         major_range: Range<u32>,
         minor_range: Range<u32>,
     ) -> HashMap<PublicKey, SubaddressIndex> {
-        let mut cached = self.cached_table.lock().unwrap();
+        let mut cached = self.cached_table.lock();
         let stale = match &*cached {
             Some(c) => c.major_range != major_range || c.minor_range != minor_range,
             None => true,
@@ -134,7 +135,6 @@ impl KeyCustody for PlainKeyCustody {
         let handle = WalletHandle::new();
         self.wallets
             .write()
-            .unwrap()
             .insert(handle, WalletEntry::new(view_pair));
         Ok(handle)
     }
@@ -142,7 +142,6 @@ impl KeyCustody for PlainKeyCustody {
     async fn remove_wallet(&self, handle: WalletHandle) -> Result<(), KeyCustodyError> {
         self.wallets
             .write()
-            .unwrap()
             .remove(&handle)
             .map(|_| ())
             .ok_or(KeyCustodyError::UnknownWallet)
@@ -175,7 +174,7 @@ impl KeyCustody for PlainKeyCustody {
         index: SubaddressIndex,
         network: Network,
     ) -> Result<Address, KeyCustodyError> {
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read();
         let entry = wallets.get(&handle).ok_or(KeyCustodyError::UnknownWallet)?;
         if index.is_zero() {
             // 0/0 is the account's *standard* address, not a subaddress - its keys
@@ -221,7 +220,7 @@ impl KeyCustody for PlainKeyCustody {
             )));
         }
 
-        let wallets = self.wallets.read().unwrap();
+        let wallets = self.wallets.read();
         let entry = wallets.get(&handle).ok_or(KeyCustodyError::UnknownWallet)?;
 
         let table = entry.table_for_range(major_range, minor_range);
@@ -558,7 +557,7 @@ mod tests {
             .unwrap();
 
         custody.remove_wallet(handle).await.unwrap();
-        assert!(custody.wallets.read().unwrap().is_empty());
+        assert!(custody.wallets.read().is_empty());
         assert!(matches!(
             custody.remove_wallet(handle).await.unwrap_err(),
             KeyCustodyError::UnknownWallet
@@ -719,7 +718,6 @@ mod tests {
         custody
             .wallets
             .read()
-            .unwrap()
             .get(&handle)
             .unwrap()
             .rebuild_count

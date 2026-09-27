@@ -224,12 +224,12 @@ pub async fn run_delivery_tick(
     max_attempts: u32,
     now: i64,
 ) -> Result<usize, crate::store::StoreError> {
-    let due = store.lock().unwrap().due_webhook_deliveries(now, 50)?;
+    let due = store.lock().due_webhook_deliveries(now, 50)?;
     let count = due.len();
 
     for delivery in &due {
         let outcome = attempt_delivery(client, delivery, allow_private, timeout).await;
-        let store = store.lock().unwrap();
+        let store = store.lock();
         if outcome.delivered {
             store.mark_webhook_delivered(delivery.delivery_id, outcome.response_status.unwrap_or(0), now)?;
         } else if delivery.attempt_count + 1 >= max_attempts {
@@ -314,11 +314,11 @@ mod tests {
     #[tokio::test]
     async fn successful_delivery_carries_a_verifiable_signature() {
         use axum::http::StatusCode;
-        let captured_signature: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+        let captured_signature: Arc<parking_lot::Mutex<Option<String>>> = Arc::new(parking_lot::Mutex::new(None));
         let captured_clone = captured_signature.clone();
         let url = spawn_test_server(move |headers| {
             let sig = headers.get("X-Monokulo-Signature").and_then(|v| v.to_str().ok()).map(str::to_string);
-            *captured_clone.lock().unwrap() = sig;
+            *captured_clone.lock() = sig;
             StatusCode::OK.into_response()
         })
         .await;
@@ -329,16 +329,16 @@ mod tests {
         let outcome = attempt_delivery(&test_client(), &delivery, true, Duration::from_secs(2)).await;
         assert!(outcome.delivered);
         assert_eq!(outcome.response_status, Some(200));
-        assert_eq!(*captured_signature.lock().unwrap(), Some(expected_signature));
+        assert_eq!(*captured_signature.lock(), Some(expected_signature));
     }
 
     #[tokio::test]
     async fn delivery_advertises_the_signed_payloads_own_event_id_as_a_header() {
         use axum::http::StatusCode;
-        let captured: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+        let captured: Arc<parking_lot::Mutex<Option<String>>> = Arc::new(parking_lot::Mutex::new(None));
         let captured_clone = captured.clone();
         let url = spawn_test_server(move |headers| {
-            *captured_clone.lock().unwrap() =
+            *captured_clone.lock() =
                 headers.get("X-Monokulo-Event-Id").and_then(|v| v.to_str().ok()).map(str::to_string);
             StatusCode::OK.into_response()
         })
@@ -352,7 +352,7 @@ mod tests {
         let outcome = attempt_delivery(&test_client(), &delivery, true, Duration::from_secs(2)).await;
         assert!(outcome.delivered);
         assert_eq!(
-            *captured.lock().unwrap(),
+            *captured.lock(),
             Some("evt_abc123".to_string()),
             "the header must repeat the id from the signed body, never a separately-generated one"
         );
@@ -369,10 +369,10 @@ mod tests {
         // so without disturbing the Host header (and, over TLS, the SNI name) the
         // merchant's server expects to see.
         use axum::http::StatusCode;
-        let captured_host: Arc<std::sync::Mutex<Option<String>>> = Arc::new(std::sync::Mutex::new(None));
+        let captured_host: Arc<parking_lot::Mutex<Option<String>>> = Arc::new(parking_lot::Mutex::new(None));
         let captured_clone = captured_host.clone();
         let url = spawn_test_server(move |headers| {
-            *captured_clone.lock().unwrap() = headers.get("host").and_then(|v| v.to_str().ok()).map(str::to_string);
+            *captured_clone.lock() = headers.get("host").and_then(|v| v.to_str().ok()).map(str::to_string);
             StatusCode::OK.into_response()
         })
         .await;
@@ -389,7 +389,7 @@ mod tests {
 
         assert!(response.status().is_success());
         assert_eq!(
-            *captured_host.lock().unwrap(),
+            *captured_host.lock(),
             Some("webhook.invalid".to_string()),
             "the destination must still see the hostname it was registered under, not the pinned IP"
         );
@@ -459,10 +459,10 @@ mod tests {
         let processed = run_delivery_tick(&store, &test_client(), true, Duration::from_secs(2), DEFAULT_MAX_ATTEMPTS, 1000).await.unwrap();
         assert_eq!(processed, 1);
 
-        let due_immediately = store.lock().unwrap().due_webhook_deliveries(1001, 10).unwrap();
+        let due_immediately = store.lock().due_webhook_deliveries(1001, 10).unwrap();
         assert!(due_immediately.is_empty(), "must not be immediately due again - backoff must push it out");
 
-        let due_after_backoff = store.lock().unwrap().due_webhook_deliveries(1000 + 61, 10).unwrap();
+        let due_after_backoff = store.lock().due_webhook_deliveries(1000 + 61, 10).unwrap();
         assert_eq!(due_after_backoff.len(), 1);
         assert_eq!(due_after_backoff[0].attempt_count, 1);
         assert_eq!(due_after_backoff[0].delivery_id, delivery_id);

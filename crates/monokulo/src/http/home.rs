@@ -30,12 +30,12 @@ use super::{resolve_authed_user, AppState, AuthedUser};
 /// pre-setup; only the very first thing a fresh install's operator sees when
 /// they actually load the site.
 pub async fn landing(State(state): State<AppState>, headers: HeaderMap) -> Response {
-    if !state.db.lock().unwrap().is_setup_complete().unwrap_or(true) {
+    if !state.db.lock().is_setup_complete().unwrap_or(true) {
         return redirect_302("/admin/setup");
     }
     let authed = resolve_authed_user(&state, &headers);
     let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/");
-    let signup_public = { crate::settings::signup_mode(&state.db.lock().unwrap()) == crate::settings::SignupMode::Public };
+    let signup_public = { crate::settings::signup_mode(&state.db.lock()) == crate::settings::SignupMode::Public };
     views::landing::page(&chrome, signup_public).into_response()
 }
 
@@ -69,7 +69,7 @@ pub async fn woocommerce_instructions(State(state): State<AppState>, AuthedUser(
 /// to add concurrency complexity for a case with no evidence it matters
 /// yet).
 pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): AuthedUser) -> Response {
-    let rows = match state.db.lock().unwrap().list_store_connections_for_user(&user.id) {
+    let rows = match state.db.lock().list_store_connections_for_user(&user.id) {
         Ok(rows) => rows,
         Err(_) => return axum::http::StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -107,7 +107,7 @@ pub async fn dashboard_home(State(state): State<AppState>, AuthedUser(user, _): 
             // Phase 3) - fiat display comes entirely from monokulo's own
             // local `order_currency_metadata`.
             let fiat_metadata =
-                state.db.lock().unwrap().list_order_currency_metadata_for_connection(&row.id).unwrap_or_default();
+                state.db.lock().list_order_currency_metadata_for_connection(&row.id).unwrap_or_default();
             for o in orders {
                 total_received_piconero += o.amount_received_piconero as u128;
                 let (amount, currency) = match fiat_metadata.get(&o.order_id) {
@@ -299,7 +299,7 @@ mod tests {
         /// creation, so no local currency metadata exists for the order. 10.00 at
         /// `TEST_RATE_PICONERO_PER_UNIT` (1e12 piconero/USD); the engine only knows XMR.
         async fn seed_real_order(state: &AppState, engine_addr: std::net::SocketAddr, public_key: &str) -> String {
-            let row = state.db.lock().unwrap().get_store_connection_by_public_key(public_key).unwrap().expect("connection exists");
+            let row = state.db.lock().get_store_connection_by_public_key(public_key).unwrap().expect("connection exists");
             let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
             let response = reqwest::Client::new()
                 .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))

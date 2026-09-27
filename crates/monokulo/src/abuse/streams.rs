@@ -18,7 +18,8 @@
 
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use super::ClientIdentity;
 
@@ -51,7 +52,7 @@ impl StreamLimiter {
     /// store.
     pub fn try_acquire(self: &Arc<Self>, client: &ClientIdentity, pk: &str) -> Option<StreamPermit> {
         let key = (client.clone(), pk.to_string());
-        let mut open = self.open.lock().unwrap();
+        let mut open = self.open.lock();
         let count = open.entry(key.clone()).or_insert(0);
         if *count >= self.max.load(Ordering::Relaxed) {
             return None;
@@ -62,7 +63,7 @@ impl StreamLimiter {
 
     #[cfg(test)]
     fn open_count(&self, client: &ClientIdentity, pk: &str) -> usize {
-        self.open.lock().unwrap().get(&(client.clone(), pk.to_string())).copied().unwrap_or(0)
+        self.open.lock().get(&(client.clone(), pk.to_string())).copied().unwrap_or(0)
     }
 }
 
@@ -75,7 +76,7 @@ pub struct StreamPermit {
 
 impl Drop for StreamPermit {
     fn drop(&mut self) {
-        let mut open = self.limiter.open.lock().unwrap();
+        let mut open = self.limiter.open.lock();
         if let Some(count) = open.get_mut(&self.key) {
             *count -= 1;
             if *count == 0 {
@@ -117,6 +118,6 @@ mod tests {
         let limiter = Arc::new(StreamLimiter::new(1));
         let client = ClientIdentity::Address("192.0.2.1".parse().unwrap());
         drop(limiter.try_acquire(&client, "pk_one").unwrap());
-        assert!(limiter.open.lock().unwrap().is_empty());
+        assert!(limiter.open.lock().is_empty());
     }
 }

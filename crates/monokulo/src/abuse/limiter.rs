@@ -20,7 +20,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 use std::hash::Hash;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 /// How long a solved challenge lets a client through without another one.
 pub const PASS_SECS: i64 = 10 * 60;
@@ -104,7 +104,7 @@ impl<K: Eq + Hash + Clone> TieredLimiter<K> {
     /// `force_soft` treats the client as past the soft limit whatever its
     /// count (under-attack mode); a pass still lets it through.
     pub fn check(&self, client: &K, limits: Limits, force_soft: bool, now: i64) -> Tier {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         let state = &mut *state;
         let seen = state.next_seen;
         state.next_seen += 1;
@@ -140,23 +140,23 @@ impl<K: Eq + Hash + Clone> TieredLimiter<K> {
 
     /// Gives `client` a pass for [`PASS_SECS`] after a solved challenge.
     pub fn grant_pass(&self, client: &K, now: i64) {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         if let Some(entry) = state.entries.get_mut(client) {
             entry.pass_until = now + PASS_SECS;
         }
     }
 
     pub fn has_pass(&self, client: &K, now: i64) -> bool {
-        self.state.lock().unwrap().entries.get(client).is_some_and(|entry| entry.pass_until > now)
+        self.state.lock().entries.get(client).is_some_and(|entry| entry.pass_until > now)
     }
 
     pub fn tracked(&self) -> usize {
-        self.state.lock().unwrap().entries.len()
+        self.state.lock().entries.len()
     }
 
     /// Every client currently tracked (for tests and diagnostics).
     pub fn clients(&self) -> Vec<K> {
-        self.state.lock().unwrap().entries.keys().cloned().collect()
+        self.state.lock().entries.keys().cloned().collect()
     }
 }
 

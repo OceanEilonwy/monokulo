@@ -117,7 +117,7 @@ pub(super) async fn create_connection_for_user(
     // Validated *before* ever provisioning a real engine tenant - a bad
     // base currency should never leave an orphaned tenant behind that this
     // connection attempt then fails to record locally.
-    let base_currency = crate::currencies::resolve_currency(&state.db.lock().unwrap(), &req.base_currency)
+    let base_currency = crate::currencies::resolve_currency(&state.db.lock(), &req.base_currency)
         .map_err(|_| CreateConnectionError::Internal)?
         .ok_or_else(|| CreateConnectionError::BadRequest(format!("{:?} is not a known currency", req.base_currency)))?;
 
@@ -149,7 +149,6 @@ pub(super) async fn create_connection_for_user(
     state
         .db
         .lock()
-        .unwrap()
         .create_store_connection(
             &id,
             &user.id,
@@ -169,7 +168,7 @@ pub(super) async fn create_connection_for_user(
     for domain in &req.domains {
         crate::embed_domains::suggest_domain(&state.db, &id, domain, now_unix());
     }
-    let _ = state.db.lock().unwrap().mark_store_domains_imported(&id);
+    let _ = state.db.lock().mark_store_domains_imported(&id);
 
     Ok(CreateConnectionOutcome { connection_id: id, public_key: created.public_key })
 }
@@ -327,7 +326,7 @@ mod tests {
         assert!(!rendered.contains("sk_"));
 
         // Confirm the row that actually landed in `store_connections`.
-        let row = state.db.lock().unwrap().get_store_connection_by_id(connection_id).unwrap().unwrap();
+        let row = state.db.lock().get_store_connection_by_id(connection_id).unwrap().unwrap();
         assert_eq!(row.platform, "woocommerce");
         assert_eq!(row.site_url, "https://shop.example.com");
         assert_eq!(row.tenant_public_key, public_key);
@@ -368,7 +367,6 @@ mod tests {
         let user = state
             .db
             .lock()
-            .unwrap()
             .get_user_by_email("merchant@example.com")
             .unwrap()
             .expect("the signed-up user should exist");
@@ -417,8 +415,8 @@ mod tests {
         // local store_connections row exists for this user at all (and, by
         // extension, no real engine tenant was ever created for it either,
         // since that's the only thing that would have produced one).
-        let user_id = state.db.lock().unwrap().get_user_by_email("bad-currency@example.com").unwrap().unwrap().id;
-        let rows = state.db.lock().unwrap().list_store_connections_for_user(&user_id).unwrap();
+        let user_id = state.db.lock().get_user_by_email("bad-currency@example.com").unwrap().unwrap().id;
+        let rows = state.db.lock().list_store_connections_for_user(&user_id).unwrap();
         assert_eq!(rows.len(), 0, "no local store_connections row should exist either");
     }
 
@@ -455,7 +453,7 @@ mod tests {
         assert_eq!(response.status(), StatusCode::CREATED, "a known currency must be selectable regardless of provider support");
 
         let connection_id = body_json(response).await["connection_id"].as_str().unwrap().to_string();
-        let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        let row = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
         assert_eq!(row.base_currency, "EUR");
     }
 }

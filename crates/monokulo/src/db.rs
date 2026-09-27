@@ -12,7 +12,8 @@
 //! is a correct — if simple — realization of "single writer", same reasoning
 //! as `Store`'s own doc comment.
 
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension, params};
 
@@ -1940,16 +1941,16 @@ mod tests {
     #[test]
     fn concurrent_threshold_adds_never_exceed_five() {
         let db = Arc::new(Mutex::new(Db::open_in_memory().unwrap()));
-        let connection_id = seed_connection_for_connect_token_tests(&db.lock().unwrap());
+        let connection_id = seed_connection_for_connect_token_tests(&db.lock());
         let threads: Vec<_> = (0..16).map(|i| {
             let db = db.clone();
             let connection_id = connection_id.clone();
             std::thread::spawn(move || {
-                db.lock().unwrap().create_confirmation_threshold_with_limit(&format!("id-{i}"), &connection_id, &i.to_string(), 10, 1000).unwrap()
+                db.lock().create_confirmation_threshold_with_limit(&format!("id-{i}"), &connection_id, &i.to_string(), 10, 1000).unwrap()
             })
         }).collect();
         assert_eq!(threads.into_iter().map(|thread| thread.join().unwrap()).filter(|inserted| *inserted).count(), 5);
-        assert_eq!(db.lock().unwrap().count_confirmation_thresholds(&connection_id).unwrap(), 5);
+        assert_eq!(db.lock().count_confirmation_thresholds(&connection_id).unwrap(), 5);
     }
 
     #[test]

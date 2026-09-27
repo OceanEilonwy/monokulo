@@ -467,7 +467,7 @@ mod tests {
     async fn signed_in_merchants_are_never_challenged() {
         let state = state(low_limits());
         {
-            let db = state.db.lock().unwrap();
+            let db = state.db.lock();
             db.create_user("u1", "merchant@example.com", "x", false, 0).unwrap();
             db.create_session(&shared::auth::hash_secret_token("session-token"), "u1", crate::now_unix()).unwrap();
         }
@@ -525,7 +525,7 @@ mod tests {
     async fn only_operators_see_challenge_activity_on_the_status_page() {
         let state = state(low_limits());
         {
-            let db = state.db.lock().unwrap();
+            let db = state.db.lock();
             db.create_user("admin", "admin@example.com", "x", true, 0).unwrap();
             db.create_user("merchant", "m@example.com", "x", false, 0).unwrap();
             db.create_session(&shared::auth::hash_secret_token("admin-token"), "admin", crate::now_unix()).unwrap();

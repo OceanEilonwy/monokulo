@@ -122,7 +122,7 @@ async fn load_order(
     pk: &str,
     order_id: &str,
 ) -> Result<(StoreConnectionRow, String, OrderDetailResponse), LoadError> {
-    let row = match state.db.lock().unwrap().get_store_connection_by_public_key(pk) {
+    let row = match state.db.lock().get_store_connection_by_public_key(pk) {
         Ok(Some(row)) => row,
         Ok(None) => return Err(LoadError::NotFound),
         Err(_) => return Err(LoadError::Internal),
@@ -222,7 +222,7 @@ fn must_open_from_shop(state: &AppState, row: &StoreConnectionRow, order_id: &st
     if dest.eq_ignore_ascii_case("iframe") || dest.eq_ignore_ascii_case("frame") {
         return false;
     }
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock();
     if !db.embed_restricted(&row.id).unwrap_or(false) {
         return false;
     }
@@ -292,7 +292,7 @@ async fn build_checkout_view(
     let confirmations_required = super::pos::resolve_confirmations_required(state, &row.id, sk, &detail.order.order_id).await;
 
     let (amount, currency) =
-        match state.db.lock().unwrap().get_order_currency_metadata(&row.id, &detail.order.order_id) {
+        match state.db.lock().get_order_currency_metadata(&row.id, &detail.order.order_id) {
             Ok(Some(metadata)) => (metadata.amount, metadata.currency),
             _ => ("—".to_string(), "".to_string()),
         };
@@ -984,7 +984,7 @@ mod tests {
         assert_eq!(engine_client.live_upstream_count(), 1, "one engine stream for this store");
 
         // A change the engine makes on its own, not through monokulo.
-        assert!(engine.store().lock().unwrap().mark_double_spend_detected(&order_id, crate::now_unix()).unwrap());
+        assert!(engine.store().lock().mark_double_spend_detected(&order_id, crate::now_unix()).unwrap());
 
         let (event, fragment) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
         assert_eq!(event, "fragment");

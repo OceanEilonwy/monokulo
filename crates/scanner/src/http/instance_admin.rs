@@ -59,6 +59,7 @@ fn effective_admin_token_hash(store: &Store) -> Result<Option<String>, StatusCod
 /// only on that first-boot path, for the caller to print - this function
 /// itself never prints anything, so a test can seed a database directly with
 /// this instead of scraping stdout for a token it needs to authenticate with.
+#[allow(clippy::expect_used, reason = "boot-time only: without a stored token the admin API is unusable, so failing loudly is right")]
 pub fn ensure_admin_token_seeded(store: &Store) -> Option<String> {
     if std::env::var(ADMIN_TOKEN_ENV_VAR).is_ok_and(|v| !v.trim().is_empty()) {
         return None;
@@ -96,7 +97,7 @@ impl FromRequestParts<AppState> for AuthedInstanceAdmin {
             parts.headers.get(header::AUTHORIZATION).and_then(|v| v.to_str().ok()).ok_or(ApiError::Unauthorized)?;
         let token = header_value.strip_prefix("Bearer ").ok_or(ApiError::Unauthorized)?;
         let presented_hash = shared::auth::hash_secret_token(token);
-        let store = state.store.lock().unwrap();
+        let store = state.store.lock();
         let effective_hash = effective_admin_token_hash(&store).map_err(|_| ApiError::Internal("settings lookup failed".into()))?;
         match effective_hash {
             Some(hash) if hash == presented_hash => Ok(AuthedInstanceAdmin),
@@ -133,7 +134,7 @@ pub struct SettingsView {
 /// value (and where it actually came from), in one response, so an admin
 /// page can render the whole form from a single call.
 pub async fn get_settings(AuthedInstanceAdmin: AuthedInstanceAdmin, State(state): State<AppState>) -> impl IntoResponse {
-    let store = state.store.lock().unwrap();
+    let store = state.store.lock();
     let scalars = settings::ALL_SCALAR
         .iter()
         .map(|s| {
@@ -255,7 +256,7 @@ pub async fn update_settings(
         }
     }
 
-    let store = state.store.lock().unwrap();
+    let store = state.store.lock();
 
     let backend = req
         .scalars

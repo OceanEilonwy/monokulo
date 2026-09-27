@@ -14,7 +14,8 @@
 //! result.
 
 use std::cell::RefCell;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension, params};
 use uuid::Uuid;
@@ -244,8 +245,12 @@ fn status_to_str(s: OrderStatus) -> &'static str {
     s.as_str()
 }
 
-fn status_from_str(s: &str) -> OrderStatus {
-    match s {
+/// An unknown value can only come from a hand-edited or corrupted row (the
+/// schema's CHECK constraint rejects it otherwise). It is reported as a row
+/// conversion error rather than a panic, so one bad row fails the query that
+/// read it, not the whole scan loop.
+fn status_from_str(s: &str) -> rusqlite::Result<OrderStatus> {
+    Ok(match s {
         "pending" => OrderStatus::Pending,
         "unconfirmed" => OrderStatus::Unconfirmed,
         "confirming" => OrderStatus::Confirming,
@@ -253,8 +258,14 @@ fn status_from_str(s: &str) -> OrderStatus {
         "partial" => OrderStatus::Partial,
         "overpaid" => OrderStatus::Overpaid,
         "expired" => OrderStatus::Expired,
-        other => panic!("unknown status in database: {other}"), // schema CHECK constraint makes this unreachable
-    }
+        other => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                0,
+                rusqlite::types::Type::Text,
+                format!("unknown order status in database: {other:?}").into(),
+            ))
+        }
+    })
 }
 
 fn new_id(prefix: &str) -> String {
@@ -339,9 +350,19 @@ impl Store {
         F: FnOnce(&Store) -> std::result::Result<T, E>,
         E: From<StoreError>,
     {
+        // Cleared again even if `f` panics, so a panic can't leave later
+        // changes made outside any transaction stuck in the buffer.
+        struct ResetOnDrop<'a>(&'a std::cell::RefCell<Option<Vec<OrderChange>>>);
+        impl Drop for ResetOnDrop<'_> {
+            fn drop(&mut self) {
+                self.0.borrow_mut().take();
+            }
+        }
         *self.pending_order_changes.borrow_mut() = Some(Vec::new());
+        let reset = ResetOnDrop(&self.pending_order_changes);
         let result = self.run_transaction(f);
         let pending = self.pending_order_changes.borrow_mut().take().unwrap_or_default();
+        drop(reset);
         if result.is_ok() {
             for change in pending {
                 let _ = self.order_changes.send(change);
@@ -785,7 +806,7 @@ impl Store {
             address: row.get("address")?,
             xmr_amount_piconero: row.get::<_, i64>("xmr_amount_piconero")? as u64,
             amount_received_piconero: row.get::<_, i64>("amount_received_piconero")? as u64,
-            status: status_from_str(&status_str),
+            status: status_from_str(&status_str)?,
             confirmations: row.get::<_, i64>("confirmations")? as u64,
             double_spend_detected_at: row.get("double_spend_detected_at_utc")?,
             refund_address: row.get("refund_address")?,
@@ -1598,6 +1619,73 @@ mod tests {
     }
 
     #[test]
+    fn a_panic_while_holding_the_shared_store_does_not_break_later_users() {
+        let shared = Store::open_in_memory().unwrap().into_shared();
+        let tenant = new_tenant(&shared.lock());
+        let panicking = shared.clone();
+        let joined = std::thread::spawn(move || {
+            let _guard = panicking.lock();
+            panic!("simulated bug while holding the store lock");
+        })
+        .join();
+        assert!(joined.is_err(), "the helper thread must really have panicked");
+
+        // With a poisoning mutex every later `lock()` would fail from here on,
+        // taking the scan loop and every HTTP handler down with it.
+        let store = shared.lock();
+        let order = new_order(&store, &tenant.tenant.id, 1);
+        assert_eq!(store.get_order_by_id(&order.id).unwrap().unwrap().id, order.id);
+    }
+
+    #[test]
+    fn a_panic_inside_a_transaction_rolls_back_and_leaves_the_store_usable() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let mut changes = store.subscribe_order_changes();
+
+        let caught = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _: std::result::Result<(), StoreError> = store.in_transaction(|s| {
+                new_order(s, &tenant.tenant.id, 1);
+                panic!("simulated bug mid-transaction");
+            });
+        }));
+        assert!(caught.is_err());
+
+        // Rolled back: the order written inside the transaction is gone.
+        assert!(store.find_order_by_minor_index(&tenant.tenant.id, 1).unwrap().is_none());
+        // No transaction left open: a new one begins and commits normally.
+        store
+            .in_transaction(|s| -> Result<()> {
+                new_order(s, &tenant.tenant.id, 2);
+                Ok(())
+            })
+            .unwrap();
+        assert!(store.find_order_by_minor_index(&tenant.tenant.id, 2).unwrap().is_some());
+
+        // And changes made outside any transaction are published straight away,
+        // not left in the buffer the panicked transaction had set up.
+        while changes.try_recv().is_ok() {}
+        let order = store.find_order_by_minor_index(&tenant.tenant.id, 2).unwrap().unwrap();
+        assert!(store.set_refund_address(&tenant.tenant.id, &order.id, "refund").unwrap());
+        assert_eq!(changes.try_recv().unwrap().order_id, order.id);
+    }
+
+    #[test]
+    fn an_unknown_order_status_in_a_row_is_an_error_not_a_panic() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, &tenant.tenant.id, 1);
+        store
+            .execute_raw_for_test(&format!(
+                "PRAGMA ignore_check_constraints = ON; UPDATE orders SET status = 'bogus' WHERE id = '{}'; PRAGMA ignore_check_constraints = OFF;",
+                order.id
+            ))
+            .unwrap();
+        let err = store.get_order_by_id(&order.id).unwrap_err();
+        assert!(err.to_string().contains("bogus"), "got: {err}");
+    }
+
+    #[test]
     fn a_setting_that_was_never_saved_reads_as_none() {
         let store = Store::open_in_memory().unwrap();
         assert_eq!(store.get_setting("payment.confirmations_required").unwrap(), None);
@@ -1724,7 +1812,7 @@ mod tests {
             .map(|_| {
                 let shared = Arc::clone(&shared);
                 let tenant_id = tenant_id.clone();
-                std::thread::spawn(move || shared.lock().unwrap().allocate_minor_index(&tenant_id).unwrap())
+                std::thread::spawn(move || shared.lock().allocate_minor_index(&tenant_id).unwrap())
             })
             .collect();
 

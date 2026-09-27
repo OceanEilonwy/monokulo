@@ -212,7 +212,7 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
 //
 // This was originally (wrongly) blamed for a reliable, node-independent,
 // multi-minute-plus stall on this test's very first scan tick, on the theory
-// that both loops contending for `Store`'s blocking `std::sync::Mutex` under
+// that both loops contending for `Store`'s blocking `parking_lot::Mutex` under
 // a single-threaded runtime could deadlock. That was a red herring: the real
 // cause was `with_background_loops`'s own `NoopDaemonClient`-driven scan-tick
 // loop sharing this network's scanned-height watermark in `Store` with the

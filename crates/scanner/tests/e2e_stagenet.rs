@@ -28,7 +28,8 @@
 mod support;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -108,7 +109,6 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
     let sealed = key_custody.seal(&material).await.unwrap();
     let created = store
         .lock()
-        .unwrap()
         .create_tenant(
             NewTenant {
                 key_custody_backend: "plain".to_string(),

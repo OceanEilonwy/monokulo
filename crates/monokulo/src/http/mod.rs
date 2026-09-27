@@ -382,7 +382,7 @@ pub(crate) fn resolve_authed_user(state: &AppState, headers: &HeaderMap) -> Opti
     };
     let token_hash = shared::auth::hash_secret_token(&token);
 
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock();
     let session = db.find_session(&token_hash).ok().flatten()?;
     let user = db.get_user_by_id(&session.user_id).ok().flatten()?;
     Some((user, token_hash))

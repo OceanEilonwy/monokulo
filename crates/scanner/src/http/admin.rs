@@ -74,7 +74,7 @@ pub async fn create_tenant(
         .map_err(key_custody_error_for_new_tenant)?;
     let sealed = state.key_custody.seal(&material).await.map_err(key_custody_error_for_new_tenant)?;
 
-    let created = state.store.lock().unwrap().create_tenant(
+    let created = state.store.lock().create_tenant(
         NewTenant {
             // Not hardcoded "plain" - see `AppState::key_custody_backend`'s own
             // doc comment: this instance may be running with `backend = "socket"`
@@ -100,7 +100,7 @@ pub async fn create_tenant(
         }
     };
 
-    state.wallet_handles.write().unwrap().insert(created.tenant.id.clone(), handle);
+    state.wallet_handles.write().insert(created.tenant.id.clone(), handle);
 
     Ok(Json(CreateTenantResponse {
         tenant_id: created.tenant.id,
@@ -204,7 +204,7 @@ pub async fn patch_own_tenant(
         confirmations_required: req.confirmations_required,
         order_expiry_seconds: req.order_expiry_seconds,
     };
-    let store = state.store.lock().unwrap();
+    let store = state.store.lock();
     store.update_tenant_config(&tenant.id, patch)?;
     let refetched = store.get_tenant_by_id(&tenant.id)?.ok_or(ApiError::NotFound)?;
     Ok(Json(TenantView::from(refetched)))
@@ -219,7 +219,7 @@ pub async fn rotate_secret(
     AuthedTenant(tenant): AuthedTenant,
     State(state): State<AppState>,
 ) -> Result<Json<RotateSecretResponse>, ApiError> {
-    let new_secret = state.store.lock().unwrap().rotate_tenant_secret(&tenant.id)?;
+    let new_secret = state.store.lock().rotate_tenant_secret(&tenant.id)?;
     Ok(Json(RotateSecretResponse { secret_token: new_secret }))
 }
 
@@ -227,12 +227,12 @@ pub async fn delete_own_tenant(
     AuthedTenant(tenant): AuthedTenant,
     State(state): State<AppState>,
 ) -> Result<StatusCode, ApiError> {
-    let removed_handle = state.wallet_handles.write().unwrap().remove(&tenant.id);
+    let removed_handle = state.wallet_handles.write().remove(&tenant.id);
     if let Some(handle) = removed_handle {
         // Best-effort: an already-unknown handle is not an error worth surfacing here.
         let _ = state.key_custody.remove_wallet(handle).await;
     }
-    state.store.lock().unwrap().disable_tenant(&tenant.id, now_unix())?;
+    state.store.lock().disable_tenant(&tenant.id, now_unix())?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -330,7 +330,7 @@ pub async fn list_orders(
     if ids.as_ref().is_some_and(|ids| ids.len() > MAX_LIST_ORDER_IDS) {
         return Err(ApiError::BadRequest(format!("ids may name at most {MAX_LIST_ORDER_IDS} orders")));
     }
-    let store = state.store.lock().unwrap();
+    let store = state.store.lock();
     let orders = match ids {
         Some(ids) => {
             let mut orders = Vec::with_capacity(ids.len());
@@ -392,7 +392,7 @@ pub async fn get_order_detail(
     Path(order_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<Json<OrderDetailResponse>, ApiError> {
-    let store = state.store.lock().unwrap();
+    let store = state.store.lock();
     let order = store.get_order(&tenant.id, &order_id)?.ok_or(ApiError::NotFound)?;
     let payments = store.get_all_payments(&order.id)?;
     let order_view = build_order_view(&store, order, now_unix(), state.expired_order_grace_period_seconds)?;
@@ -421,7 +421,7 @@ pub async fn set_order_refund_address(
     State(state): State<AppState>,
     Json(req): Json<SetRefundAddressRequest>,
 ) -> Result<(), ApiError> {
-    let updated = state.store.lock().unwrap().set_refund_address(&tenant.id, &order_id, &req.refund_address)?;
+    let updated = state.store.lock().set_refund_address(&tenant.id, &order_id, &req.refund_address)?;
     if updated {
         Ok(())
     } else {
@@ -459,7 +459,6 @@ pub async fn create_webhook(
     let webhook = state
         .store
         .lock()
-        .unwrap()
         .create_webhook(&tenant.id, &req.url, &extra_headers_json, &secret, now_unix())?;
     Ok(Json(CreateWebhookResponse { webhook_id: webhook.id, signing_secret: secret }))
 }
@@ -482,7 +481,7 @@ pub async fn list_webhooks(
     AuthedTenant(tenant): AuthedTenant,
     State(state): State<AppState>,
 ) -> Result<Json<Vec<WebhookView>>, ApiError> {
-    let webhooks = state.store.lock().unwrap().list_webhooks(&tenant.id)?;
+    let webhooks = state.store.lock().list_webhooks(&tenant.id)?;
     Ok(Json(webhooks.into_iter().map(WebhookView::from).collect()))
 }
 
@@ -491,7 +490,7 @@ pub async fn delete_webhook(
     Path(webhook_id): Path<String>,
     State(state): State<AppState>,
 ) -> Result<StatusCode, ApiError> {
-    let deleted = state.store.lock().unwrap().delete_webhook(&tenant.id, &webhook_id)?;
+    let deleted = state.store.lock().delete_webhook(&tenant.id, &webhook_id)?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
     } else {
@@ -580,7 +579,7 @@ pub async fn lookup_payment(
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let touched = {
-        let store = state.store.lock().unwrap();
+        let store = state.store.lock();
         crate::scanner::record_scan_match(&store, &tenant.id, &scan, now, block_height).map_err(|e| ApiError::Internal(e.to_string()))?
     };
 
@@ -594,7 +593,7 @@ pub async fn lookup_payment(
     // behind the real tip by an unrelated confirmation or two).
     let current_height = daemon.get_height().await.map_err(|e| ApiError::Internal(e.to_string()))?;
     {
-        let store = state.store.lock().unwrap();
+        let store = state.store.lock();
         for order_id in &touched {
             crate::scanner::recompute_and_notify(&store, order_id, current_height, now)
                 .map_err(|e| ApiError::Internal(e.to_string()))?;
@@ -624,7 +623,7 @@ pub async fn order_events(
     use axum::response::sse::{Event, KeepAlive, Sse};
     use tokio::sync::broadcast::error::RecvError;
 
-    let receiver = state.store.lock().unwrap().subscribe_order_changes();
+    let receiver = state.store.lock().subscribe_order_changes();
     let ready = futures_util::stream::once(async { Ok(Event::default().event("ready").data("{}")) });
     let changes = futures_util::stream::unfold((receiver, tenant.id), |(mut receiver, tenant_id)| async move {
         loop {

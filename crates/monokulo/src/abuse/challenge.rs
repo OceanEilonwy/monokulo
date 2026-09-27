@@ -27,7 +27,7 @@
 //! outstanding challenges (clients get a new one).
 
 use std::collections::HashMap;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 use hmac::{Hmac, KeyInit, Mac};
 use rand::Rng;
@@ -141,7 +141,7 @@ impl Challenges {
     }
 
     fn remember(&self, token: &str, expires: i64, now: i64) -> Result<(), RedeemError> {
-        let mut redeemed = self.redeemed.lock().unwrap();
+        let mut redeemed = self.redeemed.lock();
         if redeemed.contains_key(token) {
             return Err(RedeemError::Replayed);
         }

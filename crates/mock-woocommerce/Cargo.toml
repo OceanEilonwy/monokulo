@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+parking_lot = "0.12.5"
 # Kept from WBS 0.1 - not directly used by this task's own code, but left in
 # place rather than ripped out; a later WBS task (1.4.3, order creation) is
 # expected to want it.

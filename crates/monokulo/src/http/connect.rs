@@ -89,11 +89,10 @@ fn render_confirm_form(
     let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
         network_selected_flags(resubmit.and_then(|f| f.network.as_deref()).unwrap_or("mainnet"));
     let selected_currency = resubmit.and_then(|f| f.base_currency.as_deref()).unwrap_or("XMR");
-    let currency_options = crate::currencies::currency_options(&state.db.lock().unwrap(), selected_currency).unwrap_or_default();
+    let currency_options = crate::currencies::currency_options(&state.db.lock(), selected_currency).unwrap_or_default();
     let existing_stores = state
         .db
         .lock()
-        .unwrap()
         .list_store_connections_for_user(&user.id)
         .unwrap_or_default()
         .into_iter()
@@ -134,7 +133,7 @@ const NO_PUBLIC_URL: &str = "This Monokulo instance can't connect plugins yet: i
 /// sees it before typing anything), again when it is submitted, and in
 /// `/finish`, so a plugin is never handed a wrong address.
 fn public_url_for_plugins(state: &AppState) -> Result<String, String> {
-    crate::settings::public_url(&state.db.lock().unwrap()).ok_or_else(|| NO_PUBLIC_URL.to_string())
+    crate::settings::public_url(&state.db.lock()).ok_or_else(|| NO_PUBLIC_URL.to_string())
 }
 
 /// Percent-encodes `s` for safe embedding as one query-string value - the
@@ -348,12 +347,12 @@ async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str
     // Looked up in its own statement, not as a `match` scrutinee - a
     // `MutexGuard` temporary produced inside a scrutinee lives for the
     // *entire* match expression, including its arms, so a naive
-    // `match state.db.lock().unwrap().get_store_connection_by_id(...)`
+    // `match state.db.lock().get_store_connection_by_id(...)`
     // here would still be holding this lock while an arm below calls
     // `render_confirm_form`, which itself locks the same mutex - a real,
     // confirmed self-deadlock (caught by a hung test before this was ever
     // committed), not a hypothetical one.
-    let lookup = state.db.lock().unwrap().get_store_connection_by_id(connection_id);
+    let lookup = state.db.lock().get_store_connection_by_id(connection_id);
     let row = match lookup {
         Ok(Some(row)) if row.user_id == user.id => row,
         Ok(_) => {
@@ -379,7 +378,7 @@ async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str
     // (`crate::embed_domains`), and the row's `site_url` is updated so the
     // dashboard reflects the most recent site this store is actually serving.
     crate::embed_domains::suggest_site_domain(&state.db, &row.id, &form.site_url, now_unix());
-    if state.db.lock().unwrap().update_store_connection_site_url(&row.id, &form.site_url).is_err() {
+    if state.db.lock().update_store_connection_site_url(&row.id, &form.site_url).is_err() {
         return internal_error();
     }
 
@@ -395,7 +394,7 @@ async fn confirm_existing_store(state: &AppState, user: &UserRow, platform: &str
 fn mint_token_and_redirect(state: &AppState, connection_id: &str, platform: &str, form: &ConfirmForm, user: &UserRow) -> Response {
     let raw_token = shared::auth::generate_connect_token();
     let token_hash = shared::auth::hash_secret_token(&raw_token);
-    let stored = state.db.lock().unwrap().create_connect_token(&token_hash, connection_id, &form.nonce, now_unix());
+    let stored = state.db.lock().create_connect_token(&token_hash, connection_id, &form.nonce, now_unix());
     if stored.is_err() {
         return render_confirm_form(
             state,
@@ -495,7 +494,7 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
     let token_hash = shared::auth::hash_secret_token(&req.token);
 
     let connection_id = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         match db.consume_connect_token(&token_hash, now_unix(), CONNECT_TOKEN_TTL_SECONDS) {
             Ok(Some(id)) => id,
             Ok(None) => return StatusCode::UNAUTHORIZED.into_response(),
@@ -504,7 +503,7 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
     };
 
     let row = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         match db.get_store_connection_by_id(&connection_id) {
             Ok(Some(row)) => row,
             // The token pointed at a connection that no longer exists -
@@ -1188,8 +1187,8 @@ mod tests {
         let cookie = signed_up_and_logged_in_session_cookie(&router, "reuse-existing@example.com", "correct horse battery staple").await;
         let (connection_id, public_key) = create_a_store(&router, &cookie, "https://my-existing-shop.example.com").await;
 
-        let user_id = state.db.lock().unwrap().get_user_by_email("reuse-existing@example.com").unwrap().unwrap().id;
-        let connections_before = state.db.lock().unwrap().list_store_connections_for_user(&user_id).unwrap().len();
+        let user_id = state.db.lock().get_user_by_email("reuse-existing@example.com").unwrap().unwrap().id;
+        let connections_before = state.db.lock().list_store_connections_for_user(&user_id).unwrap().len();
         assert_eq!(connections_before, 1);
 
         let post_response = router
@@ -1215,7 +1214,7 @@ mod tests {
 
         // No second store_connections row was created for this "existing"-mode
         // submission.
-        let connections_after = state.db.lock().unwrap().list_store_connections_for_user(&user_id).unwrap().len();
+        let connections_after = state.db.lock().list_store_connections_for_user(&user_id).unwrap().len();
         assert_eq!(connections_after, 1, "using an existing store must not provision a second one");
 
         // /finish hands back credentials for the *same* store - same
@@ -1237,12 +1236,12 @@ mod tests {
 
         // The two real side effects of attaching a second site to an
         // existing store: the row's site_url reflects the new site...
-        let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        let row = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
         assert_eq!(row.site_url, "https://new-wp-site.example.com", "expected the row's site_url to move to the newly-attached site");
 
         // ...and the new site's domain joins the store's domains, waiting
         // for the merchant to verify it.
-        let domains = state.db.lock().unwrap().list_store_domains(&connection_id).unwrap();
+        let domains = state.db.lock().list_store_domains(&connection_id).unwrap();
         assert!(
             domains.iter().any(|d| d.domain == "new-wp-site.example.com" && d.verified_at.is_none()),
             "expected the new site's domain added, got: {domains:?}"
@@ -1307,7 +1306,7 @@ mod tests {
         assert_eq!(post_response.status(), StatusCode::FOUND);
 
         let domains: Vec<String> =
-            state.db.lock().unwrap().list_store_domains(&connection_id).unwrap().into_iter().map(|d| d.domain).collect();
+            state.db.lock().list_store_domains(&connection_id).unwrap().into_iter().map(|d| d.domain).collect();
         assert_eq!(domains, vec!["original-site.example.com".to_string(), "second-site.example.com".to_string()]);
 
     }
@@ -1384,7 +1383,7 @@ mod tests {
     #[tokio::test]
     async fn plugins_cannot_connect_until_the_public_url_is_set_and_are_told_why() {
         let (state, engine) = test_state_with_real_engine().await;
-        state.db.lock().unwrap().set_setting(crate::settings::PUBLIC_URL.key, "").unwrap();
+        state.db.lock().set_setting(crate::settings::PUBLIC_URL.key, "").unwrap();
         let router = build_router(state.clone());
         let cookie = signed_up_and_logged_in_session_cookie(&router, "no-public-url@example.com", "correct horse battery staple").await;
 
@@ -1415,14 +1414,14 @@ mod tests {
         let submit = router.clone().oneshot(form_request("/connect/woocommerce", Some(&cookie), &fields)).await.unwrap();
         assert_eq!(submit.status(), StatusCode::OK, "no redirect, no token");
         let user_id = signed_in_user_id(&state, "no-public-url@example.com");
-        assert!(state.db.lock().unwrap().list_store_connections_for_user(&user_id).unwrap().is_empty());
+        assert!(state.db.lock().list_store_connections_for_user(&user_id).unwrap().is_empty());
 
         // Get a real token with the address set, then unset it again.
-        state.db.lock().unwrap().set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL).unwrap();
+        state.db.lock().set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL).unwrap();
         let submit = router.clone().oneshot(form_request("/connect/woocommerce", Some(&cookie), &fields)).await.unwrap();
         assert_eq!(submit.status(), StatusCode::FOUND);
         let token = parse_query_params(submit.headers()["location"].to_str().unwrap())["token"].clone();
-        state.db.lock().unwrap().set_setting(crate::settings::PUBLIC_URL.key, "").unwrap();
+        state.db.lock().set_setting(crate::settings::PUBLIC_URL.key, "").unwrap();
 
         let finish = |token: String| {
             router.clone().oneshot(
@@ -1439,7 +1438,7 @@ mod tests {
         let body = body_json(response).await;
         assert!(body["error"].as_str().unwrap().contains("public address"), "{body}");
 
-        state.db.lock().unwrap().set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL).unwrap();
+        state.db.lock().set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL).unwrap();
         let response = finish(token).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK, "the token was not spent by the refused call");
         let body = body_json(response).await;
@@ -1448,6 +1447,6 @@ mod tests {
     }
 
     fn signed_in_user_id(state: &AppState, email: &str) -> String {
-        state.db.lock().unwrap().get_user_by_email(email).unwrap().unwrap().id
+        state.db.lock().get_user_by_email(email).unwrap().unwrap().id
     }
 }

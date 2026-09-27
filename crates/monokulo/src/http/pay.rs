@@ -75,7 +75,7 @@ pub async fn create_order(
     let created_with_key = key.is_some();
     let policy_lock = crate::confirmation_thresholds::policy_lock(&pk);
     let _policy_guard = policy_lock.lock().await;
-    let row = match state.db.lock().unwrap().get_store_connection_by_public_key(&pk) {
+    let row = match state.db.lock().get_store_connection_by_public_key(&pk) {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(_) => return ApiError::Internal.into_response(),
@@ -87,7 +87,7 @@ pub async fn create_order(
     // different, clearer error than "unsupported currency" (a real currency
     // this instance just can't get a live rate for right now), so the two
     // get distinct messages rather than being collapsed into one.
-    let currency_known = crate::currencies::is_known_currency(&state.db.lock().unwrap(), &req.currency);
+    let currency_known = crate::currencies::is_known_currency(&state.db.lock(), &req.currency);
     match currency_known {
         Ok(true) => {}
         Ok(false) => return ApiError::BadRequest(format!("unknown currency: {}", req.currency)).into_response(),
@@ -144,7 +144,7 @@ pub async fn create_order(
             // payment address. Losing this one local record is a strictly
             // smaller problem than telling a customer their real order
             // failed when it didn't.
-            if let Err(e) = state.db.lock().unwrap().create_order_currency_metadata(
+            if let Err(e) = state.db.lock().create_order_currency_metadata(
                 &row.id,
                 &order.order_id,
                 &req.currency,
@@ -165,7 +165,7 @@ pub async fn create_order(
                 );
             }
             let source = if created_with_key { "api" } else { "website" };
-            let _ = state.db.lock().unwrap().set_order_source(&row.id, &order.order_id, source);
+            let _ = state.db.lock().set_order_source(&row.id, &order.order_id, source);
 
             Json(CreateOrderResponse {
                 order_id: order.order_id,
@@ -493,15 +493,15 @@ mod tests {
         let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(&router, "threshold-db-failure@example.com", "correct horse battery staple").await;
         let pk = create_connection(&router, &session_token).await;
-        let row = state.db.lock().unwrap().get_store_connection_by_public_key(&pk).unwrap().unwrap();
+        let row = state.db.lock().get_store_connection_by_public_key(&pk).unwrap().unwrap();
         let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
         state.engine_client.set_confirmations_required(&sk, 0).await.unwrap();
-        state.db.lock().unwrap().break_confirmation_thresholds_for_test();
+        state.db.lock().break_confirmation_thresholds_for_test();
 
         let response = router.oneshot(create_order_request(&pk, "25.00", TEST_CURRENCY)).await.unwrap();
         assert_ne!(response.status(), StatusCode::OK);
-        let tenant_id = engine.store().lock().unwrap().find_tenant_by_public_key(&pk).unwrap().unwrap().id;
-        assert!(engine.store().lock().unwrap().list_orders(&tenant_id, None, 10, None).unwrap().is_empty());
+        let tenant_id = engine.store().lock().find_tenant_by_public_key(&pk).unwrap().unwrap().id;
+        assert!(engine.store().lock().list_orders(&tenant_id, None, 10, None).unwrap().is_empty());
     }
 
     #[tokio::test]
@@ -515,8 +515,8 @@ mod tests {
         let request = create_order_request(&pk, "25.00", TEST_CURRENCY);
         let mut task = tokio::spawn(async move { router.oneshot(request).await.unwrap() });
         assert!(tokio::time::timeout(std::time::Duration::from_millis(100), &mut task).await.is_err());
-        let tenant_id = engine.store().lock().unwrap().find_tenant_by_public_key(&pk).unwrap().unwrap().id;
-        assert!(engine.store().lock().unwrap().list_orders(&tenant_id, None, 10, None).unwrap().is_empty());
+        let tenant_id = engine.store().lock().find_tenant_by_public_key(&pk).unwrap().unwrap().id;
+        assert!(engine.store().lock().list_orders(&tenant_id, None, 10, None).unwrap().is_empty());
         drop(guard);
         assert_eq!(task.await.unwrap().status(), StatusCode::OK);
     }
@@ -527,14 +527,14 @@ mod tests {
         let router = build_router(state.clone());
         let session_token = signed_up_and_logged_in_session_token(&router, "malformed-threshold@example.com", "correct horse battery staple").await;
         let pk = create_connection(&router, &session_token).await;
-        let row = state.db.lock().unwrap().get_store_connection_by_public_key(&pk).unwrap().unwrap();
+        let row = state.db.lock().get_store_connection_by_public_key(&pk).unwrap().unwrap();
         let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
         state.engine_client.set_confirmations_required(&sk, 0).await.unwrap();
-        state.db.lock().unwrap().create_confirmation_threshold("corrupt", &row.id, "not-an-amount", 20, crate::now_unix()).unwrap();
+        state.db.lock().create_confirmation_threshold("corrupt", &row.id, "not-an-amount", 20, crate::now_unix()).unwrap();
         let response = router.oneshot(create_order_request(&pk, "25.00", TEST_CURRENCY)).await.unwrap();
         assert_ne!(response.status(), StatusCode::OK);
-        let tenant_id = engine.store().lock().unwrap().find_tenant_by_public_key(&pk).unwrap().unwrap().id;
-        assert!(engine.store().lock().unwrap().list_orders(&tenant_id, None, 10, None).unwrap().is_empty());
+        let tenant_id = engine.store().lock().find_tenant_by_public_key(&pk).unwrap().unwrap().id;
+        assert!(engine.store().lock().list_orders(&tenant_id, None, 10, None).unwrap().is_empty());
     }
 
     /// A real, previously-missing capability: `EngineClient::create_order`
@@ -643,8 +643,8 @@ mod tests {
         let order_id = body.as_object().unwrap().get("order_id").unwrap().as_str().unwrap().to_string();
 
         let connection_id =
-            state.db.lock().unwrap().get_store_connection_by_public_key(&pk).unwrap().unwrap().id;
-        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&connection_id, &order_id).unwrap();
+            state.db.lock().get_store_connection_by_public_key(&pk).unwrap().unwrap().id;
+        let metadata = state.db.lock().get_order_currency_metadata(&connection_id, &order_id).unwrap();
         let metadata = metadata.expect("expected a real local fiat-metadata row for the order just created");
         assert_eq!(metadata.currency, TEST_CURRENCY);
         assert_eq!(metadata.amount, "10.00");
@@ -782,7 +782,7 @@ mod tests {
         // The engine must never have created a real order at all - threshold
         // resolution runs *before* `EngineClient::create_order`, so a
         // failure here must leave no ghost order behind on the engine.
-        let store = engine.store().lock().unwrap();
+        let store = engine.store().lock();
         let tenant_id = store.find_tenant_by_public_key(&pk).unwrap().unwrap().id;
         let orders = store.list_orders(&tenant_id, None, 100, None).unwrap();
         assert!(orders.is_empty(), "expected no order to have been created on the real engine, got: {orders:?}");

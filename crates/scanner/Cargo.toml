@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+parking_lot = "0.12.5"
 async-trait = "0.1.92"
 axum = { version = "0.8.9", features = ["macros"] }
 handlebars = "6.4.4"

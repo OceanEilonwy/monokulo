@@ -38,7 +38,8 @@
 mod support;
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -273,7 +274,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     // engine's own admin::create_tenant handler already registered its real
     // WalletHandle into the shared wallet_handles registry this test also
     // holds a handle to, exactly like it would for any real caller.
-    assert_eq!(wallet_handles.read().unwrap().len(), 1, "the real connect flow should have registered exactly one tenant");
+    assert_eq!(wallet_handles.read().len(), 1, "the real connect flow should have registered exactly one tenant");
 
     // ---- 3. create a real order through monokulo's own public
     // `/pay/{pk}/orders` (this is what a real storefront - or the
@@ -311,7 +312,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     let expected_total = expected_total_received_display(amount_piconero);
     let mut last_dashboard_html = String::new();
     for attempt in 1..=30 {
-        let tenants: Vec<(String, WalletHandle)> = wallet_handles.read().unwrap().iter().map(|(id, h)| (id.clone(), *h)).collect();
+        let tenants: Vec<(String, WalletHandle)> = wallet_handles.read().iter().map(|(id, h)| (id.clone(), *h)).collect();
         run_scan_tick(&store, key_custody.as_ref(), daemon.as_ref(), network_str(Network::Stagenet), &tenants, e2e_fixture::PAYMENT_REORG_CHECK_DEPTH, 0)
             .await
             .expect("scan tick failed");

@@ -43,7 +43,7 @@ use super::{AppState, AuthedUser};
 /// doc comment), never distinguishing the two. `Err(())` is a real database
 /// failure - the caller's problem, not the requester's.
 pub(super) fn load_owned_connection(state: &AppState, user: &UserRow, id: &str) -> Result<Option<StoreConnectionRow>, ()> {
-    let row = state.db.lock().unwrap().get_store_connection_by_id(id).map_err(|_| ())?;
+    let row = state.db.lock().get_store_connection_by_id(id).map_err(|_| ())?;
     Ok(row.filter(|row| row.user_id == user.id))
 }
 
@@ -87,7 +87,7 @@ async fn build_orders_view_model(
 pub(super) fn order_rows(state: &AppState, row: &StoreConnectionRow, orders: Vec<crate::engine_client::OrderView>) -> Vec<OrderRowViewModel> {
     let ids: Vec<String> = orders.iter().map(|o| o.order_id.clone()).collect();
     let (fiat_metadata, details) = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         (db.list_order_currency_metadata_for_connection(&row.id).unwrap_or_default(), db.order_listing_details(&row.id, &ids).unwrap_or_default())
     };
     orders
@@ -262,7 +262,7 @@ pub async fn order_detail(
             // Phase 3) - fiat display comes entirely from monokulo's own
             // local `order_currency_metadata`, absent for any order that predates
             // this record (falls back to a dash rather than failing the page).
-            let metadata = state.db.lock().unwrap().get_order_currency_metadata(&row.id, &order_id).ok().flatten();
+            let metadata = state.db.lock().get_order_currency_metadata(&row.id, &order_id).ok().flatten();
             let (amount, currency) = match &metadata {
                 Some(m) => (m.amount.clone(), m.currency.clone()),
                 None => ("—".to_string(), "".to_string()),
@@ -556,7 +556,7 @@ async fn render_store_detail_page(
             platform: row.platform,
             site_url: row.site_url,
             public_key: row.tenant_public_key,
-            public_url: crate::settings::public_url(&state.db.lock().unwrap()),
+            public_url: crate::settings::public_url(&state.db.lock()),
             base_currency: row.base_currency,
             health,
             health_label,
@@ -621,7 +621,7 @@ pub(super) async fn render_store_settings_page(
         .map(|name| views::store_settings::FxProviderOption { selected: name == row.fx_provider, name: name.to_string() })
         .collect();
     let (base_currency_options, confirmation_thresholds) = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         let options = crate::currencies::currency_options(&db, &row.base_currency).unwrap_or_default();
         let thresholds = db
             .list_confirmation_thresholds(&row.id)
@@ -633,7 +633,7 @@ pub(super) async fn render_store_settings_page(
     };
     let confirmation_thresholds_at_max = confirmation_thresholds.len() >= 5;
     let (embed_restricted, embed_domain_rows) = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         (db.embed_restricted(&row.id).unwrap_or(false), db.list_store_domains(&row.id).unwrap_or_default())
     };
     let now = crate::now_unix();
@@ -771,7 +771,7 @@ pub async fn create_order(
     // comment and `http::pay::create_order`'s matching check for why
     // "unknown currency" and "unsupported currency" are kept as distinct
     // messages rather than collapsed into one.
-    let currency_known = crate::currencies::is_known_currency(&state.db.lock().unwrap(), currency);
+    let currency_known = crate::currencies::is_known_currency(&state.db.lock(), currency);
     match currency_known {
         Ok(true) => {}
         Ok(false) => return render_create_order_page(&state, row, &user, Some(format!("unknown currency: {currency}"))).await,
@@ -824,7 +824,7 @@ pub async fn create_order(
         .await
     {
         Ok(order) => {
-            if let Err(e) = state.db.lock().unwrap().create_order_currency_metadata(
+            if let Err(e) = state.db.lock().create_order_currency_metadata(
                 &row.id,
                 &order.order_id,
                 currency,
@@ -845,7 +845,7 @@ pub async fn create_order(
                     order.order_id, row.id
                 );
             }
-            let _ = state.db.lock().unwrap().set_order_source(&row.id, &order.order_id, "dashboard");
+            let _ = state.db.lock().set_order_source(&row.id, &order.order_id, "dashboard");
             redirect_302(&format!("/dashboard/stores/{id}/orders/{}", order.order_id))
         }
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
@@ -964,7 +964,7 @@ pub async fn update_fx_provider(
     // of that match (a real Rust footgun, not an oversight) - held across
     // the `Err` arm's own `.await` below, it would make this handler's
     // future `!Send` and fail to compile as an axum route at all.
-    let update_result = state.db.lock().unwrap().update_store_connection_fx_provider(&row.id, &form.fx_provider);
+    let update_result = state.db.lock().update_store_connection_fx_provider(&row.id, &form.fx_provider);
     match update_result {
         Ok(()) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
         Err(_) => {
@@ -1006,7 +1006,7 @@ pub async fn update_base_currency(
     // (a `MutexGuard` temporary in a `match` scrutinee stays alive across
     // every arm, including one that `.await`s, which would make this
     // handler's future `!Send`).
-    let resolved = crate::currencies::resolve_currency(&state.db.lock().unwrap(), &form.base_currency);
+    let resolved = crate::currencies::resolve_currency(&state.db.lock(), &form.base_currency);
     let base_currency = match resolved {
         Ok(Some(code)) => code,
         Ok(None) => {
@@ -1024,7 +1024,7 @@ pub async fn update_base_currency(
 
     let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
     let _policy_guard = policy_lock.lock().await;
-    let update_result = state.db.lock().unwrap().update_store_connection_base_currency(&row.id, &base_currency);
+    let update_result = state.db.lock().update_store_connection_base_currency(&row.id, &base_currency);
     match update_result {
         Ok(()) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
         Err(_) => {
@@ -1079,7 +1079,7 @@ pub async fn create_confirmation_threshold(
 
     let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
     let _policy_guard = policy_lock.lock().await;
-    let existing = match state.db.lock().unwrap().list_confirmation_thresholds(&row.id) {
+    let existing = match state.db.lock().list_confirmation_thresholds(&row.id) {
         Ok(rows) => rows,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -1090,7 +1090,7 @@ pub async fn create_confirmation_threshold(
         return render_store_settings_page(&state, row, &user, Some(format!("A threshold for {canonical_amount} already exists.")), None).await;
     }
     let threshold_id = uuid::Uuid::new_v4().to_string();
-    let create_result = state.db.lock().unwrap().create_confirmation_threshold_with_limit(&threshold_id, &row.id, &canonical_amount, confirmations_required, crate::now_unix());
+    let create_result = state.db.lock().create_confirmation_threshold_with_limit(&threshold_id, &row.id, &canonical_amount, confirmations_required, crate::now_unix());
     match create_result {
         Ok(true) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
         Ok(false) => render_store_settings_page(&state, row, &user, Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()), None).await,
@@ -1121,7 +1121,7 @@ pub async fn delete_confirmation_threshold(
     };
     let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
     let _policy_guard = policy_lock.lock().await;
-    if state.db.lock().unwrap().delete_confirmation_threshold(&row.id, &threshold_id).is_err() {
+    if state.db.lock().delete_confirmation_threshold(&row.id, &threshold_id).is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
     redirect_302(&format!("/dashboard/stores/{id}/settings"))
@@ -1160,7 +1160,7 @@ pub async fn save_confirmation_thresholds(
     let canonical_new_amount = new_confirmations.map(|_| crate::confirmation_thresholds::ThresholdAmount::parse(new_unit_amount).unwrap().canonical());
     let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
     let _policy_guard = policy_lock.lock().await;
-    let existing = match state.db.lock().unwrap().list_confirmation_thresholds(&row.id) {
+    let existing = match state.db.lock().list_confirmation_thresholds(&row.id) {
         Ok(rows) => rows,
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -1179,7 +1179,7 @@ pub async fn save_confirmation_thresholds(
 
     let threshold_id = uuid::Uuid::new_v4().to_string();
     let new_threshold = new_confirmations.map(|n| (threshold_id.as_str(), canonical_new_amount.as_deref().unwrap(), n, crate::now_unix()));
-    let update_result = state.db.lock().unwrap().replace_confirmation_thresholds(&row.id, &deleted_ids, new_threshold);
+    let update_result = state.db.lock().replace_confirmation_thresholds(&row.id, &deleted_ids, new_threshold);
     if !matches!(update_result, Ok(true)) {
         let message = match update_result {
             Ok(false) => "You can define at most 5 custom thresholds. Delete one to add another.".to_string(),
@@ -1349,7 +1349,7 @@ mod tests {
     /// creation, so no local currency metadata exists for the order. 10.00 at
     /// `TEST_RATE_PICONERO_PER_UNIT` (1e12 piconero/USD); the engine only knows XMR.
     async fn seed_real_order(state: &AppState, engine_addr: std::net::SocketAddr, public_key: &str) -> String {
-        let row = state.db.lock().unwrap().get_store_connection_by_public_key(public_key).unwrap().expect("connection exists");
+        let row = state.db.lock().get_store_connection_by_public_key(public_key).unwrap().expect("connection exists");
         let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
         let response = reqwest::Client::new()
             .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))
@@ -1717,10 +1717,10 @@ mod tests {
     #[tokio::test]
     async fn a_merchants_webhook_endpoint_receives_the_paid_notification_with_its_custom_header_and_a_valid_signature() {
         use axum::http::HeaderMap;
-        type Received = std::sync::Arc<std::sync::Mutex<Vec<(HeaderMap, String)>>>;
+        type Received = std::sync::Arc<parking_lot::Mutex<Vec<(HeaderMap, String)>>>;
         let received: Received = Default::default();
         let app = Router::new().route("/hook", axum::routing::post(|axum::extract::State(received): axum::extract::State<Received>, headers: HeaderMap, body: String| async move {
-            received.lock().unwrap().push((headers, body));
+            received.lock().push((headers, body));
             StatusCode::OK
         })).with_state(received.clone());
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1752,7 +1752,7 @@ mod tests {
 
         let deadline = std::time::Instant::now() + std::time::Duration::from_secs(20);
         let (headers, body) = loop {
-            if let Some(first) = received.lock().unwrap().first().cloned() { break first; }
+            if let Some(first) = received.lock().first().cloned() { break first; }
             assert!(std::time::Instant::now() < deadline, "no webhook delivered");
             tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         };
@@ -2398,7 +2398,7 @@ mod tests {
         let router = build_router(state.clone());
         let token = signed_up_and_logged_in_session_token(&router, "local-policy-save@example.com", "correct horse battery staple").await;
         let (connection_id, _) = create_connection(&router, &token).await;
-        state.db.lock().unwrap().create_confirmation_threshold("old", &connection_id, "50", 20, crate::now_unix()).unwrap();
+        state.db.lock().create_confirmation_threshold("old", &connection_id, "50", 20, crate::now_unix()).unwrap();
         // A custom-tier save must not depend on engine availability.
         state.engine_client = EngineClient::new("http://127.0.0.1:0");
         let response = build_router(state.clone()).oneshot(form_post_request(
@@ -2407,7 +2407,7 @@ mod tests {
             &[("delete_old", "on"), ("new_unit_amount", "100"), ("new_confirmations_required", "30")],
         )).await.unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
-        let thresholds = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap();
+        let thresholds = state.db.lock().list_confirmation_thresholds(&connection_id).unwrap();
         assert_eq!(thresholds.len(), 1);
         assert_eq!(thresholds[0].unit_amount, "100");
         assert_eq!(thresholds[0].confirmations_required, 30);
@@ -2419,17 +2419,17 @@ mod tests {
         let router = build_router(state.clone());
         let token = signed_up_and_logged_in_session_token(&router, "default-policy-save@example.com", "correct horse battery staple").await;
         let (connection_id, _) = create_connection(&router, &token).await;
-        state.db.lock().unwrap().create_confirmation_threshold("keep", &connection_id, "50", 20, crate::now_unix()).unwrap();
+        state.db.lock().create_confirmation_threshold("keep", &connection_id, "50", 20, crate::now_unix()).unwrap();
         let response = router.oneshot(form_post_request(
             &format!("/dashboard/stores/{connection_id}/settings/confirmations"),
             &token,
             &[("confirmations_required", "10"), ("zero_conf_enabled", "on"), ("zero_conf_checkbox_present", "true")],
         )).await.unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
-        let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        let row = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
         let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
         assert_eq!(state.engine_client.get_tenant(&sk).await.unwrap().confirmations_required, 0);
-        let thresholds = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap();
+        let thresholds = state.db.lock().list_confirmation_thresholds(&connection_id).unwrap();
         assert_eq!(thresholds.len(), 1);
         assert_eq!(thresholds[0].id, "keep");
         assert_eq!(thresholds[0].confirmations_required, 20);
@@ -2441,12 +2441,12 @@ mod tests {
         let router = build_router(state.clone());
         let token = signed_up_and_logged_in_session_token(&router, "broken-policy-save@example.com", "correct horse battery staple").await;
         let (connection_id, _) = create_connection(&router, &token).await;
-        state.db.lock().unwrap().break_confirmation_thresholds_for_test();
+        state.db.lock().break_confirmation_thresholds_for_test();
         let response = router.oneshot(form_post_request(
             &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"), &token, &[],
         )).await.unwrap();
         assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
-        let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        let row = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
         let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
         assert_eq!(state.engine_client.get_tenant(&sk).await.unwrap().confirmations_required, 10);
     }
@@ -2458,7 +2458,7 @@ mod tests {
         let session_token = signed_up_and_logged_in_session_token(&router, "invalid-threshold-save@example.com", "correct horse battery staple").await;
         let (connection_id, _) = create_connection(&router, &session_token).await;
         let existing_id = "existing-threshold";
-        state.db.lock().unwrap().create_confirmation_threshold(existing_id, &connection_id, "50", 20, crate::now_unix()).unwrap();
+        state.db.lock().create_confirmation_threshold(existing_id, &connection_id, "50", 20, crate::now_unix()).unwrap();
         let delete_field = format!("delete_{existing_id}");
         let response = router.oneshot(form_post_request(
             &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
@@ -2466,10 +2466,10 @@ mod tests {
             &[("confirmations_required", "10"), ("zero_conf_enabled", "on"), (delete_field.as_str(), "on"), ("new_unit_amount", "100"), ("new_confirmations_required", "oops")],
         )).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
-        let row = state.db.lock().unwrap().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        let row = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
         let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
         assert_eq!(state.engine_client.get_tenant(&sk).await.unwrap().confirmations_required, 10);
-        let thresholds = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap();
+        let thresholds = state.db.lock().list_confirmation_thresholds(&connection_id).unwrap();
         assert_eq!(thresholds.len(), 1);
         assert_eq!(thresholds[0].id, existing_id);
     }
@@ -2539,7 +2539,7 @@ mod tests {
             ))
             .await
             .unwrap();
-        assert_eq!(state.db.lock().unwrap().count_confirmation_thresholds(&connection_id).unwrap(), 1);
+        assert_eq!(state.db.lock().count_confirmation_thresholds(&connection_id).unwrap(), 1);
 
         router
             .oneshot(form_post_request(
@@ -2550,7 +2550,7 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(
-            state.db.lock().unwrap().count_confirmation_thresholds(&connection_id).unwrap(),
+            state.db.lock().count_confirmation_thresholds(&connection_id).unwrap(),
             0,
             "every custom threshold must be gone after a base currency change"
         );
@@ -2576,7 +2576,7 @@ mod tests {
             .unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
 
-        let threshold_id = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap()[0].id.clone();
+        let threshold_id = state.db.lock().list_confirmation_thresholds(&connection_id).unwrap()[0].id.clone();
 
         let page = router
             .clone()
@@ -2613,7 +2613,7 @@ mod tests {
             .unwrap();
         assert_eq!(delete_response.status(), StatusCode::FOUND);
         assert_eq!(
-            state.db.lock().unwrap().count_confirmation_thresholds(&connection_id).unwrap(),
+            state.db.lock().count_confirmation_thresholds(&connection_id).unwrap(),
             0,
             "expected the threshold to be gone"
         );
@@ -2657,7 +2657,7 @@ mod tests {
         )).await.unwrap();
         assert_eq!(response.status(), StatusCode::OK);
         assert!(body_text(response).await.contains("already exists"));
-        let rows = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap();
+        let rows = state.db.lock().list_confirmation_thresholds(&connection_id).unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].unit_amount, "50");
         assert_eq!(rows[0].confirmations_required, 20);
@@ -2725,11 +2725,11 @@ mod tests {
         assert!(html.contains("at most 5 custom thresholds"), "expected a clear rejection message, got: {html}");
 
         // Ticking one row's delete box while adding the new one fits.
-        let doomed = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap()[0].clone();
+        let doomed = state.db.lock().list_confirmation_thresholds(&connection_id).unwrap()[0].clone();
         let response = router.oneshot(form_post_request(&save, &session_token,
             &[(&format!("delete_{}", doomed.id), "on"), ("new_unit_amount", "999.00"), ("new_confirmations_required", "15")])).await.unwrap();
         assert_eq!(response.status(), StatusCode::FOUND);
-        let amounts: Vec<String> = state.db.lock().unwrap().list_confirmation_thresholds(&connection_id).unwrap().into_iter().map(|t| t.unit_amount).collect();
+        let amounts: Vec<String> = state.db.lock().list_confirmation_thresholds(&connection_id).unwrap().into_iter().map(|t| t.unit_amount).collect();
         assert_eq!(amounts.len(), 5);
         assert!(amounts.contains(&"999".to_string()) && !amounts.contains(&doomed.unit_amount), "{amounts:?}");
     }
@@ -2786,7 +2786,7 @@ mod tests {
             let html = body_text(response).await;
             assert!(html.contains(message), "{amount}/{confirmations}: expected {message:?}, got: {html}");
         }
-        assert_eq!(state.db.lock().unwrap().count_confirmation_thresholds(&connection_id).unwrap(), 0);
+        assert_eq!(state.db.lock().count_confirmation_thresholds(&connection_id).unwrap(), 0);
     }
 
     /// Proves the whole resolution chain end to end, against the real
@@ -2830,7 +2830,7 @@ mod tests {
         let location = response.headers().get("location").unwrap().to_str().unwrap().to_string();
         let order_id = location.rsplit('/').next().unwrap().to_string();
 
-        let store = engine.store().lock().unwrap();
+        let store = engine.store().lock();
         let tenant_id = store.find_tenant_by_public_key(&public_key).unwrap().unwrap().id;
         let stored = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
         assert_eq!(
@@ -2840,7 +2840,7 @@ mod tests {
         );
         drop(store);
 
-        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&connection_id, &order_id).unwrap().unwrap();
+        let metadata = state.db.lock().get_order_currency_metadata(&connection_id, &order_id).unwrap().unwrap();
         assert_eq!(metadata.store_base_currency, Some("XMR".to_string()));
         assert_eq!(
             metadata.base_currency_piconero_per_unit, None,
@@ -2907,7 +2907,7 @@ mod tests {
         let location = response.headers().get("location").unwrap().to_str().unwrap().to_string();
         let order_id = location.rsplit('/').next().unwrap().to_string();
 
-        let store = engine.store().lock().unwrap();
+        let store = engine.store().lock();
         let tenant_id = store.find_tenant_by_public_key(&public_key).unwrap().unwrap().id;
         let stored = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
         assert_eq!(
@@ -2917,7 +2917,7 @@ mod tests {
         );
         drop(store);
 
-        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&connection_id, &order_id).unwrap().unwrap();
+        let metadata = state.db.lock().get_order_currency_metadata(&connection_id, &order_id).unwrap().unwrap();
         assert_eq!(metadata.confirmations_required_applied, Some(10));
     }
 
@@ -3074,7 +3074,7 @@ mod tests {
         let dashboard = router.clone().oneshot(form_post_request(&format!("/dashboard/stores/{id}/orders/new"), &session_token,
             &[("amount", "1.00"), ("currency", "XMR"), ("merchant_order_id", "invoice-7")])).await.unwrap();
         let dashboard = dashboard.headers()["location"].to_str().unwrap().rsplit('/').next().unwrap().to_string();
-        let row = state.db.lock().unwrap().get_store_connection_by_id(&id).unwrap().unwrap();
+        let row = state.db.lock().get_store_connection_by_id(&id).unwrap().unwrap();
         let secret = crate::crypto::decrypt(&TEST_ENCRYPTION_KEY, &row.tenant_secret_token_encrypted).unwrap();
         let plugin = created_id(router.clone().oneshot(json_post(format!("/pay/{pk}/orders"), Some(format!("Bearer {secret}")),
             serde_json::json!({ "amount": "2.00", "currency": "XMR", "merchant_order_id": "wc-1042" }))).await.unwrap()).await;
@@ -3258,7 +3258,7 @@ mod tests {
         // establishes `first_scanned_height`, the second only advances `last_
         // scanned_height`, matching exactly how two real scan ticks would move it.
         {
-            let s = engine.store().lock().unwrap();
+            let s = engine.store().lock();
             let tenant = s.find_tenant_by_public_key(&public_key).unwrap().unwrap();
             s.bump_scanned_heights_for_tenant(&tenant.id, 100, crate::now_unix(), 0).unwrap();
             s.bump_scanned_heights_for_tenant(&tenant.id, 250, crate::now_unix(), 0).unwrap();

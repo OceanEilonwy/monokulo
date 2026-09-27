@@ -21,7 +21,8 @@ pub mod proxy_protocol;
 pub mod stats;
 pub mod streams;
 
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 pub use identity::{ClientIdentity, TrustedProxies};
 pub use limiter::{Limits, Tier};
@@ -132,14 +133,14 @@ impl AbuseProtection {
     }
 
     pub fn config(&self) -> AbuseConfig {
-        self.config.read().unwrap().clone()
+        self.config.read().clone()
     }
 
     /// Applies new settings without a restart (the onion listener's address
     /// is the one exception: it is bound at startup).
     pub fn reload(&self, config: AbuseConfig) {
         self.streams.set_max(config.stream_cap);
-        *self.config.write().unwrap() = config;
+        *self.config.write() = config;
     }
 
     /// Counts one request from `client` and says what it may do.

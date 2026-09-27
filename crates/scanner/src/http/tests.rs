@@ -6,7 +6,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::str::FromStr;
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 use axum::Router;
 use axum::body::Body;
@@ -167,7 +168,7 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
     assert_eq!(response.status(), StatusCode::OK);
     let order_id = body_json(response).await["order_id"].as_str().unwrap().to_string();
 
-    let guard = store.lock().unwrap();
+    let guard = store.lock();
     let tenant_id = guard.find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
     let order = guard.get_order(&tenant_id, &order_id).unwrap().unwrap();
     assert_eq!(order.confirmations_required_override, Some(3));
@@ -191,7 +192,7 @@ async fn creating_an_order_with_no_confirmations_required_override_leaves_it_uns
     assert_eq!(response.status(), StatusCode::OK);
     let order_id = body_json(response).await["order_id"].as_str().unwrap().to_string();
 
-    let guard = store.lock().unwrap();
+    let guard = store.lock();
     let tenant_id = guard.find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
     let order = guard.get_order(&tenant_id, &order_id).unwrap().unwrap();
     assert_eq!(order.confirmations_required_override, None);
@@ -233,7 +234,7 @@ async fn creating_an_order_with_confirmations_required_zero_is_accepted() {
     assert_eq!(response.status(), StatusCode::OK);
     let order_id = body_json(response).await["order_id"].as_str().unwrap().to_string();
 
-    let guard = store.lock().unwrap();
+    let guard = store.lock();
     let tenant_id = guard.find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap().id;
     let order = guard.get_order(&tenant_id, &order_id).unwrap().unwrap();
     assert_eq!(order.confirmations_required_override, Some(0));
@@ -340,7 +341,7 @@ async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_i
     deduped.dedup();
     assert_eq!(deduped.len(), 3, "every order must be issued its own subaddress");
 
-    let s = store.lock().unwrap();
+    let s = store.lock();
     let tenant_row = s.find_tenant_by_secret_token(&tenant.secret_token).unwrap().unwrap();
     assert_eq!(
         tenant_row.next_minor_index, 4,
@@ -1292,7 +1293,7 @@ fn settings_request(method: &str, bearer: Option<&str>, body: Option<serde_json:
 #[tokio::test]
 async fn instance_admin_settings_requires_a_bearer_token_at_all() {
     let (state, _daemon) = test_app_state_with_real_daemon();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
     let response = router.oneshot(settings_request("GET", None, None)).await.unwrap();
     assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
@@ -1301,7 +1302,7 @@ async fn instance_admin_settings_requires_a_bearer_token_at_all() {
 #[tokio::test]
 async fn a_tenants_own_secret_token_cannot_authenticate_as_the_instance_admin() {
     let (state, _daemon) = test_app_state_with_real_daemon();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
     let response = router.oneshot(settings_request("GET", Some(&tenant.secret_token), None)).await.unwrap();
@@ -1311,7 +1312,7 @@ async fn a_tenants_own_secret_token_cannot_authenticate_as_the_instance_admin() 
 #[tokio::test]
 async fn get_settings_reports_code_defaults_when_nothing_is_configured() {
     let (state, _daemon) = test_app_state_with_real_daemon();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
     let response = router.oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
     assert_eq!(response.status(), StatusCode::OK);
@@ -1324,7 +1325,7 @@ async fn get_settings_reports_code_defaults_when_nothing_is_configured() {
 #[tokio::test]
 async fn updating_a_scalar_setting_persists_and_a_later_get_reflects_it() {
     let (state, _daemon) = test_app_state_with_real_daemon();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
@@ -1347,7 +1348,7 @@ async fn updating_a_scalar_setting_persists_and_a_later_get_reflects_it() {
 #[tokio::test]
 async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save() {
     let (state, _daemon) = test_app_state_with_real_daemon();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     router
@@ -1371,7 +1372,7 @@ async fn an_env_var_override_is_reported_as_effective_even_after_a_database_save
 #[tokio::test]
 async fn saving_an_out_of_range_scalar_is_rejected_and_nothing_changes() {
     let (state, _daemon) = test_app_state_with_real_daemon();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     // `0` is a legal value now (native 0-conf) - `1000` (over the 720 cap) is the
@@ -1395,7 +1396,7 @@ async fn saving_an_out_of_range_scalar_is_rejected_and_nothing_changes() {
 #[tokio::test]
 async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
     let (state, _daemon) = test_app_state_with_real_daemon();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
@@ -1422,7 +1423,7 @@ async fn a_partially_invalid_save_changes_nothing_not_just_the_valid_half() {
 #[tokio::test]
 async fn socket_key_custody_backend_without_a_socket_path_is_rejected() {
     let (state, _daemon) = test_app_state_with_real_daemon();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
@@ -1439,7 +1440,7 @@ async fn socket_key_custody_backend_without_a_socket_path_is_rejected() {
 #[tokio::test]
 async fn socket_key_custody_backend_with_a_socket_path_in_the_same_request_succeeds() {
     let (state, _daemon) = test_app_state_with_real_daemon();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let post = router
@@ -1466,7 +1467,7 @@ async fn socket_key_custody_backend_using_an_already_saved_socket_path_succeeds(
     // request's own body - a caller flipping `backend` to "socket" in a request
     // that doesn't also repeat an already-saved `socket_path` must still succeed.
     let (state, _daemon) = test_app_state_with_real_daemon();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     router
@@ -1493,7 +1494,7 @@ async fn socket_key_custody_backend_using_an_already_saved_socket_path_succeeds(
 #[tokio::test]
 async fn setting_a_monero_node_round_trips_including_its_fallback_list() {
     let (state, _daemon) = test_app_state_with_real_daemon();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let node = serde_json::json!({
@@ -1524,7 +1525,7 @@ async fn setting_a_monero_node_round_trips_including_its_fallback_list() {
 #[tokio::test]
 async fn clearing_a_monero_node_with_a_null_value_removes_its_configuration() {
     let (state, _daemon) = test_app_state_with_real_daemon();
-    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock().unwrap(), "admin_test_token");
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
 
     let node = serde_json::json!({ "host": "primary.example", "port": 18081, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] });
@@ -1559,7 +1560,7 @@ async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_toke
     let generated = crate::http::instance_admin::ensure_admin_token_seeded(&store).expect("a fresh database has no token yet");
 
     let state = AppState {
-        store: std::sync::Arc::new(std::sync::Mutex::new(store)),
+        store: std::sync::Arc::new(parking_lot::Mutex::new(store)),
         key_custody: std::sync::Arc::new(PlainKeyCustody::default()),
         key_custody_backend: "plain".to_string(),
         wallet_handles: Arc::new(RwLock::new(HashMap::new())),
@@ -1570,7 +1571,7 @@ async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_toke
         scan_poll_interval_secs: 2,
         expired_order_grace_period_seconds: 21_600,
     };
-    let second_call = crate::http::instance_admin::ensure_admin_token_seeded(&state.store.lock().unwrap());
+    let second_call = crate::http::instance_admin::ensure_admin_token_seeded(&state.store.lock());
     assert_eq!(second_call, None, "a token that already exists must never be silently regenerated (that would invalidate the first one)");
 
     let router = build_router(state, 1_000_000);
@@ -1715,7 +1716,7 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
     assert_eq!(body["outcome"], "matched");
     assert_eq!(body["order_ids"].as_array().unwrap(), &[serde_json::Value::String(order_id.clone())]);
 
-    let payments = store.lock().unwrap().get_all_payments(&order_id).unwrap();
+    let payments = store.lock().get_all_payments(&order_id).unwrap();
     assert_eq!(payments.len(), 1, "the match must actually be recorded, not just reported");
 
     // A second lookup of the same, already-applied txid must be a safe no-op
@@ -1725,7 +1726,7 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["outcome"], "matched");
-    let payments = store.lock().unwrap().get_all_payments(&order_id).unwrap();
+    let payments = store.lock().get_all_payments(&order_id).unwrap();
     assert_eq!(payments.len(), 1, "looking the same txid up twice must not duplicate the recorded payment");
 }
 
@@ -1867,7 +1868,7 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
     }
     // "Table 2" is paid, so no longer open.
     {
-        let store = store.lock().unwrap();
+        let store = store.lock();
         store.record_payment_match(&ids[1], "tx_paid", 0, 1_000, "[]", crate::now_unix(), Some(10)).unwrap();
         crate::scanner::recompute_and_notify(&store, &ids[1], 100, crate::now_unix()).unwrap();
     }

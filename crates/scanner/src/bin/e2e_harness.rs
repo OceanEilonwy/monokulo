@@ -32,7 +32,8 @@
 //! crate uses).
 
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
@@ -297,7 +298,7 @@ async fn main() {
         let network_lock = network_lock.clone();
         tokio::spawn(async move {
             loop {
-                let tenants: Vec<(String, WalletHandle)> = wallet_handles.read().unwrap().iter().map(|(id, h)| (id.clone(), *h)).collect();
+                let tenants: Vec<(String, WalletHandle)> = wallet_handles.read().iter().map(|(id, h)| (id.clone(), *h)).collect();
                 {
                     let _guard = network_lock.lock().await;
                     if let Err(e) =

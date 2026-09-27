@@ -156,7 +156,7 @@ pub trait MoneroDaemonClient: Send + Sync {
 pub mod fake {
     use super::*;
     use std::collections::HashMap;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     #[derive(Clone)]
     struct FakeBlock {
@@ -248,7 +248,7 @@ pub mod fake {
         /// Mines a new block at the next height, containing `txs`. Each tx is
         /// recorded as `InBlock(height)`, matching what a real node would report.
         pub fn push_block(&self, hash: &str, txs: Vec<Transaction>) -> u64 {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             let height = state.height + 1;
             for tx in &txs {
                 state.tx_locations.insert(txid_of(tx), TxLocation::InBlock(height));
@@ -265,7 +265,7 @@ pub mod fake {
         /// reorg handling (no common ancestor to re-anchor to) is otherwise
         /// unreachable from a test. Also useful for building a chain around a gap.
         pub fn seed_block_at(&self, height: u64, hash: &str, txs: Vec<Transaction>) {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             for tx in &txs {
                 state.tx_locations.insert(txid_of(tx), TxLocation::InBlock(height));
             }
@@ -279,7 +279,7 @@ pub mod fake {
         /// other existing test gets a deterministic, monotonic default for
         /// free and never needs to call it.
         pub fn set_block_timestamp(&self, height: u64, timestamp: u64) {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             if let Some(block) = state.blocks.get_mut(&height) {
                 block.timestamp = timestamp;
             }
@@ -290,7 +290,7 @@ pub mod fake {
         /// backend being briefly ahead of its block-serving backend. See
         /// `height_override`'s doc comment.
         pub fn advance_height_without_a_block(&self) {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             state.height_override = Some(state.height + 1);
         }
 
@@ -301,11 +301,11 @@ pub mod fake {
         /// `docs/DESIGN.md` §7.7 on what the scanner does and does not take on
         /// trust from its configured node.
         pub fn report_height(&self, height: u64) {
-            self.state.lock().unwrap().height_override = Some(height);
+            self.state.lock().height_override = Some(height);
         }
 
         pub fn set_mempool(&self, txs: Vec<Transaction>) {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             for tx in &txs {
                 state.tx_locations.entry(txid_of(tx)).or_insert(TxLocation::InPool);
             }
@@ -318,7 +318,7 @@ pub mod fake {
         /// (the caller then decides, via `set_key_image_status`, whether that's a
         /// "still propagating" or "proven double-spend" situation).
         pub fn reorg_from(&self, from_height: u64, new_blocks: Vec<(&str, Vec<Transaction>)>) {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             let old_txids: Vec<String> = state
                 .blocks
                 .iter()
@@ -348,11 +348,11 @@ pub mod fake {
         }
 
         pub fn set_key_image_status(&self, key_image_hex: &str, status: KeyImageStatus) {
-            self.state.lock().unwrap().key_image_status.insert(key_image_hex.to_string(), status);
+            self.state.lock().key_image_status.insert(key_image_hex.to_string(), status);
         }
 
         pub fn drop_from_mempool(&self, tx: &Transaction) {
-            let mut state = self.state.lock().unwrap();
+            let mut state = self.state.lock();
             state.mempool.retain(|t| txid_of(t) != txid_of(tx));
             state.tx_locations.insert(txid_of(tx), TxLocation::NotFound);
         }
@@ -362,7 +362,7 @@ pub mod fake {
     impl MoneroDaemonClient for FakeDaemonClient {
         async fn get_height(&self) -> Result<u64, DaemonError> {
             self.require_online()?;
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock();
             Ok(state.height_override.unwrap_or(state.height))
         }
 
@@ -370,7 +370,6 @@ pub mod fake {
             self.require_online()?;
             self.state
                 .lock()
-                .unwrap()
                 .blocks
                 .get(&height)
                 .map(|b| b.hash.clone())
@@ -382,7 +381,6 @@ pub mod fake {
             Ok(self
                 .state
                 .lock()
-                .unwrap()
                 .blocks
                 .get(&height)
                 .map(|b| b.txs.clone())
@@ -391,7 +389,7 @@ pub mod fake {
 
         async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
             self.require_online()?;
-            Ok(self.state.lock().unwrap().mempool.clone())
+            Ok(self.state.lock().mempool.clone())
         }
 
         async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
@@ -399,7 +397,6 @@ pub mod fake {
             Ok(self
                 .state
                 .lock()
-                .unwrap()
                 .tx_locations
                 .get(txid)
                 .copied()
@@ -408,7 +405,7 @@ pub mod fake {
 
         async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
             self.require_online()?;
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock();
             for block in state.blocks.values() {
                 if let Some(tx) = block.txs.iter().find(|tx| txid_of(tx) == txid) {
                     return Ok(tx.clone());
@@ -422,7 +419,7 @@ pub mod fake {
 
         async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
             self.require_online()?;
-            let state = self.state.lock().unwrap();
+            let state = self.state.lock();
             Ok(key_images
                 .iter()
                 .map(|ki| state.key_image_status.get(ki).copied().unwrap_or(KeyImageStatus::Unspent))
@@ -433,7 +430,6 @@ pub mod fake {
             self.require_online()?;
             self.state
                 .lock()
-                .unwrap()
                 .blocks
                 .get(&height)
                 .map(|b| b.timestamp)

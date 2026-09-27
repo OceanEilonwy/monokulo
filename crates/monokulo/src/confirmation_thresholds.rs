@@ -22,13 +22,14 @@ use crate::http::AppState;
 /// control-plane process. Callers hold it through the engine create call.
 pub fn policy_lock(pk: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     use std::collections::HashMap;
-    use std::sync::{Arc, LazyLock, RwLock, Weak};
+    use parking_lot::RwLock;
+    use std::sync::{Arc, LazyLock, Weak};
 
     static LOCKS: LazyLock<RwLock<HashMap<String, Weak<tokio::sync::Mutex<()>>>>> = LazyLock::new(|| RwLock::new(HashMap::new()));
-    if let Some(lock) = LOCKS.read().unwrap().get(pk).and_then(Weak::upgrade) {
+    if let Some(lock) = LOCKS.read().get(pk).and_then(Weak::upgrade) {
         return lock;
     }
-    let mut locks = LOCKS.write().unwrap();
+    let mut locks = LOCKS.write();
     if let Some(lock) = locks.get(pk).and_then(Weak::upgrade) {
         return lock;
     }
@@ -163,7 +164,7 @@ pub async fn resolve_for_order(
             return Err("something went wrong resolving the confirmation threshold. Please try again.".to_string());
         }
     };
-    let thresholds = state.db.lock().unwrap().list_confirmation_thresholds(&row.id).map_err(|e| {
+    let thresholds = state.db.lock().list_confirmation_thresholds(&row.id).map_err(|e| {
         eprintln!("could not load confirmation thresholds for connection {}: {e}", row.id);
         "something went wrong resolving the confirmation threshold. Please try again.".to_string()
     })?;

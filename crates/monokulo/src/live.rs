@@ -18,7 +18,8 @@
 use std::collections::HashMap;
 use std::convert::Infallible;
 use std::future::Future;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 use std::time::Duration;
 
 use axum::response::sse::{Event, KeepAlive, Sse};
@@ -66,7 +67,7 @@ impl LiveHub {
     /// `engine` is the client whose events stream is opened for this store if
     /// nobody is watching it yet; `sk` authenticates it.
     pub fn subscribe(self: &Arc<Self>, engine: &EngineClient, connection_id: &str, sk: &str, order_id: &str) -> OrderSubscription {
-        let mut stores = self.stores.lock().unwrap();
+        let mut stores = self.stores.lock();
         let store = stores.entry(connection_id.to_string()).or_insert_with(|| StoreWatch {
             orders: HashMap::new(),
             upstream: tokio::spawn(run_upstream(Arc::downgrade(self), engine.clone(), connection_id.to_string(), sk.to_string())),
@@ -85,7 +86,7 @@ impl LiveHub {
     }
 
     fn release(&self, connection_id: &str, order_id: &str) {
-        let mut stores = self.stores.lock().unwrap();
+        let mut stores = self.stores.lock();
         let Some(store) = stores.get_mut(connection_id) else { return };
         if let Some(order) = store.orders.get_mut(order_id) {
             order.watchers -= 1;
@@ -101,7 +102,7 @@ impl LiveHub {
     }
 
     fn wake(&self, connection_id: &str, order_id: Option<&str>) {
-        let stores = self.stores.lock().unwrap();
+        let stores = self.stores.lock();
         let Some(store) = stores.get(connection_id) else { return };
         for (id, order) in &store.orders {
             if order_id.is_none_or(|wanted| wanted == id) {
@@ -112,7 +113,7 @@ impl LiveHub {
 
     /// How many stores currently hold an upstream connection - for tests.
     pub fn upstream_count(&self) -> usize {
-        self.stores.lock().unwrap().len()
+        self.stores.lock().len()
     }
 }
 

@@ -27,7 +27,8 @@
 
 use std::collections::HashSet;
 use std::net::SocketAddr;
-use std::sync::{Arc, Mutex as StdMutex};
+use parking_lot::Mutex as StdMutex;
+use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::{Query, State};
@@ -151,7 +152,7 @@ impl WebhookReceiver {
     /// (see this crate's own forced-delivery test) without holding a lock across a
     /// `sleep`.
     pub fn events(&self) -> Vec<RecordedWebhookEvent> {
-        self.state.lock().unwrap().events.clone()
+        self.state.lock().events.clone()
     }
 }
 
@@ -189,7 +190,7 @@ async fn webhook_handler(
         return StatusCode::UNAUTHORIZED;
     };
 
-    let signing_secret = { state.lock().unwrap().signing_secret.clone() };
+    let signing_secret = { state.lock().signing_secret.clone() };
     let Some(signing_secret) = signing_secret else {
         return StatusCode::UNAUTHORIZED;
     };
@@ -218,7 +219,7 @@ async fn webhook_handler(
     // Webhook delivery is at-least-once (`docs/DESIGN.md` §11) - a real retry of an
     // already-recorded delivery is expected, not a bug, and dedupes on `event_id`
     // exactly as the design doc says a receiver should.
-    let mut guard = state.lock().unwrap();
+    let mut guard = state.lock();
     if guard.seen_event_ids.insert(event_id.clone()) {
         guard.events.push(RecordedWebhookEvent {
             event,
@@ -755,7 +756,7 @@ async fn callback_handler(
     // `/finish` has handed one back - see `ReceiverState::signing_secret`'s own doc
     // comment for why the receiver couldn't have known this any earlier.
     if let Ok(finished) = &outcome {
-        state.webhook_state.lock().unwrap().signing_secret =
+        state.webhook_state.lock().signing_secret =
             Some(finished.webhook_signing_secret.clone());
     }
 
@@ -1265,7 +1266,7 @@ mod tests {
     /// access to the private `state` field, standing in for what
     /// `callback_handler` does once `/finish` returns a real one.
     fn set_receiver_signing_secret(receiver: &WebhookReceiver, secret: &str) {
-        receiver.state.lock().unwrap().signing_secret = Some(secret.to_string());
+        receiver.state.lock().signing_secret = Some(secret.to_string());
     }
 
     #[tokio::test]

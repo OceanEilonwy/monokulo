@@ -189,7 +189,7 @@ impl EmbedPolicy {
 /// key. A database error reads as unrestricted, so a fault never takes every
 /// store's checkout offline.
 pub fn policy_for_public_key(db: &SharedDb, public_key: &str) -> Option<EmbedPolicy> {
-    match db.lock().unwrap().embed_policy_for_public_key(public_key) {
+    match db.lock().embed_policy_for_public_key(public_key) {
         Ok(policy) => policy.map(|(restricted, domains)| EmbedPolicy { restricted, domains }),
         Err(e) => {
             eprintln!("could not read the embed policy for {public_key}: {e}");
@@ -225,7 +225,7 @@ pub fn suggest_domain(db: &SharedDb, connection_id: &str, input: &str, now: i64)
 }
 
 fn suggest(db: &SharedDb, connection_id: &str, domain: &str, now: i64) {
-    if let Err(e) = db.lock().unwrap().suggest_store_domain(connection_id, domain, now, MAX_DOMAINS_PER_STORE) {
+    if let Err(e) = db.lock().suggest_store_domain(connection_id, domain, now, MAX_DOMAINS_PER_STORE) {
         eprintln!("could not add {domain} to store {connection_id}: {e}");
     }
 }
@@ -235,7 +235,7 @@ fn suggest(db: &SharedDb, connection_id: &str, domain: &str, now: i64) {
 /// domain the merchant removes afterwards stays removed. Local to monokulo:
 /// the engine holds no embedding policy, so nothing is read from it.
 pub fn import_existing_domains(db: &SharedDb) {
-    let stores = match db.lock().unwrap().list_store_connections_awaiting_domain_import() {
+    let stores = match db.lock().list_store_connections_awaiting_domain_import() {
         Ok(stores) => stores,
         Err(e) => {
             eprintln!("could not list stores to import domains for: {e}");
@@ -244,7 +244,7 @@ pub fn import_existing_domains(db: &SharedDb) {
     };
     for store in stores {
         suggest_site_domain(db, &store.id, &store.site_url, crate::now_unix());
-        if let Err(e) = db.lock().unwrap().mark_store_domains_imported(&store.id) {
+        if let Err(e) = db.lock().mark_store_domains_imported(&store.id) {
             eprintln!("could not mark store {}'s domains imported: {e}", store.id);
         }
     }
@@ -351,13 +351,13 @@ pub async fn check(dns: &dyn TxtLookup, domain: &str, token: &str) -> CheckOutco
 pub async fn check_and_record(db: &SharedDb, dns: &dyn TxtLookup, row: &StoreDomainRow, now: i64) -> Result<CheckOutcome, crate::db::DbError> {
     let outcome = check(dns, &row.domain, &row.token).await;
     let error = outcome.error_message(&row.domain, &row.token);
-    db.lock().unwrap().record_store_domain_check(&row.id, now, error.as_deref())?;
+    db.lock().record_store_domain_check(&row.id, now, error.as_deref())?;
     Ok(outcome)
 }
 
 /// Re-checks every verified domain that is due, one at a time.
 pub async fn recheck_due(db: &SharedDb, dns: &dyn TxtLookup, now: i64) {
-    let due = match db.lock().unwrap().list_store_domains_due_for_recheck(now, RECHECK_EVERY_SECS, FAILING_RECHECK_EVERY_SECS) {
+    let due = match db.lock().list_store_domains_due_for_recheck(now, RECHECK_EVERY_SECS, FAILING_RECHECK_EVERY_SECS) {
         Ok(due) => due,
         Err(e) => {
             eprintln!("could not list domains to re-check: {e}");
@@ -385,7 +385,7 @@ pub fn spawn_rechecks(db: SharedDb, dns: Arc<dyn TxtLookup>) -> tokio::task::Joi
 #[cfg(test)]
 pub mod test_support {
     use std::collections::HashMap;
-    use std::sync::Mutex;
+    use parking_lot::Mutex;
 
     use super::*;
 
@@ -398,19 +398,19 @@ pub mod test_support {
 
     impl FakeDns {
         pub fn publish(&self, name: &str, value: &str) {
-            self.records.lock().unwrap().insert(name.to_string(), Ok(vec![value.to_string()]));
+            self.records.lock().insert(name.to_string(), Ok(vec![value.to_string()]));
         }
         pub fn remove(&self, name: &str) {
-            self.records.lock().unwrap().remove(name);
+            self.records.lock().remove(name);
         }
         pub fn fail(&self, name: &str, error: &str) {
-            self.records.lock().unwrap().insert(name.to_string(), Err(error.to_string()));
+            self.records.lock().insert(name.to_string(), Err(error.to_string()));
         }
     }
 
     impl TxtLookup for FakeDns {
         fn txt_values<'a>(&'a self, name: &'a str) -> Pin<Box<dyn Future<Output = Result<Vec<String>, String>> + Send + 'a>> {
-            let answer = self.records.lock().unwrap().get(name).cloned().unwrap_or(Ok(Vec::new()));
+            let answer = self.records.lock().get(name).cloned().unwrap_or(Ok(Vec::new()));
             Box::pin(async move { answer })
         }
     }

@@ -742,7 +742,7 @@ mod tests {
 
         let order = client.create_order(&created.secret_token, 100_000_000_000, None, Some(3)).await.unwrap();
 
-        let store = engine.store().lock().unwrap();
+        let store = engine.store().lock();
         let tenant_id = store.find_tenant_by_public_key(&created.public_key).unwrap().unwrap().id;
         let stored = store.get_order(&tenant_id, &order.order_id).unwrap().unwrap();
         assert_eq!(stored.confirmations_required_override, Some(3));
@@ -756,7 +756,7 @@ mod tests {
 
         let order = client.create_order(&created.secret_token, 100_000_000_000, None, None).await.unwrap();
 
-        let store = engine.store().lock().unwrap();
+        let store = engine.store().lock();
         let tenant_id = store.find_tenant_by_public_key(&created.public_key).unwrap().unwrap().id;
         let stored = store.get_order(&tenant_id, &order.order_id).unwrap().unwrap();
         assert_eq!(stored.confirmations_required_override, None);

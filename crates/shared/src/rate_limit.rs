@@ -14,7 +14,7 @@
 use std::collections::HashMap;
 use std::hash::Hash;
 use std::net::IpAddr;
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 /// Window length. Also the age past which an entry carries no information: a bucket
 /// whose window started more than this long ago resets to zero on its next lookup,
@@ -73,7 +73,7 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
     /// Returns `true` if this request is allowed, having consumed one unit of the
     /// caller's budget for the current window; `false` if the window is exhausted.
     pub fn check(&self, key: K, now: i64) -> bool {
-        let mut state = self.state.lock().unwrap();
+        let mut state = self.state.lock();
         // Opportunistic rather than on a timer: this map is only ever touched from
         // inside this lock, so a sweep here needs no background task and no second
         // synchronization point. Sweeping *before* inserting also means the entry
@@ -107,7 +107,7 @@ impl<K: Eq + Hash + Clone> RateLimiter<K> {
 
     #[cfg(test)]
     fn tracked_addresses(&self) -> usize {
-        self.state.lock().unwrap().buckets.len()
+        self.state.lock().buckets.len()
     }
 }
 

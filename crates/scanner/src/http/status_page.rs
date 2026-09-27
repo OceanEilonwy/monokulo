@@ -124,7 +124,7 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
             nodes.push(NodeStatus { label: node.label.clone(), is_active: i == current_index, height, error });
         }
 
-        let scan_status = state.scanner_status.read().unwrap().get(&network).cloned();
+        let scan_status = state.scanner_status.read().get(&network).cloned();
         let scanner = match scan_status {
             None => ScannerStatusView {
                 ever_ticked: false,

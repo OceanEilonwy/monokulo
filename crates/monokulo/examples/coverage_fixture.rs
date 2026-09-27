@@ -47,8 +47,8 @@ struct PaymentQuery {
 /// A customer's payment arriving: part or all of the amount, confirmed or
 /// only seen in the mempool.
 async fn record_payment(State(control): State<Controls>, Path(id): Path<String>, Query(query): Query<PaymentQuery>) -> StatusCode {
-    let Ok(Some(tenant_id)) = control.engine.store().lock().unwrap().get_order_tenant_id(&id) else { return StatusCode::NOT_FOUND };
-    let Ok(Some(order)) = control.engine.store().lock().unwrap().get_order(&tenant_id, &id) else { return StatusCode::NOT_FOUND };
+    let Ok(Some(tenant_id)) = control.engine.store().lock().get_order_tenant_id(&id) else { return StatusCode::NOT_FOUND };
+    let Ok(Some(order)) = control.engine.store().lock().get_order(&tenant_id, &id) else { return StatusCode::NOT_FOUND };
     let piconero = (order.xmr_amount_piconero as f64 * query.fraction) as u64;
     match control.engine.record_order_payment(&id, piconero, query.confirmations) {
         Ok(()) => StatusCode::NO_CONTENT,
@@ -90,21 +90,21 @@ async fn challenge(State(control): State<Controls>) -> axum::response::Html<Stri
 }
 
 async fn restrict_embed(State(control): State<Controls>) -> StatusCode {
-    match control.db.lock().unwrap().set_embed_restricted("coverage-store", true) {
+    match control.db.lock().set_embed_restricted("coverage-store", true) {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
 async fn unrestrict_embed(State(control): State<Controls>) -> StatusCode {
-    match control.db.lock().unwrap().set_embed_restricted("coverage-store", false) {
+    match control.db.lock().set_embed_restricted("coverage-store", false) {
         Ok(()) => StatusCode::NO_CONTENT,
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR,
     }
 }
 
 async fn mark_browser_created(State(control): State<Controls>, Path(id): Path<String>) -> StatusCode {
-    match control.db.lock().unwrap().create_order_currency_metadata(
+    match control.db.lock().create_order_currency_metadata(
         "coverage-store", &id, "XMR", "0.001", 1_000_000_000_000, "fixed", 1,
         "XMR", None, 1, false) {
         Ok(()) => StatusCode::NO_CONTENT,

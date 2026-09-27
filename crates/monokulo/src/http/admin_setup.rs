@@ -60,7 +60,7 @@ fn render_setup_form(state: &AppState, error: Option<&str>, email: &str) -> Resp
 /// same "just take me somewhere sensible" behavior a stale bookmark to this
 /// URL deserves.
 pub async fn setup_form(State(state): State<AppState>) -> Response {
-    if state.db.lock().unwrap().is_setup_complete().unwrap_or(true) {
+    if state.db.lock().is_setup_complete().unwrap_or(true) {
         return redirect_302("/");
     }
     render_setup_form(&state, None, "")
@@ -72,7 +72,7 @@ pub async fn setup_form(State(state): State<AppState>) -> Response {
 /// already completed elsewhere) must never be able to create a second admin
 /// account.
 pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupForm>) -> Response {
-    if state.db.lock().unwrap().is_setup_complete().unwrap_or(true) {
+    if state.db.lock().is_setup_complete().unwrap_or(true) {
         return redirect_302("/");
     }
 
@@ -98,7 +98,7 @@ pub async fn setup_submit(State(state): State<AppState>, Form(form): Form<SetupF
             // means the very next request just re-runs the (idempotent for
             // this purpose) `mark_setup_complete` if this instance ever hits
             // that path.
-            state.db.lock().unwrap().mark_setup_complete().ok();
+            state.db.lock().mark_setup_complete().ok();
 
             match login::authenticate(&state, &form.email, &form.password) {
                 Ok((_user, raw_token)) => {

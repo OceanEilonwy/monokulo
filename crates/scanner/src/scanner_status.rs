@@ -9,7 +9,8 @@
 //! just queryable instead of log-only.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 use monero::Network;
 
@@ -51,7 +52,7 @@ pub fn record_tick(
     tenants_scanned: usize,
     result: &Result<(), impl std::fmt::Display>,
 ) {
-    let mut guard = map.write().unwrap();
+    let mut guard = map.write();
     let entry = guard.entry(network).or_default();
     entry.last_tick_started_at = Some(started_at);
     entry.last_tick_finished_at = Some(finished_at);
@@ -76,7 +77,7 @@ mod tests {
     #[test]
     fn a_network_that_has_never_ticked_reports_the_real_absence_of_history() {
         let map = new_scanner_status_map();
-        assert!(map.read().unwrap().get(&Network::Stagenet).is_none());
+        assert!(map.read().get(&Network::Stagenet).is_none());
     }
 
     #[test]
@@ -85,7 +86,7 @@ mod tests {
 
         record_tick(&map, Network::Stagenet, 1000, 1001, 3, &Ok::<(), String>(()));
         {
-            let guard = map.read().unwrap();
+            let guard = map.read();
             let status = guard.get(&Network::Stagenet).unwrap();
             assert_eq!(status.tick_count, 1);
             assert!(status.last_tick_ok);
@@ -97,7 +98,7 @@ mod tests {
 
         record_tick(&map, Network::Stagenet, 1010, 1012, 3, &Err("node unreachable".to_string()));
         {
-            let guard = map.read().unwrap();
+            let guard = map.read();
             let status = guard.get(&Network::Stagenet).unwrap();
             assert_eq!(status.tick_count, 2, "a failed tick still counts as a tick");
             assert!(!status.last_tick_ok);
@@ -105,7 +106,7 @@ mod tests {
         }
 
         record_tick(&map, Network::Stagenet, 1020, 1021, 5, &Ok::<(), String>(()));
-        let guard = map.read().unwrap();
+        let guard = map.read();
         let status = guard.get(&Network::Stagenet).unwrap();
         assert_eq!(status.tick_count, 3);
         assert!(status.last_tick_ok, "a later success must clear the earlier failure");
@@ -119,7 +120,7 @@ mod tests {
         record_tick(&map, Network::Mainnet, 1000, 1001, 1, &Ok::<(), String>(()));
         record_tick(&map, Network::Stagenet, 2000, 2005, 2, &Err("down".to_string()));
 
-        let guard = map.read().unwrap();
+        let guard = map.read();
         assert!(guard.get(&Network::Mainnet).unwrap().last_tick_ok);
         assert!(!guard.get(&Network::Stagenet).unwrap().last_tick_ok);
         assert!(guard.get(&Network::Testnet).is_none());

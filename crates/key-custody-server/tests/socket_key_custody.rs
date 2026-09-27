@@ -212,7 +212,7 @@ async fn scan_tx_outputs_finds_output_paid_to_subaddress() {
 /// Ported *partially*, on purpose - see the WBS 2.1.2 brief's own framing of
 /// this exact test. The original asserts `rebuild_count(&custody, handle) ==
 /// 1` after three same-range scans and `== 2` after a range change, reading
-/// `PlainKeyCustody.wallets.read().unwrap().get(&handle).unwrap().
+/// `PlainKeyCustody.wallets.read().get(&handle).unwrap().
 /// rebuild_count` directly - a `#[cfg(test)]`-only `AtomicU64` field on the
 /// private `WalletEntry` struct.
 ///
@@ -400,7 +400,7 @@ async fn an_absurdly_wide_scan_range_is_refused_rather_than_hanging_forever() {
 /// shape of the argument; the specifics here are different.
 ///
 /// The original test makes three assertions after removing a wallet:
-/// 1. `custody.wallets.read().unwrap().is_empty()` - direct private-field
+/// 1. `custody.wallets.read().is_empty()` - direct private-field
 ///    access.
 /// 2. A second `remove_wallet` on the same (now-removed) handle returns
 ///    `UnknownWallet`.

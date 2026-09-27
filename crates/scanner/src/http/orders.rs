@@ -80,12 +80,12 @@ async fn create_order_for_tenant(state: AppState, tenant: Tenant, req: CreateOrd
     let now = now_unix();
     let mut created = None;
     for _ in 0..8 {
-        let minor_index = state.store.lock().unwrap().peek_next_minor_index(&tenant.id)?;
+        let minor_index = state.store.lock().peek_next_minor_index(&tenant.id)?;
         let address = state
             .key_custody
             .derive_subaddress(handle, SubaddressIndex { major: 0, minor: minor_index }, network)
             .await?;
-        let order = state.store.lock().unwrap().create_order_claiming_minor_index(
+        let order = state.store.lock().create_order_claiming_minor_index(
             minor_index,
             NewOrder {
                 confirmations_required_override: req.confirmations_required,

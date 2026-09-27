@@ -112,9 +112,9 @@ pub enum ExchangeRateError {
 /// the caller-supplied `max_age` has elapsed) anyone actually asks -
 /// no request in flight, no network call, ever, until something needs one.
 ///
-/// The cache is a `tokio::sync::Mutex`, not `std::sync::RwLock`: a lookup
+/// The cache is a `tokio::sync::Mutex`, not `parking_lot::RwLock`: a lookup
 /// can genuinely hold the lock *across* an `.await` (the HTTP round trip a
-/// stale cache triggers) - a `std::sync::RwLock` guard held across an await
+/// stale cache triggers) - a `parking_lot::RwLock` guard held across an await
 /// point doesn't compile (it's not `Send`), and would be the wrong tool
 /// even if it did. Holding the lock for the whole check-then-maybe-refresh
 /// sequence is deliberate, not an oversight: it serializes concurrent

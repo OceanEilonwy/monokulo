@@ -3,7 +3,7 @@
 //! or wait token that didn't redeem, or a request past the hard limit).
 //! Sixty one-minute buckets in memory; nothing is stored.
 
-use std::sync::Mutex;
+use parking_lot::Mutex;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct HourCounts {
@@ -33,7 +33,7 @@ impl Default for ChallengeStats {
 impl ChallengeStats {
     pub fn record(&self, event: Event, now: i64) {
         let minute = now.div_euclid(60);
-        let mut buckets = self.buckets.lock().unwrap();
+        let mut buckets = self.buckets.lock();
         let bucket = &mut buckets[minute.rem_euclid(60) as usize];
         if bucket.0 != minute {
             *bucket = (minute, HourCounts::default());
@@ -47,7 +47,7 @@ impl ChallengeStats {
 
     pub fn last_hour(&self, now: i64) -> HourCounts {
         let minute = now.div_euclid(60);
-        let buckets = self.buckets.lock().unwrap();
+        let buckets = self.buckets.lock();
         buckets.iter().filter(|(m, _)| *m <= minute && minute.saturating_sub(*m) < 60).fold(HourCounts::default(), |sum, (_, c)| HourCounts {
             issued: sum.issued + c.issued,
             solved: sum.solved + c.solved,

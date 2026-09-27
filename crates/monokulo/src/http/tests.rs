@@ -115,7 +115,7 @@ async fn the_stored_password_hash_is_a_real_argon2_hash_not_the_plaintext_passwo
     let response = router.oneshot(signup_request("carol@example.com", plaintext)).await.unwrap();
     assert_eq!(response.status(), StatusCode::CREATED);
 
-    let row = state.db.lock().unwrap().get_user_by_email("carol@example.com").unwrap().unwrap();
+    let row = state.db.lock().get_user_by_email("carol@example.com").unwrap().unwrap();
     assert_ne!(row.password_hash, plaintext, "the plaintext password must never be stored as-is");
     assert!(
         row.password_hash.starts_with("$argon2"),
@@ -725,14 +725,12 @@ async fn a_logged_in_user_submitting_valid_wallet_fields_gets_a_confirmation_pag
     let user = state
         .db
         .lock()
-        .unwrap()
         .get_user_by_email("connect-form@example.com")
         .unwrap()
         .expect("the signed-up user should exist");
     let row = state
         .db
         .lock()
-        .unwrap()
         .get_store_connection_by_public_key(&public_key)
         .unwrap()
         .expect("a store_connections row for this public key must exist");
@@ -928,7 +926,7 @@ async fn invite_only_mode_rejects_a_signup_with_no_token() {
     let state = test_app_state();
     let db = state.db.clone();
     let router = build_router(state);
-    db.lock().unwrap().set_setting("signup.mode", "invite_only").unwrap();
+    db.lock().set_setting("signup.mode", "invite_only").unwrap();
 
     let response = router.oneshot(invite_token_signup_request("hopeful@example.com", "correct horse battery staple", None)).await.unwrap();
     assert_eq!(response.status(), StatusCode::BAD_REQUEST);
@@ -941,9 +939,9 @@ async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
     let state = test_app_state();
     let db = state.db.clone();
     let router = build_router(state);
-    db.lock().unwrap().set_setting("signup.mode", "invite_only").unwrap();
+    db.lock().set_setting("signup.mode", "invite_only").unwrap();
     let raw_token = shared::auth::generate_invite_token();
-    db.lock().unwrap().create_invite_link("link-1", &shared::auth::hash_secret_token(&raw_token), None, None, crate::now_unix()).unwrap();
+    db.lock().create_invite_link("link-1", &shared::auth::hash_secret_token(&raw_token), None, None, crate::now_unix()).unwrap();
 
     let first = router
         .clone()

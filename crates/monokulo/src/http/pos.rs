@@ -148,12 +148,12 @@ pub async fn create_order(
     };
 
     if let Some(key) = req.request_key.as_deref() {
-        let existing = { state.db.lock().unwrap().pos_order_by_request_key(&row.id, key) };
+        let existing = { state.db.lock().pos_order_by_request_key(&row.id, key) };
         match existing {
             Ok(Some(existing)) => {
                 let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
                 let detail = match state.engine_client.get_order_detail(&sk, &existing).await { Ok(detail) => detail, Err(_) => return ApiError::Internal.into_response() };
-                let metadata_result = { state.db.lock().unwrap().get_order_currency_metadata(&row.id, &existing) };
+                let metadata_result = { state.db.lock().get_order_currency_metadata(&row.id, &existing) };
                 let metadata = match metadata_result {
                     Ok(Some(metadata)) => metadata,
                     _ => return ApiError::Internal.into_response(),
@@ -221,11 +221,11 @@ pub async fn create_order(
         .await
     {
         Ok(order) => {
-            if let Err(e) = state.db.lock().unwrap().insert_pos_order(&row.id, &order.order_id, req.request_key.as_deref(), merchant_order_id.as_deref(), crate::now_unix()) {
+            if let Err(e) = state.db.lock().insert_pos_order(&row.id, &order.order_id, req.request_key.as_deref(), merchant_order_id.as_deref(), crate::now_unix()) {
                 eprintln!("failed to record POS order {}: {e}", order.order_id);
                 return ApiError::Internal.into_response();
             }
-            if let Err(e) = state.db.lock().unwrap().create_order_currency_metadata(
+            if let Err(e) = state.db.lock().create_order_currency_metadata(
                 &row.id,
                 &order.order_id,
                 &currency,
@@ -246,7 +246,7 @@ pub async fn create_order(
                     order.order_id, row.id
                 );
             }
-            let _ = state.db.lock().unwrap().set_order_source(&row.id, &order.order_id, "pos");
+            let _ = state.db.lock().set_order_source(&row.id, &order.order_id, "pos");
 
             let xmr_amount = shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero);
 
@@ -326,7 +326,7 @@ async fn pos_order_data(state: &AppState, connection_id: &str, sk: &str, row: cr
 /// One POS order as the terminal shows it, from its local row and the
 /// engine's view of it (read singly or in a batch).
 fn pos_order_view(state: &AppState, connection_id: &str, row: crate::db::PosOrderRow, order: &OrderView) -> PosOrderData {
-    let metadata = state.db.lock().unwrap().get_order_currency_metadata(connection_id, &row.order_id).ok().flatten();
+    let metadata = state.db.lock().get_order_currency_metadata(connection_id, &row.order_id).ok().flatten();
     let confirmations_required = metadata.as_ref().and_then(|m| m.confirmations_required_applied).unwrap_or(10);
     PosOrderData {
         order_id: row.order_id,
@@ -401,7 +401,7 @@ async fn active_pos_orders(state: &AppState, connection_id: &str, sk: &str) -> R
         }
     }
     let ids: Vec<String> = open.iter().map(|order| order.order_id.clone()).collect();
-    let rows = state.db.lock().unwrap().get_pos_orders(connection_id, &ids).unwrap_or_default();
+    let rows = state.db.lock().get_pos_orders(connection_id, &ids).unwrap_or_default();
     let mut rows: HashMap<String, crate::db::PosOrderRow> = rows.into_iter().filter(|row| row.cancelled_at.is_none()).map(|row| (row.order_id.clone(), row)).collect();
     Ok(open.into_iter().filter_map(|order| rows.remove(&order.order_id).map(|row| pos_order_view(state, connection_id, row, &order))).collect())
 }
@@ -426,7 +426,7 @@ pub async fn list_orders(
     if search.is_some_and(|term| term.chars().count() > 120) {
         return ApiError::BadRequest("Search is too long.".to_string()).into_response();
     }
-    let (rows, total) = match state.db.lock().unwrap() {
+    let (rows, total) = match state.db.lock() {
         db => match (db.list_pos_orders(&id, limit, offset, search), db.count_pos_orders(&id, search)) {
             (Ok(rows), Ok(total)) => (rows, total), _ => return ApiError::Internal.into_response(),
         },
@@ -450,7 +450,7 @@ pub async fn order_detail(
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(()) => return ApiError::Internal.into_response(),
     };
-    let pos_row = match state.db.lock().unwrap().get_pos_order(&id, &order_id) {
+    let pos_row = match state.db.lock().get_pos_order(&id, &order_id) {
         Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(_) => return ApiError::Internal.into_response(),
     };
     let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
@@ -468,7 +468,7 @@ pub async fn background_order(
     Path((id, order_id)): Path<(String, String)>,
 ) -> Response {
     if !matches!(load_owned_connection(&state, &user, &id), Ok(Some(_))) { return ApiError::NotFound.into_response(); }
-    match state.db.lock().unwrap().background_pos_order(&id, &order_id) {
+    match state.db.lock().background_pos_order(&id, &order_id) {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => ApiError::NotFound.into_response(),
         Err(_) => ApiError::Internal.into_response(),
@@ -482,7 +482,7 @@ pub async fn cancel_order(
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(()) => return ApiError::Internal.into_response(),
     };
-    let pos_row = match state.db.lock().unwrap().get_pos_order(&id, &order_id) {
+    let pos_row = match state.db.lock().get_pos_order(&id, &order_id) {
         Ok(Some(row)) => row, Ok(None) => return ApiError::NotFound.into_response(), Err(_) => return ApiError::Internal.into_response(),
     };
     if pos_row.cancelled_at.is_some() { return StatusCode::NO_CONTENT.into_response(); }
@@ -493,7 +493,7 @@ pub async fn cancel_order(
     if detail.order.amount_received_piconero > 0 || detail.order.status != "pending" {
         return ApiError::BadRequest("This order has payment activity and cannot be cancelled. Background it for review instead.".to_string()).into_response();
     }
-    match state.db.lock().unwrap().cancel_pos_order(&id, &order_id, crate::now_unix()) {
+    match state.db.lock().cancel_pos_order(&id, &order_id, crate::now_unix()) {
         Ok(true) => StatusCode::NO_CONTENT.into_response(),
         Ok(false) => ApiError::NotFound.into_response(),
         Err(_) => ApiError::Internal.into_response(),
@@ -510,7 +510,7 @@ pub async fn cancel_order(
 /// "a reasonable, safe-side default" posture `http::checkout::render_checkout_page`
 /// already applies to this exact fallback.
 pub(super) async fn resolve_confirmations_required(state: &AppState, connection_id: &str, sk: &str, order_id: &str) -> u64 {
-    let local = state.db.lock().unwrap().get_order_currency_metadata(connection_id, order_id).unwrap_or_default();
+    let local = state.db.lock().get_order_currency_metadata(connection_id, order_id).unwrap_or_default();
     if let Some(applied) = local.and_then(|m| m.confirmations_required_applied) {
         return applied;
     }
@@ -953,7 +953,7 @@ mod tests {
         assert!(html.contains(&order_id), "expected the POS-created order to show up in the dashboard's own orders list");
 
         // Created by the merchant's own session: recorded as trusted as the key.
-        let metadata = state.db.lock().unwrap().get_order_currency_metadata(&id, &order_id).unwrap().unwrap();
+        let metadata = state.db.lock().get_order_currency_metadata(&id, &order_id).unwrap().unwrap();
         assert!(metadata.created_with_key);
     }
 
@@ -1204,7 +1204,7 @@ mod tests {
         expected.sort();
         assert_eq!(seen, expected);
 
-        assert!(engine.store().lock().unwrap().mark_double_spend_detected(&order_ids[1], crate::now_unix()).unwrap());
+        assert!(engine.store().lock().mark_double_spend_detected(&order_ids[1], crate::now_unix()).unwrap());
         let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
         assert_eq!(event, "status");
         let data: serde_json::Value = serde_json::from_str(&data).unwrap();
@@ -1288,7 +1288,7 @@ mod tests {
             .header("authorization", format!("Bearer {session_token}")).body(Body::empty()).unwrap()).await.unwrap();
         assert_eq!(cancel.status(), StatusCode::NO_CONTENT);
         // An order from somewhere else (the store's website), still open.
-        let pk = state.db.lock().unwrap().get_store_connection_by_id(&id).unwrap().unwrap().tenant_public_key;
+        let pk = state.db.lock().get_store_connection_by_id(&id).unwrap().unwrap().tenant_public_key;
         let web = router.clone().oneshot(Request::builder().method("POST").uri(format!("/pay/{pk}/orders"))
             .header("content-type", "application/json")
             .body(Body::from(serde_json::json!({ "amount": "1.0", "currency": "XMR" }).to_string())).unwrap()).await.unwrap();

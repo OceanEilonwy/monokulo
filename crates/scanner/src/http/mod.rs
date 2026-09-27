@@ -3,7 +3,7 @@
 //! Three simplifications worth naming up front, all reasonable for this pass and
 //! all noted rather than hidden:
 //!
-//! 1. `Store` access from handlers goes through `state.store.lock().unwrap()`
+//! 1. `Store` access from handlers goes through `state.store.lock()`
 //!    directly rather than a dedicated writer-actor thread reached over a channel.
 //!    SQLite disallows concurrent writers regardless, so this is a correct - if
 //!    simpler - realization of "single writer" (same reasoning as the concurrency
@@ -36,7 +36,8 @@ mod status_page;
 mod tests;
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 
 use axum::extract::FromRequestParts;
 use axum::http::{StatusCode, header, request::Parts};
@@ -215,7 +216,6 @@ impl FromRequestParts<AppState> for AuthedTenant {
         let tenant = state
             .store
             .lock()
-            .unwrap()
             .find_tenant_by_secret_token(token)?
             .ok_or(ApiError::Unauthorized)?;
         Ok(AuthedTenant(tenant))
@@ -225,7 +225,7 @@ impl FromRequestParts<AppState> for AuthedTenant {
 /// Ensures a tenant has a live `WalletHandle` in this process, registering it with
 /// `KeyCustody` from its sealed material on first use if it doesn't yet.
 pub async fn resolve_wallet_handle(state: &AppState, tenant: &Tenant) -> Result<WalletHandle, ApiError> {
-    if let Some(handle) = state.wallet_handles.read().unwrap().get(&tenant.id).copied() {
+    if let Some(handle) = state.wallet_handles.read().get(&tenant.id).copied() {
         return Ok(handle);
     }
     // The registration can't happen under the lock (it's `async`, and holding a
@@ -238,7 +238,7 @@ pub async fn resolve_wallet_handle(state: &AppState, tenant: &Tenant) -> Result<
     // would then fail to clean up on offboarding.
     let handle = state.key_custody.unseal_and_register(&tenant.sealed_key_material).await?;
     let winner = {
-        let mut handles = state.wallet_handles.write().unwrap();
+        let mut handles = state.wallet_handles.write();
         *handles.entry(tenant.id.clone()).or_insert(handle)
     };
     if winner != handle {

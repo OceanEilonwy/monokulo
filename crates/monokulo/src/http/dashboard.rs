@@ -146,7 +146,7 @@ pub struct ConnectForm {
 /// one is the reasonable default (see `views::auth`'s own doc comment).
 fn render_signup(state: &AppState, error: Option<&str>, invite_token: &str) -> Response {
     let invite_required =
-        crate::settings::signup_mode(&state.db.lock().unwrap()) == crate::settings::SignupMode::InviteOnly && invite_token.trim().is_empty();
+        crate::settings::signup_mode(&state.db.lock()) == crate::settings::SignupMode::InviteOnly && invite_token.trim().is_empty();
     let chrome = super::page_chrome(state, None, "");
     let data = views::auth::SignupViewModel { error: error.map(str::to_string), invite_required, invite_token: invite_token.to_string() };
     views::auth::signup_page(&chrome, &data).into_response()
@@ -170,7 +170,7 @@ fn render_connect_form(state: &AppState, error: Option<&str>, resubmit: Option<&
     let (network_mainnet_selected, network_stagenet_selected, network_testnet_selected) =
         network_selected_flags(resubmit.map(|f| f.network.as_str()).unwrap_or("mainnet"));
     let selected_currency = resubmit.map(|f| f.base_currency.as_str()).unwrap_or("XMR");
-    let currency_options = crate::currencies::currency_options(&state.db.lock().unwrap(), selected_currency).unwrap_or_default();
+    let currency_options = crate::currencies::currency_options(&state.db.lock(), selected_currency).unwrap_or_default();
     let chrome = super::page_chrome(state, Some(user), "/dashboard/connect");
     let data = views::connect::ConnectViewModel {
         error: error.map(str::to_string),
@@ -194,7 +194,7 @@ fn render_connect_success(state: &AppState, connection_id: &str, public_key: &st
         error: None,
         public_key: Some(public_key.to_string()),
         connection_id: Some(connection_id.to_string()),
-        public_url: crate::settings::public_url(&state.db.lock().unwrap()),
+        public_url: crate::settings::public_url(&state.db.lock()),
         site_url: String::new(),
         view_key_hex: String::new(),
         spend_pubkey_hex: String::new(),
@@ -258,7 +258,7 @@ pub async fn login_form(State(state): State<AppState>, Query(query): Query<Login
 /// a real page back, not `logout::logout`'s bare `204` (which is correct
 /// for the JSON API, wrong for a browser form submission).
 pub async fn logout_submit(State(state): State<AppState>, AuthedUser(_user, token_hash): AuthedUser) -> Response {
-    state.db.lock().unwrap().delete_session(&token_hash).ok();
+    state.db.lock().delete_session(&token_hash).ok();
     let cookie = Cookie::build((super::SESSION_COOKIE_NAME, ""))
         .http_only(true)
         .same_site(SameSite::Lax)
@@ -297,7 +297,7 @@ fn selected_theme(current: Theme, submitted: Option<&str>) -> Theme {
 
 pub async fn theme_submit(State(state): State<AppState>, AuthedUser(user, _): AuthedUser, Form(form): Form<ThemeForm>) -> Response {
     let next_theme = selected_theme(user.theme, form.theme.as_deref());
-    state.db.lock().unwrap().update_user_theme(&user.id, next_theme).ok();
+    state.db.lock().update_user_theme(&user.id, next_theme).ok();
     let target = form.next.as_deref().filter(|next| is_safe_redirect_path(next)).unwrap_or("/dashboard");
     redirect_302(target)
 }

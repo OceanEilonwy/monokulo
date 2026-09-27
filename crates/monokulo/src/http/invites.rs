@@ -66,7 +66,7 @@ pub async fn request_invite_submit(State(state): State<AppState>, Form(form): Fo
 
     let request_id = uuid::Uuid::new_v4().to_string();
     let now = now_unix();
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock();
     if db.create_invite_request(&request_id, email, message, now).is_err() {
         return render_request_invite(&state, Some("Something went wrong. Please try again."), false);
     }
@@ -186,7 +186,7 @@ fn render_invites_page(
     success: Option<String>,
 ) -> Response {
     let base = base_url(headers);
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock();
     let total = db.count_unactioned_invite_requests().unwrap_or(0).max(0) as u32;
     let total_pages = total.div_ceil(PAGE_SIZE as u32).max(1);
     let page = clamp_page(total_pages, requested_page);
@@ -234,7 +234,7 @@ pub async fn create_invite_link(State(state): State<AppState>, AuthedAdmin(admin
     let raw_token = shared::auth::generate_invite_token();
     let token_hash = shared::auth::hash_secret_token(&raw_token);
     let link_id = uuid::Uuid::new_v4().to_string();
-    let db = state.db.lock().unwrap();
+    let db = state.db.lock();
     if db.create_invite_link(&link_id, &token_hash, None, None, now_unix()).is_err() {
         drop(db);
         return render_invites_page(
@@ -264,7 +264,7 @@ pub async fn delete_invite_request(
     Path(id): Path<String>,
     Query(query): Query<InvitesPageQuery>,
 ) -> Response {
-    state.db.lock().unwrap().delete_invite_request(&id, now_unix()).ok();
+    state.db.lock().delete_invite_request(&id, now_unix()).ok();
     let page = query.page.unwrap_or(1);
     redirect_302(&format!("/dashboard/admin/invites?page={page}&deleted={id}"))
 }
@@ -277,7 +277,7 @@ pub async fn delete_invite_request(
 /// feature's own design discussion on why that doesn't make sense once
 /// more than one row is involved.
 pub async fn delete_all_invite_requests(State(state): State<AppState>, _admin: AuthedAdmin) -> Response {
-    let cleared = state.db.lock().unwrap().delete_all_unactioned_invite_requests(now_unix()).unwrap_or(0);
+    let cleared = state.db.lock().delete_all_unactioned_invite_requests(now_unix()).unwrap_or(0);
     redirect_302(&format!("/dashboard/admin/invites?cleared={cleared}"))
 }
 

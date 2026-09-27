@@ -120,7 +120,7 @@ pub(super) fn domain_views(rows: Vec<StoreDomainRow>, now: i64) -> Vec<EmbedDoma
 /// The store page's embed warnings.
 pub(super) fn store_page_warnings(state: &AppState, connection_id: &str, now: i64) -> EmbedWarnings {
     let (dismissed, restricted, rows) = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         (
             db.embed_warning_dismissed(connection_id).unwrap_or(false),
             db.embed_restricted(connection_id).unwrap_or(false),
@@ -172,7 +172,7 @@ pub async fn set_embed_restriction(
     let restricted = form.restricted == "on";
     let now = crate::now_unix();
     let result = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         match db.list_store_domains(&row.id) {
             Ok(domains) if restricted && !domains.iter().any(|domain| DomainState::of(domain, now).counts()) => {
                 Ok(Some("Verify at least one domain before turning this on - otherwise no website could show your checkout."))
@@ -211,7 +211,7 @@ pub async fn add_domain(
         Err(message) => return render_store_settings_page(&state, row, &user, Some(message.to_string()), None).await,
     };
     let domain_id = uuid::Uuid::new_v4().to_string();
-    let created = state.db.lock().unwrap().create_store_domain(
+    let created = state.db.lock().create_store_domain(
         &domain_id,
         &row.id,
         &domain,
@@ -240,7 +240,7 @@ pub async fn check_domain(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let domain = match state.db.lock().unwrap().get_store_domain(&row.id, &domain_id) {
+    let domain = match state.db.lock().get_store_domain(&row.id, &domain_id) {
         Ok(Some(domain)) => domain,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -272,7 +272,7 @@ pub async fn delete_domain(
     };
     let now = crate::now_unix();
     let deleted = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         let restricted = db.embed_restricted(&row.id).unwrap_or(false);
         let domains = db.list_store_domains(&row.id).unwrap_or_default();
         let counting: Vec<&StoreDomainRow> = domains.iter().filter(|domain| DomainState::of(domain, now).counts()).collect();
@@ -305,7 +305,7 @@ pub async fn dismiss_embed_warning(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let dismissed = state.db.lock().unwrap().dismiss_embed_warning(&row.id);
+    let dismissed = state.db.lock().dismiss_embed_warning(&row.id);
     match dismissed {
         Ok(()) => redirect_302(&format!("/dashboard/stores/{id}")),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -467,7 +467,7 @@ mod tests {
         .await;
         assert_eq!(status, StatusCode::CREATED);
         let domains = |state: &AppState, id: &str| -> Vec<String> {
-            state.db.lock().unwrap().list_store_domains(id).unwrap().into_iter().map(|d| d.domain).collect()
+            state.db.lock().list_store_domains(id).unwrap().into_iter().map(|d| d.domain).collect()
         };
         assert_eq!(
             domains(&state, &id),
@@ -478,17 +478,17 @@ mod tests {
         // A store from before this existed: only its own site is imported,
         // from monokulo's own records (nothing is read from the engine).
         let site_only = vec!["store-home.example".to_string()];
-        let existing = state.db.lock().unwrap().list_store_domains(&id).unwrap();
+        let existing = state.db.lock().list_store_domains(&id).unwrap();
         for domain in existing {
-            state.db.lock().unwrap().delete_store_domain(&id, &domain.id).unwrap();
+            state.db.lock().delete_store_domain(&id, &domain.id).unwrap();
         }
-        state.db.lock().unwrap().reset_store_domains_imported_for_test(&id);
+        state.db.lock().reset_store_domains_imported_for_test(&id);
         embed_domains::import_existing_domains(&state.db);
         assert_eq!(domains(&state, &id), site_only);
 
         // Once only: a domain the merchant removes afterwards stays removed.
-        let site = state.db.lock().unwrap().list_store_domains(&id).unwrap().pop().unwrap();
-        state.db.lock().unwrap().delete_store_domain(&id, &site.id).unwrap();
+        let site = state.db.lock().list_store_domains(&id).unwrap().pop().unwrap();
+        state.db.lock().delete_store_domain(&id, &site.id).unwrap();
         embed_domains::import_existing_domains(&state.db);
         assert!(domains(&state, &id).is_empty());
     }
@@ -505,7 +505,7 @@ mod tests {
             create_store_via_api(&router, &session, serde_json::json!({ "allowed_origins": ["https://legacy.example"] })).await;
         assert_eq!(status, StatusCode::CREATED);
         let domains: Vec<String> =
-            state.db.lock().unwrap().list_store_domains(&id).unwrap().into_iter().map(|d| d.domain).collect();
+            state.db.lock().list_store_domains(&id).unwrap().into_iter().map(|d| d.domain).collect();
         assert_eq!(domains, vec!["legacy.example".to_string(), "store-home.example".to_string()]);
 
         let (status, _) = create_store_via_api(&router, &session, serde_json::json!({})).await;
@@ -550,13 +550,13 @@ mod tests {
     }
 
     fn secret_key_of(state: &AppState, id: &str) -> String {
-        let row = state.db.lock().unwrap().get_store_connection_by_id(id).unwrap().unwrap();
+        let row = state.db.lock().get_store_connection_by_id(id).unwrap().unwrap();
         crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap()
     }
 
     fn recorded_with_key(state: &AppState, id: &str, order: &serde_json::Value) -> bool {
         let order_id = order["order_id"].as_str().unwrap();
-        state.db.lock().unwrap().get_order_currency_metadata(id, order_id).unwrap().unwrap().created_with_key
+        state.db.lock().get_order_currency_metadata(id, order_id).unwrap().unwrap().created_with_key
     }
 
     #[tokio::test]
@@ -598,10 +598,10 @@ mod tests {
         assert_eq!(create_order_as(&router, &pk, None, Some(&key)).await.0, StatusCode::OK);
 
         // Restrict the store to its verified domain.
-        let row = state.db.lock().unwrap().list_store_domains(&id).unwrap().pop().unwrap();
+        let row = state.db.lock().list_store_domains(&id).unwrap().pop().unwrap();
         dns.publish("_monokulo.store-home.example", &embed_domains::record_value(&row.token));
         embed_domains::check_and_record(&state.db, dns.as_ref(), &row, crate::now_unix()).await.unwrap();
-        state.db.lock().unwrap().set_embed_restricted(&id, true).unwrap();
+        state.db.lock().set_embed_restricted(&id, true).unwrap();
 
         // From a fresh address (the first one is out of per-IP budget):
         // neither a key nor an Origin is refused with a clear message.
@@ -654,10 +654,10 @@ mod tests {
         // Unrestricted: every order opens as a full page.
         assert_eq!(fetch_as(&router, &checkout(&browser_order), Some("document")).await.0, StatusCode::OK);
 
-        let row = state.db.lock().unwrap().list_store_domains(&id).unwrap().pop().unwrap();
+        let row = state.db.lock().list_store_domains(&id).unwrap().pop().unwrap();
         dns.publish("_monokulo.store-home.example", &embed_domains::record_value(&row.token));
         embed_domains::check_and_record(&state.db, dns.as_ref(), &row, crate::now_unix()).await.unwrap();
-        state.db.lock().unwrap().set_embed_restricted(&id, true).unwrap();
+        state.db.lock().set_embed_restricted(&id, true).unwrap();
 
         // Restricted, browser-created: a full page gets the plain "open it from the shop" page.
         let (status, html, vary) = fetch_as(&router, &checkout(&browser_order), Some("document")).await;
@@ -707,10 +707,10 @@ mod tests {
         // Can't turn on before a domain is verified.
         let (_, html) = send(&router, "POST", &format!("{settings}/embed-restriction"), &session, Some(&turn(true))).await;
         assert!(html.contains("Verify at least one domain before turning this on"), "got: {html}");
-        assert!(!state.db.lock().unwrap().embed_restricted(&id).unwrap());
+        assert!(!state.db.lock().embed_restricted(&id).unwrap());
 
         // Verify the store's own domain, then turn it on.
-        let row = state.db.lock().unwrap().list_store_domains(&id).unwrap().pop().unwrap();
+        let row = state.db.lock().list_store_domains(&id).unwrap().pop().unwrap();
         assert_eq!(row.domain, "store-home.example");
         dns.publish("_monokulo.store-home.example", &embed_domains::record_value(&row.token));
         embed_domains::check_and_record(&state.db, dns.as_ref(), &row, crate::now_unix()).await.unwrap();
@@ -757,7 +757,7 @@ mod tests {
         dns.remove("_monokulo.store-home.example");
         let later = crate::now_unix() + embed_domains::RECHECK_EVERY_SECS;
         embed_domains::recheck_due(&state.db, dns.as_ref(), later).await;
-        let failing_since = state.db.lock().unwrap().list_store_domains(&id).unwrap()[0].failing_since.unwrap();
+        let failing_since = state.db.lock().list_store_domains(&id).unwrap()[0].failing_since.unwrap();
         assert!(super::store_page_warnings(&state, &id, failing_since + GRACE_SECS).shown_nowhere);
 
         // Off again: any site.
@@ -776,7 +776,7 @@ mod tests {
         let store_page = format!("/dashboard/stores/{id}");
 
         // The store's own site is already on its list, waiting for DNS.
-        let suggested = state.db.lock().unwrap().list_store_domains(&id).unwrap();
+        let suggested = state.db.lock().list_store_domains(&id).unwrap();
         assert_eq!(suggested.iter().map(|d| d.domain.as_str()).collect::<Vec<_>>(), vec!["store-home.example"]);
 
         // Before anything: the store page says any website can show the checkout.
@@ -786,7 +786,7 @@ mod tests {
         // Added from a pasted URL; the record to publish is shown.
         let (status, _) = send(&router, "POST", &format!("{settings}/domains"), &session, Some("domain=https%3A%2F%2FShop.Example%2Fcart")).await;
         assert_eq!(status, StatusCode::FOUND);
-        let shop = |state: &AppState| state.db.lock().unwrap().list_store_domains(&id).unwrap().into_iter().find(|d| d.domain == "shop.example").unwrap();
+        let shop = |state: &AppState| state.db.lock().list_store_domains(&id).unwrap().into_iter().find(|d| d.domain == "shop.example").unwrap();
         let row = shop(&state);
         let (_, html) = send(&router, "GET", &settings, &session, None).await;
         assert!(html.contains("<code>_monokulo.shop.example</code>"), "got: {html}");
@@ -841,7 +841,7 @@ mod tests {
 
         // Removed.
         assert_eq!(send(&router, "POST", &format!("{settings}/domains/{}/delete", row.id), &session, None).await.0, StatusCode::FOUND);
-        assert_eq!(state.db.lock().unwrap().list_store_domains(&id).unwrap().len(), 1);
+        assert_eq!(state.db.lock().list_store_domains(&id).unwrap().len(), 1);
     }
 
     /// The merchant's DNS provider is having an outage: Verify says the
@@ -858,7 +858,7 @@ mod tests {
         let id = create_store(&router, &session).await;
         let settings = format!("/dashboard/stores/{id}/settings");
         let store_page = format!("/dashboard/stores/{id}");
-        let row = state.db.lock().unwrap().list_store_domains(&id).unwrap().pop().unwrap();
+        let row = state.db.lock().list_store_domains(&id).unwrap().pop().unwrap();
         let name = "_monokulo.store-home.example";
 
         dns.fail(name, "timed out");
@@ -872,12 +872,12 @@ mod tests {
         dns.publish(name, &embed_domains::record_value(&row.token));
         let now = crate::now_unix();
         embed_domains::check_and_record(&state.db, dns.as_ref(), &row, now).await.unwrap();
-        state.db.lock().unwrap().set_embed_restricted(&id, true).unwrap();
+        state.db.lock().set_embed_restricted(&id, true).unwrap();
 
         // A day later the re-check lands in an outage.
         dns.fail(name, "SERVFAIL");
         embed_domains::recheck_due(&state.db, dns.as_ref(), now + RECHECK_EVERY_SECS).await;
-        let failing_since = state.db.lock().unwrap().get_store_domain(&id, &row.id).unwrap().unwrap().failing_since.unwrap();
+        let failing_since = state.db.lock().get_store_domain(&id, &row.id).unwrap().unwrap().failing_since.unwrap();
         let (_, html) = send(&router, "GET", &store_page, &session, None).await;
         assert!(html.contains("store-home.example failed its DNS check"), "got: {html}");
         let warnings = super::store_page_warnings(&state, &id, failing_since + GRACE_SECS - 60);
@@ -888,7 +888,7 @@ mod tests {
         // re-check clears it with no action from the merchant.
         dns.publish(name, &embed_domains::record_value(&row.token));
         embed_domains::recheck_due(&state.db, dns.as_ref(), crate::now_unix() + embed_domains::FAILING_RECHECK_EVERY_SECS + 1).await;
-        let row = state.db.lock().unwrap().get_store_domain(&id, &row.id).unwrap().unwrap();
+        let row = state.db.lock().get_store_domain(&id, &row.id).unwrap().unwrap();
         assert!(row.failing_since.is_none());
         let (_, html) = send(&router, "GET", &store_page, &session, None).await;
         assert!(!html.contains("failed its DNS check"), "got: {html}");

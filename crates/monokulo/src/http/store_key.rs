@@ -62,7 +62,7 @@ pub fn key_matches(state: &AppState, stored_encrypted: &str, presented: &str) ->
 pub fn check(state: &AppState, pk: &str, headers: &axum::http::HeaderMap) -> KeyCheck {
     let Some(value) = headers.get(header::AUTHORIZATION) else { return KeyCheck::Absent };
     let Some(presented) = value.to_str().ok().and_then(|v| v.strip_prefix("Bearer ")) else { return KeyCheck::Invalid };
-    let row = match state.db.lock().unwrap().get_store_connection_by_public_key(pk) {
+    let row = match state.db.lock().get_store_connection_by_public_key(pk) {
         Ok(Some(row)) => row,
         _ => return KeyCheck::Invalid,
     };

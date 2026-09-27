@@ -193,7 +193,7 @@ fn render(state: &AppState, admin_user: &UserRow, view: AdminSettingsViewModel) 
 /// `GET /dashboard/admin/settings`.
 pub async fn page(State(state): State<AppState>, AuthedAdmin(admin_user, _): AuthedAdmin) -> Response {
     let (fields, engine_url, admin_token) = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
     };
     let view = build_view_model(fields, engine_url, admin_token, None, None).await;
@@ -295,7 +295,7 @@ pub async fn save_monokulo(
     // The hard limit must sit above the soft one, or the challenge tier
     // would never be reached.
     let (soft, hard) = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         let effective = |setting: &ScalarSetting| -> u32 {
             form.get(setting.key).and_then(|v| v.parse().ok()).unwrap_or_else(|| crate::settings::get(&db, setting))
         };
@@ -307,7 +307,7 @@ pub async fn save_monokulo(
     }
 
     let save_error = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         ALL_SCALAR.iter().find_map(|setting| {
             let value = form.get(setting.key)?;
             db.set_setting(setting.key, value).err().map(|_| ())
@@ -319,11 +319,11 @@ pub async fn save_monokulo(
     }
     // Rate limits, trusted proxies and the stream cap take effect straight
     // away (`crate::abuse::AbuseProtection::reload`).
-    let abuse_config = crate::abuse::AbuseConfig::from_settings(&state.db.lock().unwrap());
+    let abuse_config = crate::abuse::AbuseConfig::from_settings(&state.db.lock());
     state.abuse.reload(abuse_config);
 
     let (fields, engine_url, admin_token) = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
     };
     let view = build_view_model(fields, engine_url, admin_token, None, Some("Monokulo settings saved.".to_string())).await;
@@ -335,7 +335,7 @@ pub async fn save_monokulo(
 /// whole page again with nothing changed" path both `POST` handlers use.
 async fn render_error(state: &AppState, admin_user: &UserRow, message: String) -> Response {
     let (fields, engine_url, admin_token) = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
     };
     let view = build_view_model(fields, engine_url, admin_token, Some(message), None).await;
@@ -360,7 +360,7 @@ pub async fn save_scanner(
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
     let (engine_url, admin_token) = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         engine_connection(&db)
     };
     if engine_url.trim().is_empty() || admin_token.trim().is_empty() {
@@ -400,7 +400,7 @@ pub async fn save_scanner(
     };
 
     let (fields, engine_url, admin_token) = {
-        let db = state.db.lock().unwrap();
+        let db = state.db.lock();
         (monokulo_fields(&db), crate::settings::get::<String>(&db, &crate::settings::ENGINE_URL), crate::settings::get::<String>(&db, &crate::settings::SCANNER_ADMIN_TOKEN))
     };
     let view = build_view_model(fields, engine_url, admin_token, error, success).await;
@@ -437,7 +437,6 @@ mod tests {
         engine
             .store()
             .lock()
-            .unwrap()
             .set_setting("instance_admin_token_hash", &shared::auth::hash_secret_token(SCANNER_ADMIN_TOKEN))
             .unwrap();
         engine

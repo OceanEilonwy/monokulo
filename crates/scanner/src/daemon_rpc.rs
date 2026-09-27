@@ -315,6 +315,7 @@ fn decode_tx_hex(hex_str: &str) -> Result<Transaction, DaemonError> {
 /// object's count always fits the varint's 1-byte form (`3 << 2`), so this
 /// never needs the format's multi-byte varint case.
 fn get_blocks_bin_request(start_height: u64, max_block_count: u64) -> Vec<u8> {
+    #[allow(clippy::expect_used, reason = "only called with short field-name literals")]
     fn push_field_name(buf: &mut Vec<u8>, name: &str) {
         buf.push(u8::try_from(name.len()).expect("field name literal longer than 255 bytes"));
         buf.extend_from_slice(name.as_bytes());

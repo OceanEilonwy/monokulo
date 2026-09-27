@@ -12,8 +12,13 @@
 //! boot. There is no config file any more; the only thing this binary itself
 //! needs to be told is where its own database lives (`cli::database_path`).
 
+// See `lib.rs`: no panics in loop code. `main` itself may still exit at boot
+// (a listener that can't bind), which is marked where it happens.
+#![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
+
 use std::collections::{HashMap, HashSet};
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 use std::time::Duration;
 
 use key_custody_service::client::SocketKeyCustody;
@@ -42,6 +47,7 @@ fn open_store() -> Store {
     })
 }
 
+#[allow(clippy::expect_used, reason = "boot-time: a listener that can't bind or a server that can't start ends the process")]
 #[tokio::main]
 async fn main() {
     let raw: Vec<String> = std::env::args().skip(1).collect();
@@ -111,7 +117,7 @@ async fn main() {
 
     let store = open_store().into_shared();
 
-    if let Some(token) = ensure_admin_token_seeded(&store.lock().unwrap()) {
+    if let Some(token) = ensure_admin_token_seeded(&store.lock()) {
         println!(
             "==> generated a new instance admin token (shown once - it is stored only as a hash from here on):\n    {token}\n\
              Set the SCANNER_ADMIN_TOKEN environment variable to this value on future boots if you'd rather manage it \
@@ -119,8 +125,8 @@ async fn main() {
         );
     }
 
-    let key_custody: Arc<dyn KeyCustody> = build_key_custody(&store.lock().unwrap()).await;
-    let key_custody_backend: String = settings::get(&store.lock().unwrap(), &settings::KEY_CUSTODY_BACKEND);
+    let key_custody: Arc<dyn KeyCustody> = build_key_custody(&store.lock()).await;
+    let key_custody_backend: String = settings::get(&store.lock(), &settings::KEY_CUSTODY_BACKEND);
 
     // One daemon client per configured network (§DESIGN.md §7) - a single instance
     // can hold mainnet tenants for real customers alongside stagenet/testnet
@@ -128,7 +134,7 @@ async fn main() {
     // is a `FallbackDaemonClient` wrapping its primary node plus any configured
     // fallbacks, so a single flaky/down public node doesn't stop scanning that
     // network - see `daemon_fallback`'s own doc comment for the failover policy.
-    let daemons: HashMap<Network, Arc<FallbackDaemonClient>> = build_daemon_clients(&store.lock().unwrap(), strict_tls);
+    let daemons: HashMap<Network, Arc<FallbackDaemonClient>> = build_daemon_clients(&store.lock(), strict_tls);
     if daemons.is_empty() {
         // A warning, not a hard exit: the server still has to come up far enough to
         // serve the instance-admin settings API (`http::instance_admin`) itself,
@@ -152,7 +158,7 @@ async fn main() {
     let daemons = Arc::new(daemons);
     let scanner_status = scanner_status::new_scanner_status_map();
 
-    let mempool_poll_interval_ms: u64 = settings::get(&store.lock().unwrap(), &settings::PAYMENT_MEMPOOL_POLL_INTERVAL_MS);
+    let mempool_poll_interval_ms: u64 = settings::get(&store.lock(), &settings::PAYMENT_MEMPOOL_POLL_INTERVAL_MS);
     // Rounds down to whole seconds purely for the status page's own
     // "expected every Ns" display - the scan loop itself still sleeps the
     // real, precise millisecond value (`poll_interval` below), this is never
@@ -161,9 +167,9 @@ async fn main() {
 
     let wallet_handles = Arc::new(RwLock::new(register_all_tenants(&store, &key_custody).await));
 
-    let rate_limit_per_token_per_min: u32 = settings::get(&store.lock().unwrap(), &settings::SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN);
+    let rate_limit_per_token_per_min: u32 = settings::get(&store.lock(), &settings::SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN);
     let expired_order_grace_period_minutes: i64 =
-        settings::get(&store.lock().unwrap(), &settings::PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES);
+        settings::get(&store.lock(), &settings::PAYMENT_EXPIRED_ORDER_GRACE_PERIOD_MINUTES);
 
     let app_state = AppState {
         store: store.clone(),
@@ -178,15 +184,15 @@ async fn main() {
         expired_order_grace_period_seconds: expired_order_grace_period_minutes * 60,
     };
 
-    let allow_private_urls: bool = settings::get(&store.lock().unwrap(), &settings::WEBHOOKS_ALLOW_PRIVATE_URLS);
-    let delivery_timeout_ms: u64 = settings::get(&store.lock().unwrap(), &settings::WEBHOOKS_DELIVERY_TIMEOUT_MS);
-    let delivery_max_attempts: u32 = settings::get(&store.lock().unwrap(), &settings::WEBHOOKS_MAX_ATTEMPTS);
+    let allow_private_urls: bool = settings::get(&store.lock(), &settings::WEBHOOKS_ALLOW_PRIVATE_URLS);
+    let delivery_timeout_ms: u64 = settings::get(&store.lock(), &settings::WEBHOOKS_DELIVERY_TIMEOUT_MS);
+    let delivery_max_attempts: u32 = settings::get(&store.lock(), &settings::WEBHOOKS_MAX_ATTEMPTS);
     let delivery_store = store.clone();
     supervise("webhook delivery", move || {
         run_webhook_delivery_loop(delivery_store.clone(), allow_private_urls, delivery_timeout_ms, delivery_max_attempts)
     });
 
-    let reorg_check_depth: u64 = settings::get(&store.lock().unwrap(), &settings::PAYMENT_REORG_CHECK_DEPTH);
+    let reorg_check_depth: u64 = settings::get(&store.lock(), &settings::PAYMENT_REORG_CHECK_DEPTH);
     let expired_order_grace_period_seconds = expired_order_grace_period_minutes * 60;
     let poll_interval = Duration::from_millis(mempool_poll_interval_ms);
 
@@ -212,8 +218,8 @@ async fn main() {
         )
     });
 
-    let bind: String = settings::get(&app_state.store.lock().unwrap(), &settings::SERVER_BIND);
-    let max_body_bytes: usize = settings::get(&app_state.store.lock().unwrap(), &settings::SERVER_MAX_BODY_BYTES);
+    let bind: String = settings::get(&app_state.store.lock(), &settings::SERVER_BIND);
+    let max_body_bytes: usize = settings::get(&app_state.store.lock(), &settings::SERVER_MAX_BODY_BYTES);
     let router = build_router(app_state, max_body_bytes);
     let listener = tokio::net::TcpListener::bind(&bind).await.expect("failed to bind server address");
     println!("moneropay listening on {bind}");
@@ -329,6 +335,7 @@ const KEY_CUSTODY_CONNECT_RETRY_DELAY: Duration = Duration::from_millis(500);
 /// for why a short, bounded retry loop - not a single attempt, and not retrying
 /// forever - is the right shape for this specific startup race between two
 /// independently started processes.
+#[allow(clippy::expect_used, reason = "the retry loop above always records an error before giving up")]
 async fn connect_socket_key_custody(socket_path: &str) -> SocketKeyCustody {
     let mut last_err = None;
     for attempt in 1..=KEY_CUSTODY_CONNECT_ATTEMPTS {
@@ -361,7 +368,19 @@ async fn connect_socket_key_custody(socket_path: &str) -> SocketKeyCustody {
 /// `KeyCustody`, so `AppState::wallet_handles` starts populated rather than relying
 /// solely on the lazy on-first-use path in `http::resolve_wallet_handle`.
 async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCustody>) -> HashMap<String, WalletHandle> {
-    let tenants = store.lock().unwrap().list_active_tenants().expect("failed to list tenants at boot");
+    // A database error here must not kill the engine at boot: retry with
+    // backoff until the store answers, logging each failure.
+    let mut delay = Duration::from_millis(500);
+    let tenants = loop {
+        match store.lock().list_active_tenants() {
+            Ok(tenants) => break tenants,
+            Err(e) => {
+                eprintln!("failed to list tenants at boot, retrying in {delay:?}: {e}");
+                tokio::time::sleep(delay).await;
+                delay = (delay * 2).min(Duration::from_secs(30));
+            }
+        }
+    };
     let mut handles = HashMap::new();
     for tenant in tenants {
         match key_custody.unseal_and_register(&tenant.sealed_key_material).await {
@@ -380,10 +399,17 @@ async fn run_webhook_delivery_loop(
     timeout_ms: u64,
     max_attempts: u32,
 ) {
-    let client = reqwest::Client::builder()
-        .redirect(reqwest::redirect::Policy::none())
-        .build()
-        .expect("failed to build webhook HTTP client");
+    // Building the client can only fail if the TLS backend can't initialise.
+    // Retry rather than panic, so the supervisor isn't left in a crash loop.
+    let client = loop {
+        match reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build() {
+            Ok(client) => break client,
+            Err(e) => {
+                eprintln!("failed to build the webhook HTTP client, retrying in 30s: {e}");
+                tokio::time::sleep(Duration::from_secs(30)).await;
+            }
+        }
+    };
     let timeout = Duration::from_millis(timeout_ms);
 
     loop {
@@ -422,7 +448,7 @@ async fn run_scanner_loop(
 ) {
     loop {
         let tenants: Vec<(String, WalletHandle)> =
-            wallet_handles.read().unwrap().iter().map(|(id, h)| (id.clone(), *h)).collect();
+            wallet_handles.read().iter().map(|(id, h)| (id.clone(), *h)).collect();
         for (network, daemon) in daemons.iter() {
             let started_at = now_unix();
             let result = run_scan_tick(

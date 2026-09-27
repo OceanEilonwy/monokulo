@@ -82,13 +82,13 @@ pub(super) fn create_account(
     let id = Uuid::new_v4().to_string();
     let created_at = now_unix();
 
-    if !is_admin && crate::settings::signup_mode(&state.db.lock().unwrap()) == SignupMode::InviteOnly {
+    if !is_admin && crate::settings::signup_mode(&state.db.lock()) == SignupMode::InviteOnly {
         let token = match invite_token.map(str::trim) {
             Some(t) if !t.is_empty() => t,
             _ => return Err(CreateAccountError::InviteRequired),
         };
         let token_hash = shared::auth::hash_secret_token(token);
-        return match state.db.lock().unwrap().redeem_invite_and_create_user(&token_hash, &id, email, &password_hash, created_at) {
+        return match state.db.lock().redeem_invite_and_create_user(&token_hash, &id, email, &password_hash, created_at) {
             Ok(RedeemInviteResult::Created) => Ok(id),
             Ok(RedeemInviteResult::DuplicateEmail) => Err(CreateAccountError::DuplicateEmail),
             Ok(RedeemInviteResult::InvalidOrAlreadyUsed) => Err(CreateAccountError::InvalidOrUsedInvite),
@@ -96,7 +96,7 @@ pub(super) fn create_account(
         };
     }
 
-    let result = state.db.lock().unwrap().create_user(&id, email, &password_hash, is_admin, created_at);
+    let result = state.db.lock().create_user(&id, email, &password_hash, is_admin, created_at);
     match result {
         Ok(()) => Ok(id),
         Err(e) if e.is_unique_violation() => Err(CreateAccountError::DuplicateEmail),

@@ -69,6 +69,7 @@ pub fn monero_node_setting(store: &crate::store::Store, network: &str) -> Option
     }
 }
 
+#[allow(clippy::expect_used, reason = "a plain struct of strings, numbers and bools always serializes")]
 pub fn set_monero_node_setting(
     store: &crate::store::Store,
     network: &str,

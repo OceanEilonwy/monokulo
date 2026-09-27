@@ -10,7 +10,8 @@
 //! `cargo test -p scanner --test daemon_rpc_replay -- --ignored`.
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
+use parking_lot::Mutex;
+use std::sync::Arc;
 
 use axum::body::Bytes;
 use axum::extract::State;
@@ -138,11 +139,11 @@ async fn record_stagenet_node() {
     let http = reqwest::Client::new();
     let router = Router::new().fallback(|State((recorded, http)): State<(Arc<Mutex<Vec<Exchange>>>, reqwest::Client)>, uri: Uri, body: Bytes| async move {
         let response = http.post(format!("{NODE}{}", uri.path())).body(body.clone()).send().await.unwrap().bytes().await.unwrap();
-        recorded.lock().unwrap().push(Exchange { path: uri.path().to_string(), request_hex: hex::encode(&body), response_hex: hex::encode(&response) });
+        recorded.lock().push(Exchange { path: uri.path().to_string(), request_hex: hex::encode(&body), response_hex: hex::encode(&response) });
         (StatusCode::OK, response)
     }).with_state((recorded.clone(), http));
     let (port, _server) = serve(router).await;
     exercise(&RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap()).await;
-    let exchanges = recorded.lock().unwrap().clone();
+    let exchanges = recorded.lock().clone();
     std::fs::write(FIXTURE, serde_json::to_string_pretty(&exchanges).unwrap()).unwrap();
 }

@@ -30,7 +30,8 @@
 
 use std::collections::{HashMap, HashSet};
 use std::net::SocketAddr;
-use std::sync::{Arc, RwLock};
+use parking_lot::RwLock;
+use std::sync::Arc;
 use std::time::Duration;
 
 use key_custody_service::client::SocketKeyCustody;
@@ -124,12 +125,12 @@ impl MoneroDaemonClient for NoopDaemonClient {
 /// transaction.
 #[derive(Default)]
 struct LookupDaemonClient {
-    mempool: Arc<std::sync::Mutex<Vec<monero::Transaction>>>,
+    mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>>,
 }
 
 impl LookupDaemonClient {
     fn find(&self, txid: &str) -> Option<monero::Transaction> {
-        self.mempool.lock().unwrap().iter().find(|tx| scanner::scanner::tx_id_hex(tx) == txid).cloned()
+        self.mempool.lock().iter().find(|tx| scanner::scanner::tx_id_hex(tx) == txid).cloned()
     }
 }
 
@@ -152,7 +153,7 @@ impl MoneroDaemonClient for LookupDaemonClient {
     }
 
     async fn get_mempool_transactions(&self) -> Result<Vec<monero::Transaction>, DaemonError> {
-        Ok(self.mempool.lock().unwrap().clone())
+        Ok(self.mempool.lock().clone())
     }
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
@@ -197,7 +198,7 @@ pub struct TestEngineHandle {
     /// engine has received - the requests its per-token rate limit counts.
     tenant_requests: Arc<std::sync::atomic::AtomicUsize>,
     /// The admin lookup node's mempool (see [`LookupDaemonClient`]).
-    lookup_mempool: Arc<std::sync::Mutex<Vec<monero::Transaction>>>,
+    lookup_mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>>,
 }
 
 impl TestEngineHandle {
@@ -229,7 +230,6 @@ impl TestEngineHandle {
         let tenants: Vec<(String, WalletHandle)> = self
             .wallet_handles
             .read()
-            .unwrap()
             .iter()
             .map(|(id, h)| (id.clone(), *h))
             .collect();
@@ -260,7 +260,7 @@ impl TestEngineHandle {
     /// (only with [`TestEngineConfig::with_admin_lookup_daemon`]): a
     /// transaction a customer has just sent.
     pub fn add_mempool_transaction(&self, tx: monero::Transaction) {
-        self.lookup_mempool.lock().unwrap().push(tx);
+        self.lookup_mempool.lock().push(tx);
     }
 
     /// Tenant admin API requests received so far, including rate-limited
@@ -285,7 +285,7 @@ impl TestEngineHandle {
     /// confirmation requirement a test would configure.
     pub fn mark_order_paid(&self, order_id: &str) -> Result<(), scanner::store::StoreError> {
         let amount = {
-            let store = self.store.lock().unwrap();
+            let store = self.store.lock();
             let tenant_id = store.get_order_tenant_id(order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
             store.get_order(&tenant_id, order_id)?.ok_or(scanner::store::StoreError::NotFound)?.xmr_amount_piconero
         };
@@ -297,7 +297,7 @@ impl TestEngineHandle {
     /// confirmed, and recomputes its status.
     pub fn confirm_order_payments(&self, order_id: &str) -> Result<(), scanner::store::StoreError> {
         const PAYMENT_HEIGHT: i64 = 1000;
-        let store = self.store.lock().unwrap();
+        let store = self.store.lock();
         let now = scanner::now_unix();
         for payment in store.get_all_payments(order_id)?.into_iter().filter(|p| p.block_height.is_none()) {
             store.record_payment_match(order_id, &payment.txid, payment.output_index, payment.amount_piconero,
@@ -318,7 +318,7 @@ impl TestEngineHandle {
     /// transaction.
     pub fn record_order_payment(&self, order_id: &str, piconero: u64, confirmations: Option<u64>) -> Result<(), scanner::store::StoreError> {
         const PAYMENT_HEIGHT: i64 = 1000;
-        let store = self.store.lock().unwrap();
+        let store = self.store.lock();
         let now = scanner::now_unix();
         let existing = store.get_all_payments(order_id).map(|p| p.len()).unwrap_or(0);
         store.record_payment_match(
@@ -343,7 +343,7 @@ impl TestEngineHandle {
     /// Flags a double spend of `order_id`'s payment, as the scanner does when
     /// a key image it recorded turns up spent elsewhere.
     pub fn mark_order_double_spent(&self, order_id: &str) -> Result<(), scanner::store::StoreError> {
-        let store = self.store.lock().unwrap();
+        let store = self.store.lock();
         store.mark_double_spend_detected(order_id, scanner::now_unix())?;
         Ok(())
     }
@@ -353,7 +353,7 @@ impl TestEngineHandle {
     /// the order reads `expired` and an `order.expired` webhook is queued.
     /// For tests of a customer who never pays.
     pub fn mark_order_expired(&self, order_id: &str) -> Result<(), scanner::store::StoreError> {
-        let store = self.store.lock().unwrap();
+        let store = self.store.lock();
         let tenant_id = store.get_order_tenant_id(order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
         let order = store.get_order(&tenant_id, order_id)?.ok_or(scanner::store::StoreError::NotFound)?;
         scanner::scanner::recompute_and_notify(&store, order_id, 1000, order.expires_at + 1)
@@ -591,7 +591,7 @@ impl TestEngineConfig {
         let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
-        let lookup_mempool: Arc<std::sync::Mutex<Vec<monero::Transaction>>> = Arc::default();
+        let lookup_mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>> = Arc::default();
         let app_state = AppState {
             store: store.clone(),
             key_custody: key_custody.clone(),
@@ -679,7 +679,6 @@ impl TestEngineConfig {
                         // real daemon via `run_scan_tick_now` instead.
                         let tenants: Vec<(String, WalletHandle)> = scan_wallet_handles
                             .read()
-                            .unwrap()
                             .iter()
                             .map(|(id, h)| (id.clone(), *h))
                             .collect();
@@ -815,19 +814,19 @@ mod tests {
     /// needs to be provably useful entirely on its own).
     async fn spawn_recording_receiver() -> (
         SocketAddr,
-        Arc<std::sync::Mutex<Vec<(Option<String>, serde_json::Value)>>>,
+        Arc<parking_lot::Mutex<Vec<(Option<String>, serde_json::Value)>>>,
         tokio::task::JoinHandle<()>,
     ) {
         use axum::extract::State as AxumState;
         use axum::http::HeaderMap;
 
-        let received: Arc<std::sync::Mutex<Vec<(Option<String>, serde_json::Value)>>> =
-            Arc::new(std::sync::Mutex::new(Vec::new()));
+        let received: Arc<parking_lot::Mutex<Vec<(Option<String>, serde_json::Value)>>> =
+            Arc::new(parking_lot::Mutex::new(Vec::new()));
         let received_for_state = received.clone();
 
         async fn hook(
             AxumState(received): AxumState<
-                Arc<std::sync::Mutex<Vec<(Option<String>, serde_json::Value)>>>,
+                Arc<parking_lot::Mutex<Vec<(Option<String>, serde_json::Value)>>>,
             >,
             headers: HeaderMap,
             body: axum::body::Bytes,
@@ -837,7 +836,7 @@ mod tests {
                 .and_then(|v| v.to_str().ok())
                 .map(str::to_string);
             if let Ok(parsed) = serde_json::from_slice::<serde_json::Value>(&body) {
-                received.lock().unwrap().push((signature, parsed));
+                received.lock().push((signature, parsed));
             }
             axum::http::StatusCode::OK
         }
@@ -924,7 +923,6 @@ mod tests {
         let matched = loop {
             let found = received
                 .lock()
-                .unwrap()
                 .iter()
                 .find(|(_, body)| {
                     body.get("order_id").and_then(|v| v.as_str()) == Some(order_id.as_str())
