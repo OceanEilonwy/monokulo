@@ -235,6 +235,18 @@ reported at the end.)
   and settings applied on save. The engine's no-node boot warning already
   said "applies without a restart", so it was left as it is.
 
+- 6.0: the real-binaries harness is a separate Playwright config
+  (`e2e/pos-playwright/real-binaries.config.js`) so the stagenet and
+  coverage suites are untouched. The fake node is a new small binary,
+  `fake-monerod` in scanner-test-support (the WBS's "fake daemon from 2.1"
+  didn't exist as an HTTP server; the in-process FakeDaemonClient can't be
+  reached by a real engine). It serves a fixed chain of empty blocks,
+  answers get_blocks.bin with 404 (the engine copes), and can be taken
+  offline and back with POST /fake/offline and /fake/online.
+- 6.3: `tests/real-settings.spec.js` passes in about 45s, and fails
+  against the engine from before 8830c92 at step 3 (status never shows
+  the saved node), checked once with a worktree build via E2E_SCANNER_BIN.
+
 ## Baseline
 
 `cargo test --workspace` on `main` (43d7c53 + dc2d976): 913 passed,
@@ -256,7 +268,7 @@ After 1.5 (old settings code deleted with its 12 tests): 1038 passed, 0 failed.
 
 ## Current step
 
-Part 6: dev-run.sh (key_custody.enabled_backends, comments), docs
-(DESIGN.md 8.1, README, KeyCustody module docs), 6.0 real-binary harness,
-6.3/6.4 end-to-end tests, Playwright admin page tests on the
-coverage_fixture, real-process kill -9 test.
+6.4 (key custody switch end to end: Playwright on the real binaries with a
+real key-custody-server, plus a Rust integration test that a payment is
+matched after a switch and after a custody outage), then the kill -9
+test and Playwright admin-page tests on the coverage fixture.
