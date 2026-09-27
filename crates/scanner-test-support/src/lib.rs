@@ -117,6 +117,57 @@ impl MoneroDaemonClient for NoopDaemonClient {
     }
 }
 
+/// The node the engine's admin payment lookup asks when
+/// [`TestEngineConfig::with_admin_lookup_daemon`] is used: an empty chain
+/// whose mempool holds whatever [`TestEngineHandle::add_mempool_transaction`]
+/// put there, so a merchant's "look up this txid" can find a real
+/// transaction.
+#[derive(Default)]
+struct LookupDaemonClient {
+    mempool: Arc<std::sync::Mutex<Vec<monero::Transaction>>>,
+}
+
+impl LookupDaemonClient {
+    fn find(&self, txid: &str) -> Option<monero::Transaction> {
+        self.mempool.lock().unwrap().iter().find(|tx| scanner::scanner::tx_id_hex(tx) == txid).cloned()
+    }
+}
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for LookupDaemonClient {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        Ok(0)
+    }
+
+    async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+        Ok(format!("lookup-block-{height}"))
+    }
+
+    async fn get_block_timestamp(&self, _height: u64) -> Result<u64, DaemonError> {
+        Ok(0)
+    }
+
+    async fn get_block_transactions(&self, _height: u64) -> Result<Vec<monero::Transaction>, DaemonError> {
+        Ok(vec![])
+    }
+
+    async fn get_mempool_transactions(&self) -> Result<Vec<monero::Transaction>, DaemonError> {
+        Ok(self.mempool.lock().unwrap().clone())
+    }
+
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+        Ok(if self.find(txid).is_some() { TxLocation::InPool } else { TxLocation::NotFound })
+    }
+
+    async fn get_transaction(&self, txid: &str) -> Result<monero::Transaction, DaemonError> {
+        self.find(txid).ok_or_else(|| DaemonError::Request(format!("no such transaction: {txid}")))
+    }
+
+    async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        Ok(vec![KeyImageStatus::Unspent; key_images.len()])
+    }
+}
+
 /// Matches the order of magnitude `main.rs` and `tests/e2e_stagenet.rs` use;
 /// nothing a test sends against this harness should come close to it.
 const MAX_BODY_BYTES: usize = 1_000_000;
@@ -145,6 +196,8 @@ pub struct TestEngineHandle {
     /// How many tenant admin API requests (`/api/v1/admin/tenant/...`) this
     /// engine has received - the requests its per-token rate limit counts.
     tenant_requests: Arc<std::sync::atomic::AtomicUsize>,
+    /// The admin lookup node's mempool (see [`LookupDaemonClient`]).
+    lookup_mempool: Arc<std::sync::Mutex<Vec<monero::Transaction>>>,
 }
 
 impl TestEngineHandle {
@@ -201,6 +254,13 @@ impl TestEngineHandle {
     /// built method per caller" reasoning as `run_scan_tick_now` above.
     pub fn store(&self) -> &scanner::store::SharedStore {
         &self.store
+    }
+
+    /// Puts `tx` in the mempool of the node the admin payment lookup asks
+    /// (only with [`TestEngineConfig::with_admin_lookup_daemon`]): a
+    /// transaction a customer has just sent.
+    pub fn add_mempool_transaction(&self, tx: monero::Transaction) {
+        self.lookup_mempool.lock().unwrap().push(tx);
     }
 
     /// Tenant admin API requests received so far, including rate-limited
@@ -531,6 +591,7 @@ impl TestEngineConfig {
         let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
+        let lookup_mempool: Arc<std::sync::Mutex<Vec<monero::Transaction>>> = Arc::default();
         let app_state = AppState {
             store: store.clone(),
             key_custody: key_custody.clone(),
@@ -554,8 +615,8 @@ impl TestEngineConfig {
                         (
                             network,
                             Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-                                label: "noop-test-daemon".to_string(),
-                                client: Arc::new(NoopDaemonClient),
+                                label: "lookup-test-daemon".to_string(),
+                                client: Arc::new(LookupDaemonClient { mempool: lookup_mempool.clone() }),
                             }])),
                         )
                     })
@@ -673,6 +734,7 @@ impl TestEngineConfig {
             key_custody,
             wallet_handles,
             tenant_requests,
+            lookup_mempool,
         }
     }
 }

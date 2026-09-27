@@ -2980,6 +2980,61 @@ mod tests {
         assert!(html.contains(&txid), "the submitted txid must repopulate the form's own input");
     }
 
+    /// A customer says they paid and sends the txid; the scanner has not
+    /// matched it (their wallet paid while the node was behind, say). The
+    /// merchant pastes it into the store page's lookup, which finds the order
+    /// it pays and records the payment; the order's page then lists it.
+    /// `subaddress_tx.hex` pays subaddress 0/1 of this view/spend key pair,
+    /// and a store's first order gets subaddress index 1.
+    #[tokio::test]
+    async fn merchant_recovers_a_missed_payment_by_looking_up_the_customers_txid() {
+        use monero::cryptonote::hash::Hashable;
+        let (state, engine) = test_state_with_real_engine_and_admin_lookup_daemon().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(&router, "lookup-recover@example.com", "correct horse battery staple").await;
+        let view_key = monero::PrivateKey::from_slice(&hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07").unwrap()).unwrap();
+        let spend_key = monero::PrivateKey::from_slice(&hex::decode("e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907").unwrap()).unwrap();
+        let connect = |view: String, spend: String| Request::builder().method("POST").uri("/connections")
+            .header("content-type", "application/json").header("authorization", format!("Bearer {session_token}"))
+            .body(Body::from(serde_json::json!({
+                "platform": "custom", "site_url": "https://shop.example.com", "view_key_hex": view,
+                "spend_pubkey_hex": spend, "network": "mainnet", "domains": [], "base_currency": "XMR",
+            }).to_string())).unwrap();
+        let response = router.clone().oneshot(connect(hex::encode(view_key.to_bytes()),
+            hex::encode(monero::PublicKey::from_private_key(&spend_key).to_bytes()))).await.unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED);
+        let connection_id = body_json(response).await["connection_id"].as_str().unwrap().to_string();
+        let response = router.clone().oneshot(form_post_request(&format!("/dashboard/stores/{connection_id}/orders/new"),
+            &session_token, &[("amount", "0.000000000001"), ("currency", "XMR")])).await.unwrap();
+        assert_eq!(response.status(), StatusCode::FOUND);
+        let order_page = response.headers()["location"].to_str().unwrap().to_string();
+
+        let tx: monero::Transaction = monero::consensus::deserialize(
+            &hex::decode(include_str!("../../../scanner/tests/fixtures/subaddress_tx.hex").trim()).unwrap()).unwrap();
+        let txid = hex::encode(tx.hash().to_bytes());
+        engine.add_mempool_transaction(tx);
+        let lookup = format!("/dashboard/stores/{connection_id}/orders/lookup");
+        let html = body_text(router.clone().oneshot(form_post_request(&lookup, &session_token, &[("txid", &txid)])).await.unwrap()).await;
+        assert!(html.contains("Match found and recorded."), "got: {html}");
+        let order_id = order_page.rsplit('/').next().unwrap();
+        assert!(html.contains(&format!("/dashboard/stores/{connection_id}/orders/{order_id}")), "links to the matched order: {html}");
+
+        let order = body_text(router.clone().oneshot(Request::builder().uri(&order_page)
+            .header("authorization", format!("Bearer {session_token}")).body(Body::empty()).unwrap()).await.unwrap()).await;
+        assert!(order.contains(&txid), "the order page lists the recorded payment: {order}");
+
+        // The same transaction looked up from a store it does not pay.
+        let (other_store, _) = create_connection(&router, &session_token).await;
+        let html = body_text(router.clone().oneshot(form_post_request(&format!("/dashboard/stores/{other_store}/orders/lookup"),
+            &session_token, &[("txid", &txid)])).await.unwrap()).await;
+        assert!(html.contains("That transaction exists, but doesn&#39;t pay any of this store&#39;s orders.")
+            || html.contains("That transaction exists, but doesn't pay any of this store's orders."), "got: {html}");
+
+        // A txid mangled when pasted is refused with the engine's reason.
+        let html = body_text(router.oneshot(form_post_request(&lookup, &session_token, &[("txid", "not-a-txid")])).await.unwrap()).await;
+        assert!(html.contains("Couldn&#39;t look that up:") || html.contains("Couldn't look that up:"), "got: {html}");
+    }
+
     // -- "Scan range" row (`docs/order_rescan_wbs.md` Phase 5.4) ------------
 
     #[tokio::test]
