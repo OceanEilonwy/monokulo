@@ -126,3 +126,23 @@ test('merchant site keeps following an order through a status outage when its st
   await page.clock.runFor(3500);
   await expect.poll(() => page.evaluate(() => window.events)).toEqual([['change', 'pending'], ['change', 'paid'], ['paid', 'paid']]);
 });
+
+test('a visitor past the rate limit, or asked for proof on a plain-HTTP shop, gets a clear failure', async ({ page }) => {
+  let answer;
+  await page.route(`${fixture.base_url}/pay/*/orders`, route => route.fulfill(answer()));
+  await openShop(page);
+  const attempt = () => page.evaluate(publicKey => window.Monokulo.createOrder({ publicKey, amount: 1, currency: 'XMR' })
+    .then(() => 'created', error => error.message), fixture.public_key);
+  const cors = { 'access-control-allow-origin': '*' };
+
+  // Past the hard limit monokulo answers 429 without a challenge: nothing to
+  // solve, so the call fails with the server's reason for the merchant to retry.
+  answer = () => ({ status: 429, headers: { ...cors, 'retry-after': '60' }, json: { error: 'Too many requests. Try again later.' } });
+  expect(await attempt()).toBe('Too many requests. Try again later.');
+
+  // A shop served over plain HTTP is not a secure context: no Web Crypto,
+  // so a proof-of-work challenge cannot be solved in this browser.
+  await page.evaluate(() => { Object.defineProperty(window.crypto, 'subtle', { value: undefined }); });
+  answer = () => ({ status: 429, headers: cors, json: { error: 'Too many requests', challenge: { challenge: 'c0ffee', difficulty: 8 } } });
+  expect(await attempt()).toContain("can't solve monokulo's challenge");
+});
