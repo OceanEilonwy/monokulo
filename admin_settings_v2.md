@@ -61,7 +61,7 @@ These came from review of the first draft and are settled.
 | D6 | Scanning during key custody changes | A store may be skipped for a while, but no payment is ever lost, no other store is held up, and recovery is always automatic. See "Scanning safety" in part 5 and task 5.0. |
 | D8 | `server.bind` | Restart-only, like `server.worker_threads`. Moving the engine's listen address live, and rewriting monokulo's `engine.url` to follow it, is too much risk for a setting that rarely changes. See 2.7 and 3.6. |
 | D9 | Engine robustness | The engine must tolerate and recover from key-custody sidecar errors, database errors and node failures, and stay fair across thousands of stores. See part 7. |
-| D10 | Scan window per store | Scan only indices of orders open or closed within the grace period. Late payments to older orders are handled by the merchant with payment lookup. See 7.3. |
+| D10 | Scan window per store | Scan only indices of orders open or closed within the grace period (by a new `closed_at` time). Late payments to older orders are handled by the merchant with payment lookup, and the merchant-facing text says so. See 7.3. |
 | D7 | Reloadable config | One shared, typed library (`crates/live-settings`) used by both processes. See part 1. |
 
 ## Current state of every setting
@@ -1067,11 +1067,13 @@ The fix is a **per-store scan cursor**:
   doesn't move its orders to `Expired` (other transitions still happen).
   Once it has caught up, expiry applies as normal, with the grace period
   counted as usual.
-- **Which orders catch-up matches.** No special query is needed. Matching
-  is by subaddress index over all of a tenant's indices
-  (`0..next_minor_index`, the `ranges` in `run_scan_tick`), and
-  `record_scan_match` doesn't look at order status. So catch-up scans each
-  lagging tenant against its full index range, as the live scan does.
+- **Which orders catch-up matches.** Matching is by subaddress index, and
+  `record_scan_match` doesn't look at order status. Until 7.3 lands, the
+  live scan and catch-up both use the tenant's full index range
+  (`0..next_minor_index`, the `ranges` in `run_scan_tick`). Once 7.3's
+  scan window exists, catch-up uses the window as of the tenant's cursor
+  (orders open at any point since the cursor's block time), never
+  today's, so orders that closed during the gap are still matched.
 - **Which tenants have cursors that move.** A tenant with no active orders
   isn't scanned today (`active_tenant_ids`), and nothing can be paid to
   it. Its cursor moves with the network height anyway, in the same
@@ -1546,6 +1548,8 @@ Principles every task here follows:
 
 #### 7.1 A panic can't take the whole engine down
 
+Done in commit 97817e1 (see the progress notes).
+
 - **Aim:** No panic, anywhere, leaves the engine permanently broken.
 - **Why:** The store is an `Arc<std::sync::Mutex<Store>>`
   (`store.rs`, `SharedStore`), and it and the other shared maps are
@@ -1587,11 +1591,19 @@ Principles every task here follows:
   (`spawn_blocking` with a semaphore, or a `rayon` pool sized to spare
   cores), and scan independent (transaction, store) pairs in parallel
   within a tick. HTTP handlers never wait on that pool.
+  - Parallel scans would contend inside `PlainKeyCustody` today: a scan
+    holds the wallets map's read lock for its whole duration, and each
+    wallet's table cache sits behind one mutex (`key_custody/plain.rs`).
+    Take an `Arc` of the wallet's material and table under a brief lock,
+    then scan without holding any lock, so registering or removing a
+    wallet (tenant creation) never waits behind scans. (7.1 already moved
+    these locks to `parking_lot`, whose `RwLock` doesn't starve writers.)
 
-#### 7.3 Don't redo the same work every second
+#### 7.3 Don't redo the same work every second, and cap each store's scan cost (D10)
 
 - **Aim:** Work per tick grows with what's new, not with the size of the
-  mempool times the number of stores.
+  mempool times the number of stores, and no store's scan cost grows
+  without bound over its lifetime.
 - **Why:**
   - Every tick (1 second by default) fetches the whole mempool with full
     transaction bodies (`get_transaction_pool`, `daemon_rpc.rs`) and
@@ -1601,38 +1613,90 @@ Principles every task here follows:
   - Each scan clones the store's whole subaddress lookup table
     (`table.clone()` in `key_custody/plain.rs`). The table covers
     `0..next_minor_index`, which grows by one with every order a store
-    ever creates, so a long-lived busy store pays a large clone per
-    transaction scanned.
+    ever creates.
+  - There is a cliff: `MAX_SCAN_TABLE_ENTRIES = 1_000_000`
+    (`key_custody/plain.rs`). A store whose `next_minor_index` passes it
+    gets `ScanFailed` on every scan. Today that stalls block scanning for
+    the whole network, for good; after 5.0 it would leave that store
+    behind for ever.
+- **The scan window (D10).** Each store is scanned only for the indices
+  of its orders that are open, or were closed within the grace period
+  (`payment.expired_order_grace_period_minutes`). This caps table size by
+  the number of recent orders, not the store's age.
+  - Orders need a close time to define "closed within the grace period".
+    The orders table has none (only `updated_at`). Add `closed_at_utc`,
+    set when an order first reaches a terminal status (`paid`,
+    `overpaid`, `expired`), cleared if it leaves one (a reorg can move
+    `paid` back to `confirming`). Backfill existing terminal orders with
+    `updated_at`.
+  - Window: status is non-terminal, or `closed_at >= now - grace`. This
+    keeps a paid order in view during the grace period, so a second
+    payment within it still turns the order `overpaid`. Today's
+    `active_tenant_ids` drops paid orders at once, so this is a small
+    improvement as well as a cap.
+  - Catch-up (5.0) must not use today's window for old blocks. A store
+    whose cursor sits at block time T is caught up against orders that
+    were open at any point since T: non-terminal now, or
+    `closed_at >= T - grace`. Orders that closed during the gap are
+    included, so nothing paid during the gap is missed.
+  - A payment to an order outside the window isn't detected
+    automatically. `lookup_payment` (`http/admin.rs`) scans the store's
+    full index range and records a match for any order regardless of
+    status, re-deriving an expired order to paid, so the merchant can
+    always recover it by entering the txid. The store page's "look up a
+    payment" help text says when that's needed (payments sent after an
+    order closed).
+- **The scan API has to take a set of indices.** Today
+  `KeyCustody::scan_tx_outputs` takes two contiguous ranges
+  (`shared/src/key_custody.rs`), and so does the socket wire format
+  (`ScanTxOutputsRequest`, `key-custody-service`). A window isn't
+  contiguous.
+  - Add `scan_tx_outputs_indices(handle, tx, indices: &IndexSet)` to the
+    trait, where `IndexSet` carries the indices plus a generation number
+    that changes when the set does.
+  - Add the matching request to the wire protocol, and a protocol version
+    exchanged on connect. An engine talking to an older sidecar falls
+    back to the range call covering `min..=max` of the set (correct, just
+    less efficient) and logs that the sidecar should be upgraded.
+  - `PlainKeyCustody` keeps one table per wallet for the live window and
+    updates it incrementally when the generation changes (adds new
+    indices, drops closed ones) rather than rebuilding it. `lookup_payment`
+    and catch-up build a temporary table for their own range and never
+    replace the live one, so they can't throw it out of the cache.
+  - The table is shared as an `Arc`, never cloned per scan.
+- **Mempool:**
+  - Fetch `get_transaction_pool_hashes` each tick and fetch bodies only
+    for hashes not seen before.
+  - Keep a per-network record of (txid, store, window generation) scanned.
+    A pair counts as scanned only after the scan *succeeded*; a failed
+    scan (a custody backend that was down) is retried next tick, so the
+    store doesn't miss that transaction until it's mined. Entries are
+    dropped when the txid leaves the pool. A store whose window changed
+    rescans the pool only for indices that are new since its last scan.
 - **Verify:**
   - Unit test: two ticks against an unchanged mempool make zero
-    key-custody scan calls on the second tick. A new transaction in the
-    pool is scanned once per active store. A store whose index range grew
-    has the pool rescanned for it.
-  - Unit test: the second tick fetches only pool hashes, then bodies only
-    for new hashes.
-  - Benchmark: scanning one transaction for a store with 100,000
-    subaddresses costs no more than for one with 100 (no per-call table
-    copy).
-- **Approach:**
-  - Fetch `get_transaction_pool_hashes` each tick and fetch bodies only
-    for hashes not seen before. Keep a per-network set of (txid, store,
-    index-range generation) already scanned, dropped when the txid leaves
-    the pool.
-  - Hold the lookup table in an `Arc` and share it instead of cloning. Grow
-    it incrementally when `next_minor_index` increases instead of
-    rebuilding.
-  - Scan only a window of indices per store: the indices of orders that
-    are still open, or closed within the grace period
-    (`payment.expired_order_grace_period_minutes`), instead of every index
-    ever issued (decision D10). This caps each store's table size and scan
-    cost. A payment to an older order's address is no longer detected
-    automatically; the merchant uses the existing "look up a payment"
-    feature (`lookup_payment`) to record it. The window is a set of
-    indices, not necessarily contiguous, so the table is built from that
-    set. Tests: a payment to an open order's index matches; a payment to
-    an order closed longer ago than the grace period is not matched by the
-    scan but is found by `lookup_payment`; the table size tracks the
-    number of open orders, not `next_minor_index`.
+    key-custody scan calls on the second tick, and the second tick fetches
+    only pool hashes.
+  - Unit test: a scan that fails for one store is retried on the next tick
+    against the same pool, and the payment is recorded then.
+  - Unit test: a payment to an open order's index matches. A second
+    payment to a paid order within the grace period turns it `overpaid`.
+    A payment to an order closed longer ago than the grace period is not
+    matched by the scan, and is recorded by `lookup_payment`.
+  - Unit test: catch-up after a gap longer than the grace period matches a
+    payment to an order that was open during the gap and has closed since.
+  - Unit test: a store with 1,200,000 orders of which 50 are open scans
+    normally (no `ScanFailed`), and its table has about 50 entries.
+  - Unit test: the table is updated incrementally when an order opens or
+    closes (a counting test double shows no full rebuild), and a
+    `lookup_payment` call doesn't evict the live table.
+  - Protocol test: a new engine against a sidecar that only knows the
+    range call still detects payments.
+  - Benchmark: scanning one transaction costs the same for a store with a
+    large window as for a small one (no per-call table copy).
+- **Approach:** As above. Migration for `closed_at_utc` with the
+  backfill; set and clear it in `recompute_order_status`. The window query
+  replaces the `0..next_minor_index` range in `run_scan_tick`.
 
 #### 7.4 Fair, parallel scanning across networks and stores
 
@@ -1646,6 +1710,10 @@ Principles every task here follows:
     backend (a socket sidecar that answers slowly but doesn't fail) holds
     up every store after it.
   - Catch-up (5.0) must not starve the live scan.
+  - The double-spend revalidation loop (`run_double_spend_revalidation_loop`,
+    `main.rs`) also walks networks one after another, and the reorg check
+    makes one `get_block_hash` call per height in its window, so a slow
+    node on one network delays those for the others too.
 - **Verify:**
   - Test: a fake daemon that takes 10 s per call on stagenet doesn't
     delay mainnet ticks.
@@ -1655,7 +1723,7 @@ Principles every task here follows:
   - Test: with a large catch-up backlog, live-scan tick time stays within
     its budget and the backlog still shrinks every tick.
 - **Approach:** One supervised loop per network, each with its own status
-  entry. Within a tick, scan stores concurrently with a bounded pool,
+  entry, for both the scan loop and the double-spend revalidation loop. Within a tick, scan stores concurrently with a bounded pool,
   with a per-backend concurrency cap and a per-call deadline. A store
   whose calls hit the deadline is treated as a per-store failure (5.0)
   for this tick. Catch-up gets a fixed share of each tick's time, and
@@ -1671,26 +1739,32 @@ Principles every task here follows:
   one connection is the bottleneck. Reconnecting is covered by 5.8.
 - **Verify:**
   - Test: with 8 concurrent callers, throughput scales above the
-    single-connection rate (measured against a server with an artificial
-    per-call delay).
+    single-connection rate, against a real `key-custody-server`.
   - Test: a call that exceeds the call timeout fails only that call,
     doesn't poison the other connections, and is reported as a per-store
     failure.
 - **Approach:** A small pool of connections (size from a new
   `key_custody.socket_connections` setting), each used by one call at a
-  time, with a connection dropped and replaced after a transport error.
-  Keep the per-call timeout. The pool and 5.8's reconnect logic live in
-  the same wrapper.
+  time. A transport error on one connection replaces that connection
+  only. The full re-registration of the backend's stores runs only when
+  the canary wallet (5.8) is unknown. Keep the per-call timeout. The pool
+  and 5.8's reconnect logic live in the same wrapper.
+  - The sidecar (`key-custody-server`) already handles each connection in
+    its own task, but behind it is one `PlainKeyCustody` with the same
+    locks as the engine's. So the server-side locking change from 7.2
+    applies there too, and the throughput test runs against a real
+    server, not only one with an artificial delay.
 
 #### 7.6 Node failures and inconsistent nodes
 
 - **Aim:** Slow, dead or disagreeing nodes cost bounded time and never
   cause a wrong result.
 - **Why:**
-  - `FallbackDaemonClient` tries nodes in order on each call, each with a
-    15 s timeout (`daemon_rpc.rs`), so one call can take 45 s with three
-    dead nodes, every call, every tick. There is no cooldown for a node
-    that just failed.
+  - `FallbackDaemonClient` starts each call from the node that last
+    answered and moves on when it fails, each attempt with a 15 s timeout
+    (`daemon_rpc.rs`). When every node is dead, each call costs 15 s per
+    node, and a tick makes many calls, so a tick can take minutes. There
+    is no cooldown for a node that just failed.
   - Consecutive calls in one tick can go to different nodes, which may be
     at different heights or on different forks. Height from one node and
     blocks from another can disagree.
@@ -1776,9 +1850,15 @@ Principles every task here follows:
 - **Verify:** Test: with the store lock held by a slow operation, requests
   time out with `503` after the request deadline, and a flood beyond the
   concurrency limit gets `503` immediately rather than queueing without
-  bound.
+  bound. Test: order-event streams open longer than the request deadline
+  stay open, and don't count against the request concurrency limit.
 - **Approach:** `tower` timeout and concurrency-limit layers in
-  `build_router`, with limits from settings (live, part 1). Handlers that
+  `build_router`, with limits from settings (live, part 1). The
+  long-lived order-event stream (`order_events`,
+  `/api/v1/admin/tenant/events`) is excluded from both: monokulo's
+  `LiveHub` holds one open per watched store, so a request timeout would
+  cut streams off and a shared concurrency limit would fill up with them.
+  Streams get their own cap on open streams instead. Handlers that
   touch key custody use the 5.1 retry and return `503` when the backend is
   down.
 
@@ -1792,6 +1872,10 @@ Principles every task here follows:
     the block scanned, mid-webhook, mid-switch), restart from the same
     database, and check every payment is recorded once and every webhook
     is delivered at least once.
+  - The same check with a real process: on the 6.0 harness, `kill -9` the
+    engine binary during ticks and restart it on the same database.
+    (Killing a task inside one process doesn't show what SQLite does when
+    the process really dies.)
   - Test: on SIGTERM the engine stops accepting requests, lets the current
     tick finish (up to a deadline), and exits cleanly.
 - **Approach:** Mostly verification; the idempotent recording and
@@ -1815,8 +1899,10 @@ Principles every task here follows:
     while nothing is failing for it; the engine recovers fully after each
     injected fault ends.
 - **Approach:** Build on 5.0's property test and the existing
-  `FakeDaemonClient`. Keep the thresholds in the test so regressions fail
-  CI.
+  `FakeDaemonClient`. It needs a generator for real payment transactions
+  to many stores' subaddresses; reuse the transaction fixtures the scanner
+  tests already build, and put the generator in `scanner-test-support`.
+  Keep the thresholds in the test so regressions fail CI.
 
 #### 7.13 Seeing what's wrong
 
