@@ -2659,19 +2659,19 @@ function ga() {
 		M?.close(), M = null;
 		let e = be();
 		if (!e.length) {
-			_(!1);
+			window.clearTimeout(ue), ue = void 0, _(!1);
 			return;
 		}
 		let n = new EventSource(`${ea}/events?orders=${e.map(encodeURIComponent).join(",")}`);
 		M = n, n.addEventListener("open", () => {
-			M === n && (window.clearTimeout(ue), _(!1));
+			M === n && (window.clearTimeout(ue), ue = void 0, _(!1));
 		}), n.addEventListener("status", (e) => {
 			if (M === n) try {
 				let n = JSON.parse(e.data);
 				t((e) => e.map((e) => e.order_id === n.order_id ? he(e, n) : e)), ee((e) => e.map((e) => e.order_id === n.order_id ? he(e, n) : e)), n.is_terminal && queueMicrotask(P);
 			} catch {}
 		}), n.addEventListener("error", () => {
-			M === n && (window.clearTimeout(ue), ue = window.setTimeout(() => _(!0), 6e3));
+			M === n && ue === void 0 && (ue = window.setTimeout(() => _(!0), 6e3));
 		});
 	}
 	function xe() {

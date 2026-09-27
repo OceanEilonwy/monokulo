@@ -249,3 +249,24 @@ test('customer walks away: the order on screen expires', async ({ page, request 
   await expect(page.locator('.pos-outcome')).toContainText('This payment expired before it was completed.');
   await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Expired');
 });
+
+test('counter loses its connection: the order shows connection lost, then recovers by itself', async ({ page, request }) => {
+  let online = true;
+  // The Wi-Fi is down: every attempt to (re)open the update stream fails.
+  await page.route('**/pos/events?*', route => (online ? route.continue() : route.abort('internetdisconnected')));
+  online = false;
+  await page.goto(posUrl());
+  const badge = page.locator('.pos-order-heading .pos-badge');
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  // Retries fail every few seconds; once 6s have passed without a
+  // connection the merchant is told, however many retries that took.
+  await page.waitForTimeout(3000);
+  await expect(badge).toContainText('Awaiting payment');
+  await expect(badge).toContainText('Connection lost', { timeout: 8000 });
+  // The customer pays meanwhile; back online, the stream reconnects and
+  // brings the missed payment in without a reload.
+  await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=1&in_block=false`);
+  online = true;
+  await expect(badge).toContainText('Unconfirmed', { timeout: 10000 });
+  await expect(page.locator('.pos-pay-detail')).toHaveText('Payment seen. Waiting for its first confirmation.');
+});

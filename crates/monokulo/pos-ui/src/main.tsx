@@ -350,13 +350,13 @@ function App() {
   function openStream() {
     stream?.close(); stream = null;
     const ids = watchedIds();
-    if (!ids.length) { setOffline(false); return; }
+    if (!ids.length) { window.clearTimeout(lostTimer); lostTimer = undefined; setOffline(false); return; }
     const source = new EventSource(`${api}/events?orders=${ids.map(encodeURIComponent).join(',')}`);
     stream = source;
     // The stream sends every watched order's status when it connects, so
     // opening it needs no per-order reads of its own (the engine
     // rate-limits each store).
-    source.addEventListener('open', () => { if (stream !== source) return; window.clearTimeout(lostTimer); setOffline(false); });
+    source.addEventListener('open', () => { if (stream !== source) return; window.clearTimeout(lostTimer); lostTimer = undefined; setOffline(false); });
     source.addEventListener('status', event => {
       if (stream !== source) return;
       try {
@@ -366,9 +366,11 @@ function App() {
         if (update.is_terminal) queueMicrotask(openStream);
       } catch { /* A malformed event is ignored; the next snapshot reconciles. */ }
     });
+    // The browser retries a dropped stream every few seconds; the counter is
+    // offline once it has failed to reconnect for 6s, however many attempts
+    // that took. Only a successful open clears it.
     source.addEventListener('error', () => {
-      if (stream !== source) return;
-      window.clearTimeout(lostTimer);
+      if (stream !== source || lostTimer !== undefined) return;
       lostTimer = window.setTimeout(() => setOffline(true), 6000);
     });
   }
