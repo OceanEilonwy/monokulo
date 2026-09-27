@@ -52,7 +52,14 @@ commits. Nothing is pushed.
 | 2.3-2.6, 2.8, 2.9 | done | 8830c92 | |
 | 2.7 bind restart-only | done | 8830c92 | |
 | 1.5 remove settings | partly | 8830c92 | unknown keys refused; old settings.rs still used by the scan chunk budget and bootstrap CLI |
-| 1.3 monokulo on live-settings + part 3 | next | | |
+| 1.3 monokulo on live-settings | done | 66f32ea | |
+| 3.1-3.4, 3.6 | done | 66f32ea | engine retarget ends old streams; onion listener live; bind note in the restart banner |
+| 3.5 pin already-live settings | partly | | existing signup/public_url tests cover it; no new ones |
+| 3.7 merchant alerts | done | d7e7883 | |
+| 2.2 unserved networks | done | d7e7883 | |
+| Part 4 admin page | done except Playwright | 66f32ea | view tests; Playwright page tests wait for part 6 |
+| independent review of 8830c92 + 66f32ea | running | | |
+| Part 5 per-store key custody | next | | |
 
 ## Decisions made while working
 
@@ -104,6 +111,14 @@ reported at the end.)
   setting to have one. Harmless and occasionally useful.
 - 1.2: the body limit is checked on declared/exact length each request;
   a fixed 16MiB outer ceiling still applies to bodies of unknown length.
+- 1.3: monokulo readers of per-request settings (signup mode, public URL)
+  use a typed `settings::get(db, &SETTING)` rather than a Live section:
+  they were already read per request, and the registry writes the same
+  table. Everything with runtime state goes through the registry.
+- Part 4: parse errors show the library's messages ("Enter a whole number,
+  0 or more." rather than the range) - accurate, slightly less specific.
+- 3.7: the alert covers both "no reachable node" and "catching up" (the
+  latter phrased gently); custody reasons join in part 5.
 - D10 design details (after review): orders get `closed_at_utc`; the
   window is "non-terminal, or closed within the grace period"; the custody
   API gains an index-set scan call plus a protocol version, falling back
@@ -121,9 +136,11 @@ After 719dc2e: 986 passed, 0 failed, 20 ignored.
 After 02b0d0f: 994 passed, 0 failed, 20 ignored.
 After c51dc26: 1000 passed, 0 failed, 20 ignored.
 After 8830c92: 1011 passed, 0 failed, 21 ignored.
+After d7e7883: 1018 passed, 0 failed, 21 ignored.
 
 ## Current step
 
-1.3 (monokulo onto live-settings) with part 3 (engine URL + HTTP cache,
-exchange rates, onion listener live; engine-unreachable warning; bind
-note), then part 4 (admin page), part 5 (per-store key custody), part 6.
+Part 5 (per-store key custody): 5.1 custody registry + per-tenant
+resolution + migration of key_custody.backend, 5.2 enabled/default
+settings live, 5.3 engine API to choose/switch, 5.4-5.7 monokulo. Apply the
+independent review of 8830c92/66f32ea when it reports.
