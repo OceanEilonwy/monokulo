@@ -272,9 +272,24 @@ fn custody_unserved_tenants(state: &AppState, health: &[CustodyBackendStatus]) -
         .collect()
 }
 
+/// How far behind a store must be before it's reported as catching up: a
+/// block or two behind is normal while a tick is part-way through.
+pub const CATCHING_UP_REPORT_BLOCKS: u64 = 3;
+
+/// Whether a network's stores are cut off: no node answered this probe,
+/// and the scan loop isn't succeeding either (its last tick failed, it's
+/// stale, or it never ran). A probe that fails once while scanning works
+/// is a blip, not something to alert every store owner about.
+fn network_unreachable(status: Option<&NetworkStatus>) -> bool {
+    let Some(status) = status else { return true };
+    let probe_failed = !status.nodes.iter().any(|node| node.error.is_none());
+    let scanning_works = status.scanner.ever_ticked && status.scanner.last_tick_ok && !status.scanner.is_stale;
+    probe_failed && !scanning_works
+}
+
 /// Stores that can't be scanned right now (task 3.7): those on a network
 /// with no node configured or none answering, and those still catching up
-/// after falling behind.
+/// after falling behind by more than a couple of blocks.
 fn unserved_tenants(state: &AppState, networks: &[NetworkStatus]) -> Vec<UnservedTenant> {
     let store = state.store.lock();
     let mut unserved = Vec::new();
@@ -283,9 +298,7 @@ fn unserved_tenants(state: &AppState, networks: &[NetworkStatus]) -> Vec<Unserve
         if count == 0 {
             continue;
         }
-        let status = networks.iter().find(|n| n.network == network);
-        let reachable = status.is_some_and(|n| n.nodes.iter().any(|node| node.error.is_none()));
-        if !reachable {
+        if network_unreachable(networks.iter().find(|n| n.network == network)) {
             for public_key in store.tenant_public_keys_on_network(&network).unwrap_or_default() {
                 unserved.push(UnservedTenant { public_key, network: network.clone(), reason: "no_reachable_node", blocks_behind: None });
             }
@@ -293,6 +306,9 @@ fn unserved_tenants(state: &AppState, networks: &[NetworkStatus]) -> Vec<Unserve
         }
         let high_water = store.max_scanned_height(&network).ok().flatten().unwrap_or(0);
         for (public_key, cursor) in store.lagging_tenant_keys(&network).unwrap_or_default() {
+            if high_water.saturating_sub(cursor) < CATCHING_UP_REPORT_BLOCKS {
+                continue;
+            }
             unserved.push(UnservedTenant {
                 public_key,
                 network: network.clone(),
@@ -307,6 +323,40 @@ fn unserved_tenants(state: &AppState, networks: &[NetworkStatus]) -> Vec<Unserve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn network(probe_ok: bool, last_tick_ok: bool, is_stale: bool) -> NetworkStatus {
+        NetworkStatus {
+            network: "stagenet".to_string(),
+            nodes: vec![NodeStatus {
+                label: "node".to_string(),
+                is_active: true,
+                in_cooldown: false,
+                height: probe_ok.then_some(100),
+                error: (!probe_ok).then(|| "timed out".to_string()),
+            }],
+            scanner: ScannerStatusView {
+                ever_ticked: true,
+                last_tick_started_at: Some(0),
+                last_tick_finished_at: Some(0),
+                tick_count: 1,
+                tenants_scanned: 1,
+                last_tick_ok,
+                last_error: None,
+                is_stale,
+            },
+            lagging_tenants: 0,
+            max_blocks_behind: 0,
+        }
+    }
+
+    #[test]
+    fn one_failed_probe_while_scanning_works_is_not_reported_as_unreachable() {
+        assert!(!network_unreachable(Some(&network(false, true, false))), "a blip");
+        assert!(!network_unreachable(Some(&network(true, false, false))), "the probe answers");
+        assert!(network_unreachable(Some(&network(false, false, false))), "probe and scan both failing");
+        assert!(network_unreachable(Some(&network(false, true, true))), "the scan loop has stopped ticking");
+        assert!(network_unreachable(None), "no node configured");
+    }
 
     #[test]
     fn is_stale_uses_five_times_the_configured_poll_interval_with_a_15s_floor() {

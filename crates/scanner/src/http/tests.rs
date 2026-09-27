@@ -2132,6 +2132,18 @@ async fn a_saved_rate_limit_body_limit_and_tenant_default_apply_to_the_next_requ
     );
     assert_eq!(router.clone().oneshot(big).await.unwrap().status(), StatusCode::PAYLOAD_TOO_LARGE);
 
+    // The same body sent in chunks, with no length declared up front: cut
+    // off at the limit as it's read.
+    let text = serde_json::json!({ "view_key_hex": "a".repeat(400), "spend_pubkey_hex": "b" }).to_string();
+    let chunks: Vec<Result<Vec<u8>, std::io::Error>> = text.into_bytes().chunks(50).map(|c| Ok(c.to_vec())).collect();
+    let streamed = Request::builder()
+        .method("POST")
+        .uri("/api/v1/admin/tenants")
+        .header("content-type", "application/json")
+        .body(Body::from_stream(futures_util::stream::iter(chunks)))
+        .unwrap();
+    assert_eq!(router.clone().oneshot(streamed).await.unwrap().status(), StatusCode::PAYLOAD_TOO_LARGE);
+
     save_settings(&router, serde_json::json!({ "scalars": { "server.max_body_bytes": "8192" } })).await;
     let save_node = serde_json::json!({ "monero_node": { "mainnet": { "host": "127.0.0.1", "port": 9, "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] } } });
     save_settings(&router, save_node).await;
@@ -2493,4 +2505,25 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
     let status = get_status_json(router.clone()).await;
     assert_eq!(status["unserved_tenants"][0]["reason"], "custody_disabled", "{status}");
     assert_eq!(status["unserved_tenants"].as_array().unwrap().len(), 1);
+}
+
+#[tokio::test]
+async fn a_store_a_block_or_two_behind_is_not_reported_but_one_further_behind_is() {
+    let state = test_app_state();
+    let store = state.store.clone();
+    store.lock().set_scanned_block("mainnet", 100, "h100").unwrap();
+    let router = build_router(state, 1_000_000);
+    let tenant = create_tenant(&router, 1).await;
+    let row = store.lock().find_tenant_by_public_key(&tenant.public_key).unwrap().unwrap();
+    // Anchored at 100 (the last scanned block), then the network moves on
+    // while this store's cursor stays behind.
+    assert_eq!(row.scanned_through_height, Some(100), "a new store starts at the network's last scanned block");
+    store.lock().set_scanned_block("mainnet", 102, "h102").unwrap();
+    let status = get_status_json(router.clone()).await;
+    assert_eq!(status["unserved_tenants"], serde_json::json!([]), "2 blocks behind is normal mid-tick: {status}");
+
+    store.lock().set_scanned_block("mainnet", 103, "h103").unwrap();
+    let status = get_status_json(router.clone()).await;
+    assert_eq!(status["unserved_tenants"][0]["reason"], "catching_up", "{status}");
+    assert_eq!(status["unserved_tenants"][0]["blocks_behind"], 3);
 }

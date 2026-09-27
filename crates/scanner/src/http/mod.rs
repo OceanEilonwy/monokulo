@@ -175,9 +175,9 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
 
 /// Refuses a request whose body is larger than the current
 /// `server.max_body_bytes`, read on every request so a saved change applies
-/// to the next one (task 2.6). Checked against the declared length (or the
-/// body's exact size when it knows it); a body of unknown length is still
-/// capped by the router's fixed outer limit.
+/// to the next one (task 2.6). A declared length over the limit is refused
+/// before anything is read. A body of unknown length (chunked) is read here
+/// up to the limit and refused with `413` if it goes over, or can't be read.
 async fn body_limit_middleware(
     axum::extract::State(state): axum::extract::State<AppState>,
     request: axum::extract::Request,
@@ -195,7 +195,14 @@ async fn body_limit_middleware(
         return (StatusCode::PAYLOAD_TOO_LARGE, Json(serde_json::json!({ "error": "request body too large" })))
             .into_response();
     }
-    next.run(request).await
+    if declared.is_some() {
+        return next.run(request).await;
+    }
+    let (parts, body) = request.into_parts();
+    match axum::body::to_bytes(body, usize::try_from(limit).unwrap_or(usize::MAX)).await {
+        Ok(bytes) => next.run(axum::extract::Request::from_parts(parts, axum::body::Body::from(bytes))).await,
+        Err(_) => (StatusCode::PAYLOAD_TOO_LARGE, Json(serde_json::json!({ "error": "request body too large" }))).into_response(),
+    }
 }
 
 /// Longest an ordinary API request may take before it gets `503` (task 7.10).
