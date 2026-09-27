@@ -84,3 +84,32 @@ async fn the_ordinary_listener_never_honours_a_proxy_header() {
     assert_eq!(request(addr, "").await, Some(404));
     assert_eq!(request(addr, "").await, Some(429));
 }
+
+/// Tor pointed at the onion port without PROXY protocol, or something
+/// speaking TLS to it, sends bytes that are not a PROXY header: refused once
+/// they run past a header's length. And a connection that opens and sends
+/// nothing does not hold up a real circuit behind it.
+#[tokio::test]
+async fn junk_is_refused_and_a_stalled_connection_does_not_block_the_next_circuit() {
+    let router = build_router(state(10));
+    let listener = OnionListener::bind("127.0.0.1:0".parse().unwrap()).await.unwrap();
+    let addr = listener.bound_address();
+    tokio::spawn(async move {
+        axum::serve(listener, router.into_make_service_with_connect_info::<OnionPeer>()).await.unwrap();
+    });
+
+    // Opens, then says nothing.
+    let _stalled = TcpStream::connect(addr).await.unwrap();
+    let started = std::time::Instant::now();
+    assert_eq!(request(addr, &circuit(7)).await, Some(404));
+    assert!(started.elapsed() < std::time::Duration::from_secs(2), "the stalled connection held up a real one");
+
+    // A TLS ClientHello's first bytes: binary, no line ending.
+    let mut junk = TcpStream::connect(addr).await.unwrap();
+    let mut hello = vec![0x16, 0x03, 0x01, 0x02, 0x00, 0x01, 0x00, 0x01, 0xfc, 0x03, 0x03];
+    hello.extend(std::iter::repeat_n(0x42u8, 200));
+    junk.write_all(&hello).await.unwrap();
+    let mut answer = Vec::new();
+    let read = tokio::time::timeout(std::time::Duration::from_secs(5), junk.read_to_end(&mut answer)).await;
+    assert!(matches!(read, Ok(Ok(0)) | Ok(Err(_))), "refused without an answer: {read:?} {answer:?}");
+}
