@@ -1,0 +1,188 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Checkout paid state — mockups</title>
+  <style>
+    @font-face { font-family: Manrope; src: url('../crates/monokulo/static/manrope-500.woff2'); font-weight: 500; }
+    @font-face { font-family: Manrope; src: url('../crates/monokulo/static/manrope-700.woff2'); font-weight: 700; }
+    @font-face { font-family: Manrope; src: url('../crates/monokulo/static/manrope-800.woff2'); font-weight: 800; }
+    :root { --ink:#111; --paper:#f4f1ea; --raised:#fff; --muted:#5a564c; --line:#d8d1c4; --accent:#ff6600;
+            --ok:#1a7f37; --ok-bg:#e3f4e7; --ok-ink:#165f2e; --warn:#ac7600; --warn-bg:#fff6d8; --err:#b00020; --err-bg:#ffe6e9; }
+    * { box-sizing: border-box; }
+    body { margin: 0; background: #ded8ca; color: var(--ink); font: 500 15px/1.45 Manrope, Arial, sans-serif; }
+    .board { max-width: 1560px; margin: auto; padding: 30px 24px 40px; }
+    h1 { font-size: 27px; margin: 0 0 4px; letter-spacing: -.03em; }
+    .lede { margin: 0 0 8px; color: #4a463f; font-size: 14px; max-width: 980px; }
+    .rules { margin: 0 0 26px; padding-left: 18px; color: #4a463f; font-size: 13px; max-width: 980px; }
+    .options { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 34px 40px; }
+    .option h2 { font-size: 17px; margin: 0 0 2px; }
+    .option > p { margin: 0 0 10px; font-size: 13px; color: #4a463f; min-height: 40px; }
+    .pair { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .label { font-size: 11px; font-weight: 800; text-transform: uppercase; letter-spacing: .08em; color: #5a564c; margin-bottom: 5px; }
+    .phone { position: relative; height: 610px; overflow: hidden; background: var(--paper); border: 2px solid var(--ink); border-radius: 16px; padding: 14px 12px; font-size: 11px; }
+    /* The payment block has the same height in both states; the dashed
+       line under it is where the page below starts, and it does not move. */
+    .block { height: 372px; overflow: hidden; border-bottom: 1.5px dashed var(--accent); margin: 0 -12px; padding: 0 12px; }
+    .pills { display: flex; justify-content: center; gap: 6px; height: 22px; }
+    .pill { display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border: 1px solid var(--ink); border-radius: 4px; font-size: 9px; font-weight: 800; text-transform: uppercase; background: var(--warn-bg); }
+    .pill.soft { background: transparent; text-transform: none; font-weight: 700; }
+    .pill.ok { background: var(--ok-bg); border-color: var(--ok); color: var(--ok-ink); }
+    .amount { text-align: center; font-size: 25px; font-weight: 800; letter-spacing: -.02em; margin: 10px 0 6px; height: 34px; white-space: nowrap; }
+    .amount small { font-size: 17px; color: var(--muted); font-weight: 700; }
+    .qrbox { position: relative; width: 150px; height: 150px; margin: 0 auto; }
+    .qr { width: 150px; height: 150px; background:
+      repeating-linear-gradient(90deg, #111 0 6px, transparent 6px 11px), repeating-linear-gradient(0deg, #111 0 5px, #fff 5px 12px);
+      background-blend-mode: multiply; border: 8px solid #fff; outline: 1px solid var(--line); }
+    .addr { margin-top: 12px; height: 58px; }
+    .addr b { display: block; font-size: 9.5px; color: var(--muted); font-weight: 600; }
+    .addr code { font: 9.5px/1.35 ui-monospace, monospace; word-break: break-all; }
+    .progress { margin-top: 10px; height: 38px; }
+    .progress .row { display: flex; justify-content: space-between; font-size: 9.5px; }
+    .bar { height: 10px; margin-top: 4px; border: 1px solid var(--ink); border-radius: 3px; background: #fff; overflow: hidden; }
+    .bar i { display: block; height: 100%; background: var(--accent); }
+    .refund { margin-top: 12px; padding-top: 10px; border-top: 1px solid var(--ink); }
+    .refund b { font-size: 12px; }
+    .field { height: 30px; margin-top: 6px; border: 2px solid var(--ink); border-radius: 5px; background: #fff; }
+    .field.saved { border-color: var(--ok); background: #eef8f1; }
+    .note { margin-top: 5px; font-size: 9px; color: var(--muted); }
+    .done { display: grid; place-items: center; text-align: center; }
+    .check { width: 44px; height: 44px; border-radius: 50%; display: grid; place-items: center; background: var(--ok); color: #fff; font-size: 24px; font-weight: 800; }
+    .muted { color: var(--muted); }
+    .strong { font-weight: 800; }
+    .tx { font: 9.5px ui-monospace, monospace; }
+    .receipt { height: 330px; margin-top: 10px; border: 2px solid var(--ok); border-radius: 8px; background: var(--ok-bg); color: var(--ok-ink); display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 6px; padding: 12px; }
+    .receipt .big { font-size: 22px; white-space: nowrap; font-weight: 800; color: var(--ink); }
+    .receipt dl { display: grid; grid-template-columns: auto auto; gap: 2px 10px; margin: 6px 0 0; font-size: 10px; color: var(--ink); }
+    .receipt dt { color: var(--muted); }
+    .overlay { position: absolute; inset: 0; display: grid; place-items: center; background: rgba(244, 241, 234, .82); }
+    .overlay .check { width: 64px; height: 64px; font-size: 34px; box-shadow: 0 0 0 6px var(--ok-bg); }
+    .strip { height: 22px; display: flex; align-items: center; justify-content: center; gap: 6px; border-radius: 4px; background: var(--ok); color: #fff; font-size: 10px; font-weight: 800; }
+    .summary { height: 150px; width: 100%; display: grid; grid-template-columns: auto 1fr; align-content: center; gap: 6px 10px; padding: 0 10px; font-size: 10.5px; }
+    .summary dt { color: var(--muted); }
+    .summary dd { margin: 0; font-weight: 700; }
+    .errors { margin-top: 30px; padding: 16px 18px; background: #f4f1ea; border: 1px solid #9b9488; border-radius: 8px; font-size: 13px; }
+    .errors h2 { font-size: 17px; margin: 0 0 6px; }
+    .errors ul { margin: 0; padding-left: 18px; }
+    .banner { margin-top: 6px; padding: 7px 8px; border: 2px solid var(--err); border-radius: 6px; background: var(--err-bg); color: var(--err); font-weight: 800; font-size: 10px; }
+  </style>
+</head>
+<body>
+<div class="board">
+  <h1>Checkout: the paid state</h1>
+  <p class="lede">Today a paid order inserts a “Paid” box above everything, repeats it in a “PAID” tag, keeps the QR code up (inviting a second payment), reads “101 / 1 confirmations” and appends a payments table: the whole page jumps. Each option below keeps the awaiting card's footprint when it turns paid. The dashed orange line marks where the payment block ends: it does not move.</p>
+  <ul class="rules">
+    <li>Only an error (underpaid, overpaid, double spend) may grow the page, with a message the customer has to read.</li>
+    <li>All options also: confirmations read as “Confirmed” instead of “101 / 1”; no raw timestamps; the payment is listed by a short transaction id in the space the address used; the refund section stays where it was.</li>
+  </ul>
+
+  <div class="options">
+    <section class="option">
+      <h2>A · Swap in place</h2>
+      <p>The status pill turns green, the QR's square becomes a check with “Payment received”, and the address row becomes the transaction. Nothing else changes. The quietest option.</p>
+      <div class="pair">
+        <div><div class="label">Awaiting</div><div class="phone">
+          <div class="pills"><span class="pill">Waiting for payment</span><span class="pill soft">⧗ 28m</span></div>
+          <div class="block"><div class="amount">0.00629508857 <small>XMR</small></div>
+          <div class="qrbox"><div class="qr"></div></div>
+          <div class="addr"><b>Send exactly this amount to</b><code>85sbW6WhEGEKuRBm5fo6xWYSvi6TgkgMcTygLG4yQTNKd1FwxDKCyeNL1tBz1W76gz15hVfaLT2f7idAEHk…</code></div>
+          <div class="progress"><div class="row"><span>Waiting</span><span>0 received</span></div><div class="bar"><i style="width:0"></i></div></div></div>
+          <div class="refund"><b>Refund address</b> <span class="muted">(optional)</span><div class="field"></div><div class="note">Recorded for the merchant if a refund is needed.</div></div>
+        </div></div>
+        <div><div class="label">Paid</div><div class="phone">
+          <div class="pills"><span class="pill ok">✓ Paid</span></div>
+          <div class="block"><div class="amount">0.00629508857 <small>XMR</small></div>
+          <div class="qrbox done"><div><div class="check" style="margin:0 auto 8px">✓</div><div class="strong">Payment received</div><div class="muted">You can close this page</div></div></div>
+          <div class="addr"><b>Paid in transaction</b><span class="tx">a3f9c2e1…7b04d2 · 14:32</span></div>
+          <div class="progress"><div class="row"><span>Confirmed</span><span>0.00629508857 received</span></div><div class="bar"><i style="width:100%;background:var(--ok)"></i></div></div></div>
+          <div class="refund"><b>Refund address</b> <span class="muted">(optional)</span><div class="field"></div><div class="note">Recorded for the merchant if a refund is needed.</div></div>
+        </div></div>
+      </div>
+    </section>
+
+    <section class="option">
+      <h2>B · Receipt card</h2>
+      <p>The amount, QR, address and progress are replaced by one receipt card of the same height: a check, “Paid”, the amount, when, and the transaction. Most celebratory; reads like a receipt the customer can screenshot.</p>
+      <div class="pair">
+        <div><div class="label">Awaiting</div><div class="phone">
+          <div class="pills"><span class="pill">Waiting for payment</span><span class="pill soft">⧗ 28m</span></div>
+          <div class="block"><div class="amount">0.00629508857 <small>XMR</small></div>
+          <div class="qrbox"><div class="qr"></div></div>
+          <div class="addr"><b>Send exactly this amount to</b><code>85sbW6WhEGEKuRBm5fo6xWYSvi6TgkgMcTygLG4yQTNKd1FwxDKCyeNL1tBz1W76gz15hVfaLT2f7idAEHk…</code></div>
+          <div class="progress"><div class="row"><span>Waiting</span><span>0 received</span></div><div class="bar"><i style="width:0"></i></div></div></div>
+          <div class="refund"><b>Refund address</b> <span class="muted">(optional)</span><div class="field"></div><div class="note">Recorded for the merchant if a refund is needed.</div></div>
+        </div></div>
+        <div><div class="label">Paid</div><div class="phone">
+          <div class="pills"><span class="pill ok">✓ Paid</span></div>
+          <div class="block"><div class="receipt">
+            <div class="check">✓</div>
+            <div class="strong">Payment received</div>
+            <div class="big">0.00629508857 XMR</div>
+            <div>≈ 12.50 AUD</div>
+            <dl><dt>When</dt><dd>27 Sep, 14:32</dd><dt>Transaction</dt><dd class="tx">a3f9c2e1…7b04d2</dd><dt>Order</dt><dd class="tx">#4693…4b61</dd></dl>
+          </div></div>
+          <div class="refund"><b>Refund address</b> <span class="muted">(optional)</span><div class="field"></div><div class="note">Recorded for the merchant if a refund is needed.</div></div>
+        </div></div>
+      </div>
+    </section>
+
+    <section class="option">
+      <h2>C · Overlay on the QR</h2>
+      <p>Everything stays; the QR is washed out under a large check so it can't be scanned for a second payment, and the pill and progress turn green. Makes the change obvious at a glance while the page itself stays still.</p>
+      <div class="pair">
+        <div><div class="label">Awaiting</div><div class="phone">
+          <div class="pills"><span class="pill">Waiting for payment</span><span class="pill soft">⧗ 28m</span></div>
+          <div class="block"><div class="amount">0.00629508857 <small>XMR</small></div>
+          <div class="qrbox"><div class="qr"></div></div>
+          <div class="addr"><b>Send exactly this amount to</b><code>85sbW6WhEGEKuRBm5fo6xWYSvi6TgkgMcTygLG4yQTNKd1FwxDKCyeNL1tBz1W76gz15hVfaLT2f7idAEHk…</code></div>
+          <div class="progress"><div class="row"><span>Waiting</span><span>0 received</span></div><div class="bar"><i style="width:0"></i></div></div></div>
+          <div class="refund"><b>Refund address</b> <span class="muted">(optional)</span><div class="field"></div><div class="note">Recorded for the merchant if a refund is needed.</div></div>
+        </div></div>
+        <div><div class="label">Paid</div><div class="phone">
+          <div class="pills"><span class="pill ok">✓ Paid</span></div>
+          <div class="block"><div class="amount">0.00629508857 <small>XMR</small></div>
+          <div class="qrbox"><div class="qr"></div><div class="overlay"><div class="check">✓</div></div></div>
+          <div class="addr"><b>Paid to</b><code style="opacity:.55">85sbW6WhEGEKuRBm5fo6xWYSvi6TgkgMcTygLG4yQTNKd1FwxDKCyeNL1tBz1W76gz15hVfaLT2f7idAEHk…</code></div>
+          <div class="progress"><div class="row"><span>Confirmed</span><span>0.00629508857 received</span></div><div class="bar"><i style="width:100%;background:var(--ok)"></i></div></div></div>
+          <div class="refund"><b>Refund address</b> <span class="muted">(optional)</span><div class="field"></div><div class="note">Recorded for the merchant if a refund is needed.</div></div>
+        </div></div>
+      </div>
+    </section>
+
+    <section class="option">
+      <h2>D · Summary panel</h2>
+      <p>The status row becomes a solid green strip and the QR's square becomes a compact summary of what was paid. Most information in the same space; the least decorative.</p>
+      <div class="pair">
+        <div><div class="label">Awaiting</div><div class="phone">
+          <div class="pills"><span class="pill">Waiting for payment</span><span class="pill soft">⧗ 28m</span></div>
+          <div class="block"><div class="amount">0.00629508857 <small>XMR</small></div>
+          <div class="qrbox"><div class="qr"></div></div>
+          <div class="addr"><b>Send exactly this amount to</b><code>85sbW6WhEGEKuRBm5fo6xWYSvi6TgkgMcTygLG4yQTNKd1FwxDKCyeNL1tBz1W76gz15hVfaLT2f7idAEHk…</code></div>
+          <div class="progress"><div class="row"><span>Waiting</span><span>0 received</span></div><div class="bar"><i style="width:0"></i></div></div></div>
+          <div class="refund"><b>Refund address</b> <span class="muted">(optional)</span><div class="field"></div><div class="note">Recorded for the merchant if a refund is needed.</div></div>
+        </div></div>
+        <div><div class="label">Paid</div><div class="phone">
+          <div class="strip">✓ Paid · confirmed</div>
+          <div class="block"><div class="amount">0.00629508857 <small>XMR</small></div>
+          <div class="qrbox" style="width:auto"><dl class="summary"><dt>Received</dt><dd>0.00629508857 XMR</dd><dt>Worth</dt><dd>≈ 12.50 AUD</dd><dt>When</dt><dd>27 Sep, 14:32</dd><dt>Transaction</dt><dd class="tx">a3f9c2e1…7b04d2</dd></dl></div>
+          <div class="addr"><b>Nothing more to do</b><span class="muted">The shop has been told. You can close this page.</span></div>
+          <div class="progress"><div class="row"><span>Confirmed</span><span></span></div><div class="bar"><i style="width:100%;background:var(--ok)"></i></div></div></div>
+          <div class="refund"><b>Refund address</b> <span class="muted">(optional)</span><div class="field"></div><div class="note">Recorded for the merchant if a refund is needed.</div></div>
+        </div></div>
+      </div>
+    </section>
+  </div>
+
+  <section class="errors">
+    <h2>Errors are the exception: they may push content down</h2>
+    <ul>
+      <li><strong>Underpaid</strong>: the QR and address stay (the rest still has to be sent); a message under the status says what arrived and what is left.</li>
+      <li><strong>Overpaid</strong>: shown as paid in the chosen style, plus a message: “You sent 0.0025 XMR extra. Don't send more; contact the shop about the extra amount.”</li>
+      <li><strong>Double spend</strong>: a red banner above everything, with the time as a readable date (today it prints a raw timestamp).</li>
+    </ul>
+    <div class="banner" style="max-width:360px">A payment toward this order was reversed by a double-spend on 27 Sep at 14:32. Do not treat this order as paid.</div>
+  </section>
+</div>
+</body>
+</html>
