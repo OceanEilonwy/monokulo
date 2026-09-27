@@ -45,7 +45,14 @@ commits. Nothing is pushed.
 | 7.5 socket connection pool, reconnect | done | c51dc26 | |
 | 5.8 socket recovery (canary, re-register, start degraded) | done | c51dc26 | the per-backend parts of 5.8 (registry, CAS on backend name) come with part 5 |
 | 7.12 scale harness | done (ignored test) | see log | 1000 stores: cold 6.0s, warm 0.11s, block 0.21s; 5000: cold 30s, warm 0.52s, block 1.05s (release, this machine) |
-| 7.13 status and logging | next | | |
+| 7.13 status and logging | done (partly) | 40dbbc5 | status fields + throttled logs; no move to structured logging |
+| 1.2 engine on live-settings | done | 8830c92 | |
+| 2.1 nodes live (the reported bug) | done | 8830c92 | verified on the real binary |
+| 2.2 unserved networks | partly | 8830c92 | save reports networks with stores but no node; reachability probe and /status list still to do (with 3.7) |
+| 2.3-2.6, 2.8, 2.9 | done | 8830c92 | |
+| 2.7 bind restart-only | done | 8830c92 | |
+| 1.5 remove settings | partly | 8830c92 | unknown keys refused; old settings.rs still used by the scan chunk budget and bootstrap CLI |
+| 1.3 monokulo on live-settings + part 3 | next | | |
 
 ## Decisions made while working
 
@@ -88,6 +95,15 @@ reported at the end.)
 - 7.3: a paid order now stays in scan scope for the grace period after it
   closes (overpayments within it are seen). Three existing tests encoded
   the old "paid leaves scope at once" rule and were updated.
+- 1.2: "configured network" now means "has a daemon client" (one source
+  of truth). Two monokulo tests encoded the old "configured, no node"
+  state and were updated; test-support gives configured networks an inert
+  client.
+- 1.2: monero_node.<network> gained environment variables
+  (SCANNER_MONERO_NODE_<NETWORK>), because the library requires every
+  setting to have one. Harmless and occasionally useful.
+- 1.2: the body limit is checked on declared/exact length each request;
+  a fixed 16MiB outer ceiling still applies to bodies of unknown length.
 - D10 design details (after review): orders get `closed_at_utc`; the
   window is "non-terminal, or closed within the grace period"; the custody
   API gains an index-set scan call plus a protocol version, falling back
@@ -104,8 +120,10 @@ After 6f5e5cc: 940 passed, 0 failed, 20 ignored.
 After 719dc2e: 986 passed, 0 failed, 20 ignored.
 After 02b0d0f: 994 passed, 0 failed, 20 ignored.
 After c51dc26: 1000 passed, 0 failed, 20 ignored.
+After 8830c92: 1011 passed, 0 failed, 21 ignored.
 
 ## Current step
 
-7.13 (status fields and rate-limited logging), then part 1.2/1.3 (engine
-and monokulo onto live-settings), then parts 2 to 6.
+1.3 (monokulo onto live-settings) with part 3 (engine URL + HTTP cache,
+exchange rates, onion listener live; engine-unreachable warning; bind
+note), then part 4 (admin page), part 5 (per-store key custody), part 6.
