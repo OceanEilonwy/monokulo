@@ -301,3 +301,52 @@ test('payment lands just before the merchant confirms a cancel: the server refus
   await page.getByRole('button', { name: 'Background order', exact: true }).click();
   await expect(page.locator('.pos-stack-card')).toContainText('Fixture o');
 });
+
+async function ringUp(request, count, prefix) {
+  for (let i = 1; i <= count; i++) {
+    const created = await request.post(`${posUrl()}/orders`, { headers: { cookie: `session=${fixture.session}` },
+      data: { amount: `0.00${i}`, merchant_order_id: `${prefix} ${i}`, request_key: `${prefix}-${i}` } });
+    expect(created.ok()).toBeTruthy();
+  }
+}
+
+test('busy store reviews more orders than one page holds, by list and by search', async ({ page, request }) => {
+  test.setTimeout(60000);
+  await ringUp(request, 44, 'Table');
+  await page.goto(posUrl());
+  await page.getByRole('button', { name: 'All orders' }).click();
+  const cards = page.locator('.pos-order-card');
+  await expect(cards).toHaveCount(40);
+  await page.getByRole('button', { name: 'Load more orders' }).click();
+  await expect(cards).toHaveCount(45);
+  await expect(page.getByRole('button', { name: 'Load more orders' })).toHaveCount(0);
+  // Search pages the same way.
+  await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('Table');
+  await expect(cards).toHaveCount(40);
+  await page.getByRole('button', { name: 'Load more orders' }).click();
+  await expect(cards).toHaveCount(44);
+  await page.getByRole('searchbox', { name: 'Search reference or order ID' }).fill('Table 17');
+  await expect(cards).toHaveCount(1);
+  await cards.getByRole('button', { name: 'Open →' }).click();
+  await expect(page.locator('.pos-order-heading h1')).toHaveText('Table 17');
+});
+
+test('loading more orders during an engine hiccup shows the reason and Retry recovers the list', async ({ page, request }) => {
+  test.setTimeout(60000);
+  await ringUp(request, 44, 'Table');
+  let failures = 1;
+  await page.route('**/pos/orders?offset=40*', route => (failures-- > 0
+    ? route.fulfill({ status: 503, json: { error: 'The payment engine is busy or unreachable. Try again in a moment.' } })
+    : route.continue()));
+  await page.goto(posUrl());
+  await page.getByRole('button', { name: 'All orders' }).click();
+  const cards = page.locator('.pos-order-card');
+  await expect(cards).toHaveCount(40);
+  await page.getByRole('button', { name: 'Load more orders' }).click();
+  await expect(page.locator('.pos-list .pos-error')).toContainText('The payment engine is busy or unreachable.');
+  await page.getByRole('button', { name: 'Retry' }).click();
+  await expect(page.locator('.pos-list .pos-error')).toHaveCount(0);
+  await expect(cards).toHaveCount(40);
+  await page.getByRole('button', { name: 'Load more orders' }).click();
+  await expect(cards).toHaveCount(45);
+});
