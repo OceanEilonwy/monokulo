@@ -487,3 +487,36 @@ test('store priced in AUD: the merchant keys in dollars and cents and sees both 
   await request.post(`${fixture.base_url}/__coverage/orders/${order.order_id}/confirm`);
   await expect(page.locator('.pos-outcome-amount')).toContainText('0.03125 XMR · 12.50 AUD');
 });
+
+test('payment countdown keeps ticking down while the customer finds their wallet', async ({ page }) => {
+  await page.clock.install();
+  await page.goto(posUrl());
+  const expiry = page.locator('.pos-pay-card .pos-expiry');
+  // The fixture order expires an hour after it was made.
+  await expect(expiry).toContainText(/Send payment within (59m|1h)/);
+  await page.clock.runFor(20 * 60 * 1000);
+  await expect(expiry).toContainText(/Send payment within (39|40)m/);
+  await page.clock.runFor(39.5 * 60 * 1000);
+  await expect(expiry).toContainText('less than a minute');
+});
+
+test('merchant moves between the keypad, the stack and the order list', async ({ page, request }) => {
+  await ringUp(request, 12, 'Queue');
+  await page.goto(posUrl());
+  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  // On a desktop till the mouse wheel scrolls the stack of background orders sideways.
+  const stack = page.locator('.pos-stack-scroll');
+  await expect(stack).toBeVisible();
+  const before = await stack.evaluate(el => el.scrollLeft);
+  await stack.hover();
+  await page.mouse.wheel(0, 300);
+  await expect.poll(() => stack.evaluate(el => el.scrollLeft)).toBeGreaterThan(before);
+  await page.getByRole('button', { name: 'View all →' }).click();
+  await expect(page.locator('.pos-list h1')).toHaveText('Background orders');
+  await page.getByRole('tab', { name: /Finished/ }).click();
+  await expect(page.locator('.pos-empty')).toHaveText('No finished orders yet.');
+  await page.getByRole('tab', { name: /Active/ }).click();
+  await expect(page.locator('.pos-order-card').first()).toBeVisible();
+  await page.getByRole('button', { name: 'Back to POS' }).click();
+  await expect(page.locator('.pos-keypad')).toBeVisible();
+});
