@@ -1,4 +1,4 @@
-import { createMemo, createSignal, For, onCleanup, Show } from 'solid-js';
+import { createMemo, createSignal, flush, For, onCleanup, Show } from 'solid-js';
 import { render } from '@solidjs/web';
 import { StatusBadge, StatusIcon, StatusSymbols, stateOf, statusName } from './status';
 import { addressFromQr, decodeImageFile, looksLikeAddress, scanCamera } from './refund';
@@ -270,7 +270,6 @@ function App() {
   const [finishedAt, setFinishedAt] = createSignal<Record<string, number>>({});
   // Orders seen open this session: only these can move to Finished.
   const seenOpen = new Set<string>();
-  let currentOrders: Order[] = [];
   const active = createMemo(() => orders().find(o => o.order_id === activeId()) || null);
   const background = createMemo(() => orders().filter(o => !terminal(o) && o.order_id !== activeId()));
   const activeOrders = createMemo(() => orders().filter(o => !terminal(o)));
@@ -299,12 +298,11 @@ function App() {
   /** Every change to the orders goes through here, so an order that turns
    * final is noted as finished at that moment. */
   function updateOrders(change: (previous: Order[]) => Order[]) {
-    // From the synchronous copy, not orders(): signal writes are batched,
-    // so two updates in one tick would otherwise both start from the old
-    // list and the second would undo the first.
-    const next = change(currentOrders);
-    currentOrders = next;
-    setOrders(next);
+    // Writes are batched until the next microtask; flush() applies this one
+    // now so the list read back below is the updated one.
+    setOrders(change);
+    flush();
+    const next = orders();
     for (const o of next) if (!terminal(o)) seenOpen.add(o.order_id);
     const recorded = finishedAt();
     const newlyFinished = next.filter(o => terminal(o) && seenOpen.has(o.order_id) && recorded[o.order_id] === undefined);
@@ -328,7 +326,7 @@ function App() {
     try {
       const data = await json<{ orders: Order[] }>(`${api}/orders?state=active`);
       const open = new Set(data.orders.map(o => o.order_id));
-      const gone = currentOrders.filter(o => !terminal(o) && !open.has(o.order_id)).map(o => o.order_id);
+      const gone = orders().filter(o => !terminal(o) && !open.has(o.order_id)).map(o => o.order_id);
       updateOrders(previous => [
         ...data.orders.map(o => { const known = previous.find(p => p.order_id === o.order_id); return known ? merge(known, o) : o; }),
         ...previous.filter(o => !open.has(o.order_id) && (terminal(o) || gone.includes(o.order_id))),
