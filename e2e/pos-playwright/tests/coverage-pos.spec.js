@@ -350,3 +350,37 @@ test('loading more orders during an engine hiccup shows the reason and Retry rec
   await page.getByRole('button', { name: 'Load more orders' }).click();
   await expect(cards).toHaveCount(45);
 });
+
+test('merchant records the customer refund address from a QR image, with clear failures', async ({ page }) => {
+  const fixtures = require('node:path').join(__dirname, '../fixtures');
+  const refundAddress = '86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC';
+  await page.goto(posUrl());
+  const card = page.locator('.pos-pay-card');
+  const message = card.locator('.pos-refund-message');
+  const input = card.locator('#pos-refund');
+  async function choose(file) {
+    const chooser = page.waitForEvent('filechooser');
+    await card.getByRole('button', { name: 'Choose QR image' }).click();
+    await (await chooser).setFiles(require('node:path').join(fixtures, file));
+  }
+  await choose('receipt-photo-no-qr.png');
+  await expect(message).toHaveText('No QR code found in that image.');
+  await choose('menu-link-qr.png');
+  await expect(message).toHaveText('That QR code does not contain a Monero address.');
+  // The till's connection drops as it saves.
+  await page.route('**/refund-address', route => route.abort('internetdisconnected'));
+  await choose('refund-qr-wallet-uri.png');
+  await expect(input).toHaveValue(refundAddress);
+  await expect(message).toHaveText('Could not save. Check the connection and try again.');
+  // Back online. The customer first reads out a stagenet (test wallet)
+  // address, which the server rejects for this mainnet store.
+  await page.unroute('**/refund-address');
+  await input.fill('54F1KdjaAtnL6Fb4SbLUM1AMQSjSERjYUgYRtVgwjBirA26RyJCzxc4TbWPW65ZvRC6bifBfrTTv3fyu25BFQuvA2ogNiXg');
+  await expect(input).toHaveAttribute('aria-invalid', 'true');
+  await expect(message).toHaveText("Enter a valid Monero address for this store's network.");
+  // Then their real one.
+  await input.fill('');
+  await input.fill(refundAddress);
+  await expect(card.locator('.pos-refund-state')).toHaveAttribute('aria-label', 'Refund address saved');
+  await expect(message).toHaveCount(0);
+});
