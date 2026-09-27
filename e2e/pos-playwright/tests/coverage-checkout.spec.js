@@ -337,3 +337,48 @@ test('real checkout copies the payment address without the Clipboard API, as ove
   await expect(copy).toHaveAttribute('aria-label', 'Could not copy; address selected');
   expect(await page.locator('#address').evaluate(el => el.value.slice(el.selectionStart, el.selectionEnd))).toBe(address);
 });
+
+test('real checkout saves the address the customer ends with when they change it mid-save', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  const first = address;
+  // The Monero General Fund's published address: another valid mainnet one.
+  const second = '44AFFq5kSiGBoZ4NMDwYtN18obc8AemS33DBLWs3H7otXft3XjrpDtQGv7SqSsaBYBb98uNbr2VBBEt7f2wfn3RVGQBEP3A';
+  const saved = [];
+  let releaseFirst;
+  await page.route(`${url}/refund-address*`, async route => {
+    const value = new URLSearchParams(route.request().postData()).get('refund_address');
+    // A slow connection: the first save is still in flight when the
+    // customer pastes the address they meant.
+    if (!saved.length) await new Promise(resolve => { releaseFirst = resolve; });
+    saved.push(value);
+    await route.continue();
+  });
+  await page.goto(url);
+  const input = page.locator('#refund_address');
+  const field = page.locator('#refund-field');
+  await input.fill(first);
+  await expect(field).toHaveClass(/is-saving/);
+  await input.fill(second);
+  releaseFirst();
+  await expect.poll(() => saved).toEqual([first, second]);
+  await expect(field).toHaveClass(/is-saved/);
+  await expect(input).toHaveValue(second);
+  // What the merchant sees after a reload is the corrected address.
+  await page.reload();
+  await expect(input).toHaveValue(second);
+});
+
+test('real checkout saves on Enter without leaving the page', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  await page.goto(url);
+  const input = page.locator('#refund_address');
+  // Without script the form posts and the server redirects back; with it,
+  // Enter saves in place, so the page (and a live camera or stream) stays.
+  await page.evaluate(() => { window.__samePage = true; });
+  await input.fill(address);
+  await input.press('Enter');
+  await expect(page.locator('#refund-field')).toHaveClass(/is-saved/);
+  await page.waitForTimeout(500);
+  expect(await page.evaluate(() => window.__samePage)).toBe(true);
+  expect(page.url()).toBe(url);
+});
