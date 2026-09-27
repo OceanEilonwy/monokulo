@@ -424,6 +424,48 @@ mod tests {
             .unwrap()
     }
 
+    /// Every static file a real page asks for is served, with the type its
+    /// extension needs (a font or script with the wrong type is refused by
+    /// the browser): the landing and login pages, a customer's checkout, and
+    /// the static files those scripts load in turn.
+    #[tokio::test]
+    async fn every_static_file_the_pages_reference_is_served_with_its_type() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(&router, "assets@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let order = body_json(router.clone().oneshot(create_order_request(&pk, "25.00", TEST_CURRENCY)).await.unwrap()).await;
+        let checkout = format!("/pay/{pk}/orders/{}", order["order_id"].as_str().unwrap());
+
+        let mut referenced = std::collections::BTreeSet::new();
+        for page in ["/", "/dashboard/login", checkout.as_str()] {
+            let response = router.clone().oneshot(Request::builder().uri(page).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{page}");
+            let html = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+            for part in html.split("/static/").skip(1) {
+                let name: String = part.chars().take_while(|c| c.is_ascii_alphanumeric() || *c == '-' || *c == '.' || *c == '_').collect();
+                referenced.insert(name.trim_end_matches('.').to_string());
+            }
+        }
+        // checkout.js loads the QR decoder; the POS loads its app and styles.
+        referenced.extend(["jsQR.js", "pos-app.js", "pos-app.css", "monokulo-client.js"].map(String::from));
+        assert!(referenced.iter().any(|name| name.ends_with(".woff2")), "{referenced:?}");
+        for name in &referenced {
+            let response = router.clone().oneshot(Request::builder().uri(format!("/static/{name}")).body(Body::empty()).unwrap()).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "/static/{name}");
+            let content_type = response.headers()["content-type"].to_str().unwrap().to_string();
+            let expected = match name.rsplit('.').next().unwrap() {
+                "js" => "javascript",
+                "css" => "text/css",
+                "svg" => "image/svg+xml",
+                "woff2" => "font/woff2",
+                other => panic!("unexpected static file type {other} ({name})"),
+            };
+            assert!(content_type.contains(expected), "/static/{name} served as {content_type}");
+            assert!(!response.into_body().collect().await.unwrap().to_bytes().is_empty(), "/static/{name} is empty");
+        }
+    }
+
     #[tokio::test]
     async fn creating_a_real_order_through_the_public_endpoint_returns_a_real_address_and_order_id() {
         let (state, _engine) = test_state_with_real_engine().await;
