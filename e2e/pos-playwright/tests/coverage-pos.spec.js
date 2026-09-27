@@ -270,3 +270,34 @@ test('counter loses its connection: the order shows connection lost, then recove
   await expect(badge).toContainText('Unconfirmed', { timeout: 10000 });
   await expect(page.locator('.pos-pay-detail')).toHaveText('Payment seen. Waiting for its first confirmation.');
 });
+
+test('merchant opens Cancel order then changes their mind: nothing happens', async ({ page }) => {
+  const writes = [];
+  page.on('request', sent => { if (sent.method() !== 'GET') writes.push(sent.url()); });
+  await page.goto(posUrl());
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  page.once('dialog', dialog => dialog.dismiss());
+  await page.getByRole('button', { name: 'Cancel order' }).click();
+  await page.waitForTimeout(1000);
+  expect(writes).toEqual([]);
+  await expect(page.locator('.pos-error')).toHaveCount(0);
+  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Awaiting payment');
+  await expect(page.getByRole('button', { name: 'Cancel order' })).toBeEnabled();
+});
+
+test('payment lands just before the merchant confirms a cancel: the server refuses and says why', async ({ page, request }) => {
+  // The live update for the payment has not reached this screen yet.
+  await page.route('**/pos/events?*', () => {});
+  await page.goto(posUrl());
+  await expect(page.locator('.pos-pay-card')).toBeVisible();
+  await request.post(`${fixture.base_url}/__coverage/orders/${fixture.order_id}/payment?fraction=0.5&in_block=false`);
+  page.once('dialog', dialog => dialog.accept());
+  await page.getByRole('button', { name: 'Cancel order' }).click();
+  await expect(page.locator('.pos-error')).toHaveText('This order has payment activity and cannot be cancelled. Background it for review instead.');
+  // The screen catches up with the payment that caused the refusal.
+  await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Partially paid');
+  await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
+  // Backgrounding it instead works, and it waits in the stack for review.
+  await page.getByRole('button', { name: 'Background order', exact: true }).click();
+  await expect(page.locator('.pos-stack-card')).toContainText('Fixture o');
+});

@@ -2731,8 +2731,8 @@ function ga() {
 			p(!0), d("");
 			try {
 				await ua(`${ea}/orders/${encodeURIComponent(e.order_id)}/cancel`), await ye(e.order_id), queueMicrotask(P);
-			} catch (e) {
-				d(e.message);
+			} catch (t) {
+				d(t.message), ye(e.order_id).catch(() => {});
 			} finally {
 				p(!1);
 			}

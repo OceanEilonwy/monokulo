@@ -412,7 +412,11 @@ function App() {
     try {
       await post(`${api}/orders/${encodeURIComponent(order.order_id)}/cancel`);
       await loadOrder(order.order_id); queueMicrotask(openStream);
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) {
+      setError((e as Error).message);
+      // Refused because a payment arrived meanwhile: show it.
+      void loadOrder(order.order_id).catch(() => {});
+    }
     finally { setBusy(false); }
   }
   async function openOrder(order: Order) {
