@@ -277,3 +277,34 @@ test('real checkout open while the customer pays shows paid and stops following 
   await page.waitForTimeout(5000);
   expect(streams).toBe(1);
 });
+
+test('real checkout keeps retrying a refused live stream with backoff and then follows the order', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  const orderId = url.split('/').pop();
+  // The server refuses the stream while restarting, or past its per-client
+  // limit of open streams (429); the page must not give up on live updates.
+  const attempts = [];
+  await page.route(`${url}/events?*`, route => {
+    attempts.push(Date.now());
+    if (attempts.length <= 2) return route.fulfill({ status: attempts.length === 1 ? 503 : 429, body: '' });
+    return route.continue();
+  });
+  await page.clock.install();
+  await page.goto(url);
+  await expect.poll(() => attempts.length).toBe(1);
+  // Each "not yet" check lets a request the fake clock just released reach
+  // the route before counting.
+  await page.clock.runFor(4000);
+  await page.waitForTimeout(500);
+  expect(attempts.length, 'waits 5s before the first retry').toBe(1);
+  await page.clock.runFor(1500);
+  await expect.poll(() => attempts.length).toBe(2);
+  await page.clock.runFor(9000);
+  await page.waitForTimeout(500);
+  expect(attempts.length, 'then doubles the wait to 10s').toBe(2);
+  await page.clock.runFor(1500);
+  await expect.poll(() => attempts.length).toBe(3);
+  const paid = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/paid`);
+  expect(paid.status()).toBe(204);
+  await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
+});
