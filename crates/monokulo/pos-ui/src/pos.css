@@ -315,5 +315,46 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
     .pos-keypad .pos-primary { grid-column: 2; grid-row: 4; }
     .pos-stack { padding: 6px 12px; }
     .pos-stack-heading { margin-bottom: 4px; }
+
+    .pos-top { height: 42px; }
+    /* Payment: the card on the left - the QR beside the amount, countdown
+       and address, the refund section under both - and the order and its
+       actions on the right, so everything needed at the counter is on
+       screen at once. */
+    .pos-payment {
+      display: grid; max-width: none; padding: 8px 14px max(8px, env(safe-area-inset-bottom)); column-gap: 16px; row-gap: 6px;
+      grid-template-columns: minmax(0, 1.25fr) minmax(0, 1fr);
+      grid-template-rows: auto auto auto auto 1fr;
+      grid-template-areas: "card heading" "card error" "card primary" "card secondary" "card hint";
+      align-content: start;
+    }
+    .pos-order-heading { grid-area: heading; }
+    .pos-order-heading h1 { font-size: 20px; }
+    .pos-pay-card, .pos-outcome { grid-area: card; align-self: start; }
+    .pos-payment > .pos-error { grid-area: error; }
+    .pos-payment > .pos-primary { grid-area: primary; }
+    .pos-payment > .pos-cancel { grid-area: secondary; }
+    .pos-payment > .pos-action-hint { grid-area: hint; align-self: start; }
+    .pos-pay-card {
+      display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; row-gap: 3px; align-content: start; padding: 8px 10px;
+    }
+    .pos-pay-card > * { grid-column: 2; }
+    .pos-pay-card > .pos-qr { grid-column: 1; grid-row: 1 / span 7; align-self: center; width: min(128px, 34vh); margin: 0; }
+    .pos-pay-card > :is(hr, label, .pos-refund, .pos-refund-tools, .pos-camera, .pos-refund-message, .pos-note) { grid-column: 1 / -1; }
+    .pos-pay-card :is(.pos-pay-caption, .pos-pay-xmr, .pos-pay-fiat, .pos-pay-detail) { text-align: left; margin: 0; }
+    .pos-pay-card .pos-pay-xmr { font-size: 22px; }
+    .pos-pay-card .pos-pay-xmr span { font-size: 17px; }
+    .pos-pay-card .pos-expiry { padding: 4px 6px; }
+    .pos-pay-card .pos-quiet-label { margin-top: 2px; }
+    .pos-pay-card hr { margin: 4px 0 0; }
+    .pos-pay-card .pos-note { display: none; }
+    .pos-outcome { padding: 14px; gap: 4px; }
+    .pos-outcome .pos-icon { width: 40px; height: 40px; }
   }
+}
+
+/* A phone on its side is not a desktop: use the whole screen rather than
+   the desktop's column in the middle. */
+@media (min-width: 700px) and (max-height: 480px) and (orientation: landscape) {
+  #pos-root { max-width: none; margin: 0; border-inline: 0; box-shadow: none; }
 }

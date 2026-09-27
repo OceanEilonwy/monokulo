@@ -37,6 +37,14 @@ async function checkFit(page, context, label, w, h, captures = {}) {
     await page.getByRole('button', { name: 'Charge' }).click();
     await expect(page.locator('.pos-pay-card .pos-qr svg')).toBeVisible();
     await assertNoOuterScroll(page, `${label} payment`);
+    // On its side, what the counter needs is all on screen without scrolling.
+    if (w > h) {
+      for (const needed of ['.pos-pay-xmr', '.pos-qr', '.pos-address', '.pos-order-heading h1']) {
+        await expect(page.locator(needed), `${label}: ${needed} on screen`).toBeInViewport({ ratio: 1 });
+      }
+      await expect(page.getByRole('button', { name: 'Background order', exact: true }), `${label}: Background order on screen`).toBeInViewport({ ratio: 1 });
+      await expect(page.getByRole('button', { name: 'Cancel order' }), `${label}: Cancel order on screen`).toBeInViewport({ ratio: 1 });
+    }
     if (captures.payment) await captureCoverageStage(page, captures.payment, test.info());
   } finally { await stopCoverageFixture(fixture.process); }
 }
