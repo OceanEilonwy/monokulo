@@ -259,3 +259,21 @@ test('real frame-only checkout refuses a top-level navigation', async ({ page, r
   await page.setContent(`<iframe id="payment" title="Payment" src="${url}"></iframe>`);
   await expect(page.frameLocator('#payment').locator('#checkout-root')).toBeVisible();
 });
+
+test('real checkout open while the customer pays shows paid and stops following the order', async ({ page, request }) => {
+  const url = await checkoutUrl(request);
+  const orderId = url.split('/').pop();
+  let streams = 0;
+  page.on('request', sent => { if (sent.url().startsWith(`${url}/events?`)) streams++; });
+  await page.goto(url);
+  await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'pending');
+  await expect.poll(() => streams).toBe(1);
+  const paid = await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/paid`);
+  expect(paid.status()).toBe(204);
+  // The live stream carries the new state in; no reload.
+  await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
+  await expect(page.locator('.payment-state.is-paid')).toBeVisible();
+  // A final order closes its stream for good rather than reconnecting.
+  await page.waitForTimeout(5000);
+  expect(streams).toBe(1);
+});
