@@ -250,6 +250,12 @@ pub async fn save_monokulo(
     let Some(registry) = state.settings.registry.as_ref() else {
         return render_error(&state, &admin_user, "Settings can't be saved on this instance.".to_string()).await;
     };
+    // A new value and "Clear it" together can't both be meant.
+    if let Some(key) = crate::settings::ALL.iter().map(|s| s.key()).find(|key| {
+        form.contains_key(&format!("clear:{key}")) && form.get(*key).is_some_and(|value| !value.is_empty())
+    }) {
+        return render_error(&state, &admin_user, format!("{key}: either type a new value or tick \"Clear it\", not both.")).await;
+    }
     let secrets: Vec<&str> = crate::settings::ALL
         .iter()
         .filter(|s| matches!(s.kind(), live_settings::SettingKind::Secret))
@@ -856,6 +862,15 @@ mod tests {
         assert_eq!(db.lock().get_setting(key).unwrap(), None);
         let page = body_text(get_settings_page(&router, &cookie).await).await;
         assert!(!page.contains(&format!(r#"name="clear:{key}""#)), "nothing left to clear");
+
+        db.lock().set_setting(key, "some-token").unwrap();
+        let both = router
+            .clone()
+            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(key, "new-token"), (clear.as_str(), "on")]))
+            .await
+            .unwrap();
+        assert!(body_text(both).await.contains("not both"));
+        assert_eq!(db.lock().get_setting(key).unwrap().as_deref(), Some("some-token"), "nothing changed");
     }
 
     #[tokio::test]

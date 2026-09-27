@@ -59,6 +59,13 @@ function readyLine(child, marker) {
   });
 }
 
+// The process environment without the services' own settings, so a
+// developer's SCANNER_* or MONOKULO_* variables can't override what the
+// specs save.
+function cleanEnv() {
+  return Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('SCANNER_') && !key.startsWith('MONOKULO_')));
+}
+
 module.exports = async function globalSetup() {
   console.log('[real-binaries] building scanner, monokulo, fake-monerod and key-custody-server...');
   execFileSync(
@@ -71,6 +78,7 @@ module.exports = async function globalSetup() {
   const log = (name) => fs.openSync(path.join(dir, `${name}.log`), 'a');
   const children = [];
 
+  try {
   const fake = spawn(BIN('fake-monerod'), ['--height', '1000'], { stdio: ['ignore', 'pipe', log('fake-monerod')] });
   children.push(fake);
   const fakeAddress = await readyLine(fake, 'FAKE_MONEROD_READY ');
@@ -81,7 +89,7 @@ module.exports = async function globalSetup() {
   // spec fails against the bug it guards.
   const engine = spawn(process.env.E2E_SCANNER_BIN || BIN('scanner'), [], {
     env: {
-      ...process.env,
+      ...cleanEnv(),
       SCANNER_DB_PATH: path.join(dir, 'engine.db'),
       SCANNER_SERVER_BIND: `127.0.0.1:${enginePort}`,
       SCANNER_ADMIN_TOKEN: engineToken,
@@ -96,7 +104,7 @@ module.exports = async function globalSetup() {
   const monokulo = spawn(BIN('monokulo'), [], {
     cwd: dir,
     env: {
-      ...process.env,
+      ...cleanEnv(),
       MONOKULO_ENCRYPTION_KEY: crypto.randomBytes(32).toString('hex'),
       MONOKULO_DB_PATH: path.join(dir, 'monokulo.db'),
       MONOKULO_BIND: `127.0.0.1:${monokuloPort}`,
@@ -109,9 +117,14 @@ module.exports = async function globalSetup() {
   const monokuloUrl = `http://127.0.0.1:${monokuloPort}`;
   await waitFor(`${monokuloUrl}/`, 'monokulo', monokulo);
 
-  const fixture = { monokulo_url: monokuloUrl, engine_url: engineUrl, fake_monerod: fakeAddress, logs: dir };
+  var fixture = { monokulo_url: monokuloUrl, engine_url: engineUrl, fake_monerod: fakeAddress, logs: dir };
   fs.writeFileSync(FIXTURE_PATH, JSON.stringify(fixture, null, 2));
-  console.log(`[real-binaries] ready: monokulo ${monokuloUrl}, engine ${engineUrl}, fake monerod ${fakeAddress}, logs in ${dir}`);
+  } catch (e) {
+    for (const child of children) child.kill('SIGKILL');
+    if (!process.env.KEEP_E2E_LOGS) fs.rmSync(dir, { recursive: true, force: true });
+    throw e;
+  }
+  console.log(`[real-binaries] ready: monokulo ${fixture.monokulo_url}, engine ${fixture.engine_url}, fake monerod ${fixture.fake_monerod}, logs in ${dir}`);
 
   return async function teardown() {
     for (const child of children.reverse()) child.kill('SIGTERM');

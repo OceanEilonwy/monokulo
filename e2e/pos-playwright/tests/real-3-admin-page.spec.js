@@ -5,7 +5,13 @@
 // before clearing a network stores use, and banners in the error colour in
 // both themes.
 const { test, expect } = require('@playwright/test');
-const { fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings } = require('./real-helpers');
+const { fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+
+// Whatever a test did to the stagenet node, the next one starts with it set.
+test.afterEach(async ({ page }) => {
+  await signInAsAdmin(page);
+  await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
+});
 
 const SIZES = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } };
 
@@ -34,6 +40,17 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
 
   await page.goto(base + '/dashboard/admin/settings');
+  if (Number(await page.locator('textarea[name="monero_node_stagenet"]').getAttribute('data-tenant-count')) === 0) {
+    // Run on its own: make a store on stagenet to protect.
+    await page.goto(base + '/dashboard/connect');
+    await page.locator('input[name="site_url"]').fill('https://guarded.example.com');
+    await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
+    await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
+    await page.locator('select[name="network"]').selectOption('stagenet');
+    await page.getByRole('button', { name: 'Connect' }).click();
+    await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
+    await page.goto(base + '/dashboard/admin/settings');
+  }
   const stagenet = page.locator('textarea[name="monero_node_stagenet"]');
   const count = Number(await stagenet.getAttribute('data-tenant-count'));
   expect(count).toBeGreaterThan(0);

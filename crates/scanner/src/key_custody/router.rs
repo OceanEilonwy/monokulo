@@ -121,8 +121,26 @@ impl CustodyRouter {
             .ok_or_else(|| KeyCustodyError::BackendUnavailable(format!("the {backend:?} key custody backend is not enabled")))
     }
 
-    fn remember(&self, handle: WalletHandle, backend: &str) {
-        self.handles.write().insert(handle, backend.to_string());
+    /// Remembers `handle`, registered in `custody` under `backend` - unless
+    /// the backend was replaced or removed while it registered, in which
+    /// case the registration is freed there and the caller told to try
+    /// again (it will reach the current instance).
+    fn remember_if_current(
+        &self,
+        backend: &str,
+        custody: Arc<dyn KeyCustody>,
+        handle: WalletHandle,
+    ) -> Result<WalletHandle, KeyCustodyError> {
+        let backends = self.backends.read();
+        if backends.get(backend).is_some_and(|current| same_instance(current, &custody)) {
+            self.handles.write().insert(handle, backend.to_string());
+            return Ok(handle);
+        }
+        drop(backends);
+        free_handles(vec![(custody, handle)]);
+        Err(KeyCustodyError::BackendUnavailable(format!(
+            "the {backend:?} key custody backend was changed while registering; try again"
+        )))
     }
 
     /// Which backend holds `handle`, if it's live.
@@ -230,15 +248,15 @@ impl KeyCustody for CustodyRouter {
     }
 
     async fn register_wallet_in(&self, backend: &str, material: WalletMaterial) -> Result<WalletHandle, KeyCustodyError> {
-        let handle = self.named(backend)?.register_wallet(material).await?;
-        self.remember(handle, backend);
-        Ok(handle)
+        let custody = self.named(backend)?;
+        let handle = custody.register_wallet(material).await?;
+        self.remember_if_current(backend, custody, handle)
     }
 
     async fn unseal_and_register_in(&self, backend: &str, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
-        let handle = self.named(backend)?.unseal_and_register(sealed).await?;
-        self.remember(handle, backend);
-        Ok(handle)
+        let custody = self.named(backend)?;
+        let handle = custody.unseal_and_register(sealed).await?;
+        self.remember_if_current(backend, custody, handle)
     }
 
     async fn seal_in(&self, backend: &str, material: &WalletMaterial) -> Result<Vec<u8>, KeyCustodyError> {
@@ -435,5 +453,68 @@ mod tests {
         let again = router.register_wallet_in("socket", material(3)).await.unwrap();
         router.check_state().await.unwrap();
         assert!(router.handle_is_live(again), "the same epoch seen twice drops nothing");
+    }
+
+    /// Holds each registration until let go, so a test can change the
+    /// router in the middle of one.
+    struct Gated {
+        inner: PlainKeyCustody,
+        entered: tokio::sync::Notify,
+        gate: tokio::sync::Notify,
+    }
+
+    #[async_trait::async_trait]
+    impl KeyCustody for Gated {
+        async fn register_wallet(&self, material: WalletMaterial) -> Result<WalletHandle, KeyCustodyError> {
+            self.entered.notify_one();
+            self.gate.notified().await;
+            self.inner.register_wallet(material).await
+        }
+        async fn remove_wallet(&self, handle: WalletHandle) -> Result<(), KeyCustodyError> {
+            self.inner.remove_wallet(handle).await
+        }
+        async fn seal(&self, material: &WalletMaterial) -> Result<Vec<u8>, KeyCustodyError> {
+            self.inner.seal(material).await
+        }
+        async fn unseal_and_register(&self, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
+            self.inner.unseal_and_register(sealed).await
+        }
+        async fn derive_subaddress(&self, handle: WalletHandle, index: SubaddressIndex, network: Network) -> Result<Address, KeyCustodyError> {
+            self.inner.derive_subaddress(handle, index, network).await
+        }
+        async fn scan_tx_outputs(
+            &self,
+            handle: WalletHandle,
+            tx: &Transaction,
+            major_range: Range<u32>,
+            minor_range: Range<u32>,
+        ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
+            self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await
+        }
+    }
+
+    #[tokio::test]
+    async fn a_registration_that_finishes_after_its_backend_was_replaced_is_freed_there_and_retried() {
+        let gated = Arc::new(Gated { inner: PlainKeyCustody::default(), entered: tokio::sync::Notify::new(), gate: tokio::sync::Notify::new() });
+        let old: Arc<dyn KeyCustody> = gated.clone();
+        let router = Arc::new(CustodyRouter::new(HashMap::from([("socket".to_string(), old)]), "socket"));
+        let registering = {
+            let router = router.clone();
+            tokio::spawn(async move { router.register_wallet_in("socket", material(1)).await })
+        };
+        gated.entered.notified().await;
+        let fresh: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
+        router.replace(HashMap::from([("socket".to_string(), fresh)]), "socket");
+        gated.gate.notify_one();
+        assert!(matches!(registering.await.unwrap(), Err(KeyCustodyError::BackendUnavailable(_))), "told to try again");
+        // Freed in the old instance, in the background.
+        for _ in 0..100 {
+            if gated.inner.wallet_count() == 0 {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        assert_eq!(gated.inner.wallet_count(), 0, "no copy left behind in the replaced instance");
+        assert!(router.register_wallet_in("socket", material(1)).await.is_ok(), "the retry reaches the current one");
     }
 }

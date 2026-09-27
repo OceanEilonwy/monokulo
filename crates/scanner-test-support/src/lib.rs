@@ -1235,29 +1235,6 @@ mod tests {
         )
     }
 
-    /// WBS 2.1.3's own acceptance bar, quoted directly: "the engine's existing
-    /// integration tests (order creation, scanning) pass unmodified against this
-    /// configuration - a regression check, not a new test." Taken literally where
-    /// it can be: this reuses the *exact* scenario `src/scanner.rs`'s own
-    /// `run_scan_tick_matches_mempool_tx_recomputes_status_and_enqueues_a_webhook`
-    /// test already proves against `PlainKeyCustody` directly (same fixture
-    /// transaction, same view/spend keys, same `unconfirmed`-with-a-nonzero-amount
-    /// outcome) - not a new scenario invented for this task.
-    ///
-    /// It cannot be taken *completely* literally, though, and that gap is worth
-    /// being honest about rather than silently working around: that internal test
-    /// lives inside `scanner`'s own `#[cfg(test)]` build and constructs a
-    /// `PlainKeyCustody`/`Store` directly in-process, so it structurally cannot be
-    /// "pointed at" a different `KeyCustody` backend without becoming a different
-    /// test - and `scanner` itself can never depend on `key-custody-service`'s
-    /// `SocketKeyCustody` at all without recreating the exact Cargo dependency cycle
-    /// `shared::key_custody`'s module doc comment describes (this crate,
-    /// `scanner-test-support`, is what depends on both, same as `mock-woocommerce`/
-    /// `monokulo` already do for their own real-engine tests). So instead of
-    /// literally re-running that unit test, this reproduces its scenario end-to-end
-    /// through the real HTTP API twice - once per backend - via
-    /// [`run_order_creation_and_scan_scenario`], and asserts the two runs are
-    /// pixel-for-pixel identical, not just individually plausible.
     /// A key-custody-server on its own runtime, so shutting that runtime down
     /// is a real outage: its listener and every open connection go at once.
     fn start_key_custody_server(socket_path: &std::path::Path) -> tokio::runtime::Runtime {
@@ -1377,6 +1354,29 @@ mod tests {
         assert!(matched, "the payment made during the outage was matched once the key-custody server was back");
     }
 
+    /// WBS 2.1.3's own acceptance bar, quoted directly: "the engine's existing
+    /// integration tests (order creation, scanning) pass unmodified against this
+    /// configuration - a regression check, not a new test." Taken literally where
+    /// it can be: this reuses the *exact* scenario `src/scanner.rs`'s own
+    /// `run_scan_tick_matches_mempool_tx_recomputes_status_and_enqueues_a_webhook`
+    /// test already proves against `PlainKeyCustody` directly (same fixture
+    /// transaction, same view/spend keys, same `unconfirmed`-with-a-nonzero-amount
+    /// outcome) - not a new scenario invented for this task.
+    ///
+    /// It cannot be taken *completely* literally, though, and that gap is worth
+    /// being honest about rather than silently working around: that internal test
+    /// lives inside `scanner`'s own `#[cfg(test)]` build and constructs a
+    /// `PlainKeyCustody`/`Store` directly in-process, so it structurally cannot be
+    /// "pointed at" a different `KeyCustody` backend without becoming a different
+    /// test - and `scanner` itself can never depend on `key-custody-service`'s
+    /// `SocketKeyCustody` at all without recreating the exact Cargo dependency cycle
+    /// `shared::key_custody`'s module doc comment describes (this crate,
+    /// `scanner-test-support`, is what depends on both, same as `mock-woocommerce`/
+    /// `monokulo` already do for their own real-engine tests). So instead of
+    /// literally re-running that unit test, this reproduces its scenario end-to-end
+    /// through the real HTTP API twice - once per backend - via
+    /// [`run_order_creation_and_scan_scenario`], and asserts the two runs are
+    /// pixel-for-pixel identical, not just individually plausible.
     #[tokio::test]
     async fn order_creation_and_chain_scanning_behave_identically_through_the_socket_backed_key_custody_path(
     ) {

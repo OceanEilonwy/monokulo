@@ -71,7 +71,7 @@ PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB => { key: "payment.scan_chunk_memory_budget_
 
 Appearing in the admin settings page requires **no monokulo UI code at all** -
 confirmed by reading `instance_admin.rs:135-143`: `GET /api/v1/admin/settings`
-already iterates `settings::ALL_SCALAR` generically, and monokulo's own
+already iterates `engine_settings::ALL` generically, and monokulo's own
 `admin_settings_page` view renders whatever `scanner_fields` that response
 carries (confirmed via `admin_settings_page_shows_scanner_fields_and_networks_
 when_reachable`'s own test, `crates/monokulo/src/views/admin.rs:405-432`) -

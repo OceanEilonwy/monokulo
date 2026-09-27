@@ -150,11 +150,32 @@ impl SocketKeyCustody {
         }
     }
 
-    /// Whether the server answers a request every version knows: removing a
-    /// handle nobody has (answered "unknown wallet", and harmless).
+    /// Whether the server answers a request every version knows, on a fresh
+    /// connection: removing a handle nobody has (answered "unknown wallet",
+    /// and harmless).
     async fn answers_a_known_request(&self) -> bool {
         let request = KeyCustodyRequest::RemoveWallet(RemoveWalletRequest { handle: WalletHandleWire::from(WalletHandle::new()) });
-        matches!(self.call(request).await, Ok(KeyCustodyResponse::RemoveWallet(_)))
+        matches!(self.call_fresh(request).await, Ok(KeyCustodyResponse::RemoveWallet(_)))
+    }
+
+    /// One request on a connection opened for it and closed after, so a
+    /// stale pooled connection can't be what fails.
+    async fn call_fresh(&self, request: KeyCustodyRequest) -> Result<KeyCustodyResponse, KeyCustodyError> {
+        let mut stream = open(&self.socket_path).await?;
+        match tokio::time::timeout(self.call_timeout, async {
+            write_frame(&mut stream, &request).await?;
+            read_frame(&mut stream).await
+        })
+        .await
+        {
+            Ok(Ok(Some(response))) => Ok(response),
+            Ok(Ok(None)) => Err(KeyCustodyError::BackendUnavailable("key-custody-service closed the connection".to_string())),
+            Ok(Err(e)) => Err(KeyCustodyError::BackendUnavailable(format!("key-custody-service connection failed: {e}"))),
+            Err(_) => Err(KeyCustodyError::BackendUnavailable(format!(
+                "key-custody-service did not respond within {:?}",
+                self.call_timeout
+            ))),
+        }
     }
 
     /// Sends one request and waits for its answer on a free connection:
@@ -392,12 +413,36 @@ impl KeyCustody for SocketKeyCustody {
             Ok(KeyCustodyResponse::ScanTxOutputsForIndices(Err(e))) => Err(e.into()),
             Ok(other) => Err(mismatched_response("ScanTxOutputsForIndices", &other)),
             // An older server closes the connection on a request it doesn't
-            // know - but so does a server that is going down. Ask it
-            // something every version understands: only if it answers is it
-            // really an older server, and then the range request is used
-            // from now on. Otherwise it's an outage, and the index-set
-            // request is tried again once it's back.
-            Err(KeyCustodyError::BackendUnavailable(reason)) if self.answers_a_known_request().await => {
+            // know - but so does a server that went down or restarted since
+            // this connection was opened. Try again on a fresh connection;
+            // only if the server closes that one too while still answering a
+            // request every version knows is it really an older server, and
+            // then the range request is used from now on. Otherwise the
+            // original error stands and index-set requests carry on.
+            Err(KeyCustodyError::BackendUnavailable(first)) => {
+                let retry = KeyCustodyRequest::ScanTxOutputsForIndices(ScanTxOutputsForIndicesRequest {
+                    handle: WalletHandleWire::from(handle),
+                    tx: TransactionWire::from(tx),
+                    minors: indices.minors().to_vec(),
+                });
+                let reason = match self.call_fresh(retry).await {
+                    Ok(KeyCustodyResponse::ScanTxOutputsForIndices(Ok(matches))) => {
+                        return matches
+                            .into_iter()
+                            .map(|m: MatchedOutputWire| {
+                                MatchedOutput::try_from(m).map_err(|e| {
+                                    KeyCustodyError::BackendUnavailable(format!(
+                                        "key-custody-service returned a malformed matched output: {e}"
+                                    ))
+                                })
+                            })
+                            .collect();
+                    }
+                    Ok(KeyCustodyResponse::ScanTxOutputsForIndices(Err(e))) => return Err(e.into()),
+                    Ok(other) => return Err(mismatched_response("ScanTxOutputsForIndices", &other)),
+                    Err(KeyCustodyError::BackendUnavailable(reason)) if self.answers_a_known_request().await => reason,
+                    Err(_) => return Err(KeyCustodyError::BackendUnavailable(first)),
+                };
                 eprintln!(
                     "key-custody-service didn't answer an index-set scan ({reason}); assuming an older server and \
                      using range scans from now on. Upgrade key-custody-server to scan only each store's open orders."
@@ -427,6 +472,9 @@ impl KeyCustody for SocketKeyCustody {
                 Ok(_) => {}
                 Err(KeyCustodyError::UnknownWallet) => {
                     let epoch = self.epoch.fetch_add(1, Ordering::Relaxed) + 1;
+                    // A restarted server may be a newer one: try index-set
+                    // scans again.
+                    self.indices_unsupported.store(false, Ordering::Relaxed);
                     eprintln!("key-custody-service has lost its wallets (it restarted?); state epoch is now {epoch}");
                     let handle = self.register_wallet(canary_material()).await?;
                     *self.canary.lock() = Some(handle);

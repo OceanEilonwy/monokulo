@@ -610,8 +610,9 @@ pub(super) async fn render_store_settings_page(
     let tenant_result = state.engine_client.get_tenant(&sk).await;
     if tenant_result.as_ref().is_ok_and(|t| t.key_custody_backend.is_some()) {
         // The backends come from the engine's status: fetched now if it
-        // isn't cached (it was just invalidated by a move, for one).
-        let _ = super::status_page::get_status_cached(state).await;
+        // isn't cached (it was just invalidated by a move, for one), but
+        // never holding the page up for long.
+        let _ = tokio::time::timeout(std::time::Duration::from_millis(1500), super::status_page::get_status_cached(state)).await;
     }
     let key_storage = tenant_result.as_ref().ok().and_then(|t| t.key_custody_backend.clone()).and_then(|current| {
         let enabled = super::status_page::known_enabled_custody_backends(state);

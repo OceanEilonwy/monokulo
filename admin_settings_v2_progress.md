@@ -68,7 +68,7 @@ commits. Nothing is pushed.
 | 6.0 real-binaries harness, 6.3 e2e | done | 2568174 | fails against the pre-fix engine, checked once |
 | 6.4 key custody switch e2e | done | 3ba78bc | found and fixed 2 bugs |
 | Admin page Playwright, kill -9 test | done | fedef4f | |
-| Final independent review | running | | |
+| Final independent review | done, fixes applied | see git log | |
 
 ## Decisions made while working
 
@@ -297,6 +297,40 @@ reported at the end.)
   because they share one pair of processes and the first must see a fresh
   instance for the pre-fix regression check to mean anything.
 
+- Final review (independent agent, abe3d84..HEAD): no blocking issues.
+  Applied:
+  - The socket client still switched to range scans for good after an
+    ordinary server restart (a stale pooled connection failed, then the
+    probe succeeded on a fresh one). It now retries the index-set request
+    on a fresh connection first, and only falls back if the server closes
+    that one too while answering a known request; the flag also resets
+    when a restart is detected. The new test fails on the old client.
+  - One network's registration pass dropped other networks' stale handles,
+    hiding them from those networks' 5s fast retry. The drop is now scoped
+    to the network being registered. Failed registrations also trigger the
+    5s retry, with one throttled log line per network rather than one per
+    store.
+  - A registration that finished after its backend was replaced left the
+    keys in the replaced instance. The router now checks and frees it, and
+    the caller retries.
+  - The store settings page's status fetch has a 1.5s cap; "Clear it"
+    together with a typed value is refused; a misplaced doc comment and a
+    stale doc reference fixed.
+  - e2e: the setup kills what it started if it fails; the specs run
+    without the developer's SCANNER_*/MONOKULO_* variables; the crash spec
+    cleans up on any failure, can't hang on an already-dead engine, and
+    checks address uniqueness over every order the engine holds; the
+    admin-page spec creates a store if run alone and restores the node
+    after each test.
+  Not changed:
+  - The small port race in the harness's free-port pick. The binaries
+    don't report the port they bound, and a collision just fails the run
+    loudly.
+  - Retrying a failed removal of the old copy after a store moves. It's
+    logged, and a restarted server drops it anyway.
+  - The single global switch lock. Switches are rare; the worst case is
+    a slow backend delaying other switches, never scanning.
+
 ## Baseline
 
 `cargo test --workspace` on `main` (43d7c53 + dc2d976): 913 passed,
@@ -317,8 +351,10 @@ After review item 4 and the minor items: 1050 passed, 0 failed.
 After 1.5 (old settings code deleted with its 12 tests): 1038 passed, 0 failed.
 After 6.4: 1040 passed, 0 failed; e2e real-binaries suite 2 passed.
 After the admin page and crash specs: e2e real-binaries suite 10 passed.
+After the final review fixes: 1046 passed, 0 failed; e2e 10 passed.
 
 ## Current step
 
-Final pass: independent review of everything since the part 5 review
-(e990f7f..HEAD), apply it, then the report to the user.
+All planned work is done. Left for later, by decision: UI gallery
+screenshots of the admin page, the harness port race, and retrying failed
+removals of an old key copy after a move.

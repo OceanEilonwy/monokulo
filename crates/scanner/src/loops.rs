@@ -171,6 +171,9 @@ pub async fn run_scanner_loop(
     // most once a minute, so a tenant whose key-custody backend comes back
     // is scanned again without anyone having to call the API for it.
     let mut last_registration_attempt: Option<tokio::time::Instant> = None;
+    // The last pass left stores unregistered (their backend was down, say):
+    // try again soon rather than in a minute.
+    let mut registrations_failed = false;
     // Kept across ticks so the mempool is fetched and scanned incrementally
     // (task 7.3). A panic restarts this loop with a fresh one, which only
     // means one full rescan of the pool.
@@ -189,10 +192,11 @@ pub async fn run_scanner_loop(
         // backend lost it, or was replaced or turned off): that store isn't
         // scanned until it's registered again.
         let lost_a_handle = wallet_handles.read().values().any(|handle| !key_custody.handle_is_live(*handle));
-        let retry_after = if lost_a_handle { REGISTRATION_RETRY_AFTER_LOSS } else { REGISTRATION_RETRY };
+        let retry_after =
+            if lost_a_handle || registrations_failed { REGISTRATION_RETRY_AFTER_LOSS } else { REGISTRATION_RETRY };
         if last_registration_attempt.is_none_or(|at| at.elapsed() >= retry_after) {
             last_registration_attempt = Some(tokio::time::Instant::now());
-            let registered = crate::scanner::register_missing_wallets_checking_state(
+            let crate::scanner::Registration { registered, failed } = crate::scanner::register_missing_wallets_reporting(
                 &store,
                 key_custody.as_ref(),
                 &wallet_handles,
@@ -200,6 +204,7 @@ pub async fn run_scanner_loop(
                 network_str(network),
             )
             .await;
+            registrations_failed = failed > 0;
             if registered > 0 {
                 println!("registered the keys of {registered} tenant(s) on {network:?} that had none");
             }

@@ -915,6 +915,35 @@ fn spawn_server_rejecting(socket_path: &Path, reject: fn(&KeyCustodyRequest) -> 
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_server_restart_behind_pooled_connections_is_not_mistaken_for_an_older_server() {
+    let socket_path = temp_socket_path("restart-not-old");
+    let _cleanup = CleanupSocket(socket_path.clone());
+    let server = ServerProcess::start(&socket_path);
+    let client = connect_with_retry(&socket_path).await;
+    let handle = client.register_wallet(fixture_material()).await.unwrap();
+    let window = scanner::key_custody::ScanIndices::new([1, 5]);
+    // Several scans at once, so several connections sit in the pool.
+    let tx = fixture_tx();
+    let scan = || client.scan_tx_outputs_for_indices(handle, &tx, &window);
+    let (a, b, c, d) = tokio::join!(scan(), scan(), scan(), scan());
+    for result in [a, b, c, d] {
+        assert_eq!(result.unwrap().len(), 1);
+    }
+
+    // Restarted while they sit idle, as a server that only takes index-set
+    // scans. The wallet is registered there through another client, so the
+    // first one's next call really does meet a stale connection.
+    server.stop();
+    spawn_server_rejecting(&socket_path, |request| matches!(request, KeyCustodyRequest::ScanTxOutputs(_)));
+    let other = connect_with_retry(&socket_path).await;
+    let handle = other.register_wallet(fixture_material()).await.unwrap();
+    for _ in 0..3 {
+        let matches = client.scan_tx_outputs_for_indices(handle, &fixture_tx(), &window).await.expect("still index-set scans");
+        assert_eq!(matches.len(), 1);
+    }
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn a_server_that_is_down_during_an_index_set_scan_is_not_mistaken_for_an_older_one() {
     let socket_path = temp_socket_path("down-not-old");
     let _cleanup = CleanupSocket(socket_path.clone());

@@ -317,6 +317,12 @@ impl KeyCustody for PlainKeyCustody {
 }
 
 impl PlainKeyCustody {
+    /// How many wallets are registered (for tests that check nothing is
+    /// left behind).
+    pub fn wallet_count(&self) -> usize {
+        self.wallets.read().len()
+    }
+
     fn entry(&self, handle: WalletHandle) -> Result<std::sync::Arc<WalletEntry>, KeyCustodyError> {
         self.wallets.read().get(&handle).cloned().ok_or(KeyCustodyError::UnknownWallet)
     }
