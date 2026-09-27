@@ -41,7 +41,11 @@ commits. Nothing is pushed.
 | 7.2 scanning off the async runtime | done | 298b928 | blocking pool, one scan per core |
 | 7.3 window (D10), closed_at, index-set API, no table copy | done | 298b928 | socket backend uses the trait's default (covering range) until its wire protocol gains index sets |
 | 7.3 mempool memory | done | 02b0d0f | |
-| 7.3 socket wire protocol for index sets | todo | | goes with 7.5/5.8 socket work |
+| 7.3 socket wire protocol for index sets | done | c51dc26 | old servers fall back to range scans |
+| 7.5 socket connection pool, reconnect | done | c51dc26 | |
+| 5.8 socket recovery (canary, re-register, start degraded) | done | c51dc26 | the per-backend parts of 5.8 (registry, CAS on backend name) come with part 5 |
+| 7.12 scale harness | done (ignored test) | see log | 1000 stores: cold 6.0s, warm 0.11s, block 0.21s; 5000: cold 30s, warm 0.52s, block 1.05s (release, this machine) |
+| 7.13 status and logging | next | | |
 
 ## Decisions made while working
 
@@ -99,10 +103,9 @@ After 7.1: 916 passed, 0 failed, 20 ignored.
 After 6f5e5cc: 940 passed, 0 failed, 20 ignored.
 After 719dc2e: 986 passed, 0 failed, 20 ignored.
 After 02b0d0f: 994 passed, 0 failed, 20 ignored.
+After c51dc26: 1000 passed, 0 failed, 20 ignored.
 
 ## Current step
 
-Next: socket backend work in one piece (7.5 connection pool, 7.3 index-set
-wire message with protocol version, 5.8 reconnect with canary). Then 7.12
-scale harness, then 1.2/1.3 (engine and monokulo onto live-settings), then
-parts 2 to 6.
+7.13 (status fields and rate-limited logging), then part 1.2/1.3 (engine
+and monokulo onto live-settings), then parts 2 to 6.
