@@ -157,3 +157,19 @@ integration tests. `KEEP_E2E_LOGS=1` keeps the processes' logs and
 databases; `E2E_SCANNER_BIN=<path>` runs another engine build, for
 checking a spec fails against the bug it guards (`real-1-settings.spec.js`
 fails against the engine from before 8830c92, at the status page step).
+
+`cargo xtask coverage browser` runs this suite too
+(`coverage-real-binaries.config.js`), after the fixture suite: its stages
+join the screenshot gallery, and specs that use `coverage-test.js`
+(`real-5-logs`, `real-7-pos-timeline`) are served the instrumented browser
+assets and add to the browser coverage. `real-7-pos-timeline` ends by
+spending the anonymous client's log-report budget, so it runs last.
+
+## Screenshot stages
+
+`captureCoverageStage(page, stage, testInfo, { group, shapes })`
+(`coverage-screenshot.js`) captures a stage when `COVERAGE_SCREENSHOTS=1`:
+every size (`desktop`, `tablet-portrait`, `tablet-landscape`,
+`mobile-portrait`, `mobile-landscape`) unless `shapes` names fewer, filed
+under `group` (a page or feature; guessed from the spec's file name when
+left out). The Logs page and other admin tools are captured on desktop only.

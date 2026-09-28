@@ -622,6 +622,9 @@ pub async fn pos_timeline(State(state): State<AppState>, AuthedAdmin(admin, _): 
     let (zone, zone_label) = zone(&tz);
     let (mut rows, problem, truncated) = session_rows(&state, &session).await;
     rows.sort_by_key(|row| (attr_i64(row, "pos.seq").unwrap_or(i64::MAX), row.ts));
+    // Delivery is at least once (a batch whose answer was lost is sent
+    // again): one line per event.
+    rows.dedup_by_key(|row| attr_i64(row, "pos.seq"));
 
     let store = rows.iter().find_map(|row| attr_str(row, "store.id")).map(str::to_string);
     let store_link = store.as_ref().map(|id| {

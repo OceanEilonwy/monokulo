@@ -292,8 +292,16 @@ fn render_index(output: &Path, results: &[Value]) -> io::Result<()> {
         let entries: Value = serde_json::from_slice(&fs::read(output.join("screenshots/manifest.json"))?)?;
         let entries = entries.as_array().ok_or_else(|| io::Error::other("screenshot manifest is not an array"))?;
         page.push_str("<h2>UI evidence</h2><div style=\"display:flex;flex-wrap:wrap;gap:1rem\">");
-        for group in ["checkout", "pos", "challenge"] {
-            if let Some(entry) = entries.iter().find(|e| e["group"] == group && e["stage"] != "failure") {
+        // One picture per page or feature, in the gallery's order, at
+        // desktop size where there is one.
+        let mut groups: Vec<&str> = Vec::new();
+        for group in entries.iter().filter_map(|e| e["group"].as_str()) {
+            if !groups.contains(&group) { groups.push(group); }
+        }
+        for group in groups {
+            let shown = |e: &&Value| e["group"] == group && e["stage"] != "failure";
+            let desktop = entries.iter().filter(shown).find(|e| e["shape"] == "desktop");
+            if let Some(entry) = desktop.or_else(|| entries.iter().find(shown)) {
                 let image = entry["image"].as_str().ok_or_else(|| io::Error::other("screenshot entry has no image"))?;
                 let target = output.join("screenshots").join(image);
                 if !target.is_file() { return Err(io::Error::other(format!("missing screenshot: {image}"))); }

@@ -339,14 +339,19 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
         { "seq": 2, "t": t0 + 500, "kind": "screen", "detail": { "screen": "keypad" } },
         { "seq": 3, "t": t0 + 1_000, "level": "warn", "kind": "network.offline" },
     ]);
+    assert_eq!(send(earlier.clone()).await.unwrap().status(), StatusCode::NO_CONTENT);
+    // Sent again, as when the answer to a batch is lost.
     assert_eq!(send(earlier).await.unwrap().status(), StatusCode::NO_CONTENT);
     let store = s.state.log_store.clone().unwrap();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
-    while store.query(&telemetry::store::LogQuery { limit: 1000, ..Default::default() }).unwrap().iter().filter(|r| r.attributes.contains_key("pos.seq")).count() < 6 {
+    while store.query(&telemetry::store::LogQuery { limit: 1000, ..Default::default() }).unwrap().iter().filter(|r| r.attributes.contains_key("pos.seq")).count() < 9 {
         assert!(std::time::Instant::now() < deadline, "the POS lines were never stored");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let stored = store.query(&telemetry::store::LogQuery { limit: 1000, ..Default::default() }).unwrap();
+    assert_eq!(stored.iter().filter(|r| r.attributes.contains_key("pos.seq")).count(), 9, "a resent batch is stored again");
     let (status, _, html) = s.get(&format!("/dashboard/admin/logs/pos/{session}"), false).await;
     assert_eq!(status, StatusCode::OK, "{html}");
     let at = |needle: &str| html.find(needle).unwrap_or_else(|| panic!("{needle} missing: {html}"));
@@ -356,6 +361,8 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
     assert!(html.contains("Nothing recorded for 2 min 37 s"), "{html}");
     assert!(html.contains(r#"href="/dashboard/stores/c_pos/orders/o_pos""#), "{html}");
     assert!(html.contains("iPad Safari") && html.contains("pos-shop.example.com"), "{html}");
+    assert_eq!(html.matches(">pos.opened<").count(), 1, "shown once: {html}");
+    assert!(html.contains("<dt>Events</dt><dd>6</dd>"), "{html}");
     assert!(html.contains("<dt>Orders created</dt><dd>1</dd>") && html.contains("<dt>Warnings and errors</dt><dd>2</dd>"), "{html}");
     assert!(html.contains("sent "), "lines that arrived long after the tablet recorded them say so: {html}");
 

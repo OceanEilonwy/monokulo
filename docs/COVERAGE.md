@@ -50,15 +50,27 @@ dependencies, or test container explicitly and exits nonzero.
 Open `target/coverage/index.html` directly, or download the CI artifact,
 extract it, and open its `index.html`. The landing page links to annotated
 LLVM source, Istanbul's authored JS/TSX report, PHPUnit's branch and path
-pages, test logs, and a static screenshot gallery. The gallery has stable
-checkout, POS, and challenge stages, each linked to its full PNG and the
-Playwright test result. Playwright's own HTML report retains attachments and
-failure traces. The gallery and native reports use relative links; no local
-server is needed.
+pages, test logs, and a static screenshot gallery. The gallery files its
+stages by page or feature (checkout, challenge, POS, POS session timeline,
+store settings, Logs), each card linked to its full PNGs and the Playwright
+test result. A toggle at the top picks the size shown: Desktop, Tablet or
+Mobile, and Portrait or Landscape within Tablet and Mobile; a stage captured
+at fewer sizes (the Logs page is desktop only) says so. The toggle is radio
+buttons and CSS, so the page works from disk without script. Playwright's
+own HTML reports retain attachments and failure traces. The gallery and
+native reports use relative links; no local server is needed.
+
+The browser collector runs two suites: the deterministic browser tests
+against a fixture server, then the real-binaries tests
+(`real-*.spec.js`: the real engine and monokulo binaries with a fake
+monerod), which add their stages to the same gallery, their own report
+(`browser/playwright-report-real`), and, in specs using `coverage-test.js`,
+their instrumented browser coverage.
 
 Rust metrics include production source in Cargo workspace crates, with a
 separate `mock-woocommerce` row. Browser metrics include checked-in
-`checkout.js`, `challenge.js`, `monokulo-client.js`, and POS `main.tsx`.
+`checkout.js`, `challenge.js`, `monokulo-client.js`, and POS `main.tsx` and
+`timeline.ts`.
 Generated `pos-app.js`, `jsQR.js`, vendor packages, tests, and the `xtask`
 crate are excluded from product denominators. PHP metrics include only
 `monokulo.php` and authored `includes/*.php`; branch and path counts come

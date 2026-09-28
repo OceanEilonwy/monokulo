@@ -65,6 +65,44 @@ The plan is built. Open ends, none blocking:
 - Browser reports from the checkout have no opt-in toggle; the checkout
   never loads `telemetry.js` (D8).
 
+## Follow-up: feedback round (2026-09-28)
+
+Five asks after the plan was built, each its own commit:
+
+| Ask | State | Notes |
+|---|---|---|
+| Log reports rate limited | done | `abuse.client_logs_per_min` (30), `RouteClass::Logs`, its own `TieredLimiter` (`AbuseProtection::check_logs`); `429` + `Retry-After`, never a challenge, never the main budget. `telemetry.js` and the POS back off until `Retry-After` |
+| Client logs opt-in per store | done | migration 0025 `client_logging`, store settings "Diagnostics" section. Off: no `telemetry.js` on that store's pages or checkout (closes D8), `/telemetry/client` drops reports whose `page` is that store's, the POS records nothing, `/pay/{pk}/logs` answers `403` whatever the plugin says. Pages about no store always report |
+| POS session timeline | done | `pos-ui/src/timeline.ts`, `POST /dashboard/stores/{id}/pos/logs` (`http::pos_logs`), `/dashboard/admin/logs/pos/{session}` and `/pos?order=`; "POS session" link on POS orders' pages |
+| Logs rows closed until opened | done | properties load on first open (`/dashboard/admin/logs/row/{cursor}`), the old row 5 |
+| Playwright + screenshots | done | `real-5-logs` extended, `real-7-pos-timeline` new; gallery grouped by page with a device/orientation toggle; the real-binaries suite runs in `cargo xtask coverage browser` |
+
+Decisions:
+
+- **The store's setting wins over the plugin's.** The plugin gets a `403`
+  (it is authenticated, so it can be told); a browser gets a silent `204`.
+- **Reports are matched to a store by their `page`** (`/dashboard/stores/{id}/...`
+  or `/pay/{pk}/...`). A client can lie about its page, but anyone can post
+  a report anyway; the point is that an opted-out store's pages never send.
+- **Timeline events are lines, not a table**: `source = pos`, `pos.session`,
+  `pos.seq`, `pos.client_ts` (ms), `pos.kind`, `pos.detail` (`k=v` text,
+  keys sorted, read back by `pos_logs::detail_pairs`), `order.id`. The
+  timeline page reads monokulo's own store only, sorts by `pos.seq` and
+  drops repeated seqs: delivery is at least once (a batch whose answer is
+  lost is resent).
+- **A beacon never carries what a fetch is carrying** (`inFlightUpTo`):
+  without it every event was stored twice when the page hid mid-send.
+- **Headless Chrome can't hide or freeze a page** (a minimised window and a
+  tab behind another stay visible; `Page.setWebLifecycleState` only freezes
+  hidden pages), so `real-7` sends `visibilitychange`, `freeze` and
+  `resume` itself. Offline is real (`context.setOffline`).
+- **A line's cursor is its URL.** `/row/{ts.id.service}` finds the line as
+  the first one before `(ts, service, id + 1)`, which works for monokulo's
+  and the engine's stores alike.
+- **Screenshot names**: `coverage-stage:<group>/<stage>@<shape>`; the phone
+  shapes are now `mobile-portrait`/`mobile-landscape`. The gallery merges
+  the two suites' manifests; each run checks its own required groups.
+
 ## Decisions and deviations from the plan
 
 - **Development mode is a time, not a switch plus a duration.** The plan

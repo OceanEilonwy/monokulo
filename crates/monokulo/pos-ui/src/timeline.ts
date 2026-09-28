@@ -55,6 +55,9 @@ export function createTimeline(enabled: boolean, endpoint: string): Timeline {
   let stopped = false;
   let sending = false;
   let pausedUntil = 0;
+  /** The last event of the batch a fetch is carrying now, so a beacon
+   * sent meanwhile (the page hiding) doesn't carry it again. */
+  let inFlightUpTo = 0;
 
   function save() {
     try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify(state)); }
@@ -76,19 +79,20 @@ export function createTimeline(enabled: boolean, endpoint: string): Timeline {
     save();
   }
 
-  /** The next batch, noting any events dropped from a full queue first. */
-  function nextBatch(): Event[] {
+  /** The next batch after `after`, noting any events dropped from a full
+   * queue first. */
+  function nextBatch(after = 0): Event[] {
     if (state.dropped) {
       const dropped = state.dropped;
       state.dropped = 0;
       record('timeline.dropped', { events: dropped }, 'warn');
     }
-    return state.queue.slice(0, BATCH);
+    return state.queue.filter(e => e.seq > after).slice(0, BATCH);
   }
 
   function sent(batch: Event[]) {
-    const last = batch[batch.length - 1]?.seq ?? 0;
-    state.queue = state.queue.filter(e => e.seq > last);
+    const done = new Set(batch.map(e => e.seq));
+    state.queue = state.queue.filter(e => !done.has(e.seq));
     save();
   }
 
@@ -96,6 +100,7 @@ export function createTimeline(enabled: boolean, endpoint: string): Timeline {
     if (stopped || sending || !state.queue.length || !navigator.onLine || Date.now() < pausedUntil) return;
     sending = true;
     const batch = nextBatch();
+    inFlightUpTo = batch[batch.length - 1]?.seq ?? 0;
     let accepted = false;
     try {
       const response = await fetch(endpoint, {
@@ -116,15 +121,19 @@ export function createTimeline(enabled: boolean, endpoint: string): Timeline {
         sent(batch); // Never accepted; don't retry it forever.
       }
     } catch { /* Offline or the server unreachable: kept for the next try. */ }
-    finally { sending = false; }
+    finally { sending = false; inFlightUpTo = 0; }
     // More than one batch waiting (after a long time offline): keep going.
     if (accepted && state.queue.length) void flush();
   }
 
-  /** As the page is hidden or goes away: a beacon outlives the page. */
+  /** As the page is hidden or goes away: a beacon outlives the page. It
+   * carries what no fetch is carrying already. (Should that fetch then
+   * fail, its events are sent again later; the timeline page ignores an
+   * event it has already seen, by `seq`.) */
   function beacon() {
     if (stopped || !state.queue.length || !navigator.onLine || Date.now() < pausedUntil || !navigator.sendBeacon) return;
-    const batch = nextBatch();
+    const batch = nextBatch(inFlightUpTo);
+    if (!batch.length) return;
     const body = new Blob([JSON.stringify({ session: state.session, events: batch })], { type: 'application/json' });
     try { if (navigator.sendBeacon(endpoint, body)) sent(batch); }
     catch { /* Kept for the next try. */ }

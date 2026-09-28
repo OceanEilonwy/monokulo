@@ -23,4 +23,9 @@ screenshots_dir="$(dirname "$COVERAGE_OUTPUT")/screenshots"
 rm -rf "$screenshots_dir"
 mkdir -p "$COVERAGE_RAW_DIR"
 (cd "$playwright" && ./node_modules/.bin/playwright test -c coverage-browser.config.js)
+# The same browser code against the real engine and monokulo binaries (and a
+# fake monerod): slower, but it is what merchants actually run. Adds its
+# stages (the Logs page, the POS session timeline, store Diagnostics) to the
+# gallery and its instrumented frames to the browser coverage.
+(cd "$playwright" && ./node_modules/.bin/playwright test -c coverage-real-binaries.config.js)
 node "$playwright/collect-browser-report.js"

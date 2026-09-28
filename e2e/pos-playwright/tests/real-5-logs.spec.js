@@ -3,10 +3,18 @@
 // (structured_logging.md parts 5 and 9): with JavaScript, searches and
 // paging swap in place and keep the URL; without it, the same page works as
 // plain forms and links. Lines from monokulo and the engine share traces.
-const { test, expect } = require('@playwright/test');
+// Its stages go in the coverage gallery's Logs group, desktop only.
+const { test, expect } = require('../coverage-test');
+const { serveInstrumentedAssets } = require('../coverage-fixture');
+const { captureCoverageStage } = require('../coverage-screenshot');
 const { fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
 
 const logsUrl = (query = '') => `${fixture().monokulo_url}/dashboard/admin/logs${query}`;
+const stage = (page, name) => captureCoverageStage(page, name, test.info(), { group: 'logs', shapes: ['desktop'] });
+
+test.beforeEach(async ({ context }) => {
+  if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);
+});
 
 test('a search swaps the results in place, keeps the URL, and back returns to the earlier search', async ({ page }) => {
   await signInAsAdmin(page);
@@ -15,6 +23,7 @@ test('a search swaps the results in place, keeps the URL, and back returns to th
   await page.goto(logsUrl());
   await expect(page.locator('#log-rows .log-row').first()).toBeVisible();
   await expect(page.locator('.error', { hasText: "engine's lines aren't shown" })).toHaveCount(0);
+  await stage(page, 'logs-search');
 
   // A marker that only survives if the page is never reloaded.
   await page.evaluate(() => { window.__notReloaded = true; });
@@ -38,6 +47,40 @@ test('a search swaps the results in place, keeps the URL, and back returns to th
   await expect(page.locator('select[name="level"]')).toHaveValue('');
 });
 
+test("a line's properties load when it's first opened, and only then", async ({ page }) => {
+  await signInAsAdmin(page);
+  await page.goto(`${fixture().monokulo_url}/dashboard/admin/settings`);
+  await page.goto(logsUrl(`?q=${encodeURIComponent("has http.route")}`));
+  const row = page.locator('#log-rows .log-row').first();
+  // Closed, with no properties in the page: only a link to them.
+  await expect(row).not.toHaveAttribute('open', '');
+  await expect(row.locator('.props table')).toHaveCount(0);
+  const loads = [];
+  page.on('request', (request) => { if (request.url().includes('/dashboard/admin/logs/row/')) loads.push(request.url()); });
+
+  await row.locator('summary').click();
+  await expect(row.locator('.props table')).toBeVisible();
+  await expect(row.locator('.props th', { hasText: /^http\.route$/ })).toBeVisible();
+  expect(loads).toHaveLength(1);
+  await stage(page, 'logs-line-opened');
+
+  // Closed and opened again: already there, not fetched again.
+  await row.locator('summary').click();
+  await row.locator('summary').click();
+  await expect(row.locator('.props table')).toBeVisible();
+  expect(loads).toHaveLength(1);
+});
+
+test('a search that does not parse says where', async ({ page }) => {
+  await signInAsAdmin(page);
+  await page.goto(logsUrl());
+  await page.locator('#log-q').fill("level >= and service = ");
+  await page.locator('#log-q').press('Enter');
+  await expect(page.locator('.query-error')).toBeVisible();
+  await expect(page.locator('.query-error mark')).toBeVisible();
+  await stage(page, 'logs-query-error');
+});
+
 test('a request from monokulo to the engine is one trace with spans from both', async ({ page }) => {
   await signInAsAdmin(page);
   await page.goto(`${fixture().monokulo_url}/dashboard/admin/settings`);
@@ -49,6 +92,7 @@ test('a request from monokulo to the engine is one trace with spans from both', 
   const spans = page.locator('.trace-span');
   await expect(spans.filter({ hasText: 'monokulo' }).first()).toBeVisible();
   await expect(spans.filter({ hasText: 'scanner' }).first()).toBeVisible();
+  await stage(page, 'logs-trace');
 });
 
 test('find narrows the search to a property of a line', async ({ page }) => {
@@ -73,6 +117,7 @@ test('live adds new lines at the top without a reload, and pauses', async ({ pag
   await expect(live).toHaveText('Pause');
   await request.get(`${fixture().monokulo_url}/status`);
   await expect(page.locator('#log-rows .log-row')).toHaveCount(before + 1, { timeout: 15_000 });
+  await stage(page, 'logs-live');
   await live.click();
   await expect(live).toHaveText('Live');
   expect(await page.evaluate(() => window.__notReloaded)).toBe(true);
@@ -100,10 +145,18 @@ test.describe('without JavaScript', () => {
     expect(refresh).toContain("q=service+%3D+%27monokulo%27");
     await page.goto(fixture().monokulo_url + refresh);
     await expect(page).toHaveURL(/q=service/);
-    // A line expands without script.
+    await stage(page, 'logs-search-no-js');
+    // A line opens without script to a link to its properties' page.
     const row = page.locator('#log-rows .log-row').first();
     await row.locator('summary').click();
-    await expect(row.locator('.props')).toBeVisible();
+    const link = row.locator('.props a', { hasText: "Show this line's properties" });
+    await expect(link).toBeVisible();
+    await page.goto(fixture().monokulo_url + (await link.getAttribute('href')));
+    await expect(page.getByRole('heading', { name: 'Log line' })).toBeVisible();
+    await expect(page.locator('.log-row[open] .props table')).toBeVisible();
+    await expect(page.locator('.props th', { hasText: /^target$/ })).toBeVisible();
+    await expect(page.getByRole('link', { name: 'Back to the search' })).toHaveAttribute('href', /q=service/);
+    await stage(page, 'logs-line-page-no-js');
   });
 });
 

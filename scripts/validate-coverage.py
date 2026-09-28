@@ -106,7 +106,7 @@ def main():
             check_html(page)
     entries = json.loads(local_file('screenshots/manifest.json').read_text())
     assert len(entries) >= 10, 'fewer than ten screenshots'
-    assert {'checkout', 'pos', 'challenge'} <= {e['group'] for e in entries}, 'missing screenshot group'
+    assert {'checkout', 'pos', 'challenge', 'logs', 'pos-timeline'} <= {e['group'] for e in entries}, 'missing screenshot group'
     images = set()
     for entry in entries:
         image = entry['image']
@@ -116,7 +116,7 @@ def main():
     php = json.loads(local_file('woocommerce/summary.json').read_text())
     assert {f['name'] for f in php['files']} == {'monokulo.php', 'class-wc-gateway-monokulo.php'}, 'unexpected PHP source'
     browser = json.loads(local_file('browser/coverage-final.json').read_text())
-    expected = {'checkout.js', 'challenge.js', 'monokulo-client.js', 'main.tsx'}
+    expected = {'checkout.js', 'challenge.js', 'monokulo-client.js', 'main.tsx', 'timeline.ts'}
     assert {Path(name).name for name in browser} == expected, 'unexpected browser source'
     print('coverage artifact validation passed')
 

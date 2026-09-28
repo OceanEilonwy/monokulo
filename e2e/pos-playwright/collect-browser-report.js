@@ -27,15 +27,15 @@ async function main() {
   const imageSet = new Set();
   const groups = new Set();
   for (const entry of entries) {
-    if (!['checkout', 'pos', 'challenge'].includes(entry.group)) throw new Error(`invalid screenshot group ${entry.group}`);
+    if (!/^[a-z][a-z0-9-]*$/.test(entry.group)) throw new Error(`invalid screenshot group ${entry.group}`);
     if (!/^images\/[a-z0-9-]+\.png$/.test(entry.image)) throw new Error(`invalid screenshot path ${entry.image}`);
     if (imageSet.has(entry.image)) throw new Error(`duplicate screenshot path ${entry.image}`);
     imageSet.add(entry.image);
     if (!fs.statSync(path.join(gallery, entry.image)).size) throw new Error(`empty screenshot ${entry.image}`);
     if (entry.stage !== 'failure') groups.add(entry.group);
   }
-  if (!(stagenet ? ['pos'] : ['checkout', 'pos', 'challenge']).every(group => groups.has(group))) {
-    throw new Error('browser screenshots lack a required checkout, POS, or challenge stage');
+  if (!(stagenet ? ['pos'] : ['checkout', 'pos', 'challenge', 'logs', 'pos-timeline']).every(group => groups.has(group))) {
+    throw new Error('browser screenshots lack a required checkout, POS, challenge, Logs or POS timeline stage');
   }
   if (!fs.existsSync(path.join(gallery, 'index.html'))) throw new Error('browser screenshot gallery is missing');
   const transformed = await sourceMaps.createSourceMapStore().transformCoverage(map);
@@ -47,6 +47,7 @@ async function main() {
     'crates/monokulo/static/challenge.js',
     'crates/monokulo/static/monokulo-client.js',
     'crates/monokulo/pos-ui/src/main.tsx',
+    'crates/monokulo/pos-ui/src/timeline.ts',
   ];
   const finalMap = stagenet ? coverage.createCoverageMap({}) : transformed;
   if (stagenet) {

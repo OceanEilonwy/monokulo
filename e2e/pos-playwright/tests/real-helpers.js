@@ -60,4 +60,21 @@ async function reloadUntil(page, url, check) {
     .toBe(true);
 }
 
-module.exports = { fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, reloadUntil, VIEW_KEY, SPEND_PUBKEY };
+/** Connects a stagenet store for `site` (giving stagenet the fake node
+ * first) and returns its dashboard path, `/dashboard/stores/{id}`. */
+async function connectStore(page, site) {
+  const { monokulo_url: base } = fixture();
+  await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
+  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await page.goto(base + '/dashboard/connect');
+  await page.locator('input[name="site_url"]').fill(`https://${site}`);
+  await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
+  await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
+  await page.locator('select[name="network"]').selectOption('stagenet');
+  await page.getByRole('button', { name: 'Connect' }).click();
+  await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
+  await page.goto(base + '/dashboard');
+  return page.locator('tr', { hasText: site }).first().getByRole('link', { name: 'view →' }).getAttribute('href');
+}
+
+module.exports = { fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, reloadUntil, connectStore, VIEW_KEY, SPEND_PUBKEY };
