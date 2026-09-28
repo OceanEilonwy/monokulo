@@ -304,14 +304,21 @@ impl KeyCustody for PlainKeyCustody {
             let _ = derived;
             *live = table;
         }
-        let table = std::mem::take(&mut live.table);
-        let (table, result) = scan_on_blocking_pool(entry.view_pair, table, tx).await;
-        live.table = table;
-        if live.table.is_empty() && !live.indices.is_empty() {
+        // Move the metadata together with the keys. If this future is dropped
+        // while waiting for a CPU slot or the blocking task, the shared cache
+        // stays unset, so the next scan rebuilds before looking for payments.
+        // Keeping the generation here while taking only the keys would let
+        // that next scan report a successful no-match against an empty table.
+        let mut table = std::mem::take(&mut *live);
+        let keys = std::mem::take(&mut table.table);
+        let (keys, result) = scan_on_blocking_pool(entry.view_pair, keys, tx).await;
+        table.table = keys;
+        if table.table.is_empty() && !table.indices.is_empty() {
             // The scan task failed and lost the table: rebuild next time.
-            live.generation = None;
-            live.indices.clear();
+            table.generation = None;
+            table.indices.clear();
         }
+        *live = table;
         result
     }
 }
@@ -482,6 +489,57 @@ mod tests {
         assert_eq!(after_lookup - before, 3, "the lookup's own table");
         custody.scan_tx_outputs_for_indices(handle, &tx, &without).await.unwrap();
         assert_eq!(derivations(&custody, handle), after_lookup, "the live table survived the lookup");
+    }
+
+    #[test]
+    fn cancelling_a_scan_preserves_the_next_payment_match() {
+        // One blocking worker lets us stop a scan at an await deterministically,
+        // without sleeps, deadlines, or depending on how fast the CPU runs.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let tx: Transaction = deserialize(
+                &hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap(),
+            ).unwrap();
+            let view = hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07")
+                .unwrap().try_into().unwrap();
+            let spend = PrivateKey::from_slice(
+                &hex::decode("e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907").unwrap(),
+            ).unwrap();
+            let custody = PlainKeyCustody::default();
+            let handle = custody.register_wallet(WalletMaterial::new(
+                view, PublicKey::from_private_key(&spend).to_bytes(),
+            )).await.unwrap();
+            let window = ScanIndices::new([1]);
+            assert_eq!(custody.scan_tx_outputs_for_indices(handle, &tx, &window).await.unwrap().len(), 1);
+
+            // Exercise cancellation with an unchanged cache and during a window
+            // update. In either case the very next scan must find the payment.
+            for window in [window, ScanIndices::new([1, 5])] {
+                let (release, wait) = std::sync::mpsc::channel::<()>();
+                let (started, ready) = tokio::sync::oneshot::channel();
+                let blocker = tokio::task::spawn_blocking(move || {
+                    started.send(()).unwrap();
+                    let _ = wait.recv();
+                });
+                ready.await.unwrap();
+                let mut scan = custody.scan_tx_outputs_for_indices(handle, &tx, &window);
+                std::future::poll_fn(|cx| {
+                    assert!(scan.as_mut().poll(cx).is_pending());
+                    std::task::Poll::Ready(())
+                }).await;
+                drop(scan);
+                drop(release);
+                blocker.await.unwrap();
+                assert_eq!(
+                    custody.scan_tx_outputs_for_indices(handle, &tx, &window).await.unwrap().len(),
+                    1,
+                    "the first scan after cancellation must still find the payment",
+                );
+            }
+        });
     }
 
     #[tokio::test]

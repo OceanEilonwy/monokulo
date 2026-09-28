@@ -589,6 +589,7 @@ fn recompute_and_notify_in_tx(store: &Store, order_id: &str, current_height: u64
         let payload = serde_json::json!({ "order_id": order_id, "status": new_status.as_str() });
         enqueue_webhook_event(store, order_id, &format!("order.{new_status}"), &payload, now)?;
     }
+    store.clear_pending_payment_recompute(order_id)?;
     Ok(())
 }
 
@@ -1014,6 +1015,10 @@ pub async fn run_scan_tick_with(
         };
         mempool_txids = Some(in_pool);
 
+        // Retry a failed tenant next tick, not once per pool transaction. A
+        // single unresponsive backend must not spend the entire tick budget
+        // on repeated deadlines before block scanning even gets a turn.
+        let mut failed_in_pool = HashSet::new();
         for tx in &pool {
             let txid = tx_id_hex(tx);
             // Only the stores this transaction hasn't been scanned for, with
@@ -1023,6 +1028,7 @@ pub async fn run_scan_tick_with(
                 let done = memory.scanned.get(&txid);
                 ranges
                     .iter()
+                    .filter(|(tenant_id, _, _)| !failed_in_pool.contains(tenant_id))
                     .filter(|(tenant_id, _, window)| done.and_then(|d| d.get(tenant_id)) != Some(&window.generation()))
                     .collect()
             };
@@ -1058,6 +1064,7 @@ pub async fn run_scan_tick_with(
                         }
                     }
                     Err(e) => {
+                        failed_in_pool.insert(tenant_id.clone());
                         shared::log::throttled(
                             &format!("mempool-scan:{tenant_id}"),
                             format!("scanning a mempool tx for tenant {tenant_id} on {network} failed: {e}"),
@@ -1376,12 +1383,14 @@ pub async fn run_scan_tick_with(
     // reconciliation leaves a pure retry for the next tick, and holding every order's
     // expiry and confirmation growth hostage to it would turn a transient node blip
     // into orders that silently stop advancing.
-    let to_recompute: HashSet<String> = store
-        .lock()
-        .non_terminal_order_ids(network, now, expired_order_grace_period_seconds)?
-        .into_iter()
-        .chain(touched.iter().cloned())
-        .collect();
+    let to_recompute: HashSet<String> = {
+        let s = store.lock();
+        s.non_terminal_order_ids(network, now, expired_order_grace_period_seconds)?
+            .into_iter()
+            .chain(s.pending_payment_recomputes(network)?)
+            .chain(touched.iter().cloned())
+            .collect()
+    };
     for order_id in &to_recompute {
         let s = store.lock();
         recompute_and_notify(&s, order_id, current_height, now)?;
@@ -3671,6 +3680,8 @@ mod tests {
             "the status must not have advanced past a transition nothing will ever announce"
         );
 
+        assert_eq!(store.lock().pending_payment_recomputes("mainnet").unwrap(), vec![order_id.clone()]);
+
         // Once the store is healthy again, the next tick performs both halves.
         store.lock().execute_raw_for_test("DROP TRIGGER simulated_enqueue_failure;").unwrap();
         run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
@@ -3683,6 +3694,7 @@ mod tests {
         let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].event_type, "order.confirming");
+        assert!(s.pending_payment_recomputes("mainnet").unwrap().is_empty());
     }
 
     // ---------------------------------------------------------------------
@@ -6458,18 +6470,23 @@ mod tests {
 
     // -- Fair, concurrent scanning within a tick (task 7.4) -------------------
 
-    /// Wraps a `PlainKeyCustody` and delays `scan_tx_outputs` for chosen
-    /// handles, the way a key-custody backend that answers slowly does.
+    /// Fixture-only backend with controlled async delays. Compute real matches
+    /// during registration, before any deadlines exist: paused-time tests must
+    /// not wait on CPU slots held by other tests' independent runtimes.
     #[derive(Default)]
     struct SlowKeyCustody {
         inner: PlainKeyCustody,
         delays: parking_lot::Mutex<HashMap<WalletHandle, Duration>>,
+        matches: parking_lot::Mutex<HashMap<WalletHandle, Vec<MatchedOutput>>>,
     }
 
     #[async_trait::async_trait]
     impl KeyCustody for SlowKeyCustody {
         async fn register_wallet(&self, material: WalletMaterial) -> std::result::Result<WalletHandle, KeyCustodyError> {
-            self.inner.register_wallet(material).await
+            let handle = self.inner.register_wallet(material).await?;
+            let matches = self.inner.scan_tx_outputs(handle, &fixture_tx(), 0..1, 1..2).await?;
+            self.matches.lock().insert(handle, matches);
+            Ok(handle)
         }
         async fn remove_wallet(&self, handle: WalletHandle) -> std::result::Result<(), KeyCustodyError> {
             self.inner.remove_wallet(handle).await
@@ -6499,7 +6516,12 @@ mod tests {
             if let Some(delay) = delay {
                 tokio::time::sleep(delay).await;
             }
-            self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await
+            assert_eq!(tx_id_hex(tx), tx_id_hex(&fixture_tx()), "this backend only scans the fixture transaction");
+            let matches = self.matches.lock();
+            let matches = matches.get(&handle).ok_or(KeyCustodyError::UnknownWallet)?;
+            Ok(matches.iter().copied().filter(|m| {
+                major_range.contains(&m.subaddress_index.major) && minor_range.contains(&m.subaddress_index.minor)
+            }).collect())
         }
     }
 
@@ -6529,6 +6551,36 @@ mod tests {
         custody.delays.lock().clear();
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
         assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1, "and caught up once it answers normally");
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn a_failed_tenants_mempool_scans_do_not_consume_every_tick_before_blocks() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = SlowKeyCustody::default();
+        let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let store = store.into_shared();
+        let tenants = [(tenant, handle)];
+        let daemon = FakeDaemonClient::new();
+        let memory = MempoolMemory::default();
+        daemon.push_block("b1", vec![]);
+        daemon.push_block("b2", vec![]);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        custody.delays.lock().insert(handle, Duration::from_secs(600));
+        daemon.set_mempool((0..13).map(unrelated_tx).collect());
+        let deadline = crate::loops::tick_deadline(Duration::from_secs(1));
+        for height in 3..=4 {
+            daemon.push_block(&format!("b{height}"), vec![]);
+            let result = tokio::time::timeout(deadline, run_scan_tick_with(
+                &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 64,
+            )).await;
+            assert!(result.is_ok(), "retrying the same failed tenant must not starve block scanning");
+            result.unwrap().unwrap();
+            assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(height));
+        }
+        custody.delays.lock().clear();
+        daemon.set_mempool(vec![fixture_tx()]);
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 64).await.unwrap();
+        assert_eq!(store.lock().get_all_payments(&order).unwrap().len(), 1, "the tenant is retried after recovery");
     }
 
     #[tokio::test(start_paused = true)]
@@ -6790,6 +6842,52 @@ mod tests {
             future.as_mut().poll(cx).map(Some)
         })
         .await
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_a_closed_orders_payment_is_written_does_not_lose_its_status_or_webhook() {
+        use std::future::Future;
+        let store = Store::open_in_memory().unwrap();
+        let custody = PlainKeyCustody::default();
+        let now = crate::now_unix();
+        let (tenant, handle, order) = fixture_tenant(&store, &custody, now + 3600).await;
+        store.execute_raw_for_test(&format!(
+            "UPDATE orders SET confirmations_required_override = 0 WHERE id = '{order}'"
+        )).unwrap();
+        store.create_webhook(&tenant, "https://shop.example/hook", "{}", "whsec", now).unwrap();
+        store.record_payment_match(&order, "original", 0, 1, "[]", now, Some(1)).unwrap();
+        recompute_and_notify(&store, &order, 2, now).unwrap();
+        let store = store.into_shared();
+        assert_eq!(order_status(&store, &order), OrderStatus::Paid);
+        let tenants = [(tenant, handle)];
+        let daemon = YieldingDaemon(FakeDaemonClient::new());
+        daemon.0.push_block("b1", vec![]);
+        daemon.0.push_block("b2", vec![]);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600).await.unwrap();
+        daemon.0.push_block("b3", vec![fixture_tx()]);
+        {
+            let mut tick = Box::pin(run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600));
+            std::future::poll_fn(|cx| {
+                assert!(tick.as_mut().poll(cx).is_pending());
+                if store.lock().get_all_payments(&order).unwrap().len() == 2 {
+                    std::task::Poll::Ready(())
+                } else {
+                    std::task::Poll::Pending
+                }
+            }).await;
+            // This tick's volatile `touched` set disappears here.
+        }
+        // Let the closed order fall outside the scan window before recovery.
+        // Its already-persisted payment still needs a status update.
+        store.lock().execute_raw_for_test(&format!(
+            "UPDATE orders SET closed_at_utc = 1 WHERE id = '{order}'"
+        )).unwrap();
+        for _ in 0..2 {
+            run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        }
+        assert_eq!(order_status(&store, &order), OrderStatus::Overpaid);
+        let events = store.lock().due_webhook_deliveries(i64::MAX / 2, 100).unwrap();
+        assert_eq!(events.iter().filter(|d| d.order_id == order && d.event_type == "order.overpaid").count(), 1);
     }
 
     #[tokio::test]
