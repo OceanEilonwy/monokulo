@@ -216,7 +216,7 @@ fn render_connect_success(state: &AppState, connection_id: &str, public_key: &st
 /// for this task calls out `302` specifically). `pub(super)` since the
 /// generic connect flow (`http/connect.rs`, WBS 1.4.1) issues the exact same
 /// kind of redirect and shouldn't reimplement it.
-pub(super) fn redirect_302(location: &str) -> Response {
+pub(crate) fn redirect_302(location: &str) -> Response {
     (StatusCode::FOUND, [(header::LOCATION, location)]).into_response()
 }
 

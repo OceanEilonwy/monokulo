@@ -222,6 +222,23 @@ pub async fn challenge_script() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/challenge.js"))
 }
 
+/// `GET /static/fixi.js`, `/static/ssexi.js` and `/static/fx-glue.js` -
+/// partial page updates and server-sent events on the server-rendered
+/// pages (`http::fx`). fixi and ssexi are vendored, pinned copies (see
+/// their `.SOURCE` files), served from here like `jsQR.js`: no CDN, so the
+/// pages work offline and over Tor.
+pub async fn fixi_script() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/fixi.js"))
+}
+
+pub async fn ssexi_script() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/ssexi.js"))
+}
+
+pub async fn fx_glue_script() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/fx-glue.js"))
+}
+
 /// `GET /static/telemetry.js` - browser problem reports (`http::telemetry_client`).
 pub async fn telemetry_script() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/telemetry.js"))
@@ -474,6 +491,48 @@ mod tests {
             assert!(content_type.contains(expected), "/static/{name} served as {content_type}");
             assert!(!response.into_body().collect().await.unwrap().to_bytes().is_empty(), "/static/{name} is empty");
         }
+    }
+
+    /// Without JavaScript only the checkout embed refreshes by itself
+    /// (structured_logging.md D4); every other page is a snapshot with a
+    /// Reload button. (The challenge page's continue refresh is covered
+    /// by `views::challenge`.)
+    #[tokio::test]
+    async fn only_the_checkout_refreshes_by_itself() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(&router, "no-refresh@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let store_id = state.db.lock().get_store_connection_by_public_key(&pk).unwrap().unwrap().id;
+        let order = body_json(router.clone().oneshot(create_order_request(&pk, "25.00", TEST_CURRENCY)).await.unwrap()).await;
+        let order_id = order["order_id"].as_str().unwrap().to_string();
+
+        let get = |path: String| {
+            Request::builder().uri(path).header("authorization", format!("Bearer {session_token}")).body(Body::empty()).unwrap()
+        };
+        for path in [
+            "/".to_string(),
+            "/dashboard/login".into(),
+            "/dashboard/signup".into(),
+            "/status".into(),
+            "/dashboard".into(),
+            "/dashboard/stores/new".into(),
+            "/dashboard/connect".into(),
+            format!("/dashboard/stores/{store_id}"),
+            format!("/dashboard/stores/{store_id}/settings"),
+            format!("/dashboard/stores/{store_id}/orders"),
+            format!("/dashboard/stores/{store_id}/orders/{order_id}"),
+            format!("/dashboard/stores/{store_id}/orders/new"),
+        ] {
+            let response = router.clone().oneshot(get(path.clone())).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{path}");
+            let html = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+            assert!(!html.contains("http-equiv=\"refresh\""), "{path} must not refresh by itself: {html}");
+        }
+        let customer = Request::builder().uri(format!("/pay/{pk}/orders/{order_id}")).body(Body::empty()).unwrap();
+        let checkout = router.clone().oneshot(customer).await.unwrap();
+        let html = String::from_utf8(checkout.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        assert!(html.contains("<noscript><meta http-equiv=\"refresh\""), "the checkout keeps its no-JS refresh: {html}");
     }
 
     #[tokio::test]

@@ -36,12 +36,18 @@ because it builds on the `live-settings` crate from that work).
 | 3.3 engine log API | done | same | `GET /api/v1/admin/logs`, `/trace/{id}`, `/histogram`, `/attributes`, instance admin token |
 | 3.4 merged reader | done | same | `monokulo::logs` (`Sources`, `read`, `trace`, `histogram`, `attribute_names`) |
 | filter language (5.1 row 1) | done early | same | `telemetry::query`, needed by 3.3 |
-| 4.x onwards | not started | | |
+| 4.1 vendor fixi/ssexi | done | "fixi foundation" | fixi 0.9.4, ssexi at 78c2fb4 (no tags yet), `.LICENSE`/`.SOURCE` beside them |
+| 4.2 `FxRequest` | done | same | `http::fx`: `FxRequest`, `Timezone`, `respond`, `invalid` |
+| 4.3 glue | done | same | `static/fx-glue.js`: `fx-push-url`, `fx-replace`, `fx-debounce`, `fx-sse-reconnect`, `aria-busy`, 5xx/network banner, `data-fx-focus`, `X-Timezone` |
+| 4.4 no meta refresh | done | same | status and order detail lost theirs and gained `views::reload_button`; `http::pay::tests::only_the_checkout_refreshes_by_itself` |
+| 5.x onwards | not started | | |
 
 ### Next
 
-Part 4 (fixi foundation), then part 5 (the Logs page, which uses
-`monokulo::logs` and `telemetry::query`).
+Part 5, the Logs page (`/admin/logs`, admin only), using `monokulo::logs`
+and `telemetry::query`. Then part 6: the status and order detail pages
+currently have no live updates at all (4.4 removed their meta refresh);
+their ssexi streams come first in part 6.
 
 ## Decisions and deviations from the plan
 
@@ -153,6 +159,18 @@ Part 4 (fixi foundation), then part 5 (the Logs page, which uses
 - **The e2e targets** (`--features e2e`) didn't compile before this part
   (monokulo `AppState` gained `settings` in admin-settings-v2 and the
   harness wasn't updated). Fixed along with adding `log_store`.
+
+- **fixi facts that shaped the glue**: fixi swaps any response, whatever
+  its status (so a 422 fragment with errors just works, and the glue
+  stops 5xx pages being swapped in); `fetch` follows redirects (hence
+  `http::fx::respond`); fixi drops a new request while one is in flight
+  unless told otherwise (`fx-replace`); view transitions are on by default
+  (turned off in `fixiCfg`). An element can start its request as soon as
+  it's processed with `fx-trigger="fx:inited"` (fixi fires `fx:inited`
+  right after adding its listener): that's how a stream starts on load.
+- **Scripts load on every page with nav** (`views::page_shell`), in the
+  order glue, fixi, ssexi, all `defer`. Not on the bare layouts (checkout,
+  challenge, POS); the checkout gets them in part 8.
 
 ## What was left on println/eprintln, on purpose
 

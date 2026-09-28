@@ -2,7 +2,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout_with_head, PageChrome};
+use super::{layout, PageChrome};
 
 /// One Monero node's row - mirrors `engine_client::NodeStatus` but with
 /// presentation already done (`height_display`/`is_reachable`).
@@ -54,7 +54,6 @@ pub struct StatusPageViewModel {
 }
 
 pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
-    let extra_head = html! { meta http-equiv="refresh" content="30"; };
     let body = html! {
         div class="wrap" {
             nav class="context-nav" aria-label="Breadcrumb" {
@@ -63,8 +62,9 @@ pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
             }
             h1 { "Engine status" }
             p class="hint" {
-                "Live, on every request - not cached. Generated " (data.generated_at_display) ", node heights refreshed at that "
-                "moment. The scan loop polls every " (data.poll_interval_secs) "s."
+                "Generated " (data.generated_at_display) ", with node heights as of that moment. The scan loop polls every "
+                (data.poll_interval_secs) "s. "
+                (super::reload_button("/status"))
             }
 
             @if let Some(abuse) = &data.abuse {
@@ -138,7 +138,7 @@ pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
             }
         }
     };
-    layout_with_head(chrome, "Status - Monokulo", extra_head, body)
+    layout(chrome, "Status - Monokulo", body)
 }
 
 #[cfg(test)]

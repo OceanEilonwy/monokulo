@@ -337,12 +337,11 @@ pub async fn order_detail(
                         detail.order.currently_scanning,
                     ),
                 }),
-                meta_refresh_secs: 15,
             };
             views::orders::detail_page(&chrome, &view_model).into_response()
         }
         Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
-            let view_model = OrderDetailViewModel { connection_id: id.to_string(), display_name: display_name_for(&row.site_url), order: None, meta_refresh_secs: 15 };
+            let view_model = OrderDetailViewModel { connection_id: id.to_string(), display_name: display_name_for(&row.site_url), order: None };
             (StatusCode::NOT_FOUND, views::orders::detail_page(&chrome, &view_model)).into_response()
         }
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1511,8 +1510,8 @@ mod tests {
         // `merchant_order_id` was never set on this seeded order - must show
         // a muted placeholder, not a blank cell.
         assert!(html.contains("muted"), "expected a muted placeholder for the unset merchant order id, got: {html}");
-        assert!(html.contains(r#"<meta http-equiv="refresh""#), "expected an auto-refresh meta tag, got: {html}");
-        assert!(html.contains("refreshes automatically"), "expected the refresh interval noted on the page, got: {html}");
+        assert!(!html.contains(r#"http-equiv="refresh""#), "a point-in-time page without JS, never a meta refresh: {html}");
+        assert!(html.contains(r#"class="btn btn-secondary reload""#), "a Reload button instead: {html}");
         // The real point of this follow-up: a real, absolute, shareable
         // payment link for this exact order, built from the request's own
         // Host header (`test.example` here, set by `oneshot`'s default) -
@@ -3538,7 +3537,7 @@ mod tests {
             payment_link: "http://127.0.0.1:8081/pay/pk_abc123/orders/pay_abc123/share".to_string(),
             scan_range_display: crate::templates::display_scan_range(Some(100), Some(250), false),
         };
-        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(order), meta_refresh_secs: 15 };
+        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(order) };
         let chrome = crate::views::PageChrome::from_user(None, "");
         let html = crate::views::orders::detail_page(&chrome, &data).into_string();
         assert!(html.contains("100 - 250"), "expected the closed range display, got: {html}");

@@ -202,7 +202,6 @@ pub struct OrderDetailViewModel {
     pub connection_id: String,
     pub display_name: String,
     pub order: Option<OrderDetailData>,
-    pub meta_refresh_secs: u32,
 }
 
 const PAGE_STYLE: &str = r#"
@@ -246,7 +245,6 @@ const SHARE_SCRIPT: &str = r#"(function () {
 
 pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
     let extra_head = html! {
-        meta http-equiv="refresh" content=(data.meta_refresh_secs);
         style { (PreEscaped(PAGE_STYLE)) }
     };
 
@@ -269,8 +267,8 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                     }
                 }
                 p class="hint" {
-                    "This page refreshes automatically every 15s. Share the payment link (icon above) with whoever "
-                    "needs to pay this order."
+                    "Share the payment link (icon above) with whoever needs to pay this order. "
+                    (super::reload_button(&chrome.current_path))
                 }
                 table class="kv-table" {
                     tr { th { "Order ID" } td { code { (order.order_id) } } }
@@ -406,7 +404,7 @@ mod tests {
 
     #[test]
     fn detail_page_hides_the_double_spend_row_entirely_when_none_was_detected() {
-        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(None)), meta_refresh_secs: 15 };
+        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(None)) };
         let html = detail_page(&chrome(), &data).into_string();
         // The real point of this follow-up: no dash, no row at all - a
         // permanently-visible "Double-spend detected at" label reads as a
@@ -416,7 +414,7 @@ mod tests {
 
     #[test]
     fn detail_page_uses_order_breadcrumb() {
-        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(None)), meta_refresh_secs: 15 };
+        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(None)) };
         let html = detail_page(&chrome(), &data).into_string();
         assert!(html.contains(r#"<nav class="context-nav" aria-label="Breadcrumb"><a href="/dashboard/stores/conn_1" title="shop.example.com">shop.example.com</a><span class="breadcrumb-sep" aria-hidden="true">›</span><a href="/dashboard/stores/conn_1/orders">Orders</a></nav>"#));
         assert!(html.contains("Order · <code class=\"order-title-id\" title=\"pay_abc123\">pay_abc123</code>"));
@@ -425,7 +423,7 @@ mod tests {
     #[test]
     fn detail_page_shows_the_double_spend_row_when_one_was_detected() {
         let data =
-            OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(Some(1_700_000_000))), meta_refresh_secs: 15 };
+            OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: Some(test_order_detail_data(Some(1_700_000_000))) };
         let html = detail_page(&chrome(), &data).into_string();
         assert!(html.contains("Double-spend detected at"), "expected the row present when a double-spend was detected, got: {html}");
         assert!(html.contains("1700000000"), "expected the real detected-at timestamp shown, got: {html}");
@@ -433,7 +431,7 @@ mod tests {
 
     #[test]
     fn detail_page_shows_a_not_found_state_when_order_is_none() {
-        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: None, meta_refresh_secs: 15 };
+        let data = OrderDetailViewModel { connection_id: "conn_1".to_string(), display_name: "shop.example.com".to_string(), order: None };
         let html = detail_page(&chrome(), &data).into_string();
         assert!(html.to_lowercase().contains("not found"));
         // The nav's own status-dot poll script always renders regardless -

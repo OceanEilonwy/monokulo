@@ -180,6 +180,11 @@ fn page_shell(chrome: &PageChrome, title: &str, viewport: &str, extra_head: Opti
                 // challenge page or the POS app, which render without nav.
                 @if nav.is_some() {
                     script src="/static/telemetry.js" defer {}
+                    // Partial updates and live streams (structured_logging.md
+                    // part 4), in this order: the glue sets fixi's defaults.
+                    script src="/static/fx-glue.js" defer {}
+                    script src="/static/fixi.js" defer {}
+                    script src="/static/ssexi.js" defer {}
                 }
                 @if let Some(extra_head) = extra_head {
                     (extra_head)
@@ -200,6 +205,14 @@ fn page_shell(chrome: &PageChrome, title: &str, viewport: &str, extra_head: Opti
             }
         }
     }
+}
+
+/// The Reload button a point-in-time page shows instead of refreshing by
+/// itself (structured_logging.md D4): without JavaScript these pages are a
+/// snapshot, and a reader reloads when they want the latest. `class` is
+/// `reload` so the page's own script can hide it once it streams updates.
+pub fn reload_button(href: &str) -> Markup {
+    html! { a class="btn btn-secondary reload" href=(href) { "Reload" } }
 }
 
 /// Polls `GET /status/summary` and updates the indicator in place. Starts
