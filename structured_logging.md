@@ -96,10 +96,14 @@ Field names follow OTel semantic conventions where one exists
 New `logging` section in both processes' `live-settings` registries:
 
 - `logging.level` (default `info`);
-- `logging.dev_mode` (default off). When on: `debug` level, span events, and
-  pretty stderr output. It turns itself off after `logging.dev_mode_minutes`
-  (default 60), so it can't be left on in production by accident. The admin
-  page shows when it will turn off.
+- `logging.dev_mode_until` (a Unix time, default 0 = off). Until then the
+  level is `debug` (noisy libraries held at `info`). It ends by itself, so it
+  can't be left on in production by accident, and a restart keeps the same
+  end time. The admin page offers Off / on for 1, 4 or 24 hours and shows
+  when it ends. The output format doesn't change with it: JSON or pretty is
+  chosen once at start (`<PREFIX>_LOG_FORMAT`, else pretty at a terminal),
+  so whatever parses the logs keeps working. (Changed from the first draft's
+  on/off switch plus duration; see the work notes.)
 
 Both apply on save through the reload handle, with no restart, and follow
 the admin page's existing "applies on save" rules.
