@@ -89,11 +89,36 @@ pub fn max_cache_bytes_from_env() -> u64 {
 /// `CoingeckoRateProvider`'s own existing app-level TTL cache (`piconero_per_unit_cached`)
 /// remains the thing actually bounding how often it hits the real API.
 pub fn build_client(user_agent: &str, max_cache_bytes: u64) -> ClientWithMiddleware {
+    client_builder(user_agent).with(CacheMiddleware::new(max_cache_bytes)).build()
+}
+
+/// [`build_client`] for calls to our own services (monokulo to the engine),
+/// which also sends the caller's trace as a `traceparent` header
+/// (structured_logging.md 2.3). Not for third parties such as exchange-rate
+/// APIs, which have no use for our trace ids.
+pub fn build_traced_client(user_agent: &str, max_cache_bytes: u64) -> ClientWithMiddleware {
+    client_builder(user_agent).with(PropagateTrace).with(CacheMiddleware::new(max_cache_bytes)).build()
+}
+
+fn client_builder(user_agent: &str) -> ClientBuilder {
     let inner = reqwest::Client::builder()
         .user_agent(user_agent.to_string())
         .build()
         .expect("a validated user agent string can't fail to build a client");
-    ClientBuilder::new(inner).with(CacheMiddleware::new(max_cache_bytes)).build()
+    ClientBuilder::new(inner)
+}
+
+/// Adds a `traceparent` header naming the current span, when there is one.
+pub struct PropagateTrace;
+
+#[async_trait::async_trait]
+impl Middleware for PropagateTrace {
+    async fn handle(&self, mut req: Request, extensions: &mut Extensions, next: Next<'_>) -> reqwest_middleware::Result<Response> {
+        if let Some(value) = telemetry::trace::current_traceparent().and_then(|v| reqwest::header::HeaderValue::from_str(&v).ok()) {
+            req.headers_mut().insert(telemetry::trace::TRACEPARENT, value);
+        }
+        next.run(req, extensions).await
+    }
 }
 
 /// One cached response - the whole status/selected-headers/body a cache hit
@@ -380,5 +405,46 @@ mod tests {
             "a 3KB cap against three ~1KB entries must have evicted at least one - got {calls_before} calls before, \
              {calls_after} after re-requesting all three"
         );
+    }
+
+    async fn spawn_echo_traceparent_server() -> String {
+        let app = Router::new().route(
+            "/echo",
+            get(|headers: axum::http::HeaderMap| async move {
+                headers.get("traceparent").map(|v| v.to_str().unwrap().to_string()).unwrap_or_default()
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    #[tokio::test]
+    async fn a_traced_client_sends_the_callers_trace_and_a_plain_one_does_not() {
+        let base_url = spawn_echo_traceparent_server().await;
+        let (_telemetry, subscriber) =
+            telemetry::build("test", telemetry::Format::Json, false, "info", std::io::sink);
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let span = tracing::info_span!("caller");
+        let expected = telemetry::trace::traceparent(&span).unwrap();
+
+        let traced = build_traced_client("test-agent", 1024 * 1024);
+        let sent = tracing::Instrument::instrument(
+            async { traced.get(format!("{base_url}/echo")).send().await.unwrap().text().await.unwrap() },
+            span.clone(),
+        )
+        .await;
+        assert_eq!(sent, expected);
+
+        let plain = build_client("test-agent", 1024 * 1024);
+        let sent = tracing::Instrument::instrument(
+            async { plain.get(format!("{base_url}/echo")).send().await.unwrap().text().await.unwrap() },
+            span,
+        )
+        .await;
+        assert_eq!(sent, "", "third parties never get our trace ids");
     }
 }

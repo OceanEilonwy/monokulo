@@ -170,6 +170,9 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
         // A fixed outer ceiling; the live limit above (server.max_body_bytes,
         // task 2.6) is what normally applies.
         .layer(RequestBodyLimitLayer::new(max_body_bytes))
+        // Outermost, so every line from the layers above carries the
+        // request's span (structured_logging.md 2.1).
+        .layer(middleware::from_fn(telemetry::http::server))
         .with_state(state)
 }
 

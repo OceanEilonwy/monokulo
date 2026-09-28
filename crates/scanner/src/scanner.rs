@@ -131,14 +131,20 @@ async fn scan_for_tenants(
     use futures_util::stream::{self, StreamExt};
     let owned: Vec<(String, WalletHandle, ScanIndices)> = tenants.iter().map(|t| (*t).clone()).collect();
     stream::iter(owned)
-        .map(|(tenant_id, handle, window)| async move {
-            let result = match tokio::time::timeout(SCAN_CALL_DEADLINE, scan_transaction_in_window(key_custody, handle, tx, &window)).await {
-                Ok(result) => result,
-                Err(_) => Err(ScannerError::KeyCustody(KeyCustodyError::BackendUnavailable(format!(
-                    "scan took longer than {SCAN_CALL_DEADLINE:?}"
-                )))),
-            };
-            (tenant_id, result)
+        .map(|(tenant_id, handle, window)| {
+            let span = tracing::debug_span!("scan for store", store.id = %tenant_id);
+            tracing::Instrument::instrument(
+                async move {
+                    let result = match tokio::time::timeout(SCAN_CALL_DEADLINE, scan_transaction_in_window(key_custody, handle, tx, &window)).await {
+                        Ok(result) => result,
+                        Err(_) => Err(ScannerError::KeyCustody(KeyCustodyError::BackendUnavailable(format!(
+                            "scan took longer than {SCAN_CALL_DEADLINE:?}"
+                        )))),
+                    };
+                    (tenant_id, result)
+                },
+                span,
+            )
         })
         .buffered(SCAN_CONCURRENCY)
         .collect()

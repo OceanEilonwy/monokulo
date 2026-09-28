@@ -2,19 +2,24 @@
 //!
 //! ```json
 //! {"timestamp":"2026-09-28T12:00:00.123456Z","level":"WARN","service":"scanner","target":"scanner::loops",
-//!  "message":"scan tick failed","attributes":{"network":"Stagenet","error":"timeout"},"spans":["network loop"]}
+//!  "trace_id":"4bf92f3577b34da6a3ce929d0e0e4736","span_id":"00f067aa0ba902b7","message":"scan tick failed","attributes":{"network":"Stagenet","error":"timeout"},"spans":["network loop"]}
 //! ```
+//!
+//! `trace_id` and `span_id` (the OpenTelemetry log record's own fields) are
+//! there when the line was written inside a span that has them.
 //!
 //! `attributes` holds the fields of every span the event is in, outermost
 //! first, then the event's own; a field set closer to the event wins. Every
 //! value goes through [`crate::redact`].
 
 use std::io::Write;
+use std::sync::OnceLock;
 
 use serde_json::{Map, Value};
 use tracing::field::{Field, Visit};
 use tracing::span::{Attributes, Id, Record};
-use tracing::{Event, Subscriber};
+use tracing::dispatcher::WeakDispatch;
+use tracing::{Dispatch, Event, Subscriber};
 use tracing_subscriber::fmt::MakeWriter;
 use tracing_subscriber::layer::Context;
 use tracing_subscriber::registry::LookupSpan;
@@ -25,11 +30,48 @@ use crate::redact;
 pub(crate) struct JsonLayer<W> {
     service: &'static str,
     make_writer: W,
+    dispatch: SpanIds,
 }
 
 impl<W> JsonLayer<W> {
     pub(crate) fn new(service: &'static str, make_writer: W) -> Self {
-        JsonLayer { service, make_writer }
+        JsonLayer { service, make_writer, dispatch: SpanIds::default() }
+    }
+}
+
+/// Finds a span's trace and span ids through the subscriber this layer is
+/// part of. (`tracing_opentelemetry::get_otel_context` needs the
+/// `Dispatch`, and `tracing::dispatcher::get_default` returns none while an
+/// event is being dispatched.)
+#[derive(Default)]
+pub(crate) struct SpanIds(OnceLock<WeakDispatch>);
+
+impl SpanIds {
+    pub(crate) fn register(&self, dispatch: &Dispatch) {
+        let _ = self.0.set(dispatch.downgrade());
+    }
+
+    /// The ids of the innermost span around `event` that has them. The
+    /// spans are looked up in the registry itself, not through this
+    /// layer's context, because the level filter hides spans from this
+    /// layer that still carry ids (an `info` request span at level `warn`).
+    pub(crate) fn find(&self, event: &Event<'_>) -> Option<(String, String)> {
+        use opentelemetry::trace::TraceContextExt;
+        let dispatch = self.0.get()?.upgrade()?;
+        let start = match event.parent() {
+            Some(parent) => parent.clone(),
+            None if event.is_contextual() => dispatch.current_span().id()?.clone(),
+            None => return None,
+        };
+        let registry = dispatch.downcast_ref::<tracing_subscriber::Registry>()?;
+        // Collected first: the lookup below borrows each span's extensions.
+        let spans: Vec<Id> = registry.span(&start)?.scope().map(|span| span.id()).collect();
+        spans.iter().find_map(|id| {
+            let context = tracing_opentelemetry::get_otel_context(id, &dispatch)?;
+            let span = context.span();
+            let ids = span.span_context();
+            ids.is_valid().then(|| (ids.trace_id().to_string(), ids.span_id().to_string()))
+        })
     }
 }
 
@@ -98,6 +140,10 @@ where
     S: Subscriber + for<'a> LookupSpan<'a>,
     W: for<'w> MakeWriter<'w> + 'static,
 {
+    fn on_register_dispatch(&self, dispatch: &Dispatch) {
+        self.dispatch.register(dispatch);
+    }
+
     fn on_new_span(&self, attrs: &Attributes<'_>, id: &Id, ctx: Context<'_, S>) {
         let mut visitor = JsonVisitor::default();
         attrs.record(&mut visitor);
@@ -118,6 +164,8 @@ where
     }
 
     fn on_event(&self, event: &Event<'_>, ctx: Context<'_, S>) {
+        // Before any extensions are borrowed below: the lookup takes them.
+        let ids = self.dispatch.find(event);
         let mut attributes = Map::new();
         let mut spans = Vec::new();
         if let Some(scope) = ctx.event_scope(event) {
@@ -146,6 +194,10 @@ where
         push("level", &Value::String(metadata.level().to_string()));
         push("service", &Value::String(self.service.to_string()));
         push("target", &Value::String(metadata.target().to_string()));
+        if let Some((trace_id, span_id)) = ids {
+            push("trace_id", &Value::String(trace_id));
+            push("span_id", &Value::String(span_id));
+        }
         push("message", &Value::String(visitor.message.unwrap_or_default()));
         push("attributes", &Value::Object(attributes));
         if !spans.is_empty() {

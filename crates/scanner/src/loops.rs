@@ -11,6 +11,7 @@ use std::time::Duration;
 use monero::Network;
 use parking_lot::RwLock;
 use shared::supervise::supervise_until;
+use tracing::Instrument;
 
 use crate::engine_settings::{Daemons, EngineSettings};
 use crate::http::now_unix;
@@ -182,6 +183,10 @@ pub async fn run_scanner_loop(
     // lost-state epoch of the key-custody backend, not once per network.
     static HANDLED_CUSTODY_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
     loop {
+        // `debug`: a tick runs every few seconds, too often for a span at
+        // `info` (each would become a stored trace). Lines inside carry
+        // `network` themselves.
+        let tick = tracing::debug_span!("scan tick", network = ?network);
         let scan = settings.scan.load();
         let Some(daemon) = daemons.get(network) else {
             // Being stopped: the node setting was just cleared.
@@ -203,6 +208,7 @@ pub async fn run_scanner_loop(
                 Some(&HANDLED_CUSTODY_EPOCH),
                 network_str(network),
             )
+            .instrument(tick.clone())
             .await;
             registrations_failed = failed > 0;
             if registered > 0 {
@@ -227,7 +233,8 @@ pub async fn run_scanner_loop(
                 scan.reorg_check_depth,
                 scan.expired_order_grace_period_seconds,
                 scan.scan_chunk_memory_budget_mb,
-            ),
+            )
+            .instrument(tick.clone()),
         )
         .await
         {

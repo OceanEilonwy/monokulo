@@ -70,6 +70,21 @@ pub enum KeyCustodyRequest {
     ScanTxOutputsForIndices(ScanTxOutputsForIndicesRequest),
 }
 
+impl KeyCustodyRequest {
+    /// The request's kind, for logs (never its contents).
+    pub fn name(&self) -> &'static str {
+        match self {
+            KeyCustodyRequest::RegisterWallet(_) => "register_wallet",
+            KeyCustodyRequest::RemoveWallet(_) => "remove_wallet",
+            KeyCustodyRequest::Seal(_) => "seal",
+            KeyCustodyRequest::UnsealAndRegister(_) => "unseal_and_register",
+            KeyCustodyRequest::DeriveSubaddress(_) => "derive_subaddress",
+            KeyCustodyRequest::ScanTxOutputs(_) => "scan_tx_outputs",
+            KeyCustodyRequest::ScanTxOutputsForIndices(_) => "scan_tx_outputs_for_indices",
+        }
+    }
+}
+
 /// The matching response envelope. Each variant is already a `Result<TWire,
 /// KeyCustodyErrorWire>` (the `{Name}Response` type aliases from `lib.rs`) - a
 /// *successful* dispatch of a well-formed request always produces the variant

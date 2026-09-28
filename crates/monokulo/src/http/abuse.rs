@@ -80,7 +80,11 @@ pub fn anonymous_identity(extensions: &Extensions, headers: &HeaderMap, trusted:
     }
     let ConnectInfo(peer) = extensions.get::<ConnectInfo<SocketAddr>>()?;
     let forwarded_for = headers.get("x-forwarded-for").and_then(|value| value.to_str().ok());
-    Some(ClientIdentity::from_address(identity::client_address(peer.ip(), forwarded_for, trusted)))
+    let address = identity::client_address(peer.ip(), forwarded_for, trusted);
+    // The request span recorded the connecting peer; behind a trusted proxy
+    // this is the real client (truncated to its network when written out).
+    tracing::Span::current().record("client.address", address.to_string());
+    Some(ClientIdentity::from_address(address))
 }
 
 fn pay_route_class(method: &Method, path: &str) -> RouteClass {

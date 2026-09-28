@@ -1117,3 +1117,33 @@ async fn a_status_cached_from_the_old_engine_is_not_shown_after_the_engine_url_c
     state.engine_client.retarget("http://127.0.0.1:2", 1024);
     assert!(crate::http::status_page::known_unserved(&state).is_empty(), "the old engine's status is gone");
 }
+
+#[tokio::test]
+async fn browser_reports_are_accepted_up_to_a_small_size_and_only_the_sites_own_pages_send_them() {
+    let router = test_router();
+    let report = |body: String| {
+        Request::builder()
+            .method("POST")
+            .uri("/telemetry/client")
+            .header("content-type", "application/json")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let small = r#"{"kind":"error","message":"x is undefined","page":"/dashboard"}"#.to_string();
+    assert_eq!(router.clone().oneshot(report(small)).await.unwrap().status(), StatusCode::NO_CONTENT);
+    let big = format!(r#"{{"kind":"error","message":"{}"}}"#, "x".repeat(20_000));
+    assert_eq!(router.clone().oneshot(report(big)).await.unwrap().status(), StatusCode::PAYLOAD_TOO_LARGE);
+
+    let script = router
+        .clone()
+        .oneshot(Request::builder().uri("/static/telemetry.js").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+    assert_eq!(script.status(), StatusCode::OK);
+
+    let chrome = crate::views::PageChrome::from_user(None, "/");
+    let page = crate::views::layout(&chrome, "t", maud::html! {}).into_string();
+    assert!(page.contains(r#"src="/static/telemetry.js""#), "{page}");
+    let bare = crate::views::layout_bare(&chrome, "t", maud::html! {}).into_string();
+    assert!(!bare.contains("telemetry.js"), "not on the checkout, challenge or POS pages: {bare}");
+}

@@ -192,6 +192,11 @@ class ProcessPaymentTest extends WP_UnitTestCase {
 			$this->captured_request['args']['headers']['Authorization'],
 			'Orders are created with the store\'s secret key, so Monokulo knows they come from the shop\'s server.'
 		);
+		$this->assertMatchesRegularExpression(
+			'/^00-' . WC_Gateway_Monokulo::trace_id() . '-[0-9a-f]{16}-01$/',
+			$this->captured_request['args']['headers']['traceparent'],
+			'The call carries this request\'s trace, so Monokulo\'s logs for it can be found from the plugin\'s.'
+		);
 
 		$sent_body = json_decode( $this->captured_request['args']['body'], true );
 		$this->assertIsArray( $sent_body, 'Request body should be valid JSON.' );

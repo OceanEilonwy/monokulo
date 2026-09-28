@@ -68,7 +68,7 @@ impl EngineTarget {
         EngineTarget {
             base_url,
             max_cache_bytes,
-            http: shared::http_cache::build_client(concat!("monokulo/", env!("CARGO_PKG_VERSION")), max_cache_bytes),
+            http: shared::http_cache::build_traced_client(concat!("monokulo/", env!("CARGO_PKG_VERSION")), max_cache_bytes),
             live: Default::default(),
         }
     }

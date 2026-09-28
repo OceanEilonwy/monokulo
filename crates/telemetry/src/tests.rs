@@ -8,7 +8,7 @@ use super::*;
 
 /// Everything the subscriber wrote, shared with the test.
 #[derive(Clone, Default)]
-struct Capture(Arc<Mutex<Vec<u8>>>);
+pub(crate) struct Capture(Arc<Mutex<Vec<u8>>>);
 
 impl Write for Capture {
     fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
@@ -21,11 +21,11 @@ impl Write for Capture {
 }
 
 impl Capture {
-    fn text(&self) -> String {
+    pub(crate) fn text(&self) -> String {
         String::from_utf8(self.0.lock().clone()).unwrap()
     }
 
-    fn json_lines(&self) -> Vec<Value> {
+    pub(crate) fn json_lines(&self) -> Vec<Value> {
         self.text().lines().map(|l| serde_json::from_str(l).unwrap()).collect()
     }
 
@@ -34,7 +34,7 @@ impl Capture {
     }
 }
 
-fn subscriber(format: Format, level: &str) -> (Arc<Telemetry>, Capture, tracing::subscriber::DefaultGuard) {
+pub(crate) fn subscriber(format: Format, level: &str) -> (Arc<Telemetry>, Capture, tracing::subscriber::DefaultGuard) {
     let capture = Capture::default();
     let writer = capture.clone();
     let (telemetry, subscriber) = build("scanner", format, false, level, move || writer.clone());
@@ -254,5 +254,62 @@ mod through_settings {
         registry.save(vec![("logging.level".to_string(), Some("debug,hyper=warn".to_string()))]).await.unwrap();
         assert_eq!(telemetry.status().config.level, "debug,hyper=warn");
         assert_eq!(telemetry.status().effective_filter, "debug,hyper=warn");
+    }
+}
+
+#[test]
+fn lines_inside_a_span_carry_its_trace_and_span_ids_even_when_the_span_is_not_logged() {
+    let (_telemetry, capture, _guard) = subscriber(Format::Json, "warn");
+    let request = tracing::info_span!("HTTP request");
+    let (trace_id, span_id) = {
+        let context = trace::span_context(&request).expect("an info span has ids at level warn");
+        (context.trace_id().to_string(), context.span_id().to_string())
+    };
+    let child = request.in_scope(|| tracing::info_span!("engine call"));
+    child.in_scope(|| tracing::warn!("slow"));
+    request.in_scope(|| tracing::warn!("done"));
+    tracing::warn!("outside");
+
+    let lines = capture.json_lines();
+    assert_eq!(lines.len(), 3, "{}", capture.text());
+    assert_eq!(lines[0]["trace_id"], trace_id.as_str());
+    assert_ne!(lines[0]["span_id"], span_id.as_str(), "the child span has its own id");
+    assert_eq!(lines[1]["trace_id"], trace_id.as_str());
+    assert_eq!(lines[1]["span_id"], span_id.as_str());
+    assert!(lines[2].get("trace_id").is_none());
+    let text = capture.text();
+    assert!(text.find("\"target\"").unwrap() < text.find("\"trace_id\"").unwrap());
+    assert!(text.find("\"trace_id\"").unwrap() < text.find("\"message\"").unwrap());
+}
+
+#[test]
+fn a_span_with_a_remote_parent_joins_the_callers_trace() {
+    let (_telemetry, _capture, _guard) = subscriber(Format::Json, "info");
+    let incoming = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    let request = tracing::info_span!("HTTP request");
+    assert!(trace::set_remote_parent(&request, incoming));
+    let outgoing = trace::traceparent(&request).unwrap();
+    assert!(outgoing.starts_with("00-4bf92f3577b34da6a3ce929d0e0e4736-"), "{outgoing}");
+    assert!(!outgoing.contains("00f067aa0ba902b7"), "our own span id, not the caller's: {outgoing}");
+    assert_eq!(request.in_scope(trace::current_trace_id).as_deref(), Some("4bf92f3577b34da6a3ce929d0e0e4736"));
+}
+
+#[test]
+fn traceparent_values_are_checked() {
+    let good = "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01";
+    let parsed = trace::parse_traceparent(good).unwrap();
+    assert_eq!(trace::format_traceparent(&parsed), good);
+    assert!(trace::parse_traceparent("01-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-00-extra").is_some());
+    for bad in [
+        "",
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7",
+        "00-00000000000000000000000000000000-00f067aa0ba902b7-01",
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-0000000000000000-01",
+        "ff-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01",
+        "00-4BF92F3577B34DA6A3CE929D0E0E4736-00f067aa0ba902b7-01",
+        "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01-extra",
+        "00-4bf92f3577b34da6a3ce929d0e0e473-00f067aa0ba902b7-01",
+    ] {
+        assert!(trace::parse_traceparent(bad).is_none(), "{bad}");
     }
 }

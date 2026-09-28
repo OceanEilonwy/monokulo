@@ -170,6 +170,17 @@ fn page_shell(chrome: &PageChrome, title: &str, viewport: &str, extra_head: Opti
                 meta name="viewport" content=(viewport);
                 title { (title) }
                 (PreEscaped(HEAD_PARTIAL))
+                // The trace of the request that rendered this page, so
+                // browser reports join it (structured_logging.md 2.5).
+                @if let Some(traceparent) = telemetry::trace::current_traceparent() {
+                    meta name="traceparent" content=(traceparent);
+                }
+                // Browser problem reports on the site's own pages only: not
+                // the checkout embed (privacy on a payment page, D8), the
+                // challenge page or the POS app, which render without nav.
+                @if nav.is_some() {
+                    script src="/static/telemetry.js" defer {}
+                }
                 @if let Some(extra_head) = extra_head {
                     (extra_head)
                 }

@@ -26,27 +26,25 @@ because it builds on the `live-settings` crate from that work).
 | 1.2 move log calls to `tracing` | done for server code | ace9ab7 | see "What was left on println/eprintln" |
 | 1.3 level and dev mode as live settings | done | ace9ab7, and the commit "development logging chosen by the hour" | admin page: "Logging" heading in both halves; `logging.dev_mode_until` is a select (Off / 1 / 4 / 24 hours / "On until <time> UTC") |
 | 1.4 redaction | done | ace9ab7 | `crates/telemetry/src/redact.rs` |
-| 2.x onwards | not started | | |
+| 2.1 HTTP spans | done | "request spans and trace propagation" | `telemetry::http::server` middleware, outermost on both routers |
+| 2.2 background spans | done | same | webhook attempts (`info`), scan ticks, per-store scans, key-custody calls (`debug`) |
+| 2.3 propagation | done | same | `tracing-opentelemetry`; `traceparent` monokulo to engine (`shared::http_cache::build_traced_client`) and engine to merchant webhooks; `trace_id`/`span_id` on JSON lines |
+| 2.4 PHP plugin | done except error forwarding | same | `traceparent` on both `wp_remote_post` calls, adopted from incoming webhooks, trace id on every log line. "Forward errors to monokulo" waits for part 3's store |
+| 2.5 browser | done except checkout toggle | same | `static/telemetry.js`, `POST /telemetry/client`, `<meta name="traceparent">`. Only on pages with nav; the checkout toggle comes with part 8 |
+| 3.x onwards | not started | | |
 
 ### Next
 
-Part 2, spans and trace propagation:
+Part 3, the local log store: see the plan. Notes for it:
 
-- 2.1: `tower-http` `TraceLayer` (needs the `trace` and `request-id`
-  features on the existing `tower-http` dependency in both
-  `crates/monokulo` and `crates/scanner`) on both routers, fields from OTel
-  HTTP conventions. Watch the monokulo router: `http::abuse` reads the peer
-  address from `ConnectInfo`; log it as `client.address` so redaction
-  applies.
-- 2.2: spans around scanner ticks (`loops.rs`), per-store scans
-  (`scanner.rs`), webhook delivery attempts (`webhook_delivery.rs`), rescan
-  jobs and key-custody calls. Many events inside them already carry
-  `network`/`store.id` directly; once spans carry them, those fields can be
-  dropped from the events.
-- 2.3: `tracing-opentelemetry` + `opentelemetry` for trace ids, and W3C
-  `traceparent` on `engine_client.rs` requests and on webhooks. The JSON
-  layer should then add `trace_id` and `span_id` to each line (read from the
-  OTel context in the span extensions).
+- Spans already come out of `tracing-opentelemetry` into an
+  `opentelemetry_sdk` tracer provider built in `telemetry::build` with no
+  processors. The SQLite span exporter is a `SpanProcessor`/`SpanExporter`
+  added to that builder.
+- Log lines: the store should be a `tracing` layer beside the JSON layer
+  (sharing its per-layer level filter, e.g. `json.and_then(store)` under
+  one `with_filter`), reusing `json::JsonVisitor` and `json::SpanIds` so
+  redaction and trace ids are identical.
 
 ## Decisions and deviations from the plan
 
@@ -93,6 +91,37 @@ Part 2, spans and trace propagation:
   every existing `EngineSettings::load*` / `MonokuloSettings::load` call
   site unchanged.
 
+- **Trace ids come from `tracing-opentelemetry`**, with an SDK tracer
+  provider that has no exporter yet. Its layer sees spans at `info` and
+  above only, and never events; the output layer has the level filter as a
+  per-layer filter. So an `info` request span has ids even at level
+  `warn`. Hot-path spans (scan ticks, per-store scans, key-custody calls)
+  are `debug`, so they never become stored traces and cost nothing at
+  `info`.
+- **The JSON layer looks up ids through the registry**, not its own
+  layer context, because the level filter hides spans from that context
+  (`json::SpanIds`, using the `Dispatch` saved in `on_register_dispatch`;
+  `dispatcher::get_default` returns none inside an event).
+- **No `tower-http` `TraceLayer`/`SetRequestIdLayer`.** One small axum
+  middleware (`telemetry::http::server`, feature `axum`) does the span,
+  the `traceparent` join and the finishing line. The request id is the
+  trace id, returned in a W3C `traceresponse` header. `url.path` never
+  includes the query string. Static files log at `debug`, 5xx at `warn`.
+- **`client.address`**: the middleware records the TCP peer; monokulo's
+  `http::abuse::anonymous_identity` records the real client over it when
+  behind a trusted proxy. Onion clients have none.
+- **Only calls to our own services carry `traceparent`**: monokulo to the
+  engine, and engine webhooks (the merchant is our counterpart). Exchange
+  rate APIs and other third parties don't.
+- **Browser reports** are always `warn`, carry `browser.kind`, `url.path`,
+  `detail`, and sit in a `browser report` span with `source = "browser"`
+  that joins the page's trace. (`tracing::warn!(target: "browser", ...)`
+  with dotted field names doesn't parse, so there is no `browser` target.)
+- **PHP**: one trace per PHP request (a static on the gateway class);
+  `traceparent` gets a new span id per call; the trace id is appended to
+  each log message as `[trace <id>]`, because WooCommerce's file handler
+  drops the context array.
+
 ## What was left on println/eprintln, on purpose
 
 - CLI output meant for the person at the terminal: the engine's one-off
@@ -106,6 +135,23 @@ Part 2, spans and trace propagation:
   `xtask`, and `println!` inside tests.
 
 ## Things to know
+
+- **Tests that assert on log lines need their own test binary with one
+  global subscriber** (see `crates/scanner/tests/tracing.rs`). A
+  thread-local `set_default` subscriber in the lib test binary loses lines
+  at random: other tests on other threads hit the same callsites with no
+  subscriber, and tracing's callsite interest cache races with them
+  (`rebuild_interest_cache` doesn't fix it). The telemetry crate's own
+  tests are fine because nothing else there logs through their callsites.
+- **Running the PHP tests**: the wp-env containers mount another
+  worktree's plugin directory. Copy this one in and run phpunit there:
+  `docker exec C rm -rf /tmp/mk; docker exec C mkdir /tmp/mk; tar
+  --exclude=vendor -cf - -C plugins/woocommerce . | docker exec -i C tar
+  -xf - -C /tmp/mk; docker exec -w /tmp/mk C sh -c 'ln -s
+  /var/www/html/wp-content/plugins/monokulo/vendor vendor;
+  WP_TESTS_DIR=/wordpress-phpunit vendor/bin/phpunit'` with
+  `C=wp-env-woocommerce-coverage-81799d41-tests-cli-1` (or whichever
+  `*-tests-cli-1` container is running).
 
 - Nothing in the repo parses the servers' stdout: the Playwright
   real-binaries setup waits by polling HTTP and the socket, so moving the

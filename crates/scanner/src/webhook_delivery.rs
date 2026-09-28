@@ -172,6 +172,12 @@ pub async fn attempt_delivery(
         .header("X-Monokulo-Event-Id", event_id_of(delivery))
         .header("Content-Type", "application/json")
         .body(delivery.payload_json.clone());
+    // Our trace, so a merchant who logs it can match their side to ours
+    // (structured_logging.md 2.3). Set before the merchant's own extra
+    // headers, which win.
+    if let Some(traceparent) = telemetry::trace::current_traceparent() {
+        request = request.header(telemetry::trace::TRACEPARENT, traceparent);
+    }
 
     if let Value::Object(map) = extra_headers {
         for (k, v) in map {
@@ -191,6 +197,18 @@ pub async fn attempt_delivery(
             }
         }
         Err(e) => DeliveryOutcome { delivered: false, response_status: None, error: Some(e.to_string()) },
+    }
+}
+
+/// One line per attempt, inside its `webhook delivery` span.
+fn log_outcome(delivery: &DueDelivery, outcome: &DeliveryOutcome, max_attempts: u32) {
+    let status = outcome.response_status;
+    if outcome.delivered {
+        tracing::info!(http.response.status_code = status, "webhook delivered");
+    } else if delivery.attempt_count + 1 >= max_attempts {
+        tracing::warn!(http.response.status_code = status, error = outcome.error.as_deref(), "webhook delivery failed; no more attempts");
+    } else {
+        tracing::info!(http.response.status_code = status, error = outcome.error.as_deref(), "webhook delivery failed; will retry");
     }
 }
 
@@ -245,10 +263,24 @@ pub async fn run_delivery_tick(
     let started = std::time::Instant::now();
 
     let outcomes: Vec<(DueDelivery, DeliveryOutcome, i64)> = stream::iter(due)
-        .map(|delivery| async move {
-            let outcome = attempt_delivery(client, &delivery, allow_private, timeout).await;
-            let attempted_at = now + started.elapsed().as_secs() as i64;
-            (delivery, outcome, attempted_at)
+        .map(|delivery| {
+            let span = tracing::info_span!(
+                "webhook delivery",
+                otel.kind = "client",
+                webhook.id = %delivery.webhook_id,
+                order.id = %delivery.order_id,
+                webhook.event = %delivery.event_type,
+                attempt = delivery.attempt_count + 1,
+            );
+            tracing::Instrument::instrument(
+                async move {
+                    let outcome = attempt_delivery(client, &delivery, allow_private, timeout).await;
+                    let attempted_at = now + started.elapsed().as_secs() as i64;
+                    log_outcome(&delivery, &outcome, max_attempts);
+                    (delivery, outcome, attempted_at)
+                },
+                span,
+            )
         })
         .buffer_unordered(DELIVERY_CONCURRENCY)
         .collect()

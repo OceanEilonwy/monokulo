@@ -182,6 +182,7 @@ impl SocketKeyCustody {
     /// an idle open one if there is one, else a closed slot (opened now), else
     /// the first to come free. A transport failure closes that connection
     /// only.
+    #[tracing::instrument(level = "debug", name = "key custody call", skip_all, fields(custody.request = request.name()))]
     async fn call(&self, request: KeyCustodyRequest) -> Result<KeyCustodyResponse, KeyCustodyError> {
         let mut guard = self.acquire().await;
         if guard.is_none() {

@@ -11,7 +11,10 @@
 //!   container runtimes collect) or as readable text ([`Format::Pretty`],
 //!   the default at a terminal);
 //! - redaction of secrets, client addresses and Monero addresses in every
-//!   format ([`redact`]).
+//!   format ([`redact`]);
+//! - OpenTelemetry trace and span ids on every span at `info` or above,
+//!   whatever the level filter says, and on every line written inside one
+//!   ([`trace`]).
 //!
 //! Development mode is a time limit, not a switch: `logging.dev_mode_until`
 //! holds a Unix time, and until then the filter logs at `debug`. It ends by
@@ -20,8 +23,11 @@
 
 #![cfg_attr(not(test), deny(clippy::unwrap_used, clippy::expect_used))]
 
+#[cfg(feature = "axum")]
+pub mod http;
 mod json;
 pub mod redact;
+pub mod trace;
 
 use std::io::IsTerminal;
 use std::marker::PhantomData;
@@ -34,7 +40,9 @@ use parking_lot::Mutex;
 use tracing::Subscriber;
 use tracing_subscriber::field::MakeExt;
 use tracing_subscriber::fmt::MakeWriter;
-use tracing_subscriber::layer::{Layered, SubscriberExt};
+use opentelemetry::trace::TracerProvider as _;
+use tracing_subscriber::filter::filter_fn;
+use tracing_subscriber::layer::SubscriberExt;
 use tracing_subscriber::util::SubscriberInitExt;
 use tracing_subscriber::{reload, EnvFilter, Layer, Registry};
 
@@ -126,8 +134,7 @@ pub fn format_unix_utc(unix: u64) -> String {
     format!("{:04}-{:02}-{:02} {:02}:{:02} UTC", at.year(), u8::from(at.month()), at.day(), at.hour(), at.minute())
 }
 
-type Base = Layered<reload::Layer<EnvFilter, Registry>, Registry>;
-type Output = Box<dyn Layer<Base> + Send + Sync>;
+type Output = Box<dyn Layer<Registry> + Send + Sync>;
 
 /// What is in effect right now, for the admin page.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -194,7 +201,7 @@ where
     W: for<'w> MakeWriter<'w> + Send + Sync + 'static,
 {
     let filter = EnvFilter::builder().parse(level).unwrap_or_else(|_| EnvFilter::new(DEFAULT_LEVEL));
-    let (filter_layer, filter_handle) = reload::Layer::new(filter);
+    let (filter, filter_handle) = reload::Layer::new(filter);
     let output: Output = match format {
         Format::Json => Box::new(json::JsonLayer::new(service, writer)),
         Format::Pretty => Box::new(
@@ -204,7 +211,17 @@ where
                 .fmt_fields(tracing_subscriber::fmt::format::debug_fn(pretty_field).delimited(" ")),
         ),
     };
-    let subscriber = Registry::default().with(filter_layer).with(output);
+    // The level filter applies to what is written out, not to span
+    // creation, so trace ids exist even when a request's lines are
+    // filtered out. OpenTelemetry sees spans at `info` and above, never
+    // events (those are the log lines).
+    let tracer = opentelemetry_sdk::trace::SdkTracerProvider::builder().build().tracer(service);
+    let otel = tracing_opentelemetry::layer()
+        .with_tracer(tracer)
+        .with_location(false)
+        .with_threads(false)
+        .with_filter(filter_fn(|metadata| metadata.is_span() && *metadata.level() <= tracing::Level::INFO));
+    let subscriber = Registry::default().with(output.with_filter(filter)).with(otel);
     let telemetry = Telemetry {
         service,
         filter: filter_handle,

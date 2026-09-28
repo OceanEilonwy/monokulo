@@ -60,6 +60,7 @@ mod orders;
 mod pay;
 mod pos;
 mod signup;
+mod telemetry_client;
 pub mod embed_domains;
 pub mod status_page;
 pub mod store_key;
@@ -201,7 +202,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/stores/{id}/orders/lookup", axum::routing::post(orders::lookup_payment))
         .route("/dashboard/stores/{id}/orders/{order_id}", axum::routing::get(orders::order_detail))
         .route("/connect/{platform}", axum::routing::get(connect::start).post(connect::confirm_submit))
-        .route("/connect/{platform}/finish", post(connect::finish));
+        .route("/connect/{platform}/finish", post(connect::finish))
+        .route(
+            "/telemetry/client",
+            post(telemetry_client::client_report)
+                .layer(axum::extract::DefaultBodyLimit::max(telemetry_client::MAX_BODY_BYTES)),
+        );
 
     // `POST /pay/{pk}/orders` (`docs/fx_refactor.md` Phase 1.4) is
     // monokulo's first genuinely public, unauthenticated,
@@ -247,6 +253,7 @@ pub fn build_router(state: AppState) -> Router {
     let router = router.route("/static/pos-app.js", axum::routing::get(pay::pos_script));
     let router = router.route("/static/pos-app.css", axum::routing::get(pay::pos_style));
     let router = router.route("/static/jsQR.js", axum::routing::get(pay::qr_decoder_script));
+    let router = router.route("/static/telemetry.js", axum::routing::get(pay::telemetry_script));
     let router = router.route("/static/logo.svg", axum::routing::get(pay::logo_svg));
     let router = router.route("/static/logo-inverted.svg", axum::routing::get(pay::logo_inverted_svg));
     let router = router.route("/static/favicon.svg", axum::routing::get(pay::favicon_svg));
@@ -260,7 +267,9 @@ pub fn build_router(state: AppState) -> Router {
     #[cfg(test)]
     let router = router.route("/_test/whoami", axum::routing::get(test_whoami));
 
-    router.with_state(state)
+    // Outermost, so every line from the middleware above (abuse, embed
+    // policy) carries the request's span (structured_logging.md 2.1).
+    router.layer(middleware::from_fn(telemetry::http::server)).with_state(state)
 }
 
 /// Resolves a session token to the user that session belongs to - either

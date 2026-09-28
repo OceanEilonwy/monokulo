@@ -125,10 +125,12 @@ including development mode:
 
 #### 2.1 HTTP spans
 
-`tower-http` `TraceLayer` on both axum routers, with `SetRequestIdLayer` and
-`PropagateRequestIdLayer`. Span fields use the OTel HTTP conventions. The
-request id is the `trace_id` when a `traceparent` arrives, otherwise a new
-one.
+A small axum middleware, `telemetry::http::server`, outermost on both
+routers (built instead of `tower-http`'s `TraceLayer`, which would have
+needed the same custom span and finishing code). Span fields use the OTel
+HTTP conventions. The request id is the `trace_id`: the caller's when a
+`traceparent` arrives, otherwise a new one, returned in a `traceresponse`
+header.
 
 #### 2.2 Background work
 

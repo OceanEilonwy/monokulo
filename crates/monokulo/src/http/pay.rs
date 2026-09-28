@@ -222,6 +222,11 @@ pub async fn challenge_script() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/challenge.js"))
 }
 
+/// `GET /static/telemetry.js` - browser problem reports (`http::telemetry_client`).
+pub async fn telemetry_script() -> impl IntoResponse {
+    ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/telemetry.js"))
+}
+
 pub async fn qr_decoder_script() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "text/javascript; charset=utf-8")], include_str!("../../static/jsQR.js"))
 }

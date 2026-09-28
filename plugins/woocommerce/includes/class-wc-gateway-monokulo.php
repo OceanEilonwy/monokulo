@@ -225,6 +225,18 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	private $webhook_signing_secret;
 
 	/**
+	 * The trace this PHP request belongs to (32 lowercase hex characters,
+	 * W3C Trace Context), shared by every gateway instance in the request.
+	 * Sent to Monokulo as a `traceparent` header on every call, so
+	 * Monokulo's own logs for the call land in the same trace, and written
+	 * on every plugin log line, so the two can be matched. An incoming
+	 * webhook adopts the engine's trace instead. `null` until first used.
+	 *
+	 * @var string|null
+	 */
+	private static $trace_id = null;
+
+	/**
 	 * Sets up the gateway's identity and settings fields.
 	 *
 	 * WooCommerce instantiates every class registered via the
@@ -748,6 +760,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 				'headers' => array(
 					'Content-Type'  => 'application/json',
 					'Authorization' => 'Bearer ' . $this->secret_token,
+					'traceparent'   => self::traceparent(),
 				),
 				'body'    => wp_json_encode( $body ),
 				// An ordinary HTTP round trip (Monokulo prices the order and
@@ -1294,7 +1307,10 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$response = wp_remote_post(
 			$url,
 			array(
-				'headers' => array( 'Content-Type' => 'application/json' ),
+				'headers' => array(
+					'Content-Type' => 'application/json',
+					'traceparent'  => self::traceparent(),
+				),
 				'body'    => wp_json_encode(
 					array(
 						'token'       => $token,
@@ -1411,6 +1427,9 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 		$signature = isset( $_SERVER[ self::WEBHOOK_SIGNATURE_SERVER_KEY ] )
 			? (string) wp_unslash( $_SERVER[ self::WEBHOOK_SIGNATURE_SERVER_KEY ] ) // phpcs:ignore WordPress.Security.NonceVerification.Recommended, WordPress.Security.ValidatedSanitizedInput.MissingUnslash
 			: '';
+		// The engine sends the delivery attempt's trace; the lines this
+		// webhook logs join it.
+		self::adopt_traceparent( isset( $_SERVER['HTTP_TRACEPARENT'] ) ? (string) wp_unslash( $_SERVER['HTTP_TRACEPARENT'] ) : '' ); // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized -- checked against a strict pattern.
 
 		status_header( $this->process_webhook_request( $raw_body, $signature ) );
 		exit;
@@ -1989,6 +2008,47 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	}
 
 	/**
+	 * This PHP request's trace id, made up on first use.
+	 *
+	 * @return string 32 lowercase hex characters.
+	 */
+	public static function trace_id() {
+		if ( null === self::$trace_id ) {
+			self::$trace_id = bin2hex( random_bytes( 16 ) );
+		}
+		return self::$trace_id;
+	}
+
+	/**
+	 * Joins the trace named by an incoming `traceparent` header (version 00
+	 * only, the one this plugin also sends). Anything else is ignored and
+	 * the request keeps its own trace.
+	 *
+	 * @param string $traceparent The header value, `''` if absent.
+	 * @return bool Whether the trace was adopted.
+	 */
+	public static function adopt_traceparent( $traceparent ) {
+		if ( ! preg_match( '/^00-([0-9a-f]{32})-([0-9a-f]{16})-[0-9a-f]{2}$/D', trim( (string) $traceparent ), $parts ) ) {
+			return false;
+		}
+		if ( str_repeat( '0', 32 ) === $parts[1] || str_repeat( '0', 16 ) === $parts[2] ) {
+			return false;
+		}
+		self::$trace_id = $parts[1];
+		return true;
+	}
+
+	/**
+	 * A `traceparent` header value for one outgoing call: this request's
+	 * trace, a new span id for the call, sampled.
+	 *
+	 * @return string
+	 */
+	public static function traceparent() {
+		return '00-' . self::trace_id() . '-' . bin2hex( random_bytes( 8 ) ) . '-01';
+	}
+
+	/**
 	 * Thin wrapper around `wc_get_logger()` - guarded by `function_exists()`
 	 * only for the same reason the rest of this class never fatals outside a
 	 * real WooCommerce context, not because a live WooCommerce install (the
@@ -2001,7 +2061,17 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 */
 	private function log( $message, $level = 'info' ) {
 		if ( function_exists( 'wc_get_logger' ) ) {
-			wc_get_logger()->log( $level, $message, array( 'source' => 'monokulo' ) );
+			// The trace id goes in the message too: WooCommerce's file log
+			// handler writes only the message, not the context.
+			$trace_id = self::trace_id();
+			wc_get_logger()->log(
+				$level,
+				$message . ' [trace ' . $trace_id . ']',
+				array(
+					'source'   => 'monokulo',
+					'trace_id' => $trace_id,
+				)
+			);
 		}
 	}
 }
