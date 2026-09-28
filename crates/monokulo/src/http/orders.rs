@@ -322,7 +322,7 @@ async fn order_detail_data(
                 },
                 None => "—".to_string(),
             };
-            let from_pos = matches!(state.db.lock().get_pos_order(&row.id, &order_id), Ok(Some(_)));
+            let from_pos = matches!(state.db.lock().get_pos_order(&row.id, order_id), Ok(Some(_)));
             Ok(Some(OrderDetailData {
                 from_pos,
                 order_id: detail.order.order_id,
