@@ -15,7 +15,7 @@ type Order = {
   received_xmr?: string; remaining_xmr?: string;
   refund_address?: string | null; qr_svg?: string;
 };
-type StatusEvent = Pick<Order, 'order_id' | 'status' | 'confirmations' | 'confirmations_required' | 'error' | 'updated_at' | 'received_xmr' | 'remaining_xmr'> & { is_terminal: boolean };
+type StatusEvent = Pick<Order, 'order_id' | 'status' | 'confirmations' | 'confirmations_required' | 'error' | 'updated_at' | 'received_xmr' | 'remaining_xmr' | 'qr_svg'> & { is_terminal: boolean };
 type Config = { connectionId: string; publicKey: string; currency: string; decimals: number; storeName: string; clientLogging: boolean };
 
 const root = document.getElementById('pos-root');
@@ -226,7 +226,12 @@ function PaymentCard(props: { order: Order }) {
       <p class="pos-pay-caption">{partial() ? 'Send the remaining amount' : 'Send exactly this amount'}</p>
       <p class="pos-pay-xmr">{trimXmr(partial() ? props.order.remaining_xmr || props.order.xmr_amount : props.order.xmr_amount)} <span>XMR</span></p>
       <Show when={props.order.currency !== 'XMR' && !partial()}><p class="pos-pay-fiat">≈ {props.order.amount} {props.order.currency}</p></Show>
-      <Show when={qr()}><div class="pos-qr" innerHTML={qr()}/></Show>
+      {/* After a partial payment the code is redrawn for the rest, and says so. */}
+      <Show when={qr()}>
+        <Show when={partial()} fallback={<div class="pos-qr" innerHTML={qr()}/>}>
+          <div class="pos-qr-new"><span class="pos-qr-new-tab">New code · {trimXmr(props.order.remaining_xmr || props.order.xmr_amount)} XMR</span><div class="pos-qr" innerHTML={qr()}/></div>
+        </Show>
+      </Show>
       <p class="pos-quiet-label">Payment address</p>
       <div class="pos-address">
         <code title={props.order.address}>{shortAddress(props.order.address)}</code>

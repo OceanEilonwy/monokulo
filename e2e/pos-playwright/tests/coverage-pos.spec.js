@@ -265,9 +265,14 @@ test('customer pays while the order is on screen and the merchant starts the nex
 test('customer underpays: the card asks for the rest and the order cannot be cancelled', async ({ page, request }) => {
   await page.goto(posUrl());
   await expect(page.locator('.pos-pay-card')).toBeVisible();
+  const code = () => page.locator('.pos-qr').innerHTML();
+  const first = await code();
   await payment(request, fixture.order_id, 0.4, 20);
   await expect(page.locator('.pos-pay-detail')).toContainText('0.0004 of 0.001 XMR received');
   await expect(page.locator('.pos-pay-card')).toContainText('0.0006');
+  // The live update brings a new code, for the rest, and says so.
+  await expect(page.locator('.pos-qr-new-tab')).toHaveText('New code · 0.0006 XMR');
+  expect(await code()).not.toBe(first);
   await expect(page.getByRole('button', { name: 'Cancel order' })).toHaveCount(0);
   await expect(page.locator('.pos-action-hint')).toContainText('Background keeps this payment open');
   await captureCoverageStage(page, 'pos-underpaid', test.info());

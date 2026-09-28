@@ -38,7 +38,6 @@
   /* Fixed in both themes: a QR code stays dark on white to scan, and a
      camera preview sits on black. */
   --qr-bg: #ffffff;
-  --qr-paid: #16663a;
   --media-bg: #000000;
 
   /* ---- roles ---- */

@@ -49,19 +49,17 @@ fn checkout_payment_message(order: &OrderView) -> Option<String> {
     if order.double_spend_detected_at.is_some() {
         return super::pos::derive_payment_error(order);
     }
-    let requested = shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero);
-    let received = shared::exchange_rate::format_piconero_as_xmr(order.amount_received_piconero);
+    // Amounts without trailing zeros: this is read by the customer.
+    let xmr = |piconero: u64| crate::views::trim_xmr(&shared::exchange_rate::format_piconero_as_xmr(piconero)).to_string();
+    let requested = xmr(order.xmr_amount_piconero);
+    let received = xmr(order.amount_received_piconero);
     match order.status.as_str() {
         "partial" => {
-            let remaining = shared::exchange_rate::format_piconero_as_xmr(
-                order.xmr_amount_piconero.saturating_sub(order.amount_received_piconero),
-            );
+            let remaining = xmr(order.xmr_amount_piconero.saturating_sub(order.amount_received_piconero));
             Some(format!("{received} XMR received of {requested} XMR. Send the remaining {remaining} XMR to the address below."))
         }
         "overpaid" => {
-            let extra = shared::exchange_rate::format_piconero_as_xmr(
-                order.amount_received_piconero.saturating_sub(order.xmr_amount_piconero),
-            );
+            let extra = xmr(order.amount_received_piconero.saturating_sub(order.xmr_amount_piconero));
             Some(format!("{received} XMR received for a {requested} XMR order ({extra} XMR extra). Do not send more. Contact the merchant about the extra amount."))
         }
         _ => super::pos::derive_payment_error(order),
@@ -82,6 +80,27 @@ pub(super) fn qr_svg_for_html(data: &str) -> Result<String, ApiError> {
         None => &full[..],
     };
     Ok(svg.replacen("<svg", r#"<svg role="presentation" aria-hidden="true" focusable="false""#, 1))
+}
+
+/// What an order's QR code holds: while the customer still owes something
+/// (`pending`, or the rest after a `partial` payment), a Monero payment URI
+/// with the amount due (`monero:<address>?tx_amount=0.0006`), so a wallet
+/// that reads it fills the amount in; otherwise the bare address. The
+/// address never changes, so a code scanned before a partial payment still
+/// pays the right order - only the amount it asks for differs.
+pub(super) fn payment_uri(order: &crate::engine_client::OrderView) -> String {
+    let due = order.xmr_amount_piconero.saturating_sub(order.amount_received_piconero);
+    if matches!(order.status.as_str(), "pending" | "partial") && due > 0 {
+        let amount = shared::exchange_rate::format_piconero_as_xmr(due);
+        format!("monero:{}?tx_amount={}", order.address, crate::views::trim_xmr(&amount))
+    } else {
+        order.address.clone()
+    }
+}
+
+/// The order's QR code ([`payment_uri`]), as page-ready SVG.
+pub(super) fn payment_qr_svg(order: &crate::engine_client::OrderView) -> Result<String, ApiError> {
+    qr_svg_for_html(&payment_uri(order))
 }
 
 enum LoadError {
@@ -247,13 +266,11 @@ async fn render_checkout_page(
     refund_address_error: Option<String>,
     options: &CheckoutOptions,
 ) -> Response {
-    let qr_code_svg = match qr_svg_for_html(&detail.order.address) {
-        Ok(svg) => svg,
-        Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
-    };
+    if payment_qr_svg(&detail.order).is_err() {
+        return StatusCode::INTERNAL_SERVER_ERROR.into_response();
+    }
     let order_id = detail.order.order_id.clone();
-    let mut view = build_checkout_view(state, &pk, &row, &sk, detail, refund_address_error, options).await;
-    view.qr_code_svg = qr_code_svg;
+    let view = build_checkout_view(state, &pk, &row, &sk, detail, refund_address_error, options).await;
     let mut chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{order_id}"));
     chrome.theme = options.theme();
     // Browser problem reports only from a store that opted in (D8).
@@ -261,9 +278,10 @@ async fn render_checkout_page(
     views::checkout::checkout_page(&chrome, &view).into_response()
 }
 
-/// Everything the checkout page shows except its QR code, which never
-/// changes and is left empty here - the live-update stream re-renders only
-/// the parts that do (`views::checkout::live_fragment`).
+/// Everything the checkout page shows, the QR code included: it asks for
+/// the amount still due, so a partial payment redraws it. The live-update
+/// stream re-renders only the parts that change
+/// (`views::checkout::live_parts`).
 async fn build_checkout_view(
     state: &AppState,
     pk: &str,
@@ -317,7 +335,10 @@ async fn build_checkout_view(
         status: detail.order.status.clone(),
         status_class: status_class.to_string(),
         address: detail.order.address.clone(),
-        qr_code_svg: String::new(),
+        qr_code_svg: payment_qr_svg(&detail.order).unwrap_or_default(),
+        amount_due_xmr: shared::exchange_rate::format_piconero_as_xmr(
+            detail.order.xmr_amount_piconero.saturating_sub(detail.order.amount_received_piconero),
+        ),
         xmr_amount: shared::exchange_rate::format_piconero_as_xmr(detail.order.xmr_amount_piconero),
         amount_received_xmr: shared::exchange_rate::format_piconero_as_xmr(detail.order.amount_received_piconero),
         amount,
@@ -574,6 +595,25 @@ pub async fn checkout_share_page(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn the_qr_code_asks_for_the_amount_due_and_only_while_one_is_due() {
+        let order = |status: &str, received: u64| -> super::OrderView {
+            serde_json::from_value(serde_json::json!({
+                "order_id": "o_1", "merchant_order_id": null, "address": "4Addr", "xmr_amount_piconero": 1_000_000_000u64,
+                "amount_received_piconero": received, "status": status, "confirmations": 0, "double_spend_detected_at": null,
+                "refund_address": null, "created_at": 0, "expires_at": 0, "updated_at": 0, "first_scanned_height": null,
+                "last_scanned_height": null, "currently_scanning": false,
+            }))
+            .unwrap()
+        };
+        assert_eq!(super::payment_uri(&order("pending", 0)), "monero:4Addr?tx_amount=0.001");
+        // After a partial payment, the code asks for the rest.
+        assert_eq!(super::payment_uri(&order("partial", 400_000_000)), "monero:4Addr?tx_amount=0.0006");
+        // Nothing is due once paid, or while a payment confirms.
+        assert_eq!(super::payment_uri(&order("paid", 1_000_000_000)), "4Addr");
+        assert_eq!(super::payment_uri(&order("confirming", 1_000_000_000)), "4Addr");
+    }
+
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -617,11 +657,11 @@ mod tests {
             last_scanned_height: None,
             currently_scanning: true,
         };
-        assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.200000000000 XMR received of 0.500000000000 XMR. Send the remaining 0.300000000000 XMR to the address below."));
+        assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.2 XMR received of 0.5 XMR. Send the remaining 0.3 XMR to the address below."));
 
         order.status = "overpaid".to_string();
         order.amount_received_piconero = 600_000_000_000;
-        assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.600000000000 XMR received for a 0.500000000000 XMR order (0.100000000000 XMR extra). Do not send more. Contact the merchant about the extra amount."));
+        assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount."));
 
         order.double_spend_detected_at = Some(123);
         assert!(checkout_payment_message(&order).unwrap().contains("Double-spend"));
@@ -1029,7 +1069,7 @@ mod tests {
             targets,
             [
                 r##"{"target":"#live-status","swap":"outerHTML"}"##,
-                r##"{"target":"#amount-label","swap":"outerHTML"}"##,
+                r##"{"target":"#live-pay","swap":"outerHTML"}"##,
                 r##"{"target":"#address-label","swap":"outerHTML"}"##,
                 r##"{"target":"#live-progress","swap":"outerHTML"}"##,
                 r##"{"target":"#live-payments","swap":"outerHTML"}"##,

@@ -36,10 +36,13 @@ pub struct CheckoutViewModel {
     pub status: String,
     pub status_class: String,
     pub address: String,
-    /// Trusted, pre-rendered SVG markup (`http::checkout::qr_svg_for_html`) -
-    /// rendered raw, unescaped.
+    /// Trusted, pre-rendered SVG markup (`http::checkout::payment_qr_svg`) -
+    /// rendered raw, unescaped. Asks for `amount_due_xmr` while one is due.
     pub qr_code_svg: String,
     pub xmr_amount: String,
+    /// What is still owed: the whole amount, or the rest after a partial
+    /// payment; zero once covered.
+    pub amount_due_xmr: String,
     pub amount_received_xmr: String,
     pub amount: String,
     pub currency: String,
@@ -165,17 +168,45 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .progress-row { display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 0.4em; }
 .progress-bar { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; height: 1em; background: var(--paper); }
 .progress-fill { height: 100%; background: var(--accent); }
-/* Confirmed: the QR code and the progress bar turn the paid green, the same
-   dark green in both themes so the QR stays dark on white and still scans.
-   Follows the live status. */
-#checkout-root:is([data-status="paid"], [data-status="overpaid"]) .qr-wrap svg path { fill: var(--qr-paid); }
-#checkout-root:is([data-status="paid"], [data-status="overpaid"]) .progress-fill { background: var(--qr-paid); }
+/* Paid: a receipt replaces the code (`live_pay`), the address moves into
+   it, and the progress bar takes the paid colour. Follows the live status. */
+#checkout-root:is([data-status="paid"], [data-status="overpaid"]) .address-block { display: none; }
+#checkout-root[data-status="paid"] .progress-fill { background: var(--state-paid-border); }
+#checkout-root[data-status="overpaid"] .progress-fill { background: var(--state-overpaid-border); }
+.qr-wrap svg { background: var(--qr-bg); }
+.receipt { display: grid; justify-items: center; gap: .35em; margin: 0 0 1.4em; padding: 1.2em 1em; border: 1px solid var(--state-paid-border); border-radius: var(--radius-md); background: var(--state-paid-bg); color: var(--state-paid-ink); text-align: center; }
+[data-status="overpaid"] .receipt { border-color: var(--state-overpaid-border); background: var(--state-overpaid-bg); color: var(--state-overpaid-ink); }
+.receipt-icon { display: grid; place-items: center; width: 56px; height: 56px; border-radius: 50%; background: var(--state-paid-border); color: var(--paper-raised); }
+[data-status="overpaid"] .receipt-icon { background: var(--state-overpaid-border); }
+.receipt-icon svg { width: 30px; height: 30px; }
+.receipt-title { margin: .3em 0 0; font-size: 1.15em; border: 0; padding: 0; }
+.receipt .amount, .receipt .amount-unit { color: inherit; margin: 0; }
+.receipt-note { margin: 0; font-size: .85em; }
+.receipt-facts { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 2px 14px; margin: .5em 0 0; font-size: .85em; text-align: left; }
+.receipt-facts dt { font-weight: 700; }
+.receipt-facts dd { margin: 0; overflow-wrap: anywhere; }
+.receipt-more { justify-self: stretch; text-align: left; font-size: .85em; margin-top: .4em; }
+.receipt-more summary { cursor: pointer; font-weight: 700; }
+.receipt-more .address-label { color: inherit; margin-top: .5em; }
+.receipt-address { margin: 0; font-family: var(--font-mono); overflow-wrap: anywhere; }
+/* Partial: what arrived, then the rest to send with a new code for it. */
+.pay-steps { list-style: none; margin: 0 0 1em; padding: 0; display: grid; gap: .6em; text-align: left; }
+.pay-steps li { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .6em; align-items: start; padding: .6em .8em; border: 1px solid var(--line); border-radius: var(--radius-md); }
+.pay-steps li.is-done { color: var(--muted); }
+.pay-steps li.is-now { border-color: var(--state-partial-border); background: var(--state-partial-bg); color: var(--state-partial-ink); }
+.pay-steps small { display: block; font-size: .8em; }
+.step-mark { display: grid; place-items: center; width: 1.6em; height: 1.6em; border: 1.5px solid currentColor; border-radius: 50%; font-size: .85em; font-weight: 800; }
+.is-done .step-mark { background: var(--state-paid-border); border-color: var(--state-paid-border); color: var(--paper-raised); }
+.step-mark svg { width: 1em; height: 1em; }
+.qr-new svg { outline: 2px solid var(--state-partial-border); outline-offset: 6px; border-radius: 2px; animation: qr-new 1.4s ease-out 2; }
+@keyframes qr-new { from { box-shadow: 0 0 0 6px color-mix(in srgb, var(--state-partial-border) 55%, transparent); } to { box-shadow: 0 0 0 22px transparent; } }
+@media (prefers-reduced-motion: reduce) { .qr-new svg { animation: none; } }
+.qr-note { margin: -.6em 0 1.2em; font-size: .75em; color: var(--muted); }
 .payments-table { font-size: 0.8em; margin-top: 1.2em; }
 .meta { margin-top: 1.4em; font-size: 0.8em; color: var(--muted); text-align: left; }
 .payment-state { border: 1px solid var(--line); padding: 1em; margin: 0 0 1em; text-align: center; background: var(--paper); }
 .payment-state.is-error { border-color: var(--error); background: var(--tint-error); }
 .payment-state.is-warning { border-color: var(--warning); background: var(--tint-warning); }
-.payment-state.is-paid { border-color: var(--success); background: var(--tint-success); }
 .payment-state-title { margin: 0 0 .3em; font-size: 1.35em; }
 .payment-state p { margin: .3em 0; }
 .refresh-toggle { margin: 0 0 .5em; text-align: right; font-size: .85em; }
@@ -205,7 +236,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact .qr-wrap { margin-bottom: .5em; }
 .checkout-compact .qr-wrap svg { width: min(42vh, 208px); height: auto; }
 .checkout-compact .section { margin-top: .7em; padding-top: .7em; }
-.checkout-compact .payment-state.is-paid { position: fixed; inset: 0; z-index: 5; display: flex; flex-direction: column; align-items: center; justify-content: center; }
+.checkout-compact .receipt { position: fixed; inset: 0; z-index: 5; margin: 0; border-radius: 0; align-content: center; overflow-y: auto; }
 .checkout-compact .meta, .checkout-compact .payments-table { display: none; }
 .checkout-compact .pay-header { margin-bottom: .4em; }
 .checkout-compact .amount { font-size: clamp(1.1rem, 8cqi, 1.8rem); font-weight: 800; margin: .1em 0; }
@@ -276,19 +307,9 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
 
             div class="pay-grid" {
                 div class="pay-col-primary" {
-                    (amount_label(data))
-                    // The number and its unit never split; the font shrinks with
-                    // the frame instead (see `.amount`).
-                    div class="amount" id="xmr-amount" aria-labelledby="amount-label" {
-                        span class="amount-value" { (super::trim_xmr(&data.xmr_amount)) } " " span class="amount-unit" { "XMR" }
-                    }
-                    // A fiat equivalent only for an order priced in fiat.
-                    @if !data.currency.is_empty() && data.currency != "XMR" {
-                        div class="fiat-amount" { "≈ " (data.amount) " " (data.currency) }
-                    }
+                    (live_pay(data))
 
-                    div class="qr-wrap" { (PreEscaped(&data.qr_code_svg)) }
-
+                    // Hidden once paid, when the receipt shows the address.
                     div class="address-block" {
                         (address_label(data))
                         div class="address-row" {
@@ -361,7 +382,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
 pub fn live_fragment(data: &CheckoutViewModel) -> Markup {
     html! {
         (live_status(data))
-        (amount_label(data))
+        (live_pay(data))
         (address_label(data))
         (live_progress(data))
         (live_payments(data))
@@ -373,7 +394,7 @@ pub fn live_fragment(data: &CheckoutViewModel) -> Markup {
 pub fn live_parts(data: &CheckoutViewModel) -> [(&'static str, Markup); 5] {
     [
         ("live-status", live_status(data)),
-        ("amount-label", amount_label(data)),
+        ("live-pay", live_pay(data)),
         ("address-label", address_label(data)),
         ("live-progress", live_progress(data)),
         ("live-payments", live_payments(data)),
@@ -383,18 +404,20 @@ pub fn live_parts(data: &CheckoutViewModel) -> [(&'static str, Markup); 5] {
 fn live_status(data: &CheckoutViewModel) -> Markup {
     let awaiting_payment = matches!(data.status.as_str(), "pending" | "partial");
     let amount_mismatch = matches!(data.status.as_str(), "partial" | "overpaid");
+    // Paid and overpaid get a receipt, and a partial payment its two steps
+    // (`live_pay`), instead of a banner saying the same.
+    let told_below = data.double_spend_detected_at.is_none() && matches!(data.status.as_str(), "paid" | "overpaid" | "partial");
+    let banner = data.status != "pending" && !told_below;
     let payment_state_class = if data.double_spend_detected_at.is_some() || (data.payment_error.is_some() && !amount_mismatch) {
         "payment-state is-error"
     } else if amount_mismatch {
         "payment-state is-warning"
-    } else if data.status == "paid" {
-        "payment-state is-paid"
     } else {
         "payment-state"
     };
     html! {
         div id="live-status" data-live {
-            @if data.status != "pending" {
+            @if banner {
                 div id="payment-state" class=(payment_state_class) role="status" {
                     h2 class="payment-state-title" { (data.status_label) }
                     @if let Some(error) = &data.payment_error {
@@ -408,7 +431,9 @@ fn live_status(data: &CheckoutViewModel) -> Markup {
             }
 
             div class="pay-header" {
-                span id="status-badge" class=(format!("tag {}", data.status_class)) { (data.status_label) }
+                // Kept for screen readers when a banner, the receipt or the
+                // steps already say it on screen.
+                span id="status-badge" class=(if banner || told_below { format!("tag {} sr-only", data.status_class) } else { format!("tag {}", data.status_class) }) { (data.status_label) }
                 @if awaiting_payment {
                     span class=(format!("expiry-pill {}", data.expiry_urgency_class)) {
                         svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" {
@@ -433,11 +458,79 @@ fn live_status(data: &CheckoutViewModel) -> Markup {
     }
 }
 
-fn amount_label(data: &CheckoutViewModel) -> Markup {
-    let amount_mismatch = matches!(data.status.as_str(), "partial" | "overpaid");
+/// The part of the payment column that follows the order: while it's
+/// awaiting payment, the amount due and its QR code; after a partial
+/// payment, what arrived and the rest to send, with a new code for it; once
+/// paid, a receipt instead of a code, so nothing invites a second payment.
+fn live_pay(data: &CheckoutViewModel) -> Markup {
+    let received = super::trim_xmr(&data.amount_received_xmr);
+    let due = super::trim_xmr(&data.amount_due_xmr);
+    let total = super::trim_xmr(&data.xmr_amount);
+    let payments = data.payments.len();
     html! {
-        span class=(if amount_mismatch { "amount-label" } else { "sr-only" }) id="amount-label" data-live {
-            @if amount_mismatch { "Order total" } @else { "Amount due" }
+        div id="live-pay" data-live {
+            @match data.status.as_str() {
+                "paid" | "overpaid" => {
+                    div class="receipt" {
+                        span class="receipt-icon" { (check_icon()) }
+                        h2 class="receipt-title" { @if data.status == "paid" { "Payment received" } @else { "Payment received, with extra" } }
+                        div class="amount" { span class="amount-value" { (received) } " " span class="amount-unit" { "XMR" } }
+                        @if data.status == "overpaid" {
+                            @if let Some(error) = &data.payment_error { p class="receipt-note" { (error) } }
+                        } @else if !data.currency.is_empty() && data.currency != "XMR" {
+                            p class="receipt-note" { "For " (data.amount) " " (data.currency) }
+                        }
+                        dl class="receipt-facts" {
+                            dt { "Confirmations" } dd { (data.confirmations) " (" (data.confirmations_required) " needed)" }
+                            dt { "Order" } dd { (data.order_id) }
+                        }
+                        details class="receipt-more" {
+                            summary { "Payment details" }
+                            p class="address-label" { "Paid to" }
+                            p class="receipt-address" { (data.address) }
+                        }
+                    }
+                }
+                "partial" => {
+                    ol class="pay-steps" {
+                        li class="is-done" {
+                            span class="step-mark" { (check_icon()) }
+                            span { strong { "Received " (received) " XMR" } small { (payments) @if payments == 1 { " payment" } @else { " payments" } " of the " (total) " XMR order" } }
+                        }
+                        li class="is-now" {
+                            span class="step-mark" { "2" }
+                            span { strong { "Send the remaining " (due) " XMR" } small { "Use this new code. The first one asked for the full amount." } }
+                        }
+                    }
+                    span class="sr-only" id="amount-label" { "Still to pay" }
+                    div class="amount" id="xmr-amount" aria-labelledby="amount-label" {
+                        span class="amount-value" { (due) } " " span class="amount-unit" { "XMR" }
+                    }
+                    div class="qr-wrap qr-new" { (PreEscaped(&data.qr_code_svg)) }
+                    p class="qr-note" { "Wallets that read payment codes fill in " (due) " XMR for you." }
+                }
+                _ => {
+                    span class="sr-only" id="amount-label" { "Amount due" }
+                    // The number and its unit never split; the font shrinks with
+                    // the frame instead (see `.amount`).
+                    div class="amount" id="xmr-amount" aria-labelledby="amount-label" {
+                        span class="amount-value" { (total) } " " span class="amount-unit" { "XMR" }
+                    }
+                    // A fiat equivalent only for an order priced in fiat.
+                    @if !data.currency.is_empty() && data.currency != "XMR" {
+                        div class="fiat-amount" { "≈ " (data.amount) " " (data.currency) }
+                    }
+                    div class="qr-wrap" { (PreEscaped(&data.qr_code_svg)) }
+                }
+            }
+        }
+    }
+}
+
+fn check_icon() -> Markup {
+    html! {
+        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" {
+            path d="m4.5 12.5 5 5 10-11" {}
         }
     }
 }
@@ -457,7 +550,7 @@ fn live_progress(data: &CheckoutViewModel) -> Markup {
         div class="section" id="live-progress" data-live {
             div class="progress-row" {
                 span id="confirmations-label" { (data.confirmations) " / " (data.confirmations_required) " confirmations" }
-                span id="received-label" { (data.amount_received_xmr) " XMR received" }
+                span id="received-label" { (super::trim_xmr(&data.amount_received_xmr)) " XMR received" }
             }
             div class="progress-bar" id="progress-bar" role="progressbar" aria-labelledby="confirmations-label"
                 aria-valuemin="0" aria-valuemax=(data.confirmations_required) aria-valuenow=(data.confirmations)
@@ -480,7 +573,7 @@ fn live_payments(data: &CheckoutViewModel) -> Markup {
                             @for payment in &data.payments {
                                 tr {
                                     td { (payment.txid_short) }
-                                    td { (payment.amount_xmr) " XMR" }
+                                    td class="nowrap" { (super::trim_xmr(&payment.amount_xmr)) " XMR" }
                                     td { @if payment.is_zero_conf { "mempool" } @else { (payment.confirmations) } }
                                 }
                             }
@@ -626,6 +719,7 @@ mod tests {
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
             qr_code_svg: "<svg></svg>".to_string(),
             xmr_amount: "0.500000000000".to_string(),
+            amount_due_xmr: "0.500000000000".to_string(),
             amount_received_xmr: "0.000000000000".to_string(),
             amount: "0.5".to_string(),
             currency: "XMR".to_string(),
@@ -708,13 +802,14 @@ mod tests {
             is_zero_conf: true,
         }];
         let fragment = live_fragment(&data).into_string();
-        for id in ["live-status", "amount-label", "address-label", "live-progress", "live-payments"] {
+        for id in ["live-status", "live-pay", "address-label", "live-progress", "live-payments"] {
             assert!(fragment.contains(&format!(r#"id="{id}""#)), "missing {id} in {fragment}");
         }
         assert_eq!(fragment.matches("data-live").count(), 5);
         assert!(fragment.contains("mempool"));
         assert!(!fragment.contains("refund_address"), "the refund form must never be swapped mid-edit");
-        assert!(!fragment.contains("<svg role=\"presentation\""), "the QR code never changes and is not re-sent");
+        // The QR code follows the amount due, so it is a live part too.
+        assert!(fragment.contains(r#"<div class="qr-wrap qr-new">"#), "{fragment}");
         // Every region in the fragment is the same markup the page itself renders.
         let page = checkout_page(&chrome(), &data).into_string();
         assert!(page.contains(&fragment[fragment.find("<span").unwrap()..fragment.find("</span>").unwrap()]));
@@ -727,7 +822,9 @@ mod tests {
         data.query_suffix = "?view=compact".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(html.contains("pay-wrap checkout-compact"));
-        assert!(html.contains("payment-state is-paid"));
+        // Paid: a receipt instead of a code, full-screen in the compact view.
+        assert!(html.contains(r#"class="receipt""#) && html.contains("Payment received"));
+        assert!(!html.contains(r#"id="payment-state""#) && !html.contains(r#"class="qr-wrap"#));
         assert!(html.contains("id=\"copy-address\""));
         assert!(html.contains("class=\"address-block\""));
         assert!(html.contains("id=\"refund_address\""));
@@ -741,11 +838,17 @@ mod tests {
         data.status_label = "Partial payment received".to_string();
         data.status_class = "state-partial".to_string();
         data.amount_received_xmr = "0.200000000000".to_string();
-        data.payment_error = Some("0.200000000000 XMR received of 0.500000000000 XMR. Send the remaining 0.300000000000 XMR to the address below.".to_string());
+        data.payment_error = Some("0.2 XMR received of 0.5 XMR. Send the remaining 0.3 XMR to the address below.".to_string());
+        data.amount_due_xmr = "0.300000000000".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains("payment-state is-warning"));
-        assert!(html.contains("0.200000000000 XMR received of 0.500000000000 XMR. Send the remaining 0.300000000000 XMR"));
-        assert!(html.contains(r#"class="amount-label" id="amount-label" data-live>Order total</span>"#));
+        // Two steps instead of a banner: what arrived, then the rest with its
+        // own code; the badge stays for screen readers only.
+        assert!(!html.contains(r#"id="payment-state""#), "{html}");
+        assert!(html.contains(r#"class="tag state-partial sr-only""#));
+        assert!(html.contains("Received 0.2 XMR") && html.contains("of the 0.5 XMR order"));
+        assert!(html.contains("Send the remaining 0.3 XMR"));
+        assert!(html.contains(r#"<span class="amount-value">0.3</span>"#));
+        assert!(html.contains(r#"<div class="qr-wrap qr-new">"#));
         assert!(html.contains("Send the remaining amount to"));
         assert!(html.contains("Send payment within 30m"));
         assert!(!html.contains("the customer sent"));
@@ -766,11 +869,13 @@ mod tests {
         data.status_class = "state-overpaid".to_string();
         data.is_terminal = true;
         data.amount_received_xmr = "0.600000000000".to_string();
-        data.payment_error = Some("0.600000000000 XMR received for a 0.500000000000 XMR order (0.100000000000 XMR extra). Do not send more. Contact the merchant about the extra amount.".to_string());
+        data.payment_error = Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount.".to_string());
         let html = checkout_page(&chrome(), &data).into_string();
-        assert!(html.contains("payment-state is-warning"));
-        assert!(html.contains("0.600000000000 XMR received for a 0.500000000000 XMR order (0.100000000000 XMR extra). Do not send more."));
-        assert!(html.contains(r#"class="amount-label" id="amount-label" data-live>Order total</span>"#));
+        // A receipt, not a code, and it explains the extra.
+        assert!(!html.contains(r#"id="payment-state""#), "{html}");
+        assert!(html.contains("Payment received, with extra") && html.contains(r#"<span class="amount-value">0.6</span>"#));
+        assert!(html.contains("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more."));
+        assert!(!html.contains(r#"class="qr-wrap"#));
         assert!(!html.contains("Send payment within"));
         assert!(!html.contains("the customer sent"));
     }
