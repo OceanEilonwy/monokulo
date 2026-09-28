@@ -737,9 +737,13 @@ pub(super) async fn render_store_settings_page(
         (options, thresholds)
     };
     let confirmation_thresholds_at_max = confirmation_thresholds.len() >= 5;
-    let (embed_restricted, embed_domain_rows) = {
+    let (embed_restricted, embed_domain_rows, client_logging) = {
         let db = state.db.lock();
-        (db.embed_restricted(&row.id).unwrap_or(false), db.list_store_domains(&row.id).unwrap_or_default())
+        (
+            db.embed_restricted(&row.id).unwrap_or(false),
+            db.list_store_domains(&row.id).unwrap_or_default(),
+            db.client_logging(&row.id).unwrap_or(false),
+        )
     };
     let now = crate::now_unix();
     let embed_can_restrict = embed_domain_rows.iter().any(|domain| crate::embed_domains::DomainState::of(domain, now).counts());
@@ -778,6 +782,7 @@ pub(super) async fn render_store_settings_page(
             embed_can_restrict,
             key_storage,
             active_section: from.map(|(section, _)| section),
+            client_logging,
         }),
     };
     if let (Some((section, FxRequest(true))), Some(store)) = (from, &view_model.store) {
@@ -1097,6 +1102,40 @@ pub async fn move_key_storage(
         Err(_) => {
             render_store_settings_page(&state, row, &user, Some("Something went wrong moving the keys. Check where they are kept below, and try again if they haven't moved.".to_string()), None, Some((SECTION, fx)))
                 .await
+        }
+    }
+}
+
+#[derive(Deserialize)]
+pub struct DiagnosticsForm {
+    /// `"on"` or `"off"`.
+    pub client_logging: String,
+}
+
+/// `POST /dashboard/stores/{id}/settings/diagnostics` - turns the store's
+/// client logs on or off (`db::Db::client_logging`).
+pub async fn update_diagnostics(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
+    Path(id): Path<String>,
+    Form(form): Form<DiagnosticsForm>,
+) -> Response {
+    const SECTION: StoreSection = StoreSection::Diagnostics;
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let on = form.client_logging == "on";
+    let update_result = state.db.lock().set_client_logging(&row.id, on);
+    match update_result {
+        Ok(()) => {
+            tracing::info!(store.id = %row.id, client_logging = on, "store diagnostics changed");
+            saved(&state, row, &user, SECTION, fx, &format!("/dashboard/stores/{id}/settings")).await
+        }
+        Err(_) => {
+            render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None, Some((SECTION, fx))).await
         }
     }
 }

@@ -255,6 +255,11 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
         script src="/static/fx-glue.js" defer {}
         script src="/static/fixi.js" defer {}
         script src="/static/ssexi.js" defer {}
+        // Problem reports, only from a store that opted in to client logs
+        // (off by default: a payment page, D8).
+        @if chrome.browser_reports {
+            script src="/static/telemetry.js" defer {}
+        }
     };
     let body = html! {
         div class=(if data.is_compact { "pay-wrap checkout-compact" } else { "pay-wrap" }) id="checkout-root" data-order-id=(data.order_id) data-status=(data.status) data-confirmations=(data.confirmations) data-error=(data.payment_error.as_deref().unwrap_or("")) {

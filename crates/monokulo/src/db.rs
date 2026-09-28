@@ -46,6 +46,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (22, include_str!("../migrations/0022_pos_orders.sql")),
     (23, include_str!("../migrations/0023_order_source.sql")),
     (24, include_str!("../migrations/0024_saved_log_searches.sql")),
+    (25, include_str!("../migrations/0025_store_client_logging.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -1173,6 +1174,35 @@ impl Db {
         Ok(())
     }
 
+    /// Whether the store has opted in to client logs (migration
+    /// `0025_store_client_logging.sql`). `false` for a store that doesn't
+    /// exist.
+    pub fn client_logging(&self, connection_id: &str) -> Result<bool> {
+        self.conn
+            .query_row("SELECT client_logging FROM store_connections WHERE id = ?1", params![connection_id], |row| row.get::<_, i64>(0))
+            .optional()
+            .map(|value| value.is_some_and(|value| value != 0))
+            .map_err(DbError::from)
+    }
+
+    /// [`Db::client_logging`], for a store known by its public key.
+    pub fn client_logging_by_public_key(&self, tenant_public_key: &str) -> Result<bool> {
+        self.conn
+            .query_row(
+                "SELECT client_logging FROM store_connections WHERE tenant_public_key = ?1",
+                params![tenant_public_key],
+                |row| row.get::<_, i64>(0),
+            )
+            .optional()
+            .map(|value| value.is_some_and(|value| value != 0))
+            .map_err(DbError::from)
+    }
+
+    pub fn set_client_logging(&self, connection_id: &str, on: bool) -> Result<()> {
+        self.conn.execute("UPDATE store_connections SET client_logging = ?2 WHERE id = ?1", params![connection_id, on as i64])?;
+        Ok(())
+    }
+
     /// Stores whose own site domain hasn't been copied
     /// into `store_domains` yet (see migration `0020_embed_restriction.sql`).
     pub fn list_store_connections_awaiting_domain_import(&self) -> Result<Vec<StoreConnectionRow>> {
@@ -1775,6 +1805,21 @@ mod tests {
         assert_eq!(row.platform, "woocommerce");
         assert_eq!(row.tenant_public_key, "pk_abc");
         assert_eq!(row.tenant_secret_token_encrypted, "sk_abc");
+    }
+
+    #[test]
+    fn client_logging_is_off_until_the_store_opts_in() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user("user-cl", "cl@example.com", "hash", false, 1000).unwrap();
+        db.create_store_connection("conn-cl", "user-cl", "woocommerce", "https://shop.example.com", "pk_cl", "sk_cl", "http://127.0.0.1:8080", 3000, "XMR")
+            .unwrap();
+        assert!(!db.client_logging("conn-cl").unwrap());
+        assert!(!db.client_logging_by_public_key("pk_cl").unwrap());
+        db.set_client_logging("conn-cl", true).unwrap();
+        assert!(db.client_logging("conn-cl").unwrap());
+        assert!(db.client_logging_by_public_key("pk_cl").unwrap());
+        assert!(!db.client_logging("conn-missing").unwrap(), "no store, no logs");
+        assert!(!db.client_logging_by_public_key("pk_missing").unwrap());
     }
 
     #[test]

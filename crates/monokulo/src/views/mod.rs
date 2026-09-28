@@ -78,6 +78,10 @@ pub struct PageChrome {
     /// (task 3.7): their stores that can't be scanned right now. Shown under
     /// the nav on every page that has one, so never in the POS terminal.
     pub alerts: Vec<String>,
+    /// The page loads `static/telemetry.js`. Always on pages that aren't
+    /// about one store; on a store's pages, only when it has opted in to
+    /// client logs (`crate::http::page_chrome`).
+    pub browser_reports: bool,
 }
 
 impl PageChrome {
@@ -96,6 +100,7 @@ impl PageChrome {
                 current_path: current_path.into(),
                 health: None,
                 alerts: Vec::new(),
+                browser_reports: true,
             },
             None => PageChrome {
                 logged_in: false,
@@ -104,6 +109,7 @@ impl PageChrome {
                 current_path: current_path.into(),
                 health: None,
                 alerts: Vec::new(),
+                browser_reports: true,
             },
         }
     }
@@ -177,10 +183,13 @@ fn page_shell(chrome: &PageChrome, title: &str, viewport: &str, extra_head: Opti
                     meta name="traceparent" content=(traceparent);
                 }
                 // Browser problem reports on the site's own pages only: not
-                // the checkout embed (privacy on a payment page, D8), the
-                // challenge page or the POS app, which render without nav.
-                @if nav.is_some() {
+                // the challenge page or the POS app, which render without
+                // nav, and on a store's pages only when it opted in. (The
+                // checkout embed adds its own, also only when opted in.)
+                @if nav.is_some() && chrome.browser_reports {
                     script src="/static/telemetry.js" defer {}
+                }
+                @if nav.is_some() {
                     // Partial updates and live streams (structured_logging.md
                     // part 4), in this order: the glue sets fixi's defaults.
                     script src="/static/fx-glue.js" defer {}
@@ -380,7 +389,7 @@ mod tests {
 
     #[test]
     fn logged_in_admin_nav_order_is_dashboard_admin_invites_logout_theme_status() {
-        let chrome = PageChrome { logged_in: true, is_admin: true, theme: Theme::Dark, current_path: "/dashboard".to_string(), health: None , alerts: Vec::new()};
+        let chrome = PageChrome { logged_in: true, is_admin: true, theme: Theme::Dark, current_path: "/dashboard".to_string(), health: None, alerts: Vec::new(), browser_reports: true };
         let html = nav(&chrome).into_string();
 
         let dashboard = html.find(r#"href="/dashboard""#).expect("dashboard link");
@@ -412,7 +421,7 @@ mod tests {
     #[test]
     fn theme_toggle_renders_a_slider_with_a_thumb_positioned_for_the_current_theme() {
         for (theme, class) in [(Theme::Light, "theme-toggle-light"), (Theme::System, "theme-toggle-system"), (Theme::Dark, "theme-toggle-dark")] {
-            let chrome = PageChrome { logged_in: true, is_admin: false, theme, current_path: "/dashboard".to_string(), health: None , alerts: Vec::new()};
+            let chrome = PageChrome { logged_in: true, is_admin: false, theme, current_path: "/dashboard".to_string(), health: None, alerts: Vec::new(), browser_reports: true };
             let html = nav(&chrome).into_string();
             assert!(html.contains(&class.to_string()), "expected {class} on the toggle for {theme:?}, got: {html}");
             assert!(html.contains("theme-toggle-option-light") && html.contains("theme-toggle-option-dark"), "expected both sun and moon options, got: {html}");
@@ -439,7 +448,7 @@ mod tests {
 
     #[test]
     fn logs_links_are_for_admins_and_quote_the_value() {
-        let admin = PageChrome { logged_in: true, is_admin: true, theme: Theme::System, current_path: "/".into(), health: None, alerts: Vec::new() };
+        let admin = PageChrome { logged_in: true, is_admin: true, theme: Theme::System, current_path: "/".into(), health: None, alerts: Vec::new(), browser_reports: true };
         let html = logs_link(&admin, "order.id", "o'1", "Logs").into_string();
         assert_eq!(html, r#"<a class="logs-link" href="/dashboard/admin/logs?q=order.id+%3D+%27o%5C%271%27&amp;range=all">Logs</a>"#);
         let query = "order.id = 'o\\'1'";

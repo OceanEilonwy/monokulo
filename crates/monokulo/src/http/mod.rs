@@ -179,6 +179,7 @@ pub fn build_router(state: AppState) -> Router {
             "/dashboard/stores/{id}/settings/fx-provider",
             axum::routing::post(orders::update_fx_provider),
         )
+        .route("/dashboard/stores/{id}/settings/diagnostics", axum::routing::post(orders::update_diagnostics))
         .route(
             "/dashboard/stores/{id}/settings/base-currency",
             axum::routing::post(orders::update_base_currency),
@@ -392,7 +393,21 @@ fn cors_layer_base() -> tower_http::cors::CorsLayer {
 pub(crate) fn page_chrome(state: &AppState, user: Option<&crate::db::UserRow>, current_path: impl Into<String>) -> crate::views::PageChrome {
     let health = status_page::known_health(state);
     let alerts = user.map(|user| store_alerts(state, user)).unwrap_or_default();
-    crate::views::PageChrome::from_user(user, current_path).with_health(health).with_alerts(alerts)
+    let mut chrome = crate::views::PageChrome::from_user(user, current_path).with_health(health).with_alerts(alerts);
+    if let Some(store) = store_of_path(&chrome.current_path) {
+        chrome.browser_reports = state.db.lock().client_logging(store).unwrap_or(false);
+    }
+    chrome
+}
+
+/// The store (connection id) a `/dashboard/stores/{id}/...` path is about.
+pub(crate) fn store_of_path(path: &str) -> Option<&str> {
+    let path = path.split(['?', '#']).next().unwrap_or(path);
+    let mut segments = path.trim_start_matches('/').split('/');
+    match (segments.next(), segments.next(), segments.next()) {
+        (Some("dashboard"), Some("stores"), Some(id)) if !id.is_empty() && id != "new" => Some(id),
+        _ => None,
+    }
 }
 
 /// One alert per store of `user` that the engine can't scan right now

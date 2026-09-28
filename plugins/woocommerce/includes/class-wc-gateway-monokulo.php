@@ -562,7 +562,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 				'title'       => __( 'Send errors to Monokulo', 'monokulo' ),
 				'type'        => 'checkbox',
 				'label'       => __( 'Also send this plugin\'s warnings and errors to Monokulo\'s Logs page', 'monokulo' ),
-				'description' => __( 'They stay in WooCommerce\'s own logs as well. Sent with your store\'s secret key, next to Monokulo\'s own lines for the same request.', 'monokulo' ),
+				'description' => __( 'They stay in WooCommerce\'s own logs as well. Sent with your store\'s secret key, next to Monokulo\'s own lines for the same request. Monokulo keeps them only while Diagnostics is turned on in this store\'s settings there.', 'monokulo' ),
 				'default'     => 'no',
 				'desc_tip'    => true,
 			),

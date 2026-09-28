@@ -78,17 +78,25 @@ Without JavaScript the page is ordinary forms and links, with a **Refresh**
 link. With it, searches update in place, **Older** appends the next page and
 **Live** streams new lines as they are written.
 
-## Browser and plugin reports
+## Browser, POS and plugin reports
+
+Client logs from a store are **opt-in per store**: **Diagnostics** in the
+store's settings, off by default. While it is off, that store's dashboard
+pages and checkout don't load the report script, the POS records no session
+timeline, and anything sent anyway is dropped on arrival; the WooCommerce
+plugin's forwarded errors get `403` even with its own option on. Pages about
+no store (the admin pages, the dashboard home) always report: they carry no
+merchant or customer data.
 
 - The site's own pages report JavaScript errors and failed requests to
   `POST /telemetry/client`, in the trace of the request that rendered the
   page. Reports are always `warn`, clipped, and limited per client by
   `abuse.client_logs_per_min` (a `429` drops them; never a challenge).
-  The checkout embed doesn't send them.
 - The WooCommerce plugin sends a `traceparent` header on its requests and
   adds `[trace <id>]` to its own WooCommerce log lines, so the two can be
-  matched. With **Send errors to Monokulo** on (off by default), its warnings
-  and errors also go to monokulo's logs (`source = woocommerce`).
+  matched. With **Send errors to Monokulo** on (off by default) and the
+  store's Diagnostics on, its warnings and errors also go to monokulo's logs
+  (`source = woocommerce`).
 
 ## Sending to an OpenTelemetry collector
 

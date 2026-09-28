@@ -275,6 +275,8 @@ async fn render_checkout_page(
     view.qr_code_svg = qr_code_svg;
     let mut chrome = views::PageChrome::from_user(None, format!("/pay/{pk}/orders/{order_id}"));
     chrome.theme = options.theme();
+    // Browser problem reports only from a store that opted in (D8).
+    chrome.browser_reports = state.db.lock().client_logging(&row.id).unwrap_or(false);
     views::checkout::checkout_page(&chrome, &view).into_response()
 }
 

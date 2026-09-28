@@ -1151,6 +1151,48 @@ async fn browser_reports_are_accepted_up_to_a_small_size_and_only_the_sites_own_
 }
 
 #[tokio::test]
+async fn store_pages_load_browser_reports_only_once_the_store_opted_in_but_admin_pages_always_do() {
+    let (state, owner, _) = state_with_owner_and_store("pk_shop");
+    let with_script = |path: &str| {
+        let chrome = super::page_chrome(&state, Some(&owner), path);
+        crate::views::layout(&chrome, "t", maud::html! {}).into_string().contains("/static/telemetry.js")
+    };
+    assert!(with_script("/dashboard/admin/logs"));
+    assert!(with_script("/dashboard"));
+    assert!(with_script("/dashboard/stores/new"));
+    assert!(!with_script("/dashboard/stores/c1"));
+    assert!(!with_script("/dashboard/stores/c1/settings"));
+    state.db.lock().set_client_logging("c1", true).unwrap();
+    assert!(with_script("/dashboard/stores/c1"));
+    assert!(with_script("/dashboard/stores/c1/orders?page=2"));
+}
+
+#[tokio::test]
+async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
+    let state = test_app_state();
+    {
+        let db = state.db.lock();
+        db.create_user("u_owner", "owner@example.com", "x", false, 1).unwrap();
+        let encrypted = crate::crypto::encrypt(&state.encryption_key, "sk_shop");
+        db.create_store_connection("c1", "u_owner", "woocommerce", "https://shop.example.com", "pk_shop", &encrypted, "http://engine", 1, "XMR")
+            .unwrap();
+    }
+    let router = build_router(state.clone());
+    let forward = || {
+        Request::builder()
+            .method("POST")
+            .uri("/pay/pk_shop/logs")
+            .header("content-type", "application/json")
+            .header("authorization", "Bearer sk_shop")
+            .body(Body::from(r#"{"entries":[{"level":"error","message":"webhook signature mismatch"}]}"#))
+            .unwrap()
+    };
+    assert_eq!(router.clone().oneshot(forward()).await.unwrap().status(), StatusCode::FORBIDDEN, "off by default, whatever the plugin says");
+    state.db.lock().set_client_logging("c1", true).unwrap();
+    assert_eq!(router.clone().oneshot(forward()).await.unwrap().status(), StatusCode::NO_CONTENT);
+}
+
+#[tokio::test]
 async fn the_status_page_names_its_stream_and_the_stream_sends_the_page_content() {
     let router = test_router();
     let page = body_text(router.clone().oneshot(Request::builder().uri("/status").body(Body::empty()).unwrap()).await.unwrap()).await;

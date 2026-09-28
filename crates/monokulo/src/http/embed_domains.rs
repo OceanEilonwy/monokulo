@@ -698,6 +698,54 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn diagnostics_turn_on_the_checkouts_problem_reports_and_save_in_place_with_fixi() {
+        let (state, _engine) = test_state(Arc::new(FakeDns::default())).await;
+        let router = build_router(state.clone());
+        let session = session_for(&router, "diagnostics@example.com").await;
+        let (id, pk) = create_store_with_key(&router, &session).await;
+        let response = create_order_from(&router, &pk, None).await;
+        let body = response.into_body().collect().await.unwrap().to_bytes();
+        let order_id = serde_json::from_slice::<serde_json::Value>(&body).unwrap()["order_id"].as_str().unwrap().to_string();
+        let checkout = format!("/pay/{pk}/orders/{order_id}");
+        let checkout_html = || async {
+            let page = router.clone().oneshot(Request::builder().uri(&checkout).body(Body::empty()).unwrap()).await.unwrap();
+            String::from_utf8(page.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap()
+        };
+        assert!(!checkout_html().await.contains("/static/telemetry.js"), "off by default (D8)");
+        let (_, settings) = send(&router, "GET", &format!("/dashboard/stores/{id}/settings"), &session, None).await;
+        assert!(settings.contains("This store sends no diagnostic logs."), "{settings}");
+        assert!(!settings.contains("/static/telemetry.js"), "the store's own pages don't report either");
+
+        // Without JavaScript: a redirect back to the page.
+        let url = format!("/dashboard/stores/{id}/settings/diagnostics");
+        assert_eq!(send(&router, "POST", &url, &session, Some("client_logging=on")).await.0, StatusCode::FOUND);
+        assert!(state.db.lock().client_logging(&id).unwrap());
+        assert!(checkout_html().await.contains("/static/telemetry.js"));
+        let (_, settings) = send(&router, "GET", &format!("/dashboard/stores/{id}/settings"), &session, None).await;
+        assert!(settings.contains("/static/telemetry.js"));
+
+        // With fixi: just the section comes back.
+        let request = Request::builder()
+            .method("POST")
+            .uri(&url)
+            .header("authorization", format!("Bearer {session}"))
+            .header("content-type", "application/x-www-form-urlencoded")
+            .header(crate::http::fx::FX_REQUEST, "true")
+            .body(Body::from("client_logging=off"))
+            .unwrap();
+        let response = router.clone().oneshot(request).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let fragment = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        assert!(fragment.starts_with(r#"<section id="diagnostics">"#), "{fragment}");
+        assert!(fragment.contains("This store sends no diagnostic logs."));
+        assert!(!state.db.lock().client_logging(&id).unwrap());
+
+        // Someone else's store: not found.
+        let stranger = session_for(&router, "stranger@example.com").await;
+        assert_eq!(send(&router, "POST", &url, &stranger, Some("client_logging=on")).await.0, StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
     async fn a_restricted_store_only_works_on_its_verified_domains() {
         let dns = Arc::new(FakeDns::default());
         let (state, _engine) = test_state(dns.clone()).await;

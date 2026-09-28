@@ -96,6 +96,8 @@ pub struct StoreSettingsData {
     /// The section a form was just posted from: its error (or new webhook
     /// secret) shows there. `None` on a plain load.
     pub active_section: Option<StoreSection>,
+    /// The store sends client logs (`db::Db::client_logging`).
+    pub client_logging: bool,
 }
 
 /// The page's sections, each saved (and, with fixi, swapped back) on its
@@ -108,6 +110,7 @@ pub enum StoreSection {
     KeyStorage,
     Domains,
     Webhooks,
+    Diagnostics,
 }
 
 impl StoreSection {
@@ -119,6 +122,7 @@ impl StoreSection {
             StoreSection::KeyStorage => "key-storage",
             StoreSection::Domains => "verified-domains",
             StoreSection::Webhooks => "webhooks",
+            StoreSection::Diagnostics => "diagnostics",
         }
     }
 
@@ -408,6 +412,42 @@ fn webhooks_section(store: &StoreSettingsData, in_place: bool) -> Markup {
     }
 }
 
+/// "Diagnostics": whether this store's browsers, POS and plugin may send
+/// logs to this instance. Off by default.
+fn diagnostics_section(store: &StoreSettingsData, in_place: bool) -> Markup {
+    let (action, target) = fx(&format!("/dashboard/stores/{}/settings/diagnostics", store.connection_id), StoreSection::Diagnostics);
+    html! {
+        section id=(StoreSection::Diagnostics.id()) {
+            h2 { "Diagnostics" }
+            (section_error(store, StoreSection::Diagnostics, in_place))
+            form method="post" action=(action) fx-action=(action) fx-method="POST" fx-target=(target) {
+                @if store.client_logging {
+                    p {
+                        span class="tag tag-ok" { "On" } " "
+                        strong { "This store sends diagnostic logs." }
+                        " Script errors from its dashboard pages and checkout, a timeline of each POS session (connection "
+                        "drops, the app going to the background, orders created, backgrounded and completed), and the "
+                        "WooCommerce plugin's errors when its \"Send errors to Monokulo\" option is on, all go to this "
+                        "instance's logs, where its admins can read them."
+                    }
+                    input type="hidden" name="client_logging" value="off";
+                    button type="submit" class="btn-secondary" { "Turn off" }
+                } @else {
+                    p {
+                        span class="tag tag-unknown" { "Off" } " "
+                        strong { "This store sends no diagnostic logs." }
+                        " Turn this on while tracking down a problem with the POS, the checkout or the WooCommerce plugin: "
+                        "script errors, a timeline of each POS session and the plugin's errors then go to this instance's "
+                        "logs. Customer notes, addresses and keys are never included."
+                    }
+                    input type="hidden" name="client_logging" value="on";
+                    button type="submit" { "Send diagnostic logs" }
+                }
+            }
+        }
+    }
+}
+
 /// One section of the page, as fixi swaps it back after a save there.
 /// `oob` marks it to replace the page's copy wherever that is (a section
 /// another save changed too).
@@ -422,6 +462,7 @@ pub fn section(store: &StoreSettingsData, which: StoreSection, oob: bool) -> Mar
         },
         StoreSection::Domains => verified_domains(store, true),
         StoreSection::Webhooks => webhooks_section(store, true),
+        StoreSection::Diagnostics => diagnostics_section(store, true),
     };
     if !oob {
         return markup;
@@ -455,6 +496,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                 }
                 (verified_domains(store, false))
                 (webhooks_section(store, false))
+                (diagnostics_section(store, false))
             } @else {
                 h1 { "Store not found" }
                 p { "This store doesn't exist, or isn't connected to your account." }
@@ -582,7 +624,22 @@ mod tests {
             embed_can_restrict: false,
             key_storage: None,
             active_section: None,
+            client_logging: false,
         }
+    }
+
+    #[test]
+    fn diagnostics_are_off_until_turned_on() {
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        assert!(html.contains(r#"<section id="diagnostics"><h2>Diagnostics</h2>"#), "got: {html}");
+        assert!(html.contains("This store sends no diagnostic logs."));
+        assert!(html.contains(r#"<input type="hidden" name="client_logging" value="on">"#));
+        assert!(html.contains(r##"fx-target="#diagnostics""##));
+
+        let store = StoreSettingsData { client_logging: true, ..base_store() };
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string();
+        assert!(html.contains("This store sends diagnostic logs."));
+        assert!(html.contains(r#"<input type="hidden" name="client_logging" value="off">"#));
     }
 
     #[test]

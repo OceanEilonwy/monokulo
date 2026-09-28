@@ -572,7 +572,7 @@ mod tests {
     }
 
     /// The plugin's forwarded errors (structured_logging.md 2.4) need the
-    /// store's own secret key, and are capped.
+    /// store's own secret key and its Diagnostics on, and are capped.
     #[tokio::test]
     async fn only_the_store_itself_can_forward_its_plugin_errors() {
         let (state, _engine) = test_state_with_real_engine().await;
@@ -591,6 +591,8 @@ mod tests {
             }
             builder.body(Body::from(serde_json::json!({ "entries": entries }).to_string())).unwrap()
         };
+        assert_eq!(router.clone().oneshot(forward(Some(&sk), 2)).await.unwrap().status(), StatusCode::FORBIDDEN, "Diagnostics is off");
+        state.db.lock().set_client_logging(&row.id, true).unwrap();
         assert_eq!(router.clone().oneshot(forward(Some(&sk), 2)).await.unwrap().status(), StatusCode::NO_CONTENT);
         assert_eq!(router.clone().oneshot(forward(None, 1)).await.unwrap().status(), StatusCode::UNAUTHORIZED);
         assert_eq!(router.clone().oneshot(forward(Some("sk_wrong"), 1)).await.unwrap().status(), StatusCode::UNAUTHORIZED);
