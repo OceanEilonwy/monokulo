@@ -43,6 +43,15 @@ indicator's `/status/summary` poll are never counted.
 Open live-update streams are also capped per (client, store) at
 `abuse.stream_cap` (16).
 
+Log reports (`POST /telemetry/client`, the POS's `POST
+/dashboard/stores/{id}/pos/logs`, the plugin's `POST /pay/{pk}/logs`) have a
+budget of their own, `abuse.client_logs_per_min` (30) per client, whoever
+the client is. They never count against the main budget and are never
+challenged: past the limit the report is dropped with `429` and
+`Retry-After`, and one throttled `warn` line a minute says reports were
+dropped. The browser script and the POS stop sending until `Retry-After`
+has passed.
+
 ## The challenge
 
 A challenge is a signed, short-lived token bound to the client it was issued
@@ -119,6 +128,7 @@ validation; everything but the onion listener applies immediately.
 | `abuse.soft_per_min` | `MONOKULO_ABUSE_SOFT_PER_MIN` | 60 |
 | `abuse.hard_per_min` | `MONOKULO_ABUSE_HARD_PER_MIN` | 300 |
 | `abuse.signed_in_per_min` | `MONOKULO_ABUSE_SIGNED_IN_PER_MIN` | 600 |
+| `abuse.client_logs_per_min` | `MONOKULO_ABUSE_CLIENT_LOGS_PER_MIN` | 30 |
 | `rate_limit.per_store_key_per_min` | `MONOKULO_RATE_LIMIT_PER_STORE_KEY_PER_MIN` | 600 |
 | `abuse.stream_cap` | `MONOKULO_ABUSE_STREAM_CAP` | 16 |
 | `abuse.challenge_bits` | `MONOKULO_ABUSE_CHALLENGE_BITS` | 16 |

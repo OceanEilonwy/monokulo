@@ -23,6 +23,13 @@
 //! | JSON API | continue | `429` + `challenge` + `Monokulo-Challenge` | `429` JSON + `Retry-After` |
 //! | Stream (SSE) | continue | `429` (can't solve anything) | `429` + `Retry-After` |
 //! | Other (form posts, plugin calls) | continue | continue | `429` + `Retry-After` |
+//! | Logs (browser, POS and plugin reports) | continue | - | `429` + `Retry-After`, report dropped |
+//!
+//! Log reports have a budget of their own (`abuse.client_logs_per_min`,
+//! [`crate::abuse::AbuseProtection::check_logs`]) and don't count against
+//! the client's main one, so a page that reports a lot of problems never
+//! gets its visitor challenged or blocked, and a client spamming reports
+//! only loses its reports.
 //!
 //! Signed-in merchants and store keys never reach "Challenge" (their soft
 //! and hard limits are the same). Under-attack mode treats every anonymous
@@ -68,6 +75,8 @@ pub enum RouteClass {
     Api,
     Stream,
     Other,
+    /// Log reports: their own budget, never challenged.
+    Logs,
     /// Not counted at all (the status indicator's cached poll).
     Exempt,
 }
@@ -93,14 +102,17 @@ fn pay_route_class(method: &Method, path: &str) -> RouteClass {
         ("GET", ["pay", _, "orders", _]) | ("GET", ["pay", _, "orders", _, "share"]) => RouteClass::Page,
         ("POST", ["pay", _, "orders"]) | ("GET", ["pay", _, "orders", _, "status"]) => RouteClass::Api,
         ("GET", ["pay", _, "orders", _, "events"]) => RouteClass::Stream,
+        ("POST", ["pay", _, "logs"]) => RouteClass::Logs,
         _ => RouteClass::Other,
     }
 }
 
 fn site_route_class(method: &Method, path: &str) -> RouteClass {
-    match (method.as_str(), path) {
-        (_, "/status/summary") => RouteClass::Exempt,
-        ("GET", "/" | "/dashboard/login" | "/dashboard/signup" | "/request-invite" | "/status") => RouteClass::Page,
+    let segments: Vec<&str> = path.trim_start_matches('/').split('/').collect();
+    match (method.as_str(), path, segments.as_slice()) {
+        (_, "/status/summary", _) => RouteClass::Exempt,
+        ("GET", "/" | "/dashboard/login" | "/dashboard/signup" | "/request-invite" | "/status", _) => RouteClass::Page,
+        ("POST", "/telemetry/client", _) | ("POST", _, ["dashboard", "stores", _, "pos", "logs"]) => RouteClass::Logs,
         _ => RouteClass::Other,
     }
 }
@@ -158,6 +170,24 @@ async fn guard(state: &AppState, class: RouteClass, client: Option<ClientIdentit
     let Some(client) = client else { return next.run(request).await };
     let now = crate::now_unix();
     let abuse = &state.abuse;
+
+    if class == RouteClass::Logs {
+        if let Err(retry_after_secs) = abuse.check_logs(&client, now) {
+            // Keyed by the kind of report, not the path (paths carry store
+            // ids and keys a flood could vary).
+            let path = request.uri().path();
+            let source = if path.starts_with("/pay/") { "woocommerce" } else if path.ends_with("/pos/logs") { "pos" } else { "browser" };
+            shared::throttled!(
+                format!("client-logs-dropped:{source}"),
+                warn,
+                report.source = source,
+                "log reports dropped: a client is past abuse.client_logs_per_min"
+            );
+            return blocked(state, class, retry_after_secs);
+        }
+        request.extensions_mut().insert(client);
+        return next.run(request).await;
+    }
 
     // A solved challenge coming back.
     let mut redeem_error = None;
@@ -489,6 +519,49 @@ mod tests {
         router.clone().oneshot(get("/", "198.51.100.6:1")).await.unwrap();
         let html = text(router.clone().oneshot(get("/", "198.51.100.6:1")).await.unwrap()).await;
         assert!(html.contains("Checking your connection"));
+    }
+
+    fn report(peer: &str) -> Request<Body> {
+        let body = r#"{"kind":"error","message":"x is undefined","page":"/dashboard/admin/logs"}"#;
+        let mut request = Request::builder().method("POST").uri("/telemetry/client").body(Body::from(body)).unwrap();
+        request.extensions_mut().insert(axum::extract::ConnectInfo(peer.parse::<std::net::SocketAddr>().unwrap()));
+        request
+    }
+
+    #[tokio::test]
+    async fn a_client_flooding_log_reports_loses_only_its_reports_and_is_never_challenged() {
+        let router = build_router(state(AbuseConfig { client_logs_per_min: 3, under_attack: false, ..low_limits() }));
+        let peer = "198.51.100.20:1";
+        for _ in 0..3 {
+            assert_eq!(router.clone().oneshot(report(peer)).await.unwrap().status(), StatusCode::NO_CONTENT);
+        }
+        let dropped = router.clone().oneshot(report(peer)).await.unwrap();
+        assert_eq!(dropped.status(), StatusCode::TOO_MANY_REQUESTS);
+        assert!(dropped.headers().contains_key("retry-after"));
+        assert!(!dropped.headers().contains_key("monokulo-challenge"), "no challenge for log reports");
+
+        // The reports spent nothing of the main budget (soft limit 1): the
+        // first page is served, not challenged.
+        let page = router.clone().oneshot(get("/", peer)).await.unwrap();
+        assert_ne!(page.status(), StatusCode::TOO_MANY_REQUESTS, "the page is served, not challenged");
+        // Another client's reports have their own budget.
+        assert_eq!(router.clone().oneshot(report("198.51.100.21:1")).await.unwrap().status(), StatusCode::NO_CONTENT);
+    }
+
+    #[tokio::test]
+    async fn under_attack_never_challenges_log_reports() {
+        let router = build_router(state(AbuseConfig { under_attack: true, ..Default::default() }));
+        let response = router.clone().oneshot(report("198.51.100.22:1")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NO_CONTENT);
+    }
+
+    #[test]
+    fn log_routes_are_classed_as_logs() {
+        use axum::http::Method;
+        assert_eq!(super::site_route_class(&Method::POST, "/telemetry/client"), super::RouteClass::Logs);
+        assert_eq!(super::site_route_class(&Method::POST, "/dashboard/stores/c1/pos/logs"), super::RouteClass::Logs);
+        assert_eq!(super::site_route_class(&Method::GET, "/dashboard/stores/c1/pos/logs"), super::RouteClass::Other);
+        assert_eq!(super::pay_route_class(&Method::POST, "/pay/pk_1/logs"), super::RouteClass::Logs);
     }
 
     #[tokio::test]

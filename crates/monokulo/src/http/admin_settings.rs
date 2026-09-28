@@ -719,6 +719,7 @@ mod tests {
             ("abuse.soft_per_min", "33"),
             ("abuse.hard_per_min", "330"),
             ("abuse.signed_in_per_min", "700"),
+            ("abuse.client_logs_per_min", "45"),
             ("abuse.challenge_bits", "18"),
             ("abuse.under_attack", "true"),
             ("rate_limit.per_store_key_per_min", "444"),

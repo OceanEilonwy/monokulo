@@ -82,7 +82,8 @@ link. With it, searches update in place, **Older** appends the next page and
 
 - The site's own pages report JavaScript errors and failed requests to
   `POST /telemetry/client`, in the trace of the request that rendered the
-  page. Reports are always `warn`, clipped, and counted by the abuse limits.
+  page. Reports are always `warn`, clipped, and limited per client by
+  `abuse.client_logs_per_min` (a `429` drops them; never a challenge).
   The checkout embed doesn't send them.
 - The WooCommerce plugin sends a `traceparent` header on its requests and
   adds `[trace <id>]` to its own WooCommerce log lines, so the two can be

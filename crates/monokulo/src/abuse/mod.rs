@@ -42,6 +42,9 @@ pub struct AbuseConfig {
     pub hard_per_min: u32,
     /// Requests a minute for a signed-in merchant (never challenged).
     pub signed_in_per_min: u32,
+    /// Log reports a minute any one client may send (its own budget, see
+    /// [`AbuseProtection::check_logs`]).
+    pub client_logs_per_min: u32,
     /// Requests a minute a shop's server may make with its store's key.
     pub per_store_key_per_min: u32,
     /// Open live-update streams per (client, store).
@@ -59,6 +62,7 @@ impl Default for AbuseConfig {
             soft_per_min: settings::ABUSE_SOFT_PER_MIN.default_value(),
             hard_per_min: settings::ABUSE_HARD_PER_MIN.default_value(),
             signed_in_per_min: settings::ABUSE_SIGNED_IN_PER_MIN.default_value(),
+            client_logs_per_min: settings::ABUSE_CLIENT_LOGS_PER_MIN.default_value(),
             per_store_key_per_min: settings::RATE_LIMIT_PER_STORE_KEY_PER_MIN.default_value(),
             stream_cap: settings::ABUSE_STREAM_CAP.default_value(),
             challenge_bits: settings::ABUSE_CHALLENGE_BITS.default_value(),
@@ -82,6 +86,7 @@ impl AbuseConfig {
             soft_per_min: settings::get(db, &settings::ABUSE_SOFT_PER_MIN),
             hard_per_min: settings::get(db, &settings::ABUSE_HARD_PER_MIN),
             signed_in_per_min: settings::get(db, &settings::ABUSE_SIGNED_IN_PER_MIN),
+            client_logs_per_min: settings::get(db, &settings::ABUSE_CLIENT_LOGS_PER_MIN),
             per_store_key_per_min: settings::get(db, &settings::RATE_LIMIT_PER_STORE_KEY_PER_MIN),
             stream_cap: settings::get(db, &settings::ABUSE_STREAM_CAP),
             challenge_bits: settings::get(db, &settings::ABUSE_CHALLENGE_BITS).clamp(1, 32),
@@ -106,6 +111,9 @@ impl AbuseConfig {
 pub struct AbuseProtection {
     config: RwLock<AbuseConfig>,
     pub limiter: limiter::TieredLimiter<ClientIdentity>,
+    /// Log reports only, so a client flooding them never spends the budget
+    /// its pages and API calls need.
+    pub log_limiter: limiter::TieredLimiter<ClientIdentity>,
     pub challenges: challenge::Challenges,
     pub streams: Arc<streams::StreamLimiter>,
     pub stats: stats::ChallengeStats,
@@ -121,6 +129,7 @@ impl AbuseProtection {
     pub fn new(config: AbuseConfig) -> Self {
         AbuseProtection {
             limiter: limiter::TieredLimiter::default(),
+            log_limiter: limiter::TieredLimiter::default(),
             challenges: challenge::Challenges::default(),
             streams: Arc::new(streams::StreamLimiter::new(config.stream_cap)),
             stats: stats::ChallengeStats::default(),
@@ -147,5 +156,17 @@ impl AbuseProtection {
         let config = self.config();
         let force_soft = challengeable && config.under_attack && !client.is_authenticated();
         self.limiter.check(client, config.limits_for(client), force_soft, now)
+    }
+
+    /// Counts one log report from `client`. `Err(retry_after_secs)` past
+    /// its limit: the report is dropped. Never a challenge, whoever the
+    /// client is - solving a proof of work to deliver a log line would be
+    /// absurd, and the page that sent it keeps working either way.
+    pub fn check_logs(&self, client: &ClientIdentity, now: i64) -> Result<(), u64> {
+        let per_min = self.config().client_logs_per_min;
+        match self.log_limiter.check(client, Limits { soft_per_min: per_min, hard_per_min: per_min }, false, now) {
+            Tier::Blocked { retry_after_secs } => Err(retry_after_secs),
+            Tier::Allowed | Tier::Challenge => Ok(()),
+        }
     }
 }
