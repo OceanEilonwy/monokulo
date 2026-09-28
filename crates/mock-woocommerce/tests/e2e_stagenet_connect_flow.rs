@@ -163,8 +163,6 @@ impl Drop for TestControlPlaneHandle {
     }
 }
 
-const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
-
 async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPlaneHandle {
     use monokulo::db::Db;
     use monokulo::engine_client::EngineClient;
@@ -184,17 +182,8 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
         .expect("bound listener has no local address");
     db.set_setting("public_url", &format!("http://{addr}")).expect("failed to set public_url for test monokulo db");
     let state = AppState {
-        db: db.into_shared(),
         engine_client: EngineClient::new(format!("http://{engine_addr}")),
-        encryption_key: TEST_ENCRYPTION_KEY,
-        status_cache: monokulo::http::status_page::new_status_cache(),
-        // `TEST_CURRENCY` is `"XMR"` - needs no provider at all, so this
-        // stays genuinely unconfigured, same as everything else in this
-        // suite that isn't the "plugin" itself.
-        exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-        abuse: Default::default(),
-        dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-        settings: monokulo::settings::MonokuloSettings::defaults(),
+        ..AppState::for_tests_with_db(db.into_shared())
     };
     let router = build_router(state);
 

@@ -128,6 +128,42 @@ pub struct AppState {
     pub log_store: Option<telemetry::store::LogStore>,
 }
 
+/// The encryption key [`AppState::for_tests`] uses.
+#[cfg(any(test, feature = "test-support"))]
+pub const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
+
+#[cfg(any(test, feature = "test-support"))]
+impl AppState {
+    /// A state for tests: an in-memory db with the test admin seeded
+    /// (`Db::seed_test_admin`), an engine URL nothing listens on, a fixed
+    /// encryption key, XMR-only exchange rates, default abuse limits and
+    /// settings, no DNS and no log store. A test that needs something else
+    /// overrides just that field with struct update syntax:
+    /// `AppState { engine_client, ..AppState::for_tests() }`.
+    pub fn for_tests() -> Self {
+        let db = crate::db::Db::open_in_memory().expect("opening an in-memory db for a test AppState");
+        db.seed_test_admin();
+        Self::for_tests_with_db(db.into_shared())
+    }
+
+    /// [`AppState::for_tests`] around a db the test prepared itself, so a
+    /// test that needs its own db doesn't also open and seed one it throws
+    /// away.
+    pub fn for_tests_with_db(db: SharedDb) -> Self {
+        AppState {
+            db,
+            engine_client: EngineClient::new("http://127.0.0.1:1"),
+            encryption_key: TEST_ENCRYPTION_KEY,
+            status_cache: status_page::new_status_cache(),
+            exchange_rate: Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
+            abuse: Default::default(),
+            dns: Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+            settings: crate::settings::MonokuloSettings::defaults(),
+            log_store: None,
+        }
+    }
+}
+
 pub fn build_router(state: AppState) -> Router {
     let router = Router::new()
         .route("/", axum::routing::get(home::landing))

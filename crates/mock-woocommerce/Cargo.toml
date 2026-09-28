@@ -39,7 +39,7 @@ cli-wallet = { path = "../cli-wallet", optional = true }
 # harness in src/lib.rs). Dev-dependencies only - never linked into a normal
 # build.
 [dev-dependencies]
-monokulo = { path = "../monokulo" }
+monokulo = { path = "../monokulo", features = ["test-support"] }
 scanner-test-support = { path = "../scanner-test-support" }
 monero = "0.22.0"
 # WBS 1.4.5's real stagenet connect-flow test only (hex-encodes the sent

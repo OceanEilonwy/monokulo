@@ -580,7 +580,6 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::db::Db;
     use crate::engine_client::EngineClient;
 
     use super::super::{AppState, build_router};
@@ -630,16 +629,11 @@ mod tests {
 
     const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
     const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
-    const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
     // `"XMR"`, not a fiat currency - this module's tests are about the
     // checkout page's own rendering, not about exercising a real (mocked)
     // fiat provider (`pay.rs`'s own tests do that), and an XMR-denominated
     // order needs no provider configured at all.
     const TEST_CURRENCY: &str = "XMR";
-
-    fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
-    }
 
     async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
         let engine = scanner_test_support::TestEngineConfig::new()
@@ -648,15 +642,8 @@ mod tests {
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
             engine_client,
-            encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: test_exchange_rate_provider(),
-            abuse: Default::default(),
-            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-            settings: crate::settings::MonokuloSettings::defaults(),
-            log_store: None,
+            ..AppState::for_tests()
         };
         (state, engine)
     }

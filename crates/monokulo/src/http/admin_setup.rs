@@ -143,10 +143,7 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::db::Db;
-    use crate::engine_client::EngineClient;
     use crate::http::{build_router, AppState};
-
-    const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
 
     /// A fresh, *unseeded* instance - deliberately not `Db::seed_test_admin`
     /// (every other test fixture in this crate does seed it, precisely so
@@ -154,17 +151,7 @@ mod tests {
     /// to prove the wizard *does* trigger, and works, on a genuinely fresh
     /// install.
     fn fresh_router() -> Router {
-        let state = AppState {
-            db: Db::open_in_memory().unwrap().into_shared(),
-            engine_client: EngineClient::new("http://127.0.0.1:1"),
-            encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-            abuse: Default::default(),
-            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-            settings: crate::settings::MonokuloSettings::defaults(),
-            log_store: None,
-        };
+        let state = AppState::for_tests_with_db(Db::open_in_memory().unwrap().into_shared());
         build_router(state)
     }
 

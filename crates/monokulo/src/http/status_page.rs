@@ -419,7 +419,7 @@ mod tests {
 
     #[tokio::test]
     async fn known_health_renders_the_last_known_state_and_refreshes_it_in_the_background() {
-        let state = crate::http::tests::test_app_state();
+        let state = crate::http::AppState::for_tests();
         // Nothing learned yet: unknown, and a background refresh starts.
         assert_eq!(known_health(&state), None);
         let deadline = Instant::now() + Duration::from_secs(5);
@@ -446,18 +446,10 @@ mod tests {
         use http_body_util::BodyExt;
         use tower::ServiceExt;
 
-        use crate::db::Db;
         use crate::engine_client::EngineClient;
         use crate::http::{AppState, build_router};
 
-        use super::super::{get_status_cached, new_status_cache};
-
-        const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
-
-        /// See `AppState`'s own doc comment on `exchange_rate`.
-        fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-            std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
-        }
+        use super::super::get_status_cached;
 
         /// The real fix this cache exists for (see the module's own doc
         /// comment on the incident): a second request arriving within the
@@ -485,15 +477,8 @@ mod tests {
 
         fn state_with_engine(engine_client: EngineClient) -> AppState {
             AppState {
-                db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
                 engine_client,
-                encryption_key: TEST_ENCRYPTION_KEY,
-                status_cache: new_status_cache(),
-                exchange_rate: test_exchange_rate_provider(),
-                abuse: Default::default(),
-                dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-                settings: crate::settings::MonokuloSettings::defaults(),
-                log_store: None,
+                ..AppState::for_tests()
             }
         }
 

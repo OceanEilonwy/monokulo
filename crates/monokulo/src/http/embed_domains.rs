@@ -332,7 +332,6 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::db::Db;
     use crate::embed_domains::test_support::FakeDns;
     use crate::embed_domains::{self, GRACE_SECS, RECHECK_EVERY_SECS};
     use crate::engine_client::EngineClient;
@@ -345,19 +344,9 @@ mod tests {
     async fn test_state(dns: Arc<FakeDns>) -> (AppState, scanner_test_support::TestEngineHandle) {
         let engine = scanner_test_support::TestEngineConfig::new().with_networks(&[monero::Network::Mainnet]).spawn().await;
         let state = AppState {
-            db: {
-                let db = Db::open_in_memory().unwrap();
-                db.seed_test_admin();
-                db.into_shared()
-            },
             engine_client: EngineClient::new(format!("http://{}", engine.addr)),
-            encryption_key: [7u8; 32],
-            status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-            abuse: Default::default(),
             dns,
-            settings: crate::settings::MonokuloSettings::defaults(),
-            log_store: None,
+            ..AppState::for_tests()
         };
         (state, engine)
     }

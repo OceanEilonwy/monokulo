@@ -7,7 +7,7 @@ use monokulo::{
     crypto, db::{Db, SharedDb}, embed_domains::UnavailableDns,
     engine_client::{CreateTenantRequest, EngineClient},
     exchange_rate_config::ExchangeRateProviders,
-    http::{build_router, status_page, AppState}, views,
+    http::{build_router, AppState}, views,
 };
 use scanner_test_support::{TestEngineConfig, TestEngineHandle};
 
@@ -144,10 +144,8 @@ async fn main() {
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("bind fixture");
     let url = format!("http://{}", listener.local_addr().unwrap());
     let state = AppState {
-        db: db.into_shared(),
         engine_client,
         encryption_key: ENCRYPTION_KEY,
-        status_cache: status_page::new_status_cache(),
         exchange_rate: Arc::new(ExchangeRateProviders::coingecko_only(url.clone())),
         // Every browser test comes from one address, far faster than a real
         // visitor: generous per-address limits, so no test is sent to the
@@ -159,8 +157,7 @@ async fn main() {
             ..Default::default()
         })),
         dns: Arc::new(UnavailableDns("DNS is unavailable in browser tests".into())),
-        settings: monokulo::settings::MonokuloSettings::defaults(),
-        log_store: None,
+        ..AppState::for_tests_with_db(db.into_shared())
     };
     let controls = Router::new()
         .route("/__coverage/ready", get(ready))

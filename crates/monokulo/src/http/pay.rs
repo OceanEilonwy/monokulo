@@ -300,7 +300,6 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::db::Db;
     use crate::engine_client::EngineClient;
 
     use super::super::{AppState, build_router};
@@ -310,7 +309,6 @@ mod tests {
     /// engine's real wallet-material validation.
     const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
     const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
-    const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
     // This module's own tests deliberately exercise a real fiat quote (via a
     // local mock Coingecko server below), not just XMR - `http::pay::create_order`
     // is the real production storefront-facing endpoint, so its own tests are
@@ -352,15 +350,9 @@ mod tests {
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
             engine_client,
-            encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: crate::http::status_page::new_status_cache(),
             exchange_rate: test_exchange_rate_provider().await,
-            abuse: Default::default(),
-            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-            settings: crate::settings::MonokuloSettings::defaults(),
-            log_store: None,
+            ..AppState::for_tests()
         };
         (state, engine)
     }

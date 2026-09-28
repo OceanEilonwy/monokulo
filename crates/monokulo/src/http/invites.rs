@@ -314,28 +314,11 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::db::{Db, TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD};
-    use crate::engine_client::EngineClient;
+    use crate::db::{TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD};
     use crate::http::{build_router, AppState};
 
-    const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
-
-    fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
-    }
-
     fn test_state() -> AppState {
-        AppState {
-            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
-            engine_client: EngineClient::new("http://127.0.0.1:1"),
-            encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: test_exchange_rate_provider(),
-            abuse: Default::default(),
-            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-            settings: crate::settings::MonokuloSettings::defaults(),
-            log_store: None,
-        }
+        AppState::for_tests()
     }
 
     async fn body_text(response: axum::response::Response) -> String {

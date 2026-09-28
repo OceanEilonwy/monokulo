@@ -1435,7 +1435,6 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::db::Db;
     use crate::engine_client::EngineClient;
     use crate::views::orders::{OrderDetailData, OrderDetailViewModel};
 
@@ -1457,13 +1456,6 @@ mod tests {
     const TEST_CURRENCY: &str = "XMR";
     const TEST_RATE_PICONERO_PER_UNIT: u64 = 1_000_000_000_000;
 
-    /// An `AppState.exchange_rate` with no fiat provider configured at all -
-    /// every test in this module prices its orders in `TEST_CURRENCY`
-    /// (`"XMR"`), which needs none.
-    fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
-    }
-
     async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
         let engine = scanner_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet])
@@ -1471,15 +1463,8 @@ mod tests {
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
             engine_client,
-            encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: test_exchange_rate_provider(),
-            abuse: Default::default(),
-            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-            settings: crate::settings::MonokuloSettings::defaults(),
-            log_store: None,
+            ..AppState::for_tests()
         };
         (state, engine)
     }
@@ -1497,15 +1482,8 @@ mod tests {
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
             engine_client,
-            encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: test_exchange_rate_provider(),
-            abuse: Default::default(),
-            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-            settings: crate::settings::MonokuloSettings::defaults(),
-            log_store: None,
+            ..AppState::for_tests()
         };
         (state, engine)
     }
@@ -2023,15 +2001,8 @@ mod tests {
         let engine = scanner_test_support::TestEngineConfig::new()
             .with_networks(&[monero::Network::Mainnet]).with_background_loops().without_background_scan_loop().spawn().await;
         let state = AppState {
-            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
             engine_client: EngineClient::new(format!("http://{}", engine.addr)),
-            encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: test_exchange_rate_provider(),
-            abuse: Default::default(),
-            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-            settings: crate::settings::MonokuloSettings::defaults(),
-            log_store: None,
+            ..AppState::for_tests()
         };
         let router = build_router(state);
         let session_token = signed_up_and_logged_in_session_token(&router, "webhook-delivery@example.com", "correct horse battery staple").await;

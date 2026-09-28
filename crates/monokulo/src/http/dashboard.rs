@@ -487,15 +487,8 @@ mod tests {
 
         let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let state = crate::http::AppState {
-            db: { let db = crate::db::Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
             engine_client: crate::engine_client::EngineClient::new(format!("http://{}", engine.addr)),
-            encryption_key: [7u8; 32],
-            status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-            abuse: Default::default(),
-            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-            settings: crate::settings::MonokuloSettings::defaults(),
-            log_store: None,
+            ..crate::http::AppState::for_tests()
         };
         let router = crate::http::build_router(state);
         let json = |uri: &str, body: serde_json::Value| Request::builder().method("POST").uri(uri)

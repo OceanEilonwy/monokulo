@@ -3,6 +3,13 @@ name = "monokulo"
 version = "0.1.0"
 edition = "2021"
 
+[features]
+# `http::AppState::for_tests` and `db::Db::seed_test_admin`, for other
+# crates' tests and this crate's own integration tests and examples.
+# Enabled only from [dev-dependencies] (resolver 2 keeps it out of every
+# normal build), never in production.
+test-support = []
+
 [dependencies]
 parking_lot = "0.12.5"
 aes-gcm = "0.11.1"
@@ -42,6 +49,8 @@ serde_urlencoded = "0.7"
 jiff = "0.2"
 
 [dev-dependencies]
+# Turns on `test-support` for this crate's own integration tests and examples.
+monokulo = { path = ".", features = ["test-support"] }
 # Per-thread environment overrides for settings tests
 # (`shared::settings::test_env`), instead of mutating the real process
 # environment that parallel tests share.

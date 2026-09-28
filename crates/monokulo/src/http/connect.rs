@@ -568,7 +568,6 @@ mod tests {
     use http_body_util::BodyExt;
     use tower::ServiceExt;
 
-    use crate::db::Db;
     use crate::engine_client::EngineClient;
 
     use super::super::{AppState, build_router};
@@ -577,37 +576,15 @@ mod tests {
     /// `engine_client.rs`'s own tests use.
     const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
     const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
-    const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
     /// This test instance's configured public address - what `/finish`
     /// must hand plugins as `endpoint`.
     const TEST_PUBLIC_URL: &str = "https://pay.example.test";
 
-    /// A fixed 1-XMR-per-unit `FixedRateProvider` for tests that don't
-    /// actually exercise fiat conversion, just need `AppState.exchange_rate`
-    /// populated with something real - see `AppState`'s own doc comment.
-    fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
-    }
-
     async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
         let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
-        let state = AppState {
-            db: {
-                let db = Db::open_in_memory().unwrap();
-                db.seed_test_admin();
-                db.set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL).unwrap();
-                db.into_shared()
-            },
-            engine_client,
-            encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: test_exchange_rate_provider(),
-            abuse: Default::default(),
-            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-            settings: crate::settings::MonokuloSettings::defaults(),
-            log_store: None,
-        };
+        let state = AppState { engine_client, ..AppState::for_tests() };
+        state.db.lock().set_setting(crate::settings::PUBLIC_URL.key, TEST_PUBLIC_URL).unwrap();
         (state, engine)
     }
 

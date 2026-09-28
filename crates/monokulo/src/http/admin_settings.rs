@@ -518,7 +518,6 @@ mod tests {
     use crate::engine_client::EngineClient;
     use crate::http::{build_router, AppState};
 
-    const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
     const SCANNER_ADMIN_TOKEN: &str = "admin_test_token_for_monokulo_admin_settings_tests";
 
     fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
@@ -564,17 +563,7 @@ mod tests {
         )
         .await
         .unwrap();
-        AppState {
-            db,
-            engine_client,
-            encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate,
-            abuse,
-            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-            settings,
-            log_store: None,
-        }
+        AppState { engine_client, exchange_rate, abuse, settings, ..AppState::for_tests_with_db(db) }
     }
 
     async fn body_text(response: axum::response::Response) -> String {
@@ -1103,21 +1092,7 @@ mod tests {
 
     #[tokio::test]
     async fn an_unconfigured_scanner_connection_shows_a_configuration_prompt_instead_of_a_form() {
-        let state = {
-            let db = Db::open_in_memory().unwrap();
-            db.seed_test_admin();
-            AppState {
-                db: db.into_shared(),
-                engine_client: EngineClient::new("http://127.0.0.1:1"),
-                encryption_key: TEST_ENCRYPTION_KEY,
-                status_cache: crate::http::status_page::new_status_cache(),
-                exchange_rate: test_exchange_rate_provider(),
-                abuse: Default::default(),
-                dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-                settings: crate::settings::MonokuloSettings::defaults(),
-                log_store: None,
-            }
-        };
+        let state = AppState::for_tests();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
