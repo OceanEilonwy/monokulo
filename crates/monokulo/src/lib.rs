@@ -18,6 +18,7 @@ pub mod engine_client;
 pub mod exchange_rate_config;
 pub mod http;
 pub mod live;
+pub mod logs;
 pub mod settings;
 pub mod templates;
 pub mod views;

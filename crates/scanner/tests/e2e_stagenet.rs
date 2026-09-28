@@ -142,7 +142,8 @@ async fn real_stagenet_payment_is_detected_end_to_end() {
             Arc::new(FallbackDaemonClient::new(vec![FallbackNode { label: format!("{}:{}", e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT), client: daemon.clone() }])),
         )])),
         scanner_status: scanner::scanner_status::new_scanner_status_map(),
-            settings: scanner::engine_settings::EngineSettings::defaults(),
+        settings: scanner::engine_settings::EngineSettings::defaults(),
+        log_store: None,
     };
     let router = build_router(app_state, 1_000_000);
 

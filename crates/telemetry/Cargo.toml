@@ -16,11 +16,14 @@ live-settings = { path = "../live-settings" }
 opentelemetry = { version = "0.33.0", default-features = false, features = ["trace"] }
 opentelemetry_sdk = { version = "0.33.0", default-features = false, features = ["trace"] }
 parking_lot = "0.12.5"
+# The local log store (`logs.db`).
+rusqlite = { version = "0.40.2", features = ["bundled"] }
+serde = { version = "1", features = ["derive"] }
 serde_json = "1.0.151"
 # Timestamps on JSON lines (RFC 3339, UTC).
 time = { version = "0.3.55", features = ["formatting"] }
 # The expiry timer for development mode.
-tokio = { version = "1.53.1", features = ["time", "rt"] }
+tokio = { version = "1.53.1", features = ["time", "rt", "sync"] }
 tracing = "0.1.44"
 tracing-opentelemetry = { version = "0.34.0", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "registry"] }

@@ -191,6 +191,22 @@ settings! {
         check: range(0, i64::MAX),
         description: "Development logging: until this time the engine logs at debug level, then goes back to the level above by itself. Secrets and addresses stay hidden either way.",
     },
+    LOGGING_RETENTION_DAYS: u64 {
+        key: "logging.retention_days",
+        env: "SCANNER_LOGGING_RETENTION_DAYS",
+        default: telemetry::store::DEFAULT_RETENTION_DAYS,
+        check: range(1, 365),
+        description: "Days the engine's log store keeps lines for the Logs page. Older lines are deleted once a minute.",
+        example: "14",
+    },
+    LOGGING_MAX_MB: u64 {
+        key: "logging.max_mb",
+        env: "SCANNER_LOGGING_MAX_MB",
+        default: telemetry::store::DEFAULT_MAX_MB,
+        check: range(10, 100_000),
+        description: "Most megabytes the engine's log store may use. Past it, the oldest lines are deleted first.",
+        example: "500",
+    },
 }
 
 /// The networks the engine can scan, with their node setting.
@@ -211,12 +227,14 @@ impl AsRef<telemetry::LogConfig> for LoggingConfig {
 impl Section for LoggingConfig {
     const NAME: &'static str = "logging";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&LOGGING_LEVEL, &LOGGING_DEV_MODE_UNTIL]
+        &[&LOGGING_LEVEL, &LOGGING_DEV_MODE_UNTIL, &LOGGING_RETENTION_DAYS, &LOGGING_MAX_MB]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(LoggingConfig(telemetry::LogConfig {
             level: snapshot.get(&LOGGING_LEVEL).trim().to_string(),
             dev_mode_until: snapshot.get(&LOGGING_DEV_MODE_UNTIL),
+            retention_days: snapshot.get(&LOGGING_RETENTION_DAYS),
+            max_mb: snapshot.get(&LOGGING_MAX_MB),
         }))
     }
 }

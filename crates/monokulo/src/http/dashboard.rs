@@ -495,6 +495,7 @@ mod tests {
             abuse: Default::default(),
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
             settings: crate::settings::MonokuloSettings::defaults(),
+            log_store: None,
         };
         let router = crate::http::build_router(state);
         let json = |uri: &str, body: serde_json::Value| Request::builder().method("POST").uri(uri)

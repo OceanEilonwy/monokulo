@@ -67,6 +67,7 @@ fn test_app_state() -> AppState {
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
         scanner_status: new_scanner_status_map(),
+        log_store: None,
         settings: crate::engine_settings::EngineSettings::defaults(),
     }
 }
@@ -1283,6 +1284,7 @@ async fn test_app_state_with_real_daemon_and_env(env: live_settings::Env) -> (Ap
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
         scanner_status: new_scanner_status_map(),
+        log_store: None,
         settings: crate::engine_settings::EngineSettings::load_with(settings_store, None, Arc::new(RateLimiter::new(10_000)), env)
             .await
             .unwrap(),
@@ -1595,6 +1597,7 @@ async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_toke
         admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         daemons: crate::engine_settings::Daemons::fixed(HashMap::new()),
         scanner_status: new_scanner_status_map(),
+        log_store: None,
         settings,
     };
     let second_call = crate::http::instance_admin::ensure_admin_token_seeded(&state.store.lock());
@@ -2035,6 +2038,7 @@ async fn engine_that_applies_node_settings() -> (Router, crate::engine_settings:
         admin_rate_limiter: rate_limiter.clone(),
         daemons: daemons.clone(),
         scanner_status: new_scanner_status_map(),
+        log_store: None,
         settings,
     };
     (build_router(state, 16 * 1024 * 1024), daemons, rate_limiter)
@@ -2573,4 +2577,79 @@ fn a_disabled_store_can_not_be_moved() {
         .tenant;
     store.disable_tenant(&tenant.id, 2).unwrap();
     assert!(matches!(store.update_tenant_key_custody(&tenant.id, "socket", &[2]), Err(crate::store::StoreError::NotFound)));
+}
+
+// -- The log API (structured_logging.md 3.3) ---------------------------------
+
+#[tokio::test]
+async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_errors() {
+    let dir = std::env::temp_dir().join(format!("engine-log-api-{}-{}", std::process::id(), crate::http::now_unix()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let (telemetry, subscriber) = telemetry::build("scanner", telemetry::Format::Json, false, "info", std::io::sink);
+    let log_store = telemetry.open_store(&dir.join("scanner.logs.db")).unwrap();
+    let trace_id = {
+        let _guard = tracing::subscriber::set_default(subscriber);
+        let span = tracing::info_span!("log api test span");
+        span.in_scope(|| tracing::info!(store.id = "s_log_api", "log api test first"));
+        tracing::warn!(store.id = "s_other", "log api test second");
+        telemetry::trace::span_context(&span).unwrap().trace_id().to_string()
+    };
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while log_store.query(&telemetry::store::LogQuery { limit: 10, ..Default::default() }).unwrap().len() < 2 {
+        assert!(std::time::Instant::now() < deadline, "the lines were never stored");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let mut state = test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
+    state.log_store = Some(log_store);
+    let router = build_router(state, 1_000_000);
+    let get = |uri: String, token: Option<&str>| {
+        let mut builder = Request::builder().uri(uri);
+        if let Some(token) = token {
+            builder = builder.header("authorization", format!("Bearer {token}"));
+        }
+        builder.body(Body::empty()).unwrap()
+    };
+
+    let response = router.clone().oneshot(get("/api/v1/admin/logs".into(), None)).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+    let response = router.clone().oneshot(get("/api/v1/admin/logs".into(), Some("sk_not_the_admin"))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "a store's key is not the admin token");
+
+    let response = router.clone().oneshot(get("/api/v1/admin/logs?q=store.id%20%3D%20%27s_log_api%27".into(), Some("admin_test_token"))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body: telemetry::store::api::LogsResponse = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body.rows.len(), 1);
+    assert_eq!(body.rows[0].message, "log api test first");
+    assert_eq!(body.rows[0].trace_id.as_deref(), Some(trace_id.as_str()));
+
+    let response = router.clone().oneshot(get("/api/v1/admin/logs?q=level%20%3D%20loud".into(), Some("admin_test_token"))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let error: telemetry::store::api::QueryErrorResponse = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(error.error.contains("a level is one of"), "{error:?}");
+    assert_eq!(error.start, 8);
+
+    let response = router.clone().oneshot(get(format!("/api/v1/admin/logs/trace/{trace_id}"), Some("admin_test_token"))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let trace: telemetry::store::Trace = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(trace.logs.len(), 1);
+
+    let response = router.clone().oneshot(get("/api/v1/admin/logs/trace/not-a-trace".into(), Some("admin_test_token"))).await.unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let response = router.clone().oneshot(get("/api/v1/admin/logs/attributes".into(), Some("admin_test_token"))).await.unwrap();
+    let names: telemetry::store::api::AttributesResponse = serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(names.names.contains(&"store.id".to_string()), "{names:?}");
+
+    let _ = std::fs::remove_dir_all(dir);
+}
+
+#[tokio::test]
+async fn without_a_log_store_the_log_api_says_so() {
+    let state = test_app_state();
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
+    let router = build_router(state, 1_000_000);
+    let request = Request::builder().uri("/api/v1/admin/logs").header("authorization", "Bearer admin_test_token").body(Body::empty()).unwrap();
+    assert_eq!(router.oneshot(request).await.unwrap().status(), StatusCode::SERVICE_UNAVAILABLE);
 }

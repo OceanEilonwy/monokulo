@@ -529,6 +529,7 @@ mod tests {
             abuse,
             dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
             settings,
+            log_store: None,
         }
     }
 
@@ -683,6 +684,8 @@ mod tests {
             ("abuse.stream_cap", "9"),
             ("logging.level", "warn,monokulo::http=debug"),
             ("logging.dev_mode_until", "4102444800"),
+            ("logging.retention_days", "30"),
+            ("logging.max_mb", "250"),
         ];
         // Every monokulo setting must be covered here, or this test would
         // silently stop proving anything about a setting added later.
@@ -736,6 +739,8 @@ mod tests {
             ("webhooks.max_attempts", "12"),
             ("logging.level", "warn,scanner::loops=debug"),
             ("logging.dev_mode_until", "4102444800"),
+            ("logging.retention_days", "30"),
+            ("logging.max_mb", "250"),
         ];
         assert_eq!(
             new_values.len(),
@@ -988,6 +993,7 @@ mod tests {
                 abuse: Default::default(),
                 dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
                 settings: crate::settings::MonokuloSettings::defaults(),
+                log_store: None,
             }
         };
         let router = build_router(state);

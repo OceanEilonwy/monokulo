@@ -333,6 +333,7 @@ mod tests {
             admin_rate_limiter: rate_limiter,
             daemons: daemons.clone(),
             scanner_status: status.clone(),
+            log_store: None,
             settings: settings.clone(),
         };
         let router = crate::http::build_router(state, 1 << 20);

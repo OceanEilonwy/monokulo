@@ -4,6 +4,7 @@ version = "0.1.0"
 edition = "2021"
 
 [dependencies]
+telemetry = { path = "../telemetry" }
 live-settings = { path = "../live-settings" }
 parking_lot = "0.12.5"
 async-trait = "0.1.92"

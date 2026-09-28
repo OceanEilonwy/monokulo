@@ -160,6 +160,8 @@ async fn run(action: Action) {
     };
 
     let store = open_store().into_shared();
+    // Beside the main database; lines logged since start-up go in too.
+    let log_store = telemetry::global().and_then(|t| t.open_store_beside(&cli::database_path()));
 
     if let Some(token) = ensure_admin_token_seeded(&store.lock()) {
         println!(
@@ -236,6 +238,7 @@ async fn run(action: Action) {
         admin_rate_limiter,
         daemons: daemons.clone(),
         scanner_status: scanner_status.clone(),
+        log_store: log_store.clone(),
         settings: engine_settings.clone(),
     };
 

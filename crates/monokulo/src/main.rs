@@ -42,6 +42,8 @@ async fn main() {
     let db_path = std::env::var("MONOKULO_DB_PATH").unwrap_or_else(|_| "monokulo.db".to_string());
     let bind = std::env::var("MONOKULO_BIND").unwrap_or_else(|_| "127.0.0.1:8081".to_string());
     let db = Db::open_file(&db_path).expect("failed to open monokulo database");
+    // Beside the main database; lines logged since start-up go in too.
+    let log_store = telemetry::global().and_then(|t| t.open_store_beside(std::path::Path::new(&db_path)));
     let encryption_key = encryption_key_from_env();
     // Verified embed domains: the machine's own resolver. If it can't be set
     // up, the dashboard still works and every check says why it failed.
@@ -91,6 +93,7 @@ async fn main() {
         abuse,
         dns,
         settings: monokulo_settings,
+        log_store,
     };
     let router = build_router(app_state);
     // The onion listener (`monokulo::abuse::proxy_protocol`): same router,

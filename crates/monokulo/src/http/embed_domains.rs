@@ -347,6 +347,7 @@ mod tests {
             abuse: Default::default(),
             dns,
             settings: crate::settings::MonokuloSettings::defaults(),
+            log_store: None,
         };
         (state, engine)
     }

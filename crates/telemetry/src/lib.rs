@@ -26,7 +26,9 @@
 #[cfg(feature = "axum")]
 pub mod http;
 mod json;
+pub mod query;
 pub mod redact;
+pub mod store;
 pub mod trace;
 
 use std::io::IsTerminal;
@@ -84,11 +86,20 @@ pub struct LogConfig {
     pub level: String,
     /// Unix time until which development mode is on; 0 when off.
     pub dev_mode_until: u64,
+    /// Days the log store keeps lines.
+    pub retention_days: u64,
+    /// Most megabytes the log store may use.
+    pub max_mb: u64,
 }
 
 impl Default for LogConfig {
     fn default() -> Self {
-        LogConfig { level: DEFAULT_LEVEL.to_string(), dev_mode_until: 0 }
+        LogConfig {
+            level: DEFAULT_LEVEL.to_string(),
+            dev_mode_until: 0,
+            retention_days: store::DEFAULT_RETENTION_DAYS,
+            max_mb: store::DEFAULT_MAX_MB,
+        }
     }
 }
 
@@ -120,11 +131,6 @@ fn now_unix() -> u64 {
     SystemTime::now().duration_since(UNIX_EPOCH).map_or(0, |d| d.as_secs())
 }
 
-pub(crate) fn now_rfc3339() -> String {
-    time::OffsetDateTime::now_utc()
-        .format(&time::format_description::well_known::Rfc3339)
-        .unwrap_or_default()
-}
 
 /// A Unix time as `2026-09-28 14:00 UTC`, for messages.
 pub fn format_unix_utc(unix: u64) -> String {
@@ -150,6 +156,8 @@ pub struct LogStatus {
 pub struct Telemetry {
     service: &'static str,
     filter: reload::Handle<EnvFilter, Registry>,
+    sink: Arc<store::StoreSink>,
+    store: OnceLock<store::LogStore>,
     state: Mutex<LogStatus>,
     /// Bumped on every apply, so an expiry timer from an older apply does
     /// nothing.
@@ -202,20 +210,25 @@ where
 {
     let filter = EnvFilter::builder().parse(level).unwrap_or_else(|_| EnvFilter::new(DEFAULT_LEVEL));
     let (filter, filter_handle) = reload::Layer::new(filter);
+    let sink = Arc::new(store::StoreSink::default());
     let output: Output = match format {
-        Format::Json => Box::new(json::JsonLayer::new(service, writer)),
+        Format::Json => Box::new(json::EventLayer::new(service, Some(writer), sink.clone())),
         Format::Pretty => Box::new(
             tracing_subscriber::fmt::layer()
                 .with_writer(writer)
                 .with_ansi(ansi)
-                .fmt_fields(tracing_subscriber::fmt::format::debug_fn(pretty_field).delimited(" ")),
+                .fmt_fields(tracing_subscriber::fmt::format::debug_fn(pretty_field).delimited(" "))
+                .and_then(json::EventLayer::<W>::new(service, None, sink.clone())),
         ),
     };
     // The level filter applies to what is written out, not to span
     // creation, so trace ids exist even when a request's lines are
     // filtered out. OpenTelemetry sees spans at `info` and above, never
     // events (those are the log lines).
-    let tracer = opentelemetry_sdk::trace::SdkTracerProvider::builder().build().tracer(service);
+    let tracer = opentelemetry_sdk::trace::SdkTracerProvider::builder()
+        .with_span_processor(store::StoreSpans::new(service, sink.clone()))
+        .build()
+        .tracer(service);
     let otel = tracing_opentelemetry::layer()
         .with_tracer(tracer)
         .with_location(false)
@@ -225,8 +238,10 @@ where
     let telemetry = Telemetry {
         service,
         filter: filter_handle,
+        sink,
+        store: OnceLock::new(),
         state: Mutex::new(LogStatus {
-            config: LogConfig { level: level.to_string(), dev_mode_until: 0 },
+            config: LogConfig { level: level.to_string(), ..LogConfig::default() },
             effective_filter: level.to_string(),
             dev_mode: false,
         }),
@@ -253,6 +268,37 @@ fn pretty_field(
 impl Telemetry {
     pub fn service(&self) -> &'static str {
         self.service
+    }
+
+    /// Opens the log store at `path` (`logs.db` next to the process's main
+    /// database) and starts storing lines, including those logged since
+    /// start-up. Once per process; a second call returns the open store.
+    pub fn open_store(&self, path: &std::path::Path) -> Result<store::LogStore, store::StoreError> {
+        if let Some(open) = self.store.get() {
+            return Ok(open.clone());
+        }
+        let opened = store::LogStore::open(path, self.sink.clone())?;
+        let config = self.state.lock().config.clone();
+        opened.set_limits(config.retention_days, config.max_mb);
+        Ok(self.store.get_or_init(|| opened).clone())
+    }
+
+    /// [`Self::open_store`] beside the process's main database, logging
+    /// (not failing) when it can't be opened: logs still go to stderr.
+    pub fn open_store_beside(&self, database: &std::path::Path) -> Option<store::LogStore> {
+        let path = store::path_beside(database);
+        match self.open_store(&path) {
+            Ok(store) => Some(store),
+            Err(e) => {
+                tracing::error!(path = %path.display(), error = %e, "log store not opened; logs go to stderr only");
+                None
+            }
+        }
+    }
+
+    /// The log store, once [`Self::open_store`] has run.
+    pub fn store(&self) -> Option<store::LogStore> {
+        self.store.get().cloned()
     }
 
     /// What is in effect now.
@@ -285,6 +331,9 @@ impl Telemetry {
     }
 
     fn set(&self, config: &LogConfig, dev_mode: bool) {
+        if let Some(store) = self.store.get() {
+            store.set_limits(config.retention_days, config.max_mb);
+        }
         let effective = if dev_mode { dev_filter(&config.level) } else { config.level.clone() };
         let filter = match EnvFilter::builder().parse(&effective) {
             Ok(filter) => filter,

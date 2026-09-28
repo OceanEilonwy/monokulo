@@ -464,6 +464,46 @@ impl EngineClient {
 /// all - the engine's own handler returns `Result<(), ApiError>`, which
 /// axum serializes as an empty response, not `null` or `{}`) need - trying
 /// to `.json()` an empty body would fail even on a genuine success.
+/// The engine's log API (structured_logging.md 3.3), with the instance
+/// admin token. Never cached: its responses carry no cache headers.
+impl EngineClient {
+    async fn get_logs_api<T: serde::de::DeserializeOwned>(
+        &self,
+        admin_token: &str,
+        path: &str,
+        query: &impl Serialize,
+    ) -> Result<T, EngineClientError> {
+        let target = self.target();
+        let query = serde_urlencoded::to_string(query).unwrap_or_default();
+        let url = format!("{}/api/v1/admin/logs{path}?{query}", target.base_url);
+        let response = target.http.get(url).bearer_auth(admin_token).send().await?;
+        parse_response(response).await
+    }
+
+    pub async fn logs(&self, admin_token: &str, request: &telemetry::store::api::LogsRequest) -> Result<Vec<telemetry::store::LogRow>, EngineClientError> {
+        let response: telemetry::store::api::LogsResponse = self.get_logs_api(admin_token, "", request).await?;
+        Ok(response.rows)
+    }
+
+    pub async fn log_trace(&self, admin_token: &str, trace_id: &str) -> Result<telemetry::store::Trace, EngineClientError> {
+        self.get_logs_api(admin_token, &format!("/trace/{trace_id}"), &()).await
+    }
+
+    pub async fn log_histogram(
+        &self,
+        admin_token: &str,
+        request: &telemetry::store::api::HistogramRequest,
+    ) -> Result<Vec<u64>, EngineClientError> {
+        let response: telemetry::store::api::HistogramResponse = self.get_logs_api(admin_token, "/histogram", request).await?;
+        Ok(response.counts)
+    }
+
+    pub async fn log_attributes(&self, admin_token: &str) -> Result<Vec<String>, EngineClientError> {
+        let response: telemetry::store::api::AttributesResponse = self.get_logs_api(admin_token, "/attributes", &()).await?;
+        Ok(response.names)
+    }
+}
+
 async fn check_status(response: reqwest::Response) -> Result<reqwest::Response, EngineClientError> {
     let status = response.status();
     if !status.is_success() {

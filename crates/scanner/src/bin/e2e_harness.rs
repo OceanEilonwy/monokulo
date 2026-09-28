@@ -216,6 +216,7 @@ async fn main() {
         admin_rate_limiter: Arc::new(RateLimiter::new(1_000_000)),
         daemons: scanner::engine_settings::Daemons::fixed(HashMap::from([(Network::Stagenet, fallback_daemon.clone())])),
         scanner_status: new_scanner_status_map(),
+        log_store: None,
         settings: scanner::engine_settings::EngineSettings::defaults(),
     };
     let engine_router = build_engine_router(engine_state, 1_000_000);
@@ -239,6 +240,8 @@ async fn main() {
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         abuse: Default::default(),
         dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
+        log_store: None,
+        settings: monokulo::settings::MonokuloSettings::defaults(),
     };
     let cp_router = build_monokulo_router(cp_state);
     let cp_listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.expect("failed to bind an ephemeral monokulo port");

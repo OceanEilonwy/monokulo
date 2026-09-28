@@ -120,6 +120,9 @@ pub struct AppState {
     /// monokulo's settings registry (admin_settings_v2.md part 1): saves from
     /// the admin page go through it and apply to the running process.
     pub settings: Arc<crate::settings::MonokuloSettings>,
+    /// This process's log store, for the Logs page (structured_logging.md
+    /// part 5). `None` in tests and when it couldn't be opened.
+    pub log_store: Option<telemetry::store::LogStore>,
 }
 
 pub fn build_router(state: AppState) -> Router {

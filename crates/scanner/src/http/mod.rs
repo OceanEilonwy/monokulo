@@ -29,6 +29,7 @@
 
 mod admin;
 pub mod instance_admin;
+mod logs;
 mod orders;
 pub mod rate_limit;
 mod status_page;
@@ -93,6 +94,10 @@ pub struct AppState {
     /// Every engine setting, live (admin_settings_v2.md part 1): handlers
     /// and loops read the current value of what they need on each use.
     pub settings: Arc<crate::engine_settings::EngineSettings>,
+    /// This process's log store, read by `GET /api/v1/admin/logs` for
+    /// monokulo's Logs page (structured_logging.md 3.3). `None` in tests
+    /// and when it couldn't be opened.
+    pub log_store: Option<telemetry::store::LogStore>,
 }
 
 pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
@@ -149,6 +154,11 @@ pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
             "/api/v1/admin/settings",
             get(instance_admin::get_settings).post(instance_admin::update_settings),
         )
+        // This engine's logs, for monokulo's Logs page (structured_logging.md 3.3).
+        .route("/api/v1/admin/logs", get(logs::list))
+        .route("/api/v1/admin/logs/trace/{trace_id}", get(logs::trace))
+        .route("/api/v1/admin/logs/histogram", get(logs::histogram))
+        .route("/api/v1/admin/logs/attributes", get(logs::attributes))
         .layer(middleware::from_fn_with_state(state.clone(), admin_rate_limit_middleware));
 
     // The long-lived order-event stream (one per store monokulo is watching)

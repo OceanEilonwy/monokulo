@@ -418,6 +418,8 @@ pub struct TestEngineConfig {
     admin_lookup_daemon: bool,
     /// `Some(n)` when [`TestEngineConfig::with_rate_limit`] has been used.
     rate_limit_per_minute: Option<u32>,
+    /// Served by the engine's log API (`with_log_store`).
+    log_store: Option<telemetry::store::LogStore>,
 }
 
 impl TestEngineConfig {
@@ -426,6 +428,13 @@ impl TestEngineConfig {
     /// effectively unlimited default.
     pub fn with_rate_limit(mut self, per_minute: u32) -> Self {
         self.rate_limit_per_minute = Some(per_minute);
+        self
+    }
+
+    /// Serves `store` from the engine's log API (`GET /api/v1/admin/logs`),
+    /// as a real engine serves its own `logs.db`.
+    pub fn with_log_store(mut self, store: telemetry::store::LogStore) -> Self {
+        self.log_store = Some(store);
         self
     }
 
@@ -700,6 +709,7 @@ impl TestEngineConfig {
                     .collect::<HashMap<_, _>>()
             }),
             scanner_status: scanner::scanner_status::new_scanner_status_map(),
+            log_store: self.log_store.clone(),
             settings: engine_settings,
         };
         let tenant_requests = Arc::new(std::sync::atomic::AtomicUsize::new(0));

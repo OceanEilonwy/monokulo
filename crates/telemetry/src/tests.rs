@@ -116,13 +116,13 @@ fn applying_a_level_changes_what_is_written_straight_away() {
     tracing::debug!("hidden");
     assert!(capture.text().is_empty());
 
-    telemetry.apply(&LogConfig { level: "debug".into(), dev_mode_until: 0 });
+    telemetry.apply(&LogConfig { level: "debug".into(), dev_mode_until: 0, ..LogConfig::default() });
     tracing::debug!("shown");
     assert_eq!(capture.json_lines()[0]["message"], "shown");
     assert_eq!(telemetry.status().effective_filter, "debug");
 
     capture.clear();
-    telemetry.apply(&LogConfig { level: format!("warn,{}=debug", module_path!()), dev_mode_until: 0 });
+    telemetry.apply(&LogConfig { level: format!("warn,{}=debug", module_path!()), dev_mode_until: 0, ..LogConfig::default() });
     tracing::debug!("this target only");
     tracing::info!(target: "somewhere_else", "hidden");
     let lines = capture.json_lines();
@@ -133,7 +133,7 @@ fn applying_a_level_changes_what_is_written_straight_away() {
 #[test]
 fn a_filter_that_does_not_parse_leaves_the_old_one_in_place() {
     let (telemetry, capture, _guard) = subscriber(Format::Json, "info");
-    telemetry.apply(&LogConfig { level: "info,===".into(), dev_mode_until: 0 });
+    telemetry.apply(&LogConfig { level: "info,===".into(), dev_mode_until: 0, ..LogConfig::default() });
     assert_eq!(telemetry.status().effective_filter, "info");
     tracing::debug!("still hidden");
     assert!(!capture.text().contains("still hidden"));
@@ -143,7 +143,7 @@ fn a_filter_that_does_not_parse_leaves_the_old_one_in_place() {
 async fn development_mode_logs_debug_until_its_time_then_turns_itself_off() {
     let (telemetry, capture, _guard) = subscriber(Format::Json, "info");
     let until = now_unix() + 600;
-    telemetry.apply(&LogConfig { level: "info".into(), dev_mode_until: until });
+    telemetry.apply(&LogConfig { level: "info".into(), dev_mode_until: until, ..LogConfig::default() });
     let status = telemetry.status();
     assert!(status.dev_mode);
     assert!(status.effective_filter.starts_with("debug,hyper=info"), "{}", status.effective_filter);
@@ -163,8 +163,8 @@ async fn development_mode_logs_debug_until_its_time_then_turns_itself_off() {
 #[tokio::test(start_paused = true)]
 async fn a_later_apply_cancels_the_earlier_expiry() {
     let (telemetry, _capture, _guard) = subscriber(Format::Json, "info");
-    telemetry.apply(&LogConfig { level: "info".into(), dev_mode_until: now_unix() + 60 });
-    telemetry.apply(&LogConfig { level: "info".into(), dev_mode_until: now_unix() + 3600 });
+    telemetry.apply(&LogConfig { level: "info".into(), dev_mode_until: now_unix() + 60, ..LogConfig::default() });
+    telemetry.apply(&LogConfig { level: "info".into(), dev_mode_until: now_unix() + 3600, ..LogConfig::default() });
     tokio::time::sleep(Duration::from_secs(61)).await;
     assert!(telemetry.status().dev_mode, "the first timer must not end the second window");
 }
@@ -172,7 +172,7 @@ async fn a_later_apply_cancels_the_earlier_expiry() {
 #[test]
 fn a_development_time_already_past_is_off() {
     let (telemetry, _capture, _guard) = subscriber(Format::Json, "info");
-    telemetry.apply(&LogConfig { level: "info".into(), dev_mode_until: 1 });
+    telemetry.apply(&LogConfig { level: "info".into(), dev_mode_until: 1, ..LogConfig::default() });
     assert!(!telemetry.status().dev_mode);
     assert_eq!(telemetry.status().effective_filter, "info");
 }
@@ -234,7 +234,7 @@ mod through_settings {
             &[&LEVEL, &DEV_MODE_UNTIL]
         }
         fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
-            Ok(Logging(LogConfig { level: snapshot.get(&LEVEL), dev_mode_until: snapshot.get(&DEV_MODE_UNTIL) }))
+            Ok(Logging(LogConfig { level: snapshot.get(&LEVEL), dev_mode_until: snapshot.get(&DEV_MODE_UNTIL), ..LogConfig::default() }))
         }
     }
 
