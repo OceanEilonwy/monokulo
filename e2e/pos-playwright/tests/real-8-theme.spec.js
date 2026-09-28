@@ -3,8 +3,9 @@
 // site's app bar, table headers and buttons use the theme's surfaces (never
 // the old fixed black), the POS top bar is the same bar as the site nav, and
 // the hosted payment page's card is the same surface as the checkout framed
-// in it, so the frame's edge doesn't show. Also captures the dashboard
-// pages and the hosted payment page for the gallery, in both themes.
+// in it, so the frame's edge doesn't show. The dashboard pages fit a 320px
+// phone without scrolling sideways. Also captures the dashboard pages and
+// the hosted payment page for the gallery, in both themes.
 const { test, expect } = require('../coverage-test');
 const { serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
@@ -31,6 +32,16 @@ async function aStore(page, base) {
   const existing = page.getByRole('link', { name: 'view →' }).first();
   if (await existing.count()) return existing.getAttribute('href');
   return connectStore(page, 'theme.example.com');
+}
+
+/** Whether the page fits a 320px phone: its tables may scroll inside their
+ * own box, but the page itself never scrolls sideways. */
+async function fitsSmallPhone(page) {
+  const size = page.viewportSize();
+  await page.setViewportSize({ width: 320, height: 568 });
+  const overflow = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
+  await page.setViewportSize(size);
+  return overflow;
 }
 
 /** Chooses `theme` with the nav's own toggle, as a merchant does. */
@@ -69,22 +80,26 @@ test('the site, the POS and the hosted payment page share one theme, light and d
       await chooseTheme(page, base, theme);
       expect(await background(page.locator('.site-nav'))).toBe(expected.bar);
       if (theme === 'light') await captureCoverageStage(page, 'site-dashboard', test.info(), { group: 'site' });
+      expect(await fitsSmallPhone(page)).toBe(0);
 
       await page.goto(base + store);
       expect(await background(page.locator('.orders-table th, table th').first())).toBe(expected.tableHead);
       if (theme === 'light') await captureCoverageStage(page, 'site-store-page', test.info(), { group: 'site' });
+      expect(await fitsSmallPhone(page)).toBe(0);
 
       // Buttons are neutral; the one creating action of a form is orange.
       await page.goto(base + store + '/settings');
       expect(await background(page.getByRole('button', { name: 'Update' }).first())).toBe(expected.button);
       expect(await background(page.getByRole('button', { name: 'Add webhook' }))).toBe(ORANGE);
       if (theme === 'light') await captureCoverageStage(page, 'site-store-settings', test.info(), { group: 'site' });
+      expect(await fitsSmallPhone(page)).toBe(0);
 
       await page.goto(`${base}${store}/orders/${orderId}`);
-      await expect(page.locator('.kv-table .tag.state-pending')).toHaveText('Waiting for payment');
+      await expect(page.locator('.kv-table .tag.state-pending .label-long')).toHaveText('Waiting for payment');
       // The order's live stream can swap the table while it's read, so poll.
       await expect.poll(() => background(page.locator('.kv-table th').first())).toBe(expected.tableHead);
       if (theme === 'light') await captureCoverageStage(page, 'site-order-detail', test.info(), { group: 'site' });
+      expect(await fitsSmallPhone(page)).toBe(0);
 
       // The POS top bar is the site's app bar: same surface, the same mark.
       await page.goto(base + store + '/pos');

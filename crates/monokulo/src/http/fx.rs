@@ -43,19 +43,23 @@ impl<S: Send + Sync> FromRequestParts<S> for Timezone {
     type Rejection = Infallible;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let plausible = |z: &str| !z.is_empty() && z.len() <= 64 && z.chars().all(|c| c.is_ascii_alphanumeric() || "/_+-".contains(c));
-        let header = parts.headers.get("x-timezone").and_then(|v| v.to_str().ok()).map(str::to_string);
-        let cookie = parts
-            .headers
-            .get_all(axum::http::header::COOKIE)
-            .iter()
-            .filter_map(|v| v.to_str().ok())
-            .flat_map(|v| v.split(';'))
-            .filter_map(|pair| pair.trim().strip_prefix("tz="))
-            .map(|z| z.replace("%2F", "/").replace("%2f", "/"))
-            .next();
-        Ok(Timezone(header.into_iter().chain(cookie).find(|z| plausible(z))))
+        Ok(Timezone(browser_zone(&parts.headers)))
     }
+}
+
+/// [`Timezone`]'s zone, from a request's headers.
+pub fn browser_zone(headers: &axum::http::HeaderMap) -> Option<String> {
+    let plausible = |z: &str| !z.is_empty() && z.len() <= 64 && z.chars().all(|c| c.is_ascii_alphanumeric() || "/_+-".contains(c));
+    let header = headers.get("x-timezone").and_then(|v| v.to_str().ok()).map(str::to_string);
+    let cookie = headers
+        .get_all(axum::http::header::COOKIE)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .flat_map(|v| v.split(';'))
+        .filter_map(|pair| pair.trim().strip_prefix("tz="))
+        .map(|z| z.replace("%2F", "/").replace("%2f", "/"))
+        .next();
+    header.into_iter().chain(cookie).find(|z| plausible(z))
 }
 
 /// Answers a form post: for fixi, the section's fragment (with its saved

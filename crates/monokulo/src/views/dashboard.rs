@@ -64,50 +64,53 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                 }
 
                 h2 { "Your stores" }
-                table {
+                // On a phone only the name, health and link stay (`.col-optional`).
+                div class="table-scroll" { table {
                     thead {
-                        tr { th { "Store" } th { "Platform" } th { "Public key" } th { "Status" } th {} }
+                        tr { th { "Store" } th class="col-optional" { "Platform" } th class="col-optional" { "Public key" } th { "Status" } th {} }
                     }
                     tbody {
                         @for store in &data.stores {
                             tr {
                                 td { (store.display_name) }
-                                td { (store.platform) }
-                                td { code class="ellipsis" { (store.public_key) } }
+                                td class="col-optional" { (store.platform) }
+                                td class="col-optional" { code class="ellipsis" { (store.public_key) } }
                                 td { span class=(format!("tag tag-{}", store.health)) { (store.health_label) } }
-                                td { a href=(format!("/dashboard/stores/{}", store.connection_id)) { "view →" } }
+                                td class="nowrap" { a href=(format!("/dashboard/stores/{}", store.connection_id)) { "view →" } }
                             }
                         }
                     }
-                }
+                } }
                 a class="btn btn-secondary" href="/dashboard/stores/new" { "+ add another store" }
 
                 h2 { "Recent orders" }
                 @if data.recent_orders.is_empty() {
                     p class="muted" { "No orders yet." }
                 } @else {
-                    table {
+                    // On a phone: order, status and amount; the order page has the rest.
+                    div class="table-scroll" { table {
                         thead {
-                            tr { th { "Store" } th { "Order ID" } th { "Status" } th { "Amount" } th { "Created" } }
+                            tr { th class="col-optional" { "Store" } th { "Order ID" } th { "Status" } th { "Amount" } th class="col-optional" { "Created" } }
                         }
                         tbody {
                             @for order in &data.recent_orders {
                                 tr {
-                                    td { (order.display_name) }
+                                    td class="col-optional" { (order.display_name) }
                                     td {
-                                        a href=(format!("/dashboard/stores/{}/orders/{}", order.connection_id, order.order_id)) {
-                                            (order.order_id)
+                                        a class="order-id" href=(format!("/dashboard/stores/{}/orders/{}", order.connection_id, order.order_id)) {
+                                            (super::order_id_short(&order.order_id))
                                         }
                                     }
                                     td { (super::state_badge(&order.status)) }
-                                    td { (order.amount) " " (order.currency) }
-                                    td { (order.created_at) }
+                                    td class="nowrap" { (super::display_amount(&order.amount, &order.currency)) }
+                                    td class="col-optional" { (chrome.clock.time(order.created_at)) }
                                 }
                             }
                         }
-                    }
+                    } }
                 }
-            } @else {
+            }
+            @if !data.has_stores {
                 div class="box" {
                     h2 { "Connect your first store" }
                     p {
@@ -117,10 +120,37 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                     a class="btn btn-primary" href="/dashboard/stores/new" { "+ add a store" }
                 }
             }
+            (timezone_setting(chrome))
         }
     };
 
     layout(chrome, "Dashboard - Monokulo", body)
+}
+
+/// The zone every date and time is shown in (the nav's "tz: ..." link
+/// comes here). Automatic follows the browser.
+fn timezone_setting(chrome: &PageChrome) -> Markup {
+    let clock = &chrome.clock;
+    let automatic = if clock.is_automatic() && clock.name() != "UTC" {
+        format!("Automatic (this browser: {})", clock.name())
+    } else {
+        "Automatic (this browser's zone, UTC until it's known)".to_string()
+    };
+    html! {
+        section class="box" id="timezone" {
+            h2 { "Time zone" }
+            form method="post" action="/dashboard/timezone" class="setting-field" {
+                label for="timezone-select" { "Show dates and times in" }
+                select id="timezone-select" name="timezone" {
+                    option value="" selected[clock.is_automatic()] { (automatic) }
+                    @for name in super::time::zone_names() {
+                        option value=(name) selected[!clock.is_automatic() && name == clock.name()] { (name) }
+                    }
+                }
+                button type="submit" { "Save" }
+            }
+        }
+    }
 }
 
 #[cfg(test)]

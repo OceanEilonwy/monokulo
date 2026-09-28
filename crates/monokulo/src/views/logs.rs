@@ -124,8 +124,13 @@ const SERVICES: &[(&str, &str)] = &[("", "Monokulo and the engine"), ("monokulo"
 const PAGE_STYLE: &str = r#"
 .wrap.wrap-wide { max-width: 1200px; }
 .logs-search { display: grid; gap: .5em; margin-bottom: 1em; }
-.logs-search .q-row { display: flex; gap: .5em; }
+.logs-search .q-row { display: flex; gap: .5em; align-items: stretch; }
 .logs-search .q-row input { flex: 1; min-width: 0; font-family: var(--font-mono); }
+/* The box, Syntax and Search: one height, one top edge. */
+.logs-search .q-row > .btn, .logs-search .q-row > button { flex: none; margin: 0; }
+.q-help { display: inline-flex; align-items: center; gap: .4em; }
+.q-help svg { width: 1.15em; height: 1.15em; }
+.logs-search .quick input[type=datetime-local] { width: auto; }
 .logs-search .quick { display: flex; flex-wrap: wrap; gap: .5em; align-items: center; }
 .logs-search .quick label { display: inline-flex; gap: .3em; align-items: center; }
 .query-error mark { background: var(--tint-error); color: inherit; border-bottom: 2px solid currentColor; }
@@ -155,6 +160,33 @@ html:not(.js) .js-only { display: none; }
 .trace-span .bar { position: absolute; top: 0; bottom: 0; background: var(--accent); min-width: 2px; }
 .trace-span.status-error .bar { background: var(--error); }
 .trace-span .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+/* The syntax help: a dialog on the Logs page (a bottom sheet on a phone),
+   and the same content as its own page (`syntax_page`). */
+.qh { width: min(640px, calc(100% - 32px)); max-height: min(80dvh, 720px); padding: 0; border: 1px solid var(--line); border-radius: var(--radius-lg); background: var(--paper-raised); color: var(--ink); }
+.qh::backdrop { background: color-mix(in srgb, var(--paper) 40%, transparent); backdrop-filter: blur(2px); }
+.qh-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 1em; padding: var(--space-md) var(--space-lg); border-bottom: 1px solid var(--line); background: var(--paper-raised); }
+.qh-head h2 { margin: 0; padding: 0; border: 0; font-size: 1.1rem; }
+.qh-head form { margin: 0; }
+.qh-close { margin: 0; padding: .3em .6em; line-height: 1; }
+.qh-body { padding: var(--space-sm) var(--space-lg) var(--space-lg); }
+.qh-body h3 { margin: 1em 0 .4em; font-size: .8rem; text-transform: uppercase; letter-spacing: .06em; color: var(--muted); }
+.qh-ex { list-style: none; margin: 0; padding: 0; display: grid; gap: 4px; }
+.qh-ex li { display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-areas: "code use" "what use"; gap: 0 .6em; align-items: center; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--radius-sm); background: var(--paper-raised); }
+.qh-ex code { grid-area: code; padding: 0; border: 0; background: none; overflow-wrap: anywhere; }
+.qh-ex .qh-what { grid-area: what; font-size: .85em; color: var(--muted); }
+.qh-ex .qh-use { grid-area: use; margin: 0; padding: .25em .7em; font-size: .85em; }
+.qh-chips { display: flex; flex-wrap: wrap; gap: 4px; margin: .3em 0; }
+.qh-chip { margin: 0; padding: .15em .55em; border: 1px solid var(--line); border-radius: 999px; background: var(--surface-sunken); color: var(--ink); font: .85em var(--font-mono); font-weight: 400; }
+@media (max-width: 40em) {
+  .qh { width: 100%; max-width: none; margin: auto 0 0; border-radius: var(--radius-lg) var(--radius-lg) 0 0; max-height: 85dvh; }
+  .logs-search .quick { display: grid; grid-template-columns: 1fr 1fr; }
+  .logs-search .quick select { width: 100%; min-width: 0; }
+  .logs-search .quick label:has(select[name=range]) { grid-column: 1 / -1; }
+  .logs-search .quick label { display: grid; gap: .2em; font-size: .85em; }
+  .logs-search .quick input[type=datetime-local] { width: 100%; min-width: 0; }
+  .q-help { padding-inline: .7em; }
+  .q-help-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+}
 @media (max-width: 40em) {
   .log-row > summary { grid-template-columns: 1fr auto; }
   .log-row > summary .svc { display: none; }
@@ -196,6 +228,23 @@ const PAGE_SCRIPT: &str = r##"(function () {
     var rows = document.querySelectorAll("#log-rows > .log-row");
     for (var i = MAX_ROWS; i < rows.length; i++) rows[i].remove();
   });
+  // Syntax opens its help as a dialog instead of following the link to the
+  // same help as a page. Use puts an example in the box; a name chip adds
+  // that name to it.
+  var help = document.getElementById("query-help"), helpLink = document.getElementById("query-help-link");
+  var box = document.getElementById("log-q");
+  if (help && helpLink && box && typeof help.showModal === "function") {
+    helpLink.addEventListener("click", function (evt) { evt.preventDefault(); help.showModal(); });
+    help.addEventListener("click", function (evt) {
+      if (evt.target === help) { help.close(); return; }
+      var use = evt.target.closest(".qh-use"), chip = evt.target.closest(".qh-chip");
+      if (!use && !chip) return;
+      evt.preventDefault();
+      box.value = use ? use.dataset.q : (box.value.trim() ? box.value.trim() + " and " : "") + chip.textContent + " ";
+      help.close();
+      box.focus();
+    });
+  }
 })();"##;
 
 fn level_class(severity: Severity) -> &'static str {
@@ -428,28 +477,87 @@ fn select(name: &str, label: &str, options: &[(&str, &str)], current: &str) -> M
     }
 }
 
-fn help(names: &[String]) -> Markup {
+/// Where the syntax help lives as a page of its own.
+pub const SYNTAX_PAGE: &str = "/dashboard/admin/logs/syntax";
+
+/// Examples of each part of the language (`telemetry::query`), with what
+/// each shows.
+const EXAMPLES: &[(&str, &[(&str, &str)])] = &[
+    ("Compare a property", &[
+        ("level >= warn", "levels go trace, debug, info, warn, error"),
+        ("order.id = 'o_9'", "= equals; != or <> differs"),
+        ("http.status >= 500", "< <= > >= for numbers"),
+    ]),
+    ("Match text", &[
+        ("message contains 'timeout'", "anywhere in the text"),
+        ("http.route like '/pay/%'", "% is any run of characters, _ one character"),
+        ("payment not seen", "plain words search the message"),
+    ]),
+    ("Combine", &[
+        ("level >= warn and store.id = 's_1'", "both"),
+        ("service = 'scanner' or has error", "either; has means the line has that property"),
+        ("not (service = 'scanner')", "brackets group; not negates"),
+    ]),
+];
+
+/// The query language, for the Logs page's dialog and its own page. Each
+/// example links to a search for it; in the dialog, script puts it in the
+/// box instead, and the property names become chips that add themselves.
+fn syntax(names: &[String], in_dialog: bool) -> Markup {
     html! {
-        details class="query-help" {
-            summary { "How to search" }
-            ul {
-                li { code { "level >= warn and store.id = 's_1'" } " - properties, compared with = != < <= > >=" }
-                li { code { "order.id = 'o_9' or message contains 'timeout'" } " - 'contains' and 'like' for text" }
-                li { code { "not (service = 'scanner') and has error" } " - 'has' for lines that have a property" }
-                li { code { "'payment'" } ", or plain words - lines whose message contains them" }
-                li { "Built in: " code { "level" } ", " code { "service" } ", " code { "target" } ", " code { "message" } ", " code { "trace_id" } ", " code { "span_id" } ". Every other name is a property of the line." }
-            }
-            @if !names.is_empty() {
-                p { "Names seen on recent lines:" }
-                p class="property-names" {
-                    @for (i, name) in names.iter().enumerate() {
-                        @if i > 0 { ", " }
-                        code { (name) }
+        @for (title, examples) in EXAMPLES {
+            h3 { (title) }
+            ul class="qh-ex" {
+                @for (query, what) in *examples {
+                    li {
+                        code { (query) }
+                        span class="qh-what" { (what) }
+                        a class="btn qh-use" data-q=(query) href=(format!("/dashboard/admin/logs?q={}", url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>())) { "Use" }
                     }
                 }
             }
         }
+        h3 { "Values" }
+        p {
+            "Quote text with " code { "'" } " or " code { "\"" } "; a backslash escapes a quote. Numbers, "
+            code { "true" } ", " code { "false" } " and " code { "null" } " go bare. A bare word is text ("
+            code { "network = Stagenet" } "). Keywords ignore case."
+        }
+        h3 { "Names" }
+        p class="hint" { "Built in, and seen on recent lines. Every other name is a property of the line." }
+        p class="qh-chips" {
+            @for name in names {
+                @if in_dialog { button type="button" class="qh-chip" { (name) } } @else { code class="qh-chip" { (name) } }
+            }
+        }
     }
+}
+
+/// The syntax help as a dialog, opened by the Syntax link's script.
+fn syntax_dialog(names: &[String]) -> Markup {
+    html! {
+        dialog id="query-help" class="qh" aria-labelledby="query-help-title" closedby="any" {
+            div class="qh-head" {
+                h2 id="query-help-title" { "Search syntax" }
+                form method="dialog" { button class="qh-close" aria-label="Close" { "✕" } }
+            }
+            div class="qh-body" { (syntax(names, true)) }
+        }
+    }
+}
+
+/// `GET /dashboard/admin/logs/syntax`: the same help as the dialog, for a
+/// browser without script.
+pub fn syntax_page(chrome: &PageChrome, names: &[String]) -> Markup {
+    let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
+    let body = html! {
+        div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard/admin/logs" { "Logs" } }
+            h1 { "Search syntax" }
+            div class="qh-page" { (syntax(names, false)) }
+        }
+    };
+    layout_with_head(chrome, "Search syntax - Monokulo", extra_head, body)
 }
 
 pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
@@ -464,6 +572,15 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
                     label for="log-q" class="sr-only" { "Search" }
                     input type="search" id="log-q" name="q" value=(vm.form.q) autocomplete="off" spellcheck="false"
                         placeholder="level >= warn and order.id = 'o_1'";
+                    // A page of its own without script; a dialog with it.
+                    a class="btn q-help" id="query-help-link" href=(SYNTAX_PAGE) aria-haspopup="dialog" {
+                        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false" {
+                            circle cx="12" cy="12" r="9.5" {}
+                            path d="M9.5 9.2a2.6 2.6 0 0 1 5 .8c0 1.8-2.5 2.2-2.5 3.8" {}
+                            circle cx="12" cy="17.3" r=".6" fill="currentColor" {}
+                        }
+                        span class="q-help-label" { "Syntax" }
+                    }
                     button type="submit" class="btn-primary" { "Search" }
                 }
                 div class="quick" {
@@ -473,8 +590,8 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
                     label { "From " input type="datetime-local" name="from" value=(vm.form.from); }
                     label { "To " input type="datetime-local" name="to" value=(vm.form.to); }
                 }
-                (help(&vm.attribute_names))
             }
+            (syntax_dialog(&vm.attribute_names))
             (results(vm))
             (saved_searches(&vm.saved, &vm.query_string, vm.saved_error.as_deref()))
         }

@@ -85,8 +85,17 @@ export function StatusIcon(props: { order: StatusSource; offline?: boolean }) {
   </span>;
 }
 
+/** Words short enough for a small phone's heading ("Waiting"); the full
+ * ones stay for screen readers. */
+export const statusShortName: Record<string, string> = {
+  pending: 'Waiting', unconfirmed: 'Seen', partial: 'Part paid', offline: 'Offline',
+};
+
 /** A status pill: symbol plus word (payment page and list). */
 export function StatusBadge(props: { order: StatusSource; offline?: boolean }) {
   const state = () => stateOf(props.order, props.offline);
-  return <span class={['pos-badge', `state-${state()}`]}><StatusIcon order={props.order} offline={props.offline}/>{statusName[state()] || props.order.status}</span>;
+  const name = () => statusName[state()] || props.order.status;
+  return <span class={['pos-badge', `state-${state()}`]}><StatusIcon order={props.order} offline={props.offline}/>
+    <Show when={statusShortName[state()]} fallback={name()}>{short => <><span class="label-long">{name()}</span><span class="label-short" aria-hidden="true">{short()}</span></>}</Show>
+  </span>;
 }

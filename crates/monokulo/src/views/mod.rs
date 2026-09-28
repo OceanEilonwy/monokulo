@@ -34,6 +34,7 @@ pub mod pos;
 pub mod status;
 pub mod store_detail;
 pub mod store_settings;
+pub mod time;
 
 /// Every colour, and the spacing, radius and type tokens: the only place a
 /// colour is defined (`theme_tests`).
@@ -82,6 +83,9 @@ pub struct PageChrome {
     /// about one store; on a store's pages, only when it has opted in to
     /// client logs (`crate::http::page_chrome`).
     pub browser_reports: bool,
+    /// The zone this page shows times in (`views::time`): the signed-in
+    /// user's, or UTC.
+    pub clock: time::Clock,
 }
 
 impl PageChrome {
@@ -101,6 +105,7 @@ impl PageChrome {
                 health: None,
                 alerts: Vec::new(),
                 browser_reports: true,
+                clock: time::Clock::for_user(u),
             },
             None => PageChrome {
                 logged_in: false,
@@ -110,6 +115,7 @@ impl PageChrome {
                 health: None,
                 alerts: Vec::new(),
                 browser_reports: true,
+                clock: time::Clock::utc(crate::now_unix()),
             },
         }
     }
@@ -254,10 +260,57 @@ pub fn order_state(status: &str) -> (&'static str, &'static str, bool) {
     }
 }
 
-/// An order's status as a badge ([`order_state`]).
+/// A status's words short enough for a phone's table column ("Waiting"
+/// for "Waiting for payment"). The long words stay for screen readers.
+pub fn order_state_short(status: &str) -> &'static str {
+    match status {
+        "pending" => "Waiting",
+        "unconfirmed" => "Seen",
+        "partial" => "Part paid",
+        other => order_state(other).0,
+    }
+}
+
+/// An order's status as a badge ([`order_state`]): the full words, and the
+/// short ones that replace them on a narrow screen (`.label-short`).
 pub fn state_badge(status: &str) -> Markup {
     let (label, class, _) = order_state(status);
-    html! { span class=(format!("tag {class}")) { (label) } }
+    let short = order_state_short(status);
+    html! {
+        span class=(format!("tag {class}")) {
+            @if short == label { (label) } @else {
+                span class="label-long" { (label) }
+                span class="label-short" aria-hidden="true" { (short) }
+            }
+        }
+    }
+}
+
+/// An order id as people read it: without the `order_` every id starts
+/// with, cut in the middle when it doesn't fit (as the macOS Finder cuts a
+/// long file name), so its start and its last characters both show. The
+/// whole id stays in the page, for find-in-page, and in `title`.
+pub fn order_id_short(order_id: &str) -> Markup {
+    let id = order_id.strip_prefix("order_").unwrap_or(order_id);
+    let split = id.char_indices().rev().nth(5).map_or(0, |(i, _)| i);
+    html! {
+        span class="mid-ellipsis" title=(order_id) {
+            span class="mid-head" { (&id[..split]) }
+            span class="mid-tail" { (&id[split..]) }
+        }
+    }
+}
+
+/// An amount for people to read: XMR without its trailing zeros
+/// (`0.420000000000` is `0.42`), anything else as given (`12.50` stays).
+pub fn display_amount(amount: &str, currency: &str) -> String {
+    let amount = if currency == "XMR" { trim_xmr(amount) } else { amount };
+    if currency.is_empty() { amount.to_string() } else { format!("{amount} {currency}") }
+}
+
+/// An exact XMR amount without trailing zeros (`0.001000000000` is `0.001`).
+pub fn trim_xmr(amount: &str) -> &str {
+    if amount.contains('.') { amount.trim_end_matches('0').trim_end_matches('.') } else { amount }
 }
 
 /// A link to the Logs page searching for `field = value` over everything
@@ -358,6 +411,12 @@ fn nav(chrome: &PageChrome) -> Markup {
                     }
                     @if chrome.logged_in {
                         (theme_toggle(chrome))
+                        // The zone every time on the page is in; changed on
+                        // the dashboard.
+                        a href="/dashboard#timezone" class="nav-tz-link"
+                            title=(format!("Times are in {}{}. Change it on your dashboard.", chrome.clock.name(), if chrome.clock.is_automatic() { " (automatic)" } else { "" })) {
+                            "tz: " (chrome.clock.short_label())
+                        }
                     }
                     // Rightmost on every page.
                     (status_indicator(chrome.health, "nav-status-link"))
@@ -418,6 +477,13 @@ mod tests {
     use super::*;
 
     #[test]
+    fn an_order_id_drops_its_prefix_and_keeps_its_last_six_characters_whole() {
+        let html = order_id_short("order_a8723b2e45b0d44e").into_string();
+        assert_eq!(html, r#"<span class="mid-ellipsis" title="order_a8723b2e45b0d44e"><span class="mid-head">a8723b2e45</span><span class="mid-tail">b0d44e</span></span>"#);
+        assert!(order_id_short("abc").into_string().contains(r#"<span class="mid-head"></span><span class="mid-tail">abc</span>"#));
+    }
+
+    #[test]
     fn status_indicator_is_rendered_with_the_known_health_and_polls_only_as_an_enhancement() {
         let healthy = status_indicator(Some(true), "nav-status-link").into_string();
         assert!(healthy.contains(r#"<a href="/status" class="nav-status-link" id="status-indicator" title="all systems healthy" aria-label="Status: all systems healthy"><span class="status-dot status-dot-ok"></span></a>"#), "got: {healthy}");
@@ -435,7 +501,7 @@ mod tests {
 
     #[test]
     fn logged_in_admin_nav_order_is_dashboard_admin_invites_logout_theme_status() {
-        let chrome = PageChrome { logged_in: true, is_admin: true, theme: Theme::Dark, current_path: "/dashboard".to_string(), health: None, alerts: Vec::new(), browser_reports: true };
+        let chrome = PageChrome { logged_in: true, is_admin: true, theme: Theme::Dark, current_path: "/dashboard".to_string(), health: None, alerts: Vec::new(), browser_reports: true, clock: time::Clock::utc(0) };
         let html = nav(&chrome).into_string();
 
         let dashboard = html.find(r#"href="/dashboard""#).expect("dashboard link");
@@ -467,7 +533,7 @@ mod tests {
     #[test]
     fn theme_toggle_renders_a_slider_with_a_thumb_positioned_for_the_current_theme() {
         for (theme, class) in [(Theme::Light, "theme-toggle-light"), (Theme::System, "theme-toggle-system"), (Theme::Dark, "theme-toggle-dark")] {
-            let chrome = PageChrome { logged_in: true, is_admin: false, theme, current_path: "/dashboard".to_string(), health: None, alerts: Vec::new(), browser_reports: true };
+            let chrome = PageChrome { logged_in: true, is_admin: false, theme, current_path: "/dashboard".to_string(), health: None, alerts: Vec::new(), browser_reports: true, clock: time::Clock::utc(0) };
             let html = nav(&chrome).into_string();
             assert!(html.contains(&class.to_string()), "expected {class} on the toggle for {theme:?}, got: {html}");
             assert!(html.contains("theme-toggle-option-light") && html.contains("theme-toggle-option-dark"), "expected both sun and moon options, got: {html}");
@@ -494,7 +560,7 @@ mod tests {
 
     #[test]
     fn logs_links_are_for_admins_and_quote_the_value() {
-        let admin = PageChrome { logged_in: true, is_admin: true, theme: Theme::System, current_path: "/".into(), health: None, alerts: Vec::new(), browser_reports: true };
+        let admin = PageChrome { logged_in: true, is_admin: true, theme: Theme::System, current_path: "/".into(), health: None, alerts: Vec::new(), browser_reports: true, clock: time::Clock::utc(0) };
         let html = logs_link(&admin, "order.id", "o'1", "Logs").into_string();
         assert_eq!(html, r#"<a class="logs-link" href="/dashboard/admin/logs?q=order.id+%3D+%27o%5C%271%27&amp;range=all">Logs</a>"#);
         let query = "order.id = 'o\\'1'";

@@ -13,9 +13,6 @@
   --pos-key: var(--paper-raised);
   --pos-coin-face: var(--paper-raised);
   --pos-focus: color-mix(in srgb, var(--focus-ring) 35%, transparent);
-  --pos-expiry-bg: var(--state-pending-bg);
-  --pos-expiry-border: var(--state-pending-border);
-  --pos-expiry-ink: var(--state-pending-ink);
   --pos-disabled: var(--line);
   --pos-disabled-ink: var(--muted);
 }
@@ -189,10 +186,11 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
     display: flex; flex-direction: column; gap: 6px; padding: 12px 14px 12px; border: 2px solid var(--pos-border); border-radius: 8px;
     background: var(--paper-raised);
   }
-  .pos-expiry {
-    text-align: center; padding: 7px 8px; border: 1px solid var(--pos-expiry-border); border-radius: 4px; background: var(--pos-expiry-bg); color: var(--pos-expiry-ink);
-    font-size: 11px; font-weight: 800;
-  }
+  /* Beside the heading: the status, and under it the time left to pay. */
+  .pos-status-row { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .pos-expiry { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+  .pos-expiry svg { width: 12px; height: 12px; }
+  .pos-badge .label-short { display: none; }
   .pos-pay-detail { text-align: center; font-size: 11px; font-weight: 700; color: var(--state-ink); }
   .pos-pay-caption { text-align: center; font-size: 11px; color: var(--muted); margin-top: 4px; }
   .pos-pay-xmr { text-align: center; font-size: 26px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
@@ -200,6 +198,14 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-pay-fiat { text-align: center; font-size: 11px; color: var(--muted); }
   .pos-qr { align-self: center; width: min(150px, 40vw); aspect-ratio: 1; padding: 6px; margin: 4px 0; background: var(--qr-bg); border: 1px solid var(--line); }
   .pos-qr svg { display: block; width: 100%; height: 100%; }
+  .pos-qr-new { position: relative; align-self: center; display: grid; margin: 12px 0 4px; padding: 6px; border: 2px solid var(--state-partial-border); border-radius: 10px; background: var(--qr-bg); animation: pos-qr-new 1.4s ease-out 2; }
+  .pos-qr-new .pos-qr { margin: 0; border: 0; padding: 0; }
+  .pos-qr-new-tab {
+    position: absolute; top: 0; left: 50%; transform: translate(-50%, -55%); white-space: nowrap; padding: 1px 8px;
+    border: 1px solid var(--state-partial-border); border-radius: 999px; background: var(--state-partial-bg); color: var(--state-partial-ink); font-size: 10px; font-weight: 800;
+  }
+  @keyframes pos-qr-new { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--state-partial-border) 55%, transparent); } to { box-shadow: 0 0 0 14px transparent; } }
+  @media (prefers-reduced-motion: reduce) { .pos-qr-new { animation: none; } }
   .pos-quiet-label { font-size: 11px; color: var(--muted); margin-top: 6px; }
   .pos-address { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border: 1px solid var(--pos-border); border-radius: 3px; background: var(--pos-field); }
   .pos-address code { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: all; }
@@ -305,12 +311,12 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
       display: grid; grid-template-columns: auto minmax(0, 1fr); column-gap: 12px; row-gap: 3px; align-content: start; padding: 8px 10px;
     }
     .pos-pay-card > * { grid-column: 2; }
-    .pos-pay-card > .pos-qr { grid-column: 1; grid-row: 1 / span 7; align-self: center; width: min(128px, 34vh); margin: 0; }
+    .pos-pay-card > :is(.pos-qr, .pos-qr-new) { grid-column: 1; grid-row: 1 / span 7; align-self: center; width: min(128px, 34vh); margin: 0; }
+    .pos-pay-card > .pos-qr-new .pos-qr { width: 100%; }
     .pos-pay-card > :is(hr, label, .pos-refund, .pos-refund-tools, .pos-camera, .pos-refund-message, .pos-note) { grid-column: 1 / -1; }
     .pos-pay-card :is(.pos-pay-caption, .pos-pay-xmr, .pos-pay-fiat, .pos-pay-detail) { text-align: left; margin: 0; }
     .pos-pay-card .pos-pay-xmr { font-size: 22px; }
     .pos-pay-card .pos-pay-xmr span { font-size: 17px; }
-    .pos-pay-card .pos-expiry { padding: 4px 6px; }
     .pos-pay-card .pos-quiet-label { margin-top: 2px; }
     .pos-pay-card hr { margin: 4px 0 0; }
     .pos-pay-card .pos-note { display: none; }
@@ -390,4 +396,9 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
 /* A phone: the mark stays, the name goes. */
 @media (max-width: 520px) {
   #pos-root .pos-brand-name { display: none; }
+}
+/* A small phone: the badge takes its short words, leaving the heading room. */
+@media (max-width: 380px) {
+  #pos-root .pos-badge .label-long { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  #pos-root .pos-badge .label-short { display: inline; }
 }

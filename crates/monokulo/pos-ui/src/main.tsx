@@ -15,7 +15,7 @@ type Order = {
   received_xmr?: string; remaining_xmr?: string;
   refund_address?: string | null; qr_svg?: string;
 };
-type StatusEvent = Pick<Order, 'order_id' | 'status' | 'confirmations' | 'confirmations_required' | 'error' | 'updated_at' | 'received_xmr' | 'remaining_xmr'> & { is_terminal: boolean };
+type StatusEvent = Pick<Order, 'order_id' | 'status' | 'confirmations' | 'confirmations_required' | 'error' | 'updated_at' | 'received_xmr' | 'remaining_xmr' | 'qr_svg'> & { is_terminal: boolean };
 type Config = { connectionId: string; publicKey: string; currency: string; decimals: number; storeName: string; clientLogging: boolean };
 
 const root = document.getElementById('pos-root');
@@ -217,7 +217,6 @@ function PaymentCard(props: { order: Order }) {
   }
 
   return <section class="pos-pay-card" aria-label="Payment details">
-    <Show when={awaiting()}><p class="pos-expiry">Send payment within {durationUntil(props.order.expires_at, now())}</p></Show>
     <Show when={detail()}><p class={['pos-pay-detail', `state-${stateOf(props.order)}`]}>{detail()}</p></Show>
     <Show when={awaiting()} fallback={<>
       <p class="pos-pay-caption">Received</p>
@@ -227,7 +226,12 @@ function PaymentCard(props: { order: Order }) {
       <p class="pos-pay-caption">{partial() ? 'Send the remaining amount' : 'Send exactly this amount'}</p>
       <p class="pos-pay-xmr">{trimXmr(partial() ? props.order.remaining_xmr || props.order.xmr_amount : props.order.xmr_amount)} <span>XMR</span></p>
       <Show when={props.order.currency !== 'XMR' && !partial()}><p class="pos-pay-fiat">≈ {props.order.amount} {props.order.currency}</p></Show>
-      <Show when={qr()}><div class="pos-qr" innerHTML={qr()}/></Show>
+      {/* After a partial payment the code is redrawn for the rest, and says so. */}
+      <Show when={qr()}>
+        <Show when={partial()} fallback={<div class="pos-qr" innerHTML={qr()}/>}>
+          <div class="pos-qr-new"><span class="pos-qr-new-tab">New code · {trimXmr(props.order.remaining_xmr || props.order.xmr_amount)} XMR</span><div class="pos-qr" innerHTML={qr()}/></div>
+        </Show>
+      </Show>
       <p class="pos-quiet-label">Payment address</p>
       <div class="pos-address">
         <code title={props.order.address}>{shortAddress(props.order.address)}</code>
@@ -590,7 +594,13 @@ function App() {
       <main class="pos-payment">
         <div class="pos-order-heading">
           <div><h1>{label(order())}</h1><p>{order().merchant_order_id ? 'Reference · ' : ''}Order {shortId(order().order_id)}</p></div>
-          <StatusBadge order={order()} offline={offline() && !terminal(order())}/>
+          {/* The status, and while the customer still has to pay, the time left. */}
+          <div class="pos-status-row">
+            <StatusBadge order={order()} offline={offline() && !terminal(order())}/>
+            <Show when={['pending', 'partial'].includes(order().status) && !order().cancelled_at}>
+              <span class="pos-expiry"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2h12M6 22h12M7 2v4a5 5 0 0 0 2 4l3 2-3 2a5 5 0 0 0-2 4v4m10-20v4a5 5 0 0 1-2 4l-3 2 3 2a5 5 0 0 1 2 4v4"/></svg>{durationUntil(order().expires_at, now())} left</span>
+            </Show>
+          </div>
         </div>
         <Show when={!terminal(order())} fallback={<Outcome order={order()}/>}>
           <PaymentCard order={order()}/>

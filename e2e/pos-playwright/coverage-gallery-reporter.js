@@ -38,10 +38,10 @@ const GROUPS = [
   ['store-settings', 'Store settings'],
   ['logs', 'Logs'],
 ];
-const SHAPES = ['desktop', 'tablet-portrait', 'tablet-landscape', 'mobile-portrait', 'mobile-landscape'];
+const SHAPES = ['desktop', 'tablet-portrait', 'tablet-landscape', 'mobile-portrait', 'mobile-landscape', 'small-portrait'];
 const SHAPE_LABELS = {
   desktop: 'Desktop', 'tablet-portrait': 'Tablet, portrait', 'tablet-landscape': 'Tablet, landscape',
-  'mobile-portrait': 'Mobile, portrait', 'mobile-landscape': 'Mobile, landscape',
+  'mobile-portrait': 'Mobile, portrait', 'mobile-landscape': 'Mobile, landscape', 'small-portrait': 'Small phone (320px), portrait',
 };
 const THEMES = ['light', 'dark'];
 // Captures made before shapes had device names.
@@ -126,6 +126,7 @@ function page(entries) {
     + '<label><input type="radio" name="device" id="device-desktop" checked><span>Desktop</span></label>'
     + '<label><input type="radio" name="device" id="device-tablet"><span>Tablet</span></label>'
     + '<label><input type="radio" name="device" id="device-mobile"><span>Mobile</span></label>'
+    + '<label><input type="radio" name="device" id="device-small"><span>Small phone</span></label>'
     + '</fieldset><fieldset class="orientation"><legend>Orientation</legend>'
     + '<label><input type="radio" name="orientation" id="orientation-portrait" checked><span>Portrait</span></label>'
     + '<label><input type="radio" name="orientation" id="orientation-landscape"><span>Landscape</span></label>'

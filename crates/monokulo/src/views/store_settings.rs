@@ -55,6 +55,8 @@ pub struct EmbedDomainView {
 }
 
 pub struct StoreSettingsData {
+    /// The zone the page shows times in (the signed-in user's).
+    pub clock: super::time::Clock,
     pub connection_id: String,
     pub display_name: String,
     /// The tenant's current confirmation threshold - `10` when the engine is
@@ -250,12 +252,12 @@ fn confirmations_section(store: &StoreSettingsData, in_place: bool) -> Markup {
                     input type="hidden" name="zero_conf_checkbox_present" value="true";
                 }
                 form method="post" action=(format!("/dashboard/stores/{}/settings/confirmation-thresholds/save", store.connection_id)) fx-action=(format!("/dashboard/stores/{}/settings/confirmation-thresholds/save", store.connection_id)) fx-method="POST" fx-target="#confirmation-thresholds" {
-                    table class="thresholds-table" {
+                    table class="thresholds-table table-stack" {
                         thead { tr { th { "Amount (" (store.base_currency) ")" } th { "Confirmations required" } th { "Action" } } }
                         tbody {
                             tr {
                                 td class="muted" { "Default (fallback)" }
-                                td {
+                                td data-label="Confirmations required" {
                                     input type="text" class="confirmations-input" name="confirmations_required"
                                         value=(store.confirmations_required) size="3" maxlength="3" required form="default-confirmations";
                                     label class="zero-conf-toggle" {
@@ -268,8 +270,8 @@ fn confirmations_section(store: &StoreSettingsData, in_place: bool) -> Markup {
                             }
                             @for threshold in &store.confirmation_thresholds {
                                 tr {
-                                    td { (threshold.unit_amount) }
-                                    td { (threshold.confirmations_required) }
+                                    td data-label=(format!("Amount ({})", store.base_currency)) { (threshold.unit_amount) }
+                                    td data-label="Confirmations required" { (threshold.confirmations_required) }
                                     td {
                                         label { input type="checkbox" name=(format!("delete_{}", threshold.id)); " delete" }
                                         button type="submit" { "Save" }
@@ -355,12 +357,12 @@ fn webhooks_section(store: &StoreSettingsData, in_place: bool) -> Markup {
                         p class="hint" { "Store it somewhere safe before leaving this page. If you lose it, delete this webhook and create a new one." }
                     }
                 }
-                table {
+                table class="table-stack" {
                     thead { tr { th { "URL" } th { "Enabled" } th { "Created" } th {} } }
                     tbody {
                         @for webhook in &store.webhooks {
                             tr {
-                                td { (webhook.url) }
+                                td data-label="URL" { (webhook.url) }
                                 td {
                                     @if webhook.enabled {
                                         span class="tag tag-ok" { "enabled" }
@@ -368,7 +370,7 @@ fn webhooks_section(store: &StoreSettingsData, in_place: bool) -> Markup {
                                         span class="tag tag-unknown" { "disabled" }
                                     }
                                 }
-                                td { (webhook.created_at) }
+                                td data-label="Created" { (store.clock.time(webhook.created_at)) }
                                 td {
                                     form method="post"
                                         action=(format!("/dashboard/stores/{}/settings/webhooks/{}/delete", store.connection_id, webhook.webhook_id))
@@ -551,7 +553,7 @@ fn verified_domains(store: &StoreSettingsData, in_place: bool) -> Markup {
         @if store.embed_domains.is_empty() {
             p class="muted" { "No domains yet." }
         } @else {
-            table class="domains-table" {
+            table class="domains-table table-stack" {
                 thead { tr { th { "Domain" } th { "Status" } th { "Last checked" } th {} } }
                 tbody {
                     @for domain in &store.embed_domains {
@@ -569,7 +571,7 @@ fn verified_domains(store: &StoreSettingsData, in_place: bool) -> Markup {
                                 }
                             }
                             td { span class=(format!("tag tag-{}", domain.state_tag)) { (domain.state_label) } }
-                            td { (domain.last_checked) }
+                            td data-label="Last checked" { (domain.last_checked) }
                             td class="domain-actions" {
                                 form method="post" action=(format!("/dashboard/stores/{}/settings/domains/{}/check", store.connection_id, domain.id)) fx-action=(format!("/dashboard/stores/{}/settings/domains/{}/check", store.connection_id, domain.id)) fx-method="POST" fx-target="#verified-domains" {
                                     button type="submit" { "Check now" }
@@ -606,6 +608,7 @@ mod tests {
 
     fn base_store() -> StoreSettingsData {
         StoreSettingsData {
+            clock: crate::views::time::Clock::utc(0),
             connection_id: "conn_1".to_string(),
             display_name: "shop.example.com".to_string(),
             confirmations_required: 10,

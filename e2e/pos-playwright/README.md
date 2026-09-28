@@ -170,6 +170,7 @@ spending the anonymous client's log-report budget, so it runs last.
 `captureCoverageStage(page, stage, testInfo, { group, shapes })`
 (`coverage-screenshot.js`) captures a stage when `COVERAGE_SCREENSHOTS=1`:
 every size (`desktop`, `tablet-portrait`, `tablet-landscape`,
-`mobile-portrait`, `mobile-landscape`) unless `shapes` names fewer, filed
-under `group` (a page or feature; guessed from the spec's file name when
-left out). The Logs page and other admin tools are captured on desktop only.
+`mobile-portrait`, `mobile-landscape`, and the 320px `small-portrait`)
+unless `shapes` names fewer, filed under `group` (a page or feature; guessed
+from the spec's file name when left out). The POS session timeline is
+captured on desktop only.

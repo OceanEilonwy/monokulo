@@ -47,6 +47,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (23, include_str!("../migrations/0023_order_source.sql")),
     (24, include_str!("../migrations/0024_saved_log_searches.sql")),
     (25, include_str!("../migrations/0025_store_client_logging.sql")),
+    (26, include_str!("../migrations/0026_user_timezone.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -227,6 +228,13 @@ pub struct UserRow {
     /// lookup, so a theme change (`POST /dashboard/theme`) takes effect on
     /// the very next page load with no session/cookie invalidation needed.
     pub theme: Theme,
+    /// The time zone this user chose (`users.timezone`, migration 0026), or
+    /// `None` for automatic: `browser_timezone`, else UTC.
+    pub timezone: Option<String>,
+    /// Not stored: the browser's own zone on the current request (the `tz`
+    /// cookie), filled in by [`AuthedUser`](crate::http::AuthedUser) for an
+    /// automatic `timezone`.
+    pub browser_timezone: Option<String>,
 }
 
 /// A user's stored light/dark preference. `System` (the default, and every
@@ -471,6 +479,12 @@ impl Db {
         Ok(())
     }
 
+    /// `POST /dashboard/timezone`: a zone name, or `None` for automatic.
+    pub fn update_user_timezone(&self, id: &str, timezone: Option<&str>) -> Result<()> {
+        self.conn.execute("UPDATE users SET timezone = ?2 WHERE id = ?1", params![id, timezone])?;
+        Ok(())
+    }
+
     /// `POST /dashboard/theme` - the nav's own no-JS toggle form. Same
     /// "update a single column, keyed by id" shape as
     /// `update_store_connection_fx_provider`.
@@ -485,7 +499,7 @@ impl Db {
     pub fn get_user_by_email(&self, email: &str) -> Result<Option<UserRow>> {
         self.conn
             .query_row(
-                "SELECT id, email, password_hash, created_at_utc, is_admin, theme FROM users WHERE email = ?1",
+                "SELECT id, email, password_hash, created_at_utc, is_admin, theme, timezone FROM users WHERE email = ?1",
                 params![email],
                 |row| {
                     Ok(UserRow {
@@ -495,6 +509,8 @@ impl Db {
                         created_at: row.get(3)?,
                         is_admin: row.get(4)?,
                         theme: Theme::from_db_str(&row.get::<_, String>(5)?),
+                        timezone: row.get(6)?,
+                        browser_timezone: None,
                     })
                 },
             )
@@ -507,7 +523,7 @@ impl Db {
     pub fn get_user_by_id(&self, id: &str) -> Result<Option<UserRow>> {
         self.conn
             .query_row(
-                "SELECT id, email, password_hash, created_at_utc, is_admin, theme FROM users WHERE id = ?1",
+                "SELECT id, email, password_hash, created_at_utc, is_admin, theme, timezone FROM users WHERE id = ?1",
                 params![id],
                 |row| {
                     Ok(UserRow {
@@ -517,6 +533,8 @@ impl Db {
                         created_at: row.get(3)?,
                         is_admin: row.get(4)?,
                         theme: Theme::from_db_str(&row.get::<_, String>(5)?),
+                        timezone: row.get(6)?,
+                        browser_timezone: None,
                     })
                 },
             )

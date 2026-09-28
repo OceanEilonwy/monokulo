@@ -288,6 +288,11 @@ pub struct PosStatusResponse {
     /// a partly paid order shows the real amounts.
     pub received_xmr: String,
     pub remaining_xmr: String,
+    /// After a partial payment, the QR code redrawn for what is still owed
+    /// ([`super::checkout::payment_uri`]); absent otherwise, when the code
+    /// the terminal already has is still right.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub qr_svg: Option<String>,
 }
 
 #[derive(Serialize)]
@@ -322,7 +327,9 @@ pub struct PosOrderData {
 
 async fn pos_order_data(state: &AppState, connection_id: &str, sk: &str, row: crate::db::PosOrderRow) -> Result<PosOrderData, EngineClientError> {
     let detail = state.engine_client.get_order_detail(sk, &row.order_id).await?;
-    Ok(pos_order_view(state, connection_id, row, &detail.order))
+    let mut data = pos_order_view(state, connection_id, row, &detail.order);
+    data.qr_svg = super::checkout::payment_qr_svg(&detail.order).ok();
+    Ok(data)
 }
 
 /// One POS order as the terminal shows it, from its local row and the
@@ -457,10 +464,7 @@ pub async fn order_detail(
     };
     let sk = match decrypt_sk(&state, &row) { Ok(sk) => sk, Err(()) => return ApiError::Internal.into_response() };
     match pos_order_data(&state, &id, &sk, pos_row).await {
-        Ok(mut data) => {
-            data.qr_svg = super::checkout::qr_svg_for_html(&data.address).ok();
-            Json(data).into_response()
-        }
+        Ok(data) => Json(data).into_response(),
         Err(error) => engine_failure(&error),
     }
 }
@@ -578,6 +582,7 @@ async fn pos_status(state: &AppState, connection_id: &str, sk: &str, order: &Ord
         error: derive_payment_error(order),
         received_xmr: shared::exchange_rate::format_piconero_as_xmr(order.amount_received_piconero),
         remaining_xmr: shared::exchange_rate::format_piconero_as_xmr(order.xmr_amount_piconero.saturating_sub(order.amount_received_piconero)),
+        qr_svg: if order.status == "partial" { super::checkout::payment_qr_svg(order).ok() } else { None },
     }
 }
 
