@@ -47,6 +47,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (14, include_str!("../migrations/0014_drop_tenant_allowed_origins.sql")),
     (15, include_str!("../migrations/0015_tenant_scan_cursor.sql")),
     (16, include_str!("../migrations/0016_order_closed_at.sql")),
+    (17, include_str!("../migrations/0017_pending_payment_recomputes.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -787,6 +788,24 @@ impl Store {
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
+    }
+
+    /// Payment changes whose status/webhook transaction has not committed yet.
+    /// Unlike the live scan window this includes old, closed orders.
+    pub fn pending_payment_recomputes(&self, network: &str) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT p.order_id FROM pending_payment_recomputes p
+             JOIN orders o ON o.id = p.order_id
+             JOIN tenants t ON t.id = o.tenant_id WHERE t.network = ?1",
+        )?;
+        let rows = stmt.query_map([network], |row| row.get(0))?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Call inside the same transaction as the status update and webhook enqueue.
+    pub fn clear_pending_payment_recompute(&self, order_id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM pending_payment_recomputes WHERE order_id = ?1", [order_id])?;
+        Ok(())
     }
 
     pub fn disable_tenant(&self, tenant_id: &str, now: i64) -> Result<()> {
@@ -2040,6 +2059,38 @@ mod tests {
         assert_eq!(active[0].id, a.tenant.id);
         // Disabling doesn't delete the row - count_tenants includes it still.
         assert_eq!(store.count_tenants().unwrap(), 2);
+    }
+
+    #[test]
+    fn pending_payment_recomputes_survive_reopening_and_track_real_changes() {
+        let path = std::env::temp_dir().join(format!("pending_recomputes_{}.db", Uuid::new_v4()));
+        let store = Store::open_file(path.to_str().unwrap()).unwrap();
+        let tenant = new_tenant(&store);
+        let order = new_order(&store, &tenant.tenant.id, 1);
+        store.record_payment_match(&order.id, "tx", 0, 1, "[]", 1000, Some(1)).unwrap();
+        drop(store);
+        let store = Store::open_file(path.to_str().unwrap()).unwrap();
+        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id.clone()]);
+        assert!(store.pending_payment_recomputes("stagenet").unwrap().is_empty());
+        store.clear_pending_payment_recompute(&order.id).unwrap();
+        store.record_payment_match(&order.id, "tx", 0, 1, "[]", 1001, Some(1)).unwrap();
+        assert!(store.pending_payment_recomputes("mainnet").unwrap().is_empty(), "duplicate sightings aren't new work");
+        store.update_payment_block_height(&order.id, "tx", 0, None).unwrap();
+        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id.clone()]);
+        store.clear_pending_payment_recompute(&order.id).unwrap();
+        store.void_payment(&order.id, "tx", 0, 1002).unwrap();
+        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id.clone()]);
+        store.clear_pending_payment_recompute(&order.id).unwrap();
+        store.unvoid_payment(&order.id, "tx", 0).unwrap();
+        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id.clone()]);
+        // Reapply just the new DDL to pre-existing payments: an upgrade also
+        // schedules recovery for writes made before durable tracking existed.
+        store.conn.execute_batch("DROP TRIGGER payment_insert_needs_recompute;
+            DROP TRIGGER payment_update_needs_recompute; DROP TABLE pending_payment_recomputes;").unwrap();
+        store.conn.execute_batch(include_str!("../migrations/0017_pending_payment_recomputes.sql")).unwrap();
+        assert_eq!(store.pending_payment_recomputes("mainnet").unwrap(), vec![order.id]);
+        drop(store);
+        std::fs::remove_file(path).unwrap();
     }
 
     #[test]

@@ -262,7 +262,7 @@ pub async fn run_delivery_tick(
     let count = due.len();
     let started = std::time::Instant::now();
 
-    let outcomes: Vec<(DueDelivery, DeliveryOutcome, i64)> = stream::iter(due)
+    let mut outcomes = stream::iter(due)
         .map(|delivery| {
             let span = tracing::info_span!(
                 "webhook delivery",
@@ -282,14 +282,13 @@ pub async fn run_delivery_tick(
                 span,
             )
         })
-        .buffer_unordered(DELIVERY_CONCURRENCY)
-        .collect()
-        .await;
+        .buffer_unordered(DELIVERY_CONCURRENCY);
 
-    // Every outcome is recorded even if an earlier one fails to write: a
-    // delivery that went out but wasn't marked would be sent again.
+    // Persist each completed outcome before awaiting any more I/O. Otherwise
+    // cancelling one slow delivery loses every already-completed outcome in
+    // the batch. Still record later outcomes if an earlier write fails.
     let mut first_error = None;
-    for (delivery, outcome, at) in outcomes {
+    while let Some((delivery, outcome, at)) = outcomes.next().await {
         let store = store.lock();
         let written = if outcome.delivered {
             store.mark_webhook_delivered(delivery.delivery_id, outcome.response_status.unwrap_or(0), at)
@@ -773,6 +772,40 @@ mod tests {
             "the busy store got its fair share, not the whole batch"
         );
         assert_eq!(pending_for(&store, &slow_webhook), 40 - DELIVERY_PER_TENANT as usize);
+    }
+
+    #[tokio::test]
+    async fn cancelling_a_batch_keeps_outcomes_that_already_completed() {
+        let started = Arc::new(tokio::sync::Notify::new());
+        let signal = started.clone();
+        let app = Router::new().route("/hook", post(move || {
+            let signal = signal.clone();
+            async move {
+                signal.notify_one();
+                std::future::pending::<axum::http::StatusCode>().await
+            }
+        }));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let url = format!("http://{}/hook", listener.local_addr().unwrap());
+        let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let store = Store::open_in_memory().unwrap();
+        // URL validation finishes immediately; the other endpoint stays pending.
+        let (fast, _) = store_with_deliveries(&store, "invalid URL", 1, 100);
+        store_with_deliveries(&store, &url, 1, 101);
+        let store = store.into_shared();
+        let client = test_client();
+        {
+            let tick = run_delivery_tick(&store, &client, true, Duration::from_secs(60), 8, 1000);
+            tokio::pin!(tick);
+            tokio::select! {
+                result = &mut tick => panic!("batch unexpectedly completed: {result:?}"),
+                _ = started.notified() => {}
+            }
+        }
+        server.abort();
+        let deliveries = store.lock().due_webhook_deliveries(i64::MAX / 2, 100).unwrap();
+        let completed = deliveries.iter().find(|d| d.webhook_id == fast).unwrap();
+        assert_eq!(completed.attempt_count, 1, "completed outcomes must survive cancellation of another delivery");
     }
 
     #[tokio::test]
