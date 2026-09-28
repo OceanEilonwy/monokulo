@@ -297,7 +297,7 @@ async fn order_detail_data(
             };
             let (rate_display, rate_provider) = match &metadata {
                 Some(m) => (
-                    format!("{} XMR per 1 {}", shared::exchange_rate::format_piconero_as_xmr(m.piconero_per_unit), m.currency),
+                    format!("{} XMR per 1 {}", crate::views::trim_xmr(&shared::exchange_rate::format_piconero_as_xmr(m.piconero_per_unit)), m.currency),
                     m.provider.clone(),
                 ),
                 None => ("—".to_string(), "—".to_string()),
@@ -316,7 +316,7 @@ async fn order_detail_data(
             let base_currency_rate_display = match metadata.as_ref().and_then(|m| m.store_base_currency.clone()) {
                 Some(base_currency) => match metadata.as_ref().and_then(|m| m.base_currency_piconero_per_unit) {
                     Some(rate) => {
-                        format!("{} XMR per 1 {base_currency}", shared::exchange_rate::format_piconero_as_xmr(rate))
+                        format!("{} XMR per 1 {base_currency}", crate::views::trim_xmr(&shared::exchange_rate::format_piconero_as_xmr(rate)))
                     }
                     None => "same as order currency".to_string(),
                 },
@@ -2280,7 +2280,7 @@ mod tests {
         // still records a real rate (the trivial 1:1 identity) and a real
         // provider name ("xmr"), not a blank/special-cased display.
         assert!(
-            html.contains("1.000000000000 XMR per 1 XMR"),
+            html.contains("1 XMR per 1 XMR"),
             "expected the real exchange rate used (the identity rate) on the page, got: {html}"
         );
         assert!(html.contains("xmr"), "expected the real rate provider (\"xmr\", from the identity provider) on the page, got: {html}");
@@ -3767,7 +3767,7 @@ mod tests {
             address: "addr".to_string(),
             currency: "XMR".to_string(),
             amount: "0.5".to_string(),
-            rate_display: "1.000000000000 XMR per 1 XMR".to_string(),
+            rate_display: "1 XMR per 1 XMR".to_string(),
             rate_provider: "xmr".to_string(),
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 500_000_000_000,

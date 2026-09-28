@@ -1,5 +1,5 @@
 //! Plain, engine-agnostic display/formatting helpers shared by several
-//! `views`/`http` modules (date/duration formatting, the connect forms'
+//! `views`/`http` modules (duration formatting, the connect forms'
 //! network-select flags, ...) - all that's left here since every page this
 //! module used to render through its own Handlebars-based `TemplateEngine`
 //! now renders through `views` (Maud) instead.
@@ -87,68 +87,6 @@ pub fn format_duration_until(target_unix: i64, now_unix: i64) -> String {
     parts.join(" ")
 }
 
-/// Days since the Unix epoch (1970-01-01) for a proleptic Gregorian calendar
-/// date - Howard Hinnant's well-known constant-time algorithm
-/// (<http://howardhinnant.github.io/date_algorithms.html>), used instead of
-/// pulling calendar formatting/parsing into the `time` crate dependency this
-/// crate already has (currently used here only for `time::Duration::ZERO` on
-/// a cookie) for one narrow, exactly-specified need: converting between a
-/// `<input type="date">`'s `YYYY-MM-DD` value and a unix timestamp for the
-/// order-rescan form's date bounds (`docs/order_rescan_wbs.md` Phase 3.2).
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = (if y >= 0 { y } else { y - 399 }) / 400;
-    let yoe = y - era * 400; // [0, 399]
-    let mp = (m as i64 + 9) % 12; // [0, 11]
-    let doy = (153 * mp + 2) / 5 + d as i64 - 1; // [0, 365]
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy; // [0, 146096]
-    era * 146097 + doe - 719468
-}
-
-/// The inverse of [`days_from_civil`] - the proleptic Gregorian calendar date
-/// `z` days after the Unix epoch.
-fn civil_from_days(z: i64) -> (i64, u32, u32) {
-    let z = z + 719468;
-    let era = (if z >= 0 { z } else { z - 146096 }) / 146097;
-    let doe = z - era * 146097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36524 - doe / 146096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d)
-}
-
-/// A unix timestamp as a `YYYY-MM-DD` UTC calendar date - the exact format
-/// `<input type="date">`'s `value`/`min`/`max` attributes require.
-pub fn unix_to_date_string(ts: i64) -> String {
-    let (y, m, d) = civil_from_days(ts.div_euclid(86_400));
-    format!("{y:04}-{m:02}-{d:02}")
-}
-
-/// The inverse of [`unix_to_date_string`] - a `<input type="date">`'s
-/// submitted `YYYY-MM-DD` value as the unix timestamp of that date's own UTC
-/// midnight. `None` for anything not shaped like a real, syntactically valid
-/// date (a browser's own native date picker should never submit one, but
-/// this is form input from the network regardless - never trusted at face
-/// value). Deliberately does not reject a date `days_from_civil` can compute
-/// but that isn't a *real* calendar date (e.g. April 31st) - the native
-/// picker itself won't offer one, and `Store::trigger_rescan`'s own `from`/
-/// `to` bounds checking is what actually decides whether the resulting
-/// timestamp is acceptable, not this parser.
-pub fn date_string_to_unix_midnight(s: &str) -> Option<i64> {
-    let mut parts = s.splitn(3, '-');
-    let y = parts.next()?.parse::<i64>().ok()?;
-    let m = parts.next()?.parse::<u32>().ok()?;
-    let d = parts.next()?.parse::<u32>().ok()?;
-    if parts.next().is_some() || !(1..=12).contains(&m) || !(1..=31).contains(&d) {
-        return None;
-    }
-    Some(days_from_civil(y, m, d) * 86_400)
-}
-
 // SetupViewModel/RequestInviteViewModel/AdminInviteRequestRow/AdminInvitesViewModel/
 // AdminScalarFieldView/AdminNetworkFieldView/AdminSettingsViewModel moved to
 // `views::admin`, PosViewModel to `views::pos`, and CheckoutViewModel/
@@ -162,38 +100,6 @@ pub fn date_string_to_unix_midnight(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn unix_to_date_string_matches_known_dates() {
-        assert_eq!(unix_to_date_string(0), "1970-01-01");
-        assert_eq!(unix_to_date_string(86_399), "1970-01-01", "one second before the next day rolls over");
-        assert_eq!(unix_to_date_string(86_400), "1970-01-02");
-        // 2024-02-29 12:00:00 UTC - a real leap day, not a hypothetical one.
-        assert_eq!(unix_to_date_string(1_709_208_000), "2024-02-29");
-        // 2026-01-01 00:00:00 UTC.
-        assert_eq!(unix_to_date_string(1_767_225_600), "2026-01-01");
-        // A negative timestamp (before the epoch) must still resolve to a real
-        // date, not panic or wrap - `div_euclid` is what makes this correct.
-        assert_eq!(unix_to_date_string(-1), "1969-12-31");
-    }
-
-    #[test]
-    fn date_string_to_unix_midnight_round_trips_with_unix_to_date_string() {
-        for ts in [0i64, 86_400, 1_709_208_000, 1_767_225_600, 1_700_000_000] {
-            let date = unix_to_date_string(ts);
-            let midnight = date_string_to_unix_midnight(&date).unwrap();
-            assert_eq!(unix_to_date_string(midnight), date, "midnight of {date} must itself format back to {date}");
-        }
-        // A known, hand-checked pair, not just an internal round trip.
-        assert_eq!(date_string_to_unix_midnight("2024-02-29").unwrap(), 1_709_164_800);
-    }
-
-    #[test]
-    fn date_string_to_unix_midnight_rejects_malformed_input_rather_than_panicking() {
-        for bad in ["", "not-a-date", "2024-02", "2024-13-01", "2024-01-32", "2024-01-01-extra", "2024/01/01"] {
-            assert!(date_string_to_unix_midnight(bad).is_none(), "expected {bad:?} to be rejected");
-        }
-    }
 
     #[test]
     fn display_or_dash_shows_the_muted_placeholder_for_none_or_empty() {

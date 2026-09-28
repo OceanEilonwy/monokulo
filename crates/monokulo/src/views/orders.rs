@@ -433,7 +433,7 @@ mod tests {
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
             currency: "XMR".to_string(),
             amount: "0.5".to_string(),
-            rate_display: "1.000000000000 XMR per 1 XMR".to_string(),
+            rate_display: "1 XMR per 1 XMR".to_string(),
             rate_provider: "xmr".to_string(),
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 0,
