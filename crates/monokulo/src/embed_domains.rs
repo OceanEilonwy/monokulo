@@ -192,7 +192,7 @@ pub fn policy_for_public_key(db: &SharedDb, public_key: &str) -> Option<EmbedPol
     match db.lock().embed_policy_for_public_key(public_key) {
         Ok(policy) => policy.map(|(restricted, domains)| EmbedPolicy { restricted, domains }),
         Err(e) => {
-            eprintln!("could not read the embed policy for {public_key}: {e}");
+            tracing::error!(public_key = %public_key, error = %e, "could not read the embed policy");
             None
         }
     }
@@ -226,7 +226,7 @@ pub fn suggest_domain(db: &SharedDb, connection_id: &str, input: &str, now: i64)
 
 fn suggest(db: &SharedDb, connection_id: &str, domain: &str, now: i64) {
     if let Err(e) = db.lock().suggest_store_domain(connection_id, domain, now, MAX_DOMAINS_PER_STORE) {
-        eprintln!("could not add {domain} to store {connection_id}: {e}");
+        tracing::warn!(store.id = %connection_id, domain = %domain, error = %e, "could not add a domain to a store");
     }
 }
 
@@ -238,14 +238,14 @@ pub fn import_existing_domains(db: &SharedDb) {
     let stores = match db.lock().list_store_connections_awaiting_domain_import() {
         Ok(stores) => stores,
         Err(e) => {
-            eprintln!("could not list stores to import domains for: {e}");
+            tracing::error!(error = %e, "could not list stores to import domains for");
             return;
         }
     };
     for store in stores {
         suggest_site_domain(db, &store.id, &store.site_url, crate::now_unix());
         if let Err(e) = db.lock().mark_store_domains_imported(&store.id) {
-            eprintln!("could not mark store {}'s domains imported: {e}", store.id);
+            tracing::warn!(store.id = %store.id, error = %e, "could not mark the store's domains imported");
         }
     }
 }
@@ -360,13 +360,13 @@ pub async fn recheck_due(db: &SharedDb, dns: &dyn TxtLookup, now: i64) {
     let due = match db.lock().list_store_domains_due_for_recheck(now, RECHECK_EVERY_SECS, FAILING_RECHECK_EVERY_SECS) {
         Ok(due) => due,
         Err(e) => {
-            eprintln!("could not list domains to re-check: {e}");
+            tracing::error!(error = %e, "could not list domains to re-check");
             return;
         }
     };
     for row in due {
         if let Err(e) = check_and_record(db, dns, &row, crate::now_unix()).await {
-            eprintln!("could not record the re-check of {}: {e}", row.domain);
+            tracing::warn!(domain = %row.domain, error = %e, "could not record a domain re-check");
         }
     }
 }

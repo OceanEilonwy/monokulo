@@ -34,6 +34,8 @@ fn encryption_key_from_env() -> [u8; 32] {
 
 #[tokio::main]
 async fn main() {
+    // First, so everything after it is logged (structured_logging.md 1.1).
+    let _telemetry = telemetry::init("monokulo", "MONOKULO");
     // Where the database lives and where monokulo listens: boot-only, from
     // the environment, like `MONOKULO_ENCRYPTION_KEY` (task 6.0 needs them
     // to run a test instance on a temporary database and a free port).
@@ -46,7 +48,7 @@ async fn main() {
     let dns: Arc<dyn monokulo::embed_domains::TxtLookup> = match monokulo::embed_domains::SystemDns::new() {
         Ok(dns) => Arc::new(dns),
         Err(e) => {
-            eprintln!("DNS resolver unavailable, domain verification will fail: {e}");
+            tracing::error!(error = %e, "DNS resolver unavailable, domain verification will fail");
             Arc::new(monokulo::embed_domains::UnavailableDns(format!("this server's DNS resolver is unavailable ({e})")))
         }
     };
@@ -73,7 +75,7 @@ async fn main() {
     {
         Ok(settings) => settings,
         Err(e) => {
-            eprintln!("failed to load settings: {e}");
+            tracing::error!(error = %e, "failed to load settings");
             std::process::exit(1);
         }
     };
@@ -97,7 +99,7 @@ async fn main() {
     onion.router_ready(router.clone());
 
     let listener = tokio::net::TcpListener::bind(&bind).await.expect("failed to bind server address");
-    println!("monokulo listening on {bind}");
+    tracing::info!(server.address = %bind, "monokulo listening");
     // `with_connect_info` - without this, `http::abuse`'s client lookup
     // would never see a real peer address in production, and would fail
     // open for every request (the "no signal at all" case that should only

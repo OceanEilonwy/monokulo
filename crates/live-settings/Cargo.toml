@@ -15,6 +15,7 @@ serde = { version = "1.0.229", features = ["derive"] }
 # `Json<T>` settings (`monero_node.<network>`).
 serde_json = "1.0.151"
 thiserror = "2.0.20"
+tracing = "0.1.44"
 # `sync` for `watch` and the save mutex, `rt` for the task that finishes an
 # install even when the caller of `save` goes away.
 tokio = { version = "1.53.1", features = ["sync", "rt"] }

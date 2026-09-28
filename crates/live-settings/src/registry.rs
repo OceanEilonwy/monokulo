@@ -351,14 +351,14 @@ impl RegistryBuilder {
         for setting in &self.declared {
             let view = setting.resolve_view(stored.get(setting.key()).map(String::as_str), &self.env);
             if let Some(problem) = &view.problem {
-                eprintln!("settings: {}: {}", setting.key(), problem.message);
+                tracing::warn!(setting = setting.key(), "settings: {}", problem.message);
             }
             if setting.applies() == Applies::Restart {
                 boot_effective.insert(setting.key(), view.stored_form);
             }
         }
         for (section, errors) in &self.section_problems {
-            eprintln!("settings: section {section} is using its defaults, because {}", join_errors(errors));
+            tracing::warn!(section = %section, reasons = %join_errors(errors), "settings: section is using its defaults");
         }
 
         Ok(Registry {
@@ -458,7 +458,7 @@ impl Registry {
                 Err(error) => match entry.boot_policy() {
                     BootPolicy::Exit => return Err(BootError::Exit { section: entry.name(), error }),
                     BootPolicy::StartDegraded => {
-                        eprintln!("settings: starting without {}: {error}", entry.name());
+                        tracing::warn!(section = %entry.name(), error = %error, "settings: starting without it");
                         entry.discard();
                         report.degraded.push((entry.name(), error));
                     }
@@ -694,12 +694,12 @@ pub fn read_sync<S: Section>(store: &dyn SettingsStore) -> S {
 /// As [`read_sync`], resolving against `env`.
 pub fn read_sync_with_env<S: Section>(store: &dyn SettingsStore, env: &Env) -> S {
     let stored = store.read_all().unwrap_or_else(|e| {
-        eprintln!("settings: couldn't read the settings store ({e}), so {} uses its defaults", S::NAME);
+        tracing::warn!(section = S::NAME, error = %e, "settings: couldn't read the settings store, so this section uses its defaults");
         HashMap::new()
     });
     let (value, problem) = section_value::<S>(&Snapshot::new(stored, env.clone()));
     if let Some(errors) = problem {
-        eprintln!("settings: section {} is using its defaults, because {}", S::NAME, join_errors(&errors));
+        tracing::warn!(section = S::NAME, reasons = %join_errors(&errors), "settings: section is using its defaults");
     }
     value
 }

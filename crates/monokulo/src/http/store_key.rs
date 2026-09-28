@@ -50,7 +50,7 @@ pub fn key_matches(state: &AppState, stored_encrypted: &str, presented: &str) ->
     match crate::crypto::decrypt(&state.encryption_key, stored_encrypted) {
         Ok(stored) => bool::from(stored.as_bytes().ct_eq(presented.as_bytes())),
         Err(e) => {
-            eprintln!("could not decrypt a store's secret key to check a presented one: {e}");
+            tracing::error!(error = %e, "could not decrypt a store's secret key to check a presented one");
             false
         }
     }

@@ -196,7 +196,7 @@ pub async fn create_order(
             return ApiError::BadRequest(format!("unsupported currency: {currency}")).into_response();
         }
         Err(e) => {
-            eprintln!("exchange rate lookup failed for connection {} (currency {currency:?}): {e}", row.id);
+            tracing::error!(store.id = %row.id, currency = ?currency, error = %e, "exchange rate lookup failed");
             return ApiError::Internal.into_response();
         }
     };
@@ -222,7 +222,7 @@ pub async fn create_order(
     {
         Ok(order) => {
             if let Err(e) = state.db.lock().insert_pos_order(&row.id, &order.order_id, req.request_key.as_deref(), merchant_order_id.as_deref(), crate::now_unix()) {
-                eprintln!("failed to record POS order {}: {e}", order.order_id);
+                tracing::error!(order.id = %order.order_id, store.id = %row.id, error = %e, "failed to record a POS order");
                 return ApiError::Internal.into_response();
             }
             if let Err(e) = state.db.lock().create_order_currency_metadata(
@@ -239,11 +239,12 @@ pub async fn create_order(
                 // The merchant's own signed-in session: as trusted as the key.
                 true,
             ) {
-                eprintln!(
-                    "failed to record local fiat metadata for POS order {} on connection {}: {e} - the real \
-                     order still exists on the engine and this response is still correct, but its fiat \
-                     display on monokulo's own dashboard will be missing",
-                    order.order_id, row.id
+                tracing::error!(
+                    order.id = %order.order_id,
+                    store.id = %row.id,
+                    error = %e,
+                    "failed to record local fiat metadata - the real order still exists on the engine and this \
+                     response is still correct, but its fiat display on monokulo's own pages will be missing"
                 );
             }
             let _ = state.db.lock().set_order_source(&row.id, &order.order_id, "pos");

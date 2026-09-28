@@ -443,9 +443,10 @@ impl KeyCustody for SocketKeyCustody {
                     Err(KeyCustodyError::BackendUnavailable(reason)) if self.answers_a_known_request().await => reason,
                     Err(_) => return Err(KeyCustodyError::BackendUnavailable(first)),
                 };
-                eprintln!(
-                    "key-custody-service didn't answer an index-set scan ({reason}); assuming an older server and \
-                     using range scans from now on. Upgrade key-custody-server to scan only each store's open orders."
+                tracing::warn!(
+                    reason = %reason,
+                    "key-custody-service didn't answer an index-set scan; assuming an older server and using range \
+                     scans from now on. Upgrade key-custody-server to scan only each store's open orders."
                 );
                 self.indices_unsupported.store(true, Ordering::Relaxed);
                 match covering_range(indices) {
@@ -475,7 +476,7 @@ impl KeyCustody for SocketKeyCustody {
                     // A restarted server may be a newer one: try index-set
                     // scans again.
                     self.indices_unsupported.store(false, Ordering::Relaxed);
-                    eprintln!("key-custody-service has lost its wallets (it restarted?); state epoch is now {epoch}");
+                    tracing::warn!(epoch, "key-custody-service has lost its wallets (it restarted?)");
                     let handle = self.register_wallet(canary_material()).await?;
                     *self.canary.lock() = Some(handle);
                 }

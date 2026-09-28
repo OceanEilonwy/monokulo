@@ -148,7 +148,7 @@ impl OnionListener {
                 let (mut stream, peer) = match accepted {
                     Ok(accepted) => accepted,
                     Err(e) => {
-                        eprintln!("onion listener: accept failed: {e}");
+                        tracing::warn!(error = %e, "onion listener: accept failed");
                         tokio::time::sleep(Duration::from_millis(50)).await;
                         continue;
                     }
@@ -159,8 +159,8 @@ impl OnionListener {
                         Ok(Ok(source)) => {
                             let _ = connection_sender.send((stream, OnionPeer { source })).await;
                         }
-                        Ok(Err(e)) => eprintln!("onion listener: refused a connection from {peer}: {e}"),
-                        Err(_) => eprintln!("onion listener: refused a connection from {peer}: no PROXY header within {HEADER_TIMEOUT:?}"),
+                        Ok(Err(e)) => tracing::info!(client.address = %peer, error = %e, "onion listener: refused a connection"),
+                        Err(_) => tracing::info!(client.address = %peer, timeout = ?HEADER_TIMEOUT, "onion listener: refused a connection: no PROXY header in time"),
                     }
                 });
             }

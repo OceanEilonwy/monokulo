@@ -74,7 +74,7 @@ impl AbuseConfig {
     pub fn from_settings(db: &Db) -> Self {
         let trusted_raw: String = settings::get(db, &settings::ABUSE_TRUSTED_PROXIES);
         let trusted_proxies = TrustedProxies::parse(&trusted_raw).unwrap_or_else(|e| {
-            eprintln!("settings: abuse.trusted_proxies is invalid ({e}); trusting no proxy");
+            tracing::warn!(setting = "abuse.trusted_proxies", error = %e, "settings: invalid; trusting no proxy");
             TrustedProxies::default()
         });
         AbuseConfig {

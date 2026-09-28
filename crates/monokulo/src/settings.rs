@@ -182,6 +182,45 @@ settings! {
         description: "When true, every visitor who isn't signed in must pass a challenge before using the checkout or public pages (live updates are not affected). A pass lasts 10 minutes.",
         example: "false",
     },
+    LOGGING_LEVEL: String {
+        key: "logging.level",
+        env: "MONOKULO_LOG",
+        default: telemetry::DEFAULT_LEVEL.to_string(),
+        check: telemetry::check_level,
+        description: "Which log lines monokulo writes: a level (error, warn, info, debug, trace), optionally followed by target=level pairs for parts of monokulo.",
+        example: "info,monokulo::http=debug",
+    },
+    LOGGING_DEV_MODE_UNTIL: u64 {
+        key: "logging.dev_mode_until",
+        env: "MONOKULO_LOGGING_DEV_MODE_UNTIL",
+        default: 0,
+        check: range(0, i64::MAX),
+        description: "Development logging: until this time monokulo logs at debug level, then goes back to the level above by itself. Secrets and addresses stay hidden either way.",
+    },
+}
+
+/// Log level and development mode (structured_logging.md task 1.3), applied
+/// to the process-wide subscriber by `telemetry::LogReloadable`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoggingConfig(pub telemetry::LogConfig);
+
+impl AsRef<telemetry::LogConfig> for LoggingConfig {
+    fn as_ref(&self) -> &telemetry::LogConfig {
+        &self.0
+    }
+}
+
+impl Section for LoggingConfig {
+    const NAME: &'static str = "logging";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&LOGGING_LEVEL, &LOGGING_DEV_MODE_UNTIL]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(LoggingConfig(telemetry::LogConfig {
+            level: snapshot.get(&LOGGING_LEVEL).trim().to_string(),
+            dev_mode_until: snapshot.get(&LOGGING_DEV_MODE_UNTIL),
+        }))
+    }
 }
 
 /// A setting's effective value for a per-request read: environment, else
@@ -193,14 +232,14 @@ pub fn get<T: SettingValue>(db: &Db, setting: &Setting<T>) -> T {
         if !raw.trim().is_empty() {
             match setting.parse(&raw) {
                 Ok(value) => return value,
-                Err(e) => eprintln!("settings: {} from {} is invalid ({e}); ignoring it", setting.key, setting.env_var),
+                Err(e) => tracing::warn!(setting = setting.key, env = setting.env_var, error = %e, "settings: the environment variable's value is invalid; ignoring it"),
             }
         }
     }
     if let Some(raw) = db.get_setting(setting.key).ok().flatten() {
         match setting.parse(&raw) {
             Ok(value) => return value,
-            Err(e) => eprintln!("settings: the saved {} is invalid ({e}); using the default", setting.key),
+            Err(e) => tracing::warn!(setting = setting.key, error = %e, "settings: the saved value is invalid; using the default"),
         }
     }
     setting.default_value()
@@ -500,10 +539,10 @@ impl OnionReloadable {
                 let _ = stopped.wait_for(|s| *s).await;
             });
             if let Err(e) = serve.await {
-                eprintln!("onion listener on {address} stopped: {e}");
+                tracing::error!(server.address = %address, error = %e, "onion listener stopped");
             }
         });
-        println!("monokulo onion listener (PROXY protocol, for tor) on {address}");
+        tracing::info!(server.address = %address, "onion listener (PROXY protocol, for tor) started");
         *self.inner.running.lock() = Some(stop);
     }
 }
@@ -610,13 +649,14 @@ impl MonokuloSettings {
         // Its settings are read per request with `get` (they have no
         // runtime state to rebuild); the section only groups them.
         builder.section::<PerRequest>();
+        builder.reloadable(telemetry::LogReloadable::<LoggingConfig>::default());
         let registry = builder.build().map_err(|e| e.to_string())?;
         let report = registry.boot().await.map_err(|e| e.to_string())?;
         for warning in &report.warnings {
-            eprintln!("settings: {}", warning.message);
+            tracing::warn!(setting = warning.key.as_deref(), "settings: {}", warning.message);
         }
         for (section, error) in &report.degraded {
-            eprintln!("settings: {section} could not be applied at start, carrying on without it: {error}");
+            tracing::warn!(section = %section, error = %error, "settings: could not be applied at start, carrying on without it");
         }
         Ok(Arc::new(MonokuloSettings { registry: Some(registry) }))
     }
@@ -678,12 +718,14 @@ mod tests {
         assert!(ExchangeRateConfig::from_snapshot(&snapshot).is_ok());
         assert!(AbuseConfig::from_snapshot(&snapshot).is_ok());
         assert!(OnionListenerConfig::from_snapshot(&snapshot).is_ok());
+        assert!(LoggingConfig::from_snapshot(&snapshot).is_ok());
         let covered: usize = [
             EngineConnection::keys().len(),
             PerRequest::keys().len(),
             ExchangeRateConfig::keys().len(),
             AbuseConfig::keys().len(),
             OnionListenerConfig::keys().len(),
+            LoggingConfig::keys().len(),
         ]
         .iter()
         .sum();

@@ -1,0 +1,19 @@
+[package]
+name = "telemetry"
+version = "0.1.0"
+edition = "2021"
+description = "Structured logging for monokulo, the engine and the key-custody server: one tracing subscriber, redacted output, level changes without a restart"
+
+[dependencies]
+live-settings = { path = "../live-settings" }
+parking_lot = "0.12.5"
+serde_json = "1.0.151"
+# Timestamps on JSON lines (RFC 3339, UTC).
+time = { version = "0.3.55", features = ["formatting"] }
+# The expiry timer for development mode.
+tokio = { version = "1.53.1", features = ["time", "rt"] }
+tracing = "0.1.44"
+tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "registry"] }
+
+[dev-dependencies]
+tokio = { version = "1.53.1", features = ["time", "rt", "macros", "test-util"] }

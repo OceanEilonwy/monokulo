@@ -53,12 +53,12 @@ where
         loop {
             let started = tokio::time::Instant::now();
             match tokio::spawn(make_loop()).await {
-                Ok(()) => eprintln!("BUG: {name} loop returned; it is not supposed to terminate. Restarting in {backoff:?}."),
+                Ok(()) => tracing::error!(task = name, restart_in = ?backoff, "BUG: loop returned; it is not supposed to terminate. Restarting"),
                 Err(e) if e.is_panic() => {
-                    eprintln!("FATAL: {name} loop PANICKED: {e}. No {name} work is happening until it restarts. Restarting in {backoff:?}.");
+                    tracing::error!(task = name, error = %e, restart_in = ?backoff, "loop PANICKED. None of its work is happening until it restarts");
                 }
                 Err(e) => {
-                    eprintln!("{name} loop was cancelled: {e}. Not restarting.");
+                    tracing::warn!(task = name, error = %e, "loop was cancelled. Not restarting");
                     return;
                 }
             }
@@ -93,12 +93,12 @@ where
             tokio::select! {
                 outcome = &mut running => {
                     match outcome {
-                        Ok(()) => eprintln!("BUG: {name} loop returned; it is not supposed to terminate. Restarting in {backoff:?}."),
+                        Ok(()) => tracing::error!(task = name, restart_in = ?backoff, "BUG: loop returned; it is not supposed to terminate. Restarting"),
                         Err(e) if e.is_panic() => {
-                            eprintln!("FATAL: {name} loop PANICKED: {e}. No {name} work is happening until it restarts. Restarting in {backoff:?}.");
+                            tracing::error!(task = name, error = %e, restart_in = ?backoff, "loop PANICKED. None of its work is happening until it restarts");
                         }
                         Err(e) => {
-                            eprintln!("{name} loop was cancelled: {e}. Not restarting.");
+                            tracing::warn!(task = name, error = %e, "loop was cancelled. Not restarting");
                             return;
                         }
                     }

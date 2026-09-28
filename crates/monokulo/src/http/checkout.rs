@@ -413,7 +413,7 @@ pub async fn set_refund_address(
         Ok(()) if wants_json => Json(serde_json::json!({"ok": true})).into_response(),
         Ok(()) => redirect_302(&format!("/pay/{pk}/orders/{order_id}{}", options.suffix())),
         Err(e) => {
-            eprintln!("failed to set refund address for order {order_id} on connection {}: {e}", row.id);
+            tracing::error!(order.id = %order_id, store.id = %row.id, error = %e, "failed to set a refund address");
             if wants_json { return (StatusCode::BAD_GATEWAY, Json(serde_json::json!({"error": "Something went wrong saving that. Please try again."}))).into_response(); }
             render_checkout_page(&state, pk, row, sk, detail, Some("Something went wrong saving that. Please try again.".to_string()), &options).await
         }

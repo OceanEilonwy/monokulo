@@ -59,8 +59,11 @@ pub fn max_cache_bytes_from_env() -> u64 {
         Ok(raw) => match raw.trim().parse::<u64>() {
             Ok(mb) if mb > 0 => mb,
             _ => {
-                eprintln!(
-                    "{VAR}={raw:?} is not a positive integer number of megabytes - using the default ({DEFAULT_MB} MB)"
+                tracing::warn!(
+                    env = VAR,
+                    value = %raw,
+                    default_mb = DEFAULT_MB,
+                    "not a positive integer number of megabytes - using the default"
                 );
                 DEFAULT_MB
             }

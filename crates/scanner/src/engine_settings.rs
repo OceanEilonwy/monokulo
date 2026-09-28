@@ -176,11 +176,50 @@ settings! {
         description: "Attempts per webhook delivery before giving up, with the wait doubling from 1 minute up to 1 hour between them.",
         example: "8",
     },
+    LOGGING_LEVEL: String {
+        key: "logging.level",
+        env: "SCANNER_LOG",
+        default: telemetry::DEFAULT_LEVEL.to_string(),
+        check: telemetry::check_level,
+        description: "Which log lines the engine writes: a level (error, warn, info, debug, trace), optionally followed by target=level pairs for parts of the engine.",
+        example: "info,scanner::loops=debug",
+    },
+    LOGGING_DEV_MODE_UNTIL: u64 {
+        key: "logging.dev_mode_until",
+        env: "SCANNER_LOGGING_DEV_MODE_UNTIL",
+        default: 0,
+        check: range(0, i64::MAX),
+        description: "Development logging: until this time the engine logs at debug level, then goes back to the level above by itself. Secrets and addresses stay hidden either way.",
+    },
 }
 
 /// The networks the engine can scan, with their node setting.
 pub const NETWORKS: [(&str, &live_settings::Setting<Option<Json<MoneroNodeSetting>>>); 3] =
     [("mainnet", &MONERO_NODE_MAINNET), ("stagenet", &MONERO_NODE_STAGENET), ("testnet", &MONERO_NODE_TESTNET)];
+
+/// Log level and development mode (structured_logging.md task 1.3), applied
+/// to the process-wide subscriber by `telemetry::LogReloadable`.
+#[derive(Debug, Clone, PartialEq)]
+pub struct LoggingConfig(pub telemetry::LogConfig);
+
+impl AsRef<telemetry::LogConfig> for LoggingConfig {
+    fn as_ref(&self) -> &telemetry::LogConfig {
+        &self.0
+    }
+}
+
+impl Section for LoggingConfig {
+    const NAME: &'static str = "logging";
+    fn keys() -> &'static [&'static dyn AnySetting] {
+        &[&LOGGING_LEVEL, &LOGGING_DEV_MODE_UNTIL]
+    }
+    fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+        Ok(LoggingConfig(telemetry::LogConfig {
+            level: snapshot.get(&LOGGING_LEVEL).trim().to_string(),
+            dev_mode_until: snapshot.get(&LOGGING_DEV_MODE_UNTIL),
+        }))
+    }
+}
 
 /// Monero nodes per network (task 2.1).
 #[derive(Debug, Clone, PartialEq, Default)]
@@ -430,8 +469,8 @@ const KEY_CUSTODY_MIGRATION_MARKER: &str = "migration.key_custody_per_store";
 pub fn migrate_key_custody_setting(store: &crate::store::Store) -> Result<Option<String>, crate::store::StoreError> {
     if store.get_setting(KEY_CUSTODY_MIGRATION_MARKER)?.is_some() {
         if shared::settings::env_value("SCANNER_KEY_CUSTODY_BACKEND").is_some_and(|v| !v.trim().is_empty()) {
-            eprintln!(
-                "warning: SCANNER_KEY_CUSTODY_BACKEND is set but no longer used; key custody is chosen per store now \
+            tracing::warn!(
+                "SCANNER_KEY_CUSTODY_BACKEND is set but no longer used; key custody is chosen per store now \
                  (key_custody.enabled_backends and key_custody.default_backend)"
             );
         }
@@ -501,14 +540,14 @@ pub struct EngineSettings {
 /// with a message, as at boot.
 pub fn read_section<S: Section>(store: &crate::store::Store) -> S {
     let stored = store.list_settings().unwrap_or_else(|e| {
-        eprintln!("settings: couldn't read saved settings ({e}), so {} uses its defaults", S::NAME);
+        tracing::warn!(section = S::NAME, error = %e, "settings: couldn't read saved settings, so this section uses its defaults");
         HashMap::new()
     });
     match S::from_snapshot(&Snapshot::new(stored, live_settings::Env::process())) {
         Ok(section) => section,
         Err(errors) => {
             let reasons: Vec<String> = errors.iter().map(ToString::to_string).collect();
-            eprintln!("settings: {} is using its defaults, because {}", S::NAME, reasons.join("; "));
+            tracing::warn!(section = S::NAME, reasons = %reasons.join("; "), "settings: section is using its defaults");
             defaults_of()
         }
     }
@@ -712,6 +751,7 @@ impl EngineSettings {
         let webhooks = builder.section::<WebhookConfig>();
         let tenant_defaults = builder.section::<TenantDefaults>();
         let runtime = builder.section::<RuntimeConfig>();
+        builder.reloadable(telemetry::LogReloadable::<LoggingConfig>::default());
         let custody = match custody {
             Some(reloadable) => builder.reloadable(reloadable),
             None => builder.section::<CustodyConfig>(),
@@ -719,13 +759,13 @@ impl EngineSettings {
         let registry = builder.build().map_err(|e| e.to_string())?;
         let report = registry.boot().await.map_err(|e| e.to_string())?;
         for warning in &report.warnings {
-            eprintln!("settings: {}", warning.message);
+            tracing::warn!(setting = warning.key.as_deref(), "settings: {}", warning.message);
         }
         for (section, error) in &report.degraded {
-            eprintln!("settings: {section} could not be applied at start, carrying on without it: {error}");
+            tracing::warn!(section = %section, error = %error, "settings: could not be applied at start, carrying on without it");
         }
         for (key, problem) in registry.describe().iter().filter_map(|v| v.problem.as_ref().map(|p| (v.key, p))) {
-            eprintln!("settings: {key}: {}", problem.message);
+            tracing::warn!(setting = %key, "settings: {}", problem.message);
         }
         Ok(Arc::new(EngineSettings {
             registry: Some(registry),

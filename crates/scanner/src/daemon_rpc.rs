@@ -294,10 +294,11 @@ fn decode_pool_best_effort(entries: &[PoolTx]) -> Vec<Transaction> {
     for entry in entries {
         match decode_tx_hex(&entry.tx_blob) {
             Ok(tx) => out.push(tx),
-            Err(e) => eprintln!(
-                "skipping one undecodable mempool transaction ({e}) - it cannot be matched against any \
-                 wallet either way, and failing the whole poll over it would disable zero-conf detection \
-                 for every tenant on this network"
+            Err(e) => tracing::warn!(
+                error = %e,
+                "skipping one undecodable mempool transaction - it cannot be matched against any wallet either \
+                 way, and failing the whole poll over it would disable zero-conf detection for every tenant on \
+                 this network"
             ),
         }
     }

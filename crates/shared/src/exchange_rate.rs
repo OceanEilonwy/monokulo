@@ -200,17 +200,19 @@ impl CoingeckoRateProvider {
             return Ok(None);
         };
         let Some(price) = price_value.as_f64() else {
-            eprintln!(
-                "coingecko: price for {currency_upper} was not a JSON number ({price_value}) - treating as unpriced \
-                 for this fetch"
+            tracing::warn!(
+                currency = %currency_upper,
+                price = %price_value,
+                "coingecko: price was not a JSON number - treating as unpriced for this fetch"
             );
             return Ok(None);
         };
         if !price.is_finite() || price <= 0.0 {
-            eprintln!(
-                "coingecko: price for {currency_upper} was {price} (non-finite, zero, or negative) - refusing to \
-                 derive a rate from it, which would price every order in {currency_upper} at effectively free or \
-                 nonsense"
+            tracing::warn!(
+                currency = %currency_upper,
+                price,
+                "coingecko: price was non-finite, zero, or negative - refusing to derive a rate from it, which \
+                 would price every order in this currency at effectively free or nonsense"
             );
             return Ok(None);
         }
@@ -221,9 +223,11 @@ impl CoingeckoRateProvider {
         // essentially never divides evenly into 1e12 piconero.
         let piconero_per_unit = (PICONERO_PER_XMR as f64 / price).round();
         if !piconero_per_unit.is_finite() || piconero_per_unit > u64::MAX as f64 || piconero_per_unit < 1.0 {
-            eprintln!(
-                "coingecko: derived piconero-per-unit for {currency_upper} ({piconero_per_unit}) is out of u64 \
-                 range or less than one piconero - treating as unpriced for this fetch"
+            tracing::warn!(
+                currency = %currency_upper,
+                piconero_per_unit,
+                "coingecko: derived piconero-per-unit is out of u64 range or less than one piconero - treating as \
+                 unpriced for this fetch"
             );
             return Ok(None);
         }

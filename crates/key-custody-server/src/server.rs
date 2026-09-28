@@ -106,7 +106,7 @@ async fn handle_connection(mut stream: UnixStream, custody: Arc<PlainKeyCustody>
             Ok(Some(request)) => request,
             Ok(None) => return, // peer closed cleanly between requests
             Err(e) => {
-                eprintln!("key-custody-service: closing connection after a framing error: {e}");
+                tracing::warn!(error = %e, "closing connection after a framing error");
                 return;
             }
         };
@@ -132,15 +132,13 @@ async fn handle_connection(mut stream: UnixStream, custody: Arc<PlainKeyCustody>
                 // the same way a raw framing error does, rather than invent a
                 // fifth `KeyCustodyErrorWire` variant for a failure mode that
                 // isn't part of the `KeyCustody` trait's own contract at all.
-                eprintln!(
-                    "key-custody-service: closing connection after a malformed request: {e}"
-                );
+                tracing::warn!(error = %e, "closing connection after a malformed request");
                 return;
             }
         };
 
         if let Err(e) = write_frame(&mut stream, &response).await {
-            eprintln!("key-custody-service: closing connection after a write error: {e}");
+            tracing::warn!(error = %e, "closing connection after a write error");
             return;
         }
     }

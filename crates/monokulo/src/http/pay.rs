@@ -112,7 +112,7 @@ pub async fn create_order(
             return ApiError::BadRequest(format!("unsupported currency: {}", req.currency)).into_response();
         }
         Err(e) => {
-            eprintln!("exchange rate lookup failed for connection {} (currency {:?}): {e}", row.id, req.currency);
+            tracing::error!(store.id = %row.id, currency = ?req.currency, error = %e, "exchange rate lookup failed");
             return ApiError::Internal.into_response();
         }
     };
@@ -157,11 +157,12 @@ pub async fn create_order(
                 resolution.confirmations_required,
                 created_with_key,
             ) {
-                eprintln!(
-                    "failed to record local fiat metadata for order {} on connection {}: {e} - the real order \
-                     still exists on the engine and this response is still correct, but its fiat display on \
-                     monokulo's own dashboard/checkout page will be missing",
-                    order.order_id, row.id
+                tracing::error!(
+                    order.id = %order.order_id,
+                    store.id = %row.id,
+                    error = %e,
+                    "failed to record local fiat metadata - the real order still exists on the engine and this \
+                     response is still correct, but its fiat display on monokulo's own pages will be missing"
                 );
             }
             let source = if created_with_key { "api" } else { "website" };

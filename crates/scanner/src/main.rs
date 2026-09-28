@@ -43,7 +43,7 @@ const MAX_BODY_CEILING: usize = 16 * 1024 * 1024;
 fn open_store() -> Store {
     let db_path = cli::database_path();
     Store::open_file(&db_path.to_string_lossy()).unwrap_or_else(|e| {
-        eprintln!("failed to open database at {}: {e}", db_path.display());
+        tracing::error!(path = %db_path.display(), error = %e, "failed to open database");
         std::process::exit(1);
     })
 }
@@ -51,6 +51,10 @@ fn open_store() -> Store {
 /// Builds the runtime with `server.worker_threads` threads (task 2.8: read
 /// before the runtime exists, so it applies at the next start), then runs.
 fn main() {
+    // First, so everything after it is logged (structured_logging.md 1.1).
+    // Output meant for the person at the terminal (a one-off command's
+    // result, a secret shown once) stays on stdout with `println!`.
+    let _telemetry = telemetry::init("scanner", "SCANNER");
     let raw: Vec<String> = std::env::args().skip(1).collect();
     let action = cli::parse_args(&raw).unwrap_or_else(|e| {
         eprintln!("{e}\n\nRun with --help for usage.");
@@ -72,7 +76,7 @@ fn main() {
     let runtime = match tokio::runtime::Builder::new_multi_thread().worker_threads(worker_threads).enable_all().build() {
         Ok(runtime) => runtime,
         Err(e) => {
-            eprintln!("failed to start the async runtime with {worker_threads} worker threads: {e}");
+            tracing::error!(worker_threads, error = %e, "failed to start the async runtime");
             std::process::exit(1);
         }
     };
@@ -166,10 +170,10 @@ async fn run(action: Action) {
     }
 
     match migrate_key_custody_setting(&store.lock()) {
-        Ok(Some(done)) => println!("{done}"),
+        Ok(Some(done)) => tracing::info!("{done}"),
         Ok(None) => {}
         Err(e) => {
-            eprintln!("failed to move key custody settings to per-store custody: {e}");
+            tracing::error!(error = %e, "failed to move key custody settings to per-store custody");
             std::process::exit(1);
         }
     }
@@ -186,15 +190,15 @@ async fn run(action: Action) {
         {
         Ok(settings) => settings,
         Err(e) => {
-            eprintln!("failed to load settings: {e}");
+            tracing::error!(error = %e, "failed to load settings");
             std::process::exit(1);
         }
     };
     if daemons.networks().is_empty() {
         // A warning, not an exit: the settings API has to be reachable to
         // configure a node at all, and one saved there applies straight away.
-        eprintln!(
-            "warning: no Monero node is configured for any network (mainnet/stagenet/testnet) yet - nothing is \
+        tracing::warn!(
+            "no Monero node is configured for any network (mainnet/stagenet/testnet) yet - nothing is \
              scanned until one is saved on the admin settings page (or POST /api/v1/admin/settings, \
              monero_node.<network>); it applies without a restart"
         );
@@ -210,11 +214,12 @@ async fn run(action: Action) {
         counts.into_iter().collect()
     };
     for (backend, count) in stranded {
-        eprintln!(
-            "WARNING: {count} store(s) keep their keys in the {backend:?} key custody backend, which is not enabled \
-             (key_custody.enabled_backends = {}). Their payments are NOT being detected until it is enabled again \
-             or they move their keys to an enabled backend.",
-            enabled.join(",")
+        tracing::warn!(
+            custody.backend = %backend,
+            stores = count,
+            enabled_backends = %enabled.join(","),
+            "{count} store(s) keep their keys in the {backend:?} key custody backend, which is not enabled. Their \
+             payments are NOT being detected until it is enabled again or they move their keys to an enabled backend."
         );
     }
 
@@ -265,14 +270,15 @@ async fn run(action: Action) {
     let bind = engine_settings.runtime.load().bind;
     let router = build_router(app_state, MAX_BODY_CEILING);
     let listener = tokio::net::TcpListener::bind(&bind).await.expect("failed to bind server address");
-    println!("moneropay listening on {bind}");
+    tracing::info!(server.address = %bind, "engine listening");
     // The engine is private: only monokulo, on this machine or a private
     // network, should ever reach it. Nothing stops an operator binding it
     // elsewhere, but it must not happen by accident.
     if let Ok(local) = listener.local_addr() {
         if !scanner::settings::is_private_bind_address(local.ip()) {
-            eprintln!(
-                "WARNING: the engine is listening on {local}, which is not a loopback or private address. \
+            tracing::warn!(
+                server.address = %local,
+                "the engine is listening on {local}, which is not a loopback or private address. \
                  The engine is meant to be reached only by monokulo; anything that can connect to it can \
                  create tenants and hit its API directly. Set server.bind (SCANNER_SERVER_BIND) to a \
                  loopback or private address such as 127.0.0.1:8443 unless you really mean this."
@@ -289,12 +295,12 @@ async fn run(action: Action) {
         .with_graceful_shutdown(shutdown_signal());
     let served = tokio::spawn(async move { server.await });
     let _ = shutdown_signal().await;
-    println!("shutting down: finishing requests in flight (up to {SHUTDOWN_GRACE:?})");
+    tracing::info!(grace = ?SHUTDOWN_GRACE, "shutting down: finishing requests in flight");
     match tokio::time::timeout(SHUTDOWN_GRACE, served).await {
-        Ok(Ok(Ok(()))) => println!("shut down cleanly"),
-        Ok(Ok(Err(e))) => eprintln!("server error while shutting down: {e}"),
-        Ok(Err(e)) => eprintln!("server task failed while shutting down: {e}"),
-        Err(_) => eprintln!("requests still running after {SHUTDOWN_GRACE:?}, exiting anyway"),
+        Ok(Ok(Ok(()))) => tracing::info!("shut down cleanly"),
+        Ok(Ok(Err(e))) => tracing::error!(error = %e, "server error while shutting down"),
+        Ok(Err(e)) => tracing::error!(error = %e, "server task failed while shutting down"),
+        Err(_) => tracing::warn!(grace = ?SHUTDOWN_GRACE, "requests still running after the grace period, exiting anyway"),
     }
 }
 
@@ -314,7 +320,7 @@ async fn apply_custody(router: &Arc<CustodyRouter>, custody: &CustodyConfig) -> 
     let reloadable = CustodyReloadable { router: router.clone() };
     let (prepared, warnings) = reloadable.prepare(custody, custody).await.map_err(|e| e.to_string())?;
     for warning in warnings {
-        eprintln!("{}", warning.message);
+        tracing::warn!("{}", warning.message);
     }
     reloadable.install(prepared).await;
     Ok(())
@@ -333,7 +339,7 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
         match listed {
             Ok(tenants) => break tenants,
             Err(e) => {
-                eprintln!("failed to list tenants at boot, retrying in {delay:?}: {e}");
+                tracing::warn!(error = %e, retry_in = ?delay, "failed to list tenants at boot, retrying");
                 tokio::time::sleep(delay).await;
                 delay = (delay * 2).min(Duration::from_secs(30));
             }
@@ -345,7 +351,7 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
             Ok(handle) => {
                 handles.insert(tenant.id, handle);
             }
-            Err(e) => eprintln!("failed to register tenant {} with key custody: {e}", tenant.id),
+            Err(e) => tracing::error!(store.id = %tenant.id, error = %e, "failed to register store with key custody"),
         }
     }
     handles
@@ -358,7 +364,7 @@ const SHUTDOWN_GRACE: Duration = Duration::from_secs(10);
 async fn shutdown_signal() {
     let ctrl_c = async {
         if let Err(e) = tokio::signal::ctrl_c().await {
-            eprintln!("could not listen for Ctrl-C: {e}");
+            tracing::warn!(error = %e, "could not listen for Ctrl-C");
             std::future::pending::<()>().await;
         }
     };
@@ -369,7 +375,7 @@ async fn shutdown_signal() {
                 signal.recv().await;
             }
             Err(e) => {
-                eprintln!("could not listen for SIGTERM: {e}");
+                tracing::warn!(error = %e, "could not listen for SIGTERM");
                 std::future::pending::<()>().await;
             }
         }

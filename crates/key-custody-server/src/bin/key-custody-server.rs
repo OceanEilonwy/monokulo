@@ -35,6 +35,7 @@ use scanner::key_custody::PlainKeyCustody;
 
 #[tokio::main]
 async fn main() -> ExitCode {
+    let _telemetry = telemetry::init("key-custody-server", "KEY_CUSTODY");
     let socket_path = match std::env::args().nth(1) {
         Some(path) => path,
         None => {
@@ -44,9 +45,9 @@ async fn main() -> ExitCode {
     };
 
     let server = KeyCustodyServer::new(PlainKeyCustody::default());
-    println!("key-custody-server listening on {socket_path}");
+    tracing::info!(socket = %socket_path, "key-custody-server listening");
     if let Err(e) = server.listen(&socket_path).await {
-        eprintln!("key-custody-server: fatal error on {socket_path}: {e}");
+        tracing::error!(socket = %socket_path, error = %e, "fatal error");
         return ExitCode::FAILURE;
     }
     ExitCode::SUCCESS

@@ -305,7 +305,7 @@ pub async fn save_monokulo(
             render_error(&state, &admin_user, message).await
         }
         Err(e) => {
-            eprintln!("saving monokulo settings failed: {e}");
+            tracing::error!(error = %e, "saving monokulo settings failed");
             render_error(&state, &admin_user, "Something went wrong saving these settings. Please try again.".to_string()).await
         }
     }
@@ -670,6 +670,8 @@ mod tests {
             ("abuse.trusted_proxies", "127.0.0.1, 10.0.0.0/8"),
             ("abuse.onion_listener", "127.0.0.1:8082"),
             ("abuse.stream_cap", "9"),
+            ("logging.level", "warn,monokulo::http=debug"),
+            ("logging.dev_mode_until", "4102444800"),
         ];
         // Every monokulo setting must be covered here, or this test would
         // silently stop proving anything about a setting added later.
@@ -721,6 +723,8 @@ mod tests {
             ("webhooks.allow_private_urls", "true"),
             ("webhooks.delivery_timeout_ms", "10000"),
             ("webhooks.max_attempts", "12"),
+            ("logging.level", "warn,scanner::loops=debug"),
+            ("logging.dev_mode_until", "4102444800"),
         ];
         assert_eq!(
             new_values.len(),

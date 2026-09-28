@@ -32,7 +32,7 @@ use tokio::time::Instant;
 use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
 
 /// One entry in a [`FallbackDaemonClient`]'s ordered node list - the real client plus
-/// a human-readable label (e.g. `"host:port"`) purely for the `eprintln!` diagnostics
+/// a human-readable label (e.g. `"host:port"`) purely for the log events
 /// on failover, so an operator's logs say *which* configured node just went down or
 /// recovered rather than an opaque index.
 pub struct FallbackNode {
@@ -117,9 +117,10 @@ impl FallbackDaemonClient {
         *self.health[idx].lock() = NodeHealth::default();
         let previous = self.current.swap(idx, Ordering::Relaxed);
         if previous != idx {
-            eprintln!(
-                "monero daemon fallback: now using node {idx} ({}) after node {previous} ({})",
-                self.nodes[idx].label, self.nodes[previous].label
+            tracing::warn!(
+                node = %self.nodes[idx].label,
+                previous_node = %self.nodes[previous].label,
+                "monero daemon fallback: now using node {idx} after node {previous}"
             );
         }
     }
@@ -132,12 +133,13 @@ impl FallbackDaemonClient {
             health.cooldown_until = Some(Instant::now() + cooldown);
             cooldown
         };
-        shared::log::throttled(
-            &format!("node-failed:{}", self.nodes[idx].label),
-            format!(
-                "monero daemon fallback: node {idx} ({}) failed, skipping it for {cooldown:?} and trying the next: {error}",
-                self.nodes[idx].label
-            ),
+        shared::throttled!(
+            format!("node-failed:{}", self.nodes[idx].label),
+            warn,
+            node = %self.nodes[idx].label,
+            skipped_for = ?cooldown,
+            error = %error,
+            "monero daemon fallback: node {idx} failed, skipping it and trying the next"
         );
     }
 
@@ -355,17 +357,17 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         for node in &self.nodes {
             match node.client.is_key_image_spent(key_images).await {
                 Ok(statuses) if statuses.len() == key_images.len() => responses.push(statuses),
-                Ok(wrong_length) => eprintln!(
-                    "monero daemon fallback: node {} returned {} key-image statuses for {} key images - excluded \
-                     from corroboration",
-                    node.label,
-                    wrong_length.len(),
-                    key_images.len()
+                Ok(wrong_length) => tracing::warn!(
+                    node = %node.label,
+                    statuses = wrong_length.len(),
+                    key_images = key_images.len(),
+                    "monero daemon fallback: node returned the wrong number of key-image statuses - excluded from \
+                     corroboration"
                 ),
-                Err(e) => eprintln!(
-                    "monero daemon fallback: node {} unreachable during key-image corroboration, excluded from \
-                     the vote: {e}",
-                    node.label
+                Err(e) => tracing::warn!(
+                    node = %node.label,
+                    error = %e,
+                    "monero daemon fallback: node unreachable during key-image corroboration, excluded from the vote"
                 ),
             }
         }
@@ -379,10 +381,10 @@ impl MoneroDaemonClient for FallbackDaemonClient {
             let status = if votes.iter().all(|vote| *vote == votes[0]) {
                 votes[0]
             } else {
-                eprintln!(
-                    "monero daemon fallback: nodes disagree on key image {} - \
-                     treating the status as disputed until they agree",
-                    key_images.get(i).map(String::as_str).unwrap_or("?")
+                tracing::warn!(
+                    key_image = key_images.get(i).map(String::as_str).unwrap_or("?"),
+                    "monero daemon fallback: nodes disagree on a key image - treating the status as disputed until \
+                     they agree"
                 );
                 KeyImageStatus::Disputed
             };

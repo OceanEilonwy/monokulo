@@ -43,6 +43,8 @@ rusqlite = { version = "0.40.2", features = ["bundled"] }
 serde_json = "1.0.151"
 sha2 = "0.11.0"
 thiserror = "2.0.20"
+# `log::throttled!` emits `tracing` events (structured_logging.md 1.2).
+tracing = "0.1.44"
 # `supervise::supervise`'s own real use of `tokio::spawn`/`tokio::time::sleep`
 # (not test-only - both the scanner's and monokulo's real background
 # loops call this in production).

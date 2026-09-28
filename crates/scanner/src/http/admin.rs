@@ -278,7 +278,7 @@ pub async fn switch_key_custody(
     if let Some(previous) = previous.filter(|p| *p != handle) {
         if let Err(e) = state.key_custody.remove_wallet(previous).await {
             // The old backend is down: it loses the copy when it restarts.
-            eprintln!("moved a store's keys, but removing them from its old key custody backend failed: {e}");
+            tracing::warn!(store.id = %tenant.id, error = %e, "moved a store's keys, but removing them from its old key custody backend failed");
         }
     }
     let refetched = state.store.lock().get_tenant_by_id(&tenant.id)?.ok_or(ApiError::NotFound)?;

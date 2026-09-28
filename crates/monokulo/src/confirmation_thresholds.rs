@@ -148,9 +148,11 @@ pub async fn resolve_for_order(
                 return Err(format!("no exchange rate provider available for {base_currency} (this store's own base currency)"));
             }
             Err(e) => {
-                eprintln!(
-                    "exchange rate lookup failed resolving the confirmation threshold for connection {} (base currency {base_currency:?}): {e}",
-                    row.id
+                tracing::error!(
+                    store.id = %row.id,
+                    currency = ?base_currency,
+                    error = %e,
+                    "exchange rate lookup failed resolving the confirmation threshold"
                 );
                 return Err("something went wrong resolving the confirmation threshold. Please try again.".to_string());
             }
@@ -160,17 +162,17 @@ pub async fn resolve_for_order(
     let default_confirmations = match state.engine_client.get_tenant(sk).await {
         Ok(tenant) => tenant.confirmations_required,
         Err(e) => {
-            eprintln!("could not fetch the tenant to resolve the confirmation-threshold default for connection {}: {e}", row.id);
+            tracing::error!(store.id = %row.id, error = %e, "could not fetch the tenant to resolve the confirmation-threshold default");
             return Err("something went wrong resolving the confirmation threshold. Please try again.".to_string());
         }
     };
     let thresholds = state.db.lock().list_confirmation_thresholds(&row.id).map_err(|e| {
-        eprintln!("could not load confirmation thresholds for connection {}: {e}", row.id);
+        tracing::error!(store.id = %row.id, error = %e, "could not load confirmation thresholds");
         "something went wrong resolving the confirmation threshold. Please try again.".to_string()
     })?;
     let confirmations_required = resolve_confirmations_required(xmr_amount_piconero, effective_rate, default_confirmations, &thresholds)
         .map_err(|e| {
-            eprintln!("invalid stored confirmation policy for connection {}: {e}", row.id);
+            tracing::error!(store.id = %row.id, error = %e, "invalid stored confirmation policy");
             "something went wrong resolving the confirmation threshold. Please try again.".to_string()
         })?;
 

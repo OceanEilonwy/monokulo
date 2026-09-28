@@ -28,7 +28,7 @@ pub async fn run_webhook_delivery_loop(store: SharedStore, settings: Arc<EngineS
         match reqwest::Client::builder().redirect(reqwest::redirect::Policy::none()).build() {
             Ok(client) => break client,
             Err(e) => {
-                eprintln!("failed to build the webhook HTTP client, retrying in 30s: {e}");
+                tracing::error!(error = %e, "failed to build the webhook HTTP client, retrying in 30s");
                 tokio::time::sleep(Duration::from_secs(30)).await;
             }
         }
@@ -53,7 +53,7 @@ pub async fn run_webhook_delivery_loop(store: SharedStore, settings: Arc<EngineS
         {
             Ok(sent) => sent,
             Err(e) => {
-                eprintln!("webhook delivery tick failed: {e}");
+                tracing::warn!(error = %e, "webhook delivery tick failed");
                 0
             }
         };
@@ -107,7 +107,7 @@ pub async fn manage_network_loops(
             if !keep {
                 let _ = stop.send(true);
                 scanner_status.write().remove(network);
-                println!("stopped scanning {network:?}: its node setting was cleared");
+                tracing::info!(network = ?network, "stopped scanning: its node setting was cleared");
             }
             keep
         });
@@ -139,7 +139,7 @@ pub async fn manage_network_loops(
                     settings.clone(),
                 )
             });
-            println!("scanning {network:?}");
+            tracing::info!(network = ?network, "scanning");
             running.insert(network, stop);
         }
         if changed.changed().await.is_err() {
@@ -206,7 +206,7 @@ pub async fn run_scanner_loop(
             .await;
             registrations_failed = failed > 0;
             if registered > 0 {
-                println!("registered the keys of {registered} tenant(s) on {network:?} that had none");
+                tracing::info!(network = ?network, stores = registered, "registered the keys of stores that had none");
             }
         }
         let tenants: Vec<(String, WalletHandle)> =
@@ -239,7 +239,7 @@ pub async fn run_scanner_loop(
         };
         let finished_at = now_unix();
         if let Err(e) = &result {
-            shared::log::throttled(&format!("tick-failed:{network:?}"), format!("scan tick failed for {network:?}: {e}"));
+            shared::throttled!(format!("tick-failed:{network:?}"), warn, network = ?network, error = %e, "scan tick failed");
         }
         // Not for a network whose node setting was cleared during this tick:
         // its status was removed when its loops were stopped.
@@ -263,13 +263,15 @@ pub async fn run_double_spend_revalidation_loop(store: SharedStore, network: Net
         if let Some(daemon) = daemons.get(network) {
             match revalidate_recent_double_spend_voids(&store, daemon.as_ref(), network_str(network), now_unix()).await {
                 Ok(recovered) if !recovered.is_empty() => {
-                    println!(
-                        "double-spend revalidation on {network:?} reversed {} previously-voided payment(s): {recovered:?}",
-                        recovered.len()
+                    tracing::info!(
+                        network = ?network,
+                        payments = recovered.len(),
+                        orders = ?recovered,
+                        "double-spend revalidation reversed previously-voided payments"
                     );
                 }
                 Ok(_) => {}
-                Err(e) => eprintln!("double-spend revalidation failed for {network:?}: {e}"),
+                Err(e) => tracing::warn!(network = ?network, error = %e, "double-spend revalidation failed"),
             }
         }
         tokio::time::sleep(DOUBLE_SPEND_REVALIDATION_INTERVAL).await;

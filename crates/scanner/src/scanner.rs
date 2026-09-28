@@ -171,9 +171,11 @@ pub fn record_scan_match(
         // Skipping leaves the tick free to record it properly once the amount is
         // recoverable.
         let Some(amount) = m.amount_piconero else {
-            eprintln!(
-                "scanner: output {} of tx {} matched order {} but its amount could not be decrypted - not recording it",
-                m.output_index, scan.txid, order.id
+            tracing::warn!(
+                order.id = %order.id,
+                tx.id = %scan.txid,
+                output_index = m.output_index,
+                "an output matched an order but its amount could not be decrypted - not recording it"
             );
             continue;
         };
@@ -380,10 +382,14 @@ pub async fn check_for_reorg_and_reconcile(
             Some(h) => match daemon.get_block_hash(h).await {
                 Ok(hash) => Some(hash),
                 Err(e) => {
-                    eprintln!(
-                        "reorg at {reorg_point} on {network}: could not read the hash of the common ancestor \
-                         at {h} ({e}) - leaving the scanned-block window untouched so the next tick re-detects \
-                         this reorg, rather than dropping rows this tick can no longer re-anchor"
+                    tracing::warn!(
+                        network = %network,
+                        reorg_at = reorg_point,
+                        height = h,
+                        error = %e,
+                        "reorg: could not read the hash of the common ancestor - leaving the scanned-block window \
+                         untouched so the next tick re-detects this reorg, rather than dropping rows this tick can no \
+                         longer re-anchor"
                     );
                     return Ok(ReconcileReport {
                         reorg_detected_at: Some(reorg_point),
@@ -761,23 +767,24 @@ pub async fn revalidate_recent_double_spend_voids(
         let key_images = match parse_payment_key_images(&payment.key_images_json) {
             Ok(images) => images,
             Err(e) => {
-                eprintln!("double-spend revalidation: leaving order {} voided because its stored evidence is invalid: {e}", payment.order_id);
+                tracing::warn!(order.id = %payment.order_id, error = %e, "double-spend revalidation: leaving the order voided because its stored evidence is invalid");
                 continue;
             }
         };
         let statuses = match daemon.is_key_image_spent_corroborated(&key_images).await {
             Ok(statuses) => statuses,
             Err(e) => {
-                eprintln!(
-                    "double-spend revalidation: rechecking order {}'s voided payment on {network} failed - \
-                     leaving it voided, will retry next sweep: {e}",
-                    payment.order_id
+                tracing::warn!(
+                    order.id = %payment.order_id,
+                    network = %network,
+                    error = %e,
+                    "double-spend revalidation: rechecking a voided payment failed - leaving it voided, will retry next sweep"
                 );
                 continue;
             }
         };
         if statuses.len() != key_images.len() || !statuses.iter().all(|status| *status == KeyImageStatus::Unspent) {
-            eprintln!("double-spend revalidation: inconclusive key-image statuses for order {}; leaving it voided", payment.order_id);
+            tracing::info!(order.id = %payment.order_id, "double-spend revalidation: inconclusive key-image statuses; leaving the order voided");
             continue;
         }
         let s = store.lock();
@@ -974,9 +981,12 @@ pub async fn run_scan_tick_with(
     let pool_txids = match daemon.get_mempool_txids().await {
         Ok(txids) => Some(txids),
         Err(e) => {
-            shared::log::throttled(
-                &format!("mempool-poll:{network}"),
-                format!("polling the mempool on {network} failed - no zero-conf detection this tick: {e}"),
+            shared::throttled!(
+                format!("mempool-poll:{network}"),
+                warn,
+                network = %network,
+                error = %e,
+                "polling the mempool failed - no zero-conf detection this tick"
             );
             None
         }
@@ -998,7 +1008,12 @@ pub async fn run_scan_tick_with(
         if !missing.is_empty() {
             match daemon.get_transactions(&missing).await {
                 Ok(txs) => fresh = txs.into_iter().map(std::sync::Arc::new).collect(),
-                Err(e) => eprintln!("fetching {} new mempool transactions on {network} failed (retried next tick): {e}", missing.len()),
+                Err(e) => tracing::warn!(
+                    network = %network,
+                    transactions = missing.len(),
+                    error = %e,
+                    "fetching new mempool transactions failed (retried next tick)"
+                ),
             }
         }
         let pool: Vec<std::sync::Arc<Transaction>> = {
@@ -1052,15 +1067,22 @@ pub async fn run_scan_tick_with(
                                     memory.inner.lock().scanned.entry(txid.clone()).or_default().insert(tenant_id.clone(), *generation);
                                 }
                             }
-                            Err(e) => eprintln!(
-                                "recording a mempool match for tenant {tenant_id} on {network} failed (will retry next tick): {e}"
+                            Err(e) => tracing::warn!(
+                                store.id = %tenant_id,
+                                network = %network,
+                                error = %e,
+                                "recording a mempool match failed (will retry next tick)"
                             ),
                         }
                     }
                     Err(e) => {
-                        shared::log::throttled(
-                            &format!("mempool-scan:{tenant_id}"),
-                            format!("scanning a mempool tx for tenant {tenant_id} on {network} failed: {e}"),
+                        shared::throttled!(
+                            format!("mempool-scan:{tenant_id}"),
+                            warn,
+                            store.id = %tenant_id,
+                            network = %network,
+                            error = %e,
+                            "scanning a mempool transaction failed"
                         );
                     }
                 }
@@ -1165,18 +1187,24 @@ pub async fn run_scan_tick_with(
             let chunk = match daemon.get_blocks_range(height, chunk_size).await {
                 Ok(c) => c,
                 Err(e) => {
-                    eprintln!(
-                        "fetching blocks {height}..+{chunk_size} on {network} failed - leaving block {height} \
-                         unscanned so the next tick retries it. If this repeats at the same height, the \
-                         scanner is stuck there and no payment on {network} is being detected: {e}"
+                    tracing::warn!(
+                        network = %network,
+                        height,
+                        chunk_size,
+                        error = %e,
+                        "fetching blocks failed - leaving the block unscanned so the next tick retries it. If this \
+                         repeats at the same height, the scanner is stuck there and no payment on this network is \
+                         being detected"
                     );
                     break 'heights;
                 }
             };
             if chunk.is_empty() {
-                eprintln!(
-                    "get_blocks_range returned zero blocks for a chunk starting at height {height} on \
-                     {network} (asked for {chunk_size}) - leaving it unscanned so the next tick retries it"
+                tracing::warn!(
+                    network = %network,
+                    height,
+                    chunk_size,
+                    "get_blocks_range returned zero blocks - leaving the chunk unscanned so the next tick retries it"
                 );
                 break 'heights;
             }
@@ -1201,14 +1229,16 @@ pub async fn run_scan_tick_with(
                         let scan = match result {
                             Ok(scan) => scan,
                             Err(e) => {
-                                shared::log::throttled(
-                                    &format!("block-scan:{tenant_id}"),
-                                    format!(
-                                        "scanning a tx in block {height} on {network} for tenant {tenant_id} failed - \
-                                         leaving that tenant behind at block {} to be caught up later, the rest of the \
-                                         network carries on: {e}",
-                                        height - 1
-                                    ),
+                                shared::throttled!(
+                                    format!("block-scan:{tenant_id}"),
+                                    warn,
+                                    store.id = %tenant_id,
+                                    network = %network,
+                                    height,
+                                    left_at = height - 1,
+                                    error = %e,
+                                    "scanning a transaction failed - leaving the store behind to be caught up later, \
+                                     the rest of the network carries on"
                                 );
                                 left_behind.insert(tenant_id.clone());
                                 continue;
@@ -1221,9 +1251,12 @@ pub async fn run_scan_tick_with(
                         match recorded {
                             Ok(order_ids) => touched.extend(order_ids),
                             Err(e) => {
-                                eprintln!(
-                                    "recording a match in block {height} on {network} for tenant {tenant_id} \
-                                     failed - leaving block {height} unscanned so the next tick retries it: {e}"
+                                tracing::warn!(
+                                    store.id = %tenant_id,
+                                    network = %network,
+                                    height,
+                                    error = %e,
+                                    "recording a match failed - leaving the block unscanned so the next tick retries it"
                                 );
                                 break 'heights;
                             }
@@ -1254,17 +1287,22 @@ pub async fn run_scan_tick_with(
                             s.advance_caught_up_cursors(network, height, &left_behind_ids, now)
                         });
                         if let Err(e) = written {
-                            eprintln!(
-                                "recording block {height} on {network} as scanned failed - leaving it unscanned \
-                                 so the next tick retries it: {e}"
+                            tracing::warn!(
+                                network = %network,
+                                height,
+                                error = %e,
+                                "recording a block as scanned failed - leaving it unscanned so the next tick retries it"
                             );
                             break 'heights;
                         }
                     }
                     Err(e) => {
-                        eprintln!(
-                            "reading the hash of block {height} on {network} failed - leaving block {height} \
-                             unscanned so the next tick retries it rather than leaving a gap in the reorg window: {e}"
+                        tracing::warn!(
+                            network = %network,
+                            height,
+                            error = %e,
+                            "reading a block's hash failed - leaving it unscanned so the next tick retries it rather \
+                             than leaving a gap in the reorg window"
                         );
                         break 'heights;
                     }
@@ -1299,7 +1337,7 @@ pub async fn run_scan_tick_with(
     )
     .await
     {
-        eprintln!("catching up lagging tenants on {network} failed (retried next tick): {e}");
+        tracing::warn!(network = %network, error = %e, "catching up lagging stores failed (retried next tick)");
     }
 
     // Each tenant's orders show the range scanned *for that tenant*, which is
@@ -1314,9 +1352,12 @@ pub async fn run_scan_tick_with(
                 now,
                 expired_order_grace_period_seconds,
             ) {
-                eprintln!(
-                    "failed to bump scanned-range bookkeeping for tenant {tenant_id} on {network} - its \
-                     orders' displayed scan range may lag until a later tick succeeds: {e}"
+                tracing::warn!(
+                    store.id = %tenant_id,
+                    network = %network,
+                    error = %e,
+                    "failed to bump scanned-range bookkeeping - the store's orders' displayed scan range may lag until \
+                     a later tick succeeds"
                 );
             }
         }
@@ -1414,7 +1455,7 @@ pub async fn run_scan_tick_with(
         if let Ok(Some(high_water)) = s.max_scanned_height(network) {
             let keep_from = high_water.saturating_sub(reorg_check_depth.saturating_mul(4));
             if let Err(e) = s.prune_scanned_blocks_below(network, keep_from) {
-                eprintln!("pruning scanned blocks below {keep_from} on {network} failed (harmless, retried next tick): {e}");
+                tracing::info!(network = %network, keep_from, error = %e, "pruning scanned blocks failed (harmless, retried next tick)");
             }
         }
     }
@@ -1487,18 +1528,18 @@ pub async fn register_missing_wallets_reporting(
                             handles.clear();
                             n
                         };
-                        eprintln!("key custody lost its wallets: registering all {dropped} again from their sealed keys");
+                        tracing::warn!(stores = dropped, "key custody lost its wallets: registering them all again from their sealed keys");
                     }
                 }
             }
-            Err(e) => eprintln!("checking the key custody backend's state failed (retried later): {e}"),
+            Err(e) => tracing::warn!(error = %e, "checking the key custody backend's state failed (retried later)"),
         }
     }
     let listed = store.lock().list_active_tenants();
     let on_network: Vec<crate::store::Tenant> = match listed {
         Ok(tenants) => tenants.into_iter().filter(|t| t.network == network).collect(),
         Err(e) => {
-            eprintln!("listing tenants to register their keys on {network} failed (retried later): {e}");
+            tracing::warn!(network = %network, error = %e, "listing stores to register their keys failed (retried later)");
             return Registration { registered: 0, failed: 1 };
         }
     };
@@ -1516,7 +1557,7 @@ pub async fn register_missing_wallets_reporting(
     };
     let mut registered = 0;
     let mut failed = 0;
-    let mut first_error: Option<String> = None;
+    let mut first_error: Option<(String, String)> = None;
     for tenant in missing {
         let enabled = key_custody.enabled_backends();
         if !enabled.is_empty() && !enabled.contains(&tenant.key_custody_backend) {
@@ -1533,16 +1574,21 @@ pub async fn register_missing_wallets_reporting(
             }
             Err(e) => {
                 failed += 1;
-                first_error.get_or_insert_with(|| format!("tenant {}: {e}", tenant.id));
+                first_error.get_or_insert_with(|| (tenant.id.clone(), e.to_string()));
             }
         }
     }
-    if let Some(first) = first_error {
+    if let Some((first_store, first_error)) = first_error {
         // One line per network, and not every retry: a backend that is down
         // would otherwise log every store it holds every few seconds.
-        shared::log::throttled(
-            &format!("register-failed:{network}"),
-            format!("registering the keys of {failed} store(s) on {network} failed, retrying shortly; first: {first}"),
+        shared::throttled!(
+            format!("register-failed:{network}"),
+            warn,
+            network = %network,
+            stores = failed,
+            store.id = %first_store,
+            error = %first_error,
+            "registering the keys of stores failed, retrying shortly (the first failure is shown)"
         );
     }
     Registration { registered, failed }
@@ -1632,7 +1678,7 @@ async fn catch_up_lagging_tenants(
                     t as i64
                 }
                 Err(e) => {
-                    eprintln!("catch-up on {network}: reading the time of block {cursor} failed (retried next tick): {e}");
+                    tracing::warn!(network = %network, height = cursor, error = %e, "catch-up: reading a block's time failed (retried next tick)");
                     continue;
                 }
             },
@@ -1665,9 +1711,13 @@ async fn catch_up_lagging_tenants(
                 Ok(chunk) if !chunk.is_empty() => chunk,
                 Ok(_) => break 'group,
                 Err(e) => {
-                    shared::log::throttled(
-                        &format!("catch-up-fetch:{network}"),
-                        format!("catch-up on {network}: fetching blocks from {height} failed (retried next tick): {e}"),
+                    shared::throttled!(
+                        format!("catch-up-fetch:{network}"),
+                        warn,
+                        network = %network,
+                        height,
+                        error = %e,
+                        "catch-up: fetching blocks failed (retried next tick)"
                     );
                     break 'group;
                 }
@@ -1680,14 +1730,16 @@ async fn catch_up_lagging_tenants(
                     match daemon.get_block_hash(height).await {
                         Ok(actual) if actual == stored => {}
                         Ok(_) => {
-                            eprintln!(
-                                "catch-up on {network}: block {height} differs from the one scanned earlier - \
-                                 stopping this group until the reorg check has run"
+                            tracing::info!(
+                                network = %network,
+                                height,
+                                "catch-up: block differs from the one scanned earlier - stopping this group until the \
+                                 reorg check has run"
                             );
                             break 'group;
                         }
                         Err(e) => {
-                            eprintln!("catch-up on {network}: reading the hash of block {height} failed (retried next tick): {e}");
+                            tracing::warn!(network = %network, height, error = %e, "catch-up: reading a block's hash failed (retried next tick)");
                             break 'group;
                         }
                     }
@@ -1703,19 +1755,21 @@ async fn catch_up_lagging_tenants(
                                 match recorded {
                                     Ok(order_ids) => touched.extend(order_ids),
                                     Err(e) => {
-                                        eprintln!("catch-up on {network}: recording a match in block {height} failed (retried next tick): {e}");
+                                        tracing::warn!(network = %network, height, error = %e, "catch-up: recording a match failed (retried next tick)");
                                         return Ok(());
                                     }
                                 }
                             }
                             Err(e) => {
-                                shared::log::throttled(
-                                    &format!("catch-up-scan:{tenant_id}"),
-                                    format!(
-                                        "catch-up on {network}: scanning block {height} for tenant {tenant_id} failed, it \
-                                         stays at block {} for now: {e}",
-                                        height - 1
-                                    ),
+                                shared::throttled!(
+                                    format!("catch-up-scan:{tenant_id}"),
+                                    warn,
+                                    store.id = %tenant_id,
+                                    network = %network,
+                                    height,
+                                    left_at = height - 1,
+                                    error = %e,
+                                    "catch-up: scanning a block for a store failed, it stays behind for now"
                                 );
                                 failed.insert(tenant_id);
                             }
