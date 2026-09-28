@@ -238,6 +238,22 @@ fn dark_overrides() -> BTreeMap<String, String> {
     block(THEME_CSS, ":root[data-theme=\"dark\"] {")
 }
 
+/// The browser draws a number box's step arrows, a select's list and
+/// scroll bars itself, from `color-scheme`: it has to follow the theme in
+/// use, or an account that chose light on a dark OS gets dark arrows.
+#[test]
+fn the_browsers_own_control_parts_follow_the_theme_in_use() {
+    let css = strip_comments(THEME_CSS);
+    let scheme = |opening: &str| {
+        let start = css.find(opening).unwrap_or_else(|| panic!("theme.css has no `{opening}`")) + opening.len();
+        let end = start + css[start..].find('}').expect("an unclosed block");
+        declarations(&css[start..end]).into_iter().find(|(name, _)| name == "color-scheme").map(|(_, value)| value)
+    };
+    assert_eq!(scheme(":root {").as_deref(), Some("light"));
+    assert_eq!(scheme(":root:not([data-theme=\"light\"]) {").as_deref(), Some("dark"));
+    assert_eq!(scheme(":root[data-theme=\"dark\"] {").as_deref(), Some("dark"));
+}
+
 #[test]
 fn both_dark_blocks_agree_and_only_override_light_tokens() {
     let css = strip_comments(THEME_CSS);
