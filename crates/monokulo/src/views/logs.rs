@@ -68,6 +68,8 @@ pub struct FormView {
     pub range: String,
     pub from: String,
     pub to: String,
+    /// The Logs page's own requests are shown.
+    pub logs_requests: bool,
 }
 
 pub struct QueryErrorView {
@@ -181,9 +183,10 @@ html:not(.js) .js-only { display: none; }
   .qh { width: 100%; max-width: none; margin: auto 0 0; border-radius: var(--radius-lg) var(--radius-lg) 0 0; max-height: 85dvh; }
   .logs-search .quick { display: grid; grid-template-columns: 1fr 1fr; }
   .logs-search .quick select { width: 100%; min-width: 0; }
-  .logs-search .quick label:has(select[name=range]) { grid-column: 1 / -1; }
+  .logs-search .quick label:has(select[name=range]), .logs-search .quick .own-requests { grid-column: 1 / -1; }
   .logs-search .quick label { display: grid; gap: .2em; font-size: .85em; }
   .logs-search .quick input[type=datetime-local] { width: 100%; min-width: 0; }
+  .logs-search .quick .own-requests { display: flex; gap: .4em; }
   .q-help { padding-inline: .7em; }
   .q-help-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 }
@@ -589,6 +592,10 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
                     (select("range", "Time range", RANGES, &vm.form.range))
                     label { "From " input type="datetime-local" name="from" value=(vm.form.from); }
                     label { "To " input type="datetime-local" name="to" value=(vm.form.to); }
+                    label class="own-requests" {
+                        input type="checkbox" name="logs_requests" value="show" checked[vm.form.logs_requests];
+                        "Show the Logs page's own requests"
+                    }
                 }
             }
             (syntax_dialog(&vm.attribute_names))
