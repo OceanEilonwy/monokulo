@@ -48,14 +48,22 @@ because it builds on the `live-settings` crate from that work).
 | 6 connect | not converted | | its post leads to a different page ("Store connected"), like login and signup, so a swap buys nothing |
 | 7 OTLP export and docs | done | "OTLP export" | `telemetry::otlp`, settings `logging.otlp_endpoint`/`logging.otlp_headers` (secret) in both processes; `docs/LOGGING.md` |
 | 8 checkout embed | done | "checkout embed on fixi and ssexi" | `#checkout-stream` opens `/events?routed=true`: one ssexi JSON-routed message per changed `[data-live]` part, then `status`, then `done`; refund save through fixi on a `refund:save` trigger, JSON answer read in `fx:after`; noscript refresh and Auto Refresh toggle unchanged |
-| 9 tests | mostly done along the way | | remaining: the WooCommerce-to-engine trace end to end |
+| 9 tests | done | "trace from a caller" | converted handlers have fixi and full-page tests; `only_the_checkout_refreshes_by_itself`; redaction; filter language; real browser: `real-5-logs` (JS on and off, trace across services, a plugin-style `traceparent` followed to the engine), `real-6-sections` |
 
 ### Next
 
-Part 5, the Logs page (`/admin/logs`, admin only), using `monokulo::logs`
-and `telemetry::query`. Then part 6: the status and order detail pages
-currently have no live updates at all (4.4 removed their meta refresh);
-their ssexi streams come first in part 6.
+The plan is built. Open ends, none blocking:
+
+- No test runs the real WooCommerce plugin against the real binaries; the
+  trace test sends exactly what the plugin sends (its `traceparent`), and
+  the plugin's side is covered by its PHPUnit tests.
+- Logs page row 5 (lazy loading of properties) and row 18 (keyboard
+  shortcuts) weren't built; properties are always inline.
+- A store link on the Logs page finds monokulo's lines only: the engine
+  logs a store by its tenant id, monokulo by its connection id.
+- `connect` isn't converted to fixi (its post leads to another page).
+- Browser reports from the checkout have no opt-in toggle; the checkout
+  never loads `telemetry.js` (D8).
 
 ## Decisions and deviations from the plan
 

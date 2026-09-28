@@ -4,7 +4,7 @@
 // paging swap in place and keep the URL; without it, the same page works as
 // plain forms and links. Lines from monokulo and the engine share traces.
 const { test, expect } = require('@playwright/test');
-const { fixture, signInAsAdmin } = require('./real-helpers');
+const { fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
 
 const logsUrl = (query = '') => `${fixture().monokulo_url}/dashboard/admin/logs${query}`;
 
@@ -105,4 +105,39 @@ test.describe('without JavaScript', () => {
     await row.locator('summary').click();
     await expect(row.locator('.props')).toBeVisible();
   });
+});
+
+test("a caller's traceparent (as the WooCommerce plugin sends it) is followed through monokulo to the engine", async ({ page, request }) => {
+  const base = fixture().monokulo_url;
+  await signInAsAdmin(page);
+  await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
+  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await page.goto(base + '/dashboard/connect');
+  await page.locator('input[name="site_url"]').fill('https://traced.example.com');
+  await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
+  await page.locator('input[name="spend_pubkey_hex"]').fill(SPEND_PUBKEY);
+  await page.locator('select[name="network"]').selectOption('stagenet');
+  await page.getByRole('button', { name: 'Connect' }).click();
+  await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
+  await page.goto(base + '/dashboard');
+  const store = await page.locator('tr', { hasText: 'traced.example.com' }).first().getByRole('link', { name: 'view →' }).getAttribute('href');
+  await page.goto(base + store);
+  const publicKey = (await page.locator('tr', { hasText: 'Public key' }).locator('code').textContent()).trim();
+
+  // What class-wc-gateway-monokulo.php sends: its own trace, a new span id.
+  const traceId = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  const response = await request.post(`${base}/pay/${publicKey}/orders`, {
+    headers: { traceparent: `00-${traceId}-00f067aa0ba902b7-01` },
+    data: { amount: '0.5', currency: 'XMR' },
+  });
+  expect(response.ok()).toBeTruthy();
+  expect(response.headers()['traceresponse']).toContain(traceId);
+
+  await expect
+    .poll(async () => {
+      await page.goto(`${base}/dashboard/admin/logs/trace/${traceId}`);
+      const spans = await page.locator('.trace-span').allTextContents();
+      return spans.some((s) => s.includes('monokulo')) && spans.some((s) => s.includes('scanner'));
+    }, { timeout: 15_000, intervals: [500] })
+    .toBe(true);
 });

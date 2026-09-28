@@ -266,20 +266,16 @@ pub async fn status_events(State(state): State<AppState>, headers: axum::http::H
         // Held by the stream, so the slot frees when it ends.
         let _permit = &permit;
         async move {
-            loop {
-                if !first {
-                    tokio::time::sleep(CACHE_TTL).await;
-                }
-                let html = views::status::live_fragment(&status_view(&state, admin).await).into_string();
-                if last.as_deref() != Some(html.as_str()) {
-                    let event = axum::response::sse::Event::default().event(r##"{"target":"#status-live","swap":"outerHTML"}"##).data(html.clone());
-                    return Some((Ok::<_, std::convert::Infallible>(event), (state, Some(html), false)));
-                }
-                return Some((
-                    Ok(axum::response::sse::Event::default().comment("unchanged")),
-                    (state, last, false),
-                ));
+            if !first {
+                tokio::time::sleep(CACHE_TTL).await;
             }
+            let html = views::status::live_fragment(&status_view(&state, admin).await).into_string();
+            if last.as_deref() == Some(html.as_str()) {
+                // Unchanged: a comment keeps the connection's clock honest.
+                return Some((Ok(axum::response::sse::Event::default().comment("unchanged")), (state, last, false)));
+            }
+            let event = axum::response::sse::Event::default().event(r##"{"target":"#status-live","swap":"outerHTML"}"##).data(html.clone());
+            Some((Ok::<_, std::convert::Infallible>(event), (state, Some(html), false)))
         }
     });
     crate::live::sse(stream)
