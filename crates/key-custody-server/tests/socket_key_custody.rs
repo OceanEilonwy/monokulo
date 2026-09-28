@@ -302,6 +302,21 @@ async fn seal_then_unseal_survives_a_simulated_restart() {
 }
 
 #[tokio::test]
+async fn a_retried_scoped_registration_returns_the_original_remote_handle() {
+    let ts = spawn_server_and_client("idempotent-registration").await;
+    let material = fixture_material();
+    let sealed = ts.client.seal(&material).await.unwrap();
+    let first = ts.client.unseal_and_register_idempotent(&sealed, "tenant-a").await.unwrap();
+    let retry = ts.client.unseal_and_register_idempotent(&sealed, "tenant-a").await.unwrap();
+    assert_eq!(first, retry, "a lost response must not create an unreachable second wallet");
+    let another = ts.client.unseal_and_register_idempotent(&sealed, "tenant-b").await.unwrap();
+    assert_ne!(first, another, "separate tenants may legitimately use the same wallet material");
+    ts.client.remove_wallet(first).await.unwrap();
+    let registered_again = ts.client.unseal_and_register_idempotent(&sealed, "tenant-a").await.unwrap();
+    assert_ne!(first, registered_again, "offboarding releases the registration id");
+}
+
+#[tokio::test]
 async fn index_zero_derives_a_standard_address_not_an_unpayable_subaddress() {
     let view_key = PrivateKey::from_slice(&random_scalar_bytes(5)).unwrap();
     let spend_key = PrivateKey::from_slice(&random_scalar_bytes(6)).unwrap();

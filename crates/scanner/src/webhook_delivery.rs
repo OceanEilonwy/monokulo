@@ -125,6 +125,25 @@ pub async fn attempt_delivery(
     allow_private: bool,
     timeout: Duration,
 ) -> DeliveryOutcome {
+    // This covers DNS validation as well as the HTTP exchange. A request-level
+    // timeout alone starts too late: a stalled resolver could hold the worker
+    // indefinitely before `send` was even called.
+    match tokio::time::timeout(timeout, attempt_delivery_inner(client, delivery, allow_private, timeout)).await {
+        Ok(outcome) => outcome,
+        Err(_) => DeliveryOutcome {
+            delivered: false,
+            response_status: None,
+            error: Some(format!("delivery did not finish within {timeout:?}")),
+        },
+    }
+}
+
+async fn attempt_delivery_inner(
+    client: &reqwest::Client,
+    delivery: &DueDelivery,
+    allow_private: bool,
+    timeout: Duration,
+) -> DeliveryOutcome {
     let parsed_url = match url::Url::parse(&delivery.url) {
         Ok(u) => u,
         Err(e) => {

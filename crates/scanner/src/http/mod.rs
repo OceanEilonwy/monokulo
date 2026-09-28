@@ -3,14 +3,11 @@
 //! Three simplifications worth naming up front, all reasonable for this pass and
 //! all noted rather than hidden:
 //!
-//! 1. `Store` access from handlers goes through `state.store.lock()`
-//!    directly rather than a dedicated writer-actor thread reached over a channel.
-//!    SQLite disallows concurrent writers regardless, so this is a correct - if
-//!    simpler - realization of "single writer" (same reasoning as the concurrency
-//!    stress test in `store.rs`). It does mean a handler briefly blocks the async
-//!    worker thread it's running on for the duration of a query; fine for
-//!    single-digit-millisecond local SQLite access, worth revisiting with
-//!    `spawn_blocking` if a slower storage backend ever sits behind this trait.
+//! 1. Authentication and status reads use independent read-only SQLite
+//!    connections on bounded worker threads. Other handlers still use the
+//!    shared writer connection through `state.store.lock()`. Those synchronous
+//!    calls can block an async worker during a slow database operation; moving
+//!    the remaining writes to a dedicated worker is still required.
 //! 2. `wallet_handles` is populated eagerly at boot by `main` (via
 //!    `Store::list_active_tenants` + `KeyCustody::unseal_and_register`), with the
 //!    lazy path in `resolve_wallet_handle` kept as a fallback for a tenant created
@@ -52,13 +49,14 @@ use tower_http::limit::RequestBodyLimitLayer;
 use crate::key_custody::{KeyCustody, KeyCustodyError, WalletHandle};
 use crate::scanner_status::ScannerStatusMap;
 use crate::status::OrderStatus;
-use crate::store::{SharedStore, StoreError, Tenant};
+use crate::store::{ReadStorePool, SharedStore, Store, StoreError, Tenant};
 
 use rate_limit::{admin_rate_limit_middleware, RateLimiter};
 
 #[derive(Clone)]
 pub struct AppState {
     pub store: SharedStore,
+    pub read_pool: Option<ReadStorePool>,
     pub key_custody: Arc<dyn KeyCustody>,
     /// The `[key_custody].backend` value that produced `key_custody` above -
     /// `"plain"` or `"socket"` - so `admin::create_tenant` can record which
@@ -98,6 +96,21 @@ pub struct AppState {
     /// monokulo's Logs page (structured_logging.md 3.3). `None` in tests
     /// and when it couldn't be opened.
     pub log_store: Option<telemetry::store::LogStore>,
+}
+
+impl AppState {
+    pub async fn read_store<T: Send + 'static>(
+        &self, f: impl FnOnce(&Store) -> Result<T, StoreError> + Send + 'static,
+    ) -> Result<T, StoreError> {
+        if let Some(pool) = &self.read_pool {
+            pool.query(f).await
+        } else {
+            let store = self.store.clone();
+            tokio::task::spawn_blocking(move || f(&store.lock()))
+                .await
+                .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?
+        }
+    }
 }
 
 pub fn build_router(state: AppState, max_body_bytes: usize) -> Router {
@@ -341,11 +354,10 @@ impl FromRequestParts<AppState> for AuthedTenant {
             .get(header::AUTHORIZATION)
             .and_then(|v| v.to_str().ok())
             .ok_or(ApiError::Unauthorized)?;
-        let token = header_value.strip_prefix("Bearer ").ok_or(ApiError::Unauthorized)?;
+        let token = header_value.strip_prefix("Bearer ").ok_or(ApiError::Unauthorized)?.to_string();
         let tenant = state
-            .store
-            .lock()
-            .find_tenant_by_secret_token(token)?
+            .read_store(move |store| store.find_tenant_by_secret_token(&token))
+            .await?
             .ok_or(ApiError::Unauthorized)?;
         Ok(AuthedTenant(tenant))
     }
@@ -375,7 +387,10 @@ pub async fn resolve_wallet_handle(state: &AppState, tenant: &Tenant) -> Result<
     // would then fail to clean up on offboarding.
     // In the tenant's own backend (part 5). A backend that isn't enabled
     // refuses, so a disabled backend's store isn't quietly brought back.
-    let handle = state.key_custody.unseal_and_register_in(&tenant.key_custody_backend, &tenant.sealed_key_material).await?;
+    let handle = tokio::time::timeout(
+        std::time::Duration::from_secs(10),
+        state.key_custody.unseal_and_register_in_idempotent(&tenant.key_custody_backend, &tenant.sealed_key_material, &tenant.id),
+    ).await.map_err(|_| ApiError::Internal("key custody registration timed out".into()))??;
     let winner = {
         let mut handles = state.wallet_handles.write();
         *handles.entry(tenant.id.clone()).or_insert(handle)
@@ -429,6 +444,7 @@ impl From<StoreError> for ApiError {
             StoreError::NotFound => ApiError::NotFound,
             StoreError::Sqlite(e) if is_transient_sqlite(&e) => ApiError::Unavailable(e.to_string()),
             StoreError::Sqlite(e) => ApiError::Internal(e.to_string()),
+            StoreError::WorkerUnavailable(e) => ApiError::Unavailable(e),
         }
     }
 }

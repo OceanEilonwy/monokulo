@@ -48,6 +48,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (15, include_str!("../migrations/0015_tenant_scan_cursor.sql")),
     (16, include_str!("../migrations/0016_order_closed_at.sql")),
     (17, include_str!("../migrations/0017_pending_payment_recomputes.sql")),
+    (18, include_str!("../migrations/0018_partial_block_scans.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -92,6 +93,48 @@ fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
 
 pub type SharedStore = Arc<Mutex<Store>>;
 
+type ReadJob = Box<dyn FnOnce(&Store) + Send + 'static>;
+
+/// Independent read-only SQLite connections. WAL lets these readers run
+/// concurrently with the writer; each connection stays on its own thread so
+/// a disk stall never blocks a Tokio worker.
+#[derive(Clone)]
+pub struct ReadStorePool {
+    workers: Arc<Vec<tokio::sync::mpsc::Sender<ReadJob>>>,
+    next: Arc<std::sync::atomic::AtomicUsize>,
+}
+
+impl ReadStorePool {
+    pub fn open(path: &str, count: usize) -> Result<Self> {
+        let mut workers = Vec::new();
+        for n in 0..count.max(1) {
+            let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
+            conn.execute_batch("PRAGMA foreign_keys = ON; PRAGMA query_only = ON;")?;
+            let store = Store::from_connection(conn);
+            let (sender, mut receiver) = tokio::sync::mpsc::channel::<ReadJob>(64);
+            std::thread::Builder::new().name(format!("scanner-db-read-{n}"))
+                .spawn(move || {
+                    while let Some(job) = receiver.blocking_recv() {
+                        job(&store);
+                    }
+                })
+                .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?;
+            workers.push(sender);
+        }
+        Ok(Self { workers: Arc::new(workers), next: Arc::new(std::sync::atomic::AtomicUsize::new(0)) })
+    }
+
+    pub async fn query<T: Send + 'static>(
+        &self, f: impl FnOnce(&Store) -> Result<T> + Send + 'static,
+    ) -> Result<T> {
+        let (reply, answer) = tokio::sync::oneshot::channel();
+        let job: ReadJob = Box::new(move |store| { let _ = reply.send(f(store)); });
+        let index = self.next.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % self.workers.len();
+        self.workers[index].send(job).await.map_err(|_| StoreError::WorkerUnavailable("read worker stopped".into()))?;
+        answer.await.map_err(|_| StoreError::WorkerUnavailable("read worker stopped".into()))?
+    }
+}
+
 pub struct Store {
     conn: Connection,
     /// Fan-out of "this order's visible state just changed" hints - see
@@ -126,6 +169,8 @@ pub enum StoreError {
     Sqlite(#[from] rusqlite::Error),
     #[error("not found")]
     NotFound,
+    #[error("database worker unavailable: {0}")]
+    WorkerUnavailable(String),
 }
 
 type Result<T> = std::result::Result<T, StoreError>;
@@ -234,6 +279,17 @@ pub struct OrderPaymentRow {
     pub first_seen_at: i64,
     pub block_height: Option<i64>,
     pub voided_at: Option<i64>,
+}
+
+pub struct StagedMatch<'a> {
+    pub network: &'a str,
+    pub tenant_id: &'a str,
+    pub order_id: &'a str,
+    pub txid: &'a str,
+    pub output_index: i64,
+    pub amount: u64,
+    pub key_images_json: &'a str,
+    pub seen_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -802,6 +858,33 @@ impl Store {
         Ok(rows)
     }
 
+    /// A bounded, stable page for background status work. Keyset pagination
+    /// avoids an OFFSET walk over a large backlog on every tick.
+    pub fn pending_payment_recomputes_page(&self, network: &str, after: &str, limit: usize) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT p.order_id FROM pending_payment_recomputes p
+             JOIN orders o ON o.id = p.order_id JOIN tenants t ON t.id = o.tenant_id
+             WHERE t.network = ?1 AND p.order_id > ?2 ORDER BY p.order_id LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![network, after, limit as i64], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    pub fn non_terminal_order_ids_page(
+        &self, network: &str, now: i64, grace_period_seconds: i64, after: &str, limit: usize,
+    ) -> Result<Vec<String>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT o.id FROM orders o JOIN tenants t ON t.id = o.tenant_id
+             WHERE (o.status IN ('pending', 'unconfirmed', 'confirming', 'partial')
+                    OR (o.status = 'expired' AND o.expires_at_utc >= ?1))
+               AND t.network = ?2 AND o.id > ?3 ORDER BY o.id LIMIT ?4",
+        )?;
+        let rows = stmt.query_map(params![now - grace_period_seconds, network, after, limit as i64], |row| row.get(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     /// Call inside the same transaction as the status update and webhook enqueue.
     pub fn clear_pending_payment_recompute(&self, order_id: &str) -> Result<()> {
         self.conn.execute("DELETE FROM pending_payment_recomputes WHERE order_id = ?1", [order_id])?;
@@ -1267,6 +1350,24 @@ impl Store {
         Ok(rows)
     }
 
+    /// A bounded page for the routine vanished-mempool sweep. The rowid is a
+    /// stable keyset cursor for the life of a payment row; callers wrap to zero
+    /// at the end so transactions still absent from the pool are revisited.
+    pub fn unconfirmed_payments_page(&self, network: &str, after_rowid: i64, limit: usize) -> Result<Vec<(i64, OrderPaymentRow)>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT op.rowid, op.* FROM order_payments op
+             JOIN orders o ON o.id = op.order_id
+             JOIN tenants t ON t.id = o.tenant_id
+             WHERE op.rowid > ?2 AND op.voided_at_utc IS NULL
+               AND op.block_height IS NULL AND t.network = ?1
+             ORDER BY op.rowid LIMIT ?3",
+        )?;
+        let rows = stmt.query_map(params![network, after_rowid, limit as i64], |row| {
+            Ok((row.get(0)?, Self::row_to_payment(row)?))
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
     #[cfg(test)]
     pub fn overwrite_payment_key_images_for_test(&self, order_id: &str, raw: &str) {
         self.conn.execute("UPDATE order_payments SET key_images_json = ?2 WHERE order_id = ?1", params![order_id, raw]).unwrap();
@@ -1451,6 +1552,90 @@ impl Store {
         Ok(())
     }
 
+    /// Returns the next transaction needing a scan for this tenant. A changed
+    /// hash or scan window invalidates the old checkpoint and its staged
+    /// matches before any work on the replacement block begins.
+    pub fn start_partial_block(
+        &self, network: &str, tenant_id: &str, height: u64, hash: &str, generation: u64,
+    ) -> Result<usize> {
+        let generation = generation.to_string();
+        let old: Option<(i64, String, String, i64)> = self.conn.query_row(
+            "SELECT height, block_hash, window_generation, next_tx_index FROM partial_block_progress
+             WHERE network = ?1 AND tenant_id = ?2",
+            params![network, tenant_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+        ).optional()?;
+        if let Some((old_height, old_hash, old_generation, next)) = old {
+            if old_height == height as i64 && old_hash == hash && old_generation == generation {
+                return Ok(next as usize);
+            }
+        }
+        self.in_transaction(|s| {
+            s.clear_partial_block(network, tenant_id)?;
+            s.conn.execute(
+                "INSERT INTO partial_block_progress
+                 (network, tenant_id, height, block_hash, window_generation, next_tx_index)
+                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
+                params![network, tenant_id, height as i64, hash, generation],
+            )?;
+            Ok(0)
+        })
+    }
+
+    pub fn stage_partial_match(&self, matched: StagedMatch<'_>) -> Result<()> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO partial_block_matches
+             (network, tenant_id, order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)",
+            params![matched.network, matched.tenant_id, matched.order_id, matched.txid, matched.output_index,
+                matched.amount as i64, matched.key_images_json, matched.seen_at],
+        )?;
+        Ok(())
+    }
+
+    pub fn advance_partial_block(&self, network: &str, tenant_id: &str, next_tx_index: usize) -> Result<()> {
+        let changed = self.conn.execute(
+            "UPDATE partial_block_progress SET next_tx_index = ?3 WHERE network = ?1 AND tenant_id = ?2",
+            params![network, tenant_id, next_tx_index as i64],
+        )?;
+        if changed == 0 { return Err(StoreError::NotFound); }
+        Ok(())
+    }
+
+    /// Called inside the same transaction that commits the block hash and
+    /// tenant cursor. Partial results cannot affect order status before then.
+    pub fn promote_partial_block(&self, network: &str, tenant_id: &str, height: u64, hash: &str, tx_count: usize) -> Result<Vec<String>> {
+        let progress: Option<(i64, String, i64)> = self.conn.query_row(
+            "SELECT height, block_hash, next_tx_index FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
+            params![network, tenant_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        ).optional()?;
+        if !matches!(progress, Some((h, ref block_hash, next)) if h == height as i64 && block_hash == hash && next == tx_count as i64) {
+            return Err(StoreError::NotFound);
+        }
+        let mut stmt = self.conn.prepare(
+            "SELECT order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc
+             FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
+        )?;
+        let rows = stmt.query_map(params![network, tenant_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?,
+                row.get::<_, i64>(3)?, row.get::<_, String>(4)?, row.get::<_, i64>(5)?))
+        })?.collect::<rusqlite::Result<Vec<_>>>()?;
+        let mut touched = Vec::new();
+        for (order_id, txid, output_index, amount, key_images, seen_at) in rows {
+            self.record_payment_match(&order_id, &txid, output_index, amount as u64, &key_images, seen_at, Some(height as i64))?;
+            touched.push(order_id);
+        }
+        self.clear_partial_block(network, tenant_id)?;
+        Ok(touched)
+    }
+
+    pub fn clear_partial_block(&self, network: &str, tenant_id: &str) -> Result<()> {
+        self.conn.execute("DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2", params![network, tenant_id])?;
+        self.conn.execute("DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2", params![network, tenant_id])?;
+        Ok(())
+    }
+
     /// Forgets every block at or above `height` on this network, walking
     /// `max_scanned_height` back to `height - 1` so the next tick's forward scan
     /// naturally re-covers `height..tip`.
@@ -1529,6 +1714,10 @@ impl Store {
             "UPDATE tenants SET scanned_through_height = ?2 WHERE id = ?1 AND scanned_through_height = ?3",
             params![tenant_id, to as i64, from as i64],
         )?;
+        if changed > 0 {
+            self.conn.execute("DELETE FROM partial_block_matches WHERE tenant_id = ?1", [tenant_id])?;
+            self.conn.execute("DELETE FROM partial_block_progress WHERE tenant_id = ?1", [tenant_id])?;
+        }
         Ok(changed > 0)
     }
 
@@ -1556,6 +1745,8 @@ impl Store {
             "UPDATE tenants SET scanned_through_height = ?2 WHERE id = ?1 AND scanned_through_height < ?2",
             params![tenant_id, height as i64],
         )?;
+        self.conn.execute("DELETE FROM partial_block_matches WHERE tenant_id = ?1", [tenant_id])?;
+        self.conn.execute("DELETE FROM partial_block_progress WHERE tenant_id = ?1", [tenant_id])?;
         Ok(())
     }
 
@@ -1581,6 +1772,16 @@ impl Store {
             "UPDATE tenants SET scanned_through_height = ?2
              WHERE network = ?1 AND disabled_at_utc IS NOT NULL AND scanned_through_height < ?2",
             params![network, height as i64],
+        )?;
+        self.conn.execute(
+            "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id IN
+             (SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NOT NULL)",
+            [network],
+        )?;
+        self.conn.execute(
+            "DELETE FROM partial_block_progress WHERE network = ?1 AND tenant_id IN
+             (SELECT id FROM tenants WHERE network = ?1 AND disabled_at_utc IS NOT NULL)",
+            [network],
         )?;
         Ok(())
     }
@@ -1888,6 +2089,37 @@ pub struct DueDelivery {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn read_pool_uses_independent_connections_without_blocking_the_runtime() {
+        let path = std::env::temp_dir().join(format!("scanner_read_pool_{}.db", uuid::Uuid::new_v4()));
+        let path_str = path.to_string_lossy().into_owned();
+        let writer = Store::open_file(&path_str).unwrap();
+        writer.set_scanned_block("mainnet", 1, "h1").unwrap();
+        let pool = ReadStorePool::open(&path_str, 2).unwrap();
+
+        let (started, ready) = tokio::sync::oneshot::channel();
+        let (release, wait) = std::sync::mpsc::channel::<()>();
+        let held_pool = pool.clone();
+        let held = tokio::spawn(async move {
+            held_pool.query(move |store| {
+                started.send(()).unwrap();
+                wait.recv().unwrap();
+                store.max_scanned_height("mainnet")
+            }).await
+        });
+        ready.await.unwrap();
+        // A second read reaches another connection while the first worker is
+        // deliberately occupied. No async worker or writer mutex is involved.
+        let second = tokio::time::timeout(std::time::Duration::from_secs(2),
+            pool.query(|store| store.max_scanned_height("mainnet"))).await.unwrap().unwrap();
+        assert_eq!(second, Some(1));
+        release.send(()).unwrap();
+        assert_eq!(held.await.unwrap().unwrap(), Some(1));
+        drop(pool);
+        drop(writer);
+        let _ = std::fs::remove_file(path);
+    }
 
     fn new_tenant(store: &Store) -> CreatedTenant {
         store
@@ -2846,9 +3078,29 @@ mod tests {
         assert_eq!(found.len(), 1, "only the live mempool-only mainnet row: {found:?}");
         assert_eq!(found[0].txid, "tx_pool");
 
+        let first_page = store.unconfirmed_payments_page("mainnet", 0, 1).unwrap();
+        assert_eq!(first_page.len(), 1);
+        assert_eq!(first_page[0].1.txid, "tx_pool");
+        assert!(store.unconfirmed_payments_page("mainnet", first_page[0].0, 1).unwrap().is_empty());
+
         let stagenet_found = store.find_unconfirmed_payments("stagenet").unwrap();
         assert_eq!(stagenet_found.len(), 1);
         assert_eq!(stagenet_found[0].txid, "tx_stagenet_pool");
+    }
+
+    #[test]
+    fn unconfirmed_payment_pages_rotate_without_repeating_a_row() {
+        let store = Store::open_in_memory().unwrap();
+        let tenant = new_tenant(&store);
+        for index in 1..=3 {
+            let order = new_order(&store, &tenant.tenant.id, index);
+            store.record_payment_match(&order.id, &format!("tx_{index}"), 0, 100, "[]", 1500, None).unwrap();
+        }
+        let first = store.unconfirmed_payments_page("mainnet", 0, 2).unwrap();
+        assert_eq!(first.iter().map(|(_, payment)| payment.txid.as_str()).collect::<Vec<_>>(), vec!["tx_1", "tx_2"]);
+        let second = store.unconfirmed_payments_page("mainnet", first.last().unwrap().0, 2).unwrap();
+        assert_eq!(second.iter().map(|(_, payment)| payment.txid.as_str()).collect::<Vec<_>>(), vec!["tx_3"]);
+        assert!(store.unconfirmed_payments_page("mainnet", second.last().unwrap().0, 2).unwrap().is_empty());
     }
 
     #[test]

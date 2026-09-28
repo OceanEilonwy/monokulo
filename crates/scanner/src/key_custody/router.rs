@@ -259,6 +259,14 @@ impl KeyCustody for CustodyRouter {
         self.remember_if_current(backend, custody, handle)
     }
 
+    async fn unseal_and_register_in_idempotent(
+        &self, backend: &str, sealed: &[u8], registration_id: &str,
+    ) -> Result<WalletHandle, KeyCustodyError> {
+        let custody = self.named(backend)?;
+        let handle = custody.unseal_and_register_idempotent(sealed, registration_id).await?;
+        self.remember_if_current(backend, custody, handle)
+    }
+
     async fn seal_in(&self, backend: &str, material: &WalletMaterial) -> Result<Vec<u8>, KeyCustodyError> {
         self.named(backend)?.seal(material).await
     }
