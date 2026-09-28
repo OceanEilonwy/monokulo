@@ -6878,7 +6878,10 @@ mod tests {
         assert_eq!(store.lock().get_all_payments(&order).unwrap().len(), 1, "the tenant is retried after recovery");
     }
 
-    #[tokio::test(start_paused = true)]
+    // Real time, not a paused clock: the scans run on the blocking pool, one
+    // per core, and between two of them a paused clock jumps ahead to the
+    // next timer, which on a one- or two-core machine is the scan deadline.
+    #[tokio::test]
     async fn tenants_are_scanned_concurrently_not_one_after_another() {
         let store = Store::open_in_memory().unwrap();
         let custody = SlowKeyCustody::default();

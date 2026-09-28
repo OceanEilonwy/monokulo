@@ -93,6 +93,10 @@ module.exports = async function globalSetup() {
       SCANNER_DB_PATH: path.join(dir, 'engine.db'),
       SCANNER_SERVER_BIND: `127.0.0.1:${enginePort}`,
       SCANNER_ADMIN_TOKEN: engineToken,
+      // Every spec shares this engine and monokulo's one admin token, so the
+      // default 120 a minute is spent across specs (status reloads, the Logs
+      // page) and a later spec's settings save gets a 429 on a slow runner.
+      SCANNER_SERVER_RATE_LIMIT_PER_TOKEN_PER_MIN: '100000',
     },
     stdio: ['ignore', log('engine'), log('engine')],
   });
