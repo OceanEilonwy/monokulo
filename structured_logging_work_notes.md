@@ -40,7 +40,8 @@ because it builds on the `live-settings` crate from that work).
 | 4.2 `FxRequest` | done | same | `http::fx`: `FxRequest`, `Timezone`, `respond`, `invalid` |
 | 4.3 glue | done | same | `static/fx-glue.js`: `fx-push-url`, `fx-replace`, `fx-debounce`, `fx-sse-reconnect`, `aria-busy`, 5xx/network banner, `data-fx-focus`, `X-Timezone` |
 | 4.4 no meta refresh | done | same | status and order detail lost theirs and gained `views::reload_button`; `http::pay::tests::only_the_checkout_refreshes_by_itself` |
-| 5.x onwards | not started | | |
+| 5 Logs page | done | "the Logs page" | `/dashboard/admin/logs` (+ `/tail`, `/trace/{id}`, `/export`, `/saved`). Rows 1-18 all built except row 5's lazy loading (properties are always inline) and row 18 (keyboard shortcuts, optional); row 13 is a list in "How to search", not a datalist |
+| 6.x onwards | not started | | |
 
 ### Next
 
@@ -171,6 +172,29 @@ their ssexi streams come first in part 6.
 - **Scripts load on every page with nav** (`views::page_shell`), in the
   order glue, fixi, ssexi, all `defer`. Not on the bare layouts (checkout,
   challenge, POS); the checkout gets them in part 8.
+
+- **Logs page URL is `/dashboard/admin/logs`**, not the plan's
+  `/admin/logs`, like every other admin page. Links to it for an order
+  (`order.id`) and a store (`store.id` = monokulo's connection id) are on
+  those pages for admins (`views::logs_link`). The engine logs a store as
+  its tenant id, so a store link finds monokulo's lines only; an order's
+  id is the same in both.
+- **Times**: UTC without JavaScript; with it, the glue sends the browser's
+  zone (`X-Timezone`, and a `tz` cookie for full loads), and Rust formats
+  with `jiff` using the system tz database.
+- **Row 13 is not a `<datalist>`**: a datalist on the query box only
+  matches the whole box's text, and headless Chrome left its popup open
+  over the next page. Recent property names are listed in "How to search".
+- **Live** re-runs the search with an `after` cursor whenever the local
+  store's newest id changes, or every 2 s (the engine's lines are polled),
+  and sends rendered rows as `event: {"target":"#log-rows","swap":"afterbegin"}`
+  with the newest cursor as the event id (ssexi sends it back as
+  `Last-Event-ID` on reconnect). The page script pauses it, stops it when a
+  new search starts, and keeps at most 1,000 rows.
+- **Real-browser tests**: `e2e/pos-playwright/tests/real-5-logs.spec.js`
+  (`npx playwright test -c real-binaries.config.js`). With JavaScript off,
+  headless Chrome hit-tests `<html>` for a while after a form submission,
+  so that test follows the Refresh link's `href` rather than clicking it.
 
 ## What was left on println/eprintln, on purpose
 

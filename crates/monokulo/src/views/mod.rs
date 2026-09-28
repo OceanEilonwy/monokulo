@@ -28,6 +28,7 @@ pub mod create_order;
 pub mod dashboard;
 pub mod integration_help;
 pub mod landing;
+pub mod logs;
 pub mod orders;
 pub mod pos;
 pub mod status;
@@ -207,6 +208,18 @@ fn page_shell(chrome: &PageChrome, title: &str, viewport: &str, extra_head: Opti
     }
 }
 
+/// A link to the Logs page searching for `field = value` over everything
+/// kept, for admins on the pages about that thing (an order, a store).
+pub fn logs_link(chrome: &PageChrome, field: &str, value: &str, text: &str) -> Markup {
+    let query = format!("{field} = '{}'", value.replace('\\', "\\\\").replace('\'', "\\'"));
+    let href = format!("/dashboard/admin/logs?q={}&range=all", url::form_urlencoded::byte_serialize(query.as_bytes()).collect::<String>());
+    html! {
+        @if chrome.is_admin {
+            a class="logs-link" href=(href) { (text) }
+        }
+    }
+}
+
 /// The Reload button a point-in-time page shows instead of refreshing by
 /// itself (structured_logging.md D4): without JavaScript these pages are a
 /// snapshot, and a reader reloads when they want the latest. `class` is
@@ -281,6 +294,7 @@ fn nav(chrome: &PageChrome) -> Markup {
                     @if chrome.is_admin {
                         a href="/dashboard/admin/settings" { "admin" }
                         a href="/dashboard/admin/invites" { "invites" }
+                        a href="/dashboard/admin/logs" { "logs" }
                     }
                     @if chrome.logged_in {
                         form method="post" action="/dashboard/logout" class="nav-logout-form" {
@@ -378,7 +392,8 @@ mod tests {
 
         assert!(dashboard < admin, "dashboard must come before admin, got: {html}");
         assert!(admin < invites, "admin must come before invites, got: {html}");
-        assert!(invites < logout, "invites must come before log out, got: {html}");
+        let logs = html.find(r#"href="/dashboard/admin/logs""#).expect("logs link");
+        assert!(invites < logs && logs < logout, "logs comes after invites, before log out, got: {html}");
         assert!(logout < theme, "log out must come before the theme toggle, got: {html}");
         assert!(theme < status, "the status indicator must be rightmost, after the theme toggle, got: {html}");
     }
@@ -420,5 +435,16 @@ mod tests {
         }
         assert!(css.contains(".theme-toggle:has(.theme-toggle-option:is(:hover, :focus-visible)) .theme-toggle-option { color: var(--muted); }"));
         assert!(css.contains(".theme-toggle:has(.theme-toggle-option:is(:hover, :focus-visible)) .theme-toggle-option:is(:hover, :focus-visible) { color: var(--accent-ink); }"));
+    }
+
+    #[test]
+    fn logs_links_are_for_admins_and_quote_the_value() {
+        let admin = PageChrome { logged_in: true, is_admin: true, theme: Theme::System, current_path: "/".into(), health: None, alerts: Vec::new() };
+        let html = logs_link(&admin, "order.id", "o'1", "Logs").into_string();
+        assert_eq!(html, r#"<a class="logs-link" href="/dashboard/admin/logs?q=order.id+%3D+%27o%5C%271%27&amp;range=all">Logs</a>"#);
+        let query = "order.id = 'o\\'1'";
+        assert_eq!(telemetry::query::parse(query).unwrap().unwrap().to_string(), query, "the link's query parses back");
+        let merchant = PageChrome { is_admin: false, ..admin };
+        assert_eq!(logs_link(&merchant, "order.id", "o1", "Logs").into_string(), "");
     }
 }

@@ -39,6 +39,7 @@ tracing = "0.1.44"
 uuid = { version = "1.26.0", features = ["v4"] }
 hickory-resolver = "0.26.3"
 serde_urlencoded = "0.7"
+jiff = "0.2"
 
 [dev-dependencies]
 # Per-thread environment overrides for settings tests

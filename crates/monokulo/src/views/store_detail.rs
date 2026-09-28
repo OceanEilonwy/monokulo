@@ -147,6 +147,9 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                     tr { th { "Public key" } td { code { (store.public_key) } } }
                     tr { th { "Connected" } td { (store.created_at) } }
                 }
+                @if chrome.is_admin {
+                    p { (super::logs_link(chrome, "store.id", &store.connection_id, "This store's logs")) }
+                }
 
                 div class="widget-links" {
                     a class="btn widget-link pos-launch-disabled" id="pos-launch" data-href=(format!("/dashboard/stores/{}/pos", store.connection_id)) aria-disabled="true" tabindex="-1" {

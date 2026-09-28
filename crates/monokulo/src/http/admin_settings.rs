@@ -96,6 +96,15 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
         .collect()
 }
 
+/// A request to the engine carrying this request's trace
+/// (structured_logging.md 2.3), like every `EngineClient` call.
+fn traced(request: reqwest::RequestBuilder) -> reqwest::RequestBuilder {
+    match telemetry::trace::current_traceparent() {
+        Some(traceparent) => request.header(telemetry::trace::TRACEPARENT, traceparent),
+        None => request,
+    }
+}
+
 /// This instance's engine connection, read synchronously with the lock
 /// held - the two owned `String`s are then free to travel across an
 /// `.await` on their own.
@@ -157,8 +166,7 @@ async fn fetch_scanner_settings(
     }
 
     let url = format!("{}/api/v1/admin/settings", engine_url.trim_end_matches('/'));
-    let response = reqwest::Client::new()
-        .get(&url)
+    let response = traced(reqwest::Client::new().get(&url))
         .bearer_auth(admin_token)
         .send()
         .await
@@ -439,7 +447,7 @@ pub async fn save_scanner(
     }
 
     let url = format!("{}/api/v1/admin/settings", engine_url.trim_end_matches('/'));
-    let result = reqwest::Client::new().post(&url).bearer_auth(&admin_token).json(&req).send().await;
+    let result = traced(reqwest::Client::new().post(&url)).bearer_auth(&admin_token).json(&req).send().await;
     let (error, success, notices) = match result {
         Ok(response) if response.status().is_success() => {
             let saved: RemoteSaveResponse = response.json().await.unwrap_or_default();

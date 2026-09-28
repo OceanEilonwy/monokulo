@@ -11,6 +11,8 @@
 //   fx-debounce="ms" wait this long for the trigger to go quiet first.
 //   fx-sse-reconnect reconnect a dropped event stream (ssexi), sending
 //                    Last-Event-ID, and pause it while the tab is hidden.
+// and on a form:
+//   fx-submit-on-change  submit when a select, checkbox or date changes.
 //
 // Everywhere:
 //   - the target is marked aria-busy while a request runs;
@@ -19,13 +21,19 @@
 //   - after a swap, the element marked data-fx-focus (an error, or the
 //     section's heading) gets focus, so keyboard and screen reader users
 //     land on the result;
-//   - every request says the browser's time zone (X-Timezone), so times
-//     are formatted in it by the server.
+//   - every request says the browser's time zone (X-Timezone, and a tz
+//     cookie for full page loads), so the server formats times in it;
+//   - <html> gets class "js", so CSS can hide controls that need it.
 (function () {
   "use strict";
 
+  // Lets CSS show controls that only work with JavaScript.
+  document.documentElement.classList.add("js");
+
   var zone = "";
   try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone || ""; } catch (e) {}
+  // Also as a cookie, so full page loads show times in it too.
+  if (zone) document.cookie = "tz=" + encodeURIComponent(zone) + "; path=/; max-age=31536000; SameSite=Lax";
   // No view transitions: they flash on every small section swap.
   window.fixiCfg = { transition: false, headers: zone ? { "X-Timezone": zone } : {} };
 
@@ -65,6 +73,16 @@
     if (elt.hasAttribute("fx-sse-reconnect")) {
       cfg.sseReconnect = true;
       cfg.ssePauseOnHidden = true;
+    }
+  });
+
+  // A form marked fx-submit-on-change searches as soon as a choice
+  // changes (a select, a checkbox, a date), not only on its button. Text
+  // boxes still wait for Enter.
+  document.addEventListener("change", function (evt) {
+    var form = evt.target.form;
+    if (form && form.hasAttribute("fx-submit-on-change") && evt.target.matches("select, input[type=checkbox], input[type=radio], input[type=datetime-local]")) {
+      form.requestSubmit();
     }
   });
 

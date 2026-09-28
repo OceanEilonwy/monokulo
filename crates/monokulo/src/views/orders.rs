@@ -269,6 +269,8 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                 p class="hint" {
                     "Share the payment link (icon above) with whoever needs to pay this order. "
                     (super::reload_button(&chrome.current_path))
+                    " "
+                    (super::logs_link(chrome, "order.id", &order.order_id, "Logs for this order"))
                 }
                 table class="kv-table" {
                     tr { th { "Order ID" } td { code { (order.order_id) } } }

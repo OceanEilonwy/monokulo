@@ -32,8 +32,10 @@ impl<S: Send + Sync> FromRequestParts<S> for FxRequest {
     }
 }
 
-/// The time zone fixi's glue script sends (`X-Timezone`), when it's one
-/// this server knows.
+/// The browser's time zone, as fixi's glue script sends it: the
+/// `X-Timezone` header on its own requests, and a `tz` cookie it sets for
+/// full page loads. Only plausible zone names are believed; whether the
+/// zone exists is up to whoever formats with it.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Timezone(pub Option<String>);
 
@@ -41,13 +43,18 @@ impl<S: Send + Sync> FromRequestParts<S> for Timezone {
     type Rejection = Infallible;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        let zone = parts
+        let plausible = |z: &str| !z.is_empty() && z.len() <= 64 && z.chars().all(|c| c.is_ascii_alphanumeric() || "/_+-".contains(c));
+        let header = parts.headers.get("x-timezone").and_then(|v| v.to_str().ok()).map(str::to_string);
+        let cookie = parts
             .headers
-            .get("x-timezone")
-            .and_then(|v| v.to_str().ok())
-            .filter(|z| z.len() <= 64 && z.chars().all(|c| c.is_ascii_alphanumeric() || "/_+-".contains(c)))
-            .map(str::to_string);
-        Ok(Timezone(zone))
+            .get_all(axum::http::header::COOKIE)
+            .iter()
+            .filter_map(|v| v.to_str().ok())
+            .flat_map(|v| v.split(';'))
+            .filter_map(|pair| pair.trim().strip_prefix("tz="))
+            .map(|z| z.replace("%2F", "/").replace("%2f", "/"))
+            .next();
+        Ok(Timezone(header.into_iter().chain(cookie).find(|z| plausible(z))))
     }
 }
 
@@ -105,5 +112,8 @@ mod tests {
         assert_eq!(zone("Europe/London"), Some("Europe/London".into()));
         assert_eq!(zone("America/Argentina/Buenos_Aires"), Some("America/Argentina/Buenos_Aires".into()));
         assert_eq!(zone("<script>"), None);
+        let (mut parts, _) = Request::get("/").header("cookie", "session=x; tz=Asia%2FTokyo").body(()).unwrap().into_parts();
+        let from_cookie = futures_util::FutureExt::now_or_never(Timezone::from_request_parts(&mut parts, &())).unwrap().unwrap().0;
+        assert_eq!(from_cookie.as_deref(), Some("Asia/Tokyo"));
     }
 }

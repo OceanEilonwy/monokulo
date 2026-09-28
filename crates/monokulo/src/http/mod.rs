@@ -57,6 +57,7 @@ mod home;
 mod invites;
 mod login;
 mod logout;
+mod logs_page;
 mod orders;
 mod pay;
 mod pos;
@@ -137,6 +138,12 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/admin/invites/create-link", axum::routing::post(invites::create_invite_link))
         .route("/dashboard/admin/invites/delete-all", axum::routing::post(invites::delete_all_invite_requests))
         .route("/dashboard/admin/invites/{id}/delete", axum::routing::post(invites::delete_invite_request))
+        .route("/dashboard/admin/logs", axum::routing::get(logs_page::page))
+        .route("/dashboard/admin/logs/tail", axum::routing::get(logs_page::tail))
+        .route("/dashboard/admin/logs/export", axum::routing::get(logs_page::export))
+        .route("/dashboard/admin/logs/trace/{trace_id}", axum::routing::get(logs_page::trace_page))
+        .route("/dashboard/admin/logs/saved", post(logs_page::save_search))
+        .route("/dashboard/admin/logs/saved/{id}/delete", post(logs_page::delete_search))
         .route("/status", axum::routing::get(status_page::status_page))
         .route("/status/summary", axum::routing::get(status_page::status_summary))
         .route("/signup", post(signup::signup))

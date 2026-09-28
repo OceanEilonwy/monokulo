@@ -45,6 +45,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (21, include_str!("../migrations/0021_order_created_with_key.sql")),
     (22, include_str!("../migrations/0022_pos_orders.sql")),
     (23, include_str!("../migrations/0023_order_source.sql")),
+    (24, include_str!("../migrations/0024_saved_log_searches.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -175,6 +176,15 @@ impl Db {
 }
 
 pub type SharedDb = Arc<Mutex<Db>>;
+
+/// A search saved on the Logs page.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SavedLogSearch {
+    pub id: String,
+    pub name: String,
+    /// The page's query string, without the leading `?`.
+    pub query_string: String,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum DbError {
@@ -1039,6 +1049,36 @@ impl Db {
              WHERE (SELECT COUNT(*) FROM store_domains WHERE connection_id = ?2) < ?6",
             params![id, connection_id, domain, token, created_at, max as i64],
         )?;
+        Ok(changed == 1)
+    }
+
+    /// The Logs page searches `user_id` saved, by name.
+    pub fn list_saved_log_searches(&self, user_id: &str) -> Result<Vec<SavedLogSearch>> {
+        let mut statement = self
+            .conn
+            .prepare("SELECT id, name, query_string FROM saved_log_searches WHERE user_id = ?1 ORDER BY name, created_at_utc")?;
+        let rows = statement
+            .query_map(params![user_id], |row| Ok(SavedLogSearch { id: row.get(0)?, name: row.get(1)?, query_string: row.get(2)? }))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Saves a Logs page search for `user_id`. `Ok(false)` when they
+    /// already have `max`.
+    pub fn create_saved_log_search(&self, id: &str, user_id: &str, name: &str, query_string: &str, now: i64, max: usize) -> Result<bool> {
+        let changed = self.conn.execute(
+            "INSERT INTO saved_log_searches (id, user_id, name, query_string, created_at_utc)
+             SELECT ?1, ?2, ?3, ?4, ?5
+             WHERE (SELECT COUNT(*) FROM saved_log_searches WHERE user_id = ?2) < ?6",
+            params![id, user_id, name, query_string, now, max as i64],
+        )?;
+        Ok(changed == 1)
+    }
+
+    /// Removes one of `user_id`'s saved searches; `false` when there's no
+    /// such search of theirs.
+    pub fn delete_saved_log_search(&self, user_id: &str, id: &str) -> Result<bool> {
+        let changed = self.conn.execute("DELETE FROM saved_log_searches WHERE id = ?1 AND user_id = ?2", params![id, user_id])?;
         Ok(changed == 1)
     }
 
