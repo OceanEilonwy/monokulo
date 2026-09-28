@@ -122,7 +122,7 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
                 nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
                 h1 { "Store connected" }
                 @if let Some(connection_id) = &data.connection_id {
-                    p { a class="btn" href=(format!("/dashboard/stores/{connection_id}")) { "View store →" } }
+                    p { a class="btn btn-primary" href=(format!("/dashboard/stores/{connection_id}")) { "View store →" } }
                 }
                 p { "Your public key: " code { (public_key) } }
                 p class="hint" {
@@ -187,7 +187,7 @@ pub fn page(chrome: &PageChrome, data: &ConnectViewModel) -> Markup {
                             "price something."
                         }
                     }
-                    button type="submit" { "Connect" }
+                    button type="submit" class="btn-primary" { "Connect" }
                 }
             }
         }
@@ -233,7 +233,7 @@ pub fn platform_page(chrome: &PageChrome, data: &PlatformConnectViewModel) -> Ma
                                 }
                             }
                         }
-                        button type="submit" { "Connect this store" }
+                        button type="submit" class="btn-primary" { "Connect this store" }
                     }
                 }
 
@@ -266,7 +266,7 @@ pub fn platform_page(chrome: &PageChrome, data: &PlatformConnectViewModel) -> Ma
                     (currency_select(&data.currency_options))
                     span class="field-help" { "What custom confirmation thresholds are denominated in." }
                 }
-                button type="submit" { "Create a new store" }
+                button type="submit" class="btn-primary" { "Create a new store" }
             }
             }
         }
@@ -287,7 +287,7 @@ pub fn new_store_picker_page(chrome: &PageChrome) -> Markup {
                         "Running WordPress + WooCommerce? Install the plugin and click Connect - no keys to paste in "
                         "by hand."
                     }
-                    a class="btn" href="/dashboard/stores/new/woocommerce" { "Set up WooCommerce" }
+                    a class="btn btn-primary" href="/dashboard/stores/new/woocommerce" { "Set up WooCommerce" }
                 }
                 div class="pick-card" {
                     h3 { "Custom (advanced)" }

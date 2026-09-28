@@ -249,22 +249,16 @@ pub async fn qr_decoder_script() -> impl IntoResponse {
 }
 
 const LOGO_SVG: &str = include_str!("../../static/logo.svg");
-const LOGO_INVERTED_SVG: &str = include_str!("../../static/logo-inverted.svg");
 const FAVICON_SVG: &str = include_str!("../../static/favicon.svg");
 
-/// `GET /static/logo.svg` - the full Monokulo mark, ink-on-paper, for use
-/// over the page's own light background (`landing.html.hbs`'s hero).
+/// `GET /static/logo.svg` - the full Monokulo mark, ink-on-paper, for other
+/// sites to link to. monokulo's own pages draw it inline
+/// (`views::logo_mark`), in the text colour of either theme.
 /// Served the same way as [`client_library`] (a plain, unauthenticated
 /// static asset baked into the binary) for the same reason: no third-party
 /// CDN dependency in a page real customers may end up on.
 pub async fn logo_svg() -> impl IntoResponse {
     ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], LOGO_SVG)
-}
-
-/// `GET /static/logo-inverted.svg` - the same mark recolored for
-/// `_nav.html.hbs`'s dark (`--ink`) bar - see that file's own doc comment.
-pub async fn logo_inverted_svg() -> impl IntoResponse {
-    ([(axum::http::header::CONTENT_TYPE, "image/svg+xml")], LOGO_INVERTED_SVG)
 }
 
 /// `GET /static/favicon.svg` - the simplified, small-size version of the

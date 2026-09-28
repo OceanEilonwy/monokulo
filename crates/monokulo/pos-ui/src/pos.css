@@ -1,38 +1,30 @@
-/* Monokulo POS mini-app. Colours come from the site's own tokens
-   (views/head.html), so the POS follows the merchant's light / dark / system
-   theme like every other dashboard page. Layout and sizes follow
-   docs/pos-background-orders-sketches.html. */
+/* Monokulo POS mini-app. Every colour is a role from the site's own theme
+   (views/theme.css, loaded on this page like every other), so the POS
+   follows the merchant's light / dark / system theme and matches the site.
+   Layout and sizes follow docs/pos-background-orders-sketches.html. */
 
+/* The POS's names for site roles: no colours of its own, so it can't drift
+   from the site. The order status colours (`.state-*`) come from the site
+   stylesheet too. */
 :root {
-  --pos-border: var(--ink);
-  --pos-soft-line: #ddd5c8;
-  --pos-field: #fff;
-  --pos-key: #fff;
-  --pos-coin-face: #fff;
-  --pos-focus: color-mix(in srgb, var(--ink) 14%, transparent);
-  --pos-expiry-bg: #fff6d8; --pos-expiry-border: #ac7600; --pos-expiry-ink: #4a3600;
-  --pos-disabled: #aaa59d;
-  --pos-disabled-ink: #817d74;
-  --pos-desk: #e3ddcd;
-}
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --pos-border: #8f8f8f; --pos-soft-line: #3a3a3a; --pos-field: #262626; --pos-key: #2a2a2a;
-    --pos-coin-face: #333; --pos-disabled: #555; --pos-disabled-ink: #8a8a8a; --pos-desk: #141414;
-    --pos-expiry-bg: #3a3017; --pos-expiry-border: #c99a2e; --pos-expiry-ink: #f2d487;
-  }
-}
-:root[data-theme="dark"] {
-  --pos-border: #8f8f8f; --pos-soft-line: #3a3a3a; --pos-field: #262626; --pos-key: #2a2a2a;
-  --pos-coin-face: #333; --pos-disabled: #555; --pos-disabled-ink: #8a8a8a; --pos-desk: #141414;
-  --pos-expiry-bg: #3a3017; --pos-expiry-border: #c99a2e; --pos-expiry-ink: #f2d487;
+  --pos-border: var(--line-strong);
+  --pos-soft-line: var(--line);
+  --pos-field: var(--control-bg);
+  --pos-key: var(--paper-raised);
+  --pos-coin-face: var(--paper-raised);
+  --pos-focus: color-mix(in srgb, var(--focus-ring) 35%, transparent);
+  --pos-expiry-bg: var(--state-pending-bg);
+  --pos-expiry-border: var(--state-pending-border);
+  --pos-expiry-ink: var(--state-pending-ink);
+  --pos-disabled: var(--line);
+  --pos-disabled-ink: var(--muted);
 }
 
 html, body { height: 100%; }
 body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
 
-/* The site stylesheet styles bare elements (headings get rules, buttons turn
-   orange on hover, inputs get a thick focus outline); none of that belongs in
+/* The site stylesheet styles bare elements (headings get rules, buttons get
+   a border and padding, inputs a focus outline); none of that belongs in
    the terminal, so its own elements start from nothing. The site's own
    status indicator and theme toggle keep the site's styling. */
 #pos-root :where(h1, h2, p, button, input, label, hr, code, small):not(:where(.pos-site-controls *)) {
@@ -41,7 +33,7 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
 #pos-root :where(h1, h2, p, hr, label) { display: block; }
 #pos-root :where(button) { cursor: pointer; }
 #pos-root :where(button):disabled { cursor: not-allowed; }
-#pos-root :where(button, a, input, [tabindex]):focus-visible { outline: 2px solid var(--ink); outline-offset: 2px; }
+#pos-root :where(button, a, input, [tabindex]):focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
 #pos-root [hidden] { display: none !important; }
 
 #pos-root {
@@ -54,33 +46,6 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
 
 
 
-/* ---- status colours and symbols (the sketch's status key) ---- */
-.state-pending { --state-bg: #fff6d8; --state-border: #ac7600; --state-ink: #634800; }
-.state-unconfirmed { --state-bg: #f0f0ff; --state-border: #7779bb; --state-ink: #353683; }
-.state-confirming { --state-bg: #e7e8ff; --state-border: #5556a4; --state-ink: #353683; }
-.state-partial { --state-bg: #fff0df; --state-border: #c05e00; --state-ink: #8a3900; }
-.state-paid { --state-bg: #e3f4e7; --state-border: #1a7f37; --state-ink: #165f2e; }
-.state-overpaid { --state-bg: #ffe6d9; --state-border: #b54016; --state-ink: #912e0c; }
-.state-expired { --state-bg: #ece9e3; --state-border: #625b52; --state-ink: #4e4943; }
-.state-double-spend { --state-bg: #ffe6e9; --state-border: #b00020; --state-ink: #870019; }
-.state-offline { --state-bg: #f1f0ed; --state-border: #625b52; --state-ink: #4e4943; }
-.state-cancelled { --state-bg: #e7e7e7; --state-border: #616161; --state-ink: #404040; }
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) :is(.state-pending) { --state-bg: #3a3017; --state-border: #c99a2e; --state-ink: #f2d487; }
-  :root:not([data-theme="light"]) :is(.state-unconfirmed, .state-confirming) { --state-bg: #272842; --state-border: #8d8fe0; --state-ink: #c9caff; }
-  :root:not([data-theme="light"]) :is(.state-partial) { --state-bg: #3d2a17; --state-border: #e08a3a; --state-ink: #ffcf9e; }
-  :root:not([data-theme="light"]) :is(.state-paid) { --state-bg: #17331f; --state-border: #4cc27a; --state-ink: #a8e6bd; }
-  :root:not([data-theme="light"]) :is(.state-overpaid) { --state-bg: #3d2117; --state-border: #e5794e; --state-ink: #ffc2a8; }
-  :root:not([data-theme="light"]) :is(.state-expired, .state-offline, .state-cancelled) { --state-bg: #2e2d2b; --state-border: #9a948b; --state-ink: #d6d1c8; }
-  :root:not([data-theme="light"]) :is(.state-double-spend) { --state-bg: #3d1a1f; --state-border: #ff6b6b; --state-ink: #ffb3bc; }
-}
-:root[data-theme="dark"] :is(.state-pending) { --state-bg: #3a3017; --state-border: #c99a2e; --state-ink: #f2d487; }
-:root[data-theme="dark"] :is(.state-unconfirmed, .state-confirming) { --state-bg: #272842; --state-border: #8d8fe0; --state-ink: #c9caff; }
-:root[data-theme="dark"] :is(.state-partial) { --state-bg: #3d2a17; --state-border: #e08a3a; --state-ink: #ffcf9e; }
-:root[data-theme="dark"] :is(.state-paid) { --state-bg: #17331f; --state-border: #4cc27a; --state-ink: #a8e6bd; }
-:root[data-theme="dark"] :is(.state-overpaid) { --state-bg: #3d2117; --state-border: #e5794e; --state-ink: #ffc2a8; }
-:root[data-theme="dark"] :is(.state-expired, .state-offline, .state-cancelled) { --state-bg: #2e2d2b; --state-border: #9a948b; --state-ink: #d6d1c8; }
-:root[data-theme="dark"] :is(.state-double-spend) { --state-bg: #3d1a1f; --state-border: #ff6b6b; --state-ink: #ffb3bc; }
 
 @keyframes pos-spin { to { transform: rotate(360deg); } }
 
@@ -88,15 +53,20 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
    reset above and the site stylesheet's element rules. */
 #pos-root {
   /* ---- top bar ---- */
+  /* The site's app bar (`.site-nav`): the same surface, rule and mark. */
   .pos-top {
-    flex: none; display: flex; align-items: center; gap: 7px; height: 52px;
+    flex: none; display: flex; align-items: center; gap: 8px; height: 52px;
     padding: 0 max(16px, env(safe-area-inset-right)) 0 max(16px, env(safe-area-inset-left));
-    border-bottom: 1px solid var(--pos-soft-line); font-size: 13px;
+    background: var(--chrome-bg); color: var(--chrome-ink); border-bottom: 3px solid var(--chrome-rule); font-size: 13px;
   }
-  .pos-top strong { font-weight: 800; }
-  .pos-store { color: var(--muted); font-size: 11px; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 55%; }
+  .pos-brand-slot { display: contents; }
+  .pos-brand { flex: none; display: inline-flex; align-items: center; gap: 7px; color: var(--chrome-ink); text-decoration: none; font-size: 14px; font-weight: 700; letter-spacing: -.02em; }
+  .pos-brand:hover { color: var(--accent-text); }
+  .pos-crumb-sep { color: var(--muted); }
+  .pos-mode { flex: none; padding: 2px 7px; border-radius: 4px; background: var(--btn-primary-bg); color: var(--btn-primary-ink); font-size: 11px; font-weight: 800; letter-spacing: .04em; }
+  .pos-store { min-width: 0; color: var(--chrome-ink); font-size: 13px; font-weight: 600; text-decoration: none; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 45%; }
   .pos-store:hover { text-decoration: underline; }
-  .pos-back { display: grid; place-items: center; width: 28px; height: 28px; margin-left: -6px; color: var(--ink); }
+  .pos-back { display: grid; place-items: center; width: 28px; height: 28px; color: var(--chrome-ink); }
   .pos-back svg { width: 18px; height: 18px; }
   .pos-top-end { margin-left: auto; display: flex; align-items: center; gap: 6px; }
   .pos-orders-link { display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: var(--muted); }
@@ -117,10 +87,10 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-input::placeholder { color: var(--muted); opacity: .8; }
   .pos-input:focus-visible, .pos-refund input:focus-visible { outline: none; border-color: var(--ink); box-shadow: 0 0 0 3px var(--pos-focus); }
   .pos-primary {
-    flex: none; display: grid; place-items: center; width: 100%; height: 48px; border: 2px solid #111; border-radius: 5px;
-    background: var(--accent); color: #111; font-size: 17px; font-weight: 800;
+    flex: none; display: grid; place-items: center; width: 100%; height: 48px; border: 2px solid var(--btn-primary-bg); border-radius: 5px;
+    background: var(--btn-primary-bg); color: var(--btn-primary-ink); font-size: 17px; font-weight: 800;
   }
-  .pos-primary:hover:not(:disabled) { filter: brightness(1.05); }
+  .pos-primary:hover:not(:disabled) { background: var(--btn-primary-hover); border-color: var(--btn-primary-hover); }
   .pos-primary:disabled { background: var(--pos-field); color: var(--pos-disabled-ink); border-color: var(--pos-disabled); }
   .pos-cancel {
     flex: none; display: grid; place-items: center; width: 100%; height: 40px; border: 2px solid var(--error); border-radius: 5px;
@@ -145,11 +115,11 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-amount span { margin-left: 6px; font-size: 13px; font-weight: 700; letter-spacing: 0; color: var(--muted); }
   .pos-keys { flex: 1; min-height: 0; max-height: 470px; display: grid; grid-template-columns: repeat(3, 1fr); grid-template-rows: repeat(4, 1fr); gap: 10px; }
   .pos-keys button {
-    display: grid; place-items: center; min-height: 0; border: 2px solid var(--pos-border); border-radius: 12px;
+    display: grid; place-items: center; min-height: 0; border: 1px solid var(--pos-border); border-radius: 12px;
     background: var(--pos-key); color: var(--ink); font-size: 30px; font-weight: 800; touch-action: manipulation;
     transition: background .08s;
   }
-  .pos-keys button:active { background: var(--accent); color: #111; }
+  .pos-keys button:active { background: var(--btn-primary-bg); color: var(--btn-primary-ink); }
   .pos-keys .clear { color: var(--error); }
   .pos-keys .delete { color: var(--warning); }
   .pos-keys .delete svg { width: 34px; height: 24px; }
@@ -171,7 +141,7 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   }
   .pos-stack-card.state-offline { box-shadow: none; border-style: dashed; }
   .pos-stack-ref { font-size: 11px; font-weight: 800; overflow: hidden; text-overflow: ellipsis; min-width: 0; max-width: 12ch; }
-  .pos-stack-amount { font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .pos-stack-amount { font-size: 11px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .pos-keypad.has-stack { gap: 9px; padding-top: 12px; }
   .pos-keypad.has-stack .pos-amount { font-size: 40px; }
   .pos-keypad.has-stack .pos-amount.len-2 { font-size: 32px; }
@@ -182,6 +152,7 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   /* Every symbol sits centred in the same square box. */
   .pos-icon { flex: none; display: inline-grid; place-items: center; width: 22px; height: 22px; color: var(--state-ink); line-height: 0; }
   .pos-icon > svg, .pos-icon > span { grid-area: 1 / 1; }
+  .pos-coin-mark { stroke: var(--brand-orange); }
   .pos-icon svg { width: 100%; height: 100%; display: block; overflow: visible; }
   .pos-icon-overpaid svg { width: 130%; height: 100%; }
   .pos-spinner {
@@ -201,7 +172,7 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-badge {
     flex: none; display: inline-flex; align-items: center; gap: 4px; height: 22px; padding: 0 7px 0 4px;
     border: 1px solid var(--state-border); border-radius: 4px; background: var(--state-bg); color: var(--state-ink);
-    font-size: 10px; font-weight: 800; white-space: nowrap;
+    font-size: 11px; font-weight: 800; white-space: nowrap;
   }
   .pos-badge .pos-icon { width: 15px; height: 15px; }
 
@@ -227,11 +198,11 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-pay-xmr { text-align: center; font-size: 26px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
   .pos-pay-xmr span { font-size: 22px; }
   .pos-pay-fiat { text-align: center; font-size: 11px; color: var(--muted); }
-  .pos-qr { align-self: center; width: min(150px, 40vw); aspect-ratio: 1; padding: 6px; margin: 4px 0; background: #fff; border: 1px solid #d6d0c4; }
+  .pos-qr { align-self: center; width: min(150px, 40vw); aspect-ratio: 1; padding: 6px; margin: 4px 0; background: var(--qr-bg); border: 1px solid var(--line); }
   .pos-qr svg { display: block; width: 100%; height: 100%; }
   .pos-quiet-label { font-size: 11px; color: var(--muted); margin-top: 6px; }
   .pos-address { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border: 1px solid var(--pos-border); border-radius: 3px; background: var(--pos-field); }
-  .pos-address code { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 10.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: all; }
+  .pos-address code { flex: 1; min-width: 0; font-family: var(--font-mono); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; user-select: all; }
   .pos-address button { font-size: 11px; font-weight: 700; text-decoration: underline; }
   .pos-pay-card hr { height: 1px; background: var(--pos-soft-line); margin: 6px 0 2px; }
   .pos-refund { position: relative; }
@@ -247,14 +218,14 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-refund-tools { display: flex; flex-wrap: wrap; gap: 6px; }
   .pos-refund-tools button {
     display: inline-flex; align-items: center; gap: 5px; height: 28px; padding: 0 8px; border: 1px solid var(--pos-border); border-radius: 3px;
-    background: var(--pos-field); font-size: 10.5px; font-weight: 700;
+    background: var(--pos-field); font-size: 11px; font-weight: 700;
   }
   .pos-refund-tools svg { width: 13px; height: 13px; }
-  .pos-camera { width: 100%; max-height: 220px; border-radius: 4px; background: #000; object-fit: cover; }
+  .pos-camera { width: 100%; max-height: 220px; border-radius: 4px; background: var(--media-bg); object-fit: cover; }
   .pos-refund-message { font-size: 11px; font-weight: 700; color: var(--error); }
-  .pos-note { font-size: 9.5px; line-height: 1.35; color: var(--muted); }
+  .pos-note { font-size: 11px; line-height: 1.35; color: var(--muted); }
   .pos-payment .pos-primary { height: 44px; margin-top: 2px; }
-  .pos-action-hint { text-align: center; font-size: 9.5px; color: var(--muted); }
+  .pos-action-hint { text-align: center; font-size: 11px; color: var(--muted); }
   .pos-outcome {
     display: flex; flex-direction: column; align-items: center; gap: 8px; padding: 24px 18px; text-align: center;
     border: 2px solid var(--state-border); border-radius: 8px; background: var(--state-bg); color: var(--state-ink);
@@ -279,11 +250,11 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
   .pos-order-card-head { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; }
   .pos-order-card-head > div { min-width: 0; }
   .pos-order-card h2 { font-size: 15px; font-weight: 800; line-height: 1.25; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
-  .pos-order-card-head p { margin-top: 2px; font-size: 10px; color: var(--muted); }
+  .pos-order-card-head p { margin-top: 2px; font-size: 11px; color: var(--muted); }
   .pos-order-sum { margin-top: 10px; font-size: 22px; font-weight: 800; line-height: 1.2; font-variant-numeric: tabular-nums; }
   .pos-order-sum span { font-size: 12px; font-weight: 700; }
   .pos-order-foot { display: flex; justify-content: space-between; align-items: center; gap: 8px; margin-top: 8px; }
-  .pos-order-foot small { display: block; min-width: 0; font-size: 10px; color: var(--muted); }
+  .pos-order-foot small { display: block; min-width: 0; font-size: 11px; color: var(--muted); }
   .pos-order-foot .pos-link { flex: none; white-space: nowrap; }
   .pos-list-note { margin: 10px 0 12px; font-size: 11px; line-height: 1.45; color: var(--muted); }
   .pos-list-note a, .pos-empty a { color: var(--ink); font-weight: 800; white-space: nowrap; }
@@ -414,4 +385,9 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
 /* A phone on its side is not a desktop: use the whole screen. */
 @media (min-width: 700px) and (max-height: 480px) and (orientation: landscape) {
   #pos-root { max-width: none; margin: 0; border-inline: 0; box-shadow: none; }
+}
+
+/* A phone: the mark stays, the name goes. */
+@media (max-width: 520px) {
+  #pos-root .pos-brand-name { display: none; }
 }

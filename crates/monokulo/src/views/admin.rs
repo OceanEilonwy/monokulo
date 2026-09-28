@@ -35,7 +35,7 @@ pub fn setup_page(chrome: &PageChrome, data: &SetupViewModel) -> Markup {
                 label { "Email " input type="email" name="email" value=(data.email) required; }
                 label { "Password " input type="password" name="password" required minlength="12"; }
                 label { "Confirm password " input type="password" name="confirm_password" required minlength="12"; }
-                button type="submit" { "Create admin account" }
+                button type="submit" class="btn-primary" { "Create admin account" }
             }
         }
     };
@@ -65,7 +65,7 @@ pub fn request_invite_page(chrome: &PageChrome, data: &RequestInviteViewModel) -
                 form method="post" action="/request-invite" {
                     label { "Email " input type="email" name="email" required; }
                     label { "Message " textarea name="message" required {} }
-                    button type="submit" { "Request an invite" }
+                    button type="submit" class="btn-primary" { "Request an invite" }
                 }
             }
         }
@@ -143,7 +143,7 @@ pub fn invites_section(data: &AdminInvitesViewModel) -> Markup {
 
             form method="post" action="/dashboard/admin/invites/create-link"
                 fx-action="/dashboard/admin/invites/create-link" fx-method="POST" fx-target=(target) {
-                button type="submit" { "Create invite link" }
+                button type="submit" class="btn-primary" { "Create invite link" }
             }
             @if let Some(link) = &data.created_link {
                 p { "Share this link - it works once:" }

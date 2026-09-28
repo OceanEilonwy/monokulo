@@ -12,7 +12,7 @@ module.exports = defineConfig({
   reporter: [
     ['list'],
     ['html', { outputFolder: '../../target/coverage/browser/playwright-report-real', open: 'never' }],
-    ['./coverage-gallery-reporter.js', { required: ['logs', 'pos-timeline', 'store-settings'], report: '../browser/playwright-report-real/index.html' }],
+    ['./coverage-gallery-reporter.js', { required: ['logs', 'pos-timeline', 'store-settings', 'site', 'hosted-payment'], report: '../browser/playwright-report-real/index.html' }],
   ],
   use: { ...realBinaries.use, screenshot: 'only-on-failure', trace: 'retain-on-failure' },
 });

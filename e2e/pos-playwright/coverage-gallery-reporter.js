@@ -4,9 +4,10 @@
 // browser suite, then the real-binaries suite): each run adds its entries to
 // the manifest already there and rewrites the page from all of them.
 //
-// The page files stages under the page or feature they show, and a toggle
-// at the top picks the size shown: Desktop, Tablet or Mobile, and Portrait
-// or Landscape within Tablet and Mobile. It is radio buttons and CSS
+// The page files stages under the page or feature they show, and toggles
+// at the top pick the size shown (Desktop, Tablet or Mobile, and Portrait or
+// Landscape within Tablet and Mobile) and the theme (Light or Dark). It is
+// radio buttons and CSS
 // (`:has`), so it works opened straight from disk with no script.
 //
 // Options (the reporter tuple's second item): `required`, the groups this
@@ -28,6 +29,8 @@ const escapeHtml = value => String(value).replace(/&/g, '&amp;').replace(/</g, '
 /** Page and feature groups, in the order the gallery shows them; others
  * follow alphabetically under their own name. */
 const GROUPS = [
+  ['site', 'Dashboard'],
+  ['hosted-payment', 'Hosted payment page'],
   ['checkout', 'Checkout'],
   ['challenge', 'Challenge'],
   ['pos', 'POS'],
@@ -40,21 +43,23 @@ const SHAPE_LABELS = {
   desktop: 'Desktop', 'tablet-portrait': 'Tablet, portrait', 'tablet-landscape': 'Tablet, landscape',
   'mobile-portrait': 'Mobile, portrait', 'mobile-landscape': 'Mobile, landscape',
 };
+const THEMES = ['light', 'dark'];
 // Captures made before shapes had device names.
 const OLD_SHAPES = { portrait: 'mobile-portrait', landscape: 'mobile-landscape' };
 
-/** `<group>/<stage>@<shape>` (coverage-screenshot.js), or the older
- * `<stage>-<shape>`. */
+/** `<group>/<stage>@<shape>[+<theme>]` (coverage-screenshot.js), or the
+ * older `<stage>-<shape>`. Without a theme a capture is light. */
 function parseStage(name, guessedGroup) {
   const at = name.lastIndexOf('@');
   if (at > 0) {
     const [groupPart, stage] = name.slice(0, at).includes('/') ? name.slice(0, at).split('/') : [guessedGroup, name.slice(0, at)];
-    return { group: groupPart || guessedGroup, stage, shape: name.slice(at + 1) };
+    const [shape, theme = 'light'] = name.slice(at + 1).split('+');
+    return { group: groupPart || guessedGroup, stage, shape, theme };
   }
   for (const shape of [...SHAPES, ...Object.keys(OLD_SHAPES)]) {
-    if (name.endsWith(`-${shape}`)) return { group: guessedGroup, stage: name.slice(0, -shape.length - 1), shape: OLD_SHAPES[shape] || shape };
+    if (name.endsWith(`-${shape}`)) return { group: guessedGroup, stage: name.slice(0, -shape.length - 1), shape: OLD_SHAPES[shape] || shape, theme: 'light' };
   }
-  return { group: guessedGroup, stage: name, shape: 'element' };
+  return { group: guessedGroup, stage: name, shape: 'element', theme: 'light' };
 }
 
 function groupLabel(group) {
@@ -97,15 +102,17 @@ section { margin-top: 2rem; }
 small { color: var(--muted); }
 `;
 
-/** The rules showing each card's image for the chosen size, or saying
- * the stage wasn't captured at that size. */
+/** The rules showing each card's image for the chosen size and theme, or
+ * saying the stage wasn't captured that way. */
 function shapeRules() {
-  return SHAPES.map(shape => {
+  return SHAPES.flatMap(shape => THEMES.map(theme => {
     const [device, orientation] = shape.split('-');
-    const chosen = orientation ? `body:has(#device-${device}:checked):has(#orientation-${orientation}:checked)` : `body:has(#device-${device}:checked)`;
-    return `${chosen} .card figure[data-shape="${shape}"] { display: block; }\n`
-      + `${chosen} .card.sized:not(:has(figure[data-shape="${shape}"])) .missing { display: grid; }`;
-  }).join('\n');
+    const chosen = (orientation ? `body:has(#device-${device}:checked):has(#orientation-${orientation}:checked)` : `body:has(#device-${device}:checked)`)
+      + `:has(#theme-${theme}:checked)`;
+    const figure = `figure[data-shape="${shape}"][data-theme="${theme}"]`;
+    return `${chosen} .card ${figure} { display: block; }\n`
+      + `${chosen} .card.sized:not(:has(${figure})) .missing { display: grid; }`;
+  })).join('\n');
 }
 
 function page(entries) {
@@ -114,7 +121,7 @@ function page(entries) {
   html += '<h1>UI stages</h1><p><a href="../index.html">Coverage summary</a>';
   for (const report of [...new Set(entries.map(e => e.report))]) html += ` · <a href="${escapeHtml(report)}">Playwright test report${report.includes('real') ? ' (real binaries)' : ''}</a>`;
   html += '</p>';
-  html += '<form class="toolbar" aria-label="Screenshot size">'
+  html += '<form class="toolbar" aria-label="Screenshot size and theme">'
     + '<fieldset><legend>Device</legend>'
     + '<label><input type="radio" name="device" id="device-desktop" checked><span>Desktop</span></label>'
     + '<label><input type="radio" name="device" id="device-tablet"><span>Tablet</span></label>'
@@ -122,6 +129,9 @@ function page(entries) {
     + '</fieldset><fieldset class="orientation"><legend>Orientation</legend>'
     + '<label><input type="radio" name="orientation" id="orientation-portrait" checked><span>Portrait</span></label>'
     + '<label><input type="radio" name="orientation" id="orientation-landscape"><span>Landscape</span></label>'
+    + '</fieldset><fieldset><legend>Theme</legend>'
+    + '<label><input type="radio" name="theme" id="theme-light" checked><span>Light</span></label>'
+    + '<label><input type="radio" name="theme" id="theme-dark"><span>Dark</span></label>'
     + '</fieldset></form>';
   html += `<ul class="jump">${groups.map(g => `<li><a href="#group-${escapeHtml(g)}">${escapeHtml(groupLabel(g))}</a></li>`).join('')}</ul>`;
   for (const group of groups) {
@@ -136,10 +146,12 @@ function page(entries) {
     for (const shots of cards.values()) {
       const first = shots[0];
       const sized = shots.some(s => SHAPES.includes(s.shape));
-      const only = SHAPES.filter(shape => shots.some(s => s.shape === shape)).map(shape => SHAPE_LABELS[shape]);
+      const only = SHAPES.flatMap(shape => THEMES.filter(theme => shots.some(s => s.shape === shape && (s.theme || 'light') === theme))
+        .map(theme => `${SHAPE_LABELS[shape]} (${theme})`));
       html += `<article class="card${sized ? ' sized' : ''}">`;
       for (const shot of shots) {
-        html += `<figure data-shape="${escapeHtml(shot.shape)}"><a href="${escapeHtml(shot.image)}"><img src="${escapeHtml(shot.image)}" alt="${escapeHtml(`${first.stage}, ${SHAPE_LABELS[shot.shape] || shot.shape}`)}" loading="lazy"></a></figure>`;
+        const theme = shot.theme || 'light';
+        html += `<figure data-shape="${escapeHtml(shot.shape)}" data-theme="${escapeHtml(theme)}"><a href="${escapeHtml(shot.image)}"><img src="${escapeHtml(shot.image)}" alt="${escapeHtml(`${first.stage}, ${SHAPE_LABELS[shot.shape] || shot.shape}, ${theme}`)}" loading="lazy"></a></figure>`;
       }
       if (sized) html += `<p class="missing">Not captured at this size.<br>Captured: ${escapeHtml(only.join(', '))}</p>`;
       html += `<p><strong>${escapeHtml(first.stage)}</strong></p><p>${escapeHtml(first.test)}</p>`
@@ -168,15 +180,15 @@ class CoverageGalleryReporter {
       if (attachment.contentType !== 'image/png') continue;
       let parsed;
       if (attachment.name.startsWith('coverage-stage:')) parsed = parseStage(attachment.name.slice('coverage-stage:'.length), guessed);
-      else if (attachment.name === 'screenshot') parsed = { group: guessed, stage: 'failure', shape: 'failure' };
+      else if (attachment.name === 'screenshot') parsed = { group: guessed, stage: 'failure', shape: 'failure', theme: 'light' };
       else continue;
-      const { group, stage, shape } = parsed;
-      const id = crypto.createHash('sha256').update(`${test.id}:${result.retry}:${result.workerIndex}:${sequence}:${group}:${stage}:${shape}`)
+      const { group, stage, shape, theme } = parsed;
+      const id = crypto.createHash('sha256').update(`${test.id}:${result.retry}:${result.workerIndex}:${sequence}:${group}:${stage}:${shape}:${theme}`)
         .digest('hex').slice(0, 16);
-      const filename = `${group}-${stage}-${shape}-r${result.retry}-${id}.png`;
+      const filename = `${group}-${stage}-${shape}${theme === 'light' ? '' : `-${theme}`}-r${result.retry}-${id}.png`;
       fs.writeFileSync(path.join(images, filename), attachment.body || fs.readFileSync(attachment.path));
       this.entries.push({ group, test: test.title, test_id: test.id, retry: result.retry, worker: result.workerIndex,
-        stage, shape, sequence, status: result.status, image: `images/${filename}`, report: this.report });
+        stage, shape, theme, sequence, status: result.status, image: `images/${filename}`, report: this.report });
       sequence++;
     }
   }

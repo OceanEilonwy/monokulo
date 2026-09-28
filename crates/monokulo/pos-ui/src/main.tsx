@@ -113,6 +113,16 @@ function adoptSiteControls(slot: HTMLElement) {
   controls.remove();
 }
 
+/** Moves the site's logo and name (rendered by the server into
+ * #pos-site-brand, so the POS draws the same mark as the site nav) to the
+ * start of the top bar. */
+function adoptSiteBrand(slot: HTMLElement) {
+  const brand = document.getElementById('pos-site-brand');
+  if (!brand) return;
+  slot.append(...Array.from(brand.children));
+  brand.remove();
+}
+
 /** Sketch 2's payment card: what the customer pays, where, and where a
  * refund would go. */
 function PaymentCard(props: { order: Order }) {
@@ -516,14 +526,16 @@ function App() {
 
   return <><StatusSymbols/>
     <header class="pos-top">
+      <span class="pos-brand-slot" ref={adoptSiteBrand}/>
+      <span class="pos-crumb-sep" aria-hidden="true">/</span>
       <Show when={screen() === 'list'} fallback={
         <a class="pos-store" href={`/dashboard/stores/${encodeURIComponent(config.connectionId)}`}>{config.storeName}</a>
       }>
         <button class="pos-back" type="button" onClick={() => setScreen('keypad')} aria-label="Back to POS">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 5-7 7 7 7"/></svg>
         </button>
-        <strong>POS</strong>
       </Show>
+      <span class="pos-mode">POS</span>
       <span class="pos-top-end">
         <Show when={screen() !== 'list'}>
           <button class="pos-orders-link" type="button" onClick={showList} aria-label="All orders" title="All orders">

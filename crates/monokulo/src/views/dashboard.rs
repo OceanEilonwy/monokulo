@@ -99,7 +99,7 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                                             (order.order_id)
                                         }
                                     }
-                                    td { (order.status) }
+                                    td { (super::state_badge(&order.status)) }
                                     td { (order.amount) " " (order.currency) }
                                     td { (order.created_at) }
                                 }
@@ -114,7 +114,7 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                         "You don't have any stores connected yet. Adding one takes a couple of minutes - pick the "
                         "guided flow for WooCommerce, or the advanced form if you're integrating something custom."
                     }
-                    a class="btn" href="/dashboard/stores/new" { "+ add a store" }
+                    a class="btn btn-primary" href="/dashboard/stores/new" { "+ add a store" }
                 }
             }
         }

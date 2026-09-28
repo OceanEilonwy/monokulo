@@ -48,7 +48,6 @@ use crate::engine_client::{EngineClientError, OrderView};
 use crate::views;
 use crate::views::pos::PosViewModel;
 
-use super::checkout::status_label;
 use super::orders::{decrypt_sk, display_name_for, load_owned_connection};
 use super::{ApiError, AppState, AuthedUser};
 
@@ -564,12 +563,12 @@ pub async fn order_status(
 
 async fn pos_status(state: &AppState, connection_id: &str, sk: &str, order: &OrderView) -> PosStatusResponse {
     let confirmations_required = resolve_confirmations_required(state, connection_id, sk, &order.order_id).await;
-    // `status_label`'s own `is_terminal` already accounts for a
+    // `order_state`'s own `is_terminal` already accounts for a
     // 0-conf-trusted order: the engine only ever reports `"paid"`
     // once *that order's own* `confirmations_required` (however it
     // was resolved at creation - possibly `0`) has actually been
     // met, so there's no separate threshold check to fold in here.
-    let (_, _, is_terminal) = status_label(&order.status);
+    let (_, _, is_terminal) = crate::views::order_state(&order.status);
     PosStatusResponse {
         status: order.status.clone(),
         updated_at: order.updated_at,

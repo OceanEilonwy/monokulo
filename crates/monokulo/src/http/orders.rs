@@ -397,7 +397,7 @@ pub async fn order_detail_events(
         let (state, row, sk, order_id, payment_link) = (state.clone(), row.clone(), sk.clone(), order_id.clone(), payment_link.clone());
         async move {
             let order = order_detail_data(&state, &row, &sk, &order_id, payment_link).await.ok()??;
-            let (_, _, terminal) = super::checkout::status_label(&order.status);
+            let (_, _, terminal) = crate::views::order_state(&order.status);
             let html = views::orders::live_fragment(&order).into_string();
             let mut events =
                 vec![axum::response::sse::Event::default().event(r##"{"target":"#order-live","swap":"outerHTML"}"##).data(html.clone())];
@@ -3577,16 +3577,19 @@ mod tests {
         };
         let html = page("").await;
         for (order_id, source, reference, status) in [
-            (&pos, "POS", "Table 4", "pending"),
-            (&cancelled, "POS", "Table 9", "cancelled"),
-            (&dashboard, "Dashboard", "invoice-7", "pending"),
-            (&plugin, "WooCommerce", "wc-1042", "pending"),
-            (&website, "Website", "—", "pending"),
+            (&pos, "POS", "Table 4", "Waiting for payment"),
+            (&cancelled, "POS", "Table 9", "Cancelled"),
+            (&dashboard, "Dashboard", "invoice-7", "Waiting for payment"),
+            (&plugin, "WooCommerce", "wc-1042", "Waiting for payment"),
+            (&website, "Website", "—", "Waiting for payment"),
         ] {
             let row = row_of(&html, order_id);
             for expected in [source, reference, status] {
                 assert!(row.contains(&format!(">{expected}<")), "{order_id}: expected {expected} in {row}");
             }
+            // The status is the same badge the checkout and the POS show.
+            let class = if status == "Cancelled" { "state-cancelled" } else { "state-pending" };
+            assert!(row.contains(&format!(r#"<span class="tag {class}">{status}</span>"#)), "{order_id}: expected a {class} badge in {row}");
         }
 
         let html = page("?q=table").await;

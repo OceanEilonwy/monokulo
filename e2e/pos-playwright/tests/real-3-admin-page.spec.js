@@ -112,7 +112,7 @@ for (const scheme of ['light', 'dark']) {
         return [getComputedStyle(el).color, expected];
       });
       expect(color).toBe(token);
-      // head.html's --error for this theme.
+      // theme.css's --error for this theme.
       expect(color).toBe(scheme === 'dark' ? 'rgb(255, 107, 107)' : 'rgb(176, 0, 32)');
       const sideways = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       expect(sideways).toBeLessThanOrEqual(0);

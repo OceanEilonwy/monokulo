@@ -62,7 +62,7 @@ pub fn page(chrome: &PageChrome, data: &CreateOrderData) -> Markup {
                     "Your own order/cart id, if you have one - shown on this order's detail page so you can "
                     "match it back to your own records."
                 }
-                button type="submit" { "Create order" }
+                button type="submit" class="btn-primary" { "Create order" }
             }
         }
     };

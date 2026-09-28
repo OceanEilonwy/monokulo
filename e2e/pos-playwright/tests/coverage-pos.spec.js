@@ -156,12 +156,17 @@ test('real POS uses the site theme toggle, applies it in place and remembers it'
   await expect(page.locator('html')).not.toHaveAttribute('data-theme', /./);
 });
 
-test('real POS header links back to the store and shows the site status indicator', async ({ page }) => {
+test('real POS header is the site app bar: the mark, the store, a POS label and the status indicator', async ({ page }) => {
   await page.route('**/status/summary', route => route.fulfill({ json: { healthy: true } }));
   await page.goto(posUrl());
   const top = page.locator('.pos-top');
+  // The site's own mark and name first, linking to the dashboard, as the
+  // nav does on every page.
+  await expect(top.locator('.pos-brand')).toHaveAttribute('href', '/dashboard');
+  await expect(top.locator('.pos-brand svg.logo-mark')).toBeVisible();
   await expect(top.locator('.pos-store')).toHaveAttribute('href', `/dashboard/stores/${fixture.connection_id}`);
-  await expect(top).not.toContainText('POS');
+  await expect(top.locator('.pos-mode')).toHaveText('POS');
+  expect(await page.locator('#pos-site-brand').count()).toBe(0);
   const status = top.locator('#status-indicator');
   await expect(status).toHaveAttribute('href', '/status');
   // Rightmost in the bar, after the theme toggle, as on every page.

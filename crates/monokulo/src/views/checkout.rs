@@ -93,12 +93,7 @@ const CHECKOUT_STYLE: &str = r#"
 html { background: var(--paper-raised); }
 body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(--paper-raised); }
 .pay-wrap { max-width: 720px; margin: 0 auto; }
-/* The same dark green in both themes: it colours a QR code on white. */
-:root { --paid-green: #16663a; }
 .pay-header { display: flex; align-items: center; justify-content: center; gap: 0.6em; flex-wrap: wrap; margin-bottom: 0.8em; }
-.status-pending, .status-unconfirmed, .status-confirming, .status-partial, .status-overpaid { background: var(--tint-warning); }
-.status-paid { background: var(--tint-success); }
-.status-expired, .status-unknown { background: var(--tint-error); }
 .expiry-pill {
   display: inline-flex;
   align-items: center;
@@ -170,16 +165,13 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .progress-row { display: flex; justify-content: space-between; font-size: 0.85em; margin-bottom: 0.4em; }
 .progress-bar { border: 1px solid var(--line); border-radius: var(--radius-sm); overflow: hidden; height: 1em; background: var(--paper); }
 .progress-fill { height: 100%; background: var(--accent); }
-/* Confirmed: the QR code and the progress bar turn the paid green (the QR
-   stays dark on white, so it still scans). Follows the live status. */
-#checkout-root:is([data-status="paid"], [data-status="overpaid"]) .qr-wrap svg path { fill: var(--paid-green); }
-#checkout-root:is([data-status="paid"], [data-status="overpaid"]) .progress-fill { background: var(--paid-green); }
+/* Confirmed: the QR code and the progress bar turn the paid green, the same
+   dark green in both themes so the QR stays dark on white and still scans.
+   Follows the live status. */
+#checkout-root:is([data-status="paid"], [data-status="overpaid"]) .qr-wrap svg path { fill: var(--qr-paid); }
+#checkout-root:is([data-status="paid"], [data-status="overpaid"]) .progress-fill { background: var(--qr-paid); }
 .payments-table { font-size: 0.8em; margin-top: 1.2em; }
 .meta { margin-top: 1.4em; font-size: 0.8em; color: var(--muted); text-align: left; }
-.visually-hidden {
-  position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px;
-  overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0;
-}
 .payment-state { border: 1px solid var(--line); padding: 1em; margin: 0 0 1em; text-align: center; background: var(--paper); }
 .payment-state.is-error { border-color: var(--error); background: var(--tint-error); }
 .payment-state.is-warning { border-color: var(--warning); background: var(--tint-warning); }
@@ -205,7 +197,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .refund-field.is-invalid .refund-save-state::after { content: '!'; font-weight: 800; border: 2px solid currentColor; border-radius: 50%; width: 1.1em; height: 1.1em; line-height: 1em; text-align: center; }
 @keyframes refund-spin { to { transform: rotate(360deg); } }
 @media (prefers-reduced-motion: reduce) { .refund-field.is-saving .refund-save-state::after { animation-duration: 1.5s; } }
-.refund-camera { width: 100%; max-height: 16em; background: var(--ink); }
+.refund-camera { width: 100%; max-height: 16em; background: var(--media-bg); }
 .scan-error { color: var(--error); }
 .checkout-compact { max-width: 100%; }
 .checkout-compact .pay-grid { grid-template-columns: 1fr; gap: 0; text-align: center; }
@@ -221,7 +213,7 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact .qr-wrap { margin-bottom: .3em; }
 .checkout-compact .qr-wrap svg { width: min(29vh, 158px); height: auto; }
 .checkout-compact .address-block { margin-bottom: .5em; }
-.checkout-compact .address-row { border: 1px solid #999; border-radius: 4px; padding: .3em; }
+.checkout-compact .address-row { border: 1px solid var(--control-border); border-radius: var(--radius-sm); padding: .3em; }
 .checkout-compact .address-text { font-size: .7em; }
 .checkout-compact .refund-field { display: flex; flex-wrap: wrap; gap: .3em; }
 .checkout-compact .refund-field input[type=text] { padding-right: .6em; flex: 1 1 100%; }
@@ -263,7 +255,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
     };
     let body = html! {
         div class=(if data.is_compact { "pay-wrap checkout-compact" } else { "pay-wrap" }) id="checkout-root" data-order-id=(data.order_id) data-status=(data.status) data-confirmations=(data.confirmations) data-error=(data.payment_error.as_deref().unwrap_or("")) {
-            h1 class="visually-hidden" { "Monero payment of " (data.xmr_amount) " XMR" }
+            h1 class="sr-only" { "Monero payment of " (data.xmr_amount) " XMR" }
             @if !data.is_terminal {
                 noscript {
                     p class="refresh-toggle" {
@@ -450,7 +442,7 @@ fn trim_xmr(amount: &str) -> &str {
 fn amount_label(data: &CheckoutViewModel) -> Markup {
     let amount_mismatch = matches!(data.status.as_str(), "partial" | "overpaid");
     html! {
-        span class=(if amount_mismatch { "amount-label" } else { "visually-hidden" }) id="amount-label" data-live {
+        span class=(if amount_mismatch { "amount-label" } else { "sr-only" }) id="amount-label" data-live {
             @if amount_mismatch { "Order total" } @else { "Amount due" }
         }
     }
@@ -488,7 +480,7 @@ fn live_payments(data: &CheckoutViewModel) -> Markup {
             @if !data.payments.is_empty() {
                 div class="section" {
                     table class="payments-table" {
-                        caption class="visually-hidden" { "Individual payments received toward this order" }
+                        caption class="sr-only" { "Individual payments received toward this order" }
                         thead { tr { th scope="col" { "Tx" } th scope="col" { "Amount" } th scope="col" { "Confirmations" } } }
                         tbody id="payments-body" {
                             @for payment in &data.payments {
@@ -557,8 +549,15 @@ pub struct CheckoutShareViewModel {
     pub found: bool,
 }
 
+/// The title and the framed checkout are one card on the page. The card's
+/// surface is the checkout's own background (`--paper-raised`), so the
+/// frame's edge doesn't show and the payment reads as one panel.
 const SHARE_STYLE: &str = r#"
-.share-wrap { max-width: 840px; margin: 2.4rem auto; }
+.share-wrap { max-width: 840px; margin: 1.6rem auto; }
+.share-card { background: var(--paper-raised); border: 1px solid var(--line); border-radius: var(--radius-lg); overflow: hidden; }
+.share-card-head { padding: var(--space-xl) 1.2rem 0; text-align: center; }
+.share-card-head h1 { margin: 0 0 .25em; border: 0; padding: 0; }
+.share-card-head .hint { margin: 0 auto; max-width: 34em; }
 .share-frame {
   width: 100%;
   display: block;
@@ -599,9 +598,13 @@ pub fn share_page(chrome: &PageChrome, data: &CheckoutShareViewModel) -> Markup 
     let body = html! {
         div class="wrap share-wrap" {
             @if data.found {
-                h1 { "Pay with Monero" }
-                p class="hint" { "Complete the payment below - this page stays up to date on its own, so it's safe to bookmark or come back to later." }
-                iframe class="share-frame" id="checkout-frame" src=(share_frame_src(chrome, data)) title="Monero payment" {}
+                section class="share-card" {
+                    header class="share-card-head" {
+                        h1 { "Pay with Monero" }
+                        p class="hint" { "Complete the payment below - this page stays up to date on its own, so it's safe to bookmark or come back to later." }
+                    }
+                    iframe class="share-frame" id="checkout-frame" src=(share_frame_src(chrome, data)) title="Monero payment" {}
+                }
                 script { (PreEscaped(SHARE_SCRIPT)) }
             } @else {
                 h1 { "Order not found" }
@@ -625,7 +628,7 @@ mod tests {
             order_id: "pay_abc123".to_string(),
             status_label: if is_terminal { "Paid".to_string() } else { "Waiting for payment".to_string() },
             status: if is_terminal { "paid".to_string() } else { "pending".to_string() },
-            status_class: if is_terminal { "status-paid".to_string() } else { "status-pending".to_string() },
+            status_class: if is_terminal { "state-paid".to_string() } else { "state-pending".to_string() },
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
             qr_code_svg: "<svg></svg>".to_string(),
             xmr_amount: "0.500000000000".to_string(),
@@ -742,7 +745,7 @@ mod tests {
         let mut data = test_checkout_view_model(false);
         data.status = "partial".to_string();
         data.status_label = "Partial payment received".to_string();
-        data.status_class = "status-partial".to_string();
+        data.status_class = "state-partial".to_string();
         data.amount_received_xmr = "0.200000000000".to_string();
         data.payment_error = Some("0.200000000000 XMR received of 0.500000000000 XMR. Send the remaining 0.300000000000 XMR to the address below.".to_string());
         let html = checkout_page(&chrome(), &data).into_string();
@@ -766,7 +769,7 @@ mod tests {
 
         data.status = "overpaid".to_string();
         data.status_label = "Overpaid".to_string();
-        data.status_class = "status-overpaid".to_string();
+        data.status_class = "state-overpaid".to_string();
         data.is_terminal = true;
         data.amount_received_xmr = "0.600000000000".to_string();
         data.payment_error = Some("0.600000000000 XMR received for a 0.500000000000 XMR order (0.100000000000 XMR extra). Do not send more. Contact the merchant about the extra amount.".to_string());
