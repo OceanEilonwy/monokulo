@@ -89,4 +89,16 @@ async function connectStore(page, site) {
   return page.locator('tr', { hasText: site }).first().getByRole('link', { name: 'view →' }).getAttribute('href');
 }
 
-module.exports = { fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, reloadUntil, connectStore, VIEW_KEY, SPEND_PUBKEY };
+/**
+ * Waits for the page's view transition to finish. Every navigation from a
+ * link or form runs the theme indicator's cross-document view transition
+ * (site.css), and while it runs the page takes no clicks. With JavaScript
+ * off, a click must not land mid-transition: Playwright waits between
+ * retries with a timer in the page, which never fires, so the click hangs
+ * until the test times out.
+ */
+async function transitionDone(page) {
+  await expect.poll(() => page.evaluate(() => !document.activeViewTransition)).toBe(true);
+}
+
+module.exports = { fixture, signInAsAdmin, transitionDone, fakeNodeJson, saveEngineSettings, reloadUntil, connectStore, VIEW_KEY, SPEND_PUBKEY };
