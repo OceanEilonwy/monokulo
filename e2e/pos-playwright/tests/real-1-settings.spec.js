@@ -5,7 +5,9 @@
 // can then be connected, and the warnings for restart-only settings and
 // for clearing a network stores use work.
 const { test, expect } = require('@playwright/test');
-const { fixture, reloadUntil, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, reloadUntil, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+
+useRealStack(test);
 
 test('a node saved on a fresh instance applies straight away, and the warnings work', async ({ page }) => {
   const { monokulo_url: base, fake_monerod: fakeAddress } = fixture();

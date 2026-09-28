@@ -1,11 +1,28 @@
-// Shared by the tests/real-*.spec.js specs, which run one after another
-// against the same processes (real-binaries-setup.js), so each copes with
-// whatever state the one before left.
+// Shared by the tests/real-*.spec.js specs. Each spec file calls
+// `useRealStack(test)` and gets processes of its own (real-stack.js): its
+// tests run one after another against them, so each copes with whatever
+// state the one before in the same file left, and files never see each
+// other's state, whichever worker runs them.
 const { expect } = require('@playwright/test');
-const fs = require('node:fs');
-const path = require('node:path');
+const { startStack } = require('../real-stack');
 
-const fixture = () => JSON.parse(fs.readFileSync(path.join(__dirname, '..', '.real-binaries-fixture.json'), 'utf8'));
+let stack = null;
+
+/** Starts a fresh stack before the file's first test and stops it after its last. */
+function useRealStack(test) {
+  test.beforeAll(async () => { stack = await startStack(); });
+  test.afterAll(async () => {
+    const running = stack;
+    stack = null;
+    if (running) await running.stop();
+  });
+}
+
+/** The running stack: `{ monokulo_url, engine_url, fake_monerod, logs }`. */
+function fixture() {
+  if (!stack) throw new Error('no real-binaries stack is running: call useRealStack(test) at the top of the spec');
+  return stack.fixture;
+}
 
 const ADMIN_EMAIL = 'admin@example.com';
 const ADMIN_PASSWORD = 'correct horse battery staple';
@@ -101,4 +118,4 @@ async function transitionDone(page) {
   await expect.poll(() => page.evaluate(() => !document.activeViewTransition)).toBe(true);
 }
 
-module.exports = { fixture, signInAsAdmin, transitionDone, fakeNodeJson, saveEngineSettings, reloadUntil, connectStore, VIEW_KEY, SPEND_PUBKEY };
+module.exports = { useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeJson, saveEngineSettings, reloadUntil, connectStore, VIEW_KEY, SPEND_PUBKEY };

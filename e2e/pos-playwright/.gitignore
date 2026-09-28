@@ -2,4 +2,3 @@ node_modules/
 test-results/
 playwright-report/
 .pos-e2e-fixture.json
-.real-binaries-fixture.json

@@ -7,7 +7,9 @@
 const { test, expect } = require('../coverage-test');
 const { serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
-const { fixture, signInAsAdmin, transitionDone, fakeNodeJson, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeJson, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+
+useRealStack(test);
 
 const logsUrl = (query = '') => `${fixture().monokulo_url}/dashboard/admin/logs${query}`;
 const stage = (page, name) => captureCoverageStage(page, name, test.info(), { group: 'logs' });

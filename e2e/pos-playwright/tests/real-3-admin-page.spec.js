@@ -5,7 +5,9 @@
 // before clearing a network stores use, and banners in the error colour in
 // both themes.
 const { test, expect } = require('@playwright/test');
-const { fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+
+useRealStack(test);
 
 // Whatever a test did to the stagenet node, the next one starts with it set.
 test.afterEach(async ({ page }) => {

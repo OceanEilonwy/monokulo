@@ -8,7 +8,9 @@ const { test, expect } = require('@playwright/test');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, reloadUntil, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, reloadUntil, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+
+useRealStack(test);
 
 const KEY_CUSTODY_SERVER = path.resolve(__dirname, '..', '..', '..', 'target', 'debug', 'key-custody-server');
 

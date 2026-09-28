@@ -13,7 +13,9 @@ const { spawn } = require('node:child_process');
 const crypto = require('node:crypto');
 const net = require('node:net');
 const path = require('node:path');
-const { fixture, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+
+useRealStack(test);
 
 const SCANNER = process.env.E2E_SCANNER_BIN || path.resolve(__dirname, '..', '..', '..', 'target', 'debug', 'scanner');
 

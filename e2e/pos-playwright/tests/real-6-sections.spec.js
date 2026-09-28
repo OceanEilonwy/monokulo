@@ -3,7 +3,9 @@
 // parts 6 and 9): the page isn't reloaded, the scroll position and unsaved
 // edits elsewhere survive, and the saved section shows its own banner.
 const { test, expect } = require('@playwright/test');
-const { fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+
+useRealStack(test);
 
 test('saving the engine half of the admin settings keeps edits in the monokulo half', async ({ page }) => {
   await signInAsAdmin(page);
