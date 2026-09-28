@@ -93,6 +93,48 @@ pub struct StoreSettingsData {
     /// Where the store's keys are kept and where they could move (part 5);
     /// `None` when there's nowhere else to move them.
     pub key_storage: Option<KeyStorageView>,
+    /// The section a form was just posted from: its error (or new webhook
+    /// secret) shows there. `None` on a plain load.
+    pub active_section: Option<StoreSection>,
+}
+
+/// The page's sections, each saved (and, with fixi, swapped back) on its
+/// own (structured_logging.md part 6).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum StoreSection {
+    BaseCurrency,
+    Confirmations,
+    FxProvider,
+    KeyStorage,
+    Domains,
+    Webhooks,
+}
+
+impl StoreSection {
+    pub fn id(self) -> &'static str {
+        match self {
+            StoreSection::BaseCurrency => "base-currency",
+            StoreSection::Confirmations => "confirmation-thresholds",
+            StoreSection::FxProvider => "fx-provider",
+            StoreSection::KeyStorage => "key-storage",
+            StoreSection::Domains => "verified-domains",
+            StoreSection::Webhooks => "webhooks",
+        }
+    }
+
+    /// Other sections a save here changes too (sent out of band): a new
+    /// base currency deletes the custom thresholds and renames their unit.
+    pub fn also_changes(self) -> &'static [StoreSection] {
+        match self {
+            StoreSection::BaseCurrency => &[StoreSection::Confirmations],
+            _ => &[],
+        }
+    }
+}
+
+/// fixi attributes posting `action` and swapping `section` back.
+fn fx(action: &str, section: StoreSection) -> (String, String) {
+    (action.to_string(), format!("#{}", section.id()))
 }
 
 pub struct KeyStorageView {
@@ -104,12 +146,29 @@ pub struct KeyStorageView {
     pub move_to: Vec<super::connect::CustodyChoice>,
 }
 
+/// The error a form in `section` was just refused with, shown in the
+/// section when it's swapped back in place (`in_place`) and focused. (A
+/// whole page shows it at the top instead.)
+fn section_error(store: &StoreSettingsData, section: StoreSection, in_place: bool) -> Markup {
+    html! {
+        @if in_place && store.active_section == Some(section) {
+            @if let Some(error) = &store.settings_error {
+                div class="error" role="alert" data-fx-focus tabindex="-1" { (error) }
+            }
+        }
+    }
+}
+
 /// "Key storage": where the store's view key is kept, and a form to move it
 /// (task 5.6). The keys are entered again - they're never read back from
 /// anywhere - and the fields are always empty on render.
-fn key_storage_section(connection_id: &str, key_storage: &KeyStorageView) -> Markup {
+fn key_storage_section(store: &StoreSettingsData, key_storage: &KeyStorageView, in_place: bool) -> Markup {
+    let connection_id = &store.connection_id;
+    let (action, target) = fx(&format!("/dashboard/stores/{connection_id}/settings/key-custody"), StoreSection::KeyStorage);
     html! {
-        h2 id="key-storage" { "Key storage" }
+      section id=(StoreSection::KeyStorage.id()) {
+        h2 { "Key storage" }
+        (section_error(store, StoreSection::KeyStorage, in_place))
         p { strong { "Kept: " } (key_storage.current) }
         @if key_storage.current_disabled {
             p class="error" {
@@ -117,7 +176,7 @@ fn key_storage_section(connection_id: &str, key_storage: &KeyStorageView) -> Mar
                 "being detected. Move the keys below to start again."
             }
         }
-        form method="post" action=(format!("/dashboard/stores/{connection_id}/settings/key-custody")) {
+        form method="post" action=(action) fx-action=(action) fx-method="POST" fx-target=(target) {
             label {
                 "Move to"
                 select name="backend" {
@@ -138,6 +197,7 @@ fn key_storage_section(connection_id: &str, key_storage: &KeyStorageView) -> Mar
             }
             button type="submit" { "Move keys" }
         }
+      }
     }
 }
 
@@ -145,19 +205,13 @@ pub struct StoreSettingsViewModel {
     pub store: Option<StoreSettingsData>,
 }
 
-pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
-    let body = html! {
-        div class="wrap" {
-            @if let Some(store) = &data.store {
-                (super::store_breadcrumb(&store.connection_id, &store.display_name, false))
-                h1 { "Settings" }
-
-                @if let Some(error) = &store.settings_error {
-                    div class="error" { (error) }
-                }
-
+/// "Base currency".
+fn base_currency_section(store: &StoreSettingsData, in_place: bool) -> Markup {
+    html! {
+        section id=(StoreSection::BaseCurrency.id()) {
                 h2 { "Base currency" }
-                form method="post" action=(format!("/dashboard/stores/{}/settings/base-currency", store.connection_id)) {
+                (section_error(store, StoreSection::BaseCurrency, in_place))
+                form method="post" action=(format!("/dashboard/stores/{}/settings/base-currency", store.connection_id)) fx-action=(format!("/dashboard/stores/{}/settings/base-currency", store.connection_id)) fx-method="POST" fx-target="#base-currency" {
                     label {
                         "Base currency"
                         select name="base_currency" {
@@ -172,18 +226,26 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                     }
                     button type="submit" { "Update" }
                 }
+        }
+    }
+}
 
+/// "Confirmation thresholds": the default and the custom ones.
+fn confirmations_section(store: &StoreSettingsData, in_place: bool) -> Markup {
+    html! {
+        section id=(StoreSection::Confirmations.id()) {
                 h2 { "Confirmation thresholds" }
+                (section_error(store, StoreSection::Confirmations, in_place))
                 p class="hint" {
                     "How many blocks a payment needs before this store's orders read as paid. The default "
                     "below is the fallback used whenever no custom threshold applies; custom thresholds let a higher-value "
                     "order require more confirmations (or a lower-value one fewer) based on its amount in this store's base "
                     "currency."
                 }
-                form id="default-confirmations" method="post" action=(format!("/dashboard/stores/{}/settings/confirmations", store.connection_id)) {
+                form id="default-confirmations" method="post" action=(format!("/dashboard/stores/{}/settings/confirmations", store.connection_id)) fx-action=(format!("/dashboard/stores/{}/settings/confirmations", store.connection_id)) fx-method="POST" fx-target="#confirmation-thresholds" {
                     input type="hidden" name="zero_conf_checkbox_present" value="true";
                 }
-                form method="post" action=(format!("/dashboard/stores/{}/settings/confirmation-thresholds/save", store.connection_id)) {
+                form method="post" action=(format!("/dashboard/stores/{}/settings/confirmation-thresholds/save", store.connection_id)) fx-action=(format!("/dashboard/stores/{}/settings/confirmation-thresholds/save", store.connection_id)) fx-method="POST" fx-target="#confirmation-thresholds" {
                     table class="thresholds-table" {
                         thead { tr { th { "Amount (" (store.base_currency) ")" } th { "Confirmations required" } th { "Action" } } }
                         tbody {
@@ -235,8 +297,16 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                         "fewer."
                     }
                 }
+        }
+    }
+}
 
+/// "Exchange rate provider".
+fn fx_provider_section(store: &StoreSettingsData, in_place: bool) -> Markup {
+    html! {
+        section id=(StoreSection::FxProvider.id()) {
                 h2 { "Exchange rate provider" }
+                (section_error(store, StoreSection::FxProvider, in_place))
                 @if store.fx_provider_options.is_empty() {
                     p { strong { "Exchange rate provider:" } " " span class="muted" { "none enabled on this instance" } }
                     p class="hint" {
@@ -244,7 +314,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                         "enables a provider (e.g. Coingecko)."
                     }
                 } @else {
-                    form method="post" action=(format!("/dashboard/stores/{}/settings/fx-provider", store.connection_id)) {
+                    form method="post" action=(format!("/dashboard/stores/{}/settings/fx-provider", store.connection_id)) fx-action=(format!("/dashboard/stores/{}/settings/fx-provider", store.connection_id)) fx-method="POST" fx-target="#fx-provider" {
                         label {
                             "Exchange rate provider"
                             select name="fx_provider" {
@@ -261,14 +331,16 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                         button type="submit" { "Update" }
                     }
                 }
+        }
+    }
+}
 
-                @if let Some(key_storage) = &store.key_storage {
-                    (key_storage_section(&store.connection_id, key_storage))
-                }
-
-                (verified_domains(store))
-
+/// "Webhooks", with a new webhook's signing secret right after it is made.
+fn webhooks_section(store: &StoreSettingsData, in_place: bool) -> Markup {
+    html! {
+        section id=(StoreSection::Webhooks.id()) {
                 h2 { "Webhooks" }
+                (section_error(store, StoreSection::Webhooks, in_place))
                 @if let Some(secret) = &store.created_webhook_signing_secret {
                     div class="box" {
                         h3 { "Webhook created" }
@@ -296,6 +368,8 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                                 td {
                                     form method="post"
                                         action=(format!("/dashboard/stores/{}/settings/webhooks/{}/delete", store.connection_id, webhook.webhook_id))
+                                        fx-action=(format!("/dashboard/stores/{}/settings/webhooks/{}/delete", store.connection_id, webhook.webhook_id))
+                                        fx-method="POST" fx-target="#webhooks"
                                         onsubmit="return confirm('Delete this webhook? Anything relying on it will stop receiving events immediately.');" {
                                         button type="submit" class="btn-secondary" { "Delete" }
                                     }
@@ -309,7 +383,7 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                 }
                 div class="box" {
                     h3 { "Add a webhook" }
-                    form method="post" action=(format!("/dashboard/stores/{}/settings/webhooks", store.connection_id)) {
+                    form method="post" action=(format!("/dashboard/stores/{}/settings/webhooks", store.connection_id)) fx-action=(format!("/dashboard/stores/{}/settings/webhooks", store.connection_id)) fx-method="POST" fx-target="#webhooks" {
                         label {
                             "URL"
                             input type="url" name="url" placeholder="https://your-endpoint.example.com/monokulo-webhook" required;
@@ -330,6 +404,57 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
                         button type="submit" { "Add webhook" }
                     }
                 }
+        }
+    }
+}
+
+/// One section of the page, as fixi swaps it back after a save there.
+/// `oob` marks it to replace the page's copy wherever that is (a section
+/// another save changed too).
+pub fn section(store: &StoreSettingsData, which: StoreSection, oob: bool) -> Markup {
+    let markup = match which {
+        StoreSection::BaseCurrency => base_currency_section(store, true),
+        StoreSection::Confirmations => confirmations_section(store, true),
+        StoreSection::FxProvider => fx_provider_section(store, true),
+        StoreSection::KeyStorage => match &store.key_storage {
+            Some(key_storage) => key_storage_section(store, key_storage, true),
+            None => html! { section id=(StoreSection::KeyStorage.id()) {} },
+        },
+        StoreSection::Domains => verified_domains(store, true),
+        StoreSection::Webhooks => webhooks_section(store, true),
+    };
+    if !oob {
+        return markup;
+    }
+    // Only the opening tag changes.
+    let text = markup.into_string();
+    let opening = format!("<section id=\"{}\"", which.id());
+    maud::PreEscaped(text.replacen(&opening, &format!("{opening} data-fx-oob"), 1))
+}
+
+pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
+    let body = html! {
+        div class="wrap" {
+            @if let Some(store) = &data.store {
+                (super::store_breadcrumb(&store.connection_id, &store.display_name, false))
+                h1 { "Settings" }
+
+                @if let Some(error) = &store.settings_error {
+                    div class="error" role="alert" {
+                        (error)
+                        @if let Some(section) = store.active_section {
+                            " " a href=(format!("#{}", section.id())) { "Go to the form" }
+                        }
+                    }
+                }
+                (base_currency_section(store, false))
+                (confirmations_section(store, false))
+                (fx_provider_section(store, false))
+                @if let Some(key_storage) = &store.key_storage {
+                    (key_storage_section(store, key_storage, false))
+                }
+                (verified_domains(store, false))
+                (webhooks_section(store, false))
             } @else {
                 h1 { "Store not found" }
                 p { "This store doesn't exist, or isn't connected to your account." }
@@ -345,15 +470,18 @@ pub fn page(chrome: &PageChrome, data: &StoreSettingsViewModel) -> Markup {
 
 /// Adding, checking and removing the domains this store has proved it owns
 /// (`crate::embed_domains`).
-fn verified_domains(store: &StoreSettingsData) -> Markup {
+fn verified_domains(store: &StoreSettingsData, in_place: bool) -> Markup {
     html! {
-        h2 id="verified-domains" { "Verified domains" }
+      section id=(StoreSection::Domains.id()) {
+        h2 { "Verified domains" }
+        (section_error(store, StoreSection::Domains, in_place))
         p class="hint" {
             "Prove you own the websites that show this store's checkout. Add a domain, publish the TXT record shown here in "
             "that domain's DNS settings, then check it. A verified domain covers all of its subdomains. Onion addresses can't "
             "be verified, because they have no DNS."
         }
-        form class="embed-restriction" method="post" action=(format!("/dashboard/stores/{}/settings/embed-restriction", store.connection_id)) {
+        form class="embed-restriction" method="post" action=(format!("/dashboard/stores/{}/settings/embed-restriction", store.connection_id))
+            fx-action=(format!("/dashboard/stores/{}/settings/embed-restriction", store.connection_id)) fx-method="POST" fx-target="#verified-domains" {
             @if store.embed_restricted {
                 p {
                     span class="tag tag-ok" { "On" } " "
@@ -401,10 +529,10 @@ fn verified_domains(store: &StoreSettingsData) -> Markup {
                             td { span class=(format!("tag tag-{}", domain.state_tag)) { (domain.state_label) } }
                             td { (domain.last_checked) }
                             td class="domain-actions" {
-                                form method="post" action=(format!("/dashboard/stores/{}/settings/domains/{}/check", store.connection_id, domain.id)) {
+                                form method="post" action=(format!("/dashboard/stores/{}/settings/domains/{}/check", store.connection_id, domain.id)) fx-action=(format!("/dashboard/stores/{}/settings/domains/{}/check", store.connection_id, domain.id)) fx-method="POST" fx-target="#verified-domains" {
                                     button type="submit" { "Check now" }
                                 }
-                                form method="post" action=(format!("/dashboard/stores/{}/settings/domains/{}/delete", store.connection_id, domain.id))
+                                form method="post" action=(format!("/dashboard/stores/{}/settings/domains/{}/delete", store.connection_id, domain.id)) fx-action=(format!("/dashboard/stores/{}/settings/domains/{}/delete", store.connection_id, domain.id)) fx-method="POST" fx-target="#verified-domains"
                                     onsubmit="return confirm('Remove this domain? You would need a new DNS record to verify it again.');" {
                                     button type="submit" class="btn-secondary" { "Remove" }
                                 }
@@ -414,7 +542,7 @@ fn verified_domains(store: &StoreSettingsData) -> Markup {
                 }
             }
         }
-        form method="post" action=(format!("/dashboard/stores/{}/settings/domains", store.connection_id)) {
+        form method="post" action=(format!("/dashboard/stores/{}/settings/domains", store.connection_id)) fx-action=(format!("/dashboard/stores/{}/settings/domains", store.connection_id)) fx-method="POST" fx-target="#verified-domains" {
             label {
                 "Domain"
                 input type="text" name="domain" placeholder="shop.example" required autocomplete="off" spellcheck="false";
@@ -422,6 +550,7 @@ fn verified_domains(store: &StoreSettingsData) -> Markup {
             }
             button type="submit" { "Add domain" }
         }
+      }
     }
 }
 
@@ -452,6 +581,7 @@ mod tests {
             embed_restricted: false,
             embed_can_restrict: false,
             key_storage: None,
+            active_section: None,
         }
     }
 
@@ -473,7 +603,7 @@ mod tests {
     #[test]
     fn verified_domains_show_the_record_to_publish_until_verified() {
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
-        assert!(html.contains(r#"<h2 id="verified-domains">Verified domains</h2>"#));
+        assert!(html.contains(r#"<section id="verified-domains"><h2>Verified domains</h2>"#));
         assert!(html.contains("No domains yet."));
         assert!(html.contains(r#"action="/dashboard/stores/conn_1/settings/domains""#));
 
@@ -526,11 +656,11 @@ mod tests {
     #[test]
     fn default_and_custom_confirmation_controls_submit_to_separate_forms() {
         let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
-        assert!(html.contains(r#"<form id="default-confirmations" method="post" action="/dashboard/stores/conn_1/settings/confirmations">"#));
+        assert!(html.contains(r##"<form id="default-confirmations" method="post" action="/dashboard/stores/conn_1/settings/confirmations" fx-action="/dashboard/stores/conn_1/settings/confirmations" fx-method="POST" fx-target="#confirmation-thresholds">"##), "{html}");
         assert!(html.contains(r#"name="zero_conf_checkbox_present" value="true""#));
         assert!(html.contains(r#"maxlength="3" required form="default-confirmations""#));
         assert!(html.contains(r#"<button type="submit" form="default-confirmations">Save</button>"#));
-        assert!(html.contains(r#"<form method="post" action="/dashboard/stores/conn_1/settings/confirmation-thresholds/save">"#));
+        assert!(html.contains(r#"<form method="post" action="/dashboard/stores/conn_1/settings/confirmation-thresholds/save""#), "{html}");
         assert!(html.contains(r#"<button type="submit">Add</button>"#));
     }
 

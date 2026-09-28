@@ -18,8 +18,12 @@
 //
 // Everywhere:
 //   - the target is marked aria-busy while a request runs;
-//   - a failed request (network error or a 5xx) shows a banner instead of
-//     swapping in an error page;
+//   - forms post urlencoded, as without JavaScript;
+//   - a failed request (a network error, or any status but 2xx and 422)
+//     shows a banner instead of swapping in an error page;
+//   - an element marked data-fx-oob in a response replaces the page's
+//     element with the same id (fixi itself swaps one target);
+//   - a submit another listener cancelled isn't sent;
 //   - after a swap, the element marked data-fx-focus (an error, or the
 //     section's heading) gets focus, so keyboard and screen reader users
 //     land on the result;
@@ -59,9 +63,22 @@
 
   document.addEventListener("fx:config", function (evt) {
     var elt = evt.target, cfg = evt.detail.cfg;
+    // A submit another script cancelled (a confirm() the user declined)
+    // isn't sent; fixi itself doesn't look.
+    if (cfg.trigger && cfg.trigger.type === "submit" && cfg.trigger.defaultPrevented) {
+      evt.preventDefault();
+      return;
+    }
     if (elt.hasAttribute("fx-replace")) {
       evt.detail.requests.forEach(function (other) { other.abort(); });
       cfg.drop = 0;
+    }
+    // Forms post as application/x-www-form-urlencoded, as they do without
+    // JavaScript (fixi would send FormData as multipart), unless the form
+    // asks for multipart itself.
+    var form = elt.form || elt.closest("form");
+    if (cfg.body instanceof FormData && !(form && form.enctype === "multipart/form-data")) {
+      cfg.body = new URLSearchParams(cfg.body);
     }
     var wait = parseInt(elt.getAttribute("fx-debounce"), 10);
     if (wait > 0) {
@@ -98,11 +115,14 @@
 
   document.addEventListener("fx:after", function (evt) {
     var cfg = evt.detail.cfg, response = cfg.response;
-    // A 4xx carries the section with its errors in it and is swapped like
-    // a success; a 5xx is an error page that doesn't belong in a section.
-    if (response && response.status >= 500) {
+    // A 422 carries the section with its errors in it and is swapped like
+    // a success. Anything else that isn't a success (a 5xx page, a 403
+    // after the session ended) doesn't belong in a section.
+    if (response && !response.ok && response.status !== 422) {
       evt.preventDefault();
-      banner("Something went wrong on the server (" + response.status + "). Reload the page to try again.");
+      banner(response.status === 401 || response.status === 403
+        ? "You've been signed out. Reload the page to sign in again."
+        : "Something went wrong (" + response.status + "). Reload the page to try again.");
       return;
     }
     clearBanner();
@@ -119,11 +139,21 @@
   });
 
   document.addEventListener("fx:swapped", function () {
+    // Out-of-band parts: an element marked data-fx-oob that came back with
+    // a swap replaces the page's element with the same id, wherever that
+    // is (a save in one section that changes another).
+    document.querySelectorAll("[data-fx-oob]").forEach(function (fresh) {
+      fresh.removeAttribute("data-fx-oob");
+      document.querySelectorAll("#" + CSS.escape(fresh.id)).forEach(function (old) {
+        if (old !== fresh) { old.replaceWith(fresh); }
+      });
+    });
     var focus = document.querySelector("[data-fx-focus]");
     if (focus) {
       if (!focus.hasAttribute("tabindex")) focus.setAttribute("tabindex", "-1");
       focus.removeAttribute("data-fx-focus");
-      focus.focus();
+      // Without scrolling: the swapped section stays where it was on screen.
+      focus.focus({ preventScroll: true });
     }
   });
 

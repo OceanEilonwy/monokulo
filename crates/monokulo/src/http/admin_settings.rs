@@ -44,8 +44,9 @@ use serde::Deserialize;
 
 use crate::db::{Db, UserRow};
 use crate::views;
-use crate::views::admin::{AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel, Notice, SettingKindView};
+use crate::views::admin::{AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel, Notice, SettingKindView, SettingsSection};
 
+use super::fx::FxRequest;
 use super::{AppState, AuthedAdmin};
 
 /// `"exchange_rate.coingecko_enabled"` -> `"exchange rate coingecko enabled"` -
@@ -251,6 +252,35 @@ fn render(state: &AppState, admin_user: &UserRow, view: AdminSettingsViewModel) 
     views::admin::admin_settings_page(&chrome, &view).into_response()
 }
 
+/// What a save answers: the whole page, or for fixi just the section that
+/// was saved (`422` when nothing was saved), plus the engine section when
+/// saving monokulo changed how to reach the engine.
+fn render_saved(
+    state: &AppState,
+    admin_user: &UserRow,
+    mut view: AdminSettingsViewModel,
+    fx: FxRequest,
+    section: SettingsSection,
+    engine_changed: bool,
+) -> Response {
+    view.saved_section = Some(section);
+    if !fx.0 {
+        return render(state, admin_user, view);
+    }
+    let fragment = match section {
+        SettingsSection::Monokulo => maud::html! {
+            (views::admin::monokulo_section(&view))
+            @if engine_changed { (views::admin::engine_section(&view, true)) }
+        },
+        SettingsSection::Engine => views::admin::engine_section(&view, false),
+    };
+    if view.error.is_some() {
+        super::fx::invalid(fragment)
+    } else {
+        axum::response::Html(fragment.into_string()).into_response()
+    }
+}
+
 /// `GET /dashboard/admin/settings`.
 pub async fn page(State(state): State<AppState>, AuthedAdmin(admin_user, _): AuthedAdmin) -> Response {
     let view = build_view_model(&state, None, None, Vec::new()).await;
@@ -264,16 +294,18 @@ pub async fn page(State(state): State<AppState>, AuthedAdmin(admin_user, _): Aut
 pub async fn save_monokulo(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
+    fx: FxRequest,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
+    const SECTION: SettingsSection = SettingsSection::Monokulo;
     let Some(registry) = state.settings.registry.as_ref() else {
-        return render_error(&state, &admin_user, "Settings can't be saved on this instance.".to_string()).await;
+        return render_error(&state, &admin_user, "Settings can't be saved on this instance.".to_string(), fx, SECTION).await;
     };
     // A new value and "Clear it" together can't both be meant.
     if let Some(key) = crate::settings::ALL.iter().map(|s| s.key()).find(|key| {
         form.contains_key(&format!("clear:{key}")) && form.get(*key).is_some_and(|value| !value.is_empty())
     }) {
-        return render_error(&state, &admin_user, format!("{key}: either type a new value or tick \"Clear it\", not both.")).await;
+        return render_error(&state, &admin_user, format!("{key}: either type a new value or tick \"Clear it\", not both."), fx, SECTION).await;
     }
     let secrets: Vec<&str> = crate::settings::ALL
         .iter()
@@ -296,6 +328,7 @@ pub async fn save_monokulo(
         })
         .collect();
 
+    let engine_before = engine_connection(&state.db.lock());
     match registry.save(changes).await {
         Ok(report) => {
             let mut notices = Vec::new();
@@ -317,15 +350,16 @@ pub async fn save_monokulo(
                 )));
             }
             let view = build_view_model(&state, None, Some("Monokulo settings saved and applied.".to_string()), notices).await;
-            render(&state, &admin_user, view)
+            let engine_changed = engine_connection(&state.db.lock()) != engine_before;
+            render_saved(&state, &admin_user, view, fx, SECTION, engine_changed)
         }
         Err(live_settings::SaveError::Invalid(errors)) => {
             let message = errors.iter().map(ToString::to_string).collect::<Vec<_>>().join(" ");
-            render_error(&state, &admin_user, message).await
+            render_error(&state, &admin_user, message, fx, SECTION).await
         }
         Err(e) => {
             tracing::error!(error = %e, "saving monokulo settings failed");
-            render_error(&state, &admin_user, "Something went wrong saving these settings. Please try again.".to_string()).await
+            render_error(&state, &admin_user, "Something went wrong saving these settings. Please try again.".to_string(), fx, SECTION).await
         }
     }
 }
@@ -333,9 +367,9 @@ pub async fn save_monokulo(
 /// Re-reads the current state fresh and re-renders the page with `message`
 /// as the error banner - the common "a submission was rejected, show the
 /// whole page again with nothing changed" path both `POST` handlers use.
-async fn render_error(state: &AppState, admin_user: &UserRow, message: String) -> Response {
+async fn render_error(state: &AppState, admin_user: &UserRow, message: String, fx: FxRequest, section: SettingsSection) -> Response {
     let view = build_view_model(state, Some(message), None, Vec::new()).await;
-    render(state, admin_user, view)
+    render_saved(state, admin_user, view, fx, section, false)
 }
 
 #[derive(serde::Serialize, Default)]
@@ -419,11 +453,13 @@ fn scanner_save_notices(warnings: RemoteSaveWarnings, submitted_bind: Option<&st
 pub async fn save_scanner(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
+    fx: FxRequest,
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
+    const SECTION: SettingsSection = SettingsSection::Engine;
     let (engine_url, admin_token) = engine_connection(&state.db.lock());
     if engine_url.trim().is_empty() || admin_token.trim().is_empty() {
-        return render_error(&state, &admin_user, "No engine connection is configured.".to_string()).await;
+        return render_error(&state, &admin_user, "No engine connection is configured.".to_string(), fx, SECTION).await;
     }
 
     let mut req = RemoteUpdateRequest::default();
@@ -438,7 +474,7 @@ pub async fn save_scanner(
                     req.monero_node.insert(network.to_string(), Some(parsed));
                 }
                 Err(e) => {
-                    return render_error(&state, &admin_user, format!("Monero node config for {network} is not valid JSON: {e}")).await;
+                    return render_error(&state, &admin_user, format!("Monero node config for {network} is not valid JSON: {e}"), fx, SECTION).await;
                 }
             }
         } else {
@@ -467,7 +503,7 @@ pub async fn save_scanner(
     };
 
     let view = build_view_model(&state, error, success, notices).await;
-    render(&state, &admin_user, view)
+    render_saved(&state, &admin_user, view, fx, SECTION, false)
 }
 
 #[cfg(test)]
@@ -968,6 +1004,75 @@ mod tests {
         let reload = get_settings_page(&router, &cookie).await;
         let html = body_text(reload).await;
         assert!(html.contains("value=\"5\""), "expected the scanner's change to survive a fresh page load, got: {html}");
+    }
+
+    fn fixi(mut request: Request<Body>) -> Request<Body> {
+        request.headers_mut().insert("FX-Request", "true".parse().unwrap());
+        request
+    }
+
+    /// With fixi, a save answers with just the section that was saved, its
+    /// banner inside it, so the rest of the page (and any edits there)
+    /// stays as it was (structured_logging.md part 6).
+    #[tokio::test]
+    async fn a_fixi_save_answers_with_only_the_saved_section() {
+        let engine = spawn_scanner_with_known_admin_token().await;
+        let state = test_app_state_connected_to(engine.addr).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+
+        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        assert!(page.contains(r##"fx-action="/dashboard/admin/settings" fx-method="POST" fx-target="#monokulo-settings""##), "{page}");
+        assert!(page.contains(r##"fx-target="#engine-settings""##), "{page}");
+
+        let save = router
+            .clone()
+            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("abuse.soft_per_min", "70")])))
+            .await
+            .unwrap();
+        assert_eq!(save.status(), StatusCode::OK);
+        let html = body_text(save).await;
+        assert!(html.starts_with(r#"<section id="monokulo-settings">"#), "{html}");
+        assert!(html.contains("Monokulo settings saved and applied.") && html.contains(r#"value="70""#), "{html}");
+        assert!(!html.contains("engine-settings") && !html.contains("<html"), "only the saved section: {html}");
+
+        let refused = router
+            .clone()
+            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/scanner-settings", &cookie, &[("payment.confirmations_required", "-1")])))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let html = body_text(refused).await;
+        assert!(html.starts_with(r#"<section id="engine-settings">"#) && html.contains("The engine refused the change"), "{html}");
+        assert!(html.contains(r#"<span class="save-status error" role="alert" data-fx-focus"#), "a word by the button gets focus: {html}");
+
+        let saved = router
+            .clone()
+            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/scanner-settings", &cookie, &[("payment.confirmations_required", "4")])))
+            .await
+            .unwrap();
+        assert_eq!(saved.status(), StatusCode::OK);
+        assert!(body_text(saved).await.contains("Engine settings saved and applied."));
+    }
+
+    /// Saving the engine connection in the monokulo section changes the
+    /// engine section too: it comes back marked out of band.
+    #[tokio::test]
+    async fn a_fixi_save_that_changes_the_engine_connection_brings_the_engine_section_too() {
+        let engine = spawn_scanner_with_known_admin_token().await;
+        let state = test_app_state_connected_to(engine.addr).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let key = crate::settings::SCANNER_ADMIN_TOKEN.key;
+
+        let unchanged = router.clone().oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(key, "")]))).await.unwrap();
+        assert!(!body_text(unchanged).await.contains("engine-settings"), "the token was kept, so the engine half didn't change");
+
+        let changed =
+            router.clone().oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(key, "wrong-token")]))).await.unwrap();
+        let html = body_text(changed).await;
+        assert!(html.contains(r#"<section id="engine-settings" data-fx-oob>"#), "{html}");
+        assert!(html.contains("Could not reach the configured engine"), "{html}");
     }
 
     #[tokio::test]

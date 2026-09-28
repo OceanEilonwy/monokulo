@@ -35,7 +35,9 @@ use crate::views;
 use crate::views::orders::{OrderDetailData, OrderDetailViewModel, OrderRowViewModel, OrdersViewModel, PaymentRowViewModel};
 
 use super::dashboard::redirect_302;
+use super::fx::FxRequest;
 use super::{AppState, AuthedUser};
+use crate::views::store_settings::StoreSection;
 
 /// Looks up `store_connections` row `id` and confirms it belongs to `user`.
 /// `Ok(None)` covers *both* "no such row" and "exists but belongs to someone
@@ -456,9 +458,11 @@ fn parse_extra_headers(text: &str) -> Result<std::collections::BTreeMap<String, 
 pub async fn webhooks_create(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path(id): Path<String>,
     Form(form): Form<CreateWebhookForm>,
 ) -> Response {
+    const SECTION: StoreSection = StoreSection::Webhooks;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -471,24 +475,24 @@ pub async fn webhooks_create(
 
     let url = form.url.trim();
     if url.is_empty() {
-        return render_store_settings_page(&state, row, &user, Some("Enter a webhook URL.".to_string()), None).await;
+        return render_store_settings_page(&state, row, &user, Some("Enter a webhook URL.".to_string()), None, Some((SECTION, fx))).await;
     }
     let extra_headers = match parse_extra_headers(&form.extra_headers) {
         Ok(headers) => headers,
-        Err(message) => return render_store_settings_page(&state, row, &user, Some(message), None).await,
+        Err(message) => return render_store_settings_page(&state, row, &user, Some(message), None, Some((SECTION, fx))).await,
     };
 
     match state.engine_client.create_webhook(&sk, url, &extra_headers).await {
-        Ok((_webhook_id, signing_secret)) => render_store_settings_page(&state, row, &user, None, Some(signing_secret)).await,
+        Ok((_webhook_id, signing_secret)) => render_store_settings_page(&state, row, &user, None, Some(signing_secret), Some((SECTION, fx))).await,
         // The engine's own validation (a malformed URL, a non-http(s) scheme -
         // `src/http/admin.rs::create_webhook` at the repo root) - the
         // caller's mistake, surfaced verbatim, same convention
         // `connections::create_connection_for_user` already applies to the
         // engine's tenant-creation `400`s.
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_store_settings_page(&state, row, &user, Some(message), None).await
+            render_store_settings_page(&state, row, &user, Some(message), None, Some((SECTION, fx))).await
         }
-        Err(_) => render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await,
+        Err(_) => render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None, Some((SECTION, fx))).await,
     }
 }
 
@@ -502,8 +506,10 @@ pub async fn webhooks_create(
 pub async fn webhooks_delete(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path((id, webhook_id)): Path<(String, String)>,
 ) -> Response {
+    const SECTION: StoreSection = StoreSection::Webhooks;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -515,12 +521,12 @@ pub async fn webhooks_delete(
     };
 
     match state.engine_client.delete_webhook(&sk, &webhook_id).await {
-        Ok(()) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
+        Ok(()) => saved(&state, row, &user, SECTION, fx, &format!("/dashboard/stores/{id}/settings")).await,
         Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
-            redirect_302(&format!("/dashboard/stores/{id}/settings"))
+            saved(&state, row, &user, SECTION, fx, &format!("/dashboard/stores/{id}/settings")).await
         }
         Err(_) => {
-            render_store_settings_page(&state, row, &user, Some("Could not delete that webhook. Please try again.".to_string()), None).await
+            render_store_settings_page(&state, row, &user, Some("Could not delete that webhook. Please try again.".to_string()), None, Some((SECTION, fx))).await
         }
     }
 }
@@ -639,7 +645,7 @@ pub async fn store_settings(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    render_store_settings_page(&state, row, &user, None, None).await
+    render_store_settings_page(&state, row, &user, None, None, None).await
 }
 
 /// Shared by every settings mutation below (base currency, confirmation
@@ -648,12 +654,17 @@ pub async fn store_settings(
 /// just-created webhook signing secret. Takes an already ownership-checked
 /// row rather than re-checking it, since every caller has already done
 /// that.
+///
+/// `from` names the section a form was posted from and whether fixi sent
+/// it: its error shows there, and fixi gets only that section back (with
+/// any section the save changed too, out of band), `422` when refused.
 pub(super) async fn render_store_settings_page(
     state: &AppState,
     row: StoreConnectionRow,
     user: &UserRow,
     settings_error: Option<String>,
     created_webhook_signing_secret: Option<String>,
+    from: Option<(StoreSection, FxRequest)>,
 ) -> Response {
     let chrome = super::page_chrome(state, Some(user), format!("/dashboard/stores/{}/settings", row.id));
     let sk = match decrypt_sk(state, &row) {
@@ -750,9 +761,33 @@ pub(super) async fn render_store_settings_page(
             embed_restricted,
             embed_can_restrict,
             key_storage,
+            active_section: from.map(|(section, _)| section),
         }),
     };
+    if let (Some((section, FxRequest(true))), Some(store)) = (from, &view_model.store) {
+        let refused = store.settings_error.is_some();
+        let fragment = maud::html! {
+            (views::store_settings::section(store, section, false))
+            @for other in section.also_changes() { (views::store_settings::section(store, *other, true)) }
+        };
+        return if refused { super::fx::invalid(fragment) } else { axum::response::Html(fragment.into_string()).into_response() };
+    }
     views::store_settings::page(&chrome, &view_model).into_response()
+}
+
+/// After a successful save: for fixi, the saved section as it is now;
+/// otherwise the usual redirect back to the page.
+pub(super) async fn saved(state: &AppState, row: StoreConnectionRow, user: &UserRow, section: StoreSection, fx: FxRequest, redirect_to: &str) -> Response {
+    if fx.0 {
+        // Read again: `row` is from before the save.
+        let row = match load_owned_connection(state, user, &row.id) {
+            Ok(Some(fresh)) => fresh,
+            _ => row,
+        };
+        render_store_settings_page(state, row, user, None, None, Some((section, fx))).await
+    } else {
+        redirect_302(redirect_to)
+    }
 }
 
 /// Every currency this store's "create an order" form can offer right now -
@@ -958,9 +993,11 @@ pub struct UpdateConfirmationsForm {
 pub async fn update_confirmations_required(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path(id): Path<String>,
     Form(form): Form<UpdateConfirmationsForm>,
 ) -> Response {
+    const SECTION: StoreSection = StoreSection::Confirmations;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -975,9 +1012,9 @@ pub async fn update_confirmations_required(
             Ok(0) if form.zero_conf_checkbox_present => 10,
             Ok(n) if n <= 720 => n,
             Ok(_) => {
-                return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations from 0 to 720.".to_string()), None).await;
+                return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations from 0 to 720.".to_string()), None, Some((SECTION, fx))).await;
             }
-            Err(_) => return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations.".to_string()), None).await,
+            Err(_) => return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations.".to_string()), None, Some((SECTION, fx))).await,
         }
     };
 
@@ -989,12 +1026,12 @@ pub async fn update_confirmations_required(
     let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
     let _policy_guard = policy_lock.lock().await;
     match state.engine_client.set_confirmations_required(&sk, confirmations_required).await {
-        Ok(_) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
+        Ok(_) => saved(&state, row, &user, SECTION, fx, &format!("/dashboard/stores/{id}/settings")).await,
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_store_settings_page(&state, row, &user, Some(message), None).await
+            render_store_settings_page(&state, row, &user, Some(message), None, Some((SECTION, fx))).await
         }
         Err(_) => {
-            render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
+            render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None, Some((SECTION, fx))).await
         }
     }
 }
@@ -1013,9 +1050,11 @@ pub struct MoveKeyStorageForm {
 pub async fn move_key_storage(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path(id): Path<String>,
     Form(form): Form<MoveKeyStorageForm>,
 ) -> Response {
+    const SECTION: StoreSection = StoreSection::KeyStorage;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -1034,13 +1073,13 @@ pub async fn move_key_storage(
             // The engine's status (and so any "keys unavailable" alert) is
             // re-read on the next page rather than waiting out the cache.
             super::status_page::invalidate_status_cache(&state);
-            redirect_302(&format!("/dashboard/stores/{id}/settings#key-storage"))
+            saved(&state, row, &user, SECTION, fx, &format!("/dashboard/stores/{id}/settings#key-storage")).await
         }
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
-            render_store_settings_page(&state, row, &user, Some(message), None).await
+            render_store_settings_page(&state, row, &user, Some(message), None, Some((SECTION, fx))).await
         }
         Err(_) => {
-            render_store_settings_page(&state, row, &user, Some("Something went wrong moving the keys. Check where they are kept below, and try again if they haven't moved.".to_string()), None)
+            render_store_settings_page(&state, row, &user, Some("Something went wrong moving the keys. Check where they are kept below, and try again if they haven't moved.".to_string()), None, Some((SECTION, fx)))
                 .await
         }
     }
@@ -1066,9 +1105,11 @@ pub struct UpdateFxProviderForm {
 pub async fn update_fx_provider(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path(id): Path<String>,
     Form(form): Form<UpdateFxProviderForm>,
 ) -> Response {
+    const SECTION: StoreSection = StoreSection::FxProvider;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -1082,6 +1123,7 @@ pub async fn update_fx_provider(
             &user,
             Some(format!("{:?} is not an available exchange rate provider on this instance.", form.fx_provider)),
             None,
+            Some((SECTION, fx)),
         )
         .await;
     }
@@ -1093,9 +1135,9 @@ pub async fn update_fx_provider(
     // future `!Send` and fail to compile as an axum route at all.
     let update_result = state.db.lock().update_store_connection_fx_provider(&row.id, &form.fx_provider);
     match update_result {
-        Ok(()) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
+        Ok(()) => saved(&state, row, &user, SECTION, fx, &format!("/dashboard/stores/{id}/settings")).await,
         Err(_) => {
-            render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
+            render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None, Some((SECTION, fx))).await
         }
     }
 }
@@ -1119,9 +1161,11 @@ pub struct UpdateBaseCurrencyForm {
 pub async fn update_base_currency(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path(id): Path<String>,
     Form(form): Form<UpdateBaseCurrencyForm>,
 ) -> Response {
+    const SECTION: StoreSection = StoreSection::BaseCurrency;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -1143,7 +1187,8 @@ pub async fn update_base_currency(
                 &user,
                 Some(format!("{:?} is not a known currency.", form.base_currency)),
                 None,
-            )
+            Some((SECTION, fx)),
+        )
             .await;
         }
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1153,9 +1198,9 @@ pub async fn update_base_currency(
     let _policy_guard = policy_lock.lock().await;
     let update_result = state.db.lock().update_store_connection_base_currency(&row.id, &base_currency);
     match update_result {
-        Ok(()) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
+        Ok(()) => saved(&state, row, &user, SECTION, fx, &format!("/dashboard/stores/{id}/settings")).await,
         Err(_) => {
-            render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
+            render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None, Some((SECTION, fx))).await
         }
     }
 }
@@ -1178,9 +1223,11 @@ pub struct CreateConfirmationThresholdForm {
 pub async fn create_confirmation_threshold(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path(id): Path<String>,
     Form(form): Form<CreateConfirmationThresholdForm>,
 ) -> Response {
+    const SECTION: StoreSection = StoreSection::Confirmations;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -1190,16 +1237,16 @@ pub async fn create_confirmation_threshold(
     let confirmations_required: u64 = match form.confirmations_required.trim().parse() {
         Ok(n) if n <= 720 => n,
         Ok(_) => {
-            return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations from 0 to 720.".to_string()), None)
+            return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations from 0 to 720.".to_string()), None, Some((SECTION, fx)))
                 .await;
         }
-        Err(_) => return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations.".to_string()), None).await,
+        Err(_) => return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations.".to_string()), None, Some((SECTION, fx))).await,
     };
 
     let unit_amount = match crate::confirmation_thresholds::ThresholdAmount::parse(&form.unit_amount) {
         Ok(amount) => amount,
         Err(_) => {
-            return render_store_settings_page(&state, row, &user, Some("Enter a non-negative amount.".to_string()), None).await;
+            return render_store_settings_page(&state, row, &user, Some("Enter a non-negative amount.".to_string()), None, Some((SECTION, fx))).await;
         }
     };
     let canonical_amount = unit_amount.canonical();
@@ -1211,22 +1258,22 @@ pub async fn create_confirmation_threshold(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     if existing.iter().any(|threshold| crate::confirmation_thresholds::ThresholdAmount::parse(&threshold.unit_amount).is_err()) {
-        return render_store_settings_page(&state, row, &user, Some("An existing threshold amount is invalid. Delete it before adding another.".to_string()), None).await;
+        return render_store_settings_page(&state, row, &user, Some("An existing threshold amount is invalid. Delete it before adding another.".to_string()), None, Some((SECTION, fx))).await;
     }
     if existing.iter().any(|threshold| crate::confirmation_thresholds::ThresholdAmount::parse(&threshold.unit_amount).is_ok_and(|amount| amount == unit_amount)) {
-        return render_store_settings_page(&state, row, &user, Some(format!("A threshold for {canonical_amount} already exists.")), None).await;
+        return render_store_settings_page(&state, row, &user, Some(format!("A threshold for {canonical_amount} already exists.")), None, Some((SECTION, fx))).await;
     }
     let threshold_id = uuid::Uuid::new_v4().to_string();
     let create_result = state.db.lock().create_confirmation_threshold_with_limit(&threshold_id, &row.id, &canonical_amount, confirmations_required, crate::now_unix());
     match create_result {
-        Ok(true) => redirect_302(&format!("/dashboard/stores/{id}/settings")),
-        Ok(false) => render_store_settings_page(&state, row, &user, Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()), None).await,
+        Ok(true) => saved(&state, row, &user, SECTION, fx, &format!("/dashboard/stores/{id}/settings")).await,
+        Ok(false) => render_store_settings_page(&state, row, &user, Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()), None, Some((SECTION, fx))).await,
         Err(e) if e.is_unique_violation() => {
-            render_store_settings_page(&state, row, &user, Some(format!("A threshold for {canonical_amount} already exists.")), None)
+            render_store_settings_page(&state, row, &user, Some(format!("A threshold for {canonical_amount} already exists.")), None, Some((SECTION, fx)))
                 .await
         }
         Err(_) => {
-            render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await
+            render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None, Some((SECTION, fx))).await
         }
     }
 }
@@ -1239,8 +1286,10 @@ pub async fn create_confirmation_threshold(
 pub async fn delete_confirmation_threshold(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path((id, threshold_id)): Path<(String, String)>,
 ) -> Response {
+    const SECTION: StoreSection = StoreSection::Confirmations;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -1251,7 +1300,7 @@ pub async fn delete_confirmation_threshold(
     if state.db.lock().delete_confirmation_threshold(&row.id, &threshold_id).is_err() {
         return StatusCode::INTERNAL_SERVER_ERROR.into_response();
     }
-    redirect_302(&format!("/dashboard/stores/{id}/settings"))
+    saved(&state, row, &user, SECTION, fx, &format!("/dashboard/stores/{id}/settings")).await
 }
 
 /// Saves custom threshold additions and deletions in one SQLite transaction.
@@ -1261,9 +1310,11 @@ pub async fn delete_confirmation_threshold(
 pub async fn save_confirmation_thresholds(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path(id): Path<String>,
     Form(raw): Form<HashMap<String, String>>,
 ) -> Response {
+    const SECTION: StoreSection = StoreSection::Confirmations;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -1277,11 +1328,11 @@ pub async fn save_confirmation_thresholds(
     } else {
         let confirmations: u64 = match new_confirmations_text.parse() {
             Ok(n) if n <= 720 => n,
-            _ => return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations from 0 to 720 for the new threshold.".to_string()), None).await,
+            _ => return render_store_settings_page(&state, row, &user, Some("Enter a whole number of confirmations from 0 to 720 for the new threshold.".to_string()), None, Some((SECTION, fx))).await,
         };
         match crate::confirmation_thresholds::ThresholdAmount::parse(new_unit_amount) {
             Ok(_) => Some(confirmations),
-            Err(_) => return render_store_settings_page(&state, row, &user, Some("Enter a non-negative amount for the new threshold.".to_string()), None).await,
+            Err(_) => return render_store_settings_page(&state, row, &user, Some("Enter a non-negative amount for the new threshold.".to_string()), None, Some((SECTION, fx))).await,
         }
     };
     let canonical_new_amount = new_confirmations.map(|_| crate::confirmation_thresholds::ThresholdAmount::parse(new_unit_amount).unwrap().canonical());
@@ -1293,14 +1344,14 @@ pub async fn save_confirmation_thresholds(
     };
     let deleted_ids: Vec<String> = existing.iter().filter(|threshold| raw.contains_key(&format!("delete_{}", threshold.id))).map(|threshold| threshold.id.clone()).collect();
     if existing.iter().any(|threshold| !deleted_ids.contains(&threshold.id) && crate::confirmation_thresholds::ThresholdAmount::parse(&threshold.unit_amount).is_err()) {
-        return render_store_settings_page(&state, row, &user, Some("An existing threshold amount is invalid. Delete it before saving.".to_string()), None).await;
+        return render_store_settings_page(&state, row, &user, Some("An existing threshold amount is invalid. Delete it before saving.".to_string()), None, Some((SECTION, fx))).await;
     }
     if new_confirmations.is_some() {
         if existing.len() - deleted_ids.len() >= 5 {
-            return render_store_settings_page(&state, row, &user, Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()), None).await;
+            return render_store_settings_page(&state, row, &user, Some("You can define at most 5 custom thresholds. Delete one to add another.".to_string()), None, Some((SECTION, fx))).await;
         }
         if existing.iter().any(|threshold| !deleted_ids.contains(&threshold.id) && crate::confirmation_thresholds::ThresholdAmount::parse(&threshold.unit_amount).is_ok_and(|amount| Some(amount.canonical()) == canonical_new_amount)) {
-            return render_store_settings_page(&state, row, &user, Some(format!("A threshold for {} already exists.", canonical_new_amount.as_deref().unwrap())), None).await;
+            return render_store_settings_page(&state, row, &user, Some(format!("A threshold for {} already exists.", canonical_new_amount.as_deref().unwrap())), None, Some((SECTION, fx))).await;
         }
     }
 
@@ -1313,10 +1364,10 @@ pub async fn save_confirmation_thresholds(
             Err(ref e) if e.is_unique_violation() => format!("A threshold for {} already exists.", canonical_new_amount.as_deref().unwrap_or(new_unit_amount)),
             _ => "Something went wrong. Please try again.".to_string(),
         };
-        return render_store_settings_page(&state, row, &user, Some(message), None).await;
+        return render_store_settings_page(&state, row, &user, Some(message), None, Some((SECTION, fx))).await;
     }
 
-    redirect_302(&format!("/dashboard/stores/{id}/settings"))
+    saved(&state, row, &user, SECTION, fx, &format!("/dashboard/stores/{id}/settings")).await
 }
 
 #[cfg(test)]
@@ -2312,7 +2363,7 @@ mod tests {
 
         let settings_uri = format!("/dashboard/stores/{connection_id}/settings");
         let html = get_page(&router, &session_token, &settings_uri).await;
-        assert!(html.contains(r#"<h2 id="key-storage">Key storage</h2>"#), "{html}");
+        assert!(html.contains(r#"<section id="key-storage"><h2>Key storage</h2>"#), "{html}");
         assert!(html.contains("In the engine (simplest)"), "the current place is described: {html}");
         assert!(html.contains(r#"<option value="socket" selected>"#), "the other backend is offered: {html}");
         assert!(!html.contains(TEST_VIEW_KEY_HEX), "keys are never echoed back");
@@ -2600,6 +2651,57 @@ mod tests {
             html.contains("not an available exchange rate provider"),
             "expected a clear rejection message, got: {html}"
         );
+    }
+
+    fn fixi(mut request: Request<Body>) -> Request<Body> {
+        request.headers_mut().insert("FX-Request", "true".parse().unwrap());
+        request
+    }
+
+    /// With fixi, every store settings form answers with just its own
+    /// section (structured_logging.md part 6): saved state, errors inside
+    /// it and focused, and any other section the save changed, out of band.
+    #[tokio::test]
+    async fn store_settings_forms_answer_fixi_with_their_section() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(&router, "settings-sections@example.com", "correct horse battery staple").await;
+        let (connection_id, _public_key) = create_connection(&router, &session_token).await;
+        let url = |path: &str| format!("/dashboard/stores/{connection_id}/settings/{path}");
+        let send = |path: &str, fields: &[(&str, &str)]| router.clone().oneshot(fixi(form_post_request(&url(path), &session_token, fields)));
+
+        let response = send("base-currency", &[("base_currency", "EUR")]).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.starts_with(r#"<section id="base-currency">"#), "{html}");
+        assert!(html.contains(r#"<section id="confirmation-thresholds" data-fx-oob>"#), "thresholds change with it: {html}");
+        assert!(html.contains("Amount (EUR)"), "{html}");
+        assert!(!html.contains("<html") && !html.contains(r#"id="webhooks""#), "{html}");
+
+        let response = send("confirmations", &[("zero_conf_checkbox_present", "true"), ("confirmations_required", "abc")]).await.unwrap();
+        assert_eq!(response.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        let html = body_text(response).await;
+        assert!(html.starts_with(r#"<section id="confirmation-thresholds">"#), "{html}");
+        assert!(html.contains(r#"<div class="error" role="alert" data-fx-focus tabindex="-1">Enter a whole number"#), "the error is in the section: {html}");
+
+        let response = send("webhooks", &[("url", "https://hooks.example.com/monokulo")]).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.starts_with(r#"<section id="webhooks">"#) && html.contains("Webhook created"), "the secret shows once: {html}");
+
+        let response = send("domains", &[("domain", "shop.example")]).await.unwrap();
+        let html = body_text(response).await;
+        assert!(html.starts_with(r#"<section id="verified-domains">"#) && html.contains("shop.example"), "{html}");
+
+        // Without fixi: the same error is at the top of the whole page, with
+        // a link to its form.
+        let response = router
+            .clone()
+            .oneshot(form_post_request(&url("confirmations"), &session_token, &[("zero_conf_checkbox_present", "true"), ("confirmations_required", "abc")]))
+            .await
+            .unwrap();
+        let html = body_text(response).await;
+        assert!(html.contains(r##"Enter a whole number of confirmations. <a href="#confirmation-thresholds">Go to the form</a>"##), "{html}");
     }
 
     #[tokio::test]

@@ -41,7 +41,11 @@ because it builds on the `live-settings` crate from that work).
 | 4.3 glue | done | same | `static/fx-glue.js`: `fx-push-url`, `fx-replace`, `fx-debounce`, `fx-sse-reconnect`, `aria-busy`, 5xx/network banner, `data-fx-focus`, `X-Timezone` |
 | 4.4 no meta refresh | done | same | status and order detail lost theirs and gained `views::reload_button`; `http::pay::tests::only_the_checkout_refreshes_by_itself` |
 | 5 Logs page | done | "the Logs page" | `/dashboard/admin/logs` (+ `/tail`, `/trace/{id}`, `/export`, `/saved`). Rows 1-18 all built except row 5's lazy loading (properties are always inline) and row 18 (keyboard shortcuts, optional); row 13 is a list in "How to search", not a datalist |
-| 6.x onwards | not started | | |
+| 6 order detail, status | done | "order detail and status pages stream" | ssexi streams `/dashboard/stores/{id}/orders/{order_id}/events` and `/status/events`, JSON-routed to `#order-live` / `#status-live`; `done` event ends the order stream |
+| 6 admin settings | done | "settings pages save one section at a time" | `#monokulo-settings`, `#engine-settings`; engine section out of band when the engine connection changes |
+| 6 store settings | done | same | six sections (`views::store_settings::StoreSection`); base currency also sends confirmations out of band |
+| 6 orders list, connect, store detail, invites | not started | | |
+| 7 onwards | not started | | |
 
 ### Next
 
@@ -195,6 +199,23 @@ their ssexi streams come first in part 6.
   (`npx playwright test -c real-binaries.config.js`). With JavaScript off,
   headless Chrome hit-tests `<html>` for a while after a form submission,
   so that test follows the Refresh link's `href` rather than clicking it.
+
+- **fixi posts urlencoded** (glue converts `FormData` to
+  `URLSearchParams`): axum's `Form` refuses multipart, and without JS
+  forms post urlencoded anyway. The glue swaps only 2xx and 422; other
+  statuses show a banner (401/403 say "signed out").
+- **Out-of-band swaps** (`data-fx-oob`, in the glue): a response can carry
+  extra sections that replace the page's copies by id. Used when a save
+  changes another section too.
+- **Focus after a save** goes to a short status by the Save button
+  (`.save-status`) with `preventScroll`, so the page doesn't jump; the
+  fuller banners sit at the top of the section. Without JS, errors show at
+  the top of the page, with a "Go to the form" link on store settings.
+- **Confirm dialogs** (`onsubmit="return confirm(...)"`, and the admin
+  page's cleared-network check, now a capture listener on the document)
+  cancel fixi too: the glue drops a submit whose event was cancelled.
+- **Store settings `saved()` re-reads the row**: the handler's row is
+  from before the save.
 
 ## What was left on println/eprintln, on purpose
 

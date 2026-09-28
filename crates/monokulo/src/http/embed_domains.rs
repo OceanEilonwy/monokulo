@@ -18,7 +18,9 @@ use crate::views::store_detail::{EmbedWarnings, FailingDomainWarning};
 use crate::views::store_settings::EmbedDomainView;
 
 use super::dashboard::redirect_302;
-use super::orders::{load_owned_connection, render_store_settings_page};
+use super::fx::FxRequest;
+use super::orders::{load_owned_connection, render_store_settings_page, saved};
+use crate::views::store_settings::StoreSection;
 use super::{AppState, AuthedUser};
 
 /// `{pk}` from a public `/pay/{pk}/...` path.
@@ -161,9 +163,11 @@ pub struct EmbedRestrictionForm {
 pub async fn set_embed_restriction(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path(id): Path<String>,
     Form(form): Form<EmbedRestrictionForm>,
 ) -> Response {
+    const SECTION: StoreSection = StoreSection::Domains;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -182,9 +186,9 @@ pub async fn set_embed_restriction(
         }
     };
     match result {
-        Ok(None) => redirect_302(&settings_url(&id)),
-        Ok(Some(error)) => render_store_settings_page(&state, row, &user, Some(error.to_string()), None).await,
-        Err(_) => render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await,
+        Ok(None) => saved(&state, row, &user, SECTION, fx, &settings_url(&id)).await,
+        Ok(Some(error)) => render_store_settings_page(&state, row, &user, Some(error.to_string()), None, Some((SECTION, fx))).await,
+        Err(_) => render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None, Some((SECTION, fx))).await,
     }
 }
 
@@ -198,9 +202,11 @@ pub struct AddDomainForm {
 pub async fn add_domain(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path(id): Path<String>,
     Form(form): Form<AddDomainForm>,
 ) -> Response {
+    const SECTION: StoreSection = StoreSection::Domains;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -208,7 +214,7 @@ pub async fn add_domain(
     };
     let domain = match embed_domains::normalize_domain(&form.domain) {
         Ok(domain) => domain,
-        Err(message) => return render_store_settings_page(&state, row, &user, Some(message.to_string()), None).await,
+        Err(message) => return render_store_settings_page(&state, row, &user, Some(message.to_string()), None, Some((SECTION, fx))).await,
     };
     let domain_id = uuid::Uuid::new_v4().to_string();
     let created = state.db.lock().create_store_domain(
@@ -220,12 +226,12 @@ pub async fn add_domain(
         embed_domains::MAX_DOMAINS_PER_STORE,
     );
     let error = match created {
-        Ok(true) => return redirect_302(&settings_url(&id)),
+        Ok(true) => return saved(&state, row, &user, SECTION, fx, &settings_url(&id)).await,
         Ok(false) => format!("A store can have at most {} domains. Remove one to add another.", embed_domains::MAX_DOMAINS_PER_STORE),
         Err(e) if e.is_unique_violation() => format!("{domain} is already on this store's list."),
         Err(_) => "Something went wrong. Please try again.".to_string(),
     };
-    render_store_settings_page(&state, row, &user, Some(error), None).await
+    render_store_settings_page(&state, row, &user, Some(error), None, Some((SECTION, fx))).await
 }
 
 /// `POST /dashboard/stores/{id}/settings/domains/{domain_id}/check` - looks
@@ -233,8 +239,10 @@ pub async fn add_domain(
 pub async fn check_domain(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path((id, domain_id)): Path<(String, String)>,
 ) -> Response {
+    const SECTION: StoreSection = StoreSection::Domains;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -250,12 +258,12 @@ pub async fn check_domain(
         let wait = embed_domains::MIN_CHECK_GAP_SECS - (now - last);
         if wait > 0 {
             let error = format!("{} was checked moments ago. Try again in {wait} seconds.", domain.domain);
-            return render_store_settings_page(&state, row, &user, Some(error), None).await;
+            return render_store_settings_page(&state, row, &user, Some(error), None, Some((SECTION, fx))).await;
         }
     }
     match embed_domains::check_and_record(&state.db, state.dns.as_ref(), &domain, now).await {
-        Ok(_) => redirect_302(&settings_url(&id)),
-        Err(_) => render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await,
+        Ok(_) => saved(&state, row, &user, SECTION, fx, &settings_url(&id)).await,
+        Err(_) => render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None, Some((SECTION, fx))).await,
     }
 }
 
@@ -263,8 +271,10 @@ pub async fn check_domain(
 pub async fn delete_domain(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path((id, domain_id)): Path<(String, String)>,
 ) -> Response {
+    const SECTION: StoreSection = StoreSection::Domains;
     let row = match load_owned_connection(&state, &user, &id) {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -283,13 +293,13 @@ pub async fn delete_domain(
         }
     };
     match deleted {
-        Ok(Some(true)) => redirect_302(&settings_url(&id)),
+        Ok(Some(true)) => saved(&state, row, &user, SECTION, fx, &settings_url(&id)).await,
         Ok(Some(false)) => StatusCode::NOT_FOUND.into_response(),
         Ok(None) => {
             let error = "This is your last verified domain. Turn off \"Only my verified domains can show this checkout\" first - otherwise no website could show your checkout.";
-            render_store_settings_page(&state, row, &user, Some(error.to_string()), None).await
+            render_store_settings_page(&state, row, &user, Some(error.to_string()), None, Some((SECTION, fx))).await
         }
-        Err(_) => render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None).await,
+        Err(_) => render_store_settings_page(&state, row, &user, Some("Something went wrong. Please try again.".to_string()), None, Some((SECTION, fx))).await,
     }
 }
 

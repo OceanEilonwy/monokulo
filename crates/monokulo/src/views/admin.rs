@@ -278,8 +278,18 @@ pub enum Notice {
     Info(String),
 }
 
+/// The two halves of the admin settings page, each saved (and, with
+/// fixi, swapped back) on its own.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsSection {
+    Monokulo,
+    Engine,
+}
+
 #[derive(Default)]
 pub struct AdminSettingsViewModel {
+    /// Which half was just saved: its banners show inside it.
+    pub saved_section: Option<SettingsSection>,
     pub error: Option<String>,
     pub success: Option<String>,
     pub notices: Vec<Notice>,
@@ -387,11 +397,13 @@ fn notices(items: &[Notice]) -> Markup {
 
 /// With JavaScript, confirm before saving an engine settings form that
 /// clears a network stores still use (task 4.4). Without it, the form posts
-/// and the red banner after the save says what happened.
+/// and the red banner after the save says what happened. Listens on the
+/// document, before fixi (capture), so it still works on the form fixi
+/// swaps in after a save; cancelling stops fixi too (`static/fx-glue.js`).
 const CONFIRM_CLEARED_NETWORK_SCRIPT: &str = r#"(function () {
-  var form = document.getElementById("scanner-settings-form");
-  if (!form) return;
-  form.addEventListener("submit", function (event) {
+  document.addEventListener("submit", function (event) {
+    var form = event.target;
+    if (form.id !== "scanner-settings-form") return;
     var fields = form.querySelectorAll("textarea[data-tenant-count]");
     for (var i = 0; i < fields.length; i++) {
       var field = fields[i];
@@ -405,7 +417,7 @@ const CONFIRM_CLEARED_NETWORK_SCRIPT: &str = r#"(function () {
         }
       }
     }
-  });
+  }, true);
 })();"#;
 
 /// Settings shown under "Abuse protection" (`crate::abuse`).
@@ -430,23 +442,45 @@ fn engine_group(key: &str) -> &'static str {
     }
 }
 
-pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -> Markup {
-    let groups = ["Key custody", "Payments", "Server", "Webhooks", "Logging", "Other"];
-    let body = html! {
-        div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
-            h1 { "Admin settings" }
+/// A short word on the save beside the Save button, where the person who
+/// pressed it is looking; focused after a fixi swap (the banners above say
+/// more).
+fn save_status(data: &AdminSettingsViewModel, section: SettingsSection) -> Markup {
+    html! {
+        @if data.saved_section == Some(section) {
+            @if data.error.is_some() {
+                span class="save-status error" role="alert" data-fx-focus tabindex="-1" { "Not saved - see the message above." }
+            } @else if data.success.is_some() {
+                span class="save-status success" role="status" data-fx-focus tabindex="-1" { "Saved." }
+            }
+        }
+    }
+}
+
+/// The page's banners after a save: the error, the success message and
+/// any notices.
+fn banners(data: &AdminSettingsViewModel) -> Markup {
+    html! {
+        div class="save-banners" {
             @if let Some(error) = &data.error {
                 p class="error" role="alert" { (error) }
             }
             @if let Some(success) = &data.success {
-                p class="success" { (success) }
+                p class="success" role="status" { (success) }
             }
             (notices(&data.notices))
+        }
+    }
+}
 
+/// Monokulo's own settings: one form, saved and swapped back as a whole.
+pub fn monokulo_section(data: &AdminSettingsViewModel) -> Markup {
+    html! {
+        section id="monokulo-settings" {
             h2 { "Monokulo" }
+            @if data.saved_section == Some(SettingsSection::Monokulo) { (banners(data)) }
             p class="hint" { "Saved settings apply straight away. An environment variable, where set, always wins over the value saved here - saving still works, it just won't take effect until that variable is unset." }
-            form method="post" action="/dashboard/admin/settings" {
+            form method="post" action="/dashboard/admin/settings" fx-action="/dashboard/admin/settings" fx-method="POST" fx-target="#monokulo-settings" {
                 @for field in data.monokulo_fields.iter().filter(|f| !is_abuse_field(&f.key) && !is_logging_field(&f.key)) {
                     (scalar_field(field))
                 }
@@ -465,13 +499,26 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
                     (scalar_field(field))
                 }
                 button type="submit" { "Save monokulo settings" }
+                (save_status(data, SettingsSection::Monokulo))
             }
+        }
+    }
+}
 
+/// The engine's settings. `oob` marks it for fixi's glue to put in place
+/// of the page's own copy when it comes back with the monokulo section
+/// (saving the engine connection there changes this half too).
+pub fn engine_section(data: &AdminSettingsViewModel, oob: bool) -> Markup {
+    let groups = ["Key custody", "Payments", "Server", "Webhooks", "Logging", "Other"];
+    html! {
+        section id="engine-settings" data-fx-oob[oob] {
             h2 { "Engine" }
+            @if data.saved_section == Some(SettingsSection::Engine) { (banners(data)) }
             @if !data.scanner_configured {
                 p { "Set " code { "engine.url" } " and " code { "engine.admin_token" } " above and save to manage this instance's engine settings from here." }
             } @else if data.scanner_reachable {
-                form method="post" action="/dashboard/admin/scanner-settings" id="scanner-settings-form" {
+                form method="post" action="/dashboard/admin/scanner-settings" id="scanner-settings-form"
+                    fx-action="/dashboard/admin/scanner-settings" fx-method="POST" fx-target="#engine-settings" {
                     h3 { "Monero nodes" }
                     @for network in &data.scanner_networks {
                         div class="setting-field" {
@@ -509,14 +556,27 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
                         }
                     }
                     button type="submit" { "Save engine settings" }
+                    (save_status(data, SettingsSection::Engine))
                 }
-                script { (maud::PreEscaped(CONFIRM_CLEARED_NETWORK_SCRIPT)) }
             } @else {
                 p class="error" role="alert" {
                     "Could not reach the configured engine: "
                     @if let Some(scanner_error) = &data.scanner_error { (scanner_error) }
                 }
             }
+        }
+    }
+}
+
+pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -> Markup {
+    let body = html! {
+        div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
+            h1 { "Admin settings" }
+            @if data.saved_section.is_none() { (banners(data)) }
+            (monokulo_section(data))
+            (engine_section(data, false))
+            script { (maud::PreEscaped(CONFIRM_CLEARED_NETWORK_SCRIPT)) }
         }
     };
     layout(chrome, "Admin settings - Monokulo", body)
