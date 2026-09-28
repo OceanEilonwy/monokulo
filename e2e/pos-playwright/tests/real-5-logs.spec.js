@@ -7,7 +7,7 @@
 const { test, expect } = require('../coverage-test');
 const { serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
-const { fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { fixture, signInAsAdmin, transitionDone, fakeNodeJson, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
 
 const logsUrl = (query = '') => `${fixture().monokulo_url}/dashboard/admin/logs${query}`;
 const stage = (page, name) => captureCoverageStage(page, name, test.info(), { group: 'logs' });
@@ -91,6 +91,7 @@ test('without JavaScript, Syntax is a page whose examples are searches', async (
     await expect(page).toHaveURL(/\/dashboard\/admin\/logs\/syntax$/);
     await expect(page.getByRole('heading', { name: 'Search syntax', level: 1 })).toBeVisible();
     await stage(page, 'logs-syntax-page');
+    await transitionDone(page);
     await page.locator('li').filter({ has: page.getByText('level >= warn', { exact: true }) }).getByRole('link', { name: 'Use' }).click();
     await expect(page.locator('#log-q')).toHaveValue('level >= warn');
   } finally { await context.close(); }
@@ -187,20 +188,20 @@ test.describe('without JavaScript', () => {
     for (const service of await page.locator('#log-rows .log-row .svc').allTextContents()) {
       expect(service).toBe('monokulo');
     }
-    // Refresh is a plain link to the same search. (Followed with goto:
-    // headless Chrome with JavaScript off hit-tests <html> instead of the
-    // page for a while after a form submission, so clicks don't land.)
-    const refresh = await page.getByRole('link', { name: 'Refresh' }).getAttribute('href');
-    expect(refresh).toContain("q=service+%3D+%27monokulo%27");
-    await page.goto(fixture().monokulo_url + refresh);
+    // Refresh is a plain link to the same search.
+    const refresh = page.getByRole('link', { name: 'Refresh' });
+    expect(await refresh.getAttribute('href')).toContain("q=service+%3D+%27monokulo%27");
+    await transitionDone(page);
+    await refresh.click();
     await expect(page).toHaveURL(/q=service/);
     await stage(page, 'logs-search-no-js');
     // A line opens without script to a link to its properties' page.
     const row = page.locator('#log-rows .log-row').first();
+    await transitionDone(page);
     await row.locator('summary').click();
     const link = row.locator('.props a', { hasText: "Show this line's properties" });
     await expect(link).toBeVisible();
-    await page.goto(fixture().monokulo_url + (await link.getAttribute('href')));
+    await link.click();
     await expect(page.getByRole('heading', { name: 'Log line' })).toBeVisible();
     await expect(page.locator('.log-row[open] .props table')).toBeVisible();
     await expect(page.locator('.props th', { hasText: /^target$/ })).toBeVisible();
