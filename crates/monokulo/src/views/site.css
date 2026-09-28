@@ -254,7 +254,10 @@ form .field-help { display: block; font-weight: 400; color: var(--muted); margin
    starting its own line below the form - block, like `.field-help` above,
    fixes that regardless of how much room is left on the line. */
 .setting-source { display: block; margin-top: 0.15em; }
-input[type=text], input[type=email], input[type=password], input[type=url], select, textarea {
+/* Every text-like input: a type left out here keeps the browser's own
+   border and padding (the Logs page's search box once did). */
+input[type=text], input[type=email], input[type=password], input[type=url], input[type=search], input[type=number],
+input[type=date], input[type=datetime-local], input[type=time], select, textarea {
   width: 100%;
   font-family: inherit;
   font-size: 1em;

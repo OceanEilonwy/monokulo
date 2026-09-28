@@ -104,7 +104,14 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     assert!(html.contains(r#"class="log-histogram""#), "{html}");
     assert!(html.contains(">Refresh</a>"), "a Refresh link, never a refresh by itself");
     assert!(!html.contains("http-equiv=\"refresh\""));
-    assert!(html.contains("<code>order.id</code>"), "property names listed in the help: {html}");
+    // Syntax help: a link to its own page, opened as a dialog by script.
+    assert!(html.contains(r#"id="query-help-link" href="/dashboard/admin/logs/syntax""#), "{html}");
+    assert!(html.contains(r#"<dialog id="query-help""#) && html.contains(r#"<button type="button" class="qh-chip">order.id</button>"#), "property names listed in the help: {html}");
+    let (status, _, syntax) = s.get("/dashboard/admin/logs/syntax", false).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(syntax.contains("<h1>Search syntax</h1>") && syntax.contains(r#"<code class="qh-chip">order.id</code>"#), "{syntax}");
+    // Without script each example is a search for it.
+    assert!(syntax.contains(&format!(r#"href="/dashboard/admin/logs?q={}""#, encode("level >= warn"))), "{syntax}");
     // Lines come closed, without their properties: each holds a link to
     // its own page, which fixi fetches into place when it opens.
     assert!(!html.contains(r#"<details class="log-row" id="log-monokulo-1" open"#));

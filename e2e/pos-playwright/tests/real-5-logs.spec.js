@@ -47,6 +47,55 @@ test('a search swaps the results in place, keeps the URL, and back returns to th
   await expect(page.locator('select[name="level"]')).toHaveValue('');
 });
 
+test('the search box, Syntax and Search share one height; Syntax opens the help as a dialog', async ({ page }) => {
+  await signInAsAdmin(page);
+  await page.goto(logsUrl());
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 800 });
+    const boxes = await page.locator('.logs-search .q-row > :is(input, a, button)').evaluateAll(els => els.map(el => {
+      const r = el.getBoundingClientRect();
+      return { top: Math.round(r.top), height: Math.round(r.height) };
+    }));
+    expect(boxes, `${width}px`).toHaveLength(3);
+    for (const box of boxes) expect(box, `${width}px`).toEqual(boxes[0]);
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+
+  // With script, Syntax is a dialog, not the page it links to.
+  await page.getByRole('link', { name: 'Syntax' }).click();
+  const help = page.getByRole('dialog', { name: 'Search syntax' });
+  await expect(help).toBeVisible();
+  await expect(page).not.toHaveURL(/syntax/);
+  await stage(page, 'logs-syntax-dialog');
+  // Use puts its example in the box and closes.
+  await help.locator('li', { hasText: "message contains 'timeout'" }).getByRole('link', { name: 'Use' }).click();
+  await expect(help).toBeHidden();
+  await expect(page.locator('#log-q')).toHaveValue("message contains 'timeout'");
+  await expect(page.locator('#log-q')).toBeFocused();
+  // A name chip adds itself; Escape closes.
+  await page.getByRole('link', { name: 'Syntax' }).click();
+  await help.getByRole('button', { name: 'level', exact: true }).click();
+  await expect(page.locator('#log-q')).toHaveValue("message contains 'timeout' and level ");
+  await page.getByRole('link', { name: 'Syntax' }).click();
+  await page.keyboard.press('Escape');
+  await expect(help).toBeHidden();
+});
+
+test('without JavaScript, Syntax is a page whose examples are searches', async ({ browser }) => {
+  const context = await browser.newContext({ javaScriptEnabled: false });
+  try {
+    const page = await context.newPage();
+    await signInAsAdmin(page);
+    await page.goto(logsUrl());
+    await page.getByRole('link', { name: 'Syntax' }).click();
+    await expect(page).toHaveURL(/\/dashboard\/admin\/logs\/syntax$/);
+    await expect(page.getByRole('heading', { name: 'Search syntax', level: 1 })).toBeVisible();
+    await stage(page, 'logs-syntax-page');
+    await page.locator('li').filter({ has: page.getByText('level >= warn', { exact: true }) }).getByRole('link', { name: 'Use' }).click();
+    await expect(page.locator('#log-q')).toHaveValue('level >= warn');
+  } finally { await context.close(); }
+});
+
 test("a line's properties load when it's first opened, and only then", async ({ page }) => {
   await signInAsAdmin(page);
   await page.goto(`${fixture().monokulo_url}/dashboard/admin/settings`);

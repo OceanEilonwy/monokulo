@@ -396,6 +396,14 @@ pub async fn page(
     Html(view::page(&chrome, &vm).into_string()).into_response()
 }
 
+/// `GET /dashboard/admin/logs/syntax`: the search language, as a page. The
+/// Logs page opens the same help as a dialog when script runs.
+pub async fn syntax_page(State(state): State<AppState>, AuthedAdmin(admin, _): AuthedAdmin) -> Response {
+    let names = attribute_names(&Sources::from_state(&state)).await;
+    let chrome = super::page_chrome(&state, Some(&admin), view::SYNTAX_PAGE);
+    Html(view::syntax_page(&chrome, &names).into_string()).into_response()
+}
+
 /// `GET /dashboard/admin/logs/tail`: lines newer than `after` (or the
 /// `Last-Event-ID` a reconnecting stream sends), as they arrive. Each event
 /// carries rendered rows routed to the top of `#log-rows` (ssexi's JSON
