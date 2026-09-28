@@ -286,6 +286,24 @@ pub async fn logout_submit(State(state): State<AppState>, AuthedUser(_user, toke
 /// token needed beyond what `logout_submit` above already relies on
 /// (`SameSite=Lax`) - same-origin `<form method="post">`, nothing more.
 #[derive(Deserialize)]
+pub struct TimezoneForm {
+    /// A zone name, or empty for automatic.
+    pub timezone: String,
+}
+
+/// `POST /dashboard/timezone`: the zone dates and times are shown in. An
+/// unknown name is ignored rather than saved.
+pub async fn timezone_submit(State(state): State<AppState>, AuthedUser(user, _): AuthedUser, Form(form): Form<TimezoneForm>) -> Response {
+    let chosen = form.timezone.trim();
+    if chosen.is_empty() {
+        state.db.lock().update_user_timezone(&user.id, None).ok();
+    } else if jiff::tz::TimeZone::get(chosen).is_ok() {
+        state.db.lock().update_user_timezone(&user.id, Some(chosen)).ok();
+    }
+    redirect_302("/dashboard#timezone")
+}
+
+#[derive(Deserialize)]
 pub struct ThemeForm {
     pub next: Option<String>,
     pub theme: Option<String>,
@@ -524,5 +542,53 @@ mod tests {
         }
         let response = router.clone().oneshot(pick("dark", "https://evil.example/phish")).await.unwrap();
         assert_eq!(response.headers()["location"], "/dashboard");
+    }
+
+    #[tokio::test]
+    async fn times_follow_the_zone_a_merchant_picks_or_else_their_browsers() {
+        use axum::body::Body;
+        use axum::http::{Request, StatusCode};
+        use http_body_util::BodyExt;
+        use tower::ServiceExt;
+
+        let router = crate::http::build_router(crate::http::AppState::for_tests());
+        let json = |uri: &str, body: serde_json::Value| Request::builder().method("POST").uri(uri)
+            .header("content-type", "application/json").body(Body::from(body.to_string())).unwrap();
+        let credentials = serde_json::json!({ "email": "zone@example.com", "password": "correct horse battery staple" });
+        assert_eq!(router.clone().oneshot(json("/signup", credentials.clone())).await.unwrap().status(), StatusCode::CREATED);
+        let login = router.clone().oneshot(json("/login", credentials)).await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&login.into_body().collect().await.unwrap().to_bytes()).unwrap();
+        let session = body["session_token"].as_str().unwrap().to_string();
+
+        let pick = |zone: &str| Request::builder().method("POST").uri("/dashboard/timezone")
+            .header("authorization", format!("Bearer {session}")).header("content-type", "application/x-www-form-urlencoded")
+            .body(Body::from(format!("timezone={}", zone.replace('/', "%2F")))).unwrap();
+        let dashboard = |cookie: Option<&str>| {
+            let mut request = Request::builder().uri("/dashboard").header("authorization", format!("Bearer {session}"));
+            if let Some(cookie) = cookie {
+                request = request.header("cookie", cookie.to_string());
+            }
+            let router = router.clone();
+            async move {
+                let response = router.oneshot(request.body(Body::empty()).unwrap()).await.unwrap();
+                String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap()
+            }
+        };
+
+        // Automatic: the browser's zone, else UTC.
+        assert!(dashboard(None).await.contains(">tz: utc</a>"));
+        let html = dashboard(Some("tz=Australia%2FPerth")).await;
+        assert!(html.contains(r##"<a href="/dashboard#timezone" class="nav-tz-link""##) && html.contains(">tz: perth</a>"), "{html}");
+        assert!(html.contains("Automatic (this browser: Australia/Perth)"), "{html}");
+
+        // A picked zone wins over the browser's; one that doesn't exist is ignored.
+        let response = router.clone().oneshot(pick("America/New_York")).await.unwrap();
+        assert_eq!((response.status(), &response.headers()["location"]), (StatusCode::FOUND, &"/dashboard#timezone".parse().unwrap()));
+        let html = dashboard(Some("tz=Australia%2FPerth")).await;
+        assert!(html.contains(">tz: new york</a>") && html.contains(r#"<option value="America/New_York" selected>"#), "{html}");
+        router.clone().oneshot(pick("Not/AZone")).await.unwrap();
+        assert!(dashboard(None).await.contains(">tz: new york</a>"));
+        router.clone().oneshot(pick("")).await.unwrap();
+        assert!(dashboard(Some("tz=Asia%2FTokyo")).await.contains(">tz: tokyo</a>"));
     }
 }

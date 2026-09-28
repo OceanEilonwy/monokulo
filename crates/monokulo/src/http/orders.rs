@@ -30,7 +30,7 @@ use serde::Deserialize;
 use crate::crypto;
 use crate::db::{StoreConnectionRow, UserRow};
 use crate::engine_client::{EngineClientError, PaymentLookupView};
-use crate::templates::{display_or_dash, display_scan_range, display_timestamp, display_timestamp_or_dash};
+use crate::templates::{display_or_dash, display_scan_range};
 use crate::views;
 use crate::views::orders::{OrderDetailData, OrderDetailViewModel, OrderRowViewModel, OrdersViewModel, PaymentRowViewModel};
 
@@ -160,7 +160,7 @@ pub async fn orders_list(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     if fx.0 {
-        return axum::response::Html(views::orders::list_results(&view_model).into_string()).into_response();
+        return axum::response::Html(views::orders::list_results(&view_model, &views::time::Clock::for_user(&user)).into_string()).into_response();
     }
     let chrome = super::page_chrome(&state, Some(&user), format!("/dashboard/stores/{id}/orders"));
     views::orders::list_page(&chrome, &view_model).into_response()
@@ -340,11 +340,10 @@ async fn order_detail_data(
                 base_currency_display,
                 base_currency_rate_display,
                 double_spend_detected_at: detail.order.double_spend_detected_at,
-                double_spend_detected_at_display: display_timestamp_or_dash(detail.order.double_spend_detected_at),
                 refund_address: detail.order.refund_address,
-                created_at_display: display_timestamp(detail.order.created_at),
-                expires_at_display: display_timestamp(detail.order.expires_at),
-                updated_at_display: display_timestamp(detail.order.updated_at),
+                created_at: detail.order.created_at,
+                expires_at: detail.order.expires_at,
+                updated_at: detail.order.updated_at,
                 payments: detail
                     .payments
                     .into_iter()
@@ -352,9 +351,9 @@ async fn order_detail_data(
                         txid: p.txid,
                         output_index: p.output_index,
                         amount_piconero: p.amount_piconero,
-                        first_seen_at_display: display_timestamp(p.first_seen_at),
+                        first_seen_at: p.first_seen_at,
                         block_height_display: display_or_dash(p.block_height.map(|h| h.to_string()).as_deref()),
-                        voided_at_display: display_timestamp_or_dash(p.voided_at),
+                        voided_at: p.voided_at,
                     })
                     .collect(),
                 payment_link,
@@ -393,12 +392,14 @@ pub async fn order_detail_events(
     let payment_link = payment_link_for(&headers, &row.tenant_public_key, &order_id);
     let subscription = state.engine_client.subscribe_order(&row.id, &sk, &order_id);
     let row = std::sync::Arc::new(row);
+    // Times in the viewer's zone, as the page itself shows them.
+    let clock = views::time::Clock::for_user(&user);
     crate::live::live_events(subscription, std::time::Duration::from_secs(30), move || {
-        let (state, row, sk, order_id, payment_link) = (state.clone(), row.clone(), sk.clone(), order_id.clone(), payment_link.clone());
+        let (state, row, sk, order_id, payment_link, clock) = (state.clone(), row.clone(), sk.clone(), order_id.clone(), payment_link.clone(), clock.clone());
         async move {
             let order = order_detail_data(&state, &row, &sk, &order_id, payment_link).await.ok()??;
             let (_, _, terminal) = crate::views::order_state(&order.status);
-            let html = views::orders::live_fragment(&order).into_string();
+            let html = views::orders::live_fragment(&order, &clock).into_string();
             let mut events =
                 vec![axum::response::sse::Event::default().event(r##"{"target":"#order-live","swap":"outerHTML"}"##).data(html.clone())];
             if terminal {
@@ -766,6 +767,7 @@ pub(super) async fn render_store_settings_page(
 
     let view_model = views::store_settings::StoreSettingsViewModel {
         store: Some(views::store_settings::StoreSettingsData {
+            clock: chrome.clock.clone(),
             connection_id: row.id,
             display_name: display_name_for(&row.site_url),
             confirmations_required,
@@ -1718,7 +1720,7 @@ mod tests {
         // The share icon and order id live in the order title.
         assert!(html.contains(r#"<h1 class="order-title">"#), "expected the title banner to carry the share button, got: {html}");
         assert!(
-            html.contains(&format!(r#"<code class="order-title-id" title="{order_id}">{order_id}</code>"#)),
+            html.contains(r#"<code class="order-title-id"><span class="mid-ellipsis""#) && html.contains(&format!(r#"title="{order_id}""#)),
             "expected the order id inside the title banner, got: {html}"
         );
         assert!(
@@ -3775,11 +3777,10 @@ mod tests {
             base_currency_display: "XMR".to_string(),
             base_currency_rate_display: "same as order currency".to_string(),
             double_spend_detected_at: None,
-            double_spend_detected_at_display: crate::templates::display_timestamp_or_dash(None),
             refund_address: None,
-            created_at_display: "1000".to_string(),
-            expires_at_display: "2000".to_string(),
-            updated_at_display: "1000".to_string(),
+            created_at: 1000,
+            expires_at: 2000,
+            updated_at: 1000,
             payments: vec![],
             payment_link: "http://127.0.0.1:8081/pay/pk_abc123/orders/pay_abc123/share".to_string(),
             scan_range_display: crate::templates::display_scan_range(Some(100), Some(250), false),

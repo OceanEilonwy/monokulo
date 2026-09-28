@@ -403,7 +403,8 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .context-nav .breadcrumb-sep { flex: none; }
 .breadcrumb-sep { color: var(--muted); font-weight: 400; }
 .store-header-row { position: relative; display: grid; grid-template-columns: minmax(0, 1fr) auto 5.5em; align-items: center; column-gap: var(--space-sm); margin-bottom: 1.2em; }
-.store-header-status { min-width: 0; overflow-wrap: anywhere; }
+.store-header-status { min-width: 0; display: flex; align-items: center; gap: .4em; white-space: nowrap; }
+.store-header-status .store-site { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 .store-header-row .settings-link { margin: 0; white-space: nowrap; }
 /* The details element spans the content width; its summary is positioned in
    the header's reserved Help slot, away from status and Settings. */
@@ -412,6 +413,13 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .help-disclosure summary::-webkit-details-marker { display: none; }
 .help-disclosure .help-control { margin: 0; white-space: nowrap; }
 .help-disclosure[open] .help-control::after { content: " \25B4"; }
+/* A phone: the status line gets the width to itself, above Settings and
+   Help (which keep their places: Settings left, Help's slot right). */
+@media (max-width: 640px) {
+  .store-header-row { grid-template-columns: auto minmax(0, 1fr) 5.5em; padding-top: 2.4em; }
+  .store-header-status { position: absolute; top: 0; left: 0; right: 0; height: 1.9em; }
+  .help-disclosure summary { top: 2.4em; }
+}
 .help-disclosure:not([open]) .help-control::after { content: " \25BE"; }
 /* Nav bar - a semantic <nav>/<label>/checkbox structure rather than pure
    inline styles, so the small-screen hamburger below (a plain CSS checkbox
@@ -448,6 +456,7 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 }
 .site-nav-links a:hover, .site-nav-links .nav-link-button:hover { color: var(--accent-text); background: none; text-decoration: underline; text-decoration-thickness: 1px; }
 .site-nav-links .nav-logout-form, .site-nav-links .nav-theme-form { margin: 0; display: inline; }
+.site-nav-links .nav-tz-link { font-size: 0.8em; font-weight: 500; color: var(--muted); text-decoration: none; white-space: nowrap; }
 .nav-status-link { display: inline-flex; align-items: center; align-self: center; text-decoration: none !important; }
 /* The Orders page's search: field and button on one line. */
 .orders-search { display: flex; flex-wrap: wrap; align-items: stretch; gap: 0.5em; margin: 0 0 1em; }
@@ -455,9 +464,12 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .orders-search button { margin: 0; }
 .orders-search a { align-self: center; }
 .orders-table td:nth-child(2) { max-width: 14em; overflow-wrap: anywhere; }
-/* An order id in a list: the start shows, the rest is an ellipsis (the whole
-   id stays in the page for find-in-page). */
-.ellipsis.order-id { max-width: 11em; }
+/* `views::order_id_short`: the start of an id, an ellipsis in the middle
+   when it doesn't fit, and always its last characters. */
+.mid-ellipsis { display: inline-flex; max-width: 100%; min-width: 0; white-space: nowrap; vertical-align: bottom; }
+.mid-head { min-width: 4ch; overflow: hidden; text-overflow: ellipsis; }
+.mid-tail { flex: none; }
+a.order-id { display: inline-block; max-width: 11em; }
 .orders-pages { display: flex; gap: 0.5em; }
 /* Visually hidden but still readable by assistive tech: the theme toggle's
    labels, the checkout's heading, the Logs page's search label. */

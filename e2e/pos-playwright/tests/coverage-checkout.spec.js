@@ -605,3 +605,42 @@ test('real checkout centres its status and time-left badges and swaps the QR for
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.getElementById('progress-fill')).backgroundColor)).toBe('rgb(26, 127, 55)');
   await captureCoverageStage(page, 'checkout-paid-receipt', test.info());
 });
+
+test('real checkout shows times in the customer\'s own zone, or the one ?timezone= names', async ({ browser, request }) => {
+  const context = await browser.newContext({ timezoneId: 'Asia/Tokyo' });
+  try {
+    const page = await context.newPage();
+    const url = await checkoutUrl(request);
+    const orderId = url.split('/').pop();
+    await customerSends(request, orderId, 1);
+    await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/double-spend`);
+    // What the server says, in a given zone, in the page's own shape.
+    const MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+    const shown = (at, timeZone) => {
+      const parts = Object.fromEntries(new Intl.DateTimeFormat('en-GB', { timeZone, day: 'numeric', month: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+        .formatToParts(at).map(part => [part.type, part.value]));
+      return `${Number(parts.day)} ${MONTHS[Number(parts.month) - 1]}, ${parts.hour}:${parts.minute}`;
+    };
+    const time = page.locator('#double-spend-time time');
+
+    // No ?timezone=: sent in UTC, then shown in the browser's zone.
+    await page.goto(url);
+    await expect(time).not.toHaveAttribute('data-local', /.*/);
+    const at = new Date(await time.getAttribute('datetime'));
+    await expect(time).toHaveText(shown(at, 'Asia/Tokyo'));
+
+    // ?timezone= wins, and the script leaves it alone.
+    await page.goto(`${url}?timezone=Europe%2FLondon`);
+    await expect(time).toHaveText(shown(at, 'Europe/London'));
+    await expect(time).toHaveAttribute('title', /\(Europe\/London\)$/);
+
+    // Without JavaScript: UTC, and it says so.
+    const noJs = await browser.newContext({ timezoneId: 'Asia/Tokyo', javaScriptEnabled: false });
+    try {
+      const plain = await noJs.newPage();
+      await plain.goto(url);
+      await expect(plain.locator('#double-spend-time time')).toHaveText(shown(at, 'UTC'));
+      await expect(plain.locator('#double-spend-time time')).toHaveAttribute('title', /\(UTC\)$/);
+    } finally { await noJs.close(); }
+  } finally { await context.close(); }
+});

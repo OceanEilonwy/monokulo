@@ -55,10 +55,14 @@ pub struct CheckoutViewModel {
     /// comment).
     pub progress_percent: u8,
     pub is_terminal: bool,
-    /// Presence only - gates the double-spend banner. The actual text comes
-    /// from `double_spend_detected_at_display`, pre-rendered server-side.
+    /// When a double spend was detected: gates the banner, which shows the
+    /// time with `clock`.
     pub double_spend_detected_at: Option<i64>,
-    pub double_spend_detected_at_display: String,
+    /// The zone times are shown in: `?timezone=`, else UTC.
+    pub clock: super::time::Clock,
+    /// No `?timezone=`: the script shows each time in the customer's own
+    /// zone instead (`data-local`).
+    pub local_times: bool,
     /// A moment.js-style relative duration ("12h", "4h 15m", "2d 4h"),
     /// pre-rendered server-side (`crate::templates::format_duration_until`) -
     /// this page is customer-facing and must stay fully meaningful with
@@ -447,7 +451,9 @@ fn live_status(data: &CheckoutViewModel) -> Markup {
             @if data.double_spend_detected_at.is_some() {
                 div id="double-spend-banner" class="error" role="alert" {
                     "A payment toward this order was reversed by a blockchain double-spend, detected at "
-                    span id="double-spend-time" { (data.double_spend_detected_at_display) }
+                    @if let Some(at) = data.double_spend_detected_at {
+                        span id="double-spend-time" { @if data.local_times { (data.clock.time_local(at)) } @else { (data.clock.time(at)) } }
+                    }
                     "."
                     @if !data.is_terminal {
                         " This order's status above reflects only still-valid payments."
@@ -618,12 +624,19 @@ pub fn open_from_shop_page(chrome: &PageChrome) -> Markup {
 /// The checkout the share page frames, in the viewer's own theme when they
 /// are signed in and chose one (the framed page can't see their account).
 fn share_frame_src(chrome: &PageChrome, data: &CheckoutShareViewModel) -> String {
-    let theme = match chrome.theme {
-        crate::db::Theme::System => "",
-        crate::db::Theme::Light => "?theme=light",
-        crate::db::Theme::Dark => "?theme=dark",
-    };
-    format!("/pay/{}/orders/{}{theme}", data.pk, data.order_id)
+    let mut params = Vec::new();
+    match chrome.theme {
+        crate::db::Theme::System => {}
+        crate::db::Theme::Light => params.push("theme=light".to_string()),
+        crate::db::Theme::Dark => params.push("theme=dark".to_string()),
+    }
+    // A signed-in viewer who chose a zone sees times in it; otherwise the
+    // checkout shows the browser's own.
+    if chrome.logged_in && !chrome.clock.is_automatic() {
+        params.push(format!("timezone={}", url::form_urlencoded::byte_serialize(chrome.clock.name().as_bytes()).collect::<String>()));
+    }
+    let query = if params.is_empty() { String::new() } else { format!("?{}", params.join("&")) };
+    format!("/pay/{}/orders/{}{query}", data.pk, data.order_id)
 }
 
 pub struct CheckoutShareViewModel {
@@ -728,7 +741,8 @@ mod tests {
             progress_percent: 0,
             is_terminal,
             double_spend_detected_at: None,
-            double_spend_detected_at_display: "-".to_string(),
+            clock: crate::views::time::Clock::utc(0),
+            local_times: true,
             expires_in_display: "30m".to_string(),
             expiry_urgency_class: String::new(),
             refund_address: None,
@@ -908,10 +922,15 @@ mod tests {
     fn checkout_page_shows_the_double_spend_banner_only_when_one_was_detected() {
         let mut data = test_checkout_view_model(false);
         data.double_spend_detected_at = Some(1_700_000_000);
-        data.double_spend_detected_at_display = "2023-11-14".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(html.contains("double-spend-banner"));
-        assert!(html.contains("2023-11-14"));
+        // UTC, marked for the script to show in the customer's own zone.
+        assert!(html.contains(r#"<time class="when" datetime="2023-11-14T22:13:20Z" title="Tuesday 14 November 2023, 22:13:20 (UTC)" data-local>14 Nov 2023, 22:13</time>"#), "{html}");
+        // With `?timezone=`, that zone, and nothing for the script to change.
+        data.clock = crate::views::time::Clock::new(Some("Australia/Perth"), None, 0);
+        data.local_times = false;
+        let html = checkout_page(&chrome(), &data).into_string();
+        assert!(html.contains(">15 Nov 2023, 06:13</time>") && !html.contains("data-local"), "{html}");
     }
 
     #[test]

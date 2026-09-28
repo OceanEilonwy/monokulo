@@ -55,6 +55,8 @@ pub struct EmbedDomainView {
 }
 
 pub struct StoreSettingsData {
+    /// The zone the page shows times in (the signed-in user's).
+    pub clock: super::time::Clock,
     pub connection_id: String,
     pub display_name: String,
     /// The tenant's current confirmation threshold - `10` when the engine is
@@ -368,7 +370,7 @@ fn webhooks_section(store: &StoreSettingsData, in_place: bool) -> Markup {
                                         span class="tag tag-unknown" { "disabled" }
                                     }
                                 }
-                                td data-label="Created" { (webhook.created_at) }
+                                td data-label="Created" { (store.clock.time(webhook.created_at)) }
                                 td {
                                     form method="post"
                                         action=(format!("/dashboard/stores/{}/settings/webhooks/{}/delete", store.connection_id, webhook.webhook_id))
@@ -606,6 +608,7 @@ mod tests {
 
     fn base_store() -> StoreSettingsData {
         StoreSettingsData {
+            clock: crate::views::time::Clock::utc(0),
             connection_id: "conn_1".to_string(),
             display_name: "shop.example.com".to_string(),
             confirmations_required: 10,

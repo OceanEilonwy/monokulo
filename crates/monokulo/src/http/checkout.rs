@@ -163,9 +163,18 @@ pub struct CheckoutOptions {
     /// site, and for monokulo's share page passing a signed-in viewer's
     /// choice.
     theme: Option<String>,
+    /// An IANA zone (`Australia/Perth`) to show times in. Without one (or
+    /// with one this build doesn't know), times are UTC, and the page's
+    /// script shows them in the customer's own zone.
+    timezone: Option<String>,
 }
 
 impl CheckoutOptions {
+    /// The zone named by `timezone`, if it names a real one.
+    fn zone(&self) -> Option<&str> {
+        self.timezone.as_deref().filter(|name| jiff::tz::TimeZone::get(name).is_ok())
+    }
+    fn clock(&self) -> views::time::Clock { views::time::Clock::new(self.zone(), None, crate::now_unix()) }
     fn theme(&self) -> crate::db::Theme { crate::db::Theme::from_db_str(self.theme.as_deref().unwrap_or("")) }
     fn is_compact(&self) -> bool { self.view.as_deref() == Some("compact") }
     fn refund_enabled(&self) -> bool { self.refund != Some(false) }
@@ -180,6 +189,8 @@ impl CheckoutOptions {
             crate::db::Theme::Dark => params.push("theme=dark"),
             crate::db::Theme::System => {}
         }
+        let timezone = self.zone().map(|zone| format!("timezone={}", url::form_urlencoded::byte_serialize(zone.as_bytes()).collect::<String>()));
+        let params: Vec<&str> = params.into_iter().chain(timezone.as_deref()).collect();
         if params.is_empty() { String::new() } else { format!("?{}", params.join("&")) }
     }
     /// The same page's query string with auto refresh flipped.
@@ -348,7 +359,8 @@ async fn build_checkout_view(
         progress_percent,
         is_terminal,
         double_spend_detected_at: detail.order.double_spend_detected_at,
-        double_spend_detected_at_display: crate::templates::display_timestamp_or_dash(detail.order.double_spend_detected_at),
+        clock: options.clock(),
+        local_times: options.zone().is_none(),
         expires_in_display: crate::templates::format_duration_until(detail.order.expires_at, crate::now_unix()),
         expiry_urgency_class,
         refund_address: detail.order.refund_address.clone(),
@@ -595,6 +607,17 @@ pub async fn checkout_share_page(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn a_known_timezone_is_kept_in_the_pages_own_links_and_an_unknown_one_is_dropped() {
+        let options = |zone: &str| super::CheckoutOptions { timezone: Some(zone.to_string()), ..Default::default() };
+        assert_eq!(options("Asia/Tokyo").suffix(), "?timezone=Asia%2FTokyo");
+        assert_eq!(options("Asia/Tokyo").clock().name(), "Asia/Tokyo");
+        assert_eq!(options("Not/AZone").suffix(), "");
+        assert_eq!(options("Not/AZone").clock().name(), "UTC");
+        let compact = super::CheckoutOptions { view: Some("compact".into()), ..options("Europe/London") };
+        assert_eq!(compact.suffix(), "?view=compact&timezone=Europe%2FLondon");
+    }
+
     #[test]
     fn the_qr_code_asks_for_the_amount_due_and_only_while_one_is_due() {
         let order = |status: &str, received: u64| -> super::OrderView {

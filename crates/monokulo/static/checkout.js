@@ -25,6 +25,35 @@
       setTimeout(function () { copyAddress.setAttribute('aria-label', 'Copy payment address'); }, 2000);
     });
   }
+  // Times come in UTC unless the page was given ?timezone=; those marked
+  // data-local are shown in the customer's own zone instead, in the same
+  // shape the server uses ("14 Nov, 22:13", with the year when it isn't
+  // this one). Run again for each part the live stream swaps in.
+  var MONTHS = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+  function showLocalTimes() {
+    if (typeof Intl !== 'object' || !Intl.DateTimeFormat) return;
+    var zone;
+    try { zone = Intl.DateTimeFormat().resolvedOptions().timeZone; } catch (_) { return; }
+    if (!zone) return;
+    var now = new Date();
+    var times = document.querySelectorAll('time[data-local]');
+    for (var i = 0; i < times.length; i++) {
+      var at = new Date(times[i].getAttribute('datetime'));
+      if (isNaN(at.getTime())) continue;
+      // Numbers from Intl, month names our own: locales disagree on them
+      // ("Sep" or "Sept"), and this must match what the server writes.
+      var parts = {};
+      new Intl.DateTimeFormat('en-GB', { year: 'numeric', month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit', hourCycle: 'h23' })
+        .formatToParts(at).forEach(function (part) { parts[part.type] = part.value; });
+      var sameYear = Number(parts.year) === Number(new Intl.DateTimeFormat('en-GB', { year: 'numeric' }).format(now));
+      times[i].textContent = Number(parts.day) + ' ' + MONTHS[Number(parts.month) - 1] + (sameYear ? '' : ' ' + parts.year) + ', ' + parts.hour + ':' + parts.minute;
+      times[i].title = new Intl.DateTimeFormat('en-GB', { dateStyle: 'full', timeStyle: 'medium' }).format(at) + ' (' + zone + ')';
+      times[i].removeAttribute('data-local');
+    }
+  }
+  showLocalTimes();
+  document.addEventListener('fx:sse:swapped', showLocalTimes);
+
   var refundInput = document.getElementById('refund_address');
   var refundForm = document.getElementById('refund-form');
   var refundField = document.getElementById('refund-field');

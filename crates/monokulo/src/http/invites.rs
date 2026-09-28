@@ -133,7 +133,7 @@ fn invite_signup_url(base_url: &str, raw_token: &str) -> String {
     format!("{base_url}/dashboard/signup?invite={raw_token}")
 }
 
-fn to_row_view(encryption_key: &[u8; 32], base_url: &str, row: InviteRequestRow, just_deleted: bool) -> AdminInviteRequestRow {
+fn to_row_view(encryption_key: &[u8; 32], base_url: &str, clock: &crate::views::time::Clock, row: InviteRequestRow, just_deleted: bool) -> AdminInviteRequestRow {
     let mailto_href = row
         .invite_token_encrypted
         .as_deref()
@@ -143,7 +143,7 @@ fn to_row_view(encryption_key: &[u8; 32], base_url: &str, row: InviteRequestRow,
         id: row.id,
         email: row.email,
         message: row.message,
-        created_at_display: crate::templates::unix_to_date_string(row.created_at),
+        created_at_display: clock.time(row.created_at),
         mailto_href,
         just_deleted,
     }
@@ -188,16 +188,17 @@ fn render_invites_page(
     fx: FxRequest,
 ) -> Response {
     let base = base_url(headers);
+    let clock = crate::views::time::Clock::for_user(admin_user);
     let db = state.db.lock();
     let total = db.count_unactioned_invite_requests().unwrap_or(0).max(0) as u32;
     let total_pages = total.div_ceil(PAGE_SIZE as u32).max(1);
     let page = clamp_page(total_pages, requested_page);
     let offset = (page as i64 - 1) * PAGE_SIZE;
     let rows = db.list_unactioned_invite_requests(PAGE_SIZE, offset).unwrap_or_default();
-    let row_views = rows.into_iter().map(|r| to_row_view(&state.encryption_key, &base, r, false)).collect();
+    let row_views = rows.into_iter().map(|r| to_row_view(&state.encryption_key, &base, &clock, r, false)).collect();
 
     let just_deleted_row =
-        deleted_id.and_then(|id| db.get_invite_request(id).ok().flatten()).map(|r| to_row_view(&state.encryption_key, &base, r, true));
+        deleted_id.and_then(|id| db.get_invite_request(id).ok().flatten()).map(|r| to_row_view(&state.encryption_key, &base, &clock, r, true));
 
     let view = AdminInvitesViewModel {
         error,

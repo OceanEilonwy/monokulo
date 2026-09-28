@@ -197,6 +197,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/login", axum::routing::get(dashboard::login_form).post(dashboard::login_submit))
         .route("/dashboard/logout", axum::routing::post(dashboard::logout_submit))
         .route("/dashboard/theme", axum::routing::post(dashboard::theme_submit))
+        .route("/dashboard/timezone", axum::routing::post(dashboard::timezone_submit))
         .route("/dashboard/connect", axum::routing::get(dashboard::connect_form).post(dashboard::connect_submit))
         .route("/dashboard/stores/new", axum::routing::get(home::new_store_picker))
         .route("/dashboard/stores/new/woocommerce", axum::routing::get(home::woocommerce_instructions))
@@ -513,7 +514,8 @@ pub(crate) fn resolve_authed_user(state: &AppState, headers: &HeaderMap) -> Opti
 
     let db = state.db.lock();
     let session = db.find_session(&token_hash).ok().flatten()?;
-    let user = db.get_user_by_id(&session.user_id).ok().flatten()?;
+    let mut user = db.get_user_by_id(&session.user_id).ok().flatten()?;
+    user.browser_timezone = fx::browser_zone(headers);
     Some((user, token_hash))
 }
 

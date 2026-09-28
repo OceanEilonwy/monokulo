@@ -30,25 +30,6 @@ pub fn display_or_dash(value: Option<&str>) -> String {
     }
 }
 
-/// Compact, non-human-readable form (raw Unix seconds) - a deliberate,
-/// user-requested reversion from an earlier human-readable-date attempt on
-/// this page. Kept as its own function (rather than inlining `.to_string()`
-/// at every call site) purely so the muted-dash-for-`None` behavior stays
-/// centralized in one place - a plain number is still `Option`-aware here,
-/// it's just no longer formatted as a calendar date.
-pub fn display_timestamp_or_dash(value: Option<i64>) -> String {
-    match value {
-        Some(v) => v.to_string(),
-        None => NO_VALUE.to_string(),
-    }
-}
-
-/// Same as [`display_timestamp_or_dash`] but for a timestamp that's always
-/// present (`created_at`/`expires_at`/`updated_at`) - never a dash.
-pub fn display_timestamp(value: i64) -> String {
-    value.to_string()
-}
-
 /// `docs/order_rescan_wbs.md` Phase 5.4 - the order-detail page's "Scan range"
 /// row, computed once here rather than branched on in the template.
 /// `first_scanned_height` gates everything: `None` means nothing has ever
@@ -181,13 +162,6 @@ pub fn date_string_to_unix_midnight(s: &str) -> Option<i64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn display_timestamp_or_dash_shows_a_raw_compact_number_not_a_human_readable_date() {
-        assert_eq!(display_timestamp_or_dash(Some(1_700_000_000)), "1700000000");
-        assert_eq!(display_timestamp_or_dash(None), NO_VALUE);
-        assert_eq!(display_timestamp(1_700_000_000), "1700000000");
-    }
 
     #[test]
     fn unix_to_date_string_matches_known_dates() {

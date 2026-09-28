@@ -81,7 +81,8 @@ pub struct AdminInviteRequestRow {
     pub id: String,
     pub email: String,
     pub message: String,
-    pub created_at_display: String,
+    /// When it arrived, in the admin's zone (`views::time`).
+    pub created_at_display: Markup,
     pub mailto_href: Option<String>,
     /// Set only for the one row this page just deleted - rendered struck-
     /// through, as a one-time confirmation, outside the page's own real
@@ -632,7 +633,7 @@ mod tests {
             id: id.to_string(),
             email: email.to_string(),
             message: "let me in please".to_string(),
-            created_at_display: "just now".to_string(),
+            created_at_display: maud::PreEscaped("just now".to_string()),
             mailto_href: Some(format!("mailto:{email}")),
             just_deleted: false,
         }

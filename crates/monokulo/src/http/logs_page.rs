@@ -106,8 +106,9 @@ fn now_nanos() -> i64 {
 
 /// Where times are shown: the browser's zone when it said one this server
 /// knows, UTC otherwise.
-fn zone(tz: &Timezone) -> (jiff::tz::TimeZone, String) {
-    match tz.0.as_deref().and_then(|name| jiff::tz::TimeZone::get(name).ok().map(|zone| (zone, name.to_string()))) {
+/// The zone the admin chose (`users.timezone`), else the browser's, else UTC.
+fn zone(tz: &Timezone, admin: &crate::db::UserRow) -> (jiff::tz::TimeZone, String) {
+    match admin.timezone.as_deref().or(tz.0.as_deref()).and_then(|name| jiff::tz::TimeZone::get(name).ok().map(|zone| (zone, name.to_string()))) {
         Some(found) => found,
         None => (jiff::tz::TimeZone::UTC, "UTC".to_string()),
     }
@@ -286,7 +287,7 @@ fn histogram_view(counts: &[u64], params: &LogsParams, from: i64, to: i64, zone:
 }
 
 async fn build(state: &AppState, admin: &crate::db::UserRow, params: &LogsParams, tz: &Timezone) -> LogsViewModel {
-    let (zone, zone_label) = zone(tz);
+    let (zone, zone_label) = zone(tz, admin);
     let now = now_nanos();
     let (from, to) = time_range(params, &zone, now);
     let search = params.search_only();
@@ -410,7 +411,7 @@ pub async fn syntax_page(State(state): State<AppState>, AuthedAdmin(admin, _): A
 /// event form), with the newest row's cursor as its id.
 pub async fn tail(
     State(state): State<AppState>,
-    AuthedAdmin(..): AuthedAdmin,
+    AuthedAdmin(admin, _): AuthedAdmin,
     tz: Timezone,
     headers: HeaderMap,
     Query(params): Query<LogsParams>,
@@ -423,7 +424,7 @@ pub async fn tail(
     let cursor = resume.or_else(|| Cursor::parse(&params.after)).unwrap_or(Cursor { ts: now_nanos(), service: String::new(), id: 0 });
     let sources = Sources::from_state(&state);
     let changed = sources.local.as_ref().map(telemetry::store::LogStore::subscribe);
-    let (zone, _) = zone(&tz);
+    let (zone, _) = zone(&tz, &admin);
     let user = parse(&params.q).ok().flatten();
 
     struct Tail {
@@ -475,7 +476,7 @@ pub async fn trace_page(
     if !is_trace_id(&trace_id) {
         return (StatusCode::NOT_FOUND, "No such trace.").into_response();
     }
-    let (zone, zone_label) = zone(&tz);
+    let (zone, zone_label) = zone(&tz, &admin);
     let sources = Sources::from_state(&state);
     let (trace, engine_problem) = crate::logs::trace(&sources, &trace_id).await;
     let search = LogsParams { q: format!("trace_id = '{trace_id}'"), range: "all".into(), ..LogsParams::default() };
@@ -540,7 +541,7 @@ pub async fn row_page(
     Path(cursor): Path<String>,
     Query(params): Query<LogsParams>,
 ) -> Response {
-    let (zone, _) = zone(&tz);
+    let (zone, _) = zone(&tz, &admin);
     let search = params.search_only();
     let back_url = search.url(LOGS);
     let found = match Cursor::parse(&cursor) {
@@ -627,7 +628,7 @@ pub async fn pos_timeline(State(state): State<AppState>, AuthedAdmin(admin, _): 
     if !super::pos_logs::is_session_id(&session) {
         return (StatusCode::NOT_FOUND, "No such POS session.").into_response();
     }
-    let (zone, zone_label) = zone(&tz);
+    let (zone, zone_label) = zone(&tz, &admin);
     let (mut rows, problem, truncated) = session_rows(&state, &session).await;
     rows.sort_by_key(|row| (attr_i64(row, "pos.seq").unwrap_or(i64::MAX), row.ts));
     // Delivery is at least once (a batch whose answer was lost is sent
@@ -782,8 +783,8 @@ fn csv_field(text: &str) -> String {
 
 /// `GET /dashboard/admin/logs/export?format=ndjson|csv`: this search's
 /// lines, newest first, up to `EXPORT_MAX`.
-pub async fn export(State(state): State<AppState>, AuthedAdmin(..): AuthedAdmin, tz: Timezone, Query(params): Query<LogsParams>) -> Response {
-    let (zone, _) = zone(&tz);
+pub async fn export(State(state): State<AppState>, AuthedAdmin(admin, _): AuthedAdmin, tz: Timezone, Query(params): Query<LogsParams>) -> Response {
+    let (zone, _) = zone(&tz, &admin);
     let (from, to) = time_range(&params, &zone, now_nanos());
     let (_, combined) = match filters(&params) {
         Ok(filters) => filters,

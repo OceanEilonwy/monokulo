@@ -126,6 +126,13 @@ fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
     }
 }
 
+/// A site's address as people say it: `shop.example.com`, not
+/// `https://shop.example.com/`.
+fn site_host(url: &str) -> &str {
+    let host = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")).unwrap_or(url);
+    host.strip_suffix('/').unwrap_or(host)
+}
+
 pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
     let body = html! {
         div class="wrap" {
@@ -134,10 +141,12 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 h1 { (store.display_name) }
 
                 div class="store-header-row" {
+                    // One line: the site shows as its host, cut with an ellipsis
+                    // rather than broken mid-word; the link keeps the full URL.
                     span class="store-header-status" {
                         span class=(format!("tag tag-{}", store.health)) { (store.health_label) }
-                        "\u{a0}" span class="muted" { (store.platform) } "\u{a0}·\u{a0}"
-                        a href=(store.site_url) { (store.site_url) }
+                        span class="muted" { (store.platform) } span class="muted" aria-hidden="true" { "·" }
+                        a class="store-site" href=(store.site_url) title=(store.site_url) { (site_host(&store.site_url)) }
                     }
                     a class="btn btn-secondary settings-link" href=(format!("/dashboard/stores/{}/settings", store.connection_id)) {
                         "Settings " span aria-hidden="true" { "→" }
@@ -155,7 +164,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 table class="kv-table" {
                     tr { th { "Base currency" } td { (store.base_currency) } }
                     tr { th { "Public key" } td { code { (store.public_key) } } }
-                    tr { th { "Connected" } td { (store.created_at) } }
+                    tr { th { "Connected" } td { (chrome.clock.time(store.created_at)) } }
                 }
                 @if chrome.is_admin {
                     p { (super::logs_link(chrome, "store.id", &store.connection_id, "This store's logs")) }
@@ -206,7 +215,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
                 @if store.recent_orders.is_empty() {
                     p class="muted" { "No orders yet." }
                 } @else {
-                    (orders_table(&store.connection_id, &store.recent_orders))
+                    (orders_table(&store.connection_id, &store.recent_orders, &chrome.clock))
                 }
                 p {
                     a href=(format!("/dashboard/stores/{}/orders", store.connection_id)) { "all orders →" }
