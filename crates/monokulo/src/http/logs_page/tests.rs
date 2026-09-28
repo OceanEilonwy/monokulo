@@ -168,6 +168,32 @@ async fn a_search_filters_and_a_fixi_search_gets_only_the_results() {
 }
 
 #[tokio::test]
+async fn the_logs_pages_own_requests_are_hidden_unless_asked_for() {
+    let s = setup(0).await;
+    tracing::dispatcher::with_default(&s.dispatch, || {
+        tracing::info_span!("HTTP request", http.route = "/dashboard/admin/logs/row/{cursor}").in_scope(|| tracing::info!("reading a log line"));
+        tracing::info_span!("HTTP request", http.route = "/api/v1/admin/logs").in_scope(|| tracing::info!("the engine served its lines"));
+    });
+    let store = s.state.log_store.clone().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while store.query(&telemetry::store::LogQuery { limit: 1000, ..Default::default() }).unwrap().len() < 5 {
+        assert!(std::time::Instant::now() < deadline, "the lines were never stored");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let (_, _, html) = s.get("/dashboard/admin/logs", false).await;
+    assert!(html.contains("payment seen for the page test"), "other requests' lines stay: {html}");
+    assert!(html.contains("the page test failed"), "lines outside any request stay: {html}");
+    assert!(!html.contains("reading a log line") && !html.contains("the engine served its lines"), "{html}");
+    assert!(html.contains(r#"<input type="checkbox" name="logs_requests" value="show">"#), "{html}");
+
+    let (_, _, html) = s.get("/dashboard/admin/logs?logs_requests=show", false).await;
+    assert!(html.contains("reading a log line") && html.contains("the engine served its lines"), "{html}");
+    assert!(html.contains(r#"name="logs_requests" value="show" checked"#), "{html}");
+    assert!(html.contains("logs_requests=show"), "the choice stays in the links: {html}");
+}
+
+#[tokio::test]
 async fn a_query_that_does_not_parse_is_shown_with_the_problem_marked() {
     let s = setup(0).await;
     let (status, _, html) = s.get(&logs_url("level = loud", ""), false).await;

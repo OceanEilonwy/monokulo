@@ -101,7 +101,11 @@
   --font-ui: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
 
-  color-scheme: light dark;
+  /* The browser's own parts of a control (a number box's step arrows, a
+     select's list, scroll bars) follow the theme in use, which the account
+     may have chosen against the OS preference: dark only in the blocks
+     below. */
+  color-scheme: light;
 }
 /* Dark: the OS preference, unless the account chose light. The two dark
    blocks must stay identical (`views::theme_tests` checks). */
@@ -122,6 +126,8 @@
     --warning: #e0a83d;
     --warning-ink: #111111;
     --chrome-bg: #181818;
+  color-scheme: dark;
+    color-scheme: dark;
     --state-pending-bg: #3a3017; --state-pending-border: #c99a2e; --state-pending-ink: #f2d487;
     --state-unconfirmed-bg: #272842; --state-unconfirmed-border: #8d8fe0; --state-unconfirmed-ink: #c9caff;
     --state-confirming-bg: #272842; --state-confirming-border: #8d8fe0; --state-confirming-ink: #c9caff;
@@ -151,6 +157,7 @@
   --warning: #e0a83d;
   --warning-ink: #111111;
   --chrome-bg: #181818;
+  color-scheme: dark;
   --state-pending-bg: #3a3017; --state-pending-border: #c99a2e; --state-pending-ink: #f2d487;
   --state-unconfirmed-bg: #272842; --state-unconfirmed-border: #8d8fe0; --state-unconfirmed-ink: #c9caff;
   --state-confirming-bg: #272842; --state-confirming-border: #8d8fe0; --state-confirming-ink: #c9caff;

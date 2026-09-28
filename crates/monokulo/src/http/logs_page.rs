@@ -60,6 +60,10 @@ pub struct LogsParams {
     pub from: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub to: String,
+    /// `show` includes the Logs page's own requests, hidden otherwise
+    /// ([`OWN_REQUESTS`]).
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub logs_requests: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub before: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
@@ -80,6 +84,7 @@ impl LogsParams {
             range: self.range.clone(),
             from: self.from.clone(),
             to: self.to.clone(),
+            logs_requests: self.logs_requests.clone(),
             ..LogsParams::default()
         }
     }
@@ -153,11 +158,25 @@ fn time_range(params: &LogsParams, zone: &jiff::tz::TimeZone, now: i64) -> (Opti
     }
 }
 
-/// The user's own query, and the whole filter with the level and service
-/// choices added.
+/// Routes whose lines only say someone was reading the logs: this page's
+/// own requests, and the engine's that serve them. Hidden unless asked for,
+/// or every look at the page would fill it.
+const OWN_REQUESTS: [&str; 2] = ["/dashboard/admin/logs%", "/api/v1/admin/logs%"];
+
+/// The user's own query, and the whole filter with the level, service and
+/// own-requests choices added.
 fn filters(params: &LogsParams) -> Result<(Option<Expr>, Option<Expr>), ParseError> {
     let user = parse(&params.q)?;
     let mut combined = user.clone();
+    if params.logs_requests != "show" {
+        let own = OWN_REQUESTS
+            .map(|pattern| Expr::Like { field: "http.route".into(), pattern: pattern.into() })
+            .into_iter()
+            .reduce(|a, b| Expr::Or(Box::new(a), Box::new(b)));
+        if let Some(own) = own {
+            combined = Some(and_also(combined.as_ref(), Expr::Not(Box::new(own))));
+        }
+    }
     if let Some(level) = Severity::from_name(&params.level) {
         combined = Some(and_also(combined.as_ref(), Expr::Compare { field: "level".into(), op: Op::Ge, value: QValue::Level(level) }));
     }
@@ -302,6 +321,7 @@ async fn build(state: &AppState, admin: &crate::db::UserRow, params: &LogsParams
             range: params.range().to_string(),
             from: params.from.clone(),
             to: params.to.clone(),
+            logs_requests: params.logs_requests == "show",
         },
         query_error: None,
         problems: Vec::new(),

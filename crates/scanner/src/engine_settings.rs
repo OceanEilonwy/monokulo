@@ -55,7 +55,7 @@ settings! {
         key: "key_custody.enabled_backends",
         env: "SCANNER_KEY_CUSTODY_ENABLED_BACKENDS",
         default: live_settings::parsed_default("plain"),
-        description: "Where stores' private view keys may be held, comma-separated: plain (in the engine's own memory) and socket (a separate key-custody-server process). Each store uses one of these; a store whose backend is turned off stops being scanned until it's turned on again or the store moves to another one.",
+        description: "Where stores' private view keys may be held (comma-separated in the environment variable): plain (in the engine's own memory) and socket (a separate key-custody-server process). Each store uses one of these; a store whose backend is turned off stops being scanned until it's turned on again or the store moves to another one.",
         example: "plain,socket",
     },
     KEY_CUSTODY_DEFAULT_BACKEND: CustodyBackend {

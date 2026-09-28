@@ -20,7 +20,8 @@ for (const [name, size] of Object.entries(SIZES)) {
     await page.setViewportSize(size);
     await signInAsAdmin(page);
     await page.goto(fixture().monokulo_url + '/dashboard/admin/settings');
-    const fields = page.locator('.setting-field');
+    // A key custody backend that's turned off keeps its section hidden.
+    const fields = page.locator('.setting-field:visible');
     expect(await fields.count()).toBeGreaterThan(20);
     for (const field of await fields.all()) {
       await expect(field.locator('.field-help').first()).toBeVisible();

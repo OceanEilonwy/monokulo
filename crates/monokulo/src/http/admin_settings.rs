@@ -287,6 +287,27 @@ pub async fn page(State(state): State<AppState>, AuthedAdmin(admin_user, _): Aut
     render(&state, &admin_user, view)
 }
 
+/// The submitted form by name. A list of choices sends each one ticked
+/// under the same name, after an empty one (so ticking none still sends
+/// the name): they're joined with commas, the setting's own format.
+fn joined(pairs: Vec<(String, String)>) -> HashMap<String, String> {
+    let mut form: HashMap<String, String> = HashMap::new();
+    for (name, value) in pairs {
+        match form.get_mut(&name) {
+            Some(joined) if joined.is_empty() => *joined = value,
+            Some(joined) if !value.is_empty() => {
+                joined.push(',');
+                joined.push_str(&value);
+            }
+            Some(_) => {}
+            None => {
+                form.insert(name, value);
+            }
+        }
+    }
+    form
+}
+
 /// `POST /dashboard/admin/settings` - saves every monokulo setting the form
 /// submitted, through the registry (admin_settings_v2.md part 1): all
 /// checked first, then applied to the running process and stored together,
@@ -295,8 +316,9 @@ pub async fn save_monokulo(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
     fx: FxRequest,
-    Form(form): Form<HashMap<String, String>>,
+    Form(form): Form<Vec<(String, String)>>,
 ) -> Response {
+    let form = joined(form);
     const SECTION: SettingsSection = SettingsSection::Monokulo;
     let Some(registry) = state.settings.registry.as_ref() else {
         return render_error(&state, &admin_user, "Settings can't be saved on this instance.".to_string(), fx, SECTION).await;
@@ -454,8 +476,9 @@ pub async fn save_scanner(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
     fx: FxRequest,
-    Form(form): Form<HashMap<String, String>>,
+    Form(form): Form<Vec<(String, String)>>,
 ) -> Response {
+    let form = joined(form);
     const SECTION: SettingsSection = SettingsSection::Engine;
     let (engine_url, admin_token) = engine_connection(&state.db.lock());
     if engine_url.trim().is_empty() || admin_token.trim().is_empty() {
@@ -812,12 +835,21 @@ mod tests {
         }
     }
 
+    #[test]
+    fn ticked_choices_are_joined_and_ticking_none_still_sends_the_name() {
+        let pairs = |list: &[(&str, &str)]| list.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect::<Vec<_>>();
+        let form = super::joined(pairs(&[("list", ""), ("list", "plain"), ("list", "socket"), ("other", "a,b")]));
+        assert_eq!(form["list"], "plain,socket");
+        assert_eq!(form["other"], "a,b");
+        assert_eq!(super::joined(pairs(&[("list", "")]))["list"], "");
+    }
+
     /// A value shown in a text or number input, or selected in a select.
     fn shows_value(html: &str, value: &str) -> bool {
         html.contains(&format!("value=\"{value}\" selected")) || html.contains(&format!("value=\"{value}\">"))
-            || html.contains(&format!("value=\"{value}\" min")) || html.contains(&format!("value=\"{value}\";"))
+            || html.contains(&format!("value=\"{value}\" min")) || html.contains(&format!("value=\"{value}\" id="))
+            || html.contains(&format!("value=\"{value}\" checked"))
             || html.contains(&format!("\">{value}</textarea>"))
-            || html.contains(&format!("value=\"{value}\"></label>"))
     }
 
     // -- Task 3.5: settings that were already live stay live --------------
