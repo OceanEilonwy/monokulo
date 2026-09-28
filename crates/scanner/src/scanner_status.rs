@@ -5,7 +5,7 @@
 //! observational: nothing here feeds back into scanning behavior itself,
 //! and losing it (a restart) loses only history, never anything the
 //! scanner's own correctness depends on - the same relationship
-//! `daemon_fallback`'s own `eprintln!` diagnostics have to real behavior,
+//! `daemon_fallback`'s own log events have to real behavior,
 //! just queryable instead of log-only.
 
 use std::collections::HashMap;

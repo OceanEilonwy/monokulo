@@ -22,25 +22,31 @@ because it builds on the `live-settings` crate from that work).
 | Task | State | Commit | Notes |
 |---|---|---|---|
 | Plan | done | 741b108 | `structured_logging.md` |
-| 1.1 `crates/telemetry` | done | (this commit) | init, JSON and pretty output, reload handle |
-| 1.2 move log calls to `tracing` | done for server code | (this commit) | see "What was left on println/eprintln" |
-| 1.3 level and dev mode as live settings | settings + apply done; admin page control not yet | (this commit) | see "Next" |
-| 1.4 redaction | done | (this commit) | `crates/telemetry/src/redact.rs` |
+| 1.1 `crates/telemetry` | done | ace9ab7 | init, JSON and pretty output, reload handle |
+| 1.2 move log calls to `tracing` | done for server code | ace9ab7 | see "What was left on println/eprintln" |
+| 1.3 level and dev mode as live settings | done | ace9ab7, and the commit "development logging chosen by the hour" | admin page: "Logging" heading in both halves; `logging.dev_mode_until` is a select (Off / 1 / 4 / 24 hours / "On until <time> UTC") |
+| 1.4 redaction | done | ace9ab7 | `crates/telemetry/src/redact.rs` |
 | 2.x onwards | not started | | |
 
 ### Next
 
-- 1.3, admin page: `logging.dev_mode_until` currently shows as a plain
-  number input (Unix seconds) on the admin settings page, for both
-  monokulo's and the engine's settings. Give it its own control in
-  `crates/monokulo/src/views/admin.rs` (`scalar_input`, keyed on the setting
-  key): a select of "Off", "On for 1 hour", "4 hours", "24 hours", whose
-  option values are absolute Unix times computed when the page is rendered,
-  plus a line saying "On until <time> UTC" when it is on. No server-side
-  parsing change is needed, since the posted value is still a Unix time.
-  Add "Logging" to `engine_group` in the same file so the engine's two
-  logging settings get their own heading instead of "Other".
-- Then part 2 (spans and trace propagation).
+Part 2, spans and trace propagation:
+
+- 2.1: `tower-http` `TraceLayer` (needs the `trace` and `request-id`
+  features on the existing `tower-http` dependency in both
+  `crates/monokulo` and `crates/scanner`) on both routers, fields from OTel
+  HTTP conventions. Watch the monokulo router: `http::abuse` reads the peer
+  address from `ConnectInfo`; log it as `client.address` so redaction
+  applies.
+- 2.2: spans around scanner ticks (`loops.rs`), per-store scans
+  (`scanner.rs`), webhook delivery attempts (`webhook_delivery.rs`), rescan
+  jobs and key-custody calls. Many events inside them already carry
+  `network`/`store.id` directly; once spans carry them, those fields can be
+  dropped from the events.
+- 2.3: `tracing-opentelemetry` + `opentelemetry` for trace ids, and W3C
+  `traceparent` on `engine_client.rs` requests and on webhooks. The JSON
+  layer should then add `trace_id` and `span_id` to each line (read from the
+  OTel context in the span extensions).
 
 ## Decisions and deviations from the plan
 

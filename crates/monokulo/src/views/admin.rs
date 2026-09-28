@@ -202,6 +202,12 @@ pub enum SettingKindView {
     Text,
     Secret,
     Json,
+    /// A Unix time until which something stays on (development logging),
+    /// chosen as "off" or "on for N hours" from `now`. Never sent by the
+    /// engine; set by the handler for keys it knows (structured_logging.md
+    /// 1.3).
+    #[serde(skip)]
+    TimeLimit { now: u64 },
 }
 
 impl From<live_settings::SettingKind> for SettingKindView {
@@ -320,6 +326,21 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
             }
         },
         SettingKindView::Json => html! { textarea name=(name) rows="4" { (field.value) } },
+        SettingKindView::TimeLimit { now } => {
+            let until: u64 = field.value.trim().parse().unwrap_or(0);
+            let on = until > *now;
+            html! {
+                select name=(name) {
+                    @if on {
+                        option value=(until) selected { "On until " (telemetry::format_unix_utc(until)) }
+                    }
+                    option value="0" selected[!on] { "Off" }
+                    @for (hours, label) in [(1, "On for 1 hour"), (4, "On for 4 hours"), (24, "On for 24 hours")] {
+                        option value=(now + hours * 3600) { (label) }
+                    }
+                }
+            }
+        }
         _ => html! { input type="text" name=(name) value=(field.value); },
     }
 }
@@ -392,6 +413,11 @@ fn is_abuse_field(key: &str) -> bool {
     key.starts_with("abuse.") || key.starts_with("rate_limit.")
 }
 
+/// Settings shown under "Logging".
+fn is_logging_field(key: &str) -> bool {
+    key.starts_with("logging.")
+}
+
 /// The engine's settings, grouped (task 4.7).
 fn engine_group(key: &str) -> &'static str {
     match key.split('.').next().unwrap_or("") {
@@ -399,12 +425,13 @@ fn engine_group(key: &str) -> &'static str {
         "payment" => "Payments",
         "server" => "Server",
         "webhooks" => "Webhooks",
+        "logging" => "Logging",
         _ => "Other",
     }
 }
 
 pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -> Markup {
-    let groups = ["Key custody", "Payments", "Server", "Webhooks", "Other"];
+    let groups = ["Key custody", "Payments", "Server", "Webhooks", "Logging", "Other"];
     let body = html! {
         div class="wrap" {
             nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
@@ -420,7 +447,7 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
             h2 { "Monokulo" }
             p class="hint" { "Saved settings apply straight away. An environment variable, where set, always wins over the value saved here - saving still works, it just won't take effect until that variable is unset." }
             form method="post" action="/dashboard/admin/settings" {
-                @for field in data.monokulo_fields.iter().filter(|f| !is_abuse_field(&f.key)) {
+                @for field in data.monokulo_fields.iter().filter(|f| !is_abuse_field(&f.key) && !is_logging_field(&f.key)) {
                     (scalar_field(field))
                 }
                 h3 id="abuse-protection" { "Abuse protection" }
@@ -431,6 +458,10 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
                     "plugins using their store's secret key are never checked."
                 }
                 @for field in data.monokulo_fields.iter().filter(|f| is_abuse_field(&f.key)) {
+                    (scalar_field(field))
+                }
+                h3 id="logging" { "Logging" }
+                @for field in data.monokulo_fields.iter().filter(|f| is_logging_field(&f.key)) {
                     (scalar_field(field))
                 }
                 button type="submit" { "Save monokulo settings" }
@@ -682,6 +713,30 @@ mod tests {
         let secret = scalar_field(&field(SettingKindView::Secret, "\u{2022}\u{2022}\u{2022}\u{2022}")).into_string();
         assert!(secret.contains(r#"type="password""#) && secret.contains(r#"value="""#), "{secret}");
         assert!(!secret.contains('\u{2022}'));
+    }
+
+    #[test]
+    fn development_logging_is_chosen_as_off_or_a_number_of_hours_and_says_when_it_ends() {
+        let now = 1_790_000_000;
+        let field = |value: &str| AdminScalarFieldView {
+            key: "logging.dev_mode_until".to_string(),
+            label: "logging dev mode until".to_string(),
+            value: value.to_string(),
+            kind: SettingKindView::TimeLimit { now },
+            ..Default::default()
+        };
+        let off = scalar_field(&field("0")).into_string();
+        assert!(off.contains(r#"<option value="0" selected>Off</option>"#), "{off}");
+        assert!(off.contains(&format!(r#"<option value="{}">On for 1 hour</option>"#, now + 3600)), "{off}");
+        assert!(off.contains(&format!(r#"<option value="{}">On for 24 hours</option>"#, now + 86_400)), "{off}");
+        assert!(!off.contains("On until"), "{off}");
+
+        let on = scalar_field(&field(&(now + 600).to_string())).into_string();
+        assert!(on.contains(&format!(r#"<option value="{}" selected>On until 2026-09-21 14:23 UTC</option>"#, now + 600)), "{on}");
+        assert!(on.contains(r#"<option value="0">Off</option>"#), "{on}");
+
+        let ended = scalar_field(&field(&(now - 1).to_string())).into_string();
+        assert!(ended.contains(r#"<option value="0" selected>Off</option>"#), "a time already past is off: {ended}");
     }
 
     #[test]

@@ -204,12 +204,23 @@ async fn fetch_scanner_settings(
 
 /// Assembles the whole page's view model: monokulo's fields from its
 /// registry, the engine's fetched over HTTP.
+/// Settings that hold a Unix time until which something stays on get the
+/// "off / on for N hours" control instead of a number box.
+fn with_time_limits(fields: &mut [AdminScalarFieldView]) {
+    let now = u64::try_from(crate::now_unix()).unwrap_or(0);
+    for field in fields.iter_mut().filter(|f| f.key == "logging.dev_mode_until") {
+        field.kind = SettingKindView::TimeLimit { now };
+    }
+}
+
 async fn build_view_model(state: &AppState, error: Option<String>, success: Option<String>, notices: Vec<Notice>) -> AdminSettingsViewModel {
-    let monokulo_fields = monokulo_fields(state);
+    let mut monokulo_fields = monokulo_fields(state);
+    with_time_limits(&mut monokulo_fields);
     let (engine_url, admin_token) = engine_connection(&state.db.lock());
     let mut view = AdminSettingsViewModel { error, success, notices, monokulo_fields, ..Default::default() };
     match fetch_scanner_settings(&engine_url, &admin_token).await {
-        Ok(Some((fields, networks))) => {
+        Ok(Some((mut fields, networks))) => {
+            with_time_limits(&mut fields);
             view.scanner_configured = true;
             view.scanner_reachable = true;
             view.scanner_fields = fields;

@@ -197,3 +197,62 @@ fn check_level_accepts_filters_and_refuses_the_rest() {
 fn unix_times_read_as_utc() {
     assert_eq!(format_unix_utc(1_790_000_000), "2026-09-21 14:13 UTC");
 }
+
+mod through_settings {
+    use live_settings::{settings, AnySetting, FieldError, Section, Snapshot};
+
+    use super::*;
+
+    settings! {
+        LEVEL: String {
+            key: "logging.level",
+            env: "TELEMETRY_TEST_LOG",
+            default: DEFAULT_LEVEL.to_string(),
+            check: check_level,
+            description: "level",
+        },
+        DEV_MODE_UNTIL: u64 {
+            key: "logging.dev_mode_until",
+            env: "TELEMETRY_TEST_LOGGING_DEV_MODE_UNTIL",
+            default: 0,
+            description: "until",
+        },
+    }
+
+    #[derive(Debug, Clone, PartialEq)]
+    struct Logging(LogConfig);
+
+    impl AsRef<LogConfig> for Logging {
+        fn as_ref(&self) -> &LogConfig {
+            &self.0
+        }
+    }
+
+    impl Section for Logging {
+        const NAME: &'static str = "logging";
+        fn keys() -> &'static [&'static dyn AnySetting] {
+            &[&LEVEL, &DEV_MODE_UNTIL]
+        }
+        fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
+            Ok(Logging(LogConfig { level: snapshot.get(&LEVEL), dev_mode_until: snapshot.get(&DEV_MODE_UNTIL) }))
+        }
+    }
+
+    /// The one test in this binary that installs the process-wide
+    /// subscriber; the others use a thread-local one, which wins on their
+    /// own threads.
+    #[tokio::test]
+    async fn a_saved_level_reaches_the_process_wide_subscriber() {
+        let store = Arc::new(live_settings::MemoryStore::default());
+        let mut builder = live_settings::Registry::builder_with_env(store, ALL, live_settings::Env::fixed::<&str, &str>([]));
+        builder.reloadable(LogReloadable::<Logging>::default());
+        let registry = builder.build().unwrap();
+        let telemetry = init("telemetry-test", "TELEMETRY_TEST");
+        registry.boot().await.unwrap();
+        assert_eq!(telemetry.status().effective_filter, "info");
+
+        registry.save(vec![("logging.level".to_string(), Some("debug,hyper=warn".to_string()))]).await.unwrap();
+        assert_eq!(telemetry.status().config.level, "debug,hyper=warn");
+        assert_eq!(telemetry.status().effective_filter, "debug,hyper=warn");
+    }
+}
