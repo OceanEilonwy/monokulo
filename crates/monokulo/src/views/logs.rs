@@ -28,6 +28,11 @@ pub struct RowView {
     /// The POS session this line belongs to, as a timeline.
     pub pos_session_url: Option<String>,
     pub properties: Vec<PropertyView>,
+    /// Where the properties load from on first open. `None` renders them
+    /// in the page (the trace page, a single line's page).
+    pub properties_url: Option<String>,
+    /// Shown opened (a single line's page).
+    pub open: bool,
 }
 
 /// One property of an expanded line, with links that narrow or widen the
@@ -170,6 +175,12 @@ const PAGE_SCRIPT: &str = r##"(function () {
     if (b) { b.setAttribute("aria-pressed", "false"); b.textContent = "Live"; }
   }
   document.addEventListener("fx:config", function (evt) {
+    // A line's properties load the first time it opens, never on close.
+    if (evt.target.matches && evt.target.matches("details.log-row")) {
+      if (!evt.target.open || evt.target.dataset.loaded) evt.preventDefault();
+      else evt.target.dataset.loaded = "1";
+      return;
+    }
     if (evt.target.id === "log-live") {
       if (stream) { evt.preventDefault(); stop(); } else evt.detail.cfg.logLive = true;
     } else if (evt.target.id === "log-search") stop();
@@ -198,45 +209,91 @@ fn level_class(severity: Severity) -> &'static str {
     }
 }
 
-/// One line: a summary that expands to its properties.
+/// One line: a summary that expands to its properties. In a list the
+/// properties aren't sent with the page: opening the line fetches them
+/// (fixi, on `toggle`), and without JavaScript the line holds a link to its
+/// own page instead.
 pub fn row(row: &RowView) -> Markup {
+    let props_id = format!("{}-props", row.dom_id);
     html! {
-        details class="log-row" id=(row.dom_id) {
-            summary {
-                time datetime=(row.time_iso) { (row.time_display) }
-                span class=(level_class(row.severity)) { (row.severity.upper()) }
-                span class="svc" { (row.service) }
-                span class="msg" { (row.message) }
+        @if let Some(url) = &row.properties_url {
+            details class="log-row" id=(row.dom_id) open[row.open] fx-action=(url) fx-trigger="toggle" fx-target=(format!("#{props_id}")) fx-swap="outerHTML" {
+                (summary(row))
+                div class="props" id=(props_id) { a href=(url) { "Show this line's properties" } }
             }
-            div class="props" {
-                table class="kv-table" {
-                    tbody {
-                        tr { th { "target" } td { code { (row.target) } } td {} }
-                        @for property in &row.properties {
-                            tr {
-                                th { (property.name) }
-                                td { code { (property.value) } }
-                                td class="act" {
-                                    @if let Some(find) = &property.find_url {
-                                        a href=(find) title=(format!("Only lines where {} is this", property.name)) { "Find" }
-                                    }
-                                    @if let Some(exclude) = &property.exclude_url {
-                                        a href=(exclude) title=(format!("Hide lines where {} is this", property.name)) { "Exclude" }
-                                    }
+        } @else {
+            details class="log-row" id=(row.dom_id) open[row.open] {
+                (summary(row))
+                (properties(row))
+            }
+        }
+    }
+}
+
+fn summary(row: &RowView) -> Markup {
+    html! {
+        summary {
+            time datetime=(row.time_iso) { (row.time_display) }
+            span class=(level_class(row.severity)) { (row.severity.upper()) }
+            span class="svc" { (row.service) }
+            span class="msg" { (row.message) }
+        }
+    }
+}
+
+/// A line's properties, with links that narrow or widen the search by
+/// each; also what fixi swaps in when a line opens.
+pub fn properties(row: &RowView) -> Markup {
+    html! {
+        div class="props" id=(format!("{}-props", row.dom_id)) {
+            table class="kv-table" {
+                tbody {
+                    tr { th { "target" } td { code { (row.target) } } td {} }
+                    @for property in &row.properties {
+                        tr {
+                            th { (property.name) }
+                            td { code { (property.value) } }
+                            td class="act" {
+                                @if let Some(find) = &property.find_url {
+                                    a href=(find) title=(format!("Only lines where {} is this", property.name)) { "Find" }
+                                }
+                                @if let Some(exclude) = &property.exclude_url {
+                                    a href=(exclude) title=(format!("Hide lines where {} is this", property.name)) { "Exclude" }
                                 }
                             }
                         }
                     }
                 }
-                @if let Some(trace) = &row.trace_url {
-                    p { a href=(trace) { "Show the whole trace" } }
-                }
-                @if let Some(session) = &row.pos_session_url {
-                    p { a href=(session) { "Show the POS session timeline" } }
-                }
+            }
+            @if let Some(trace) = &row.trace_url {
+                p { a href=(trace) { "Show the whole trace" } }
+            }
+            @if let Some(session) = &row.pos_session_url {
+                p { a href=(session) { "Show the POS session timeline" } }
             }
         }
     }
+}
+
+/// `/dashboard/admin/logs/row/{cursor}` without JavaScript: one line,
+/// opened, with a way back to the search it came from.
+pub fn row_page(chrome: &PageChrome, row_view: Option<&RowView>, back_url: &str) -> Markup {
+    let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
+    let body = html! {
+        div class="wrap wrap-wide" {
+            nav class="context-nav" aria-label="Breadcrumb" {
+                a href="/dashboard" { "Dashboard" } " / " a href=(back_url) { "Logs" }
+            }
+            h1 { "Log line" }
+            @if let Some(r) = row_view {
+                div class="log-rows" { (row(r)) }
+            } @else {
+                p class="muted" { "This line is no longer kept: log retention has deleted it." }
+            }
+            p { a href=(back_url) { "Back to the search" } }
+        }
+    };
+    layout_with_head(chrome, "Log line - Monokulo", extra_head, body)
 }
 
 /// The "Older" control: a plain link to the next page, which fixi turns

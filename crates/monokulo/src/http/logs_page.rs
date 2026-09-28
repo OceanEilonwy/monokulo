@@ -5,6 +5,8 @@
 //! - `GET /dashboard/admin/logs/tail`: new lines as server-sent events
 //!   (Live; JavaScript only).
 //! - `GET /dashboard/admin/logs/trace/{trace_id}`: one trace's waterfall.
+//! - `GET /dashboard/admin/logs/row/{cursor}`: one line's properties, which
+//!   a line in a list loads when it's first opened.
 //! - `GET /dashboard/admin/logs/pos/{session}`: one POS session's
 //!   timeline; `GET /dashboard/admin/logs/pos?order=...` finds the session
 //!   that created an order.
@@ -198,7 +200,9 @@ fn find_links(params: &LogsParams, user: Option<&Expr>, field: &str, value: Opti
     (Some(with(condition.clone())), Some(with(Expr::Not(Box::new(condition)))))
 }
 
-fn row_view(row: &LogRow, params: &LogsParams, user: Option<&Expr>, zone: &jiff::tz::TimeZone) -> RowView {
+/// A line as shown. `lazy`: its properties load when it opens (lists),
+/// rather than coming with the page.
+fn row_view(row: &LogRow, params: &LogsParams, user: Option<&Expr>, zone: &jiff::tz::TimeZone, lazy: bool) -> RowView {
     let severity = row.severity();
     let mut properties = Vec::new();
     let mut push = |name: &str, shown: String, value: Option<QValue>| {
@@ -235,6 +239,8 @@ fn row_view(row: &LogRow, params: &LogsParams, user: Option<&Expr>, zone: &jiff:
             .and_then(Value::as_str)
             .filter(|s| super::pos_logs::is_session_id(s))
             .map(|s| format!("{LOGS}/pos/{s}")),
+        properties_url: lazy.then(|| params.search_only().url(&format!("{LOGS}/row/{}", row.cursor().encode()))),
+        open: false,
         properties,
     }
 }
@@ -342,7 +348,7 @@ async fn build(state: &AppState, admin: &crate::db::UserRow, params: &LogsParams
     };
     vm.problems.extend(page.local_problem);
     vm.problems.extend(page.engine_problem);
-    vm.rows = page.rows.iter().map(|row| row_view(row, params, user.as_ref(), &zone)).collect();
+    vm.rows = page.rows.iter().map(|row| row_view(row, params, user.as_ref(), &zone, true)).collect();
     if params.before.is_empty() && params.after.is_empty() {
         vm.histogram = histogram_view(&counts, params, histogram_from, histogram_to, &zone);
     }
@@ -439,7 +445,7 @@ pub async fn tail(
                 let Ok(page) = crate::logs::read(&tail.sources, &request).await else { continue };
                 let Some(newest) = page.rows.first() else { continue };
                 tail.cursor = newest.cursor();
-                let rows: Vec<RowView> = page.rows.iter().map(|row| row_view(row, &params, user.as_ref(), &zone)).collect();
+                let rows: Vec<RowView> = page.rows.iter().map(|row| row_view(row, &params, user.as_ref(), &zone, true)).collect();
                 let event = axum::response::sse::Event::default()
                     .event(r##"{"target":"#log-rows","swap":"afterbegin"}"##)
                     .id(tail.cursor.encode())
@@ -505,13 +511,51 @@ pub async fn trace_page(
     let vm = view::TraceViewModel {
         trace_id: trace_id.clone(),
         spans,
-        rows: trace.logs.iter().map(|row| row_view(row, &search, user.as_ref(), &zone)).collect(),
+        rows: trace.logs.iter().map(|row| row_view(row, &search, user.as_ref(), &zone, false)).collect(),
         problems: engine_problem.into_iter().collect(),
         logs_url: search.url(LOGS),
         zone_label,
     };
     let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/trace/{trace_id}"));
     Html(view::trace_page(&chrome, &vm).into_string()).into_response()
+}
+
+/// `GET /dashboard/admin/logs/row/{cursor}`: one line's properties. For
+/// fixi (a line opening in a list), just the properties; otherwise a page
+/// with the line opened. The search's parameters come along, so the Find
+/// and Exclude links add to it.
+pub async fn row_page(
+    State(state): State<AppState>,
+    AuthedAdmin(admin, _): AuthedAdmin,
+    fx: FxRequest,
+    tz: Timezone,
+    Path(cursor): Path<String>,
+    Query(params): Query<LogsParams>,
+) -> Response {
+    let (zone, _) = zone(&tz);
+    let search = params.search_only();
+    let back_url = search.url(LOGS);
+    let found = match Cursor::parse(&cursor) {
+        // The first line before one just after it, in the order every
+        // store pages in, is the line itself when it is still kept.
+        Some(wanted) => {
+            let just_after = Cursor { id: wanted.id + 1, ..wanted.clone() };
+            let page = crate::logs::read(&Sources::from_state(&state), &request(None, None, None, &just_after.encode(), "", 1)).await.ok();
+            page.and_then(|page| page.rows.into_iter().next()).filter(|row| row.cursor() == wanted)
+        }
+        None => None,
+    };
+    let user = parse(&search.q).ok().flatten();
+    let row = found.map(|row| RowView { open: true, ..row_view(&row, &search, user.as_ref(), &zone, false) });
+    if fx.0 {
+        return match &row {
+            Some(row) => Html(view::properties(row).into_string()).into_response(),
+            None => (StatusCode::NOT_FOUND, Html(r#"<div class="props"><p class="muted">This line is no longer kept.</p></div>"#)).into_response(),
+        };
+    }
+    let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/row/{cursor}"));
+    let status = if row.is_some() { StatusCode::OK } else { StatusCode::NOT_FOUND };
+    (status, Html(view::row_page(&chrome, row.as_ref(), &back_url).into_string())).into_response()
 }
 
 /// Most events one POS timeline shows.

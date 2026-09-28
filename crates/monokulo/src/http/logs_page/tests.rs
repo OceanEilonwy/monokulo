@@ -117,11 +117,43 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     assert!(html.contains(r#"class="log-histogram""#), "{html}");
     assert!(html.contains(">Refresh</a>"), "a Refresh link, never a refresh by itself");
     assert!(!html.contains("http-equiv=\"refresh\""));
-    // Expanded properties, with links narrowing or widening the search.
-    assert!(html.contains(&format!(r#"href="{}""#, logs_url("order.id = 'o_page'", "").replace('&', "&amp;"))), "{html}");
-    assert!(html.contains(&format!(r#"href="{}""#, logs_url("not order.id = 'o_page'", ""))), "{html}");
-    assert!(html.contains(&format!("/dashboard/admin/logs/trace/{}", s.trace_id)));
     assert!(html.contains("<code>order.id</code>"), "property names listed in the help: {html}");
+    // Lines come closed, without their properties: each holds a link to
+    // its own page, which fixi fetches into place when it opens.
+    assert!(!html.contains(r#"<details class="log-row" id="log-monokulo-1" open"#));
+    assert!(!html.contains("Only lines where order.id is this"), "no properties in the list: {html}");
+    let row_url = properties_url(&html, "payment seen for the page test");
+    assert!(html.contains(r#"fx-trigger="toggle""#) && html.contains("Show this line"), "{html}");
+
+    // Opened without JavaScript: a page with the line open, links
+    // narrowing or widening the search, and a way back.
+    let (status, _, page) = s.get(&row_url, false).await;
+    assert_eq!(status, StatusCode::OK, "{page}");
+    assert!(page.contains(r#"<details class="log-row""#) && page.contains(" open>"), "{page}");
+    assert!(page.contains(&format!(r#"href="{}""#, logs_url("order.id = 'o_page'", "").replace('&', "&amp;"))), "{page}");
+    assert!(page.contains(&format!(r#"href="{}""#, logs_url("not order.id = 'o_page'", ""))), "{page}");
+    assert!(page.contains(&format!("/dashboard/admin/logs/trace/{}", s.trace_id)));
+    assert!(page.contains("Back to the search"));
+
+    // Opened with fixi: only the properties, replacing the placeholder.
+    let (status, _, fragment) = s.get(&row_url, true).await;
+    assert_eq!(status, StatusCode::OK);
+    assert!(fragment.starts_with(r#"<div class="props" id="log-monokulo-"#), "{fragment}");
+    assert!(fragment.contains("<th>order.id</th>") && fragment.contains("Only lines where order.id is this"), "{fragment}");
+
+    // A line retention has deleted.
+    let (status, _, page) = s.get("/dashboard/admin/logs/row/1.999999.monokulo", false).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(page.contains("no longer kept"), "{page}");
+}
+
+/// The properties URL of the line whose message is `message`.
+fn properties_url(html: &str, message: &str) -> String {
+    let at = html.find(message).unwrap_or_else(|| panic!("{message} missing: {html}"));
+    let start = html[..at].rfind(r#"<details class="log-row""#).unwrap();
+    let action = &html[start..at];
+    let from = action.find(r#"fx-action=""#).unwrap() + r#"fx-action=""#.len();
+    action[from..from + action[from..].find('"').unwrap()].replace("&amp;", "&")
 }
 
 #[tokio::test]
@@ -335,7 +367,8 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
     assert_eq!(status, StatusCode::NOT_FOUND);
     assert!(html.contains("No POS session recorded"));
     let (_, _, html) = s.get(&logs_url("pos.kind = 'order.created'", ""), false).await;
-    assert!(html.contains(&format!(r#"href="/dashboard/admin/logs/pos/{session}""#)) && html.contains("Show the POS session timeline"), "{html}");
+    let (_, _, fragment) = s.get(&properties_url(&html, "order.created has_note=true"), true).await;
+    assert!(fragment.contains(&format!(r#"href="/dashboard/admin/logs/pos/{session}""#)) && fragment.contains("Show the POS session timeline"), "{fragment}");
     let (status, _, _) = s.get("/dashboard/admin/logs/pos/not-a-session!", false).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
 }

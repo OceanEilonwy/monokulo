@@ -143,6 +143,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/admin/logs/tail", axum::routing::get(logs_page::tail))
         .route("/dashboard/admin/logs/export", axum::routing::get(logs_page::export))
         .route("/dashboard/admin/logs/trace/{trace_id}", axum::routing::get(logs_page::trace_page))
+        .route("/dashboard/admin/logs/row/{cursor}", axum::routing::get(logs_page::row_page))
         .route("/dashboard/admin/logs/pos", axum::routing::get(logs_page::pos_session_for_order))
         .route("/dashboard/admin/logs/pos/{session}", axum::routing::get(logs_page::pos_timeline))
         .route("/dashboard/admin/logs/saved", post(logs_page::save_search))
