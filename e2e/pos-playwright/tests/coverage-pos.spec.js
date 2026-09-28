@@ -121,7 +121,7 @@ test('real POS payment card copies the address and saves a refund address', asyn
   await context.grantPermissions(['clipboard-read', 'clipboard-write']);
   await page.goto(posUrl());
   const card = page.locator('.pos-pay-card');
-  await expect(card.locator('.pos-expiry')).toContainText('Send payment within');
+  await expect(page.locator('.pos-order-heading .pos-expiry')).toContainText(/(59m|1h) left/);
   const address = await card.locator('.pos-address code').getAttribute('title');
   await card.getByRole('button', { name: 'Copy payment address' }).click();
   await expect(card.getByRole('button', { name: 'Copy payment address' })).toHaveText('Copied');
@@ -517,13 +517,14 @@ test('store priced in AUD: the merchant keys in dollars and cents and sees both 
 test('payment countdown keeps ticking down while the customer finds their wallet', async ({ page }) => {
   await page.clock.install();
   await page.goto(posUrl());
-  const expiry = page.locator('.pos-pay-card .pos-expiry');
+  // Under the status badge, beside the heading.
+  const expiry = page.locator('.pos-order-heading .pos-expiry');
   // The fixture order expires an hour after it was made.
-  await expect(expiry).toContainText(/Send payment within (59m|1h)/);
+  await expect(expiry).toContainText(/(59m|1h) left/);
   await page.clock.runFor(20 * 60 * 1000);
-  await expect(expiry).toContainText(/Send payment within (39|40)m/);
+  await expect(expiry).toContainText(/(39|40)m left/);
   await page.clock.runFor(39.5 * 60 * 1000);
-  await expect(expiry).toContainText('less than a minute');
+  await expect(expiry).toContainText('less than a minute left');
 });
 
 test('merchant moves between the keypad, the stack and the order list', async ({ page, request }) => {

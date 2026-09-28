@@ -13,9 +13,6 @@
   --pos-key: var(--paper-raised);
   --pos-coin-face: var(--paper-raised);
   --pos-focus: color-mix(in srgb, var(--focus-ring) 35%, transparent);
-  --pos-expiry-bg: var(--state-pending-bg);
-  --pos-expiry-border: var(--state-pending-border);
-  --pos-expiry-ink: var(--state-pending-ink);
   --pos-disabled: var(--line);
   --pos-disabled-ink: var(--muted);
 }
@@ -189,10 +186,11 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
     display: flex; flex-direction: column; gap: 6px; padding: 12px 14px 12px; border: 2px solid var(--pos-border); border-radius: 8px;
     background: var(--paper-raised);
   }
-  .pos-expiry {
-    text-align: center; padding: 7px 8px; border: 1px solid var(--pos-expiry-border); border-radius: 4px; background: var(--pos-expiry-bg); color: var(--pos-expiry-ink);
-    font-size: 11px; font-weight: 800;
-  }
+  /* Beside the heading: the status, and under it the time left to pay. */
+  .pos-status-row { flex: none; display: flex; flex-direction: column; align-items: flex-end; gap: 4px; }
+  .pos-expiry { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; font-weight: 700; color: var(--muted); white-space: nowrap; }
+  .pos-expiry svg { width: 12px; height: 12px; }
+  .pos-badge .label-short { display: none; }
   .pos-pay-detail { text-align: center; font-size: 11px; font-weight: 700; color: var(--state-ink); }
   .pos-pay-caption { text-align: center; font-size: 11px; color: var(--muted); margin-top: 4px; }
   .pos-pay-xmr { text-align: center; font-size: 26px; font-weight: 800; letter-spacing: -.02em; line-height: 1.1; overflow-wrap: anywhere; font-variant-numeric: tabular-nums; }
@@ -310,7 +308,6 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
     .pos-pay-card :is(.pos-pay-caption, .pos-pay-xmr, .pos-pay-fiat, .pos-pay-detail) { text-align: left; margin: 0; }
     .pos-pay-card .pos-pay-xmr { font-size: 22px; }
     .pos-pay-card .pos-pay-xmr span { font-size: 17px; }
-    .pos-pay-card .pos-expiry { padding: 4px 6px; }
     .pos-pay-card .pos-quiet-label { margin-top: 2px; }
     .pos-pay-card hr { margin: 4px 0 0; }
     .pos-pay-card .pos-note { display: none; }
@@ -390,4 +387,9 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
 /* A phone: the mark stays, the name goes. */
 @media (max-width: 520px) {
   #pos-root .pos-brand-name { display: none; }
+}
+/* A small phone: the badge takes its short words, leaving the heading room. */
+@media (max-width: 380px) {
+  #pos-root .pos-badge .label-long { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  #pos-root .pos-badge .label-short { display: inline; }
 }
