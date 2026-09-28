@@ -242,21 +242,31 @@ pub async fn order_detail(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let chrome = super::page_chrome(&state, Some(&user), format!("/dashboard/stores/{id}/orders/{order_id}"));
-    // A real, absolute, copy-pasteable URL - not just the path - since the
-    // whole point is something a merchant can paste into an email or chat
-    // to someone who isn't already looking at this dashboard. This
-    // instance has no configured "external base URL" of its own yet, so
-    // this is built from the *incoming* request's own `Host` header (what
-    // the merchant's own browser just used to reach this page - reliably
-    // the right host for a link they're about to copy from it) plus
-    // `X-Forwarded-Proto` if a reverse proxy set it (the common way a
-    // self-hosted instance behind real TLS termination communicates that
-    // inward), falling back to plain `http` for local/dev use.
-    let host = headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
-    let scheme = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).unwrap_or("http");
-    let payment_link = format!("{scheme}://{host}/pay/{}/orders/{}/share", row.tenant_public_key, order_id);
+    let payment_link = payment_link_for(&headers, &row.tenant_public_key, &order_id);
 
-    match state.engine_client.get_order_detail(&sk, &order_id).await {
+    match order_detail_data(&state, &row, &sk, &order_id, payment_link).await {
+        Ok(Some(order)) => {
+            let view_model = OrderDetailViewModel { connection_id: id.to_string(), display_name: display_name_for(&row.site_url), order: Some(order) };
+            views::orders::detail_page(&chrome, &view_model).into_response()
+        }
+        Ok(None) => {
+            let view_model = OrderDetailViewModel { connection_id: id.to_string(), display_name: display_name_for(&row.site_url), order: None };
+            (StatusCode::NOT_FOUND, views::orders::detail_page(&chrome, &view_model)).into_response()
+        }
+        Err(()) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    }
+}
+
+/// Everything the order detail page shows about one order, `None` when
+/// the engine has no such order.
+async fn order_detail_data(
+    state: &AppState,
+    row: &StoreConnectionRow,
+    sk: &str,
+    order_id: &str,
+    payment_link: String,
+) -> Result<Option<OrderDetailData>, ()> {
+    match state.engine_client.get_order_detail(sk, order_id).await {
         Ok(detail) => {
             // The engine has no concept of fiat any more (`docs/fx_refactor.md`
             // Phase 3) - fiat display comes entirely from monokulo's own
@@ -294,58 +304,103 @@ pub async fn order_detail(
                 },
                 None => "—".to_string(),
             };
-            let view_model = OrderDetailViewModel {
-                connection_id: id.to_string(),
-                display_name: display_name_for(&row.site_url),
-                order: Some(OrderDetailData {
-                    order_id: detail.order.order_id,
-                    merchant_order_id: detail.order.merchant_order_id,
-                    address: detail.order.address,
-                    currency,
-                    amount,
-                    rate_display,
-                    rate_provider,
-                    xmr_amount_piconero: detail.order.xmr_amount_piconero,
-                    amount_received_piconero: detail.order.amount_received_piconero,
-                    status: detail.order.status,
-                    confirmations: detail.order.confirmations,
-                    confirmations_required_display,
-                    base_currency_display,
-                    base_currency_rate_display,
-                    double_spend_detected_at: detail.order.double_spend_detected_at,
-                    double_spend_detected_at_display: display_timestamp_or_dash(detail.order.double_spend_detected_at),
-                    refund_address: detail.order.refund_address,
-                    created_at_display: display_timestamp(detail.order.created_at),
-                    expires_at_display: display_timestamp(detail.order.expires_at),
-                    updated_at_display: display_timestamp(detail.order.updated_at),
-                    payments: detail
-                        .payments
-                        .into_iter()
-                        .map(|p| PaymentRowViewModel {
-                            txid: p.txid,
-                            output_index: p.output_index,
-                            amount_piconero: p.amount_piconero,
-                            first_seen_at_display: display_timestamp(p.first_seen_at),
-                            block_height_display: display_or_dash(p.block_height.map(|h| h.to_string()).as_deref()),
-                            voided_at_display: display_timestamp_or_dash(p.voided_at),
-                        })
-                        .collect(),
-                    payment_link,
-                    scan_range_display: display_scan_range(
-                        detail.order.first_scanned_height,
-                        detail.order.last_scanned_height,
-                        detail.order.currently_scanning,
-                    ),
-                }),
-            };
-            views::orders::detail_page(&chrome, &view_model).into_response()
+            Ok(Some(OrderDetailData {
+                order_id: detail.order.order_id,
+                merchant_order_id: detail.order.merchant_order_id,
+                address: detail.order.address,
+                currency,
+                amount,
+                rate_display,
+                rate_provider,
+                xmr_amount_piconero: detail.order.xmr_amount_piconero,
+                amount_received_piconero: detail.order.amount_received_piconero,
+                status: detail.order.status,
+                confirmations: detail.order.confirmations,
+                confirmations_required_display,
+                base_currency_display,
+                base_currency_rate_display,
+                double_spend_detected_at: detail.order.double_spend_detected_at,
+                double_spend_detected_at_display: display_timestamp_or_dash(detail.order.double_spend_detected_at),
+                refund_address: detail.order.refund_address,
+                created_at_display: display_timestamp(detail.order.created_at),
+                expires_at_display: display_timestamp(detail.order.expires_at),
+                updated_at_display: display_timestamp(detail.order.updated_at),
+                payments: detail
+                    .payments
+                    .into_iter()
+                    .map(|p| PaymentRowViewModel {
+                        txid: p.txid,
+                        output_index: p.output_index,
+                        amount_piconero: p.amount_piconero,
+                        first_seen_at_display: display_timestamp(p.first_seen_at),
+                        block_height_display: display_or_dash(p.block_height.map(|h| h.to_string()).as_deref()),
+                        voided_at_display: display_timestamp_or_dash(p.voided_at),
+                    })
+                    .collect(),
+                payment_link,
+                scan_range_display: display_scan_range(
+                    detail.order.first_scanned_height,
+                    detail.order.last_scanned_height,
+                    detail.order.currently_scanning,
+                ),
+            }))
         }
-        Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => {
-            let view_model = OrderDetailViewModel { connection_id: id.to_string(), display_name: display_name_for(&row.site_url), order: None };
-            (StatusCode::NOT_FOUND, views::orders::detail_page(&chrome, &view_model)).into_response()
-        }
-        Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+        Err(EngineClientError::EngineError { status, .. }) if status == reqwest::StatusCode::NOT_FOUND => Ok(None),
+        Err(_) => Err(()),
     }
+}
+
+/// `GET /dashboard/stores/{id}/orders/{order_id}/events`: the order detail
+/// page's live part, re-rendered whenever the order changes (and every
+/// 30 s, for the clock), as ssexi JSON-routed events replacing
+/// `#order-live`. Ends with a `done` event once the order can't change
+/// any more, so the page stops reconnecting (`static/fx-glue.js`).
+pub async fn order_detail_events(
+    State(state): State<AppState>,
+    AuthedUser(user, _): AuthedUser,
+    Path((id, order_id)): Path<(String, String)>,
+    headers: HeaderMap,
+) -> Response {
+    let row = match load_owned_connection(&state, &user, &id) {
+        Ok(Some(row)) => row,
+        Ok(None) => return StatusCode::NOT_FOUND.into_response(),
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let sk = match decrypt_sk(&state, &row) {
+        Ok(sk) => sk,
+        Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
+    };
+    let payment_link = payment_link_for(&headers, &row.tenant_public_key, &order_id);
+    let subscription = state.engine_client.subscribe_order(&row.id, &sk, &order_id);
+    let row = std::sync::Arc::new(row);
+    crate::live::live_events(subscription, std::time::Duration::from_secs(30), move || {
+        let (state, row, sk, order_id, payment_link) = (state.clone(), row.clone(), sk.clone(), order_id.clone(), payment_link.clone());
+        async move {
+            let order = order_detail_data(&state, &row, &sk, &order_id, payment_link).await.ok()??;
+            let (_, _, terminal) = super::checkout::status_label(&order.status);
+            let html = views::orders::live_fragment(&order).into_string();
+            let mut events =
+                vec![axum::response::sse::Event::default().event(r##"{"target":"#order-live","swap":"outerHTML"}"##).data(html.clone())];
+            if terminal {
+                events.push(axum::response::sse::Event::default().event("done").data("final"));
+            }
+            Some(crate::live::LiveSnapshot { events, fingerprint: html, terminal })
+        }
+    })
+}
+
+/// A real, absolute, copy-pasteable URL for paying an order - not just the
+/// path - since the whole point is something a merchant can paste into an
+/// email or chat to someone who isn't already looking at this dashboard.
+/// This instance has no configured "external base URL" of its own yet, so
+/// it's built from the incoming request's own `Host` header (what the
+/// merchant's browser just used to reach this page) plus
+/// `X-Forwarded-Proto` if a reverse proxy set it, falling back to plain
+/// `http` for local/dev use.
+fn payment_link_for(headers: &HeaderMap, public_key: &str, order_id: &str) -> String {
+    let host = headers.get(axum::http::header::HOST).and_then(|v| v.to_str().ok()).unwrap_or("");
+    let scheme = headers.get("x-forwarded-proto").and_then(|v| v.to_str().ok()).unwrap_or("http");
+    format!("{scheme}://{host}/pay/{public_key}/orders/{order_id}/share")
 }
 
 #[derive(Deserialize)]
@@ -1465,6 +1520,43 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
         assert!(html.contains(&order_id), "expected the seeded order's order_id in the response, got: {html}");
+    }
+
+    /// With JavaScript, the order detail page streams its changing part
+    /// (structured_logging.md part 6): the page names the stream, and the
+    /// stream starts with that part, routed to replace itself.
+    #[tokio::test]
+    async fn order_detail_streams_its_live_part_to_its_owner_only() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(&router, "order-events@example.com", "correct horse battery staple").await;
+        let (connection_id, public_key) = create_connection(&router, &session_token).await;
+        let order_id = seed_real_order(&state, engine.addr, &public_key).await;
+        let get = |uri: String, token: &str| {
+            Request::builder().uri(uri).header("authorization", format!("Bearer {token}")).header("host", "test.example").body(Body::empty()).unwrap()
+        };
+
+        let page = body_text(router.clone().oneshot(get(format!("/dashboard/stores/{connection_id}/orders/{order_id}"), &session_token)).await.unwrap()).await;
+        let events_url = format!("/dashboard/stores/{connection_id}/orders/{order_id}/events");
+        assert!(page.contains(&format!(r#"fx-action="{events_url}" fx-trigger="fx:inited""#)), "{page}");
+        assert!(page.contains(r#"<div id="order-live">"#), "{page}");
+
+        let response = router.clone().oneshot(get(events_url.clone(), &session_token)).await.unwrap();
+        assert_eq!(response.headers()["content-type"], "text/event-stream");
+        let mut body = response.into_body();
+        let mut text = String::new();
+        while !text.contains("\n\n") {
+            let frame = tokio::time::timeout(std::time::Duration::from_secs(10), body.frame()).await.unwrap().unwrap().unwrap();
+            if let Some(data) = frame.data_ref() {
+                text.push_str(std::str::from_utf8(data).unwrap());
+            }
+        }
+        assert!(text.starts_with(r##"event: {"target":"#order-live","swap":"outerHTML"}"##), "{text}");
+        assert!(text.contains(r#"data: <div id="order-live">"#) && text.contains(&order_id), "{text}");
+
+        let stranger = signed_up_and_logged_in_session_token(&router, "order-events-stranger@example.com", "correct horse battery staple").await;
+        let response = router.oneshot(get(events_url, &stranger)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "someone else's store");
     }
 
     #[tokio::test]

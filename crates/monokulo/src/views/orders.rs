@@ -243,6 +243,70 @@ const SHARE_SCRIPT: &str = r#"(function () {
   });
 })();"#;
 
+/// The part of the order detail page that changes as the order does:
+/// its fields and payments. Streamed as a whole to replace itself
+/// (`http::orders::order_detail_events`).
+pub fn live_fragment(order: &OrderDetailData) -> Markup {
+    html! {
+        div id="order-live" {
+            table class="kv-table" {
+                tr { th { "Order ID" } td { code { (order.order_id) } } }
+                tr {
+                    th { "Merchant Reference" }
+                    td {
+                        @if let Some(v) = &order.merchant_order_id { (v) } @else { span class="muted" { "-" } }
+                    }
+                }
+                tr { th { "Address" } td { code { (order.address) } } }
+                tr { th { "Amount" } td { (order.amount) " " (order.currency) } }
+                tr { th { "Exchange rate" } td { (order.rate_display) } }
+                tr { th { "Rate provider" } td { (order.rate_provider) } }
+                tr { th { "XMR amount (piconero)" } td { (order.xmr_amount_piconero) } }
+                tr { th { "Amount received (piconero)" } td { (order.amount_received_piconero) } }
+                tr { th { "Status" } td { (order.status) } }
+                tr { th { "Confirmations" } td { (order.confirmations) } }
+                tr { th { "Confirmations required" } td { (order.confirmations_required_display) } }
+                tr { th { "Store base currency (at order creation)" } td { (order.base_currency_display) } }
+                tr { th { "Base currency rate used" } td { (order.base_currency_rate_display) } }
+                @if order.double_spend_detected_at.is_some() {
+                    tr { th { "Double-spend detected at" } td { (PreEscaped(&order.double_spend_detected_at_display)) } }
+                }
+                tr {
+                    th { "Refund address" }
+                    td {
+                        @if let Some(v) = &order.refund_address { code { (v) } } @else { span class="muted" { "-" } }
+                    }
+                }
+                tr { th { "Created at" } td { (PreEscaped(&order.created_at_display)) } }
+                tr { th { "Expires at" } td { (PreEscaped(&order.expires_at_display)) } }
+                tr { th { "Updated at" } td { (PreEscaped(&order.updated_at_display)) } }
+                tr { th { "Scan range" } td { (PreEscaped(&order.scan_range_display)) } }
+            }
+            h2 { "Payments" }
+            table class="payments-table" {
+                thead {
+                    tr {
+                        th { "Txid" } th { "Output index" } th { "Amount (piconero)" }
+                        th { "First seen" } th { "Block height" } th { "Voided at" }
+                    }
+                }
+                tbody {
+                    @for payment in &order.payments {
+                        tr {
+                            td { code { (payment.txid) } }
+                            td { (payment.output_index) }
+                            td { (payment.amount_piconero) }
+                            td { (PreEscaped(&payment.first_seen_at_display)) }
+                            td { (PreEscaped(&payment.block_height_display)) }
+                            td { (PreEscaped(&payment.voided_at_display)) }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
 pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
     let extra_head = html! {
         style { (PreEscaped(PAGE_STYLE)) }
@@ -272,60 +336,11 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                     " "
                     (super::logs_link(chrome, "order.id", &order.order_id, "Logs for this order"))
                 }
-                table class="kv-table" {
-                    tr { th { "Order ID" } td { code { (order.order_id) } } }
-                    tr {
-                        th { "Merchant Reference" }
-                        td {
-                            @if let Some(v) = &order.merchant_order_id { (v) } @else { span class="muted" { "-" } }
-                        }
-                    }
-                    tr { th { "Address" } td { code { (order.address) } } }
-                    tr { th { "Amount" } td { (order.amount) " " (order.currency) } }
-                    tr { th { "Exchange rate" } td { (order.rate_display) } }
-                    tr { th { "Rate provider" } td { (order.rate_provider) } }
-                    tr { th { "XMR amount (piconero)" } td { (order.xmr_amount_piconero) } }
-                    tr { th { "Amount received (piconero)" } td { (order.amount_received_piconero) } }
-                    tr { th { "Status" } td { (order.status) } }
-                    tr { th { "Confirmations" } td { (order.confirmations) } }
-                    tr { th { "Confirmations required" } td { (order.confirmations_required_display) } }
-                    tr { th { "Store base currency (at order creation)" } td { (order.base_currency_display) } }
-                    tr { th { "Base currency rate used" } td { (order.base_currency_rate_display) } }
-                    @if order.double_spend_detected_at.is_some() {
-                        tr { th { "Double-spend detected at" } td { (PreEscaped(&order.double_spend_detected_at_display)) } }
-                    }
-                    tr {
-                        th { "Refund address" }
-                        td {
-                            @if let Some(v) = &order.refund_address { code { (v) } } @else { span class="muted" { "-" } }
-                        }
-                    }
-                    tr { th { "Created at" } td { (PreEscaped(&order.created_at_display)) } }
-                    tr { th { "Expires at" } td { (PreEscaped(&order.expires_at_display)) } }
-                    tr { th { "Updated at" } td { (PreEscaped(&order.updated_at_display)) } }
-                    tr { th { "Scan range" } td { (PreEscaped(&order.scan_range_display)) } }
-                }
-                h2 { "Payments" }
-                table class="payments-table" {
-                    thead {
-                        tr {
-                            th { "Txid" } th { "Output index" } th { "Amount (piconero)" }
-                            th { "First seen" } th { "Block height" } th { "Voided at" }
-                        }
-                    }
-                    tbody {
-                        @for payment in &order.payments {
-                            tr {
-                                td { code { (payment.txid) } }
-                                td { (payment.output_index) }
-                                td { (payment.amount_piconero) }
-                                td { (PreEscaped(&payment.first_seen_at_display)) }
-                                td { (PreEscaped(&payment.block_height_display)) }
-                                td { (PreEscaped(&payment.voided_at_display)) }
-                            }
-                        }
-                    }
-                }
+                (live_fragment(order))
+                // Streams the part above as the order changes, when
+                // JavaScript is on (fixi starts it as soon as it's seen).
+                span hidden fx-action=(format!("/dashboard/stores/{}/orders/{}/events", data.connection_id, order.order_id))
+                    fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect {}
 
             } @else {
                 h1 { "Order not found" }

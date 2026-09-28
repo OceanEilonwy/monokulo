@@ -243,7 +243,51 @@ pub(crate) async fn get_status_cached(state: &AppState) -> Result<EngineStatusRe
 /// per-request check (see `StatusPageViewModel::logged_in`'s own doc
 /// comment), not a fixed literal like most other pages.
 pub async fn status_page(State(state): State<AppState>, headers: axum::http::HeaderMap) -> Response {
-    let mut view_model = match get_status_cached(&state).await {
+    let authed = super::resolve_authed_user(&state, &headers);
+    let view_model = status_view(&state, authed.as_ref().is_some_and(|(user, _)| user.is_admin)).await;
+    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/status");
+    views::status::page(&chrome, &view_model).into_response()
+}
+
+/// `GET /status/events`: the status page's content, sent again whenever it
+/// changes (checked as often as the cached engine status can change), as
+/// ssexi JSON-routed events replacing `#status-live`. One open stream per
+/// client, like the checkout's.
+pub async fn status_events(State(state): State<AppState>, headers: axum::http::HeaderMap, extensions: axum::http::Extensions) -> Response {
+    let permit = match extensions.get::<crate::abuse::ClientIdentity>() {
+        Some(client) => match state.abuse.streams.try_acquire(client, "status") {
+            Some(permit) => Some(permit),
+            None => return (axum::http::StatusCode::TOO_MANY_REQUESTS, "too many open update streams").into_response(),
+        },
+        None => None,
+    };
+    let admin = super::resolve_authed_user(&state, &headers).is_some_and(|(user, _)| user.is_admin);
+    let stream = futures_util::stream::unfold((state, None::<String>, true), move |(state, last, first)| {
+        // Held by the stream, so the slot frees when it ends.
+        let _permit = &permit;
+        async move {
+            loop {
+                if !first {
+                    tokio::time::sleep(CACHE_TTL).await;
+                }
+                let html = views::status::live_fragment(&status_view(&state, admin).await).into_string();
+                if last.as_deref() != Some(html.as_str()) {
+                    let event = axum::response::sse::Event::default().event(r##"{"target":"#status-live","swap":"outerHTML"}"##).data(html.clone());
+                    return Some((Ok::<_, std::convert::Infallible>(event), (state, Some(html), false)));
+                }
+                return Some((
+                    Ok(axum::response::sse::Event::default().comment("unchanged")),
+                    (state, last, false),
+                ));
+            }
+        }
+    });
+    crate::live::sse(stream)
+}
+
+/// The status page's content; abuse figures only for an admin.
+async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPageViewModel {
+    let mut view_model = match get_status_cached(state).await {
         Ok(status) => build_view_model(status),
         Err(message) => views::status::StatusPageViewModel {
             abuse: None,
@@ -253,10 +297,9 @@ pub async fn status_page(State(state): State<AppState>, headers: axum::http::Hea
             generated_at_display: String::new(),
         },
     };
-    let authed = super::resolve_authed_user(&state, &headers);
     // Challenge activity is for operators only; anonymous visitors and
     // merchants don't see it.
-    if authed.as_ref().is_some_and(|(user, _)| user.is_admin) {
+    if admin {
         let counts = state.abuse.stats.last_hour(crate::now_unix());
         view_model.abuse = Some(views::status::AbuseStatusView {
             under_attack: state.abuse.config().under_attack,
@@ -265,8 +308,7 @@ pub async fn status_page(State(state): State<AppState>, headers: axum::http::Hea
             refused: counts.refused,
         });
     }
-    let chrome = super::page_chrome(&state, authed.as_ref().map(|(user, _)| user), "/status");
-    views::status::page(&chrome, &view_model).into_response()
+    view_model
 }
 
 /// `GET /status/summary` - a small, cheap JSON endpoint the status

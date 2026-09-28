@@ -10,7 +10,9 @@
 //                    (fixi's default drops the new one instead).
 //   fx-debounce="ms" wait this long for the trigger to go quiet first.
 //   fx-sse-reconnect reconnect a dropped event stream (ssexi), sending
-//                    Last-Event-ID, and pause it while the tab is hidden.
+//                    Last-Event-ID, and pause it while the tab is hidden;
+//                    a named "done" event ends it for good. While a stream
+//                    is open, the page's Reload button (.reload) is hidden.
 // and on a form:
 //   fx-submit-on-change  submit when a select, checkbox or date changes.
 //
@@ -123,6 +125,19 @@
       focus.removeAttribute("data-fx-focus");
       focus.focus();
     }
+  });
+
+  // A page streaming its own updates doesn't need its Reload button;
+  // it comes back if the stream fails for good. A stream whose subject
+  // can't change any more says "done", and isn't reconnected.
+  document.addEventListener("fx:sse:open", function () {
+    document.querySelectorAll(".reload").forEach(function (b) { b.hidden = true; });
+  });
+  document.addEventListener("fx:sse:error", function () {
+    document.querySelectorAll(".reload").forEach(function (b) { b.hidden = false; });
+  });
+  document.addEventListener("fx:sse:done", function (evt) {
+    evt.detail.cfg.sse.close();
   });
 
   // Pages whose state lives in the URL were changed by pushState; show the

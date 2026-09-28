@@ -53,18 +53,14 @@ pub struct StatusPageViewModel {
     pub generated_at_display: String,
 }
 
-pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
-    let body = html! {
-        div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" {
-                @if chrome.logged_in { a href="/dashboard" { "Dashboard" } }
-                @else { a href="/" { "Home" } }
-            }
-            h1 { "Engine status" }
+/// Everything on the status page below its heading: streamed as a whole
+/// to replace itself (`http::status_page::status_events`).
+pub fn live_fragment(data: &StatusPageViewModel) -> Markup {
+    html! {
+        div id="status-live" {
             p class="hint" {
                 "Generated " (data.generated_at_display) ", with node heights as of that moment. The scan loop polls every "
-                (data.poll_interval_secs) "s. "
-                (super::reload_button("/status"))
+                (data.poll_interval_secs) "s."
             }
 
             @if let Some(abuse) = &data.abuse {
@@ -136,6 +132,22 @@ pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
                     }
                 }
             }
+        }
+    }
+}
+
+pub fn page(chrome: &PageChrome, data: &StatusPageViewModel) -> Markup {
+    let body = html! {
+        div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" {
+                @if chrome.logged_in { a href="/dashboard" { "Dashboard" } }
+                @else { a href="/" { "Home" } }
+            }
+            h1 { "Engine status" }
+            p { (super::reload_button("/status")) }
+            (live_fragment(data))
+            // Streams the part above while the page is open, with JavaScript.
+            span hidden fx-action="/status/events" fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect {}
         }
     };
     layout(chrome, "Status - Monokulo", body)

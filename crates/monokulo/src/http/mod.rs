@@ -146,6 +146,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/admin/logs/saved/{id}/delete", post(logs_page::delete_search))
         .route("/status", axum::routing::get(status_page::status_page))
         .route("/status/summary", axum::routing::get(status_page::status_summary))
+        .route("/status/events", axum::routing::get(status_page::status_events))
         .route("/signup", post(signup::signup))
         .route("/login", post(login::login))
         .route("/logout", post(logout::logout))
@@ -212,6 +213,7 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/stores/{id}/orders", axum::routing::get(orders::orders_list))
         .route("/dashboard/stores/{id}/orders/lookup", axum::routing::post(orders::lookup_payment))
         .route("/dashboard/stores/{id}/orders/{order_id}", axum::routing::get(orders::order_detail))
+        .route("/dashboard/stores/{id}/orders/{order_id}/events", axum::routing::get(orders::order_detail_events))
         .route("/connect/{platform}", axum::routing::get(connect::start).post(connect::confirm_submit))
         .route("/connect/{platform}/finish", post(connect::finish))
         .route(

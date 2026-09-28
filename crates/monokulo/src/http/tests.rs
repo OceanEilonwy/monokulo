@@ -1149,3 +1149,24 @@ async fn browser_reports_are_accepted_up_to_a_small_size_and_only_the_sites_own_
     let bare = crate::views::layout_bare(&chrome, "t", maud::html! {}).into_string();
     assert!(!bare.contains("telemetry.js"), "not on the checkout, challenge or POS pages: {bare}");
 }
+
+#[tokio::test]
+async fn the_status_page_names_its_stream_and_the_stream_sends_the_page_content() {
+    let router = test_router();
+    let page = body_text(router.clone().oneshot(Request::builder().uri("/status").body(Body::empty()).unwrap()).await.unwrap()).await;
+    assert!(page.contains(r#"fx-action="/status/events" fx-trigger="fx:inited""#), "{page}");
+    assert!(page.contains(r#"<div id="status-live">"#) && page.contains(r#"class="btn btn-secondary reload""#), "{page}");
+
+    let response = router.oneshot(Request::builder().uri("/status/events").body(Body::empty()).unwrap()).await.unwrap();
+    assert_eq!(response.headers()["content-type"], "text/event-stream");
+    let mut body = response.into_body();
+    let mut text = String::new();
+    while !text.contains("\n\n") {
+        let frame = tokio::time::timeout(std::time::Duration::from_secs(10), body.frame()).await.unwrap().unwrap().unwrap();
+        if let Some(data) = frame.data_ref() {
+            text.push_str(std::str::from_utf8(data).unwrap());
+        }
+    }
+    assert!(text.starts_with(r##"event: {"target":"#status-live","swap":"outerHTML"}"##), "{text}");
+    assert!(text.contains(r#"data: <div id="status-live">"#), "{text}");
+}
