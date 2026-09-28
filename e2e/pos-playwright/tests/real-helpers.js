@@ -41,7 +41,19 @@ function fakeNodeJson() {
 async function saveEngineSettings(page, fields) {
   const { monokulo_url: base } = fixture();
   await page.goto(base + '/dashboard/admin/settings');
-  for (const [name, value] of Object.entries(fields)) {
+  // Lists of choices first: ticking a key custody backend shows its own
+  // section, whose fields can then be filled.
+  const isList = async (name) => (await page.locator(`input[type=checkbox][name="${name}"]`).count()) > 0;
+  const entries = Object.entries(fields);
+  const lists = [];
+  for (const entry of entries) if (await isList(entry[0])) lists.push(entry);
+  for (const [name, value] of lists) {
+    const chosen = value.split(',').map((v) => v.trim());
+    for (const box of await page.locator(`input[type=checkbox][name="${name}"]`).all()) {
+      await box.setChecked(chosen.includes(await box.getAttribute('value')));
+    }
+  }
+  for (const [name, value] of entries.filter((entry) => !lists.includes(entry))) {
     const field = page.locator(`[name="${name}"]`);
     if ((await field.evaluate((el) => el.tagName)) === 'SELECT') await field.selectOption(value);
     else await field.fill(value);

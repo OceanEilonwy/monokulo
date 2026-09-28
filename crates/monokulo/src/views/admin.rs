@@ -321,29 +321,55 @@ pub struct AdminSettingsViewModel {
     pub scanner_networks: Vec<AdminNetworkFieldView>,
 }
 
+/// The id of a setting's control, which its label and help point at.
+fn field_id(key: &str) -> String {
+    format!("setting-{key}")
+}
+
+/// The id of a setting's help text, when it has some.
+fn help_id(field: &AdminScalarFieldView) -> Option<String> {
+    field.help.as_ref().map(|_| format!("setting-help-{}", field.key))
+}
+
 fn scalar_input(field: &AdminScalarFieldView) -> Markup {
     let name = field.key.as_str();
+    let id = field_id(name);
+    let help = help_id(field);
     match &field.kind {
         SettingKindView::Integer { min, max } => html! {
-            input type="number" name=(name) value=(field.value) min=[min] max=[max] step="1";
+            input type="number" name=(name) value=(field.value) min=[min] max=[max] step="1" id=(id) aria-describedby=[help];
         },
         SettingKindView::Bool => html! {
-            select name=(name) {
+            select name=(name) id=(id) aria-describedby=[help] {
                 option value="true" selected[field.value == "true"] { "true" }
                 option value="false" selected[field.value == "false"] { "false" }
             }
         },
         SettingKindView::Choice { choices } => html! {
-            select name=(name) {
+            select name=(name) id=(id) aria-describedby=[help] {
                 @for choice in choices {
                     option value=(choice) selected[&field.value == choice] { (choice) }
                 }
             }
         },
-        SettingKindView::Url => html! { input type="url" name=(name) value=(field.value); },
+        // Every choice ticked is sent under the one name; an empty one
+        // first, so ticking none still says so.
+        SettingKindView::ChoiceList { choices } => {
+            let chosen: Vec<&str> = field.value.split(',').map(str::trim).collect();
+            html! {
+                input type="hidden" name=(name) value="";
+                @for choice in choices {
+                    label class="inline" {
+                        input type="checkbox" name=(name) value=(choice) checked[chosen.contains(&choice.as_str())];
+                        " " (choice)
+                    }
+                }
+            }
+        }
+        SettingKindView::Url => html! { input type="url" name=(name) value=(field.value) id=(id) aria-describedby=[help]; },
         // Never echoed back: left empty means "keep the current one".
         SettingKindView::Secret => html! {
-            input type="password" name=(name) value="" autocomplete="off"
+            input type="password" name=(name) value="" autocomplete="off" id=(id) aria-describedby=[help]
                 placeholder=(if field.value.is_empty() { "not set" } else { "set - leave empty to keep it" });
             @if !field.value.is_empty() {
                 label class="inline" {
@@ -352,12 +378,12 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
                 }
             }
         },
-        SettingKindView::Json => html! { textarea name=(name) rows="4" { (field.value) } },
+        SettingKindView::Json => html! { textarea name=(name) rows="4" id=(id) aria-describedby=[help] { (field.value) } },
         SettingKindView::TimeLimit { now } => {
             let until: u64 = field.value.trim().parse().unwrap_or(0);
             let on = until > *now;
             html! {
-                select name=(name) {
+                select name=(name) id=(id) aria-describedby=[help] {
                     @if on {
                         option value=(until) selected { "On until " (telemetry::format_unix_utc(until)) }
                     }
@@ -368,34 +394,55 @@ fn scalar_input(field: &AdminScalarFieldView) -> Markup {
                 }
             }
         }
-        _ => html! { input type="text" name=(name) value=(field.value); },
+        _ => html! { input type="text" name=(name) value=(field.value) id=(id) aria-describedby=[help]; },
     }
 }
 
+/// A setting's name, then what it's for, then its control, then where its
+/// value came from. A list of choices is a group of checkboxes, named by a
+/// legend rather than a label.
 fn scalar_field(field: &AdminScalarFieldView) -> Markup {
+    let help = html! {
+        @if let (Some(help), Some(id)) = (&field.help, help_id(field)) {
+            span class="field-help" id=(id) { (help) }
+        }
+    };
     html! {
-        div class="setting-field" {
-            label {
-                (field.label) " "
+        @if matches!(field.kind, SettingKindView::ChoiceList { .. }) {
+            fieldset class="setting-field" aria-describedby=[help_id(field)] {
+                legend class="setting-label" { (field.label) }
+                (help)
+                div class="setting-choices" { (scalar_input(field)) }
+                (field_status(field))
+            }
+        } @else {
+            div class="setting-field" {
+                label class="setting-label" for=(field_id(&field.key)) { (field.label) }
+                (help)
                 (scalar_input(field))
+                (field_status(field))
             }
-            @if let Some(help) = &field.help {
-                span class="field-help" { (help) }
-            }
-            @if let Some(example) = &field.example {
-                span class="field-help" { "Example: " code { (example) } }
-            }
-            span class="setting-source" {
-                "(" (field.source_label)
-                @if field.restart_only { ", applies after a restart" }
-                ")"
-            }
-            @if field.pending_restart {
-                span class="setting-pending" { "Saved - restart needed for it to take effect." }
-            }
-            @if let Some(problem) = &field.problem {
-                span class="setting-problem" { (problem) }
-            }
+        }
+    }
+}
+
+/// Under a setting's control: an example, where its value came from, and
+/// anything wrong with it.
+fn field_status(field: &AdminScalarFieldView) -> Markup {
+    html! {
+        @if let Some(example) = &field.example {
+            span class="field-help" { "Example: " code { (example) } }
+        }
+        span class="setting-source" {
+            "(" (field.source_label)
+            @if field.restart_only { ", applies after a restart" }
+            ")"
+        }
+        @if field.pending_restart {
+            span class="setting-pending" { "Saved - restart needed for it to take effect." }
+        }
+        @if let Some(problem) = &field.problem {
+            span class="setting-problem" { (problem) }
         }
     }
 }
@@ -458,6 +505,64 @@ fn engine_group(key: &str) -> &'static str {
         _ => "Other",
     }
 }
+
+const ENABLED_BACKENDS: &str = "key_custody.enabled_backends";
+
+/// A group's settings, in the engine's order except that the key custody
+/// backends to turn on come before the choice among them.
+fn in_group<'a>(fields: &'a [AdminScalarFieldView], group: &'a str) -> impl Iterator<Item = &'a AdminScalarFieldView> {
+    let fields = move || fields.iter().filter(move |f| engine_group(&f.key) == group);
+    fields().filter(|f| f.key == ENABLED_BACKENDS).chain(fields().filter(|f| f.key != ENABLED_BACKENDS))
+}
+
+/// The key custody backends the engine offers, and whether each is turned
+/// on. Empty from an engine that doesn't say.
+fn custody_backends(fields: &[AdminScalarFieldView]) -> Vec<(String, bool)> {
+    let Some(field) = fields.iter().find(|f| f.key == ENABLED_BACKENDS) else { return Vec::new() };
+    let SettingKindView::ChoiceList { choices } = &field.kind else { return Vec::new() };
+    let enabled: Vec<&str> = field.value.split(',').map(str::trim).collect();
+    choices.iter().map(|choice| (choice.clone(), enabled.contains(&choice.as_str()))).collect()
+}
+
+/// The backend a key custody setting belongs to: one only that backend
+/// uses is named `key_custody.<backend>_...` (`key_custody.socket_path`).
+fn custody_backend_of<'a>(field: &AdminScalarFieldView, backends: &'a [(String, bool)]) -> Option<&'a str> {
+    let rest = field.key.strip_prefix("key_custody.")?;
+    backends
+        .iter()
+        .map(|(backend, _)| backend.as_str())
+        .find(|backend| rest.strip_prefix(backend).is_some_and(|after| after.starts_with('_')))
+}
+
+/// A section of its own for each backend, shown only while it's turned on
+/// (at once with JavaScript, after saving without).
+fn custody_backend_sections(fields: &[AdminScalarFieldView], backends: &[(String, bool)]) -> Markup {
+    html! {
+        @for (backend, enabled) in backends {
+            section class="custody-backend" data-custody-backend=(backend) hidden[!enabled] {
+                h3 { "Key custody: " (backend) }
+                @let own: Vec<&AdminScalarFieldView> =
+                    fields.iter().filter(|f| custody_backend_of(f, backends) == Some(backend.as_str())).collect();
+                @if own.is_empty() {
+                    p class="hint" { "Nothing to set up for this backend." }
+                }
+                @for field in own { (scalar_field(field)) }
+            }
+        }
+    }
+}
+
+/// With JavaScript, a key custody backend's section shows or hides as its
+/// box is ticked, before saving. Listens on the document, so it still
+/// works on the form fixi swaps in after a save.
+const CUSTODY_BACKENDS_SCRIPT: &str = r#"(function () {
+  document.addEventListener("change", function (event) {
+    var box = event.target;
+    if (box.name !== "key_custody.enabled_backends") return;
+    var section = document.querySelector('[data-custody-backend="' + box.value + '"]');
+    if (section) section.hidden = !box.checked;
+  });
+})();"#;
 
 /// A short word on the save beside the Save button, where the person who
 /// pressed it is looking; focused after a fixi swap (the banners above say
@@ -527,6 +632,7 @@ pub fn monokulo_section(data: &AdminSettingsViewModel) -> Markup {
 /// (saving the engine connection there changes this half too).
 pub fn engine_section(data: &AdminSettingsViewModel, oob: bool) -> Markup {
     let groups = ["Key custody", "Payments", "Server", "Webhooks", "Logging", "Other"];
+    let backends = custody_backends(&data.scanner_fields);
     html! {
         section id="engine-settings" data-fx-oob[oob] {
             h2 { "Engine" }
@@ -538,15 +644,15 @@ pub fn engine_section(data: &AdminSettingsViewModel, oob: bool) -> Markup {
                     fx-action="/dashboard/admin/scanner-settings" fx-method="POST" fx-target="#engine-settings" {
                     h3 { "Monero nodes" }
                     @for network in &data.scanner_networks {
+                        @let id = format!("setting-monero_node_{}", network.network);
+                        @let help = network.description.as_ref().map(|_| format!("setting-help-monero_node_{}", network.network));
                         div class="setting-field" {
-                            label {
-                                "Monero node (" (network.network) ") "
-                                textarea name=(format!("monero_node_{}", network.network)) rows="4"
-                                    data-network=(network.network) data-tenant-count=(network.tenant_count) { (network.value_json) }
+                            label class="setting-label" for=(id) { "Monero node (" (network.network) ")" }
+                            @if let (Some(description), Some(help)) = (&network.description, &help) {
+                                span class="field-help" id=(help) { (description) }
                             }
-                            @if let Some(description) = &network.description {
-                                span class="field-help" { (description) }
-                            }
+                            textarea name=(format!("monero_node_{}", network.network)) rows="4" id=(id) aria-describedby=[help]
+                                data-network=(network.network) data-tenant-count=(network.tenant_count) { (network.value_json) }
                             span class="setting-source" {
                                 @if network.tenant_count == 1 { "Used by 1 store." } @else { "Used by " (network.tenant_count) " stores." }
                             }
@@ -565,11 +671,12 @@ pub fn engine_section(data: &AdminSettingsViewModel, oob: bool) -> Markup {
                         }
                     }
                     @for group in groups {
-                        @if data.scanner_fields.iter().any(|f| engine_group(&f.key) == group) {
+                        @if in_group(&data.scanner_fields, group).next().is_some() {
                             h3 { (group) }
-                            @for field in data.scanner_fields.iter().filter(|f| engine_group(&f.key) == group) {
+                            @for field in in_group(&data.scanner_fields, group).filter(|f| custody_backend_of(f, &backends).is_none()) {
                                 (scalar_field(field))
                             }
+                            @if group == "Key custody" { (custody_backend_sections(&data.scanner_fields, &backends)) }
                         }
                     }
                     button type="submit" { "Save engine settings" }
@@ -594,6 +701,7 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
             (monokulo_section(data))
             (engine_section(data, false))
             script { (maud::PreEscaped(CONFIRM_CLEARED_NETWORK_SCRIPT)) }
+            script { (maud::PreEscaped(CUSTODY_BACKENDS_SCRIPT)) }
         }
     };
     layout(chrome, "Admin settings - Monokulo", body)
@@ -760,18 +868,76 @@ mod tests {
         };
         let html = admin_settings_page(&chrome(), &data).into_string();
         assert!(html.contains("engine url"));
-        assert!(html.contains(r#"<span class="field-help">Where the engine listens.</span>"#));
+        // The name, then what it's for, then the box.
+        assert!(
+            html.contains(concat!(
+                r#"<label class="setting-label" for="setting-engine.url">engine url</label>"#,
+                r#"<span class="field-help" id="setting-help-engine.url">Where the engine listens.</span>"#,
+                r#"<input type="url" name="engine.url""#,
+            )),
+            "{html}"
+        );
+        assert!(html.contains(r#"aria-describedby="setting-help-engine.url""#), "{html}");
         assert!(html.contains("Abuse protection"));
         assert!(html.contains(r#"type="url" name="engine.url" value="http://scanner.internal""#), "{html}");
         assert!(html.contains("payment confirmations required"));
         assert!(html.contains(r#"type="number" name="payment.confirmations_required" value="10" min="0" max="720""#), "{html}");
         assert!(html.contains("Example: <code>10</code>"));
-        assert!(html.contains("Monero node (mainnet)"));
+        assert!(
+            html.contains(concat!(
+                r#"<label class="setting-label" for="setting-monero_node_mainnet">Monero node (mainnet)</label>"#,
+                r#"<span class="field-help" id="setting-help-monero_node_mainnet">The mainnet node.</span><textarea"#,
+            )),
+            "{html}"
+        );
         assert!(html.contains(r#"name="monero_node_mainnet""#));
         assert!(html.contains(r#"data-tenant-count="2""#));
         assert!(html.contains("Used by 2 stores."));
         assert!(html.contains("fallbacks"), "the node field explains its shape");
         assert!(html.contains("window.confirm"), "confirms before clearing a network in use");
+    }
+
+    #[test]
+    fn each_key_custody_backend_has_its_own_section_shown_while_it_is_turned_on() {
+        let field = |key: &str, value: &str, kind: SettingKindView| AdminScalarFieldView {
+            key: key.to_string(),
+            label: key.to_string(),
+            value: value.to_string(),
+            kind,
+            ..Default::default()
+        };
+        let backends = || SettingKindView::ChoiceList { choices: vec!["plain".into(), "socket".into()] };
+        let page = |enabled: &str| {
+            let data = AdminSettingsViewModel {
+                scanner_configured: true,
+                scanner_reachable: true,
+                scanner_fields: vec![
+                    field("key_custody.enabled_backends", enabled, backends()),
+                    field("key_custody.default_backend", "plain", SettingKindView::Choice { choices: vec!["plain".into(), "socket".into()] }),
+                    field("key_custody.socket_path", "/run/kc.sock", SettingKindView::Path),
+                ],
+                ..Default::default()
+            };
+            admin_settings_page(&chrome(), &data).into_string()
+        };
+
+        let html = page("plain");
+        // The backends are boxes to tick, after an empty value so ticking
+        // none still says so.
+        assert!(html.contains(r#"<input type="hidden" name="key_custody.enabled_backends" value="">"#), "{html}");
+        assert!(html.contains(r#"<input type="checkbox" name="key_custody.enabled_backends" value="plain" checked>"#), "{html}");
+        assert!(html.contains(r#"<input type="checkbox" name="key_custody.enabled_backends" value="socket">"#), "{html}");
+        // The socket's path sits in the socket's own section, hidden while
+        // socket is off; plain has nothing to set.
+        let socket = html.find(r#"<section class="custody-backend" data-custody-backend="socket" hidden>"#).expect(&html);
+        assert!(html.find(r#"name="key_custody.socket_path""#).unwrap() > socket, "{html}");
+        assert!(html.find(r#"name="key_custody.default_backend""#).unwrap() < socket, "{html}");
+        assert!(html.contains(r#"<section class="custody-backend" data-custody-backend="plain"><h3>Key custody: plain</h3><p class="hint">Nothing to set up"#), "{html}");
+        assert!(html.contains(r#"name !== "key_custody.enabled_backends""#), "shown as soon as it's ticked, with JavaScript");
+
+        let html = page("plain,socket");
+        assert!(html.contains(r#"<section class="custody-backend" data-custody-backend="socket"><h3>Key custody: socket</h3>"#), "{html}");
+        assert!(html.contains(r#"value="socket" checked"#), "{html}");
     }
 
     #[test]

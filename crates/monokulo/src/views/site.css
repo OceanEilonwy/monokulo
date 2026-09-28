@@ -104,7 +104,12 @@ pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-br
   margin: 1em 0;
 }
 .setting-field { margin: 0 0 1.1em; }
-.setting-field label { display: block; }
+/* A setting reads name, what it's for, then its control. */
+.setting-field .setting-label { display: block; margin: 0.9em 0 0.15em; font-weight: 700; }
+.setting-field .setting-label + .field-help { margin: 0 0 0.4em; }
+fieldset.setting-field { border: 0; padding: 0; min-width: 0; }
+fieldset.setting-field > legend { padding: 0; }
+.setting-field label.inline { display: inline-flex; gap: 0.3em; align-items: center; margin: 0.2em 1.2em 0.2em 0; font-weight: 400; }
 .setting-field input, .setting-field select, .setting-field textarea { max-width: 100%; }
 .setting-field textarea { width: 100%; font-family: ui-monospace, monospace; }
 .setting-field details pre { margin: 0.4em 0; }
