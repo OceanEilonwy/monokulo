@@ -3,14 +3,14 @@
 // (structured_logging.md parts 5 and 9): with JavaScript, searches and
 // paging swap in place and keep the URL; without it, the same page works as
 // plain forms and links. Lines from monokulo and the engine share traces.
-// Its stages go in the coverage gallery's Logs group, desktop only.
+// Its stages go in the coverage gallery's Logs group, in every shape.
 const { test, expect } = require('../coverage-test');
 const { serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
 const { fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
 
 const logsUrl = (query = '') => `${fixture().monokulo_url}/dashboard/admin/logs${query}`;
-const stage = (page, name) => captureCoverageStage(page, name, test.info(), { group: 'logs', shapes: ['desktop'] });
+const stage = (page, name) => captureCoverageStage(page, name, test.info(), { group: 'logs' });
 
 test.beforeEach(async ({ context }) => {
   if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);

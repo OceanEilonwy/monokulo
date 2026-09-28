@@ -1,6 +1,7 @@
 // A UI stage for the coverage gallery. A whole page is captured in the
-// shapes it is used in - a phone upright and on its side, a tablet (iPad Air
-// size) upright and on its side, a desktop - then put back to the size the
+// shapes it is used in - a phone upright and on its side, a small phone
+// (320px, iPhone SE size) upright, a tablet (iPad Air size) upright and on
+// its side, a desktop - then put back to the size the
 // test had; anything smaller (a frame, one element) is captured once as it
 // is.
 //
@@ -11,11 +12,11 @@
 // `options.group` names the page or feature the gallery files the stage
 // under (`logs`, `pos-timeline`, ...); without it the gallery guesses from
 // the spec's file name (checkout, pos, challenge). `options.shapes` limits
-// the sizes: the Logs page, an admin tool used at a desk, is captured on
-// desktop only. `options.themes` limits the themes the same way.
+// the sizes: the POS timeline, read at a desk, is captured on desktop only. `options.themes` limits the themes the same way.
 const SHAPES = {
   'mobile-portrait': { width: 390, height: 844 },
   'mobile-landscape': { width: 844, height: 390 },
+  'small-portrait': { width: 320, height: 568 },
   'tablet-portrait': { width: 820, height: 1180 },
   'tablet-landscape': { width: 1180, height: 820 },
   desktop: { width: 1280, height: 800 },
