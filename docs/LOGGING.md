@@ -92,6 +92,21 @@ merchant or customer data.
   `POST /telemetry/client`, in the trace of the request that rendered the
   page. Reports are always `warn`, clipped, and limited per client by
   `abuse.client_logs_per_min` (a `429` drops them; never a challenge).
+- The POS records a timeline of each session (`pos-ui/src/timeline.ts`):
+  the tablet going offline and back (and for how long), the page hidden and
+  shown, frozen and resumed, restored from the back/forward cache, the live
+  stream dropping and reconnecting, every API request (route, status, time
+  taken), orders charged (whether a note was given and its length, never
+  its text), created, backgrounded, brought back, cancelled, changing
+  status and finishing, refund addresses saved (never the address), screen
+  changes and script errors. Events queue in `sessionStorage`, so nothing
+  is lost offline or across a reload, and go in batches to
+  `POST /dashboard/stores/{id}/pos/logs` (`source = pos`, `pos.session`,
+  `pos.seq`, `pos.client_ts`, `pos.kind`, `pos.detail`, `order.id`). A
+  line's "Show the POS session timeline" link, or "POS session" on a POS
+  order's page, opens `/dashboard/admin/logs/pos/{session}`: the events in
+  the tablet's order with gaps, offline and hidden periods, and late
+  arrivals called out.
 - The WooCommerce plugin sends a `traceparent` header on its requests and
   adds `[trace <id>]` to its own WooCommerce log lines, so the two can be
   matched. With **Send errors to Monokulo** on (off by default) and the

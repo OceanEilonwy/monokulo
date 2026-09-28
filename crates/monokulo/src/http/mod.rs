@@ -61,6 +61,7 @@ mod logs_page;
 mod orders;
 mod pay;
 mod pos;
+mod pos_logs;
 mod signup;
 mod telemetry_client;
 pub mod embed_domains;
@@ -142,6 +143,8 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/admin/logs/tail", axum::routing::get(logs_page::tail))
         .route("/dashboard/admin/logs/export", axum::routing::get(logs_page::export))
         .route("/dashboard/admin/logs/trace/{trace_id}", axum::routing::get(logs_page::trace_page))
+        .route("/dashboard/admin/logs/pos", axum::routing::get(logs_page::pos_session_for_order))
+        .route("/dashboard/admin/logs/pos/{session}", axum::routing::get(logs_page::pos_timeline))
         .route("/dashboard/admin/logs/saved", post(logs_page::save_search))
         .route("/dashboard/admin/logs/saved/{id}/delete", post(logs_page::delete_search))
         .route("/status", axum::routing::get(status_page::status_page))
@@ -211,6 +214,10 @@ pub fn build_router(state: AppState) -> Router {
         .route("/dashboard/stores/{id}/pos/orders/{order_id}/cancel", axum::routing::post(pos::cancel_order))
         .route("/dashboard/stores/{id}/pos/orders/{order_id}/status", axum::routing::get(pos::order_status))
         .route("/dashboard/stores/{id}/pos/events", axum::routing::get(pos::order_events))
+        .route(
+            "/dashboard/stores/{id}/pos/logs",
+            post(pos_logs::receive).layer(axum::extract::DefaultBodyLimit::max(pos_logs::MAX_BODY_BYTES)),
+        )
         .route("/dashboard/stores/{id}/orders", axum::routing::get(orders::orders_list))
         .route("/dashboard/stores/{id}/orders/lookup", axum::routing::post(orders::lookup_payment))
         .route("/dashboard/stores/{id}/orders/{order_id}", axum::routing::get(orders::order_detail))

@@ -25,6 +25,8 @@ pub struct RowView {
     pub target: String,
     pub message: String,
     pub trace_url: Option<String>,
+    /// The POS session this line belongs to, as a timeline.
+    pub pos_session_url: Option<String>,
     pub properties: Vec<PropertyView>,
 }
 
@@ -229,6 +231,9 @@ pub fn row(row: &RowView) -> Markup {
                 @if let Some(trace) = &row.trace_url {
                     p { a href=(trace) { "Show the whole trace" } }
                 }
+                @if let Some(session) = &row.pos_session_url {
+                    p { a href=(session) { "Show the POS session timeline" } }
+                }
             }
         }
     }
@@ -421,6 +426,126 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
     };
     layout_with_head(chrome, "Logs - Monokulo", extra_head, body)
 }
+
+/// One event of a POS session timeline.
+pub struct TimelineEntryView {
+    /// A stretch with nothing recorded before this event, as text
+    /// ("Nothing recorded for 4 min").
+    pub gap_before: Option<String>,
+    /// The tablet's clock.
+    pub time_display: String,
+    pub time_iso: String,
+    /// Since the event before ("+1.2 s").
+    pub since_previous: String,
+    pub severity: Severity,
+    pub kind: String,
+    pub order: Option<(String, String)>,
+    /// A period the event closes, worth pointing out ("offline for 42 s").
+    pub period: Option<String>,
+    pub detail: Vec<(String, String)>,
+    /// Queued on the tablet and sent later ("sent 5 min later").
+    pub late: Option<String>,
+}
+
+/// Totals shown above a POS session timeline.
+pub struct TimelineSummaryView {
+    pub events: usize,
+    pub span: String,
+    pub offline: String,
+    pub hidden: String,
+    pub stream_drops: usize,
+    pub orders_created: usize,
+    pub problems: usize,
+}
+
+pub struct PosTimelineViewModel {
+    pub session: String,
+    pub store: Option<(String, String)>,
+    pub device: Option<String>,
+    pub summary: TimelineSummaryView,
+    pub entries: Vec<TimelineEntryView>,
+    pub problems: Vec<String>,
+    pub truncated: bool,
+    pub logs_url: String,
+    pub zone_label: String,
+}
+
+/// `/dashboard/admin/logs/pos/{session}`: one POS session, event by event
+/// in the order the tablet recorded them, with gaps and the periods it was
+/// offline or hidden called out.
+pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Markup {
+    let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) (PreEscaped(TIMELINE_STYLE)) } };
+    let body = html! {
+        div class="wrap wrap-wide" {
+            nav class="context-nav" aria-label="Breadcrumb" {
+                a href="/dashboard" { "Dashboard" } " / " a href="/dashboard/admin/logs" { "Logs" }
+            }
+            h1 { "POS session" }
+            p class="hint" {
+                code { (vm.session) }
+                @if let Some((name, href)) = &vm.store { " · " a href=(href) { (name) } }
+                @if let Some(device) = &vm.device { br; span class="muted" { (device) } }
+            }
+            @for problem in &vm.problems { p class="error" role="status" { (problem) } }
+            @if vm.entries.is_empty() {
+                p class="muted" { "Nothing was recorded for this session, or its lines have been deleted by log retention." }
+            } @else {
+                dl class="timeline-summary" {
+                    div { dt { "Events" } dd { (vm.summary.events) } }
+                    div { dt { "Length" } dd { (vm.summary.span) } }
+                    div { dt { "Offline" } dd { (vm.summary.offline) } }
+                    div { dt { "Hidden" } dd { (vm.summary.hidden) } }
+                    div { dt { "Live updates dropped" } dd { (vm.summary.stream_drops) } }
+                    div { dt { "Orders created" } dd { (vm.summary.orders_created) } }
+                    div { dt { "Warnings and errors" } dd { (vm.summary.problems) } }
+                }
+                @if vm.truncated {
+                    p class="hint" { "Only the first events of a very long session are shown. " a href=(vm.logs_url) { "Search them all" } }
+                }
+                p class="hint" {
+                    "Times are the tablet's clock, in " (vm.zone_label) ". "
+                    a href=(vm.logs_url) { "Show these lines in Logs" }
+                }
+                ol class="pos-timeline" {
+                    @for entry in &vm.entries {
+                        @if let Some(gap) = &entry.gap_before { li class="timeline-gap" { (gap) } }
+                        li class=(match entry.severity { Severity::Error => "timeline-event is-error", Severity::Warn => "timeline-event is-warn", _ => "timeline-event" }) {
+                            time datetime=(entry.time_iso) { (entry.time_display) }
+                            span class="since muted" { (entry.since_previous) }
+                            span class="kind" { (entry.kind) }
+                            span class="about" {
+                                @if let Some((label, href)) = &entry.order { a href=(href) { (label) } " " }
+                                @if let Some(period) = &entry.period { strong class="period" { (period) } " " }
+                                @for (name, value) in &entry.detail { span class="kv" { span class="muted" { (name) "=" } (value) } " " }
+                                @if let Some(late) = &entry.late { span class="late muted" { "(" (late) ")" } }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    };
+    layout_with_head(chrome, "POS session - Monokulo", extra_head, body)
+}
+
+const TIMELINE_STYLE: &str = r#"
+.timeline-summary { display: flex; flex-wrap: wrap; gap: .5em 1.5em; margin: .5em 0 1em; }
+.timeline-summary div { display: flex; flex-direction: column; }
+.timeline-summary dt { font-size: .8em; color: var(--muted, #666); }
+.timeline-summary dd { margin: 0; font-weight: 700; }
+.pos-timeline { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--line); font-size: .9em; }
+.timeline-event { display: grid; grid-template-columns: 6.5em 5em 11em 1fr; gap: .5em; padding: .3em .3em; border-bottom: 1px solid var(--line); align-items: baseline; }
+.timeline-event .kind { font-family: var(--mono, monospace); }
+.timeline-event.is-warn .kind { font-weight: 700; color: var(--warn, #9a6700); }
+.timeline-event.is-error .kind { font-weight: 700; color: var(--error, #b00020); }
+.timeline-event .about { overflow-wrap: anywhere; }
+.timeline-event .period { color: var(--warn, #9a6700); }
+.timeline-gap { padding: .4em .3em; border-bottom: 1px dashed var(--line); color: var(--muted, #666); font-style: italic; text-align: center; }
+@media (max-width: 40em) {
+  .timeline-event { grid-template-columns: 1fr auto; }
+  .timeline-event .kind, .timeline-event .about { grid-column: 1 / -1; }
+}
+"#;
 
 /// One span on the trace page.
 pub struct SpanView {

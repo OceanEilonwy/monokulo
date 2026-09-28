@@ -1193,6 +1193,39 @@ async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
 }
 
 #[tokio::test]
+async fn the_pos_timeline_is_taken_only_from_the_stores_owner_once_it_opted_in() {
+    let (state, _, _) = state_with_owner_and_store("pk_shop");
+    {
+        let db = state.db.lock();
+        db.create_session(&shared::auth::hash_secret_token("owner-token"), "u_owner", crate::now_unix()).unwrap();
+        db.create_session(&shared::auth::hash_secret_token("other-token"), "u_other", crate::now_unix()).unwrap();
+    }
+    let router = build_router(state.clone());
+    let send = |token: &str, body: String| {
+        Request::builder()
+            .method("POST")
+            .uri("/dashboard/stores/c1/pos/logs")
+            .header("cookie", format!("session={token}"))
+            .header("content-type", "text/plain")
+            .body(Body::from(body))
+            .unwrap()
+    };
+    let batch = |events: usize| {
+        let events: Vec<_> = (1..=events)
+            .map(|seq| serde_json::json!({ "seq": seq, "t": 1_790_000_000_000i64 + seq as i64, "kind": "network.offline", "detail": { "online": false } }))
+            .collect();
+        serde_json::json!({ "session": "0f8e2c1a-3b4d-4e5f-9a6b-7c8d9e0f1a2b", "events": events }).to_string()
+    };
+    let status = |request: Request<Body>| { let router = router.clone(); async move { router.oneshot(request).await.unwrap().status() } };
+    assert_eq!(status(send("owner-token", batch(2))).await, StatusCode::FORBIDDEN, "Diagnostics is off");
+    state.db.lock().set_client_logging("c1", true).unwrap();
+    assert_eq!(status(send("owner-token", batch(2))).await, StatusCode::NO_CONTENT);
+    assert_eq!(status(send("owner-token", batch(101))).await, StatusCode::PAYLOAD_TOO_LARGE);
+    assert_eq!(status(send("owner-token", r#"{"session":"x","events":[]}"#.into())).await, StatusCode::BAD_REQUEST);
+    assert_eq!(status(send("other-token", batch(1))).await, StatusCode::NOT_FOUND, "someone else's store");
+}
+
+#[tokio::test]
 async fn the_status_page_names_its_stream_and_the_stream_sends_the_page_content() {
     let router = test_router();
     let page = body_text(router.clone().oneshot(Request::builder().uri("/status").body(Body::empty()).unwrap()).await.unwrap()).await;

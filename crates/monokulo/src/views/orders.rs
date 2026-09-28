@@ -189,6 +189,8 @@ pub struct PaymentRowViewModel {
 }
 
 pub struct OrderDetailData {
+    /// Taken on the POS: admins get a link to its session's timeline.
+    pub from_pos: bool,
     pub order_id: String,
     /// Raw, *not* pre-rendered to a trusted-HTML display string like the
     /// timestamp fields below - a merchant order id is caller-supplied free
@@ -355,6 +357,12 @@ pub fn detail_page(chrome: &PageChrome, data: &OrderDetailViewModel) -> Markup {
                     (super::reload_button(&chrome.current_path))
                     " "
                     (super::logs_link(chrome, "order.id", &order.order_id, "Logs for this order"))
+                    @if order.from_pos && chrome.is_admin {
+                        " "
+                        a class="logs-link" href=(format!("/dashboard/admin/logs/pos?order={}", url::form_urlencoded::byte_serialize(order.order_id.as_bytes()).collect::<String>())) {
+                            "POS session"
+                        }
+                    }
                 }
                 (live_fragment(order))
                 // Streams the part above as the order changes, when
@@ -413,6 +421,7 @@ mod tests {
 
     fn test_order_detail_data(double_spend_detected_at: Option<i64>) -> OrderDetailData {
         OrderDetailData {
+            from_pos: false,
             order_id: "pay_abc123".to_string(),
             merchant_order_id: None,
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),

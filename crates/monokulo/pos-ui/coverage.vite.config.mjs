@@ -8,7 +8,8 @@ const directory = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(directory, '../../..');
 const requireFromTests = createRequire(path.join(root, 'e2e/pos-playwright/package.json'));
 const { createInstrumenter } = requireFromTests('istanbul-lib-instrument');
-const source = 'crates/monokulo/pos-ui/src/main.tsx';
+// The authored POS sources, each counted under its repository path.
+const sources = ['main.tsx', 'timeline.ts'];
 
 function coverageInstrument() {
   return {
@@ -16,7 +17,9 @@ function coverageInstrument() {
     enforce: 'post',
     apply: 'build',
     transform(code, id) {
-      if (id.split('?')[0] !== path.join(directory, 'src/main.tsx')) return null;
+      const file = sources.find(name => id.split('?')[0] === path.join(directory, 'src', name));
+      if (!file) return null;
+      const source = `crates/monokulo/pos-ui/src/${file}`;
       const inputMap = this.getCombinedSourcemap();
       const instrumenter = createInstrumenter({ esModules: true, produceSourceMap: true, compact: false });
       const output = instrumenter.instrumentSync(code, source, inputMap.mappings ? inputMap : undefined);

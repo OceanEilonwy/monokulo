@@ -5,6 +5,9 @@
 //! - `GET /dashboard/admin/logs/tail`: new lines as server-sent events
 //!   (Live; JavaScript only).
 //! - `GET /dashboard/admin/logs/trace/{trace_id}`: one trace's waterfall.
+//! - `GET /dashboard/admin/logs/pos/{session}`: one POS session's
+//!   timeline; `GET /dashboard/admin/logs/pos?order=...` finds the session
+//!   that created an order.
 //! - `GET /dashboard/admin/logs/export?format=ndjson|csv`: a download.
 //! - `POST /dashboard/admin/logs/saved`, `.../saved/{id}/delete`: saved
 //!   searches.
@@ -226,6 +229,12 @@ fn row_view(row: &LogRow, params: &LogsParams, user: Option<&Expr>, zone: &jiff:
         target: row.target.clone(),
         message: row.message.clone(),
         trace_url: row.trace_id.as_ref().map(|id| format!("{LOGS}/trace/{id}")),
+        pos_session_url: row
+            .attributes
+            .get("pos.session")
+            .and_then(Value::as_str)
+            .filter(|s| super::pos_logs::is_session_id(s))
+            .map(|s| format!("{LOGS}/pos/{s}")),
         properties,
     }
 }
@@ -503,6 +512,208 @@ pub async fn trace_page(
     };
     let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/trace/{trace_id}"));
     Html(view::trace_page(&chrome, &vm).into_string()).into_response()
+}
+
+/// Most events one POS timeline shows.
+const TIMELINE_MAX: usize = 5_000;
+
+/// "42 s", "4 min 12 s", "2 h 5 min".
+fn human_duration(ms: i64) -> String {
+    let seconds = ms.max(0) / 1000;
+    match seconds {
+        0 => format!("{:.1} s", ms.max(0) as f64 / 1000.0),
+        1..=59 => format!("{seconds} s"),
+        60..=3599 => match seconds % 60 {
+            0 => format!("{} min", seconds / 60),
+            s => format!("{} min {s} s", seconds / 60),
+        },
+        _ => match (seconds % 3600) / 60 {
+            0 => format!("{} h", seconds / 3600),
+            m => format!("{} h {m} min", seconds / 3600),
+        },
+    }
+}
+
+/// Every line of one POS session, oldest page last, from monokulo's own
+/// store (the engine never has them).
+async fn session_rows(state: &AppState, session: &str) -> (Vec<LogRow>, Option<String>, bool) {
+    let sources = Sources { local: state.log_store.clone(), engine: crate::logs::EngineSource::Unavailable(String::new()) };
+    let q = format!("pos.session = '{session}'");
+    let (mut rows, mut before) = (Vec::new(), String::new());
+    loop {
+        let page = match crate::logs::read(&sources, &request(parse(&q).ok().flatten().as_ref(), None, None, &before, "", telemetry::store::api::MAX_LIMIT)).await {
+            Ok(page) => page,
+            Err(e) => return (rows, Some(e.to_string()), false),
+        };
+        if let Some(problem) = page.local_problem {
+            return (rows, Some(problem), false);
+        }
+        let Some(last) = page.rows.last() else { break };
+        before = last.cursor().encode();
+        let full = page.rows.len() == telemetry::store::api::MAX_LIMIT as usize;
+        rows.extend(page.rows);
+        if rows.len() >= TIMELINE_MAX {
+            return (rows, None, true);
+        }
+        if !full {
+            break;
+        }
+    }
+    (rows, None, false)
+}
+
+fn attr_i64(row: &LogRow, name: &str) -> Option<i64> {
+    row.attributes.get(name).and_then(|v| v.as_i64().or_else(|| v.as_str().and_then(|s| s.parse().ok())))
+}
+
+fn attr_str<'a>(row: &'a LogRow, name: &str) -> Option<&'a str> {
+    row.attributes.get(name).and_then(Value::as_str)
+}
+
+/// `GET /dashboard/admin/logs/pos/{session}`.
+pub async fn pos_timeline(State(state): State<AppState>, AuthedAdmin(admin, _): AuthedAdmin, tz: Timezone, Path(session): Path<String>) -> Response {
+    if !super::pos_logs::is_session_id(&session) {
+        return (StatusCode::NOT_FOUND, "No such POS session.").into_response();
+    }
+    let (zone, zone_label) = zone(&tz);
+    let (mut rows, problem, truncated) = session_rows(&state, &session).await;
+    rows.sort_by_key(|row| (attr_i64(row, "pos.seq").unwrap_or(i64::MAX), row.ts));
+
+    let store = rows.iter().find_map(|row| attr_str(row, "store.id")).map(str::to_string);
+    let store_link = store.as_ref().map(|id| {
+        let name = state
+            .db
+            .lock()
+            .get_store_connection_by_id(id)
+            .ok()
+            .flatten()
+            .map(|row| super::orders::display_name_for(&row.site_url))
+            .unwrap_or_else(|| id.clone());
+        (name, format!("/dashboard/stores/{id}"))
+    });
+    let device = rows
+        .iter()
+        .find(|row| attr_str(row, "pos.kind") == Some("pos.opened"))
+        .and_then(|row| attr_str(row, "pos.detail"))
+        .and_then(|detail| super::pos_logs::detail_pairs(detail).into_iter().find(|(k, _)| k == "agent").map(|(_, v)| v));
+
+    let (mut offline_ms, mut hidden_ms, mut stream_drops, mut orders_created, mut problems) = (0i64, 0i64, 0usize, 0usize, 0usize);
+    let mut previous: Option<i64> = None;
+    let mut entries = Vec::with_capacity(rows.len());
+    for row in &rows {
+        let client_ms = attr_i64(row, "pos.client_ts").unwrap_or(row.ts / 1_000_000);
+        let kind = attr_str(row, "pos.kind").unwrap_or("unknown").to_string();
+        let detail = attr_str(row, "pos.detail").map(super::pos_logs::detail_pairs).unwrap_or_default();
+        let number = |name: &str| detail.iter().find(|(k, _)| k == name).and_then(|(_, v)| v.parse::<i64>().ok());
+        let period = if let Some(ms) = number("offline_ms") {
+            offline_ms += ms;
+            Some(format!("offline for {}", human_duration(ms)))
+        } else if let Some(ms) = number("hidden_ms") {
+            hidden_ms += ms;
+            Some(format!("hidden for {}", human_duration(ms)))
+        } else {
+            number("down_ms").map(|ms| format!("live updates down for {}", human_duration(ms)))
+        };
+        match kind.as_str() {
+            "stream.error" => stream_drops += 1,
+            "order.created" => orders_created += 1,
+            _ => {}
+        }
+        let severity = row.severity();
+        if severity >= Severity::Warn {
+            problems += 1;
+        }
+        let since = previous.map(|p| client_ms - p);
+        let gap_before = since.filter(|ms| *ms >= 60_000).map(|ms| format!("Nothing recorded for {}", human_duration(ms)));
+        let late_ms = row.ts / 1_000_000 - client_ms;
+        let order = attr_str(row, "order.id").map(|order| {
+            let href = match &store {
+                Some(store) => format!("/dashboard/stores/{store}/orders/{order}"),
+                None => format!("{LOGS}?q={}", url::form_urlencoded::byte_serialize(format!("order.id = '{order}'").as_bytes()).collect::<String>()),
+            };
+            (order.to_string(), href)
+        });
+        let shown_detail = detail
+            .into_iter()
+            .filter(|(k, _)| !matches!(k.as_str(), "offline_ms" | "hidden_ms" | "down_ms" | "agent"))
+            .collect();
+        entries.push(view::TimelineEntryView {
+            gap_before,
+            time_display: display_time(client_ms * 1_000_000, &zone),
+            time_iso: iso_time(client_ms * 1_000_000),
+            since_previous: since.map(|ms| format!("+{}", human_duration(ms))).unwrap_or_default(),
+            severity,
+            kind,
+            order,
+            period,
+            detail: shown_detail,
+            late: (late_ms >= 30_000).then(|| format!("sent {} later", human_duration(late_ms))),
+        });
+        previous = Some(client_ms);
+    }
+    let first = rows.first().map(|row| attr_i64(row, "pos.client_ts").unwrap_or(row.ts / 1_000_000));
+    let span = match (first, previous) {
+        (Some(first), Some(last)) => human_duration(last - first),
+        _ => String::new(),
+    };
+    let search = LogsParams { q: format!("pos.session = '{session}'"), range: "all".into(), ..LogsParams::default() };
+    let vm = view::PosTimelineViewModel {
+        session: session.clone(),
+        store: store_link,
+        device,
+        summary: view::TimelineSummaryView {
+            events: entries.len(),
+            span,
+            offline: human_duration(offline_ms),
+            hidden: human_duration(hidden_ms),
+            stream_drops,
+            orders_created,
+            problems,
+        },
+        entries,
+        problems: problem.into_iter().collect(),
+        truncated,
+        logs_url: search.url(LOGS),
+        zone_label,
+    };
+    let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/pos/{session}"));
+    Html(view::pos_timeline_page(&chrome, &vm).into_string()).into_response()
+}
+
+#[derive(Deserialize)]
+pub struct PosSessionForOrder {
+    order: String,
+}
+
+/// `GET /dashboard/admin/logs/pos?order=...`: the POS session that created
+/// an order, or a page saying there isn't one.
+pub async fn pos_session_for_order(
+    State(state): State<AppState>,
+    AuthedAdmin(admin, _): AuthedAdmin,
+    Query(query): Query<PosSessionForOrder>,
+) -> Response {
+    let order = query.order.replace('\\', "\\\\").replace('\'', "\\'");
+    let q = format!("order.id = '{order}' and pos.kind = 'order.created'");
+    let sources = Sources { local: state.log_store.clone(), engine: crate::logs::EngineSource::Unavailable(String::new()) };
+    if let Ok(page) = crate::logs::read(&sources, &request(parse(&q).ok().flatten().as_ref(), None, None, "", "", 1)).await {
+        if let Some(session) = page.rows.first().and_then(|row| attr_str(row, "pos.session")).filter(|s| super::pos_logs::is_session_id(s)) {
+            return axum::response::Redirect::to(&format!("{LOGS}/pos/{session}")).into_response();
+        }
+    }
+    let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/pos"));
+    let body = maud::html! {
+        div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" {
+                a href="/dashboard" { "Dashboard" } " / " a href=(LOGS) { "Logs" }
+            }
+            h1 { "No POS session recorded" }
+            p {
+                "No POS session timeline mentions creating this order. Only orders taken on the POS of a store with "
+                "Diagnostics turned on have one, and only until log retention deletes it."
+            }
+        }
+    };
+    (StatusCode::NOT_FOUND, crate::views::layout(&chrome, "No POS session - Monokulo", body)).into_response()
 }
 
 fn format_duration(nanos: i64) -> String {

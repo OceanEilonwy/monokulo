@@ -275,3 +275,67 @@ async fn live_streams_new_lines_to_the_top_of_the_list() {
     assert!(text.contains("\nid: "), "an id, so a reconnect resumes after it: {text}");
     assert!(!text.contains("the page test failed"), "older lines aren't sent again: {text}");
 }
+
+/// A POS session sent through the real route, out of order and partly
+/// late, shown as one timeline in the order the tablet recorded it.
+#[tokio::test]
+async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
+    use tracing::instrument::WithSubscriber;
+    let s = setup(0).await;
+    let admin = s.state.db.lock().get_user_by_email(TEST_ADMIN_EMAIL).unwrap().unwrap();
+    {
+        let db = s.state.db.lock();
+        db.create_store_connection("c_pos", &admin.id, "woocommerce", "https://pos-shop.example.com", "pk_pos", "enc", "http://engine", 1, "XMR").unwrap();
+        db.set_client_logging("c_pos", true).unwrap();
+    }
+    let session = "5b0c7f0e-2a8d-4c61-9e3b-1f2d3c4b5a69";
+    let t0: i64 = 1_790_000_000_000;
+    let send = |events: serde_json::Value| {
+        let body = serde_json::json!({ "session": session, "events": events }).to_string();
+        let request = Request::post("/dashboard/stores/c_pos/pos/logs").header("cookie", &s.cookie).body(Body::from(body)).unwrap();
+        s.router.clone().oneshot(request).with_subscriber(s.dispatch.clone())
+    };
+    // Sent after coming back online: the later batch arrives first.
+    let later = serde_json::json!([
+        { "seq": 4, "t": t0 + 43_000, "kind": "network.online", "detail": { "offline_ms": 42_000 } },
+        { "seq": 5, "t": t0 + 200_000, "kind": "order.created", "order_id": "o_pos", "detail": { "has_note": true } },
+        { "seq": 6, "t": t0 + 201_000, "level": "warn", "kind": "stream.error", "detail": { "orders": 1 } },
+    ]);
+    assert_eq!(send(later).await.unwrap().status(), StatusCode::NO_CONTENT);
+    let earlier = serde_json::json!([
+        { "seq": 1, "t": t0, "kind": "pos.opened", "detail": { "agent": "iPad Safari", "navigation": "navigate" } },
+        { "seq": 2, "t": t0 + 500, "kind": "screen", "detail": { "screen": "keypad" } },
+        { "seq": 3, "t": t0 + 1_000, "level": "warn", "kind": "network.offline" },
+    ]);
+    assert_eq!(send(earlier).await.unwrap().status(), StatusCode::NO_CONTENT);
+    let store = s.state.log_store.clone().unwrap();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while store.query(&telemetry::store::LogQuery { limit: 1000, ..Default::default() }).unwrap().iter().filter(|r| r.attributes.contains_key("pos.seq")).count() < 6 {
+        assert!(std::time::Instant::now() < deadline, "the POS lines were never stored");
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    let (status, _, html) = s.get(&format!("/dashboard/admin/logs/pos/{session}"), false).await;
+    assert_eq!(status, StatusCode::OK, "{html}");
+    let at = |needle: &str| html.find(needle).unwrap_or_else(|| panic!("{needle} missing: {html}"));
+    assert!(at(">pos.opened<") < at(">screen<") && at(">screen<") < at(">network.offline<"));
+    assert!(at(">network.offline<") < at(">network.online<") && at(">network.online<") < at(">order.created<"), "by seq, not arrival");
+    assert!(html.contains("offline for 42 s"), "{html}");
+    assert!(html.contains("Nothing recorded for 2 min 37 s"), "{html}");
+    assert!(html.contains(r#"href="/dashboard/stores/c_pos/orders/o_pos""#), "{html}");
+    assert!(html.contains("iPad Safari") && html.contains("pos-shop.example.com"), "{html}");
+    assert!(html.contains("<dt>Orders created</dt><dd>1</dd>") && html.contains("<dt>Warnings and errors</dt><dd>2</dd>"), "{html}");
+    assert!(html.contains("sent "), "lines that arrived long after the tablet recorded them say so: {html}");
+
+    // From the order, and from a line in Logs.
+    let (status, headers, _) = s.get("/dashboard/admin/logs/pos?order=o_pos", false).await;
+    assert_eq!(status, StatusCode::SEE_OTHER);
+    assert_eq!(headers["location"], format!("/dashboard/admin/logs/pos/{session}"));
+    let (status, _, html) = s.get("/dashboard/admin/logs/pos?order=o_elsewhere", false).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+    assert!(html.contains("No POS session recorded"));
+    let (_, _, html) = s.get(&logs_url("pos.kind = 'order.created'", ""), false).await;
+    assert!(html.contains(&format!(r#"href="/dashboard/admin/logs/pos/{session}""#)) && html.contains("Show the POS session timeline"), "{html}");
+    let (status, _, _) = s.get("/dashboard/admin/logs/pos/not-a-session!", false).await;
+    assert_eq!(status, StatusCode::NOT_FOUND);
+}

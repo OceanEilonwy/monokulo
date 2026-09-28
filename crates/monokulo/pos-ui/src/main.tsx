@@ -3,6 +3,7 @@ import { render } from '@solidjs/web';
 import { StatusBadge, StatusIcon, StatusSymbols, stateOf, statusName } from './status';
 import { addressFromQr, decodeImageFile, looksLikeAddress, scanCamera } from './refund';
 import { applyTheme, type Theme } from './theme';
+import { createTimeline, routeOf, watchPage } from './timeline';
 import './pos.css';
 
 type Order = {
@@ -15,16 +16,19 @@ type Order = {
   refund_address?: string | null; qr_svg?: string;
 };
 type StatusEvent = Pick<Order, 'order_id' | 'status' | 'confirmations' | 'confirmations_required' | 'error' | 'updated_at' | 'received_xmr' | 'remaining_xmr'> & { is_terminal: boolean };
-type Config = { connectionId: string; publicKey: string; currency: string; decimals: number; storeName: string };
+type Config = { connectionId: string; publicKey: string; currency: string; decimals: number; storeName: string; clientLogging: boolean };
 
 const root = document.getElementById('pos-root');
 if (!root) throw new Error('POS root missing');
 const config: Config = {
   connectionId: root.dataset.connectionId || '', publicKey: root.dataset.publicKey || '',
   currency: root.dataset.currency || 'AUD', decimals: Number(root.dataset.decimals || '2'),
-  storeName: root.dataset.storeName || 'Store',
+  storeName: root.dataset.storeName || 'Store', clientLogging: root.dataset.clientLogging === 'true',
 };
 const api = `/dashboard/stores/${encodeURIComponent(config.connectionId)}/pos`;
+/** This session's story for the store's logs, when it opted in. */
+const timeline = createTimeline(config.clientLogging, `${api}/logs`);
+watchPage(timeline);
 const terminal = (o: Order) => Boolean(o.cancelled_at) || ['paid', 'overpaid', 'expired'].includes(o.status);
 
 /** `#8f42…a91c` - the order ID's distinctive part, without its `order_` prefix. */
@@ -63,7 +67,15 @@ function shortAddress(address: string): string {
 }
 
 async function json<T>(url: string, init?: RequestInit): Promise<T> {
-  const response = await fetch(url, init);
+  const started = performance.now();
+  const method = init?.method || 'GET';
+  let response: Response;
+  try { response = await fetch(url, init); }
+  catch (e) {
+    timeline.record('request.failed', { method, route: routeOf(url), ms: Math.round(performance.now() - started), error: (e as Error).message }, 'warn');
+    throw e;
+  }
+  timeline.record('request', { method, route: routeOf(url), status: response.status, ms: Math.round(performance.now() - started) }, response.ok ? 'info' : 'warn');
   if (!response.ok) {
     const body = await response.json().catch(() => ({}));
     throw new Error(body.error || `Request failed (${response.status})`);
@@ -149,10 +161,12 @@ function PaymentCard(props: { order: Order }) {
         body: new URLSearchParams({ refund_address: value }),
       });
       const body = await response.json().catch(() => ({}));
+      timeline.record(response.ok ? 'refund.saved' : 'refund.rejected', { order_id: props.order.order_id, status: response.status }, response.ok ? 'info' : 'warn');
       if (refund().trim() !== value) return;
       if (response.ok) { setSaved(value); setRefundState('saved'); }
       else { setRefundState('invalid'); setRefundMessage(body.error || 'That address was not accepted.'); }
-    } catch {
+    } catch (e) {
+      timeline.record('refund.save_failed', { order_id: props.order.order_id, error: (e as Error).message }, 'warn');
       if (refund().trim() === value) { setRefundState('idle'); setRefundMessage('Could not save. Check the connection and try again.'); }
     }
   }
@@ -178,7 +192,10 @@ function PaymentCard(props: { order: Order }) {
     const session = scanCamera(video);
     stopScan = session.stop; setScanning(true);
     try { const payload = await session.result; if (payload) useQr(payload); }
-    catch { setRefundMessage('Camera unavailable. Choose a QR image instead.'); }
+    catch (e) {
+      timeline.record('refund.camera_failed', { order_id: props.order.order_id, error: (e as Error)?.message }, 'warn');
+      setRefundMessage('Camera unavailable. Choose a QR image instead.');
+    }
     finally { setScanning(false); stopScan = null; }
   }
   async function chooseImage(file: File | undefined) {
@@ -303,13 +320,24 @@ function App() {
   function updateOrders(change: (previous: Order[]) => Order[]) {
     // Writes are batched until the next microtask; flush() applies this one
     // now so the list read back below is the updated one.
+    const before = new Map(orders().map(o => [o.order_id, o]));
     setOrders(change);
     flush();
     const next = orders();
+    for (const o of next) {
+      const was = before.get(o.order_id);
+      if (was && (was.status !== o.status || Boolean(was.cancelled_at) !== Boolean(o.cancelled_at) || was.error !== o.error)) {
+        timeline.record('order.status', {
+          order_id: o.order_id, from: was.status, to: o.status, confirmations: o.confirmations,
+          cancelled: Boolean(o.cancelled_at), error: o.error ?? undefined,
+        }, stateOf(o) === 'double-spend' || o.error ? 'warn' : 'info');
+      }
+    }
     for (const o of next) if (!terminal(o)) seenOpen.add(o.order_id);
     const recorded = finishedAt();
     const newlyFinished = next.filter(o => terminal(o) && seenOpen.has(o.order_id) && recorded[o.order_id] === undefined);
     if (newlyFinished.length) {
+      for (const o of newlyFinished) timeline.record('order.finished', { order_id: o.order_id, status: o.cancelled_at ? 'cancelled' : o.status });
       const at = Math.floor(Date.now() / 1000);
       setFinishedAt({ ...recorded, ...Object.fromEntries(newlyFinished.map(o => [o.order_id, at])) });
     }
@@ -331,10 +359,12 @@ function App() {
         ...previous.filter(o => !open.has(o.order_id) && (terminal(o) || gone.includes(o.order_id))),
       ]);
       for (const id of gone) void loadOrder(id).catch(() => {});
+      let resumed: string | undefined;
       if (!activeId()) {
         const foreground = data.orders.find(o => !o.backgrounded);
-        if (foreground) { setActiveId(foreground.order_id); setScreen('payment'); void loadOrder(foreground.order_id).catch(() => {}); }
+        if (foreground) { resumed = foreground.order_id; setActiveId(foreground.order_id); setScreen('payment'); void loadOrder(foreground.order_id).catch(() => {}); }
       }
+      timeline.record('orders.loaded', { open: data.orders.length, backgrounded: data.orders.filter(o => o.backgrounded).length, order_id: resumed });
       setError('');
     } catch (e) { setError((e as Error).message); }
   }
@@ -356,6 +386,8 @@ function App() {
     return [...new Set([...foreground, ...onScreen, ...otherActive, ...cancelled])].slice(0, 32).join(',');
   });
   function markConnected() { window.clearTimeout(lostTimer); lostTimer = undefined; setOffline(false); }
+  /** When the stream last dropped, for how long it was down. */
+  let streamDownAt = 0;
   // One update stream for the watched orders, reopened whenever they change
   // and closed when the POS goes away. It sends every watched order's status
   // when it connects, so opening it needs no per-order reads (the engine
@@ -363,7 +395,12 @@ function App() {
   createEffect(watchedIds, ids => {
     if (!ids) { markConnected(); return; }
     const source = new EventSource(`${api}/events?orders=${ids.split(',').map(encodeURIComponent).join(',')}`);
-    source.addEventListener('open', markConnected);
+    const watching = ids.split(',').length;
+    source.addEventListener('open', () => {
+      timeline.record('stream.open', { orders: watching, down_ms: streamDownAt ? Date.now() - streamDownAt : undefined });
+      streamDownAt = 0;
+      markConnected();
+    });
     source.addEventListener('status', event => {
       let update: StatusEvent;
       try { update = JSON.parse((event as MessageEvent).data) as StatusEvent; }
@@ -375,7 +412,8 @@ function App() {
     // that took (and however often the watched set changes meanwhile). Only
     // a successful open clears it.
     source.addEventListener('error', () => {
-      if (lostTimer === undefined) lostTimer = window.setTimeout(() => setOffline(true), 6000);
+      if (!streamDownAt) { streamDownAt = Date.now(); timeline.record('stream.error', { orders: watching, online: navigator.onLine }, 'warn'); }
+      if (lostTimer === undefined) lostTimer = window.setTimeout(() => { setOffline(true); timeline.record('stream.lost', { after_ms: 6000 }, 'warn'); }, 6000);
     });
     return () => source.close();
   });
@@ -387,18 +425,20 @@ function App() {
     setBusy(true); setError('');
     const amount = plainAmount(digits());
     const note = reference().trim();
-    if (!pendingRequest || pendingRequest.amount !== amount || pendingRequest.reference !== note) {
-      pendingRequest = { amount, reference: note, key: crypto.randomUUID() };
-    }
+    const retry = Boolean(pendingRequest && pendingRequest.amount === amount && pendingRequest.reference === note);
+    if (!retry || !pendingRequest) pendingRequest = { amount, reference: note, key: crypto.randomUUID() };
+    // Whether a note was given and how long, never its text.
+    timeline.record('order.charge', { amount, currency: config.currency, has_note: Boolean(note), note_length: note.length || undefined, retry });
     try {
       const created = await json<{ order_id: string }>(`${api}/orders`, {
         method: 'POST', headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ amount, merchant_order_id: note || null, request_key: pendingRequest.key }),
       });
+      timeline.record('order.created', { order_id: created.order_id, has_note: Boolean(note) });
       await loadOrder(created.order_id);
       pendingRequest = null;
       setActiveId(created.order_id); setScreen('payment');
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { timeline.record('order.create_failed', { error: (e as Error).message }, 'warn'); setError((e as Error).message); }
     finally { setBusy(false); }
   }
   async function backgroundOrder() {
@@ -406,8 +446,9 @@ function App() {
     setBusy(true); setError('');
     try {
       await post(`${api}/orders/${encodeURIComponent(order.order_id)}/background`);
+      timeline.record('order.backgrounded', { order_id: order.order_id, status: order.status });
       upsert({ ...order, backgrounded: true }); resetKeypad();
-    } catch (e) { setError((e as Error).message); }
+    } catch (e) { timeline.record('order.background_failed', { order_id: order.order_id, error: (e as Error).message }, 'warn'); setError((e as Error).message); }
     finally { setBusy(false); }
   }
   async function cancelOrder() {
@@ -416,8 +457,10 @@ function App() {
     setBusy(true); setError('');
     try {
       await post(`${api}/orders/${encodeURIComponent(order.order_id)}/cancel`);
+      timeline.record('order.cancelled', { order_id: order.order_id });
       await loadOrder(order.order_id);
     } catch (e) {
+      timeline.record('order.cancel_failed', { order_id: order.order_id, error: (e as Error).message }, 'warn');
       setError((e as Error).message);
       // Refused because a payment arrived meanwhile: show it.
       void loadOrder(order.order_id).catch(() => {});
@@ -425,6 +468,7 @@ function App() {
     finally { setBusy(false); }
   }
   async function openOrder(order: Order) {
+    timeline.record('order.foregrounded', { order_id: order.order_id, from: screen() === 'list' ? 'list' : 'stack', status: order.status });
     if (screen() === 'list' && listElement) setListScroll(listElement.scrollTop);
     setError(''); setActiveId(order.order_id); setScreen('payment');
     try { await loadOrder(order.order_id); } catch (e) { setError((e as Error).message); }
@@ -443,6 +487,8 @@ function App() {
     else if (event.key === 'Escape') setDigits('0');
     else if (event.key === 'Enter') void charge();
   }
+  // Which screen the terminal shows, as it changes.
+  createEffect(screen, shown => timeline.record('screen', { screen: shown, order_id: shown === 'payment' ? untrack(activeId) ?? undefined : undefined }));
   onSettled(() => {
     void refresh();
     document.addEventListener('keydown', onKey);

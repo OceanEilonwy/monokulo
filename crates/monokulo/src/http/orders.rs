@@ -322,7 +322,9 @@ async fn order_detail_data(
                 },
                 None => "—".to_string(),
             };
+            let from_pos = matches!(state.db.lock().get_pos_order(&row.id, &order_id), Ok(Some(_)));
             Ok(Some(OrderDetailData {
+                from_pos,
                 order_id: detail.order.order_id,
                 merchant_order_id: detail.order.merchant_order_id,
                 address: detail.order.address,
@@ -3783,6 +3785,7 @@ mod tests {
     #[test]
     fn scan_range_row_shows_a_closed_range_once_no_longer_being_watched() {
         let order = OrderDetailData {
+            from_pos: false,
             order_id: "pay_abc123".to_string(),
             merchant_order_id: None,
             address: "addr".to_string(),

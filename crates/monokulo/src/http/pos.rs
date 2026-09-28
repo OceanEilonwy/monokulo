@@ -68,12 +68,14 @@ pub async fn pos_page(State(state): State<AppState>, AuthedUser(user, _): Authed
     // entry" decision.
     let base_currency_decimals: u8 = if row.base_currency.eq_ignore_ascii_case("XMR") { 12 } else { 2 };
 
+    let client_logging = state.db.lock().client_logging(&row.id).unwrap_or(false);
     let view = PosViewModel {
         connection_id: id,
         public_key: row.tenant_public_key,
         display_name: display_name_for(&row.site_url),
         base_currency: row.base_currency,
         base_currency_decimals,
+        client_logging,
     };
     let chrome = super::page_chrome(&state, Some(&user), format!("/dashboard/stores/{}/pos", view.connection_id));
     views::pos::page(&chrome, &view).into_response()
