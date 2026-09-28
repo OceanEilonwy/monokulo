@@ -318,6 +318,7 @@ mod tests {
         let status = scanner_status::new_scanner_status_map();
         let state = crate::http::AppState {
             store: store.clone(),
+            read_pool: None,
             key_custody: key_custody.clone(),
             key_custody_backend: "plain".to_string(),
             wallet_handles: wallet_handles.clone(),

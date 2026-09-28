@@ -120,7 +120,9 @@ impl SocketKeyCustody {
         pool_size: usize,
     ) -> Result<Self, KeyCustodyError> {
         let socket_path = socket_path.as_ref().to_path_buf();
-        let first = open(&socket_path).await?;
+        let first = tokio::time::timeout(call_timeout, open(&socket_path))
+            .await
+            .map_err(|_| call_timed_out(call_timeout))??;
         let mut slots: Vec<Mutex<Option<UnixStream>>> = (0..pool_size.max(1)).map(|_| Mutex::new(None)).collect();
         slots[0] = Mutex::new(Some(first));
         Ok(SocketKeyCustody {
@@ -161,8 +163,11 @@ impl SocketKeyCustody {
     /// One request on a connection opened for it and closed after, so a
     /// stale pooled connection can't be what fails.
     async fn call_fresh(&self, request: KeyCustodyRequest) -> Result<KeyCustodyResponse, KeyCustodyError> {
-        let mut stream = open(&self.socket_path).await?;
-        match tokio::time::timeout(self.call_timeout, async {
+        let deadline = tokio::time::Instant::now() + self.call_timeout;
+        let mut stream = tokio::time::timeout_at(deadline, open(&self.socket_path))
+            .await
+            .map_err(|_| call_timed_out(self.call_timeout))??;
+        match tokio::time::timeout_at(deadline, async {
             write_frame(&mut stream, &request).await?;
             read_frame(&mut stream).await
         })
@@ -183,16 +188,21 @@ impl SocketKeyCustody {
     /// the first to come free. A transport failure closes that connection
     /// only.
     async fn call(&self, request: KeyCustodyRequest) -> Result<KeyCustodyResponse, KeyCustodyError> {
-        let mut guard = self.acquire().await;
+        let deadline = tokio::time::Instant::now() + self.call_timeout;
+        let mut guard = tokio::time::timeout_at(deadline, self.acquire())
+            .await
+            .map_err(|_| call_timed_out(self.call_timeout))?;
         // Only an idle connection with a fully consumed response belongs in
         // the pool. An outer timeout/abort can drop us at any await, including
         // halfway through a frame; dropping the owned stream then closes it.
         let mut stream = match guard.take() {
             Some(stream) => stream,
-            None => open(&self.socket_path).await?,
+            None => tokio::time::timeout_at(deadline, open(&self.socket_path))
+                .await
+                .map_err(|_| call_timed_out(self.call_timeout))??,
         };
 
-        let outcome = tokio::time::timeout(self.call_timeout, async {
+        let outcome = tokio::time::timeout_at(deadline, async {
             write_frame(&mut stream, &request).await?;
             read_frame(&mut stream).await
         })
@@ -259,6 +269,10 @@ async fn open(path: &Path) -> Result<UnixStream, KeyCustodyError> {
     })
 }
 
+fn call_timed_out(timeout: Duration) -> KeyCustodyError {
+    KeyCustodyError::BackendUnavailable(format!("key-custody-service call did not finish within {timeout:?}"))
+}
+
 fn canary_material() -> WalletMaterial {
     // The canary's spend public key is the view key's public key: any valid
     // point does, since nothing is ever paid to it.
@@ -320,6 +334,7 @@ impl KeyCustody for SocketKeyCustody {
     async fn unseal_and_register(&self, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
         let request = KeyCustodyRequest::UnsealAndRegister(UnsealAndRegisterRequest {
             sealed: SealedMaterialWire::from(sealed),
+            registration_id: None,
         });
         match self.call(request).await? {
             KeyCustodyResponse::UnsealAndRegister(Ok(handle)) => WalletHandle::try_from(handle)
@@ -328,6 +343,19 @@ impl KeyCustody for SocketKeyCustody {
                         "key-custody-service returned a malformed handle: {e}"
                     ))
                 }),
+            KeyCustodyResponse::UnsealAndRegister(Err(e)) => Err(e.into()),
+            other => Err(mismatched_response("UnsealAndRegister", &other)),
+        }
+    }
+
+    async fn unseal_and_register_idempotent(&self, sealed: &[u8], registration_id: &str) -> Result<WalletHandle, KeyCustodyError> {
+        let request = KeyCustodyRequest::UnsealAndRegister(UnsealAndRegisterRequest {
+            sealed: SealedMaterialWire::from(sealed),
+            registration_id: Some(registration_id.to_string()),
+        });
+        match self.call(request).await? {
+            KeyCustodyResponse::UnsealAndRegister(Ok(handle)) => WalletHandle::try_from(handle)
+                .map_err(|e| KeyCustodyError::BackendUnavailable(format!("key-custody-service returned a malformed handle: {e}"))),
             KeyCustodyResponse::UnsealAndRegister(Err(e)) => Err(e.into()),
             other => Err(mismatched_response("UnsealAndRegister", &other)),
         }

@@ -225,6 +225,8 @@ async fn run(action: Action) {
 
     let app_state = AppState {
         store: store.clone(),
+        read_pool: Some(scanner::store::ReadStorePool::open(&cli::database_path().to_string_lossy(), 2)
+            .unwrap_or_else(|e| { eprintln!("failed to open database read pool: {e}"); std::process::exit(1) })),
         key_custody: key_custody.clone(),
         key_custody_backend,
         wallet_handles: wallet_handles.clone(),
@@ -324,6 +326,7 @@ async fn apply_custody(router: &Arc<CustodyRouter>, custody: &CustodyConfig) -> 
 /// `KeyCustody`, so `AppState::wallet_handles` starts populated rather than relying
 /// solely on the lazy on-first-use path in `http::resolve_wallet_handle`.
 async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCustody>) -> HashMap<String, WalletHandle> {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     // A database error here must not kill the engine at boot: retry with
     // backoff until the store answers, logging each failure.
     let mut delay = Duration::from_millis(500);
@@ -341,11 +344,19 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
     };
     let mut handles = HashMap::new();
     for tenant in tenants {
-        match key_custody.unseal_and_register_in(&tenant.key_custody_backend, &tenant.sealed_key_material).await {
-            Ok(handle) => {
+        if tokio::time::Instant::now() >= deadline {
+            eprintln!("boot registration allowance exhausted; remaining tenants will be retried by the scanner");
+            break;
+        }
+        match tokio::time::timeout_at(
+            deadline.min(tokio::time::Instant::now() + Duration::from_secs(10)),
+            key_custody.unseal_and_register_in_idempotent(&tenant.key_custody_backend, &tenant.sealed_key_material, &tenant.id),
+        ).await {
+            Ok(Ok(handle)) => {
                 handles.insert(tenant.id, handle);
             }
-            Err(e) => eprintln!("failed to register tenant {} with key custody: {e}", tenant.id),
+            Ok(Err(e)) => eprintln!("failed to register tenant {} with key custody: {e}", tenant.id),
+            Err(_) => eprintln!("registration of tenant {} exceeded its deadline", tenant.id),
         }
     }
     handles

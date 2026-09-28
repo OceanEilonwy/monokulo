@@ -210,6 +210,7 @@ async fn main() {
 
     let engine_state = EngineAppState {
         store: store.clone(),
+        read_pool: None,
         key_custody: key_custody.clone(),
         key_custody_backend: "plain".to_string(),
         wallet_handles: wallet_handles.clone(),

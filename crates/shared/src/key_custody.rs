@@ -300,6 +300,14 @@ pub trait KeyCustody: Send + Sync {
     /// call is a fresh `WalletHandle`.
     async fn unseal_and_register(&self, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError>;
 
+    /// Retryable registration for a stored tenant. Reusing `registration_id`
+    /// returns the same handle if the server completed an earlier attempt but
+    /// its response was lost. Backends without remote state may use the default.
+    async fn unseal_and_register_idempotent(&self, sealed: &[u8], registration_id: &str) -> Result<WalletHandle, KeyCustodyError> {
+        let _ = registration_id;
+        self.unseal_and_register(sealed).await
+    }
+
     /// Derive the receiving address for one subaddress index. Requires the private
     /// view key internally, which is exactly why it lives behind this boundary
     /// rather than in the order-creation code path.
@@ -371,6 +379,13 @@ pub trait KeyCustody: Send + Sync {
     async fn unseal_and_register_in(&self, backend: &str, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
         let _ = backend;
         self.unseal_and_register(sealed).await
+    }
+
+    async fn unseal_and_register_in_idempotent(
+        &self, backend: &str, sealed: &[u8], registration_id: &str,
+    ) -> Result<WalletHandle, KeyCustodyError> {
+        let _ = backend;
+        self.unseal_and_register_idempotent(sealed, registration_id).await
     }
 
     /// `seal`, by the backend called `backend`.
