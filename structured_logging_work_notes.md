@@ -46,7 +46,8 @@ because it builds on the `live-settings` crate from that work).
 | 6 store settings | done | same | six sections (`views::store_settings::StoreSection`); base currency also sends confirmations out of band |
 | 6 orders list, store detail, invites | done | "orders list, store detail and invites" | orders search and paging swap `#orders-results` with `fx-push-url`; payment lookup swaps its card; embed warning Dismiss swaps in the one-line version; invites buttons and paging swap `#invites` |
 | 6 connect | not converted | | its post leads to a different page ("Store connected"), like login and signup, so a swap buys nothing |
-| 7 onwards | not started | | |
+| 7 OTLP export and docs | done | "OTLP export" | `telemetry::otlp`, settings `logging.otlp_endpoint`/`logging.otlp_headers` (secret) in both processes; `docs/LOGGING.md` |
+| 8 onwards | not started | | |
 
 ### Next
 
@@ -217,6 +218,15 @@ their ssexi streams come first in part 6.
   cancel fixi too: the glue drops a submit whose event was cancelled.
 - **Store settings `saved()` re-reads the row**: the handler's row is
   from before the save.
+
+- **OTLP isn't `opentelemetry-otlp`**: `telemetry::otlp` builds
+  `opentelemetry-proto` messages (prost) from the same redacted rows the
+  store keeps and POSTs them as OTLP/HTTP protobuf with reqwest. That way
+  redaction happens in one place (the SDK exporters would get span fields
+  and log records before our redaction), the endpoint can change live, and
+  there's no gRPC stack. The local store always stays on. Seq's OTLP
+  endpoint is `/ingest/otlp` (verified Sept 2026); the Aspire Dashboard's
+  OTLP/HTTP port is 18890 inside its container.
 
 ## What was left on println/eprintln, on purpose
 

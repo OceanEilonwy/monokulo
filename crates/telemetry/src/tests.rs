@@ -313,3 +313,94 @@ fn traceparent_values_are_checked() {
         assert!(trace::parse_traceparent(bad).is_none(), "{bad}");
     }
 }
+
+mod otlp_export {
+    use axum::body::Bytes;
+    use axum::routing::post;
+    use opentelemetry_proto::tonic::collector::logs::v1::ExportLogsServiceRequest;
+    use opentelemetry_proto::tonic::collector::trace::v1::ExportTraceServiceRequest;
+    use opentelemetry_proto::tonic::common::v1::any_value::Value as AnyValue;
+    use prost::Message;
+
+    use super::*;
+
+    #[derive(Clone, Default)]
+    struct Received {
+        logs: Arc<Mutex<Vec<ExportLogsServiceRequest>>>,
+        traces: Arc<Mutex<Vec<ExportTraceServiceRequest>>>,
+        headers: Arc<Mutex<Vec<String>>>,
+    }
+
+    fn string(value: &Option<opentelemetry_proto::tonic::common::v1::AnyValue>) -> String {
+        match value.as_ref().and_then(|v| v.value.as_ref()) {
+            Some(AnyValue::StringValue(s)) => s.clone(),
+            other => format!("{other:?}"),
+        }
+    }
+
+    #[tokio::test]
+    async fn lines_and_spans_reach_the_collector_redacted_and_in_their_trace() {
+        let received = Received::default();
+        let (logs, traces, headers) = (received.clone(), received.clone(), received.clone());
+        let app = axum::Router::new()
+            .route(
+                "/v1/logs",
+                post(move |h: axum::http::HeaderMap, body: Bytes| async move {
+                    headers.headers.lock().push(h.get("x-team").map(|v| v.to_str().unwrap().to_string()).unwrap_or_default());
+                    logs.logs.lock().push(ExportLogsServiceRequest::decode(body).unwrap());
+                }),
+            )
+            .route(
+                "/v1/traces",
+                post(move |body: Bytes| async move { traces.traces.lock().push(ExportTraceServiceRequest::decode(body).unwrap()) }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let endpoint = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+
+        let (telemetry, _capture, _guard) = subscriber(Format::Json, "info");
+        telemetry.apply(&LogConfig { otlp_endpoint: endpoint.clone(), otlp_headers: "x-team=ops".into(), ..LogConfig::default() });
+        let request = tracing::info_span!("otlp test request", view_key = "abcdef");
+        let trace_id = trace::span_context(&request).unwrap().trace_id();
+        request.in_scope(|| tracing::warn!(order.id = "o_otlp", secret_token = "sk_1234", "otlp test line"));
+        drop(request);
+
+        let deadline = std::time::Instant::now() + Duration::from_secs(10);
+        while received.logs.lock().is_empty() || received.traces.lock().is_empty() {
+            assert!(std::time::Instant::now() < deadline, "nothing reached the collector");
+            tokio::time::sleep(Duration::from_millis(50)).await;
+        }
+        let logs = received.logs.lock().clone();
+        let resource = &logs[0].resource_logs[0];
+        let service = &resource.resource.as_ref().unwrap().attributes[0];
+        assert_eq!((service.key.as_str(), string(&service.value)), ("service.name", "scanner".to_string()));
+        let record = resource.scope_logs[0].log_records.iter().find(|r| string(&r.body) == "otlp test line").unwrap();
+        assert_eq!(record.severity_number, 13);
+        assert_eq!(record.trace_id, trace_id.to_bytes().to_vec());
+        let attr = |name: &str| string(&record.attributes.iter().find(|a| a.key == name).unwrap().value);
+        assert_eq!(attr("order.id"), "o_otlp");
+        assert_eq!(attr("secret_token"), redact::REDACTED);
+        assert_eq!(received.headers.lock()[0], "ops");
+
+        let traces = received.traces.lock().clone();
+        let span = &traces[0].resource_spans[0].scope_spans[0].spans[0];
+        assert_eq!(span.trace_id, trace_id.to_bytes().to_vec());
+        let key = span.attributes.iter().find(|a| a.key == "view_key").unwrap();
+        assert_eq!(string(&key.value), redact::REDACTED, "span fields are redacted too");
+
+        telemetry.apply(&LogConfig::default());
+        assert!(telemetry.sink.otlp.read().is_none(), "an empty endpoint stops it");
+    }
+
+    #[test]
+    fn settings_are_checked() {
+        assert!(otlp::check_endpoint(&"".to_string()).is_ok());
+        assert!(otlp::check_endpoint(&"http://127.0.0.1:4318".to_string()).is_ok());
+        assert!(otlp::check_endpoint(&"127.0.0.1:4318".to_string()).is_err());
+        assert!(otlp::check_headers(&"authorization=Bearer x, x-team=ops".to_string()).is_ok());
+        assert!(otlp::check_headers(&"just-a-name".to_string()).is_err());
+        let config = otlp::OtlpConfig::from_settings("http://c:4318/", "a=1, b = 2").unwrap();
+        assert_eq!(config.endpoint, "http://c:4318");
+        assert_eq!(config.headers, vec![("a".into(), "1".into()), ("b".into(), "2".into())]);
+    }
+}

@@ -730,6 +730,8 @@ mod tests {
             ("logging.dev_mode_until", "4102444800"),
             ("logging.retention_days", "30"),
             ("logging.max_mb", "250"),
+            ("logging.otlp_endpoint", "http://127.0.0.1:4318"),
+            ("logging.otlp_headers", "x-team=ops"),
         ];
         // Every monokulo setting must be covered here, or this test would
         // silently stop proving anything about a setting added later.
@@ -744,7 +746,7 @@ mod tests {
         let reload = get_settings_page(&router, &cookie).await;
         let html = body_text(reload).await;
         for (key, value) in new_values {
-            if *key == "engine.admin_token" {
+            if *key == "engine.admin_token" || *key == "logging.otlp_headers" {
                 assert!(!html.contains(value), "a secret is never echoed back");
                 continue;
             }
@@ -785,6 +787,8 @@ mod tests {
             ("logging.dev_mode_until", "4102444800"),
             ("logging.retention_days", "30"),
             ("logging.max_mb", "250"),
+            ("logging.otlp_endpoint", "http://127.0.0.1:4318"),
+            ("logging.otlp_headers", "x-team=ops"),
         ];
         assert_eq!(
             new_values.len(),
@@ -808,6 +812,10 @@ mod tests {
             // skipped here (its round-trip is still exercised - a wrong
             // value there would still show up as *something* nonempty).
             if value.is_empty() {
+                continue;
+            }
+            if *key == "logging.otlp_headers" {
+                assert!(!html.contains(value), "a secret is never echoed back");
                 continue;
             }
             assert!(shows_value(&html, value), "expected {key}={value:?} to have round-tripped, got: {html}");

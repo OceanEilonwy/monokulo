@@ -26,6 +26,7 @@
 #[cfg(feature = "axum")]
 pub mod http;
 mod json;
+pub mod otlp;
 pub mod query;
 pub mod redact;
 pub mod store;
@@ -90,6 +91,10 @@ pub struct LogConfig {
     pub retention_days: u64,
     /// Most megabytes the log store may use.
     pub max_mb: u64,
+    /// An OpenTelemetry collector to send lines and spans to; empty for none.
+    pub otlp_endpoint: String,
+    /// Headers for it, as `name=value` pairs separated by commas.
+    pub otlp_headers: String,
 }
 
 impl Default for LogConfig {
@@ -99,6 +104,8 @@ impl Default for LogConfig {
             dev_mode_until: 0,
             retention_days: store::DEFAULT_RETENTION_DAYS,
             max_mb: store::DEFAULT_MAX_MB,
+            otlp_endpoint: String::new(),
+            otlp_headers: String::new(),
         }
     }
 }
@@ -158,6 +165,7 @@ pub struct Telemetry {
     filter: reload::Handle<EnvFilter, Registry>,
     sink: Arc<store::StoreSink>,
     store: OnceLock<store::LogStore>,
+    otlp_config: Mutex<Option<otlp::OtlpConfig>>,
     state: Mutex<LogStatus>,
     /// Bumped on every apply, so an expiry timer from an older apply does
     /// nothing.
@@ -240,6 +248,7 @@ where
         filter: filter_handle,
         sink,
         store: OnceLock::new(),
+        otlp_config: Mutex::new(None),
         state: Mutex::new(LogStatus {
             config: LogConfig { level: level.to_string(), ..LogConfig::default() },
             effective_filter: level.to_string(),
@@ -296,6 +305,27 @@ impl Telemetry {
         }
     }
 
+    /// Starts, replaces or stops OTLP export. Only when it changed: an
+    /// unchanged config keeps the running exporter and its queue.
+    pub fn set_otlp(&self, config: Option<otlp::OtlpConfig>) {
+        let mut current = self.otlp_config.lock();
+        if *current == config {
+            return;
+        }
+        let exporter = config.clone().and_then(otlp::Exporter::start);
+        if config.is_some() && exporter.is_none() {
+            // No tokio runtime to send from; try again on the next apply.
+            return;
+        }
+        *self.sink.otlp.write() = exporter;
+        if let Some(config) = &config {
+            tracing::info!(endpoint = %config.endpoint, "sending lines and spans to an OpenTelemetry collector");
+        } else if current.is_some() {
+            tracing::info!("stopped sending to the OpenTelemetry collector");
+        }
+        *current = config;
+    }
+
     /// The log store, once [`Self::open_store`] has run.
     pub fn store(&self) -> Option<store::LogStore> {
         self.store.get().cloned()
@@ -334,6 +364,7 @@ impl Telemetry {
         if let Some(store) = self.store.get() {
             store.set_limits(config.retention_days, config.max_mb);
         }
+        self.set_otlp(otlp::OtlpConfig::from_settings(&config.otlp_endpoint, &config.otlp_headers));
         let effective = if dev_mode { dev_filter(&config.level) } else { config.level.clone() };
         let filter = match EnvFilter::builder().parse(&effective) {
             Ok(filter) => filter,

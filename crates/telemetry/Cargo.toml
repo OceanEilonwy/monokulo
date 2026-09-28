@@ -15,6 +15,11 @@ live-settings = { path = "../live-settings" }
 # followed across monokulo, the engine, the plugin and the browser.
 opentelemetry = { version = "0.33.0", default-features = false, features = ["trace"] }
 opentelemetry_sdk = { version = "0.33.0", default-features = false, features = ["trace"] }
+# OTLP export (`telemetry::otlp`): the protocol's messages, encoded with
+# prost and POSTed with reqwest (OTLP/HTTP, protobuf).
+opentelemetry-proto = { version = "0.33.0", default-features = false, features = ["gen-tonic-messages", "trace", "logs"] }
+prost = "0.14"
+reqwest = { version = "0.13.4", default-features = false, features = ["rustls"] }
 parking_lot = "0.12.5"
 # The local log store (`logs.db`).
 rusqlite = { version = "0.40.2", features = ["bundled"] }
@@ -29,6 +34,6 @@ tracing-opentelemetry = { version = "0.34.0", default-features = false }
 tracing-subscriber = { version = "0.3", default-features = false, features = ["std", "fmt", "ansi", "env-filter", "registry"] }
 
 [dev-dependencies]
-axum = { version = "0.8.9", default-features = false, features = ["matched-path", "tokio"] }
+axum = { version = "0.8.9", default-features = false, features = ["matched-path", "tokio", "http1"] }
 tower = { version = "0.5.3", features = ["util"] }
-tokio = { version = "1.53.1", features = ["time", "rt", "macros", "test-util"] }
+tokio = { version = "1.53.1", features = ["time", "rt", "macros", "test-util", "net"] }

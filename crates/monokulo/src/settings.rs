@@ -213,6 +213,20 @@ settings! {
         description: "Most megabytes monokulo's log store may use. Past it, the oldest lines are deleted first.",
         example: "500",
     },
+    LOGGING_OTLP_ENDPOINT: String {
+        key: "logging.otlp_endpoint",
+        env: "MONOKULO_LOGGING_OTLP_ENDPOINT",
+        default: String::new(),
+        check: telemetry::otlp::check_endpoint,
+        description: "An OpenTelemetry collector (OTLP over HTTP) to send monokulo's log lines and spans to as well, such as a Collector, Grafana, Seq or the Aspire Dashboard. Leave empty to keep them here only. They are redacted the same way either way.",
+        example: "http://127.0.0.1:4318",
+    },
+    LOGGING_OTLP_HEADERS: live_settings::Secret {
+        key: "logging.otlp_headers",
+        env: "MONOKULO_LOGGING_OTLP_HEADERS",
+        default: live_settings::Secret::default(),
+        description: "Headers the collector needs, such as an API key, as name=value pairs separated by commas.",
+    },
 }
 
 /// Log level and development mode (structured_logging.md task 1.3), applied
@@ -229,7 +243,7 @@ impl AsRef<telemetry::LogConfig> for LoggingConfig {
 impl Section for LoggingConfig {
     const NAME: &'static str = "logging";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&LOGGING_LEVEL, &LOGGING_DEV_MODE_UNTIL, &LOGGING_RETENTION_DAYS, &LOGGING_MAX_MB]
+        &[&LOGGING_LEVEL, &LOGGING_DEV_MODE_UNTIL, &LOGGING_RETENTION_DAYS, &LOGGING_MAX_MB, &LOGGING_OTLP_ENDPOINT, &LOGGING_OTLP_HEADERS]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(LoggingConfig(telemetry::LogConfig {
@@ -237,6 +251,8 @@ impl Section for LoggingConfig {
             dev_mode_until: snapshot.get(&LOGGING_DEV_MODE_UNTIL),
             retention_days: snapshot.get(&LOGGING_RETENTION_DAYS),
             max_mb: snapshot.get(&LOGGING_MAX_MB),
+            otlp_endpoint: snapshot.get(&LOGGING_OTLP_ENDPOINT).trim().to_string(),
+            otlp_headers: snapshot.get(&LOGGING_OTLP_HEADERS).expose().to_string(),
         }))
     }
 }

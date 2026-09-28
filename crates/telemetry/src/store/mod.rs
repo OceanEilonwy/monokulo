@@ -221,6 +221,7 @@ impl From<rusqlite::Error> for StoreError {
     }
 }
 
+#[derive(Clone)]
 pub(crate) enum Record {
     Log(LogRow),
     Span(SpanRow),
@@ -232,6 +233,8 @@ pub(crate) struct StoreSink {
     sender: OnceLock<SyncSender<Record>>,
     early: Mutex<Vec<Record>>,
     dropped: AtomicU64,
+    /// OTLP export, when configured: gets a copy of every record.
+    pub(crate) otlp: parking_lot::RwLock<Option<crate::otlp::Exporter>>,
 }
 
 impl StoreSink {
@@ -240,6 +243,11 @@ impl StoreSink {
     }
 
     fn send(&self, record: Record) {
+        if let Some(exporter) = self.otlp.read().as_ref() {
+            if !exporter.offer(record.clone()) {
+                self.dropped.fetch_add(1, Ordering::Relaxed);
+            }
+        }
         if let Some(sender) = self.sender.get() {
             self.try_send(sender, record);
             return;
