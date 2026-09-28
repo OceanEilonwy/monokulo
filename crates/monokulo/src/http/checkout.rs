@@ -148,6 +148,12 @@ pub struct CheckoutOptions {
     /// `/events` only: also stream re-rendered page fragments, for the
     /// checkout page's own script (`checkout.js`).
     fragments: Option<bool>,
+    /// `/events` only: stream each changed page fragment as its own
+    /// message, routed by ssexi to the element it replaces
+    /// (structured_logging.md part 8), then `status`, then `done` once the
+    /// order is final. What the checkout page itself uses now; `fragments`
+    /// stays for pages already open with the earlier script.
+    routed: Option<bool>,
     /// `refresh=false` turns off the no-JavaScript meta refresh, so a
     /// customer can type a refund address without the page reloading under
     /// them. Set by the page's own "Auto Refresh" toggle link.
@@ -488,7 +494,12 @@ pub async fn checkout_events(
     };
     let subscription = state.engine_client.subscribe_order(&row.id, &sk, &order_id);
     let fragments = options.fragments == Some(true);
+    let routed = options.routed == Some(true);
+    // What each routed part last looked like on this stream, so only
+    // changed ones are sent.
+    let sent: std::sync::Arc<parking_lot::Mutex<std::collections::HashMap<&'static str, String>>> = Default::default();
     crate::live::live_events(subscription, std::time::Duration::from_secs(30), move || {
+        let sent = sent.clone();
         // Held by the stream, so the slot frees when the stream ends.
         let _permit = &permit;
         let (state, pk, order_id, options) = (state.clone(), pk.clone(), order_id.clone(), options.clone());
@@ -512,7 +523,22 @@ pub async fn checkout_events(
                 fingerprint.push_str(&html);
                 events.push(axum::response::sse::Event::default().event("fragment").data(html));
             }
+            if routed {
+                let mut sent = sent.lock();
+                for (id, part) in views::checkout::live_parts(&view) {
+                    let html = part.into_string();
+                    fingerprint.push_str(&html);
+                    if sent.get(id) != Some(&html) {
+                        let route = format!(r##"{{"target":"#{id}","swap":"outerHTML"}}"##);
+                        events.push(axum::response::sse::Event::default().event(route).data(html.clone()));
+                        sent.insert(id, html);
+                    }
+                }
+            }
             events.push(axum::response::sse::Event::default().event("status").data(status_json));
+            if routed && view.is_terminal {
+                events.push(axum::response::sse::Event::default().event("done").data("final"));
+            }
             Some(crate::live::LiveSnapshot { events, fingerprint, terminal: view.is_terminal })
         }
     })
@@ -997,6 +1023,56 @@ mod tests {
 
         drop(body);
         assert_eq!(engine_client.live_upstream_count(), 0, "the engine stream closes with its last watcher");
+    }
+
+    /// The checkout page's own stream (`routed=true`, structured_logging.md
+    /// part 8): every live part at first, each routed to the element it
+    /// replaces, then only the parts that change.
+    #[tokio::test]
+    async fn the_routed_checkout_stream_sends_only_changed_parts_to_their_elements() {
+        let (state, engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let session_token = signed_up_and_logged_in_session_token(&router, "checkout-routed@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let order_id = create_order(&router, &pk, "10.00").await;
+
+        let page = router.clone().oneshot(Request::builder().uri(format!("/pay/{pk}/orders/{order_id}")).body(Body::empty()).unwrap()).await.unwrap();
+        let html = String::from_utf8(page.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        let events_url = format!("/pay/{pk}/orders/{order_id}/events?routed=true");
+        assert!(html.contains(&format!(r#"id="checkout-stream" hidden fx-action="{events_url}" fx-trigger="fx:inited""#)), "{html}");
+        assert!(html.contains(r#"fx-trigger="refund:save""#) && html.contains("/static/ssexi.js"), "{html}");
+        assert!(!html.contains("/static/telemetry.js"), "no browser reports from the checkout (D8)");
+
+        let response = router.clone().oneshot(Request::builder().uri(&events_url).body(Body::empty()).unwrap()).await.unwrap();
+        let mut body = response.into_body();
+        let (mut pending, mut parser) = (Vec::new(), crate::live::SseTestParser::default());
+        let mut first = Vec::new();
+        loop {
+            let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+            if event == "status" {
+                break;
+            }
+            first.push((event, data));
+        }
+        let targets: Vec<&str> = first.iter().map(|(e, _)| e.as_str()).collect();
+        assert_eq!(
+            targets,
+            [
+                r##"{"target":"#live-status","swap":"outerHTML"}"##,
+                r##"{"target":"#amount-label","swap":"outerHTML"}"##,
+                r##"{"target":"#address-label","swap":"outerHTML"}"##,
+                r##"{"target":"#live-progress","swap":"outerHTML"}"##,
+                r##"{"target":"#live-payments","swap":"outerHTML"}"##,
+            ]
+        );
+        assert!(first[0].1.starts_with(r#"<div id="live-status" data-live"#), "{}", first[0].1);
+
+        assert!(engine.store().lock().mark_double_spend_detected(&order_id, crate::now_unix()).unwrap());
+        let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+        assert_eq!(event, r##"{"target":"#live-status","swap":"outerHTML"}"##, "only what changed");
+        assert!(data.contains("double-spend-banner"), "{data}");
+        let (event, _) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
+        assert_eq!(event, "status");
     }
 
     #[tokio::test]

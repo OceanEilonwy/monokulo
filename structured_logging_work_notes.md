@@ -47,7 +47,8 @@ because it builds on the `live-settings` crate from that work).
 | 6 orders list, store detail, invites | done | "orders list, store detail and invites" | orders search and paging swap `#orders-results` with `fx-push-url`; payment lookup swaps its card; embed warning Dismiss swaps in the one-line version; invites buttons and paging swap `#invites` |
 | 6 connect | not converted | | its post leads to a different page ("Store connected"), like login and signup, so a swap buys nothing |
 | 7 OTLP export and docs | done | "OTLP export" | `telemetry::otlp`, settings `logging.otlp_endpoint`/`logging.otlp_headers` (secret) in both processes; `docs/LOGGING.md` |
-| 8 onwards | not started | | |
+| 8 checkout embed | done | "checkout embed on fixi and ssexi" | `#checkout-stream` opens `/events?routed=true`: one ssexi JSON-routed message per changed `[data-live]` part, then `status`, then `done`; refund save through fixi on a `refund:save` trigger, JSON answer read in `fx:after`; noscript refresh and Auto Refresh toggle unchanged |
+| 9 tests | mostly done along the way | | remaining: the WooCommerce-to-engine trace end to end |
 
 ### Next
 
@@ -227,6 +228,16 @@ their ssexi streams come first in part 6.
   there's no gRPC stack. The local store always stays on. Seq's OTLP
   endpoint is `/ingest/otlp` (verified Sept 2026); the Aspire Dashboard's
   OTLP/HTTP port is 18890 inside its container.
+
+- **Checkout stream**: `routed=true` is new; `fragments=true` stays for
+  checkout pages already open with the old script. Per stream, the server
+  remembers each part's last HTML and sends only changed parts. The glue
+  attribute `fx-own-errors` stops its banner for the stream and the refund
+  form (the checkout shows its own messages). A refused stream is retried
+  from `checkout.js` with backoff by dispatching `fx:inited` again.
+- **`var` hoisting bit once**: `checkout.js` is one function scope; a new
+  `var stream` for the live stream silently replaced the camera's. The
+  live stream is `liveStream`.
 
 ## What was left on println/eprintln, on purpose
 

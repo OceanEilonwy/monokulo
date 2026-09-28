@@ -9,6 +9,8 @@
 //   fx-replace       abort a request still in flight and send this one
 //                    (fixi's default drops the new one instead).
 //   fx-debounce="ms" wait this long for the trigger to go quiet first.
+//   fx-own-errors    the page's script shows this element's failures;
+//                    no banner.
 //   fx-sse-reconnect reconnect a dropped event stream (ssexi), sending
 //                    Last-Event-ID, and pause it while the tab is hidden;
 //                    a named "done" event ends it for good. While a stream
@@ -118,6 +120,8 @@
     // A 422 carries the section with its errors in it and is swapped like
     // a success. Anything else that isn't a success (a 5xx page, a 403
     // after the session ended) doesn't belong in a section.
+    // fx-own-errors: the page's own script shows this element's failures.
+    if (evt.target.hasAttribute("fx-own-errors")) return;
     if (response && !response.ok && response.status !== 422) {
       evt.preventDefault();
       banner(response.status === 401 || response.status === 403
@@ -134,7 +138,7 @@
 
   document.addEventListener("fx:error", function (evt) {
     var error = evt.detail.error;
-    if (error && error.name === "AbortError") return;
+    if ((error && error.name === "AbortError") || evt.target.hasAttribute("fx-own-errors")) return;
     banner("Couldn't reach the server. Check your connection and try again.");
   });
 

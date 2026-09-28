@@ -233,6 +233,13 @@ body { min-height: 100vh; min-height: 100dvh; padding: 1.2rem; background: var(-
 .checkout-compact .field-help { font-size: .7em; }
 "#;
 
+/// The order's event stream, routed part by part, with the page's own
+/// options.
+fn events_url(data: &CheckoutViewModel) -> String {
+    let join = if data.query_suffix.is_empty() { '?' } else { '&' };
+    format!("/pay/{}/orders/{}/events{}{join}routed=true", data.pk, data.order_id, data.query_suffix)
+}
+
 pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
     let extra_head = html! {
         // Without JavaScript this is the only update path; with it,
@@ -243,6 +250,11 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
         }
         style { (PreEscaped(CHECKOUT_STYLE)) }
         @if data.is_compact { style { (PreEscaped("body{padding:.4rem}")) } }
+        // Live updates and the refund address save (structured_logging.md
+        // part 8), in this order: the glue sets fixi's defaults.
+        script src="/static/fx-glue.js" defer {}
+        script src="/static/fixi.js" defer {}
+        script src="/static/ssexi.js" defer {}
     };
     let body = html! {
         div class=(if data.is_compact { "pay-wrap checkout-compact" } else { "pay-wrap" }) id="checkout-root" data-order-id=(data.order_id) data-status=(data.status) data-confirmations=(data.confirmations) data-error=(data.payment_error.as_deref().unwrap_or("")) {
@@ -258,6 +270,12 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
             }
 
             (live_status(data))
+            // With JavaScript, fixi opens the order's event stream as soon
+            // as it sees this, and ssexi routes each changed part of the
+            // page into place. Not for a final order: nothing will change.
+            @if !data.is_terminal {
+                span id="checkout-stream" hidden fx-action=(events_url(data)) fx-trigger="fx:inited" fx-swap="none" fx-sse-reconnect fx-own-errors {}
+            }
 
             div class="pay-grid" {
                 div class="pay-col-primary" {
@@ -291,7 +309,9 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                     (live_progress(data))
 
                     @if data.refund_enabled { div class="section" {
-                        form method="post" id="refund-form" action=(format!("/pay/{}/orders/{}/refund-address{}", data.pk, data.order_id, data.query_suffix)) {
+                        form method="post" id="refund-form" action=(format!("/pay/{}/orders/{}/refund-address{}", data.pk, data.order_id, data.query_suffix))
+                            fx-action=(format!("/pay/{}/orders/{}/refund-address{}", data.pk, data.order_id, data.query_suffix))
+                            fx-method="POST" fx-trigger="refund:save" fx-swap="none" fx-own-errors {
                                 label for="refund_address" { "Refund address " span class="field-help" style="display:inline" { "(optional)" } }
                                 @if let Some(error) = &data.refund_address_error {
                                     div class="error" { (error) }
@@ -349,6 +369,18 @@ pub fn live_fragment(data: &CheckoutViewModel) -> Markup {
         (live_progress(data))
         (live_payments(data))
     }
+}
+
+/// The same parts one by one, with the id each replaces, for the stream
+/// that routes each to its element (`http::checkout::checkout_events`).
+pub fn live_parts(data: &CheckoutViewModel) -> [(&'static str, Markup); 5] {
+    [
+        ("live-status", live_status(data)),
+        ("amount-label", amount_label(data)),
+        ("address-label", address_label(data)),
+        ("live-progress", live_progress(data)),
+        ("live-payments", live_payments(data)),
+    ]
 }
 
 fn live_status(data: &CheckoutViewModel) -> Markup {

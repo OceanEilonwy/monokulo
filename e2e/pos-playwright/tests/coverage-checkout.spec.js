@@ -90,7 +90,9 @@ test('real checkout live update preserves a focused partial refund address', asy
     await new Promise(resolve => { sendUpdate = resolve; });
     const fragment = '<div id="live-status" data-live><span id="status-badge">Partial payment received</span></div>';
     const status = JSON.stringify({ status: 'partial', confirmations: 0, confirmations_required: 1, is_terminal: false, error: 'Underpaid' });
-    await route.fulfill({ contentType: 'text/event-stream', body: `event: fragment\ndata: ${fragment}\n\nevent: status\ndata: ${status}\n\n` });
+    // The page's own stream: each changed part routed to its element (ssexi).
+    const route_ = JSON.stringify({ target: '#live-status', swap: 'outerHTML' });
+    await route.fulfill({ contentType: 'text/event-stream', body: `event: ${route_}\ndata: ${fragment}\n\nevent: status\ndata: ${status}\n\n` });
   });
   await page.goto(url);
   await requested;

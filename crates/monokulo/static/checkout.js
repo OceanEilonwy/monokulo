@@ -65,35 +65,54 @@
     saveTimer = setTimeout(saveAddress, delay);
   }
 
-  async function saveAddress() {
+  // The save itself goes through fixi (the form's fx-action, triggered by
+  // a "refund:save" event), answered in JSON; this script keeps the
+  // debounce and what the field shows.
+  var pendingValue = null;
+
+  function saveAddress() {
     var value = refundInput.value.trim();
     if (saving || !validAddress(value) || value === savedAddress) return;
     saving = true;
+    pendingValue = value;
     saveDisplay('saving');
     error('');
-    try {
-      var response = await fetch(refundForm.action, {
-        method: 'POST', headers: { 'Accept': 'application/json', 'Content-Type': 'application/x-www-form-urlencoded' },
-        body: new URLSearchParams({ refund_address: value }).toString()
-      });
-      var result = await response.json();
-      if (!response.ok || !result.ok) {
-        var failure = new Error(result.error || 'Could not save the refund address. Try again.');
-        failure.invalid = response.status === 400;
-        throw failure;
-      }
+    refundForm.dispatchEvent(new CustomEvent('refund:save'));
+  }
+
+  function saveFinished(problem) {
+    var value = pendingValue;
+    saving = false;
+    pendingValue = null;
+    if (!problem) {
       savedAddress = value;
       if (refundInput.value.trim() === value) saveDisplay('saved');
       else saveDisplay('');
-    } catch (problem) {
-      if (refundInput.value.trim() === value) {
-        saveDisplay(problem.invalid ? 'invalid' : '');
-        error(problem.invalid ? 'Invalid refund address. Enter a valid address for this store’s network.' : problem.message || 'Could not save the refund address. Try again.');
-      } else saveDisplay('');
-    } finally {
-      saving = false;
-      if (refundInput.value.trim() !== value) scheduleSave(0);
-    }
+    } else if (refundInput.value.trim() === value) {
+      saveDisplay(problem.invalid ? 'invalid' : '');
+      error(problem.invalid ? 'Invalid refund address. Enter a valid address for this store’s network.' : problem.message || 'Could not save the refund address. Try again.');
+    } else saveDisplay('');
+    if (refundInput.value.trim() !== value) scheduleSave(0);
+  }
+
+  if (refundForm) {
+    refundForm.addEventListener('fx:config', function (event) {
+      if (!saving) { event.preventDefault(); return; }
+      event.detail.cfg.headers.Accept = 'application/json';
+      event.detail.cfg.body = new URLSearchParams({ refund_address: pendingValue });
+    });
+    refundForm.addEventListener('fx:after', function (event) {
+      var response = event.detail.cfg.response, result = {};
+      try { result = JSON.parse(event.detail.cfg.text); } catch (_) {}
+      if (response.ok && result.ok) { saveFinished(null); return; }
+      var failure = new Error(result.error || 'Could not save the refund address. Try again.');
+      failure.invalid = response.status === 400;
+      saveFinished(failure);
+    });
+    refundForm.addEventListener('fx:error', function (event) {
+      var problem = event.detail && event.detail.error;
+      saveFinished(new Error((problem && problem.message) || 'Could not save the refund address. Try again.'));
+    });
   }
 
   if (refundInput) {
@@ -239,57 +258,45 @@
   }
   window.addEventListener('pagehide', stopCamera);
 
-  // Live updates: the server streams re-rendered copies of the page's
-  // changing parts (`[data-live]` elements) whenever the order changes, and
-  // each is swapped in by id. Nothing else is touched, so a refund address
-  // mid-edit or a camera scan in progress carries on undisturbed. The
-  // stream ends once the order is final. The page knows nothing about
-  // whatever embeds it; an embedder follows the order on its own.
-  var initialStatus = root.dataset.status;
-  if (initialStatus === 'paid' || initialStatus === 'overpaid' || initialStatus === 'expired') return;
-  if (typeof EventSource !== 'function') {
+  // Live updates (structured_logging.md part 8): fixi opens the order's
+  // event stream from #checkout-stream as soon as it sees it, and ssexi
+  // routes each changed part of the page (the `[data-live]` elements) to
+  // the element it replaces. Nothing else is touched, so a refund address
+  // mid-edit or a camera scan in progress carries on undisturbed. A
+  // dropped stream reconnects with Last-Event-ID (fx-sse-reconnect); the
+  // server says "done" once the order is final. The page knows nothing
+  // about whatever embeds it; an embedder follows the order on its own.
+  var streamElement = document.getElementById('checkout-stream');
+  if (!streamElement) return;
+  if (typeof window.ReadableStream !== 'function' || typeof window.fetch !== 'function') {
+    // No streaming fetch: fall back to reloading, as without JavaScript.
     setTimeout(function () { location.reload(); }, 60000);
     return;
   }
+  var liveStream = null;
   // A refused stream (server error, restart, too many open streams) is
   // retried with backoff: 5s, doubling to at most a minute.
   var STREAM_RETRY_MS = 5000;
   var STREAM_RETRY_MAX_MS = 60000;
   var retryDelay = STREAM_RETRY_MS;
-  var params = new URLSearchParams(location.search);
-  params.set('fragments', 'true');
-  var eventsUrl = location.pathname + '/events?' + params.toString();
-  var updates = null;
   var finished = false;
-  function connect() {
-    var source = new EventSource(eventsUrl);
-    updates = source;
-    source.addEventListener('open', function () { retryDelay = STREAM_RETRY_MS; });
-    source.addEventListener('fragment', function (event) {
-      var template = document.createElement('template');
-      template.innerHTML = event.data;
-      Array.prototype.forEach.call(template.content.querySelectorAll('[data-live][id]'), function (fresh) {
-        var current = document.getElementById(fresh.id);
-        if (current && current.outerHTML !== fresh.outerHTML) current.replaceWith(fresh);
-      });
-    });
-    source.addEventListener('status', function (event) {
-      var state;
-      try { state = JSON.parse(event.data); } catch (_) { return; }
-      root.dataset.status = state.status;
-      if (state.is_terminal) { finished = true; source.close(); }
-    });
-    source.addEventListener('error', function () {
-      if (finished || updates !== source) return;
-      // EventSource reconnects by itself after a dropped connection, but
-      // not after a refused request.
-      if (source.readyState !== EventSource.CLOSED) return;
-      setTimeout(function () { if (updates === source) connect(); }, retryDelay);
-      retryDelay = Math.min(retryDelay * 2, STREAM_RETRY_MAX_MS);
-    });
-  }
-  connect();
-  window.addEventListener('pagehide', function () { if (updates) updates.close(); updates = null; });
+  streamElement.addEventListener('fx:sse:open', function (event) {
+    liveStream = event.detail.cfg.sse;
+    retryDelay = STREAM_RETRY_MS;
+  });
+  streamElement.addEventListener('fx:after', function (event) {
+    var response = event.detail.cfg.response;
+    if (finished || !response || response.ok) return;
+    setTimeout(function () { streamElement.dispatchEvent(new CustomEvent('fx:inited')); }, retryDelay);
+    retryDelay = Math.min(retryDelay * 2, STREAM_RETRY_MAX_MS);
+  });
+  document.addEventListener('fx:sse:status', function (event) {
+    var state;
+    try { state = JSON.parse(event.detail.message.data); } catch (_) { return; }
+    root.dataset.status = state.status;
+    if (state.is_terminal) finished = true;
+  });
+  window.addEventListener('pagehide', function () { finished = true; if (liveStream) liveStream.close(); liveStream = null; });
   // Restored from the back/forward cache with the stream closed.
   window.addEventListener('pageshow', function (event) { if (event.persisted) location.reload(); });
 })();
