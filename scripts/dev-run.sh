@@ -13,7 +13,9 @@
 #
 # `start` builds both debug binaries first by default (skip with
 # --no-build for a faster restart when you know nothing changed) and is
-# safe to run again while already running - it just reports what's up.
+# safe to run again while already running - it just reports what's up,
+# except that a process older than its binary is restarted, so a rebuild
+# always takes effect.
 #
 # WHERE STATE LIVES: everything this script creates lives under
 # .dev-run/ at the repo root (gitignored) - PID files, logs, the
@@ -108,6 +110,22 @@ EOF
 is_running() {
     # $1: pid file
     [[ -f "$1" ]] && kill -0 "$(cat "$1")" 2>/dev/null
+}
+
+# Whether the process in pid file $1 started before binary $2 was last
+# built - i.e. it's still running old code. `start` rebuilds, so without
+# this a process left running from an earlier `start` would quietly keep
+# serving the old build (and skip everything `start` does after launching
+# it, such as provisioning engine settings). False if either time can't be
+# read, so an unusual `ps`/`stat` never blocks `start`.
+is_stale() {
+    local pid elapsed built now
+    pid="$(cat "$1")"
+    elapsed="$(ps -o etimes= -p "$pid" 2>/dev/null | tr -d ' ')"
+    built="$(stat -c %Y "$2" 2>/dev/null || stat -f %m "$2" 2>/dev/null)"
+    [[ "$elapsed" =~ ^[0-9]+$ && "$built" =~ ^[0-9]+$ ]] || return 1
+    now="$(date +%s)"
+    (( now - elapsed < built ))
 }
 
 ensure_dirs() {
@@ -228,8 +246,12 @@ ensure_wallet_bootstrapped() {
 
 start_engine() {
     if is_running "$ENGINE_PID_FILE"; then
-        echo "engine already running (pid $(cat "$ENGINE_PID_FILE"))"
-        return
+        if ! is_stale "$ENGINE_PID_FILE" "$ENGINE_BIN"; then
+            echo "engine already running (pid $(cat "$ENGINE_PID_FILE"))"
+            return
+        fi
+        echo "==> engine (pid $(cat "$ENGINE_PID_FILE")) is running an older build than $ENGINE_BIN - restarting it"
+        stop_one "engine" "$ENGINE_PID_FILE"
     fi
     ensure_engine_admin_token
     if [[ ! -x "$ENGINE_BIN" ]]; then
@@ -256,8 +278,12 @@ start_engine() {
 
 start_control_plane() {
     if is_running "$CP_PID_FILE"; then
-        echo "monokulo already running (pid $(cat "$CP_PID_FILE"))"
-        return
+        if ! is_stale "$CP_PID_FILE" "$CP_BIN"; then
+            echo "monokulo already running (pid $(cat "$CP_PID_FILE"))"
+            return
+        fi
+        echo "==> monokulo (pid $(cat "$CP_PID_FILE")) is running an older build than $CP_BIN - restarting it"
+        stop_one "monokulo" "$CP_PID_FILE"
     fi
     ensure_cp_key
     if [[ ! -x "$CP_BIN" ]]; then
