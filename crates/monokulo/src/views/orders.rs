@@ -72,14 +72,14 @@ pub fn lookup_payment_card(
     order_href: impl Fn(&str) -> String,
 ) -> Markup {
     html! {
-        div class="card" {
+        div class="card" id="payment-lookup" {
             h2 { "Look up a transaction" }
             p { "Have a customer's transaction ID? Look it up directly - no need to know which order it belongs to." }
             p class="hint" {
                 "Payments are watched for while an order is open and for a while after it's paid or expires. "
                 "A payment sent later than that isn't picked up by itself: look it up here to record it."
             }
-            form method="post" action=(action) {
+            form method="post" action=(action) fx-action=(action) fx-method="POST" fx-target="#payment-lookup" {
                 input
                     type="text"
                     name="txid"
@@ -91,7 +91,7 @@ pub fn lookup_payment_card(
                 button type="submit" { "Look up" }
             }
             @if let Some(message) = message {
-                p {
+                p role="status" data-fx-focus tabindex="-1" {
                     (message)
                     @if let Some(order_id) = found_order_id {
                         " "
@@ -103,8 +103,14 @@ pub fn lookup_payment_card(
     }
 }
 
-pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
-    let base = format!("/dashboard/stores/{}/orders", data.connection_id);
+fn orders_base(data: &OrdersViewModel) -> String {
+    format!("/dashboard/stores/{}/orders", data.connection_id)
+}
+
+/// The list and its paging: what a search or a page change replaces. With
+/// fixi, swapped in place with the URL kept in the address bar.
+pub fn list_results(data: &OrdersViewModel) -> Markup {
+    let base = orders_base(data);
     let page_link = |page: u32| {
         let mut query = Vec::new();
         if !data.search.is_empty() {
@@ -115,16 +121,8 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
         }
         if query.is_empty() { base.clone() } else { format!("{base}?{}", query.join("&")) }
     };
-    let body = html! {
-        div class="wrap" {
-            (super::store_breadcrumb(&data.connection_id, &data.display_name, false))
-            h1 { "Orders" }
-            form method="get" action=(base) class="orders-search" role="search" {
-                label for="orders-search" class="sr-only" { "Search orders" }
-                input type="search" id="orders-search" name="q" value=(data.search) placeholder="Search by reference or order ID" maxlength="120";
-                button type="submit" { "Search" }
-                @if !data.search.is_empty() { " " a href=(base) { "Clear" } }
-            }
+    html! {
+        div id="orders-results" {
             @if data.orders.is_empty() {
                 p class="muted" {
                     @if data.search.is_empty() { "No orders yet." } @else { "No orders match “" (data.search) "”." }
@@ -134,11 +132,33 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
             }
             @if data.page > 0 || data.has_more {
                 p class="orders-pages" {
-                    @if data.page > 0 { a href=(page_link(data.page - 1)) rel="prev" { "← Newer" } }
+                    @if data.page > 0 {
+                        a href=(page_link(data.page - 1)) rel="prev" fx-action=(page_link(data.page - 1)) fx-target="#orders-results" fx-push-url { "← Newer" }
+                    }
                     @if data.page > 0 && data.has_more { " · " }
-                    @if data.has_more { a href=(page_link(data.page + 1)) rel="next" { "Older →" } }
+                    @if data.has_more {
+                        a href=(page_link(data.page + 1)) rel="next" fx-action=(page_link(data.page + 1)) fx-target="#orders-results" fx-push-url { "Older →" }
+                    }
                 }
             }
+        }
+    }
+}
+
+pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
+    let base = orders_base(data);
+    let body = html! {
+        div class="wrap" {
+            (super::store_breadcrumb(&data.connection_id, &data.display_name, false))
+            h1 { "Orders" }
+            form method="get" action=(base) class="orders-search" role="search"
+                fx-action=(base) fx-target="#orders-results" fx-push-url fx-replace {
+                label for="orders-search" class="sr-only" { "Search orders" }
+                input type="search" id="orders-search" name="q" value=(data.search) placeholder="Search by reference or order ID" maxlength="120";
+                button type="submit" { "Search" }
+                @if !data.search.is_empty() { " " a href=(base) { "Clear" } }
+            }
+            (list_results(data))
         }
     };
     layout(chrome, &format!("Orders - {} - Monokulo", data.display_name), body)

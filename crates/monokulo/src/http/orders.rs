@@ -141,6 +141,7 @@ pub struct OrdersListQuery {
 pub async fn orders_list(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path(id): Path<String>,
     Query(query): Query<OrdersListQuery>,
 ) -> Response {
@@ -158,6 +159,9 @@ pub async fn orders_list(
         Ok(vm) => vm,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
+    if fx.0 {
+        return axum::response::Html(views::orders::list_results(&view_model).into_string()).into_response();
+    }
     let chrome = super::page_chrome(&state, Some(&user), format!("/dashboard/stores/{id}/orders"));
     views::orders::list_page(&chrome, &view_model).into_response()
 }
@@ -198,6 +202,7 @@ async fn perform_payment_lookup(state: &AppState, sk: &str, txid: &str) -> Resul
 pub async fn lookup_payment(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path(id): Path<String>,
     Form(form): Form<LookupPaymentForm>,
 ) -> Response {
@@ -217,6 +222,17 @@ pub async fn lookup_payment(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
+    if fx.0 {
+        // Just the card, with its answer.
+        let card = views::orders::lookup_payment_card(
+            &format!("/dashboard/stores/{id}/orders/lookup"),
+            &txid,
+            &Some(message),
+            &found_order_id,
+            |order_id| format!("/dashboard/stores/{id}/orders/{order_id}"),
+        );
+        return axum::response::Html(card.into_string()).into_response();
+    }
     render_store_detail_page(&state, row, &user, txid, Some(message), found_order_id).await
 }
 
@@ -1558,6 +1574,7 @@ mod tests {
         let order_id = seed_real_order(&state, engine.addr, &public_key).await;
 
         let response = router
+            .clone()
             .oneshot(
                 Request::builder()
                     .method("GET")
@@ -1571,6 +1588,22 @@ mod tests {
         assert_eq!(response.status(), StatusCode::OK);
         let html = body_text(response).await;
         assert!(html.contains(&order_id), "expected the seeded order's order_id in the response, got: {html}");
+        assert!(html.contains(r##"fx-target="#orders-results" fx-push-url"##), "the search is enhanced: {html}");
+
+        // A fixi search gets only the results, filtered.
+        let search = |q: &str| {
+            fixi(
+                Request::builder()
+                    .uri(format!("/dashboard/stores/{connection_id}/orders?q={q}"))
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+        };
+        let html = body_text(router.clone().oneshot(search(&order_id)).await.unwrap()).await;
+        assert!(html.starts_with(r#"<div id="orders-results">"#) && html.contains(&order_id), "{html}");
+        let html = body_text(router.clone().oneshot(search("no-such-order")).await.unwrap()).await;
+        assert!(html.contains("No orders match") && !html.contains("<html"), "{html}");
     }
 
     /// With JavaScript, the order detail page streams its changing part
@@ -3611,8 +3644,12 @@ mod tests {
             || html.contains("That transaction exists, but doesn't pay any of this store's orders."), "got: {html}");
 
         // A txid mangled when pasted is refused with the engine's reason.
-        let html = body_text(router.oneshot(form_post_request(&lookup, &session_token, &[("txid", "not-a-txid")])).await.unwrap()).await;
+        let html = body_text(router.clone().oneshot(form_post_request(&lookup, &session_token, &[("txid", "not-a-txid")])).await.unwrap()).await;
         assert!(html.contains("Couldn&#39;t look that up:") || html.contains("Couldn't look that up:"), "got: {html}");
+
+        // With fixi, only the card comes back, answer in it.
+        let html = body_text(router.oneshot(fixi(form_post_request(&lookup, &session_token, &[("txid", &txid)]))).await.unwrap()).await;
+        assert!(html.starts_with(r#"<div class="card" id="payment-lookup">"#) && html.contains(&txid), "got: {html}");
     }
 
     // -- "Scan range" row (`docs/order_rescan_wbs.md` Phase 5.4) ------------

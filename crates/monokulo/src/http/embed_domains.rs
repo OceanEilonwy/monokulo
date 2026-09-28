@@ -17,7 +17,6 @@ use crate::templates::format_duration_until;
 use crate::views::store_detail::{EmbedWarnings, FailingDomainWarning};
 use crate::views::store_settings::EmbedDomainView;
 
-use super::dashboard::redirect_302;
 use super::fx::FxRequest;
 use super::orders::{load_owned_connection, render_store_settings_page, saved};
 use crate::views::store_settings::StoreSection;
@@ -308,6 +307,7 @@ pub async fn delete_domain(
 pub async fn dismiss_embed_warning(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
+    fx: FxRequest,
     Path(id): Path<String>,
 ) -> Response {
     let row = match load_owned_connection(&state, &user, &id) {
@@ -317,7 +317,7 @@ pub async fn dismiss_embed_warning(
     };
     let dismissed = state.db.lock().dismiss_embed_warning(&row.id);
     match dismissed {
-        Ok(()) => redirect_302(&format!("/dashboard/stores/{id}")),
+        Ok(()) => super::fx::respond(fx, &format!("/dashboard/stores/{id}"), || crate::views::store_detail::compact_embed_warning(&id)),
         Err(_) => StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     }
 }
@@ -839,7 +839,17 @@ mod tests {
         let warnings = super::store_page_warnings(&state, &id, row.failing_since.unwrap() + GRACE_SECS);
         assert!(warnings.failing[0].lapsed, "past the grace period it no longer counts");
 
-        // Dismissing shrinks only the "any website" warning.
+        // Dismissing shrinks only the "any website" warning; fixi gets the
+        // shrunk warning to put in its place.
+        let dismiss = Request::post(format!("/dashboard/stores/{id}/embed-warning/dismiss"))
+            .header("authorization", format!("Bearer {session}"))
+            .header("FX-Request", "true")
+            .body(Body::empty())
+            .unwrap();
+        let response = router.clone().oneshot(dismiss).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let fragment = String::from_utf8(response.into_body().collect().await.unwrap().to_bytes().to_vec()).unwrap();
+        assert!(fragment.starts_with(r#"<div class="embed-warning is-compact" id="embed-warning">"#), "{fragment}");
         let (status, _) = send(&router, "POST", &format!("/dashboard/stores/{id}/embed-warning/dismiss"), &session, None).await;
         assert_eq!(status, StatusCode::FOUND);
         let (_, html) = send(&router, "GET", &store_page, &session, None).await;

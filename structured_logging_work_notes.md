@@ -44,7 +44,8 @@ because it builds on the `live-settings` crate from that work).
 | 6 order detail, status | done | "order detail and status pages stream" | ssexi streams `/dashboard/stores/{id}/orders/{order_id}/events` and `/status/events`, JSON-routed to `#order-live` / `#status-live`; `done` event ends the order stream |
 | 6 admin settings | done | "settings pages save one section at a time" | `#monokulo-settings`, `#engine-settings`; engine section out of band when the engine connection changes |
 | 6 store settings | done | same | six sections (`views::store_settings::StoreSection`); base currency also sends confirmations out of band |
-| 6 orders list, connect, store detail, invites | not started | | |
+| 6 orders list, store detail, invites | done | "orders list, store detail and invites" | orders search and paging swap `#orders-results` with `fx-push-url`; payment lookup swaps its card; embed warning Dismiss swaps in the one-line version; invites buttons and paging swap `#invites` |
+| 6 connect | not converted | | its post leads to a different page ("Store connected"), like login and signup, so a swap buys nothing |
 | 7 onwards | not started | | |
 
 ### Next

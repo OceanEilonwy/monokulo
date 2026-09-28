@@ -118,7 +118,8 @@ fn invite_row(row: &AdminInviteRequestRow, page: u32) -> Markup {
                     @if let Some(href) = &row.mailto_href {
                         a href=(href) { "email invite" }
                     }
-                    form method="post" action=(format!("/dashboard/admin/invites/{}/delete?page={}", row.id, page)) class="inline-form" {
+                    form method="post" action=(format!("/dashboard/admin/invites/{}/delete?page={}", row.id, page)) class="inline-form"
+                        fx-action=(format!("/dashboard/admin/invites/{}/delete?page={}", row.id, page)) fx-method="POST" fx-target="#invites" {
                         button type="submit" { "delete" }
                     }
                 }
@@ -127,24 +128,26 @@ fn invite_row(row: &AdminInviteRequestRow, page: u32) -> Markup {
     }
 }
 
-pub fn admin_invites_page(chrome: &PageChrome, data: &AdminInvitesViewModel) -> Markup {
-    let body = html! {
-        div class="wrap" {
-            nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
-            h1 { "Invites" }
+/// Everything on the invites page below its heading: what fixi swaps back
+/// after any button here, or a page change.
+pub fn invites_section(data: &AdminInvitesViewModel) -> Markup {
+    let target = "#invites";
+    html! {
+        section id="invites" {
             @if let Some(error) = &data.error {
-                p class="error" { (error) }
+                p class="error" role="alert" data-fx-focus tabindex="-1" { (error) }
             }
             @if let Some(success) = &data.success {
-                p class="success" { (success) }
+                p class="success" role="status" data-fx-focus tabindex="-1" { (success) }
             }
 
-            form method="post" action="/dashboard/admin/invites/create-link" {
+            form method="post" action="/dashboard/admin/invites/create-link"
+                fx-action="/dashboard/admin/invites/create-link" fx-method="POST" fx-target=(target) {
                 button type="submit" { "Create invite link" }
             }
             @if let Some(link) = &data.created_link {
                 p { "Share this link - it works once:" }
-                pre { (link) }
+                pre data-fx-focus tabindex="-1" { (link) }
             }
 
             h2 { "Pending requests" }
@@ -162,14 +165,17 @@ pub fn admin_invites_page(chrome: &PageChrome, data: &AdminInvitesViewModel) -> 
                 }
                 nav class="pagination" {
                     @if data.has_previous {
-                        a href=(format!("/dashboard/admin/invites?page={}", data.previous_page)) { "Previous" }
+                        @let href = format!("/dashboard/admin/invites?page={}", data.previous_page);
+                        a href=(href) fx-action=(href) fx-target=(target) fx-push-url { "Previous" }
                     }
                     span { "Page " (data.page) " of " (data.total_pages) }
                     @if data.has_next {
-                        a href=(format!("/dashboard/admin/invites?page={}", data.next_page)) { "Next" }
+                        @let href = format!("/dashboard/admin/invites?page={}", data.next_page);
+                        a href=(href) fx-action=(href) fx-target=(target) fx-push-url { "Next" }
                     }
                 }
-                form method="post" action="/dashboard/admin/invites/delete-all" {
+                form method="post" action="/dashboard/admin/invites/delete-all"
+                    fx-action="/dashboard/admin/invites/delete-all" fx-method="POST" fx-target=(target) {
                     button type="submit" { "Delete all" }
                 }
             } @else if let Some(deleted) = &data.just_deleted_row {
@@ -180,6 +186,16 @@ pub fn admin_invites_page(chrome: &PageChrome, data: &AdminInvitesViewModel) -> 
             } @else {
                 p class="hint" { "No pending invite requests." }
             }
+        }
+    }
+}
+
+pub fn admin_invites_page(chrome: &PageChrome, data: &AdminInvitesViewModel) -> Markup {
+    let body = html! {
+        div class="wrap" {
+            nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
+            h1 { "Invites" }
+            (invites_section(data))
         }
     };
     layout(chrome, "Invites - Monokulo", body)

@@ -27,6 +27,7 @@ use crate::views;
 use crate::views::admin::{AdminInviteRequestRow, AdminInvitesViewModel, RequestInviteViewModel};
 
 use super::dashboard::redirect_302;
+use super::fx::FxRequest;
 use super::{AppState, AuthedAdmin};
 
 const PAGE_SIZE: i64 = 10;
@@ -184,6 +185,7 @@ fn render_invites_page(
     created_link: Option<String>,
     error: Option<String>,
     success: Option<String>,
+    fx: FxRequest,
 ) -> Response {
     let base = base_url(headers);
     let db = state.db.lock();
@@ -210,6 +212,10 @@ fn render_invites_page(
         next_page: (page + 1).min(total_pages),
         created_link,
     };
+    drop(db);
+    if fx.0 {
+        return axum::response::Html(views::admin::invites_section(&view).into_string()).into_response();
+    }
     let chrome = super::page_chrome(state, Some(admin_user), "/dashboard/admin/invites");
     views::admin::admin_invites_page(&chrome, &view).into_response()
 }
@@ -219,18 +225,19 @@ fn render_invites_page(
 pub async fn invites_page(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
+    fx: FxRequest,
     headers: HeaderMap,
     Query(query): Query<InvitesPageQuery>,
 ) -> Response {
-    let success = query.cleared.map(|n| format!("{n} request{} deleted.", if n == 1 { "" } else { "s" }));
-    render_invites_page(&state, &admin_user, &headers, query.page.unwrap_or(1), query.deleted.as_deref(), None, None, success)
+    let success = query.cleared.map(cleared_message);
+    render_invites_page(&state, &admin_user, &headers, query.page.unwrap_or(1), query.deleted.as_deref(), None, None, success, fx)
 }
 
 /// `POST /dashboard/admin/invites/create-link` - the standalone-link
 /// button: a fresh, never-request-linked invite, shown exactly once (see
 /// `AdminInvitesViewModel::created_link`'s own doc comment) and only ever
 /// stored hashed.
-pub async fn create_invite_link(State(state): State<AppState>, AuthedAdmin(admin_user, _): AuthedAdmin, headers: HeaderMap) -> Response {
+pub async fn create_invite_link(State(state): State<AppState>, AuthedAdmin(admin_user, _): AuthedAdmin, fx: FxRequest, headers: HeaderMap) -> Response {
     let raw_token = shared::auth::generate_invite_token();
     let token_hash = shared::auth::hash_secret_token(&raw_token);
     let link_id = uuid::Uuid::new_v4().to_string();
@@ -246,10 +253,11 @@ pub async fn create_invite_link(State(state): State<AppState>, AuthedAdmin(admin
             None,
             Some("Something went wrong creating the link. Please try again.".to_string()),
             None,
+            fx,
         );
     }
     drop(db);
-    render_invites_page(&state, &admin_user, &headers, 1, None, Some(invite_signup_url(&base_url(&headers), &raw_token)), None, None)
+    render_invites_page(&state, &admin_user, &headers, 1, None, Some(invite_signup_url(&base_url(&headers), &raw_token)), None, None, fx)
 }
 
 /// `POST /dashboard/admin/invites/{id}/delete?page=N` - see this module's
@@ -260,12 +268,17 @@ pub async fn create_invite_link(State(state): State<AppState>, AuthedAdmin(admin
 /// so the reload can show the one-time struck-through confirmation.
 pub async fn delete_invite_request(
     State(state): State<AppState>,
-    _admin: AuthedAdmin,
+    AuthedAdmin(admin_user, _): AuthedAdmin,
+    fx: FxRequest,
+    headers: HeaderMap,
     Path(id): Path<String>,
     Query(query): Query<InvitesPageQuery>,
 ) -> Response {
     state.db.lock().delete_invite_request(&id, now_unix()).ok();
     let page = query.page.unwrap_or(1);
+    if fx.0 {
+        return render_invites_page(&state, &admin_user, &headers, page, Some(&id), None, None, None, fx);
+    }
     redirect_302(&format!("/dashboard/admin/invites?page={page}&deleted={id}"))
 }
 
@@ -276,9 +289,21 @@ pub async fn delete_invite_request(
 /// banner. No single-row struck-through treatment here - see this
 /// feature's own design discussion on why that doesn't make sense once
 /// more than one row is involved.
-pub async fn delete_all_invite_requests(State(state): State<AppState>, _admin: AuthedAdmin) -> Response {
+pub async fn delete_all_invite_requests(
+    State(state): State<AppState>,
+    AuthedAdmin(admin_user, _): AuthedAdmin,
+    fx: FxRequest,
+    headers: HeaderMap,
+) -> Response {
     let cleared = state.db.lock().delete_all_unactioned_invite_requests(now_unix()).unwrap_or(0);
+    if fx.0 {
+        return render_invites_page(&state, &admin_user, &headers, 1, None, None, None, Some(cleared_message(cleared)), fx);
+    }
     redirect_302(&format!("/dashboard/admin/invites?cleared={cleared}"))
+}
+
+fn cleared_message(n: usize) -> String {
+    format!("{n} request{} deleted.", if n == 1 { "" } else { "s" })
 }
 
 #[cfg(test)]
@@ -589,5 +614,25 @@ mod tests {
         let after = router.oneshot(Request::builder().method("GET").uri(&location).header("cookie", cookie).body(Body::empty()).unwrap()).await.unwrap();
         let html = body_text(after).await;
         assert!(html.contains("Page 1 of 1"), "page 2 no longer exists once its only row is gone - must clamp back to page 1");
+    }
+
+    /// With fixi, every button on the invites page answers with the page's
+    /// section only (structured_logging.md part 6).
+    #[tokio::test]
+    async fn invites_buttons_answer_fixi_with_the_section() {
+        let router = build_router(test_state());
+        let cookie = admin_session_cookie(&router).await;
+        let mut create = authed_form_request("POST", "/dashboard/admin/invites/create-link", &cookie, &[]);
+        create.headers_mut().insert("FX-Request", "true".parse().unwrap());
+        let html = body_text(router.clone().oneshot(create).await.unwrap()).await;
+        assert!(html.starts_with(r#"<section id="invites">"#), "{html}");
+        assert!(html.contains("Share this link") && html.contains("/dashboard/signup?invite="), "{html}");
+
+        let mut clear = authed_form_request("POST", "/dashboard/admin/invites/delete-all", &cookie, &[]);
+        clear.headers_mut().insert("FX-Request", "true".parse().unwrap());
+        let response = router.clone().oneshot(clear).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK);
+        let html = body_text(response).await;
+        assert!(html.contains("0 requests deleted.") && !html.contains("<html"), "{html}");
     }
 }

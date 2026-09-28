@@ -52,6 +52,17 @@ pub struct FailingDomainWarning {
 /// while embedding isn't restricted (shrunk to one line once dismissed), and,
 /// never dismissable, one per failing domain plus one when the restriction
 /// is on but no domain counts any more.
+/// The one-line reminder left once the "any website" warning is
+/// dismissed; also what fixi swaps in for the warning on Dismiss.
+pub fn compact_embed_warning(connection_id: &str) -> Markup {
+    let settings = format!("/dashboard/stores/{connection_id}/settings#verified-domains");
+    html! {
+        div class="embed-warning is-compact" id="embed-warning" {
+            strong { "Any website can show this store's checkout." } " " a href=(settings) { "Verify your domains" }
+        }
+    }
+}
+
 pub struct EmbedWarnings {
     pub restricted: bool,
     pub any_site_dismissed: bool,
@@ -98,17 +109,16 @@ fn embed_warnings(connection_id: &str, warnings: &EmbedWarnings) -> Markup {
         }
         @if warnings.restricted {
         } @else if warnings.any_site_dismissed {
-            div class="embed-warning is-compact" {
-                strong { "Any website can show this store's checkout." } " " a href=(settings) { "Verify your domains" }
-            }
+            (compact_embed_warning(connection_id))
         } @else {
-            div class="embed-warning" {
+            div class="embed-warning" id="embed-warning" {
                 strong { "Any website can show this store's checkout" }
                 span {
                     "If a scam site embeds it, that site's victims would pay you, and you'd be the one they come to. "
                     a href=(settings) { "Verify your domains" } " in Settings and allow only them."
                 }
-                form method="post" action=(format!("/dashboard/stores/{connection_id}/embed-warning/dismiss")) {
+                form method="post" action=(format!("/dashboard/stores/{connection_id}/embed-warning/dismiss"))
+                    fx-action=(format!("/dashboard/stores/{connection_id}/embed-warning/dismiss")) fx-method="POST" fx-target="#embed-warning" {
                     button type="submit" class="btn-secondary" { "Dismiss" }
                 }
             }
@@ -288,7 +298,7 @@ mod tests {
     #[test]
     fn the_any_site_warning_can_be_dismissed_to_one_line_but_a_failing_domain_warning_cannot() {
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(base_store(false)) }).into_string();
-        assert!(html.contains(r#"<div class="embed-warning"><strong>Any website can show this store's checkout</strong>"#), "got: {html}");
+        assert!(html.contains(r#"<div class="embed-warning" id="embed-warning"><strong>Any website can show this store's checkout</strong>"#), "got: {html}");
         assert!(html.contains(r#"action="/dashboard/stores/conn_1/embed-warning/dismiss""#));
         assert!(html.contains(r#"href="/dashboard/stores/conn_1/settings#verified-domains""#));
 
@@ -317,7 +327,7 @@ mod tests {
             ..base_store(false)
         };
         let html = page(&chrome(), &StoreDetailViewModel { store: Some(store) }).into_string();
-        assert!(html.contains(r#"<div class="embed-warning is-compact"><strong>Any website can show this store's checkout.</strong>"#), "got: {html}");
+        assert!(html.contains(r#"<div class="embed-warning is-compact" id="embed-warning"><strong>Any website can show this store's checkout.</strong>"#), "got: {html}");
         assert!(!html.contains("embed-warning/dismiss"), "a dismissed warning offers nothing more to dismiss");
         assert!(html.contains("shop.example failed its DNS check"));
         assert!(html.contains("If it isn't back within 2d 19h, shop.example will stop counting as verified."));
