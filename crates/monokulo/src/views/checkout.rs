@@ -280,7 +280,7 @@ pub fn checkout_page(chrome: &PageChrome, data: &CheckoutViewModel) -> Markup {
                     // The number and its unit never split; the font shrinks with
                     // the frame instead (see `.amount`).
                     div class="amount" id="xmr-amount" aria-labelledby="amount-label" {
-                        span class="amount-value" { (trim_xmr(&data.xmr_amount)) } " " span class="amount-unit" { "XMR" }
+                        span class="amount-value" { (super::trim_xmr(&data.xmr_amount)) } " " span class="amount-unit" { "XMR" }
                     }
                     // A fiat equivalent only for an order priced in fiat.
                     @if !data.currency.is_empty() && data.currency != "XMR" {
@@ -431,12 +431,6 @@ fn live_status(data: &CheckoutViewModel) -> Markup {
             }
         }
     }
-}
-
-/// An exact XMR amount without trailing zeros (`0.001000000000` is `0.001`):
-/// the same amount, short enough to sit on one line with its unit.
-fn trim_xmr(amount: &str) -> &str {
-    if amount.contains('.') { amount.trim_end_matches('0').trim_end_matches('.') } else { amount }
 }
 
 fn amount_label(data: &CheckoutViewModel) -> Markup {

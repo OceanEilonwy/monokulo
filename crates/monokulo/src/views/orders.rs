@@ -40,21 +40,23 @@ pub const ORDERS_PER_PAGE: u32 = 50;
 /// "Recent orders".
 pub fn orders_table(connection_id: &str, orders: &[OrderRowViewModel]) -> Markup {
     html! {
-        table class="orders-table" {
+        // On a phone each row is a card (`.table-cards`): order and status,
+        // then amount and date, then reference and source.
+        div class="table-scroll" { table class="orders-table table-cards" {
             thead { tr { th { "Order" } th { "Reference" } th { "Source" } th { "Status" } th { "Amount" } th { "Created" } } }
             tbody {
                 @for order in orders {
                     tr {
-                        td { a href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (order.order_id) } }
-                        td { @if let Some(reference) = &order.reference { (reference) } @else { span class="muted" { "—" } } }
-                        td { (order.source) }
-                        td { (super::state_badge(&order.status)) }
-                        td { (order.amount) " " (order.currency) }
-                        td { (order.created_at) }
+                        td class="card-title" { a class="ellipsis order-id" href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (order.order_id) } }
+                        td class="card-meta" { @if let Some(reference) = &order.reference { (reference) } @else { span class="muted" { "—" } } }
+                        td class="card-meta" { (order.source) }
+                        td class="card-status" { (super::state_badge(&order.status)) }
+                        td class="card-amount nowrap" { (super::display_amount(&order.amount, &order.currency)) }
+                        td class="card-when" { (order.created_at) }
                     }
                 }
             }
-        }
+        } }
     }
 }
 
@@ -228,7 +230,9 @@ pub struct OrderDetailViewModel {
 
 const PAGE_STYLE: &str = r#"
 .kv-table th { width: 14em; }
-.kv-table td, .payments-table td { word-break: break-all; overflow-wrap: anywhere; }
+/* Codes (address, ids, txids) break anywhere; words and badges never do. */
+.kv-table td, .payments-table td { overflow-wrap: anywhere; }
+.kv-table td code, .payments-table td code { word-break: break-all; }
 .payments-table th { min-width: 8em; }
 .order-title { display: flex; align-items: center; gap: 0.5em; min-width: 0; }
 .order-title > span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -280,7 +284,7 @@ pub fn live_fragment(order: &OrderDetailData) -> Markup {
                     }
                 }
                 tr { th { "Address" } td { code { (order.address) } } }
-                tr { th { "Amount" } td { (order.amount) " " (order.currency) } }
+                tr { th { "Amount" } td { (super::display_amount(&order.amount, &order.currency)) } }
                 tr { th { "Exchange rate" } td { (order.rate_display) } }
                 tr { th { "Rate provider" } td { (order.rate_provider) } }
                 tr { th { "XMR amount (piconero)" } td { (order.xmr_amount_piconero) } }
@@ -305,7 +309,7 @@ pub fn live_fragment(order: &OrderDetailData) -> Markup {
                 tr { th { "Scan range" } td { (PreEscaped(&order.scan_range_display)) } }
             }
             h2 { "Payments" }
-            table class="payments-table" {
+            div class="table-scroll" { table class="payments-table" {
                 thead {
                     tr {
                         th { "Txid" } th { "Output index" } th { "Amount (piconero)" }
@@ -324,7 +328,7 @@ pub fn live_fragment(order: &OrderDetailData) -> Markup {
                         }
                     }
                 }
-            }
+            } }
         }
     }
 }

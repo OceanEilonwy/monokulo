@@ -162,6 +162,45 @@ th { background: var(--table-head-bg); color: var(--table-head-ink); font-weight
    (ink is near-black) and lightens in dark mode (ink is near-white) from
    the same rule. */
 tr:nth-child(even) td { background: color-mix(in srgb, var(--ink) 5%, transparent); }
+/* A table sits in its own scroll box, so however wide it gets, the page
+   never scrolls sideways on a phone. */
+.table-scroll { overflow-x: auto; margin: 0.8em 0; }
+.table-scroll > table { margin: 0; }
+.nowrap { white-space: nowrap; }
+/* Phones (the same 640px as the nav): a table drops the columns marked
+   optional, and a `.table-cards` table turns each row into a card - title
+   and status, then amount and date, then the rest. */
+@media (max-width: 640px) {
+  .col-optional { display: none; }
+  table.table-cards, table.table-cards tbody { display: block; }
+  table.table-cards thead { display: none; }
+  table.table-cards tr { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: var(--space-xs) var(--space-md); align-items: center; padding: var(--space-sm) var(--space-md); margin-bottom: var(--space-sm); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
+  table.table-cards td { display: block; min-width: 0; padding: 0; border: 0; background: none; }
+  table.table-cards .card-title { grid-column: 1; grid-row: 1; font-weight: 700; }
+  table.table-cards .card-status { grid-column: 2; grid-row: 1; justify-self: end; }
+  table.table-cards .card-amount { grid-column: 1; grid-row: 2; font-weight: 700; }
+  table.table-cards .card-when { grid-column: 2; grid-row: 2; justify-self: end; color: var(--muted); font-size: 0.85em; }
+  table.table-cards .card-meta { grid-column: 1 / -1; color: var(--muted); font-size: 0.85em; }
+  table.table-cards .card-meta:empty { display: none; }
+}
+/* A phone: a table of facts (`.kv-table`) puts each label over its value,
+   and a `.table-stack` table (settings rows with inputs and buttons) turns
+   each row into a box of its cells, each named by its `data-label`. */
+@media (max-width: 640px) {
+  .kv-table, .kv-table tbody, .kv-table tr, .kv-table th, .kv-table td { display: block; width: auto; }
+  .kv-table { border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
+  .kv-table th, .kv-table td, .kv-table tr:nth-child(even) td { border: 0; padding: 0; background: none; }
+  .kv-table tr { padding: var(--space-sm) var(--space-md); border-bottom: 1px solid var(--line); }
+  .kv-table tr:last-child { border-bottom: 0; }
+  .kv-table th { color: var(--muted); font-size: 0.8em; }
+  .kv-table td code { word-break: break-all; }
+  table.table-stack, table.table-stack tbody, table.table-stack tr, table.table-stack td { display: block; width: auto; }
+  table.table-stack thead { display: none; }
+  table.table-stack tr { padding: var(--space-sm) var(--space-md); margin-bottom: var(--space-sm); border: 1px solid var(--line); border-radius: var(--radius-md); background: var(--paper-raised); }
+  table.table-stack td, table.table-stack tr:nth-child(even) td { border: 0; padding: var(--space-xs) 0; background: none; overflow-wrap: anywhere; }
+  table.table-stack td[data-label]::before { content: attr(data-label); display: block; color: var(--muted); font-size: 0.8em; font-weight: 700; }
+  table.table-stack td:empty { display: none; }
+}
 /* Truncates long inline content (e.g. a public key in a list table) with an
    ellipsis, without letting it force its containing table wider than its
    own header row. Purely visual: CSS truncation never removes the full text
@@ -305,6 +344,14 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
   font-weight: 700;
   text-transform: uppercase;
   letter-spacing: 0.03em;
+  white-space: nowrap;
+}
+/* `views::state_badge`: the short words replace the long ones on a phone;
+   the long ones stay for screen readers. */
+.tag .label-short { display: none; }
+@media (max-width: 640px) {
+  .tag .label-long { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
+  .tag .label-short { display: inline; }
 }
 .tag-ok { background: var(--tint-success); }
 .tag-error { background: var(--tint-error); }
@@ -405,6 +452,9 @@ button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring);
 .orders-search button { margin: 0; }
 .orders-search a { align-self: center; }
 .orders-table td:nth-child(2) { max-width: 14em; overflow-wrap: anywhere; }
+/* An order id in a list: the start shows, the rest is an ellipsis (the whole
+   id stays in the page for find-in-page). */
+.ellipsis.order-id { max-width: 11em; }
 .orders-pages { display: flex; gap: 0.5em; }
 /* Visually hidden but still readable by assistive tech: the theme toggle's
    labels, the checkout's heading, the Logs page's search label. */

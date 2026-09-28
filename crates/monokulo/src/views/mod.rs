@@ -254,10 +254,42 @@ pub fn order_state(status: &str) -> (&'static str, &'static str, bool) {
     }
 }
 
-/// An order's status as a badge ([`order_state`]).
+/// A status's words short enough for a phone's table column ("Waiting"
+/// for "Waiting for payment"). The long words stay for screen readers.
+pub fn order_state_short(status: &str) -> &'static str {
+    match status {
+        "pending" => "Waiting",
+        "unconfirmed" => "Seen",
+        "partial" => "Part paid",
+        other => order_state(other).0,
+    }
+}
+
+/// An order's status as a badge ([`order_state`]): the full words, and the
+/// short ones that replace them on a narrow screen (`.label-short`).
 pub fn state_badge(status: &str) -> Markup {
     let (label, class, _) = order_state(status);
-    html! { span class=(format!("tag {class}")) { (label) } }
+    let short = order_state_short(status);
+    html! {
+        span class=(format!("tag {class}")) {
+            @if short == label { (label) } @else {
+                span class="label-long" { (label) }
+                span class="label-short" aria-hidden="true" { (short) }
+            }
+        }
+    }
+}
+
+/// An amount for people to read: XMR without its trailing zeros
+/// (`0.420000000000` is `0.42`), anything else as given (`12.50` stays).
+pub fn display_amount(amount: &str, currency: &str) -> String {
+    let amount = if currency == "XMR" { trim_xmr(amount) } else { amount };
+    if currency.is_empty() { amount.to_string() } else { format!("{amount} {currency}") }
+}
+
+/// An exact XMR amount without trailing zeros (`0.001000000000` is `0.001`).
+pub fn trim_xmr(amount: &str) -> &str {
+    if amount.contains('.') { amount.trim_end_matches('0').trim_end_matches('.') } else { amount }
 }
 
 /// A link to the Logs page searching for `field = value` over everything

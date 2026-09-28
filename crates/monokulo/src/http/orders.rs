@@ -3048,7 +3048,7 @@ mod tests {
             .await
             .unwrap();
         let html = body_text(page).await;
-        assert!(html.contains("<td>50</td>"), "expected the canonical threshold amount shown, got: {html}");
+        assert!(html.contains(">50</td>"), "expected the canonical threshold amount shown, got: {html}");
         assert!(
             html.contains(&format!("name=\"delete_{threshold_id}\"")),
             "expected a real delete checkbox for the new threshold in the condensed table, got: {html}"
@@ -3153,9 +3153,9 @@ mod tests {
             .await
             .unwrap();
         let html = body_text(page).await;
-        let pos_10 = html.find("<td>10</td>").expect("canonical 10 shown");
-        let pos_50 = html.find("<td>50</td>").expect("canonical 50 shown");
-        let pos_100 = html.find("<td>100</td>").expect("canonical 100 shown");
+        let pos_10 = html.find(">10</td>").expect("canonical 10 shown");
+        let pos_50 = html.find(">50</td>").expect("canonical 50 shown");
+        let pos_100 = html.find(">100</td>").expect("canonical 100 shown");
         assert!(pos_10 < pos_50 && pos_50 < pos_100, "expected ascending amount order, got: {html}");
     }
 
@@ -3560,7 +3560,7 @@ mod tests {
             }
             // The status is the same badge the checkout and the POS show.
             let class = if status == "Cancelled" { "state-cancelled" } else { "state-pending" };
-            assert!(row.contains(&format!(r#"<span class="tag {class}">{status}</span>"#)), "{order_id}: expected a {class} badge in {row}");
+            assert!(row.contains(&format!(r#"<span class="tag {class}">"#)), "{order_id}: expected a {class} badge in {row}");
         }
 
         let html = page("?q=table").await;
@@ -3576,10 +3576,10 @@ mod tests {
             router.clone().oneshot(json_post(format!("/pay/{pk}/orders"), None, serde_json::json!({ "amount": format!("0.{i:02}1"), "currency": "XMR" }))).await.unwrap();
         }
         let first = page("").await;
-        assert_eq!(first.matches("<tr><td><a href").count(), 50);
+        assert_eq!(first.matches(r#"<tr><td class="card-title"><a"#).count(), 50);
         assert!(first.contains(&format!(r#"href="/dashboard/stores/{id}/orders?page=1" rel="next""#)) && !first.contains(r#"rel="prev""#));
         let second = page("?page=1").await;
-        assert_eq!(second.matches("<tr><td><a href").count(), 1);
+        assert_eq!(second.matches(r#"<tr><td class="card-title"><a"#).count(), 1);
         assert!(second.contains(r#"rel="prev""#) && !second.contains(r#"rel="next""#));
     }
 

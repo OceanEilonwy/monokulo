@@ -152,7 +152,7 @@ pub fn page(chrome: &PageChrome, data: &StoreDetailViewModel) -> Markup {
 
                 (embed_warnings(&store.connection_id, &store.embed_warnings))
 
-                table {
+                table class="kv-table" {
                     tr { th { "Base currency" } td { (store.base_currency) } }
                     tr { th { "Public key" } td { code { (store.public_key) } } }
                     tr { th { "Connected" } td { (store.created_at) } }

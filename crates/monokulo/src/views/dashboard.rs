@@ -64,48 +64,50 @@ pub fn page(chrome: &PageChrome, data: &DashboardViewModel) -> Markup {
                 }
 
                 h2 { "Your stores" }
-                table {
+                // On a phone only the name, health and link stay (`.col-optional`).
+                div class="table-scroll" { table {
                     thead {
-                        tr { th { "Store" } th { "Platform" } th { "Public key" } th { "Status" } th {} }
+                        tr { th { "Store" } th class="col-optional" { "Platform" } th class="col-optional" { "Public key" } th { "Status" } th {} }
                     }
                     tbody {
                         @for store in &data.stores {
                             tr {
                                 td { (store.display_name) }
-                                td { (store.platform) }
-                                td { code class="ellipsis" { (store.public_key) } }
+                                td class="col-optional" { (store.platform) }
+                                td class="col-optional" { code class="ellipsis" { (store.public_key) } }
                                 td { span class=(format!("tag tag-{}", store.health)) { (store.health_label) } }
-                                td { a href=(format!("/dashboard/stores/{}", store.connection_id)) { "view →" } }
+                                td class="nowrap" { a href=(format!("/dashboard/stores/{}", store.connection_id)) { "view →" } }
                             }
                         }
                     }
-                }
+                } }
                 a class="btn btn-secondary" href="/dashboard/stores/new" { "+ add another store" }
 
                 h2 { "Recent orders" }
                 @if data.recent_orders.is_empty() {
                     p class="muted" { "No orders yet." }
                 } @else {
-                    table {
+                    // On a phone: order, status and amount; the order page has the rest.
+                    div class="table-scroll" { table {
                         thead {
-                            tr { th { "Store" } th { "Order ID" } th { "Status" } th { "Amount" } th { "Created" } }
+                            tr { th class="col-optional" { "Store" } th { "Order ID" } th { "Status" } th { "Amount" } th class="col-optional" { "Created" } }
                         }
                         tbody {
                             @for order in &data.recent_orders {
                                 tr {
-                                    td { (order.display_name) }
+                                    td class="col-optional" { (order.display_name) }
                                     td {
-                                        a href=(format!("/dashboard/stores/{}/orders/{}", order.connection_id, order.order_id)) {
+                                        a class="ellipsis order-id" href=(format!("/dashboard/stores/{}/orders/{}", order.connection_id, order.order_id)) {
                                             (order.order_id)
                                         }
                                     }
                                     td { (super::state_badge(&order.status)) }
-                                    td { (order.amount) " " (order.currency) }
-                                    td { (order.created_at) }
+                                    td class="nowrap" { (super::display_amount(&order.amount, &order.currency)) }
+                                    td class="col-optional" { (order.created_at) }
                                 }
                             }
                         }
-                    }
+                    } }
                 }
             } @else {
                 div class="box" {
