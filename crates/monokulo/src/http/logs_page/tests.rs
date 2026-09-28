@@ -4,8 +4,7 @@ use axum::Router;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use crate::db::{Db, TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD};
-use crate::engine_client::EngineClient;
+use crate::db::{TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD};
 use crate::http::{build_router, AppState};
 
 struct Setup {
@@ -53,19 +52,7 @@ async fn setup(extra: usize) -> Setup {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    let db = Db::open_in_memory().unwrap();
-    db.seed_test_admin();
-    let state = AppState {
-        db: db.into_shared(),
-        engine_client: EngineClient::new("http://127.0.0.1:1"),
-        encryption_key: [7u8; 32],
-        status_cache: crate::http::status_page::new_status_cache(),
-        exchange_rate: std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-        abuse: Default::default(),
-        dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-        settings: crate::settings::MonokuloSettings::defaults(),
-        log_store: Some(store),
-    };
+    let state = AppState { log_store: Some(store), ..AppState::for_tests() };
     let router = build_router(state.clone());
     let login = form("/dashboard/login", &[("email", TEST_ADMIN_EMAIL), ("password", TEST_ADMIN_PASSWORD)], None);
     let response = router.clone().oneshot(login).await.unwrap();

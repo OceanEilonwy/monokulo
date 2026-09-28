@@ -8,36 +8,12 @@ use axum::http::{Request, StatusCode};
 use http_body_util::BodyExt;
 use tower::ServiceExt;
 
-use crate::db::Db;
 use crate::engine_client::EngineClient;
 
 use super::{AppState, build_router};
 
-/// A dummy, never-dialed engine URL — these tests exercise `/signup`,
-/// `/login`, `/logout`, and the `AuthedUser` extractor, none of which ever
-/// reach the engine client. See `connections.rs`'s own tests for the
-/// `/connections` handler, which does need a real spawned engine.
-/// See `AppState`'s own doc comment on `exchange_rate`.
-fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-    std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
-}
-
-pub(super) fn test_app_state() -> AppState {
-    AppState {
-        db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
-        engine_client: EngineClient::new("http://127.0.0.1:1"),
-        encryption_key: [7u8; 32],
-        status_cache: crate::http::status_page::new_status_cache(),
-        exchange_rate: test_exchange_rate_provider(),
-        abuse: Default::default(),
-        dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-        settings: crate::settings::MonokuloSettings::defaults(),
-        log_store: None,
-    }
-}
-
 fn test_router() -> Router {
-    build_router(test_app_state())
+    build_router(AppState::for_tests())
 }
 
 fn signup_request(email: &str, password: &str) -> Request<Body> {
@@ -110,7 +86,7 @@ async fn signing_up_the_same_email_twice_returns_conflict_on_the_second_attempt(
 
 #[tokio::test]
 async fn the_stored_password_hash_is_a_real_argon2_hash_not_the_plaintext_password() {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     let router = build_router(state.clone());
 
     let plaintext = "correct horse battery staple";
@@ -606,7 +582,7 @@ async fn an_unknown_email_at_dashboard_login_gets_the_same_generic_error_as_a_wr
 // Unlike the rest of this file, these tests need a *real* spawned engine
 // (same reason as `connections.rs`'s own tests: `/dashboard/connect` really
 // provisions a tenant) - so they get their own `AppState` helper instead of
-// `test_app_state()`'s dummy, never-dialed engine URL.
+// `AppState::for_tests()`'s dummy, never-dialed engine URL.
 
 /// Same fixed-scalar construction `connections.rs`'s and `engine_client.rs`'s
 /// own tests use - see those modules for why these particular values pass
@@ -618,15 +594,8 @@ async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestE
     let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
     let engine_client = EngineClient::new(format!("http://{}", engine.addr));
     let state = AppState {
-        db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
         engine_client,
-        encryption_key: [7u8; 32],
-        status_cache: crate::http::status_page::new_status_cache(),
-        exchange_rate: test_exchange_rate_provider(),
-        abuse: Default::default(),
-        dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-        settings: crate::settings::MonokuloSettings::defaults(),
-        log_store: None,
+        ..AppState::for_tests()
     };
     (state, engine)
 }
@@ -927,7 +896,7 @@ async fn public_mode_signup_needs_no_invite_token_at_all() {
 
 #[tokio::test]
 async fn invite_only_mode_rejects_a_signup_with_no_token() {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     let db = state.db.clone();
     let router = build_router(state);
     db.lock().set_setting("signup.mode", "invite_only").unwrap();
@@ -940,7 +909,7 @@ async fn invite_only_mode_rejects_a_signup_with_no_token() {
 
 #[tokio::test]
 async fn invite_only_mode_accepts_a_valid_token_exactly_once() {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     let db = state.db.clone();
     let router = build_router(state);
     db.lock().set_setting("signup.mode", "invite_only").unwrap();
@@ -1021,7 +990,7 @@ async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
 // -- Alerts for stores that can't be scanned (admin_settings_v2.md task 3.7) --
 
 fn state_with_owner_and_store(tenant_public_key: &str) -> (AppState, crate::db::UserRow, crate::db::UserRow) {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     {
         let db = state.db.lock();
         db.create_user("u_owner", "owner@example.com", "x", false, 1).unwrap();
@@ -1169,7 +1138,7 @@ async fn store_pages_load_browser_reports_only_once_the_store_opted_in_but_admin
 
 #[tokio::test]
 async fn the_plugins_forwarded_errors_are_refused_until_the_store_opted_in() {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     {
         let db = state.db.lock();
         db.create_user("u_owner", "owner@example.com", "x", false, 1).unwrap();

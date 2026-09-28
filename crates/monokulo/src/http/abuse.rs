@@ -347,21 +347,13 @@ mod tests {
 
     use crate::abuse::{AbuseConfig, AbuseProtection, TrustedProxies};
     use crate::db::Db;
-    use crate::engine_client::EngineClient;
 
     use super::super::{build_router, AppState};
 
     fn state(config: AbuseConfig) -> AppState {
         AppState {
-            db: Db::open_in_memory().unwrap().into_shared(),
-            engine_client: EngineClient::new("http://127.0.0.1:1"),
-            encryption_key: [7u8; 32],
-            status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             abuse: Arc::new(AbuseProtection::new(config)),
-            dns: Arc::new(crate::embed_domains::UnavailableDns("no DNS in tests".to_string())),
-            settings: crate::settings::MonokuloSettings::defaults(),
-            log_store: None,
+            ..AppState::for_tests_with_db(Db::open_in_memory().unwrap().into_shared())
         }
     }
 

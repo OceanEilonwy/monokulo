@@ -218,7 +218,6 @@ mod tests {
     use tower::ServiceExt;
 
     use crate::crypto;
-    use crate::db::Db;
     use crate::engine_client::EngineClient;
 
     use super::super::{AppState, build_router};
@@ -229,32 +228,12 @@ mod tests {
     const TEST_VIEW_KEY_HEX: &str = "0707070707070707070707070707070707070707070707070707070707070707";
     const TEST_SPEND_PUBKEY_HEX: &str = "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90";
 
-    /// Fixed test encryption key (WBS 1.2.3) — no environment variable
-    /// needed in tests, see `crate::crypto`'s and `main.rs`'s doc comments
-    /// on why the real key is sourced from `MONOKULO_ENCRYPTION_KEY`
-    /// instead.
-    const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
-
-    /// See `AppState`'s own doc comment on `exchange_rate` -
-    /// `connections.rs`'s own tests don't exercise fiat conversion, so a
-    /// fixed, arbitrary provider is enough.
-    fn test_exchange_rate_provider() -> std::sync::Arc<crate::exchange_rate_config::ExchangeRateProviders> {
-        std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only())
-    }
-
     async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestEngineHandle) {
         let engine = scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            db: { let db = Db::open_in_memory().unwrap(); db.seed_test_admin(); db.into_shared() },
             engine_client,
-            encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: crate::http::status_page::new_status_cache(),
-            exchange_rate: test_exchange_rate_provider(),
-            abuse: Default::default(),
-            dns: std::sync::Arc::new(crate::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-            settings: crate::settings::MonokuloSettings::defaults(),
-            log_store: None,
+            ..AppState::for_tests()
         };
         (state, engine)
     }

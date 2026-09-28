@@ -98,6 +98,42 @@ pub struct AppState {
     pub log_store: Option<telemetry::store::LogStore>,
 }
 
+#[cfg(test)]
+impl AppState {
+    /// A state for tests: an in-memory store, plain key custody, a fake
+    /// mainnet node (tenants default to mainnet, so it must be configured),
+    /// a rate limit high enough that no test trips it by accident, default
+    /// settings and no log store. A test that needs something else
+    /// overrides just that field with struct update syntax:
+    /// `AppState { daemons, ..AppState::for_tests() }`.
+    pub fn for_tests() -> Self {
+        Self::for_tests_with_store(Store::open_in_memory().unwrap().into_shared())
+    }
+
+    /// [`AppState::for_tests`] around a store the test prepared itself (for
+    /// example to load real settings from it first).
+    pub fn for_tests_with_store(store: SharedStore) -> Self {
+        let mainnet_daemon = Arc::new(crate::daemon_fallback::FallbackDaemonClient::new(vec![
+            crate::daemon_fallback::FallbackNode {
+                label: "fake-node:18081".to_string(),
+                client: Arc::new(crate::daemon::fake::FakeDaemonClient::new()),
+            },
+        ]));
+        AppState {
+            store,
+            read_pool: None,
+            key_custody: Arc::new(crate::key_custody::PlainKeyCustody::default()),
+            key_custody_backend: "plain".to_string(),
+            wallet_handles: Arc::default(),
+            admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
+            daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(monero::Network::Mainnet, mainnet_daemon)])),
+            scanner_status: crate::scanner_status::new_scanner_status_map(),
+            settings: crate::engine_settings::EngineSettings::defaults(),
+            log_store: None,
+        }
+    }
+}
+
 impl AppState {
     pub async fn read_store<T: Send + 'static>(
         &self, f: impl FnOnce(&Store) -> Result<T, StoreError> + Send + 'static,

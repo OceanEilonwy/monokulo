@@ -877,12 +877,6 @@ mod tests {
         }
     }
 
-    /// Fixed test encryption key - same convention `monokulo`'s own
-    /// tests use (see `monokulo/src/http/connections.rs`'s
-    /// `TEST_ENCRYPTION_KEY`); no `MONOKULO_ENCRYPTION_KEY` environment
-    /// variable needed for a test-constructed `AppState`.
-    const TEST_ENCRYPTION_KEY: [u8; 32] = [7u8; 32];
-
     /// Spawns a real monokulo instance (in-memory `Db`, an
     /// `EngineClient` pointed at `engine_addr`, the fixed test encryption
     /// key) bound to a real ephemeral local port. No exchange rate/order-
@@ -915,15 +909,8 @@ mod tests {
             .expect("bound listener has no local address");
         db.set_setting("public_url", &format!("http://{addr}")).expect("failed to set public_url for test monokulo db");
         let state = AppState {
-            db: db.into_shared(),
             engine_client: EngineClient::new(format!("http://{engine_addr}")),
-            encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: monokulo::http::status_page::new_status_cache(),
-            exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
-            abuse: Default::default(),
-            dns: Arc::new(monokulo::embed_domains::UnavailableDns("DNS is not available in tests".to_string())),
-            settings: monokulo::settings::MonokuloSettings::defaults(),
-            log_store: None,
+            ..AppState::for_tests_with_db(db.into_shared())
         };
         let router = build_router(state);
 

@@ -6,7 +6,6 @@
 
 use std::collections::HashMap;
 use std::str::FromStr;
-use parking_lot::RwLock;
 use std::sync::Arc;
 
 use axum::Router;
@@ -20,7 +19,6 @@ use tower::ServiceExt;
 use crate::daemon::fake::FakeDaemonClient;
 use crate::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use crate::key_custody::{KeyCustody, PlainKeyCustody};
-use crate::scanner_status::new_scanner_status_map;
 use crate::store::Store;
 
 use super::rate_limit::RateLimiter;
@@ -41,40 +39,8 @@ fn valid_spend_pubkey_hex(seed: u8) -> String {
     hex::encode(PublicKey::from_private_key(&secret).to_bytes())
 }
 
-fn test_app_state() -> AppState {
-    let store = Store::open_in_memory().unwrap().into_shared();
-    let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-    // A real (fake-backed, but genuinely `MoneroDaemonClient`-implementing)
-    // node for mainnet - matches `configured_networks` below, and gives
-    // `status_page`'s own tests something real to query rather than an
-    // empty map that would make every test tenant's own network
-    // inconsistent with what `daemons` actually has.
-    let mainnet_daemon = Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-        label: "fake-node:18081".to_string(),
-        client: Arc::new(FakeDaemonClient::new()),
-    }]));
-    AppState {
-        store,
-        read_pool: None,
-        key_custody,
-        key_custody_backend: "plain".to_string(),
-        wallet_handles: Arc::new(RwLock::new(HashMap::new())),
-        // Every test tenant is created without an explicit `network`, which
-        // defaults to mainnet (see admin::create_tenant) - so mainnet must be
-        // "configured" for tenant creation to succeed in these tests.
-        // Generous by default so the auth/IDOR/order-flow tests below aren't
-        // incidentally affected by rate limiting - the middleware's own behavior is
-        // tested separately, end to end, in `rate_limit_middleware_rejects_after_the_limit_with_a_real_connect_info`.
-        admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
-        daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
-        scanner_status: new_scanner_status_map(),
-        log_store: None,
-        settings: crate::engine_settings::EngineSettings::defaults(),
-    }
-}
-
 fn test_router() -> Router {
-    build_router(test_app_state(), 1_000_000)
+    build_router(AppState::for_tests(), 1_000_000)
 }
 
 fn json_request(method: &str, uri: &str, bearer: Option<&str>, origin: Option<&str>, body: serde_json::Value) -> Request<Body> {
@@ -152,7 +118,7 @@ async fn create_tenant_then_create_order_happy_path() {
 
 #[tokio::test]
 async fn creating_an_order_with_a_confirmations_required_override_persists_it() {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     let store = state.store.clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
@@ -176,7 +142,7 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
 
 #[tokio::test]
 async fn creating_an_order_with_no_confirmations_required_override_leaves_it_unset() {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     let store = state.store.clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
@@ -218,7 +184,7 @@ async fn creating_an_order_with_an_out_of_range_confirmations_required_is_reject
 
 #[tokio::test]
 async fn creating_an_order_with_confirmations_required_zero_is_accepted() {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     let store = state.store.clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
@@ -317,7 +283,7 @@ async fn successive_orders_get_distinct_addresses_and_never_leave_an_unclaimed_i
     // that replaces it must still hand out one distinct address per order and must
     // not skip indices along the way (a skipped index means an address was derived,
     // counted, and never issued to anyone).
-    let state = test_app_state();
+    let state = AppState::for_tests();
     let store = state.store.clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 1).await;
@@ -577,7 +543,7 @@ async fn tenant_creation_is_rejected_for_a_network_with_no_configured_node() {
     // derived for a chain nothing on this instance is actually scanning, so a
     // real payment to it would simply never be detected - a silent, much worse
     // failure than refusing to create the tenant at all.
-    let router = test_router(); // only mainnet is configured, see test_app_state()
+    let router = test_router(); // only mainnet is configured, see AppState::for_tests()
 
     let req = json_request(
         "POST",
@@ -650,7 +616,7 @@ async fn unauthenticated_routes_are_limited_per_address_by_the_admin_limiter() {
     // Tenant creation and `/status` carry no token, so the admin limiter keys
     // them on the caller's address (with a fabricated `ConnectInfo`, the way
     // production's `into_make_service_with_connect_info` provides it).
-    let mut state = test_app_state();
+    let mut state = AppState::for_tests();
     state.admin_rate_limiter = Arc::new(RateLimiter::new(2));
     let router = build_router(state, 1_000_000);
 
@@ -674,7 +640,7 @@ async fn admin_rate_limit_middleware_rejects_after_the_limit_with_a_real_connect
     // Same shape as the public-route test above, but against the admin API's own
     // separate limiter - with no `Authorization` header at all, so this exercises
     // `admin_rate_limit_middleware`'s IP-fallback path (see its own doc comment).
-    let mut state = test_app_state();
+    let mut state = AppState::for_tests();
     state.admin_rate_limiter = Arc::new(RateLimiter::new(2));
     let router = build_router(state, 1_000_000);
 
@@ -702,7 +668,7 @@ async fn admin_rate_limit_middleware_keys_on_the_presented_token_not_the_source_
     // proxied through the *same* source IP (exactly what happens when a hosted
     // control plane calls this API on every real user's behalf), must not share
     // one budget - each `sk_...` gets its own.
-    let mut state = test_app_state();
+    let mut state = AppState::for_tests();
     state.admin_rate_limiter = Arc::new(RateLimiter::new(1));
     let router = build_router(state, 1_000_000);
 
@@ -732,7 +698,7 @@ async fn admin_rate_limit_middleware_keys_on_the_presented_token_not_the_source_
 
 #[tokio::test]
 async fn oversized_request_body_is_rejected_before_reaching_the_handler() {
-    let router = build_router(test_app_state(), 16); // absurdly small cap for the test
+    let router = build_router(AppState::for_tests(), 16); // absurdly small cap for the test
 
     let oversized_body = serde_json::json!({ "xmr_amount_piconero": 67_000_000_000u64 }).to_string();
     assert!(oversized_body.len() > 16);
@@ -1163,7 +1129,7 @@ async fn get_status_json(router: Router) -> serde_json::Value {
 async fn status_endpoint_is_reachable_with_no_authentication_at_all() {
     // Deliberately no `authorization` header, no session cookie - see
     // `build_router`'s own doc comment on why this route is unauthenticated.
-    let router = build_router(test_app_state(), 1_000_000);
+    let router = build_router(AppState::for_tests(), 1_000_000);
     let body = get_status_json(router).await;
     assert!(body["networks"].is_array());
     assert!(body["loop_restarts"].is_array(), "restart counts are reported (task 7.9), got: {body}");
@@ -1172,7 +1138,7 @@ async fn status_endpoint_is_reachable_with_no_authentication_at_all() {
 
 #[tokio::test]
 async fn status_endpoint_shows_the_real_configured_network_and_node_with_its_live_height() {
-    let router = build_router(test_app_state(), 1_000_000);
+    let router = build_router(AppState::for_tests(), 1_000_000);
     let body = get_status_json(router).await;
     let network = &body["networks"][0];
     assert_eq!(network["network"], "mainnet", "expected the configured network shown, got: {body}");
@@ -1190,7 +1156,7 @@ async fn status_endpoint_shows_the_real_configured_network_and_node_with_its_liv
 
 #[tokio::test]
 async fn status_endpoint_shows_an_offline_node_as_an_error_not_a_silent_gap() {
-    let mut state = test_app_state();
+    let mut state = AppState::for_tests();
     let offline_daemon = Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
         label: "dead-node:18081".to_string(),
         client: Arc::new(FakeDaemonClient::default()), // starts offline (see FakeDaemonClient::new vs. Default)
@@ -1207,7 +1173,7 @@ async fn status_endpoint_shows_an_offline_node_as_an_error_not_a_silent_gap() {
 
 #[tokio::test]
 async fn status_endpoint_reflects_a_healthy_recent_scan_tick() {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     crate::scanner_status::record_tick(&state.scanner_status, Network::Mainnet, crate::now_unix(), crate::now_unix(), 3, &Ok::<(), String>(()));
     let router = build_router(state, 1_000_000);
     let body = get_status_json(router).await;
@@ -1220,7 +1186,7 @@ async fn status_endpoint_reflects_a_healthy_recent_scan_tick() {
 
 #[tokio::test]
 async fn status_endpoint_reflects_a_failing_scan_tick_with_its_real_error() {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     crate::scanner_status::record_tick(
         &state.scanner_status,
         Network::Mainnet,
@@ -1238,7 +1204,7 @@ async fn status_endpoint_reflects_a_failing_scan_tick_with_its_real_error() {
 
 #[tokio::test]
 async fn status_endpoint_reflects_a_stale_scanner_that_has_stopped_ticking() {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     // A tick that "succeeded" a very long time ago - the scanner itself is
     // the thing that's actually broken here (stopped ticking at all), which
     // must read differently from a merely-failing-but-alive tick.
@@ -1251,15 +1217,15 @@ async fn status_endpoint_reflects_a_stale_scanner_that_has_stopped_ticking() {
 
 #[tokio::test]
 async fn status_endpoint_with_no_configured_networks_says_so_plainly() {
-    let mut state = test_app_state();
+    let mut state = AppState::for_tests();
     state.daemons = crate::engine_settings::Daemons::fixed(HashMap::new());
     let router = build_router(state, 1_000_000);
     let body = get_status_json(router).await;
     assert_eq!(body["networks"].as_array().unwrap().len(), 0);
 }
 
-/// Like `test_app_state`, but hands back the mainnet `FakeDaemonClient` directly so
-/// a test can script real, findable block heights/transactions - `test_app_state`'s
+/// Like `AppState::for_tests`, but hands back the mainnet `FakeDaemonClient` directly so
+/// a test can script real, findable block heights/transactions - `for_tests`'
 /// own daemon starts with no blocks at all, which is fine for most tests here but
 /// not for these.
 async fn test_app_state_with_real_daemon() -> (AppState, Arc<FakeDaemonClient>) {
@@ -1270,26 +1236,17 @@ async fn test_app_state_with_real_daemon() -> (AppState, Arc<FakeDaemonClient>) 
 /// API works), and `env` as the environment it sees.
 async fn test_app_state_with_real_daemon_and_env(env: live_settings::Env) -> (AppState, Arc<FakeDaemonClient>) {
     let store = Store::open_in_memory().unwrap().into_shared();
-    let settings_store = store.clone();
-    let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
     let fake_daemon = Arc::new(FakeDaemonClient::new());
     let mainnet_daemon = Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
         label: "fake-node:18081".to_string(),
         client: fake_daemon.clone(),
     }]));
     let state = AppState {
-        store,
-        read_pool: None,
-        key_custody,
-        key_custody_backend: "plain".to_string(),
-        wallet_handles: Arc::new(RwLock::new(HashMap::new())),
-        admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         daemons: crate::engine_settings::Daemons::fixed(HashMap::from([(Network::Mainnet, mainnet_daemon)])),
-        scanner_status: new_scanner_status_map(),
-        log_store: None,
-        settings: crate::engine_settings::EngineSettings::load_with(settings_store, None, Arc::new(RateLimiter::new(10_000)), env)
+        settings: crate::engine_settings::EngineSettings::load_with(store.clone(), None, Arc::new(RateLimiter::new(10_000)), env)
             .await
             .unwrap(),
+        ..AppState::for_tests_with_store(store)
     };
     (state, fake_daemon)
 }
@@ -1592,16 +1549,9 @@ async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_toke
     .await
     .unwrap();
     let state = AppState {
-        store,
-        read_pool: None,
-        key_custody: std::sync::Arc::new(PlainKeyCustody::default()),
-        key_custody_backend: "plain".to_string(),
-        wallet_handles: Arc::new(RwLock::new(HashMap::new())),
-        admin_rate_limiter: Arc::new(RateLimiter::new(10_000)),
         daemons: crate::engine_settings::Daemons::fixed(HashMap::new()),
-        scanner_status: new_scanner_status_map(),
-        log_store: None,
         settings,
+        ..AppState::for_tests_with_store(store)
     };
     let second_call = crate::http::instance_admin::ensure_admin_token_seeded(&state.store.lock());
     assert_eq!(second_call, None, "a token that already exists must never be silently regenerated (that would invalidate the first one)");
@@ -1888,7 +1838,7 @@ async fn listing_orders_by_ids_returns_only_this_tenants_named_orders_in_order()
 
 #[tokio::test]
 async fn listing_orders_can_page_search_and_keep_to_open_orders() {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     let store = state.store.clone();
     let router = build_router(state, 1_000_000);
     let tenant = create_tenant(&router, 44).await;
@@ -2034,16 +1984,10 @@ async fn engine_that_applies_node_settings() -> (Router, crate::engine_settings:
     .await
     .unwrap();
     let state = AppState {
-        store,
-        read_pool: None,
-        key_custody: Arc::new(PlainKeyCustody::default()),
-        key_custody_backend: "plain".to_string(),
-        wallet_handles: Arc::new(RwLock::new(HashMap::new())),
         admin_rate_limiter: rate_limiter.clone(),
         daemons: daemons.clone(),
-        scanner_status: new_scanner_status_map(),
-        log_store: None,
         settings,
+        ..AppState::for_tests_with_store(store)
     };
     (build_router(state, 16 * 1024 * 1024), daemons, rate_limiter)
 }
@@ -2238,7 +2182,7 @@ fn test_app_state_with_two_custody_backends() -> (AppState, Arc<dyn KeyCustody>,
         HashMap::from([("plain".to_string(), plain.clone()), ("socket".to_string(), socket.clone())]),
         "plain",
     );
-    let mut state = test_app_state();
+    let mut state = AppState::for_tests();
     state.key_custody = Arc::new(router);
     (state, plain, socket)
 }
@@ -2472,7 +2416,7 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
         HashMap::from([("plain".to_string(), plain.clone()), ("socket".to_string(), socket)]),
         "plain",
     ));
-    let mut state = test_app_state();
+    let mut state = AppState::for_tests();
     state.key_custody = router_custody.clone();
     let router = build_router(state, 1_000_000);
 
@@ -2517,7 +2461,7 @@ async fn status_lists_stores_whose_key_storage_is_turned_off_or_not_answering() 
 
 #[tokio::test]
 async fn a_store_a_block_or_two_behind_is_not_reported_but_one_further_behind_is() {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     let store = state.store.clone();
     store.lock().set_scanned_block("mainnet", 100, "h100").unwrap();
     let router = build_router(state, 1_000_000);
@@ -2545,7 +2489,7 @@ async fn two_overlapping_moves_of_one_store_leave_its_row_and_its_live_keys_in_t
         ]),
         "plain",
     ));
-    let mut state = test_app_state();
+    let mut state = AppState::for_tests();
     state.key_custody = custody.clone();
     let wallet_handles = state.wallet_handles.clone();
     let store = state.store.clone();
@@ -2604,7 +2548,7 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
 
-    let mut state = test_app_state();
+    let mut state = AppState::for_tests();
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     state.log_store = Some(log_store);
     let router = build_router(state, 1_000_000);
@@ -2651,7 +2595,7 @@ async fn the_log_api_answers_the_admin_with_filtered_lines_traces_and_query_erro
 
 #[tokio::test]
 async fn without_a_log_store_the_log_api_says_so() {
-    let state = test_app_state();
+    let state = AppState::for_tests();
     crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
     let router = build_router(state, 1_000_000);
     let request = Request::builder().uri("/api/v1/admin/logs").header("authorization", "Bearer admin_test_token").body(Body::empty()).unwrap();

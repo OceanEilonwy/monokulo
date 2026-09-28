@@ -602,7 +602,7 @@ impl Db {
     /// database error - every caller is a test fixture already `.unwrap()`-
     /// ing `Db::open_in_memory()` right next to this, so a failure here is
     /// exactly as fatal to the test as that would be.
-    #[cfg(test)]
+    #[cfg(any(test, feature = "test-support"))]
     pub fn seed_test_admin(&self) {
         let password_hash = shared::password::hash_password(TEST_ADMIN_PASSWORD).expect("hashing the fixed test admin password");
         self.create_user("test-admin", TEST_ADMIN_EMAIL, &password_hash, true, 0).expect("seeding the test admin account");
