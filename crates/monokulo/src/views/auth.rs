@@ -66,7 +66,7 @@ pub fn signup_page(chrome: &PageChrome, data: &SignupViewModel) -> Markup {
                     input type="hidden" name="invite" value=(data.invite_token);
                     label { "Email " input type="email" name="email" required; }
                     label { "Password " input type="password" name="password" required; }
-                    button type="submit" { "Sign up" }
+                    button type="submit" class="btn-primary" { "Sign up" }
                 }
             }
             p { "Already have an account? " a href="/dashboard/login" { "Log in" } }
@@ -89,7 +89,7 @@ pub fn login_page(chrome: &PageChrome, data: &LoginViewModel) -> Markup {
                 }
                 label { "Email " input type="email" name="email" required; }
                 label { "Password " input type="password" name="password" required; }
-                button type="submit" { "Log in" }
+                button type="submit" class="btn-primary" { "Log in" }
             }
             p { "Need an account? " a href="/dashboard/signup" { "Sign up" } }
         }

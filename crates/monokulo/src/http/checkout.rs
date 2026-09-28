@@ -37,25 +37,6 @@ use crate::views::checkout::{CheckoutPaymentViewModel, CheckoutShareViewModel, C
 use super::dashboard::redirect_302;
 use super::{ApiError, AppState};
 
-/// `pending`/`unconfirmed`/`confirming`/`partial` are still "in progress";
-/// `paid`/`overpaid`/`expired` are terminal - used to decide whether the
-/// page should keep updating. Mirrors the engine's own (soon-removed)
-/// `templates::status_label` - presentation logic, duplicated once rather
-/// than shared, since it's a 10-line match statement used in exactly one
-/// place per crate, not obviously worth a `shared` module of its own.
-pub(super) fn status_label(status: &str) -> (&'static str, &'static str, bool) {
-    match status {
-        "pending" => ("Waiting for payment", "status-pending", false),
-        "unconfirmed" => ("Payment seen, unconfirmed", "status-unconfirmed", false),
-        "confirming" => ("Confirming", "status-confirming", false),
-        "partial" => ("Partial payment received", "status-partial", false),
-        "paid" => ("Paid", "status-paid", true),
-        "overpaid" => ("Overpaid", "status-overpaid", true),
-        "expired" => ("Expired", "status-expired", true),
-        _ => ("Unknown", "status-unknown", true),
-    }
-}
-
 fn short_txid(txid: &str) -> String {
     if txid.len() <= 16 {
         return txid.to_string();
@@ -305,7 +286,7 @@ async fn build_checkout_view(
             _ => ("—".to_string(), "".to_string()),
         };
 
-    let (status_text, status_class, is_terminal) = status_label(&detail.order.status);
+    let (status_text, status_class, is_terminal) = crate::views::order_state(&detail.order.status);
     // A subtle, progressive color shift as expiry nears (research on real
     // crypto-checkout UIs: a big alarming red countdown creates anxiety: a
     // quiet color change at 5 minutes, then 2, communicates urgency without
@@ -446,7 +427,7 @@ pub async fn checkout_status(State(state): State<AppState>, Path((pk, order_id))
         Ok((row, sk, detail)) => {
             let confirmations_required = super::pos::resolve_confirmations_required(&state, &row.id, &sk, &detail.order.order_id).await;
             let error = checkout_payment_message(&detail.order);
-            let (_, _, is_terminal) = status_label(&detail.order.status);
+            let (_, _, is_terminal) = crate::views::order_state(&detail.order.status);
             Json(CheckoutStatusResponse {
                 status: detail.order.status,
                 confirmations: detail.order.confirmations,

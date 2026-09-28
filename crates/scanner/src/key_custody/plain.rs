@@ -34,26 +34,80 @@ struct KeyTable {
     generation: Option<u64>,
     indices: std::collections::BTreeSet<u32>,
     table: HashMap<PublicKey, SubaddressIndex>,
+    building_generation: Option<u64>,
+    pending_indices: Vec<u32>,
 }
 
 impl KeyTable {
     /// Makes the table cover exactly `indices`, deriving only indices it
     /// didn't have and dropping ones no longer wanted (task 7.3: a store's
     /// scan window changes by an order or two at a time).
-    fn update_to(&mut self, view_pair: &ViewPair, indices: &ScanIndices) -> u64 {
+    fn update_batch_to(&mut self, view_pair: &ViewPair, indices: &ScanIndices) -> u64 {
         if self.generation == Some(indices.generation()) {
             return 0;
         }
-        let wanted: std::collections::BTreeSet<u32> = indices.minors().iter().copied().collect();
-        self.table.retain(|_, index| wanted.contains(&index.minor) && index.major == 0);
+        if self.building_generation != Some(indices.generation()) {
+            let wanted: std::collections::BTreeSet<u32> = indices.minors().iter().copied().collect();
+            self.table.retain(|_, index| wanted.contains(&index.minor) && index.major == 0);
+            self.indices.retain(|index| wanted.contains(index));
+            self.pending_indices = wanted.difference(&self.indices).copied().collect();
+            self.building_generation = Some(indices.generation());
+            self.generation = None;
+        }
         let mut derived = 0;
-        for &minor in wanted.difference(&self.indices) {
+        for _ in 0..SCAN_TABLE_BUILD_BATCH {
+            let Some(minor) = self.pending_indices.pop() else { break };
             let index = SubaddressIndex { major: 0, minor };
             self.table.insert(monero::cryptonote::subaddress::get_spend_public_key(view_pair, index), index);
+            self.indices.insert(minor);
             derived += 1;
         }
-        self.indices = wanted;
-        self.generation = Some(indices.generation());
+        if self.pending_indices.is_empty() {
+            self.generation = Some(indices.generation());
+            self.building_generation = None;
+        }
+        derived
+    }
+}
+
+const SCAN_TABLE_BUILD_BATCH: usize = 256;
+
+#[derive(Default)]
+struct RangeTable {
+    range: Option<(u32, u32, u32, u32)>,
+    next_major: u32,
+    next_minor: u32,
+    complete: bool,
+    table: HashMap<PublicKey, SubaddressIndex>,
+}
+
+impl RangeTable {
+    fn update_batch(&mut self, view_pair: &ViewPair, major: &Range<u32>, minor: &Range<u32>) -> usize {
+        let range = (major.start, major.end, minor.start, minor.end);
+        if self.range != Some(range) {
+            self.range = Some(range);
+            self.table.clear();
+            self.next_major = major.start;
+            self.next_minor = minor.start;
+            self.complete = major.is_empty() || minor.is_empty();
+        }
+        let mut derived = 0;
+        for _ in 0..SCAN_TABLE_BUILD_BATCH {
+            if self.complete { break; }
+            let index = SubaddressIndex { major: self.next_major, minor: self.next_minor };
+            self.table.insert(monero::cryptonote::subaddress::get_spend_public_key(view_pair, index), index);
+            derived += 1;
+            if self.next_minor + 1 < minor.end {
+                self.next_minor += 1;
+            } else {
+                self.next_minor = minor.start;
+                if self.next_major + 1 < major.end {
+                    self.next_major += 1;
+                } else {
+                    self.complete = true;
+                }
+            }
+        }
         derived
     }
 }
@@ -64,7 +118,8 @@ struct WalletEntry {
     /// An async mutex: the table is moved into a blocking scan and back, so
     /// scans of one wallet run one at a time (different wallets in parallel)
     /// and no table is ever copied.
-    live: tokio::sync::Mutex<KeyTable>,
+    live: std::sync::Arc<tokio::sync::Mutex<KeyTable>>,
+    lookup: std::sync::Arc<tokio::sync::Mutex<RangeTable>>,
     /// Derivations done so far, for tests that check nothing is rebuilt.
     #[cfg(test)]
     derivations: std::sync::atomic::AtomicU64,
@@ -74,7 +129,8 @@ impl WalletEntry {
     fn new(view_pair: ViewPair) -> Self {
         WalletEntry {
             view_pair,
-            live: tokio::sync::Mutex::new(KeyTable::default()),
+            live: std::sync::Arc::new(tokio::sync::Mutex::new(KeyTable::default())),
+            lookup: std::sync::Arc::new(tokio::sync::Mutex::new(RangeTable::default())),
             #[cfg(test)]
             derivations: std::sync::atomic::AtomicU64::new(0),
         }
@@ -88,44 +144,6 @@ static SCAN_SLOTS: std::sync::LazyLock<std::sync::Arc<tokio::sync::Semaphore>> =
     let cores = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(2);
     std::sync::Arc::new(tokio::sync::Semaphore::new(cores))
 });
-
-/// Runs one scan of `tx` against `table` on the blocking pool and hands the
-/// table back, so it is reused rather than copied.
-async fn scan_on_blocking_pool(
-    view_pair: ViewPair,
-    table: HashMap<PublicKey, SubaddressIndex>,
-    tx: &Transaction,
-) -> (HashMap<PublicKey, SubaddressIndex>, Result<Vec<MatchedOutput>, KeyCustodyError>) {
-    let permit = SCAN_SLOTS.clone().acquire_owned().await;
-    let tx = tx.clone();
-    let joined = tokio::task::spawn_blocking(move || {
-        let _permit = permit;
-        let checker = SubKeyChecker { table, keys: &view_pair };
-        let result = match tx.check_outputs_with(&checker) {
-            Ok(owned) => Ok(owned
-                .into_iter()
-                .map(|o| MatchedOutput {
-                    output_index: o.index(),
-                    subaddress_index: o.sub_index(),
-                    amount_piconero: o.amount().map(|a| a.as_pico()),
-                })
-                .collect()),
-            // A transaction with no transaction public key, or with script
-            // outputs, can't pay any wallet: it's "no match", not a failure.
-            // Reporting it as a failure would make every tenant fail on it and
-            // retry the same block for ever.
-            Err(monero::blockdata::transaction::Error::NoTxPublicKey)
-            | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Ok(Vec::new()),
-            Err(e) => Err(KeyCustodyError::ScanFailed(e.to_string())),
-        };
-        (checker.table, result)
-    })
-    .await;
-    match joined {
-        Ok(done) => done,
-        Err(e) => (HashMap::new(), Err(KeyCustodyError::ScanFailed(format!("scan task failed: {e}")))),
-    }
-}
 
 /// Best-effort scrub of the one *long-lived* copy of a tenant's view key: the one
 /// this registry holds for the life of the process, and the one still sitting in
@@ -159,6 +177,7 @@ impl Drop for WalletEntry {
 #[derive(Default)]
 pub struct PlainKeyCustody {
     wallets: RwLock<HashMap<WalletHandle, std::sync::Arc<WalletEntry>>>,
+    registration_ids: RwLock<HashMap<String, WalletHandle>>,
 }
 
 #[async_trait::async_trait]
@@ -176,6 +195,8 @@ impl KeyCustody for PlainKeyCustody {
     }
 
     async fn remove_wallet(&self, handle: WalletHandle) -> Result<(), KeyCustodyError> {
+        // Keep lock order the same as idempotent registration.
+        self.registration_ids.write().retain(|_, registered| *registered != handle);
         self.wallets
             .write()
             .remove(&handle)
@@ -202,6 +223,29 @@ impl KeyCustody for PlainKeyCustody {
     async fn unseal_and_register(&self, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError> {
         let material = WalletMaterial::from_raw_bytes(sealed)?;
         self.register_wallet(material).await
+    }
+
+    async fn unseal_and_register_idempotent(&self, sealed: &[u8], registration_id: &str) -> Result<WalletHandle, KeyCustodyError> {
+        if registration_id.is_empty() || registration_id.len() > 128 {
+            return Err(KeyCustodyError::InvalidKeyMaterial("invalid registration id".into()));
+        }
+        let material = WalletMaterial::from_raw_bytes(sealed)?;
+        let view_pair = material.to_view_pair()?;
+        let mut registrations = self.registration_ids.write();
+        let mut wallets = self.wallets.write();
+        if let Some(&handle) = registrations.get(registration_id) {
+            if let Some(existing) = wallets.get(&handle) {
+                if existing.view_pair != view_pair {
+                    return Err(KeyCustodyError::InvalidKeyMaterial("registration id belongs to another wallet".into()));
+                }
+                return Ok(handle);
+            }
+            registrations.remove(registration_id);
+        }
+        let handle = WalletHandle::new();
+        wallets.insert(handle, std::sync::Arc::new(WalletEntry::new(view_pair)));
+        registrations.insert(registration_id.to_string(), handle);
+        Ok(handle)
     }
 
     async fn derive_subaddress(
@@ -256,19 +300,55 @@ impl KeyCustody for PlainKeyCustody {
             )));
         }
         let entry = self.entry(handle)?;
-        // A one-off range (payment lookup, catch-up over old blocks): its own
-        // table, built on the blocking pool, never replacing the live one.
+        // Keep one independent lookup range per wallet. Each completed CPU
+        // batch stays in the cache even if the caller is cancelled while the
+        // blocking worker runs; a retry resumes instead of starting at zero.
+        let mut lookup = entry.lookup.clone().lock_owned().await;
+        while lookup.range != Some((major_range.start, major_range.end, minor_range.start, minor_range.end)) || !lookup.complete {
+            let view_pair = entry.view_pair;
+            let major = major_range.clone();
+            let minor = minor_range.clone();
+            let permit = SCAN_SLOTS.clone().acquire_owned().await;
+            let (returned, derived) = tokio::task::spawn_blocking(move || {
+                let _permit = permit;
+                let derived = lookup.update_batch(&view_pair, &major, &minor);
+                (lookup, derived)
+            })
+            .await
+            .map_err(|e| KeyCustodyError::ScanFailed(format!("building the scan table failed: {e}")))?;
+            lookup = returned;
+            #[cfg(test)]
+            entry.derivations.fetch_add(derived as u64, std::sync::atomic::Ordering::Relaxed);
+            #[cfg(not(test))]
+            let _ = derived;
+            if !lookup.complete { tokio::task::yield_now().await; }
+        }
         let view_pair = entry.view_pair;
+        let tx = tx.clone();
         let permit = SCAN_SLOTS.clone().acquire_owned().await;
-        let table = tokio::task::spawn_blocking(move || {
+        tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            SubKeyChecker::new(&view_pair, major_range, minor_range).table
+            let keys = std::mem::take(&mut lookup.table);
+            let cached_range = lookup.range.take();
+            lookup.complete = false;
+            let checker = SubKeyChecker { table: keys, keys: &view_pair };
+            let result = match tx.check_outputs_with(&checker) {
+                Ok(owned) => Ok(owned.into_iter().map(|o| MatchedOutput {
+                    output_index: o.index(),
+                    subaddress_index: o.sub_index(),
+                    amount_piconero: o.amount().map(|a| a.as_pico()),
+                }).collect()),
+                Err(monero::blockdata::transaction::Error::NoTxPublicKey)
+                | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Ok(Vec::new()),
+                Err(e) => Err(KeyCustodyError::ScanFailed(e.to_string())),
+            };
+            lookup.table = checker.table;
+            lookup.range = cached_range;
+            lookup.complete = true;
+            result
         })
         .await
-        .map_err(|e| KeyCustodyError::ScanFailed(format!("building the scan table failed: {e}")))?;
-        #[cfg(test)]
-        entry.derivations.fetch_add(table.len() as u64, std::sync::atomic::Ordering::Relaxed);
-        scan_on_blocking_pool(view_pair, table, tx).await.1
+        .map_err(|e| KeyCustodyError::ScanFailed(format!("scan task failed: {e}")))?
     }
 
     async fn scan_tx_outputs_for_indices(
@@ -284,35 +364,60 @@ impl KeyCustody for PlainKeyCustody {
             )));
         }
         let entry = self.entry(handle)?;
-        let mut live = entry.live.lock().await;
-        if live.generation != Some(indices.generation()) {
-            // Update on the blocking pool too: adding indices is EC work.
-            let mut table = std::mem::take(&mut *live);
+        // The owned guard travels with each blocking task. Dropping this
+        // future cannot discard work already running: that task finishes one
+        // bounded batch and leaves the table, including partial progress, in
+        // the wallet's cache before releasing the guard.
+        let mut live = entry.live.clone().lock_owned().await;
+        while live.generation != Some(indices.generation()) {
             let view_pair = entry.view_pair;
-            let indices = indices.clone();
+            let wanted = indices.clone();
             let permit = SCAN_SLOTS.clone().acquire_owned().await;
-            let (table, derived) = tokio::task::spawn_blocking(move || {
+            let (returned, derived) = tokio::task::spawn_blocking(move || {
                 let _permit = permit;
-                let derived = table.update_to(&view_pair, &indices);
-                (table, derived)
+                let derived = live.update_batch_to(&view_pair, &wanted);
+                (live, derived)
             })
             .await
             .map_err(|e| KeyCustodyError::ScanFailed(format!("updating the scan table failed: {e}")))?;
+            live = returned;
             #[cfg(test)]
             entry.derivations.fetch_add(derived, std::sync::atomic::Ordering::Relaxed);
             #[cfg(not(test))]
             let _ = derived;
-            *live = table;
+            if live.generation != Some(indices.generation()) {
+                tokio::task::yield_now().await;
+            }
         }
-        let table = std::mem::take(&mut live.table);
-        let (table, result) = scan_on_blocking_pool(entry.view_pair, table, tx).await;
-        live.table = table;
-        if live.table.is_empty() && !live.indices.is_empty() {
-            // The scan task failed and lost the table: rebuild next time.
+        let tx = tx.clone();
+        let view_pair = entry.view_pair;
+        let generation = indices.generation();
+        let permit = SCAN_SLOTS.clone().acquire_owned().await;
+        tokio::task::spawn_blocking(move || {
+            let _permit = permit;
+            // If `check_outputs_with` panics, the next call must rebuild, not
+            // treat an emptied table as a completed generation.
+            let keys = std::mem::take(&mut live.table);
+            let cached_indices = std::mem::take(&mut live.indices);
             live.generation = None;
-            live.indices.clear();
-        }
-        result
+            let checker = SubKeyChecker { table: keys, keys: &view_pair };
+            let result = match tx.check_outputs_with(&checker) {
+                Ok(owned) => Ok(owned.into_iter().map(|o| MatchedOutput {
+                    output_index: o.index(),
+                    subaddress_index: o.sub_index(),
+                    amount_piconero: o.amount().map(|a| a.as_pico()),
+                }).collect()),
+                Err(monero::blockdata::transaction::Error::NoTxPublicKey)
+                | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Ok(Vec::new()),
+                Err(e) => Err(KeyCustodyError::ScanFailed(e.to_string())),
+            };
+            live.table = checker.table;
+            live.indices = cached_indices;
+            live.generation = Some(generation);
+            result
+        })
+        .await
+        .map_err(|e| KeyCustodyError::ScanFailed(format!("scan task failed: {e}")))?
     }
 }
 
@@ -482,6 +587,73 @@ mod tests {
         assert_eq!(after_lookup - before, 3, "the lookup's own table");
         custody.scan_tx_outputs_for_indices(handle, &tx, &without).await.unwrap();
         assert_eq!(derivations(&custody, handle), after_lookup, "the live table survived the lookup");
+    }
+
+    #[test]
+    fn a_large_lookup_range_builds_in_reusable_bounded_batches() {
+        let material = WalletMaterial::new(random_scalar_bytes(71),
+            PublicKey::from_private_key(&PrivateKey::from_slice(&random_scalar_bytes(72)).unwrap()).to_bytes());
+        let pair = material.to_view_pair().unwrap();
+        let mut table = RangeTable::default();
+        let major = 0..1;
+        let minor = 0..(SCAN_TABLE_BUILD_BATCH as u32 + 3);
+        assert_eq!(table.update_batch(&pair, &major, &minor), SCAN_TABLE_BUILD_BATCH);
+        assert!(!table.complete);
+        assert_eq!(table.update_batch(&pair, &major, &minor), 3);
+        assert!(table.complete);
+        assert_eq!(table.update_batch(&pair, &major, &minor), 0);
+        assert_eq!(table.table.len(), SCAN_TABLE_BUILD_BATCH + 3);
+    }
+
+    #[test]
+    fn cancelling_a_scan_preserves_the_next_payment_match() {
+        // One blocking worker lets us stop a scan at an await deterministically,
+        // without sleeps, deadlines, or depending on how fast the CPU runs.
+        let runtime = tokio::runtime::Builder::new_current_thread()
+            .max_blocking_threads(1)
+            .build()
+            .unwrap();
+        runtime.block_on(async {
+            let tx: Transaction = deserialize(
+                &hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap(),
+            ).unwrap();
+            let view = hex::decode("bcfdda53205318e1c14fa0ddca1a45df363bb427972981d0249d0f4652a7df07")
+                .unwrap().try_into().unwrap();
+            let spend = PrivateKey::from_slice(
+                &hex::decode("e5f4301d32f3bdaef814a835a18aaaa24b13cc76cf01a832a7852faf9322e907").unwrap(),
+            ).unwrap();
+            let custody = PlainKeyCustody::default();
+            let handle = custody.register_wallet(WalletMaterial::new(
+                view, PublicKey::from_private_key(&spend).to_bytes(),
+            )).await.unwrap();
+            let window = ScanIndices::new([1]);
+            assert_eq!(custody.scan_tx_outputs_for_indices(handle, &tx, &window).await.unwrap().len(), 1);
+
+            // Exercise cancellation with an unchanged cache and during a window
+            // update. In either case the very next scan must find the payment.
+            for window in [window, ScanIndices::new([1, 5])] {
+                let (release, wait) = std::sync::mpsc::channel::<()>();
+                let (started, ready) = tokio::sync::oneshot::channel();
+                let blocker = tokio::task::spawn_blocking(move || {
+                    started.send(()).unwrap();
+                    let _ = wait.recv();
+                });
+                ready.await.unwrap();
+                let mut scan = custody.scan_tx_outputs_for_indices(handle, &tx, &window);
+                std::future::poll_fn(|cx| {
+                    assert!(scan.as_mut().poll(cx).is_pending());
+                    std::task::Poll::Ready(())
+                }).await;
+                drop(scan);
+                drop(release);
+                blocker.await.unwrap();
+                assert_eq!(
+                    custody.scan_tx_outputs_for_indices(handle, &tx, &window).await.unwrap().len(),
+                    1,
+                    "the first scan after cancellation must still find the payment",
+                );
+            }
+        });
     }
 
     #[tokio::test]

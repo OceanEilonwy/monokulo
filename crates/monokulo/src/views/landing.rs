@@ -8,7 +8,7 @@ pub fn page(chrome: &PageChrome, signup_public: bool) -> Markup {
     let body = html! {
         div class="wrap" {
             div class="hero" {
-                img src="/static/logo.svg" alt="" width="64" height="64" class="hero-logo";
+                (super::logo_mark(64, "hero-logo"))
                 div {
                     h1 { "Accept Monero. Non-custodial. Nothing to trust but math." }
                     p {
@@ -30,9 +30,9 @@ pub fn page(chrome: &PageChrome, signup_public: bool) -> Markup {
             }
 
             @if signup_public {
-                a class="btn" href="/dashboard/signup" { "Sign up - it's free to connect a store" }
+                a class="btn btn-primary" href="/dashboard/signup" { "Sign up - it's free to connect a store" }
             } @else {
-                a class="btn" href="/request-invite" { "Request an invite to join" }
+                a class="btn btn-primary" href="/request-invite" { "Request an invite to join" }
             }
             a class="btn btn-secondary" href="/dashboard/login" { "Log in" }
 
@@ -91,7 +91,7 @@ mod tests {
     #[test]
     fn landing_page_renders_with_a_signup_cta_in_public_mode() {
         let html = page(&PageChrome::from_user(None, "/"), true).into_string();
-        assert!(html.contains(r#"class="btn" href="/dashboard/signup""#), "expected the main sign-up CTA, got: {html}");
+        assert!(html.contains(r#"class="btn btn-primary" href="/dashboard/signup""#), "expected the main sign-up CTA, got: {html}");
         assert!(!html.contains("Request an invite"));
         assert!(html.to_lowercase().contains("monero"));
     }
@@ -100,6 +100,6 @@ mod tests {
     fn landing_page_renders_with_a_request_invite_cta_in_invite_only_mode() {
         let html = page(&PageChrome::from_user(None, "/"), false).into_string();
         assert!(html.contains(r#"href="/request-invite""#), "expected the request-invite CTA, got: {html}");
-        assert!(!html.contains(r#"class="btn" href="/dashboard/signup""#), "the main sign-up CTA must not appear in invite-only mode");
+        assert!(!html.contains(r#"class="btn btn-primary" href="/dashboard/signup""#), "the main sign-up CTA must not appear in invite-only mode");
     }
 }

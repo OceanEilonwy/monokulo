@@ -43,7 +43,7 @@ use super::AppState;
 
 const NODE_HEIGHT_TIMEOUT: Duration = Duration::from_secs(5);
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct NodeStatus {
     pub label: String,
     pub is_active: bool,
@@ -53,7 +53,7 @@ pub struct NodeStatus {
     pub error: Option<String>,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct ScannerStatusView {
     pub ever_ticked: bool,
     pub last_tick_started_at: Option<i64>,
@@ -68,7 +68,7 @@ pub struct ScannerStatusView {
     pub is_stale: bool,
 }
 
-#[derive(Serialize)]
+#[derive(Serialize, Clone)]
 pub struct NetworkStatus {
     pub network: String,
     pub nodes: Vec<NodeStatus>,
@@ -211,13 +211,13 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
             }
         };
 
-        let (lagging_tenants, max_blocks_behind) = {
-            let store = state.store.lock();
-            let high_water = store.max_scanned_height(network_str(network)).ok().flatten().unwrap_or(0);
-            let lagging = store.lagging_tenants(network_str(network)).unwrap_or_default();
+        let network_name = network_str(network).to_string();
+        let (lagging_tenants, max_blocks_behind) = state.read_store(move |store| {
+            let high_water = store.max_scanned_height(&network_name)?.unwrap_or(0);
+            let lagging = store.lagging_tenants(&network_name)?;
             let behind = lagging.iter().map(|(_, cursor)| high_water.saturating_sub(*cursor)).max().unwrap_or(0);
-            (lagging.len(), behind)
-        };
+            Ok((lagging.len(), behind))
+        }).await.unwrap_or((0, 0));
         network_views.push(NetworkStatus {
             network: network_str(network).to_string(),
             nodes,
@@ -229,7 +229,7 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
 
     let loop_restarts =
         shared::supervise::restart_counts().into_iter().map(|(name, restarts)| LoopRestarts { name, restarts }).collect();
-    let (due, oldest) = state.store.lock().webhook_backlog(now).unwrap_or((0, None));
+    let (due, oldest) = state.read_store(move |store| store.webhook_backlog(now)).await.unwrap_or((0, None));
     let key_custody: Vec<CustodyBackendStatus> = state
         .key_custody
         .backend_health()
@@ -237,8 +237,12 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
         .into_iter()
         .map(|(backend, error)| CustodyBackendStatus { backend, error })
         .collect();
-    let mut unserved_tenants = unserved_tenants(&state, &network_views);
-    unserved_tenants.extend(custody_unserved_tenants(&state, &key_custody));
+    let networks_for_read = network_views.clone();
+    let mut unserved_tenants = state.read_store(move |store| Ok(unserved_tenants(store, &networks_for_read)))
+        .await.unwrap_or_default();
+    let key_custody_for_read = key_custody.clone();
+    unserved_tenants.extend(state.read_store(move |store| Ok(custody_unserved_tenants(store, &key_custody_for_read)))
+        .await.unwrap_or_default());
     Json(EngineStatusResponse {
         networks: network_views,
         poll_interval_secs,
@@ -254,11 +258,11 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
 
 /// Stores whose keys are in a backend that is turned off or not answering
 /// (task 5.5). Only with a router: a single backend has no per-store choice.
-fn custody_unserved_tenants(state: &AppState, health: &[CustodyBackendStatus]) -> Vec<UnservedTenant> {
+fn custody_unserved_tenants(store: &crate::store::Store, health: &[CustodyBackendStatus]) -> Vec<UnservedTenant> {
     if health.is_empty() {
         return Vec::new();
     }
-    let tenants = state.store.lock().tenant_custody_backends().unwrap_or_default();
+    let tenants = store.tenant_custody_backends().unwrap_or_default();
     tenants
         .into_iter()
         .filter_map(|(public_key, network, backend)| {
@@ -290,8 +294,7 @@ fn network_unreachable(status: Option<&NetworkStatus>) -> bool {
 /// Stores that can't be scanned right now (task 3.7): those on a network
 /// with no node configured or none answering, and those still catching up
 /// after falling behind by more than a couple of blocks.
-fn unserved_tenants(state: &AppState, networks: &[NetworkStatus]) -> Vec<UnservedTenant> {
-    let store = state.store.lock();
+fn unserved_tenants(store: &crate::store::Store, networks: &[NetworkStatus]) -> Vec<UnservedTenant> {
     let mut unserved = Vec::new();
     let with_tenants = store.count_tenants_by_network().unwrap_or_default();
     for (network, count) in with_tenants {

@@ -1,0 +1,164 @@
+/* The one place a colour is defined, for every page monokulo serves: the
+   site, the POS terminal and the checkout (`views::theme_tests` fails on a
+   colour literal anywhere else, and on a `var(--x)` nothing declares).
+
+   Three layers, each built only from the one above it:
+   - palette: the actual colours, one value per theme;
+   - roles: what a component paints with (`--chrome-bg`, `--btn-bg`,
+     `--table-head-bg` ...). Components read roles, never the palette, so a
+     surface can't accidentally flip with the text colour between themes
+     (the old nav bar that turned white in dark mode, because it reused
+     `--ink` as a background);
+   - order states: one colour set per order status, shared by the checkout
+     badge, the POS and the dashboard's order lists.
+
+   Contrast is checked by `views::theme_tests` in both themes: 4.5:1 for text,
+   3:1 for control borders. Dark mode is its own audited set, not an
+   inversion: a soft VS Code "Dark+"-like grey scale rather than near-black
+   and near-white, which read as harsh at night. */
+:root {
+  /* ---- palette ---- */
+  --ink: #1a1917;
+  --paper: #f4f1ea;
+  --paper-raised: #ffffff;
+  --surface-sunken: #efeae0;
+  --line: #dcd5c7;
+  --line-strong: #8c8577;
+  --muted: #5a564c;
+  --accent: #ff6600;
+  --accent-hover: #e85d00;
+  --accent-ink: #111111;
+  --accent-text: #b34700;
+  --brand-orange: #ff6600;
+  --error: #b00020;
+  --error-ink: #ffffff;
+  --success: #1a7f37;
+  --warning: #7d5e00;
+  --warning-ink: #ffffff;
+  /* Fixed in both themes: a QR code stays dark on white to scan, and a
+     camera preview sits on black. */
+  --qr-bg: #ffffff;
+  --qr-paid: #16663a;
+  --media-bg: #000000;
+
+  /* ---- roles ---- */
+  /* The app bar: the site nav and the POS top bar. */
+  --chrome-bg: var(--paper-raised);
+  --chrome-ink: var(--ink);
+  --chrome-rule: var(--accent);
+  --table-head-bg: var(--surface-sunken);
+  --table-head-ink: var(--ink);
+  --control-bg: var(--paper-raised);
+  --control-border: var(--line-strong);
+  --btn-bg: var(--paper-raised);
+  --btn-ink: var(--ink);
+  --btn-border: var(--line-strong);
+  --btn-hover-bg: var(--surface-sunken);
+  --btn-hover-border: var(--ink);
+  /* The one main action of a form or screen (`.btn-primary`, POS Charge). */
+  --btn-primary-bg: var(--accent);
+  --btn-primary-hover: var(--accent-hover);
+  --btn-primary-ink: var(--accent-ink);
+  /* Orange as a ring must clear 3:1 against the page; the brand orange is
+     2.6:1 on paper, so the ring takes the orange used for text. */
+  --focus-ring: var(--accent-text);
+
+  /* Soft backgrounds for messages, mixed from the colours above so a status
+     colour and its tint can't drift apart. Ink on any tint clears 4.5:1;
+     success-coloured text on `--tint-success` does not, and nothing does it. */
+  --tint-success: color-mix(in srgb, var(--success) 14%, var(--paper-raised));
+  --tint-error: color-mix(in srgb, var(--error) 14%, var(--paper-raised));
+  --tint-warning: color-mix(in srgb, var(--warning) 14%, var(--paper-raised));
+  --tint-neutral: color-mix(in srgb, var(--muted) 12%, var(--paper-raised));
+  --tint-highlight: color-mix(in srgb, var(--brand-orange) 20%, var(--paper-raised));
+
+  /* ---- order states (`.state-*` in site.css) ---- */
+  --state-pending-bg: #fff6d8; --state-pending-border: #ac7600; --state-pending-ink: #634800;
+  --state-unconfirmed-bg: #f0f0ff; --state-unconfirmed-border: #7779bb; --state-unconfirmed-ink: #353683;
+  --state-confirming-bg: #e7e8ff; --state-confirming-border: #5556a4; --state-confirming-ink: #353683;
+  --state-partial-bg: #fff0df; --state-partial-border: #c05e00; --state-partial-ink: #8a3900;
+  --state-paid-bg: #e3f4e7; --state-paid-border: #1a7f37; --state-paid-ink: #165f2e;
+  --state-overpaid-bg: #ffe6d9; --state-overpaid-border: #b54016; --state-overpaid-ink: #912e0c;
+  --state-expired-bg: #ece9e3; --state-expired-border: #625b52; --state-expired-ink: #4e4943;
+  --state-double-spend-bg: #ffe6e9; --state-double-spend-border: #b00020; --state-double-spend-ink: #870019;
+  --state-cancelled-bg: #e7e7e7; --state-cancelled-border: #616161; --state-cancelled-ink: #404040;
+
+  /* ---- shape and type (the same in both themes) ----
+     Monero classic, tuned: 1x density, 10% roundedness, 0% elevation. Space
+     and radius are px so control chrome keeps one rhythm whatever the text
+     size; typographic margins stay in em/rem. At 0% elevation the ambient
+     shadow is fully transparent, so flat really is flat. */
+  --space-xs: 4px;
+  --space-sm: 8px;
+  --space-md: 12px;
+  --space-lg: 16px;
+  --space-xl: 24px;
+  --radius-sm: 5px;
+  --radius-md: 9px;
+  --radius-lg: 16px;
+  --shadow-ambient-y: 0px;
+  --shadow-ambient-blur: 0px;
+  --shadow-ambient: rgba(17, 17, 17, 0);
+  --font-ui: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+
+  color-scheme: light dark;
+}
+/* Dark: the OS preference, unless the account chose light. The two dark
+   blocks must stay identical (`views::theme_tests` checks). */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --ink: #d4d4d4;
+    --paper: #1e1e1e;
+    --paper-raised: #2a2a2a;
+    --surface-sunken: #333333;
+    --line: #3d3d3d;
+    --line-strong: #7a7a7a;
+    --muted: #9d9d9d;
+    --accent-hover: #ff7a1f;
+    --accent-text: #ff8a3d;
+    --error: #ff6b6b;
+    --error-ink: #111111;
+    --success: #4cc27a;
+    --warning: #e0a83d;
+    --warning-ink: #111111;
+    --chrome-bg: #181818;
+    --state-pending-bg: #3a3017; --state-pending-border: #c99a2e; --state-pending-ink: #f2d487;
+    --state-unconfirmed-bg: #272842; --state-unconfirmed-border: #8d8fe0; --state-unconfirmed-ink: #c9caff;
+    --state-confirming-bg: #272842; --state-confirming-border: #8d8fe0; --state-confirming-ink: #c9caff;
+    --state-partial-bg: #3d2a17; --state-partial-border: #e08a3a; --state-partial-ink: #ffcf9e;
+    --state-paid-bg: #17331f; --state-paid-border: #4cc27a; --state-paid-ink: #a8e6bd;
+    --state-overpaid-bg: #3d2117; --state-overpaid-border: #e5794e; --state-overpaid-ink: #ffc2a8;
+    --state-expired-bg: #2e2d2b; --state-expired-border: #9a948b; --state-expired-ink: #d6d1c8;
+    --state-double-spend-bg: #3d1a1f; --state-double-spend-border: #ff6b6b; --state-double-spend-ink: #ffb3bc;
+    --state-cancelled-bg: #2e2d2b; --state-cancelled-border: #9a948b; --state-cancelled-ink: #d6d1c8;
+  }
+}
+/* Dark: the account's own choice (`data-theme="dark"` on <html>), which wins
+   over the OS preference. */
+:root[data-theme="dark"] {
+  --ink: #d4d4d4;
+  --paper: #1e1e1e;
+  --paper-raised: #2a2a2a;
+  --surface-sunken: #333333;
+  --line: #3d3d3d;
+  --line-strong: #7a7a7a;
+  --muted: #9d9d9d;
+  --accent-hover: #ff7a1f;
+  --accent-text: #ff8a3d;
+  --error: #ff6b6b;
+  --error-ink: #111111;
+  --success: #4cc27a;
+  --warning: #e0a83d;
+  --warning-ink: #111111;
+  --chrome-bg: #181818;
+  --state-pending-bg: #3a3017; --state-pending-border: #c99a2e; --state-pending-ink: #f2d487;
+  --state-unconfirmed-bg: #272842; --state-unconfirmed-border: #8d8fe0; --state-unconfirmed-ink: #c9caff;
+  --state-confirming-bg: #272842; --state-confirming-border: #8d8fe0; --state-confirming-ink: #c9caff;
+  --state-partial-bg: #3d2a17; --state-partial-border: #e08a3a; --state-partial-ink: #ffcf9e;
+  --state-paid-bg: #17331f; --state-paid-border: #4cc27a; --state-paid-ink: #a8e6bd;
+  --state-overpaid-bg: #3d2117; --state-overpaid-border: #e5794e; --state-overpaid-ink: #ffc2a8;
+  --state-expired-bg: #2e2d2b; --state-expired-border: #9a948b; --state-expired-ink: #d6d1c8;
+  --state-double-spend-bg: #3d1a1f; --state-double-spend-border: #ff6b6b; --state-double-spend-ink: #ffb3bc;
+  --state-cancelled-bg: #2e2d2b; --state-cancelled-border: #9a948b; --state-cancelled-ink: #d6d1c8;
+}

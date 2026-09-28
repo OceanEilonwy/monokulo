@@ -286,7 +286,6 @@ pub fn build_router(state: AppState) -> Router {
     let router = router.route("/static/ssexi.js", axum::routing::get(pay::ssexi_script));
     let router = router.route("/static/fx-glue.js", axum::routing::get(pay::fx_glue_script));
     let router = router.route("/static/logo.svg", axum::routing::get(pay::logo_svg));
-    let router = router.route("/static/logo-inverted.svg", axum::routing::get(pay::logo_inverted_svg));
     let router = router.route("/static/favicon.svg", axum::routing::get(pay::favicon_svg));
     let router = router.route("/static/manrope-500.woff2", axum::routing::get(pay::manrope_500_woff2));
     let router = router.route("/static/manrope-700.woff2", axum::routing::get(pay::manrope_700_woff2));

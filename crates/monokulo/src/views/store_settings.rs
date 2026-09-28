@@ -288,7 +288,7 @@ fn confirmations_section(store: &StoreSettingsData, in_place: bool) -> Markup {
                                 }
                                 td {
                                     @if !store.confirmation_thresholds_at_max {
-                                        button type="submit" { "Add" }
+                                        button type="submit" class="btn-primary" { "Add" }
                                     }
                                 }
                             }
@@ -405,7 +405,7 @@ fn webhooks_section(store: &StoreSettingsData, in_place: bool) -> Markup {
                                 "webhook, alongside the signature headers Monokulo always includes."
                             }
                         }
-                        button type="submit" { "Add webhook" }
+                        button type="submit" class="btn-primary" { "Add webhook" }
                     }
                 }
         }
@@ -590,7 +590,7 @@ fn verified_domains(store: &StoreSettingsData, in_place: bool) -> Markup {
                 input type="text" name="domain" placeholder="shop.example" required autocomplete="off" spellcheck="false";
                 span class="field-help" { "Just the domain, like shop.example. Its subdomains are covered too." }
             }
-            button type="submit" { "Add domain" }
+            button type="submit" class="btn-primary" { "Add domain" }
         }
       }
     }
@@ -718,7 +718,7 @@ mod tests {
         assert!(html.contains(r#"maxlength="3" required form="default-confirmations""#));
         assert!(html.contains(r#"<button type="submit" form="default-confirmations">Save</button>"#));
         assert!(html.contains(r#"<form method="post" action="/dashboard/stores/conn_1/settings/confirmation-thresholds/save""#), "{html}");
-        assert!(html.contains(r#"<button type="submit">Add</button>"#));
+        assert!(html.contains(r#"<button type="submit" class="btn-primary">Add</button>"#));
     }
 
     #[test]
@@ -751,7 +751,7 @@ mod tests {
         assert!(!html.contains("threshold-gap-row"));
         assert!(html.contains(r#"<tr class="new-threshold-row"><td><input type="text" name="new_unit_amount" placeholder="Minimum Amount (XMR)">"#), "got: {html}");
         assert!(html.contains(r##"placeholder="# Confirmations""##), "got: {html}");
-        assert!(html.contains(r#"<button type="submit">Add</button>"#));
+        assert!(html.contains(r#"<button type="submit" class="btn-primary">Add</button>"#));
     }
 
     #[test]
@@ -765,7 +765,7 @@ mod tests {
         assert!(html.contains("Maximum of 5 custom thresholds reached"));
         assert!(html.contains(r#"name="delete_threshold_1""#), "got: {html}");
         assert!(html.contains(r#"<button type="submit">Save</button>"#), "existing thresholds need a Save button, got: {html}");
-        assert!(!html.contains(r#"<button type="submit">Add</button>"#));
+        assert!(!html.contains(r#"<button type="submit" class="btn-primary">Add</button>"#));
     }
 
     #[test]

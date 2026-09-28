@@ -55,6 +55,7 @@ fn test_app_state() -> AppState {
     }]));
     AppState {
         store,
+        read_pool: None,
         key_custody,
         key_custody_backend: "plain".to_string(),
         wallet_handles: Arc::new(RwLock::new(HashMap::new())),
@@ -1278,6 +1279,7 @@ async fn test_app_state_with_real_daemon_and_env(env: live_settings::Env) -> (Ap
     }]));
     let state = AppState {
         store,
+        read_pool: None,
         key_custody,
         key_custody_backend: "plain".to_string(),
         wallet_handles: Arc::new(RwLock::new(HashMap::new())),
@@ -1591,6 +1593,7 @@ async fn ensure_admin_token_seeded_generates_exactly_once_and_the_generated_toke
     .unwrap();
     let state = AppState {
         store,
+        read_pool: None,
         key_custody: std::sync::Arc::new(PlainKeyCustody::default()),
         key_custody_backend: "plain".to_string(),
         wallet_handles: Arc::new(RwLock::new(HashMap::new())),
@@ -2032,6 +2035,7 @@ async fn engine_that_applies_node_settings() -> (Router, crate::engine_settings:
     .unwrap();
     let state = AppState {
         store,
+        read_pool: None,
         key_custody: Arc::new(PlainKeyCustody::default()),
         key_custody_backend: "plain".to_string(),
         wallet_handles: Arc::new(RwLock::new(HashMap::new())),

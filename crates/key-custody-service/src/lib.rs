@@ -537,6 +537,8 @@ pub type SealResponse = Result<SealedMaterialWire, KeyCustodyErrorWire>;
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UnsealAndRegisterRequest {
     pub sealed: SealedMaterialWire,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub registration_id: Option<String>,
 }
 pub type UnsealAndRegisterResponse = Result<WalletHandleWire, KeyCustodyErrorWire>;
 
@@ -909,7 +911,7 @@ mod tests {
     #[test]
     fn unseal_and_register_request_and_response_round_trip() {
         let sealed_bytes = vec![5u8; 64];
-        let request = UnsealAndRegisterRequest { sealed: SealedMaterialWire::from(sealed_bytes.as_slice()) };
+        let request = UnsealAndRegisterRequest { sealed: SealedMaterialWire::from(sealed_bytes.as_slice()), registration_id: None };
         let json = serde_json::to_string(&request).unwrap();
         let decoded: UnsealAndRegisterRequest = serde_json::from_str(&json).unwrap();
         assert_eq!(decoded.sealed.to_bytes().unwrap(), sealed_bytes);

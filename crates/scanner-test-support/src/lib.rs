@@ -667,6 +667,7 @@ impl TestEngineConfig {
                 .expect("test engine settings load from an empty store");
         let app_state = AppState {
             store: store.clone(),
+            read_pool: None,
             key_custody: key_custody.clone(),
             key_custody_backend: key_custody_backend.to_string(),
             wallet_handles: wallet_handles.clone(),

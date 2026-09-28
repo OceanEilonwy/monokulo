@@ -7,8 +7,8 @@
 //! that owned the page shell. [`layout`] and [`nav`] below are that place
 //! now: every page in this module builds its own body content and hands it
 //! to [`layout`], which owns `<!doctype html>` through `</html>`, the shared
-//! `<head>` (`head.html`, unchanged from the old `_styles.html.hbs` partial,
-//! just renamed since it's no longer a handlebars template), and the nav bar
+//! `<head>` (the colours in `theme.css`, the components in `site.css`), and
+//! the nav bar
 //! (including the theme-toggle form) - so a per-user `data-theme` attribute,
 //! or anything else every page needs, is a one-place change from here on.
 //!
@@ -35,11 +35,11 @@ pub mod status;
 pub mod store_detail;
 pub mod store_settings;
 
-/// The shared `<head>` content (fonts, the full color/spacing/radius token
-/// system, every component's CSS) - see that file's own header comment.
-/// Unchanged by this migration: it carried no handlebars syntax at all
-/// (confirmed - zero `{{` in it), so there was nothing to convert.
-const HEAD_PARTIAL: &str = include_str!("head.html");
+/// Every colour, and the spacing, radius and type tokens: the only place a
+/// colour is defined (`theme_tests`).
+pub(crate) const THEME_CSS: &str = include_str!("theme.css");
+/// The fonts and every shared component, painted with `THEME_CSS`'s roles.
+pub(crate) const SITE_CSS: &str = include_str!("site.css");
 
 /// Shared back links for store pages and pages nested under Orders.
 pub fn store_breadcrumb(connection_id: &str, display_name: &str, include_orders: bool) -> Markup {
@@ -176,7 +176,8 @@ fn page_shell(chrome: &PageChrome, title: &str, viewport: &str, extra_head: Opti
                 meta charset="utf-8";
                 meta name="viewport" content=(viewport);
                 title { (title) }
-                (PreEscaped(HEAD_PARTIAL))
+                link rel="icon" type="image/svg+xml" href="/static/favicon.svg";
+                style { (PreEscaped(THEME_CSS)) (PreEscaped(SITE_CSS)) }
                 // The trace of the request that rendered this page, so
                 // browser reports join it (structured_logging.md 2.5).
                 @if let Some(traceparent) = telemetry::trace::current_traceparent() {
@@ -215,6 +216,48 @@ fn page_shell(chrome: &PageChrome, title: &str, viewport: &str, extra_head: Opti
             }
         }
     }
+}
+
+/// The Monokulo mark, inline: a looking glass doubling as a monocle, watching
+/// an eye with a Monero-orange pupil. Its lines are `currentColor`, so it
+/// takes the text colour of whatever it sits on in either theme; the pupil
+/// is `--brand-orange` (`.logo-pupil` in site.css). `static/logo.svg` is
+/// the same drawing for other sites to link to.
+pub fn logo_mark(size: u32, class: &str) -> Markup {
+    html! {
+        svg class=(format!("logo-mark {class}")) viewBox="0 0 64 64" width=(size) height=(size) aria-hidden="true" focusable="false" {
+            line x1="19.7" y1="16.3" x2="15.5" y2="12.5" stroke="currentColor" stroke-width="2.25" {}
+            circle cx="13.5" cy="10.5" r="2.25" fill="none" stroke="currentColor" stroke-width="2.25" {}
+            line x1="39.3" y1="39.3" x2="56" y2="56" stroke="currentColor" stroke-width="6" stroke-linecap="round" {}
+            circle cx="28" cy="28" r="16" fill="none" stroke="currentColor" stroke-width="5" {}
+            path d="M19,28 Q28,20.5 37,28 Q28,35.5 19,28 Z" fill="none" stroke="currentColor" stroke-width="1.75" {}
+            circle class="logo-pupil" cx="28" cy="28" r="5" stroke="currentColor" stroke-width="1" {}
+            rect x="26.1" y="26.1" width="3.8" height="3.8" fill="currentColor" transform="rotate(45 28 28)" {}
+        }
+    }
+}
+
+/// An order status's words and its `.state-*` colour class, and whether the
+/// order can still change. The checkout, the POS and the dashboard show a
+/// status with the same words and colours.
+pub fn order_state(status: &str) -> (&'static str, &'static str, bool) {
+    match status {
+        "pending" => ("Waiting for payment", "state-pending", false),
+        "unconfirmed" => ("Payment seen, unconfirmed", "state-unconfirmed", false),
+        "confirming" => ("Confirming", "state-confirming", false),
+        "partial" => ("Partial payment received", "state-partial", false),
+        "paid" => ("Paid", "state-paid", true),
+        "overpaid" => ("Overpaid", "state-overpaid", true),
+        "expired" => ("Expired", "state-expired", true),
+        "cancelled" => ("Cancelled", "state-cancelled", true),
+        _ => ("Unknown", "state-unknown", true),
+    }
+}
+
+/// An order's status as a badge ([`order_state`]).
+pub fn state_badge(status: &str) -> Markup {
+    let (label, class, _) = order_state(status);
+    html! { span class=(format!("tag {class}")) { (label) } }
 }
 
 /// A link to the Logs page searching for `field = value` over everything
@@ -293,7 +336,7 @@ fn nav(chrome: &PageChrome) -> Markup {
         nav class="site-nav" {
             div class="wrap site-nav-row" {
                 a href="/" class="site-nav-brand" {
-                    img src="/static/logo-inverted.svg" alt="" width="24" height="24" class="site-nav-logo";
+                    (logo_mark(24, "site-nav-logo"))
                     "Monokulo"
                 }
                 input type="checkbox" id="nav-toggle" class="nav-toggle-checkbox";
@@ -368,6 +411,9 @@ pub fn theme_toggle(chrome: &PageChrome) -> Markup {
 }
 
 #[cfg(test)]
+mod theme_tests;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 
@@ -438,7 +484,7 @@ mod tests {
 
     #[test]
     fn theme_hover_moves_the_thumb_and_recolors_only_the_hovered_icon() {
-        let css = include_str!("head.html");
+        let css = include_str!("site.css");
         for option in ["light", "system", "dark"] {
             assert!(css.contains(&format!(".theme-toggle-option-{option}:is(:hover, :focus-visible) ~ .theme-toggle-thumb")));
         }

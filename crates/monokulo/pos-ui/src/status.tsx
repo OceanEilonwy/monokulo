@@ -40,7 +40,7 @@ export function StatusSymbols() {
         <path d="M4 12.5v6c0 5 5.4 9 12 9s12-4 12-9v-6" fill="currentColor" fill-opacity=".24" stroke="currentColor" stroke-width="1.6" stroke-linejoin="round"/>
         <path d="M8 22.5v3M16 24.5v3M24 22.5v3" fill="none" stroke="currentColor" stroke-opacity=".55" stroke-width="1"/>
         <ellipse cx="16" cy="12.5" rx="12" ry="9" fill="var(--pos-coin-face)" stroke="currentColor" stroke-width="1.6"/>
-        <path d="M9.5 15.7V9.4l6.5 5 6.5-5v6.3" fill="none" stroke="#ff6600" stroke-width="2.5" stroke-linecap="square"/>
+        <path d="M9.5 15.7V9.4l6.5 5 6.5-5v6.3" fill="none" class="pos-coin-mark" stroke-width="2.5" stroke-linecap="square"/>
         <path d="M9.5 15.7v1.2h13v-1.2" fill="none" stroke="currentColor" stroke-width="1"/>
       </symbol>
       <symbol id="pos-coin-partial" viewBox="0 0 32 32">

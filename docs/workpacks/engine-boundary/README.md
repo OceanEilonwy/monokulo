@@ -49,7 +49,7 @@ Your work will be reviewed independently, step by step, against this document. C
 - **Code style:**
   - Match the surrounding code's naming, idiom and comment density.
   - This codebase uses long, explanatory doc comments explaining *why*. Write new ones in that spirit, but plainly and without filler.
-  - Views are `maud` in `crates/monokulo/src/views/*.rs`. Shared CSS is in `crates/monokulo/src/views/head.html`.
+  - Views are `maud` in `crates/monokulo/src/views/*.rs`. Colours are in `crates/monokulo/src/views/theme.css` (the only place allowed), shared components in `views/site.css`.
 - **Hard project rules (from the owner; violating these is a failed review):**
   1. **Progressive enhancement.** Customer-facing pages (checkout, share, and the new challenge interstitial) must work with JavaScript disabled. JavaScript only enhances. All formatting and rendering happens in Rust (server-side); never send raw timestamps or data for JS to format. Do not add frontend frameworks or libraries (htmx was explicitly rejected).
   2. **The checkout embed and whatever embeds it know nothing about each other.**

@@ -123,17 +123,16 @@ const SERVICES: &[(&str, &str)] = &[("", "Monokulo and the engine"), ("monokulo"
 
 const PAGE_STYLE: &str = r#"
 .wrap.wrap-wide { max-width: 1200px; }
-.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
 .logs-search { display: grid; gap: .5em; margin-bottom: 1em; }
 .logs-search .q-row { display: flex; gap: .5em; }
-.logs-search .q-row input { flex: 1; min-width: 0; font-family: var(--mono, monospace); }
+.logs-search .q-row input { flex: 1; min-width: 0; font-family: var(--font-mono); }
 .logs-search .quick { display: flex; flex-wrap: wrap; gap: .5em; align-items: center; }
 .logs-search .quick label { display: inline-flex; gap: .3em; align-items: center; }
-.query-error mark { background: var(--error-bg, #fdd); color: inherit; border-bottom: 2px solid currentColor; }
+.query-error mark { background: var(--tint-error); color: inherit; border-bottom: 2px solid currentColor; }
 .log-histogram { display: flex; align-items: flex-end; gap: 1px; height: 3.5em; margin: .5em 0 .2em; }
 .log-histogram a { flex: 1; background: var(--accent); min-height: 1px; opacity: .8; }
 .log-histogram a:hover, .log-histogram a:focus { opacity: 1; }
-.log-histogram-axis { display: flex; justify-content: space-between; font-size: .8em; color: var(--muted, #666); }
+.log-histogram-axis { display: flex; justify-content: space-between; font-size: .8em; color: var(--muted); }
 .log-rows { border-top: 1px solid var(--line); }
 .log-row { border-bottom: 1px solid var(--line); }
 .log-row > summary { display: grid; grid-template-columns: 13em 4.5em 6em 1fr; gap: .5em; padding: .25em .3em; cursor: pointer; list-style: none; font-size: .9em; }
@@ -144,9 +143,9 @@ const PAGE_STYLE: &str = r#"
 .log-row .props td { overflow-wrap: anywhere; }
 .log-row .props .act a { margin-right: .5em; }
 .lvl { font-weight: 700; }
-.lvl-error { color: var(--error, #b00020); }
-.lvl-warn { color: var(--warn, #9a6700); }
-.lvl-debug, .lvl-trace { color: var(--muted, #666); }
+.lvl-error { color: var(--error); }
+.lvl-warn { color: var(--warning); }
+.lvl-debug, .lvl-trace { color: var(--muted); }
 .log-paging { display: flex; gap: .5em; margin: .8em 0; flex-wrap: wrap; align-items: center; }
 .log-live[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
 html:not(.js) .js-only { display: none; }
@@ -154,7 +153,7 @@ html:not(.js) .js-only { display: none; }
 .trace-span { display: grid; grid-template-columns: minmax(12em, 30%) 1fr 6em; gap: .5em; align-items: center; padding: .15em 0; border-bottom: 1px solid var(--line); }
 .trace-span .bar-track { position: relative; height: .9em; }
 .trace-span .bar { position: absolute; top: 0; bottom: 0; background: var(--accent); min-width: 2px; }
-.trace-span.status-error .bar { background: var(--error, #b00020); }
+.trace-span.status-error .bar { background: var(--error); }
 .trace-span .name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 @media (max-width: 40em) {
   .log-row > summary { grid-template-columns: 1fr auto; }
@@ -419,7 +418,7 @@ pub fn saved_searches(saved: &[SavedLogSearch], query_string: &str, error: Optio
 fn select(name: &str, label: &str, options: &[(&str, &str)], current: &str) -> Markup {
     html! {
         label {
-            span class="visually-hidden" { (label) }
+            span class="sr-only" { (label) }
             select name=(name) aria-label=(label) {
                 @for (value, text) in options {
                     option value=(value) selected[*value == current] { (text) }
@@ -462,10 +461,10 @@ pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
             form id="log-search" class="logs-search" method="get" action="/dashboard/admin/logs"
                 fx-action="/dashboard/admin/logs" fx-target="#log-results" fx-swap="outerHTML" fx-push-url fx-replace fx-submit-on-change {
                 div class="q-row" {
-                    label for="log-q" class="visually-hidden" { "Search" }
+                    label for="log-q" class="sr-only" { "Search" }
                     input type="search" id="log-q" name="q" value=(vm.form.q) autocomplete="off" spellcheck="false"
                         placeholder="level >= warn and order.id = 'o_1'";
-                    button type="submit" { "Search" }
+                    button type="submit" class="btn-primary" { "Search" }
                 }
                 div class="quick" {
                     (select("level", "Level", LEVELS, &vm.form.level))
@@ -588,16 +587,16 @@ pub fn pos_timeline_page(chrome: &PageChrome, vm: &PosTimelineViewModel) -> Mark
 const TIMELINE_STYLE: &str = r#"
 .timeline-summary { display: flex; flex-wrap: wrap; gap: .5em 1.5em; margin: .5em 0 1em; }
 .timeline-summary div { display: flex; flex-direction: column; }
-.timeline-summary dt { font-size: .8em; color: var(--muted, #666); }
+.timeline-summary dt { font-size: .8em; color: var(--muted); }
 .timeline-summary dd { margin: 0; font-weight: 700; }
 .pos-timeline { list-style: none; padding: 0; margin: 0; border-top: 1px solid var(--line); font-size: .9em; }
 .timeline-event { display: grid; grid-template-columns: 6.5em 5em 11em 1fr; gap: .5em; padding: .3em .3em; border-bottom: 1px solid var(--line); align-items: baseline; }
-.timeline-event .kind { font-family: var(--mono, monospace); }
-.timeline-event.is-warn .kind { font-weight: 700; color: var(--warn, #9a6700); }
-.timeline-event.is-error .kind { font-weight: 700; color: var(--error, #b00020); }
+.timeline-event .kind { font-family: var(--font-mono); }
+.timeline-event.is-warn .kind { font-weight: 700; color: var(--warning); }
+.timeline-event.is-error .kind { font-weight: 700; color: var(--error); }
 .timeline-event .about { overflow-wrap: anywhere; }
-.timeline-event .period { color: var(--warn, #9a6700); }
-.timeline-gap { padding: .4em .3em; border-bottom: 1px dashed var(--line); color: var(--muted, #666); font-style: italic; text-align: center; }
+.timeline-event .period { color: var(--warning); }
+.timeline-gap { padding: .4em .3em; border-bottom: 1px dashed var(--line); color: var(--muted); font-style: italic; text-align: center; }
 @media (max-width: 40em) {
   .timeline-event { grid-template-columns: 1fr auto; }
   .timeline-event .kind, .timeline-event .about { grid-column: 1 / -1; }

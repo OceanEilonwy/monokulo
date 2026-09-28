@@ -1,5 +1,6 @@
-<link rel="icon" type="image/svg+xml" href="/static/favicon.svg">
-<style>
+/* Every component on monokulo's server-rendered pages, and the parts the
+   POS and the checkout share with them (buttons, badges, the app bar). It
+   names roles from `theme.css`, never a colour: retheme there. */
 /* Manrope, self-hosted (`http::pay::manrope_*_woff2`) - not a Google Fonts
    `<link>`, deliberately: that CDN sees every visitor's IP on every page
    load, checkout included, which is the wrong tradeoff for a privacy-
@@ -28,155 +29,6 @@
   src: url("/static/manrope-800.woff2") format("woff2");
 }
 
-/* Shared look for every monokulo page (registered as the "styles"
-   partial - see templates.rs). Monero-rooted but no longer brutalist:
-   black & orange identity, Manrope, light and accessible, corners and
-   spacing nudged toward welcoming without losing the compact/utilitarian
-   feel. Tokens (color, spacing, radius, shadow, type) are the single
-   source of truth - every rule below reaches for one of these custom
-   properties rather than a literal value, so the whole site retunes from
-   here. Values were produced and contrast-audited (WCAG AA: 4.5:1 text,
-   3:1 UI) in the interactive design-language tool, not picked by eye -
-   see that artifact for the light/dark audit this palette passed.
-   No third-party request of any kind, font included - see the
-   `@font-face` block above's own doc comment for why that isn't the usual
-   "no external dependency" default this note used to say a Google Fonts
-   `<link>` was, but an intentional self-hosting call. */
-:root {
-  --ink: #111111;
-  --paper: #f4f1ea;
-  --paper-raised: #ffffff;
-  --line: #111111;
-  --accent: #ff6600;
-  --accent-ink: #111111;
-  --brand-orange: #ff6600;
-  /* `--chrome-bg`/`--chrome-ink`: the nav bar, table headers and primary
-     buttons deliberately invert (dark bar, light text) as this site's
-     black & orange identity - previously that inversion literally
-     reused `--ink`/`--paper`, which is correct in light mode (`--ink` is
-     black) but backfires in dark mode, where `--ink` flips to a near-white
-     text color: the "black" nav bar/table header/button silently became a
-     solid near-white one - the exact "blinding chunk of white in a dark
-     theme" bug this pair exists to fix. `--chrome-bg`/`--chrome-ink` are
-     fixed (not redefined in the dark-mode blocks below) precisely so this
-     chrome stays a dark bar with light text in both themes. */
-  --chrome-bg: #111111;
-  --chrome-ink: #f4f1ea;
-  --error: #b00020;
-  /* `--error-ink`/`--warning-ink`: unlike `--accent-ink` (always #111111 -
-     `--accent` stays the same bright orange in both modes), `--error` and
-     `--warning` FLIP lightness between modes (dark red/olive in light
-     mode, light red/amber in dark mode) - so whatever reads as legible
-     text on top of a solid error/warning surface (e.g. a pressed key)
-     must flip with them, not stay fixed white. */
-  --error-ink: #ffffff;
-  --success: #1a7f37;
-  --warning: #7d5e00;
-  --warning-ink: #ffffff;
-  --muted: #5a564c;
-  --pos-frame: #e3ddcd;
-  /* A fixed, mode-independent shadow tint (not `--ink`, which flips to
-     near-white in dark mode - a shadow must stay dark regardless of the
-     surface it's cast on). `r, g, b` (no `rgb()` wrapper) so callers can
-     compose it with their own alpha: `rgba(var(--shadow-rgb), 0.28)`. */
-  --shadow-rgb: 17, 17, 17;
-
-  /* Semantic tints - derived from the tokens above via `color-mix`, never
-     a separate hardcoded hex, so a status color and its soft background
-     can never drift out of sync, and both retune automatically if the
-     base token ever changes. Percentages were chosen so ink-on-tint always
-     clears 4.5:1 (used for plain tag/status backgrounds) and so a colored
-     label directly on its own error/warning tint also clears 4.5:1 (used
-     by `.expiry-pill`) - `--tint-success` is NOT contrast-safe for
-     success-colored text on top of it (mixing success into white doesn't
-     move far enough for that specific pairing) and nothing here does that;
-     if a future component wants success-colored text, put it on
-     `--paper-raised` instead, not `--tint-success`. */
-  --tint-success: color-mix(in srgb, var(--success) 14%, var(--paper-raised));
-  --tint-error: color-mix(in srgb, var(--error) 14%, var(--paper-raised));
-  --tint-warning: color-mix(in srgb, var(--warning) 14%, var(--paper-raised));
-  --tint-neutral: color-mix(in srgb, var(--muted) 12%, var(--paper-raised));
-  --tint-highlight: color-mix(in srgb, var(--brand-orange) 20%, var(--paper-raised));
-
-  /* Shape scale - Monero classic, tuned: Manrope, 1x density, 10%
-     roundedness, 0% elevation. `--space-*` and `--radius-*` are absolute
-     px (not em) so component chrome (buttons, boxes, controls) keeps one
-     consistent rhythm regardless of the text size inside it; typographic
-     margins (heading spacing, paragraph rhythm) stay in em/rem on purpose
-     - those scale with their own font-size, which is correct there and
-     wouldn't be if forced onto this scale. At 0% elevation every shadow
-     below resolves to a fully transparent, zero-offset shadow (no floor),
-     so "flat" really means flat rather than a faint shadow nobody asked
-     for - see the design tool's own audit notes for why that matters. */
-  --space-xs: 4px;
-  --space-sm: 8px;
-  --space-md: 12px;
-  --space-lg: 16px;
-  --space-xl: 24px;
-  --radius-sm: 5px;
-  --radius-md: 9px;
-  --radius-lg: 16px;
-  --shadow-ambient-y: 0px;
-  --shadow-ambient-blur: 0px;
-  --shadow-ambient: rgba(17, 17, 17, 0);
-
-  --font-ui: "Manrope", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
-
-  color-scheme: light dark;
-}
-/* Dark - OS preference, unless the page's own toggle already said light.
-   Every dark value here is its own contrast-audited pick, not an inverted
-   formula (the light `--error`, for one, is only 2.2:1 on the dark
-   surface - failing outright - so nothing here is derived from its light
-   counterpart). Shape/type tokens are unchanged - only color differs
-   between modes.
-   Deliberately NOT near-black/near-white (an earlier pass used `--paper:
-   #1b1815`/`--ink: #f1ece2`, close enough to true black/white that at
-   night it read as harsh, and - combined with the `--chrome-bg`/`--ink`
-   mixup fixed above - produced solid glare-white chunks): retuned to a
-   softer, neutral VS Code "Dark+"-like scale (editor/panel grays, a
-   muted mid-gray foreground instead of near-white) so both the base
-   surface and body text sit closer to the middle of the brightness range
-   a screen shown at night should stay in. */
-@media (prefers-color-scheme: dark) {
-  :root:not([data-theme="light"]) {
-    --ink: #d4d4d4;
-    --paper: #1e1e1e;
-    --paper-raised: #2a2a2a;
-    --line: #454545;
-    --accent: #ff6600;
-    --accent-ink: #111111;
-    --brand-orange: #ff6600;
-    --error: #ff6b6b;
-    --error-ink: #111111;
-    --success: #4cc27a;
-    --warning: #e0a83d;
-    --warning-ink: #111111;
-    --muted: #9d9d9d;
-    --pos-frame: #262626;
-  }
-}
-/* Dark - the page's own toggle (`data-theme="dark"` on `<html>`), wins
-   over OS preference either way. No such toggle exists yet - this is
-   here so adding one later is a one-line change, not a new stylesheet. */
-:root[data-theme="dark"] {
-  --ink: #d4d4d4;
-  --paper: #1e1e1e;
-  --paper-raised: #2a2a2a;
-  --line: #454545;
-  --accent: #ff6600;
-  --accent-ink: #111111;
-  --brand-orange: #ff6600;
-  --error: #ff6b6b;
-  --error-ink: #111111;
-  --success: #4cc27a;
-  --warning: #e0a83d;
-  --warning-ink: #111111;
-  --muted: #9d9d9d;
-  --pos-frame: #262626;
-}
-
 * { box-sizing: border-box; }
 /* Minimal reset for form controls - browsers (and this file's own later,
    more specific `button, .btn` rule) give buttons/inputs/etc. their own
@@ -200,9 +52,9 @@ html, body {
 }
 body { padding-bottom: 4rem; }
 a { color: var(--ink); text-decoration: underline; text-decoration-thickness: 1px; }
-a:hover { color: var(--accent); }
+a:hover { color: var(--accent-text); }
 h1, h2, h3 { font-weight: 700; letter-spacing: -0.01em; margin: 1.4em 0 0.6em; }
-h1 { font-size: 1.6rem; border-bottom: 3px solid var(--line); padding-bottom: 0.3em; margin: var(--space-lg) 0 var(--space-sm); }
+h1 { font-size: 1.6rem; border-bottom: 2px solid var(--line); padding-bottom: 0.3em; margin: var(--space-lg) 0 var(--space-sm); }
 .context-nav + h1 { margin-top: var(--space-xs); }
 h2 { font-size: 1.15rem; border-bottom: 1px solid var(--line); padding-bottom: 0.2em; }
 p { margin: 0.6em 0; }
@@ -290,7 +142,7 @@ pre { padding: var(--space-md); overflow-x: auto; white-space: pre-wrap; word-br
   .hero { flex-direction: column; align-items: flex-start; gap: 0.6rem; }
 }
 .box {
-  border: 2px solid var(--line);
+  border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--paper-raised);
   padding: var(--space-xl);
@@ -303,7 +155,7 @@ th, td { border: 1px solid var(--line); padding: var(--space-xs) var(--space-sm)
 /* A code/pre value inside a table cell (an address, a txid) shouldn't carry
    its own box on top of the cell's own border - the cell border is enough. */
 td code, td pre, th code, th pre { background: none; border: none; padding: 0; }
-th { background: var(--chrome-bg); color: var(--chrome-ink); font-weight: 700; }
+th { background: var(--table-head-bg); color: var(--table-head-ink); font-weight: 700; }
 /* `color-mix` with `transparent`, not a flat `rgba(0,0,0,...)`: a literal
    black tint darkens a light surface but is imperceptible on a dark one.
    Mixing a sliver of `--ink` itself means the stripe darkens in light mode
@@ -367,14 +219,16 @@ input[type=text], input[type=email], input[type=password], input[type=url], sele
   width: 100%;
   font-family: inherit;
   font-size: 1em;
-  padding: var(--space-sm) var(--space-md);
-  border: 2px solid var(--line);
+  /* One pixel more padding than the 1px border needs keeps the old 2px
+     border's outer size. */
+  padding: calc(var(--space-sm) + 1px) calc(var(--space-md) + 1px);
+  border: 1px solid var(--control-border);
   border-radius: var(--radius-sm);
-  background: var(--paper-raised);
+  background: var(--control-bg);
   color: var(--ink);
 }
 textarea { resize: vertical; }
-input:focus, select:focus, textarea:focus { outline: 3px solid var(--accent); outline-offset: 0; }
+input:focus, select:focus, textarea:focus { outline: 2px solid var(--focus-ring); outline-offset: 1px; border-color: var(--focus-ring); }
 /* `margin-right`: two `.btn`/`button` elements written as separate Maud
    markup expressions (e.g. the landing page's "Sign up" + "Log in") render
    with no whitespace text node between them - unlike a hand-written .hbs
@@ -386,19 +240,25 @@ button, .btn {
   font-family: inherit;
   font-size: 1em;
   font-weight: 700;
-  background: var(--chrome-bg);
-  color: var(--chrome-ink);
-  border: 2px solid var(--line);
+  background: var(--btn-bg);
+  color: var(--btn-ink);
+  border: 1px solid var(--btn-border);
   border-radius: var(--radius-sm);
-  padding: var(--space-sm) var(--space-lg);
+  padding: calc(var(--space-sm) + 1px) calc(var(--space-lg) + 1px);
   cursor: pointer;
   text-decoration: none;
   margin-top: 0.9em;
   margin-right: var(--space-md);
 }
-button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
-.btn-secondary { background: var(--paper-raised); color: var(--ink); }
-.btn-secondary:hover { background: var(--accent); color: var(--accent-ink); }
+button:hover, .btn:hover { background: var(--btn-hover-bg); color: var(--btn-ink); border-color: var(--btn-hover-border); }
+button:focus-visible, .btn:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 2px; }
+/* Neutral is the default: a settings page has a dozen Save buttons, and
+   orange on all of them would mark none. `.btn-primary` is the one main
+   action of a form or page (Add, Log in, Search), the same orange as the
+   POS's Charge. `.btn-secondary` is kept as a name for the default. */
+.btn-primary, .btn-primary:hover { color: var(--btn-primary-ink); }
+.btn-primary { background: var(--btn-primary-bg); border-color: var(--btn-primary-bg); }
+.btn-primary:hover { background: var(--btn-primary-hover); border-color: var(--btn-primary-hover); }
 /* Store-detail "widget" launchers (POS terminal, create-order) - a row of
    tappable tiles above the Recent orders table, each opening its own
    full-screen tool page rather than an inline form on this page. */
@@ -418,7 +278,7 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .widget-link-text { display: flex; flex-direction: column; gap: 0.2em; }
 .widget-link-title { font-weight: 700; }
 .widget-link-hint { font-weight: 400; font-size: 0.82em; opacity: 0.85; }
-.pos-launch-disabled, .pos-launch-disabled:hover { opacity: 0.45; cursor: not-allowed; background: var(--chrome-bg); color: var(--chrome-ink); }
+.pos-launch-disabled, .pos-launch-disabled:hover { opacity: 0.45; cursor: not-allowed; background: var(--btn-bg); color: var(--btn-ink); border-color: var(--btn-border); }
 /* Confirmation-thresholds table, Default row: the 0-conf checkbox sits on
    its own line below the confirmations count, rather than the whole
    "Zero-confirmation payments" section this used to be. */
@@ -438,7 +298,7 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .thresholds-table .new-threshold-row button { margin: 0; }
 .tag {
   display: inline-block;
-  border: 1px solid var(--line);
+  border: 1px solid var(--line-strong);
   border-radius: var(--radius-sm);
   padding: 0.05em 0.5em;
   font-size: 0.8em;
@@ -451,6 +311,19 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .tag-unknown { background: var(--tint-neutral); }
 .tag-syncing { background: var(--accent); color: var(--accent-ink); }
 .tag-stalled { background: var(--tint-warning); }
+/* An order's status, the same everywhere it's shown: the checkout, the POS
+   and the dashboard (`views::state_badge`). Each `.state-*` names its colour
+   set; `.tag` and the POS's own badges and cards paint with it. */
+.tag[class*="state-"] { background: var(--state-bg); color: var(--state-ink); border-color: var(--state-border); }
+.state-pending { --state-bg: var(--state-pending-bg); --state-border: var(--state-pending-border); --state-ink: var(--state-pending-ink); }
+.state-unconfirmed { --state-bg: var(--state-unconfirmed-bg); --state-border: var(--state-unconfirmed-border); --state-ink: var(--state-unconfirmed-ink); }
+.state-confirming { --state-bg: var(--state-confirming-bg); --state-border: var(--state-confirming-border); --state-ink: var(--state-confirming-ink); }
+.state-partial { --state-bg: var(--state-partial-bg); --state-border: var(--state-partial-border); --state-ink: var(--state-partial-ink); }
+.state-paid { --state-bg: var(--state-paid-bg); --state-border: var(--state-paid-border); --state-ink: var(--state-paid-ink); }
+.state-overpaid { --state-bg: var(--state-overpaid-bg); --state-border: var(--state-overpaid-border); --state-ink: var(--state-overpaid-ink); }
+.state-expired, .state-offline, .state-unknown { --state-bg: var(--state-expired-bg); --state-border: var(--state-expired-border); --state-ink: var(--state-expired-ink); }
+.state-double-spend { --state-bg: var(--state-double-spend-bg); --state-border: var(--state-double-spend-border); --state-ink: var(--state-double-spend-ink); }
+.state-cancelled { --state-bg: var(--state-cancelled-bg); --state-border: var(--state-cancelled-border); --state-ink: var(--state-cancelled-ink); }
 .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; }
 @media (max-width: 640px) { .grid-2 { grid-template-columns: 1fr; } }
 .muted { color: var(--muted); }
@@ -458,7 +331,7 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .pick-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1.2rem; margin: 1.2rem 0; }
 @media (max-width: 640px) { .pick-grid { grid-template-columns: 1fr; } }
 .pick-card {
-  border: 2px solid var(--line);
+  border: 1px solid var(--line);
   border-radius: var(--radius-md);
   background: var(--paper-raised);
   padding: var(--space-xl);
@@ -495,7 +368,7 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
    toggle - no JS involved in showing/hiding the menu itself) has real
    selectors to work with. Above the breakpoint this all just renders as a
    normal flex row; the checkbox/label stay hidden and irrelevant. */
-.site-nav { background: var(--chrome-bg); color: var(--chrome-ink); border-bottom: 3px solid var(--accent); }
+.site-nav { background: var(--chrome-bg); color: var(--chrome-ink); border-bottom: 3px solid var(--chrome-rule); }
 .site-nav-row {
   display: flex;
   align-items: center;
@@ -506,7 +379,11 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
   position: relative;
 }
 .site-nav-brand { color: var(--chrome-ink); text-decoration: none; font-weight: 700; letter-spacing: -0.02em; display: inline-flex; align-items: center; gap: 0.45em; }
+/* The logo mark (`views::logo_mark`): drawn in `currentColor`, so the
+   one inline SVG suits either theme's bar, with a Monero-orange pupil. */
 .site-nav-logo { display: block; }
+.logo-mark { flex: none; }
+.logo-mark .logo-pupil { fill: var(--brand-orange); }
 .site-nav-links { display: flex; align-items: center; flex-wrap: wrap; }
 .site-nav-links a, .site-nav-links .nav-link-button {
   color: var(--chrome-ink);
@@ -516,9 +393,10 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
   font: inherit;
   cursor: pointer;
   padding: 0;
-  text-decoration: underline;
-  text-decoration-thickness: 1px;
+  font-weight: 600;
+  text-decoration: none;
 }
+.site-nav-links a:hover, .site-nav-links .nav-link-button:hover { color: var(--accent-text); background: none; text-decoration: underline; text-decoration-thickness: 1px; }
 .site-nav-links .nav-logout-form, .site-nav-links .nav-theme-form { margin: 0; display: inline; }
 .nav-status-link { display: inline-flex; align-items: center; align-self: center; text-decoration: none !important; }
 /* The Orders page's search: field and button on one line. */
@@ -528,8 +406,8 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
 .orders-search a { align-self: center; }
 .orders-table td:nth-child(2) { max-width: 14em; overflow-wrap: anywhere; }
 .orders-pages { display: flex; gap: 0.5em; }
-/* Visually hidden but still readable by assistive tech - used by the theme
-   toggle below, whose visible content is icons/a thumb, not text. */
+/* Visually hidden but still readable by assistive tech: the theme toggle's
+   labels, the checkout's heading, the Logs page's search label. */
 .sr-only {
   position: absolute;
   width: 1px;
@@ -545,7 +423,7 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
    rules preview the indicator position without JavaScript. */
 .theme-toggle {
   margin: 0 0 0 1.2em;
-  border: 2px solid var(--line);
+  border: 1px solid var(--line-strong);
   border-radius: 999px;
   background: var(--paper-raised);
 }
@@ -576,7 +454,7 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
   color: var(--muted);
 }
 .theme-toggle-option svg { width: 1em; height: 1em; display: block; }
-.theme-toggle-option:focus-visible { outline: 2px solid var(--ink); outline-offset: 3px; border-radius: 999px; }
+.theme-toggle-option:focus-visible { outline: 2px solid var(--focus-ring); outline-offset: 3px; border-radius: 999px; }
 .theme-toggle-system .theme-toggle-option-system,
 .theme-toggle-light .theme-toggle-option-light,
 .theme-toggle-dark .theme-toggle-option-dark,
@@ -656,4 +534,3 @@ button:hover, .btn:hover { background: var(--accent); color: var(--accent-ink); 
   0%, 100% { opacity: 1; }
   50% { opacity: 0.45; }
 }
-</style>

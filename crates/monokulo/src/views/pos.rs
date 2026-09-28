@@ -4,7 +4,7 @@
 
 use maud::{html, Markup};
 
-use super::{layout_bare_with_head, status_indicator, theme_toggle, PageChrome};
+use super::{layout_bare_with_head, logo_mark, status_indicator, theme_toggle, PageChrome};
 
 pub struct PosViewModel {
     pub connection_id: String,
@@ -28,9 +28,15 @@ pub fn page(chrome: &PageChrome, data: &PosViewModel) -> Markup {
             data-currency=(data.base_currency)
             data-decimals=(data.base_currency_decimals)
             data-client-logging=(data.client_logging) {}
-        // The site's own status indicator and theme toggle, rendered here so
-        // the POS uses exactly the controls every other page does; the POS
-        // app moves them into its top bar.
+        // The site's logo, status indicator and theme toggle, rendered here
+        // so the POS's top bar carries exactly what the site nav does; the
+        // POS app moves them into its top bar.
+        div id="pos-site-brand" hidden {
+            a class="pos-brand" href="/dashboard" aria-label="Monokulo dashboard" {
+                (logo_mark(22, "pos-brand-logo"))
+                span class="pos-brand-name" { "Monokulo" }
+            }
+        }
         div id="pos-site-controls" hidden {
             (theme_toggle(chrome))
             (status_indicator(chrome.health, "pos-status-link"))
@@ -59,5 +65,6 @@ mod tests {
         assert!(html.contains("/static/pos-app.js"));
         assert!(html.contains("/static/pos-app.css"));
         assert!(!html.contains("<nav class=\"site-nav\""));
+        assert!(html.contains(r#"<div id="pos-site-brand" hidden><a class="pos-brand" href="/dashboard""#), "the POS bar gets the site's mark: {html}");
     }
 }

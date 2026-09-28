@@ -48,7 +48,7 @@ pub fn orders_table(connection_id: &str, orders: &[OrderRowViewModel]) -> Markup
                         td { a href=(format!("/dashboard/stores/{connection_id}/orders/{}", order.order_id)) { (order.order_id) } }
                         td { @if let Some(reference) = &order.reference { (reference) } @else { span class="muted" { "—" } } }
                         td { (order.source) }
-                        td { (order.status) }
+                        td { (super::state_badge(&order.status)) }
                         td { (order.amount) " " (order.currency) }
                         td { (order.created_at) }
                     }
@@ -88,7 +88,7 @@ pub fn lookup_payment_card(
                     pattern="[0-9a-fA-F]{64}"
                     maxlength="64"
                     required;
-                button type="submit" { "Look up" }
+                button type="submit" class="btn-primary" { "Look up" }
             }
             @if let Some(message) = message {
                 p role="status" data-fx-focus tabindex="-1" {
@@ -155,7 +155,7 @@ pub fn list_page(chrome: &PageChrome, data: &OrdersViewModel) -> Markup {
                 fx-action=(base) fx-target="#orders-results" fx-push-url fx-replace {
                 label for="orders-search" class="sr-only" { "Search orders" }
                 input type="search" id="orders-search" name="q" value=(data.search) placeholder="Search by reference or order ID" maxlength="120";
-                button type="submit" { "Search" }
+                button type="submit" class="btn-primary" { "Search" }
                 @if !data.search.is_empty() { " " a href=(base) { "Clear" } }
             }
             (list_results(data))
@@ -285,7 +285,7 @@ pub fn live_fragment(order: &OrderDetailData) -> Markup {
                 tr { th { "Rate provider" } td { (order.rate_provider) } }
                 tr { th { "XMR amount (piconero)" } td { (order.xmr_amount_piconero) } }
                 tr { th { "Amount received (piconero)" } td { (order.amount_received_piconero) } }
-                tr { th { "Status" } td { (order.status) } }
+                tr { th { "Status" } td { (super::state_badge(&order.status)) } }
                 tr { th { "Confirmations" } td { (order.confirmations) } }
                 tr { th { "Confirmations required" } td { (order.confirmations_required_display) } }
                 tr { th { "Store base currency (at order creation)" } td { (order.base_currency_display) } }

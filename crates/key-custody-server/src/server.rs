@@ -181,9 +181,10 @@ pub async fn dispatch(
         }
         KeyCustodyRequest::UnsealAndRegister(req) => {
             let sealed = req.sealed.to_bytes()?;
-            let result = custody
-                .unseal_and_register(&sealed)
-                .await
+            let result = match req.registration_id.as_deref() {
+                Some(id) => custody.unseal_and_register_idempotent(&sealed, id).await,
+                None => custody.unseal_and_register(&sealed).await,
+            }
                 .map(WalletHandleWire::from)
                 .map_err(KeyCustodyErrorWire::from);
             KeyCustodyResponse::UnsealAndRegister(result)

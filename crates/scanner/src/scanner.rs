@@ -199,6 +199,24 @@ pub fn record_scan_match(
     Ok(touched)
 }
 
+/// Store a match from an unfinished block without making it visible as a
+/// payment. The caller commits this and the transaction checkpoint together.
+fn stage_block_match(store: &Store, network: &str, tenant_id: &str, scan: &ScanResult, seen_at: i64) -> Result<()> {
+    for m in &scan.matches {
+        let Some(order) = store.find_order_by_minor_index(tenant_id, m.subaddress_index.minor)? else { continue };
+        let Some(amount) = m.amount_piconero else {
+            tracing::warn!("scanner: output {} of tx {} matched order {} but its amount could not be decrypted", m.output_index, scan.txid, order.id);
+            continue;
+        };
+        store.stage_partial_match(crate::store::StagedMatch {
+            network, tenant_id, order_id: &order.id, txid: &scan.txid,
+            output_index: m.output_index as i64, amount,
+            key_images_json: &scan.key_images_json, seen_at,
+        })?;
+    }
+    Ok(())
+}
+
 /// Convenience wrapper combining `scan_transaction` + `record_scan_match`, for
 /// callers that `.await` it directly within their own task rather than spawning it
 /// (every test in this file does exactly that, so the `!Send` issue never bites
@@ -483,6 +501,17 @@ pub async fn check_vanished_mempool_payments(
     now: i64,
 ) -> Result<VanishedPoolReport> {
     let unconfirmed = store.lock().find_unconfirmed_payments(network)?;
+    check_vanished_candidates(store, daemon, mempool_txids, current_height, now, unconfirmed).await
+}
+
+async fn check_vanished_candidates(
+    store: &crate::store::SharedStore,
+    daemon: &dyn MoneroDaemonClient,
+    mempool_txids: &HashSet<String>,
+    current_height: u64,
+    now: i64,
+    unconfirmed: Vec<crate::store::OrderPaymentRow>,
+) -> Result<VanishedPoolReport> {
     let mut dirty_orders = HashSet::new();
     let mut double_spent_orders = HashSet::new();
 
@@ -601,6 +630,7 @@ fn recompute_and_notify_in_tx(store: &Store, order_id: &str, current_height: u64
         let payload = serde_json::json!({ "order_id": order_id, "status": new_status.as_str() });
         enqueue_webhook_event(store, order_id, &format!("order.{new_status}"), &payload, now)?;
     }
+    store.clear_pending_payment_recompute(order_id)?;
     Ok(())
 }
 
@@ -857,15 +887,8 @@ fn update_avg_bytes_per_block(avg_bytes_per_block: f64, chunk_bytes: usize, bloc
 /// own daemon and its own independent block-height bookkeeping - mixing them under
 /// one call would compare block hashes across unrelated chains.
 ///
-/// Takes `&SharedStore` and re-locks it around each `scan_transaction_for_tenant`
-/// call rather than for the whole tick - but unlike `webhook_delivery::run_delivery_tick`,
-/// it does *not* avoid holding the lock across `scan_transaction_for_tenant`'s
-/// internal `.await` on `KeyCustody::scan_tx_outputs`. That await is CPU-bound
-/// in-process work (elliptic-curve scalar multiplication), not network I/O, so the
-/// hold time is microseconds rather than however long a merchant's webhook
-/// endpoint takes to respond - a materially different, and currently accepted,
-/// tradeoff. Worth revisiting with `spawn_blocking` if profiling ever shows
-/// contention with HTTP handlers.
+/// Takes `&SharedStore` and holds the lock only for synchronous persistence;
+/// key-custody scans and daemon calls run without it.
 ///
 /// On first run (no `scanned_blocks` history at all), seeds at the current chain
 /// tip rather than replaying the entire chain from genesis - this is a payment
@@ -898,6 +921,11 @@ pub async fn run_scan_tick(
 #[derive(Default)]
 pub struct MempoolMemory {
     inner: parking_lot::Mutex<MempoolMemoryInner>,
+    next_tx_offset: std::sync::atomic::AtomicUsize,
+    next_tenant_offset: std::sync::atomic::AtomicUsize,
+    pending_order_cursor: parking_lot::Mutex<String>,
+    active_order_cursor: parking_lot::Mutex<String>,
+    unconfirmed_payment_cursor: parking_lot::Mutex<i64>,
 }
 
 #[derive(Default)]
@@ -909,6 +937,13 @@ struct MempoolMemoryInner {
 /// Most mempool transaction bodies remembered; beyond this (a spam wave) new
 /// ones are scanned but not kept.
 const MEMPOOL_MEMORY_MAX_BODIES: usize = 20_000;
+const MEMPOOL_TXS_PER_TICK: usize = 64;
+const MEMPOOL_TENANTS_PER_TX: usize = 32;
+const MEMPOOL_PHASE_TIME: std::time::Duration = std::time::Duration::from_secs(15);
+/// A cancellation may replay this many no-match transactions. Batching the
+/// checkpoint avoids one SQLite commit per tenant and transaction in a large
+/// block, while every actual match still commits atomically with its position.
+const PARTIAL_CHECKPOINT_EVERY_TXS: usize = 16;
 
 /// `run_scan_tick` with mempool memory kept by the caller between ticks.
 #[allow(clippy::too_many_arguments)] // one tick's genuinely independent inputs
@@ -1003,12 +1038,21 @@ pub async fn run_scan_tick_with(
     let mut mempool_txids: Option<HashSet<String>> = None;
     if let Some(pool_txids) = pool_txids {
         let in_pool: HashSet<String> = pool_txids.iter().cloned().collect();
-        // Forget what left the pool; fetch only bodies not already held.
+        // Rotate a bounded slice of the pool. Both the fetch and the EC work
+        // must leave room for blocks even if the pool is very large.
+        let mut selected = pool_txids;
+        selected.sort_unstable();
+        if !selected.is_empty() {
+            let offset = memory.next_tx_offset.load(std::sync::atomic::Ordering::Relaxed) % selected.len();
+            selected.rotate_left(offset);
+            selected.truncate(MEMPOOL_TXS_PER_TICK);
+        }
+        // Forget what left the pool; fetch only selected bodies not already held.
         let missing: Vec<String> = {
             let mut memory = memory.inner.lock();
             memory.bodies.retain(|txid, _| in_pool.contains(txid));
             memory.scanned.retain(|txid, _| in_pool.contains(txid));
-            pool_txids.iter().filter(|txid| !memory.bodies.contains_key(*txid)).cloned().collect()
+            selected.iter().filter(|txid| !memory.bodies.contains_key(*txid)).cloned().collect()
         };
         let mut fresh: Vec<std::sync::Arc<Transaction>> = Vec::new();
         if !missing.is_empty() {
@@ -1024,29 +1068,47 @@ pub async fn run_scan_tick_with(
         }
         let pool: Vec<std::sync::Arc<Transaction>> = {
             let mut memory = memory.inner.lock();
+            let mut fetched = HashMap::new();
             for tx in &fresh {
+                let txid = tx_id_hex(tx);
+                fetched.insert(txid.clone(), tx.clone());
                 if memory.bodies.len() < MEMPOOL_MEMORY_MAX_BODIES {
-                    memory.bodies.insert(tx_id_hex(tx), tx.clone());
+                    memory.bodies.insert(txid, tx.clone());
                 }
             }
-            let held: Vec<_> = memory.bodies.values().cloned().collect();
-            let held_ids: HashSet<String> = memory.bodies.keys().cloned().collect();
-            held.into_iter().chain(fresh.into_iter().filter(|tx| !held_ids.contains(&tx_id_hex(tx)))).collect()
+            selected.iter().filter_map(|txid| memory.bodies.get(txid).or_else(|| fetched.get(txid)).cloned()).collect()
         };
         mempool_txids = Some(in_pool);
 
+        // Retry a failed tenant next tick, not once per pool transaction. A
+        // single unresponsive backend must not spend the entire tick budget
+        // on repeated deadlines before block scanning even gets a turn.
+        let mut failed_in_pool = HashSet::new();
+        let phase_end = tokio::time::Instant::now() + MEMPOOL_PHASE_TIME;
+        let mut attempted_txs = 0;
         for tx in &pool {
+            if tokio::time::Instant::now() >= phase_end {
+                break;
+            }
+            attempted_txs += 1;
             let txid = tx_id_hex(tx);
             // Only the stores this transaction hasn't been scanned for, with
             // the store's current window, yet.
-            let due: Vec<&(String, WalletHandle, ScanIndices)> = {
+            let mut due: Vec<&(String, WalletHandle, ScanIndices)> = {
                 let memory = memory.inner.lock();
                 let done = memory.scanned.get(&txid);
                 ranges
                     .iter()
+                    .filter(|(tenant_id, _, _)| !failed_in_pool.contains(tenant_id))
                     .filter(|(tenant_id, _, window)| done.and_then(|d| d.get(tenant_id)) != Some(&window.generation()))
                     .collect()
             };
+            due.sort_unstable_by(|a, b| a.0.cmp(&b.0));
+            if !due.is_empty() {
+                let offset = memory.next_tenant_offset.fetch_add(MEMPOOL_TENANTS_PER_TX, std::sync::atomic::Ordering::Relaxed) % due.len();
+                due.rotate_left(offset);
+                due.truncate(MEMPOOL_TENANTS_PER_TX);
+            }
             if due.is_empty() {
                 continue;
             }
@@ -1082,6 +1144,7 @@ pub async fn run_scan_tick_with(
                         }
                     }
                     Err(e) => {
+                        failed_in_pool.insert(tenant_id.clone());
                         shared::throttled!(
                             format!("mempool-scan:{tenant_id}"),
                             warn,
@@ -1094,6 +1157,13 @@ pub async fn run_scan_tick_with(
                 }
             }
         }
+        // Advance by work actually attempted. Advancing by the whole selected
+        // slice would revisit its slow first member forever when the pool size
+        // exactly equals the slice size and the time allowance stops us early.
+        memory.next_tx_offset.fetch_add(
+            if attempted_txs == 0 { selected.len() } else { attempted_txs },
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     // A failure anywhere in here means "skip block scanning this tick, try again
@@ -1153,6 +1223,7 @@ pub async fn run_scan_tick_with(
     let mut left_behind: HashSet<String> =
         active_ids.iter().filter(|tenant_id| !in_ranges.contains(tenant_id)).cloned().collect();
     if let Some((scan_from, scan_to)) = scan_range {
+        let block_phase_end = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
         // Fetches transactions in `get_blocks_range` chunks sized against
         // `payment.scan_chunk_memory_budget_mb` (passed in each tick from the
         // live scan settings, so a saved change applies to the next) rather than
@@ -1181,6 +1252,7 @@ pub async fn run_scan_tick_with(
 
         let mut height = scan_from;
         'heights: while height <= scan_to {
+            if tokio::time::Instant::now() >= block_phase_end { break; }
             let remaining = scan_to - height + 1;
             let chunk_size = next_scan_chunk_size(budget_bytes, avg_bytes_per_block, remaining);
 
@@ -1226,90 +1298,86 @@ pub async fn run_scan_tick_with(
             avg_bytes_per_block = update_avg_bytes_per_block(avg_bytes_per_block, chunk_bytes, chunk.len());
 
             for (offset, block_txs) in chunk.iter().enumerate() {
+                if tokio::time::Instant::now() >= block_phase_end { break 'heights; }
                 let height = height + offset as u64;
-                for tx in block_txs {
-                    let still_live: Vec<&(String, WalletHandle, ScanIndices)> =
-                        live.iter().copied().filter(|(tenant_id, _, _)| !left_behind.contains(tenant_id)).collect();
-                    for (tenant_id, result) in scan_for_tenants(key_custody, tx, &still_live).await {
-                        let tenant_id = &tenant_id;
-                        let scan = match result {
-                            Ok(scan) => scan,
-                            Err(e) => {
-                                shared::throttled!(
-                                    format!("block-scan:{tenant_id}"),
-                                    warn,
-                                    store.id = %tenant_id,
-                                    network = %network,
-                                    height,
-                                    left_at = height - 1,
-                                    error = %e,
-                                    "scanning a transaction failed - leaving the store behind to be caught up later, \
-                                     the rest of the network carries on"
-                                );
-                                left_behind.insert(tenant_id.clone());
-                                continue;
-                            }
-                        };
-                        let recorded = {
-                            let s = store.lock();
-                            record_scan_match(&s, tenant_id, &scan, now, Some(height))
-                        };
-                        match recorded {
-                            Ok(order_ids) => touched.extend(order_ids),
-                            Err(e) => {
-                                tracing::warn!(
-                                    store.id = %tenant_id,
-                                    network = %network,
-                                    height,
-                                    error = %e,
-                                    "recording a match failed - leaving the block unscanned so the next tick retries it"
-                                );
-                                break 'heights;
+                let hash = match daemon.get_block_hash(height).await {
+                    Ok(hash) => hash,
+                    Err(e) => {
+                        tracing::warn!("reading the hash of block {height} on {network} failed: {e}");
+                        break 'heights;
+                    }
+                };
+                let still_live: Vec<&(String, WalletHandle, ScanIndices)> =
+                    live.iter().copied().filter(|(tenant_id, _, _)| !left_behind.contains(tenant_id)).collect();
+                let mut next_tx = HashMap::new();
+                for (tenant_id, _, window) in &still_live {
+                    match store.lock().start_partial_block(network, tenant_id, height, &hash, window.generation()) {
+                        Ok(next) if next <= block_txs.len() => { next_tx.insert(tenant_id.clone(), next); }
+                        Ok(_) => {
+                            tracing::warn!("invalid partial-block checkpoint for tenant {tenant_id} at {height}");
+                            break 'heights;
+                        }
+                        Err(e) => {
+                            tracing::warn!("starting partial-block checkpoint for tenant {tenant_id} at {height} failed: {e}");
+                            break 'heights;
+                        }
+                    }
+                }
+                for (tx_index, tx) in block_txs.iter().enumerate() {
+                    let due: Vec<_> = still_live.iter().copied()
+                        .filter(|(id, _, _)| !left_behind.contains(id) && next_tx.get(id).is_some_and(|next| *next <= tx_index))
+                        .collect();
+                    for batch in due.chunks(SCAN_CONCURRENCY) {
+                        if tokio::time::Instant::now() >= block_phase_end { break 'heights; }
+                        for (tenant_id, result) in scan_for_tenants(key_custody, tx, batch).await {
+                            match result {
+                                Ok(scan) => {
+                                    if scan.matches.is_empty()
+                                        && (tx_index + 1) % PARTIAL_CHECKPOINT_EVERY_TXS != 0
+                                        && tx_index + 1 != block_txs.len() {
+                                        continue;
+                                    }
+                                    let written = store.lock().in_transaction(|s| -> Result<()> {
+                                        stage_block_match(s, network, &tenant_id, &scan, now)?;
+                                        s.advance_partial_block(network, &tenant_id, tx_index + 1)?;
+                                        Ok(())
+                                    });
+                                    if let Err(e) = written {
+                                        tracing::warn!("staging a match in block {height} for tenant {tenant_id} failed: {e}");
+                                        break 'heights;
+                                    }
+                                }
+                                Err(e) => {
+                                    shared::throttled!(format!("block-scan:{tenant_id}"), warn, "scanning block {height} on {network} for tenant {tenant_id} failed; tenant left behind: {e}");
+                                    left_behind.insert(tenant_id);
+                                }
                             }
                         }
                     }
                 }
-                // Failing to read the hash of a block that was otherwise scanned
-                // fine is the same "abandon the range here" situation as any
-                // other failure at this height, and for a sharper reason than it
-                // looks: continuing would leave a *hole* - height H unrecorded
-                // while H+1 onwards are - and `check_for_reorg_and_reconcile`
-                // skips heights it has no stored hash for. A later reorg
-                // starting at H is then first noticed at H+1, so the reorg point
-                // is reported one block too high: the payments actually
-                // orphaned at H are never re-evaluated (they keep counting
-                // towards their order at a height that no longer exists) and
-                // block H of the replacement chain is never rescanned. Stopping
-                // here instead simply re-scans H next tick, which is a no-op
-                // for anything already recorded. Still one call per height,
-                // unbatched - see this block's own opening comment.
+                // The block may have changed while its transactions were
+                // scanned. Staged matches are promoted only for the same hash.
                 match daemon.get_block_hash(height).await {
-                    Ok(hash) => {
-                        // The network and every tenant caught up with it move
-                        // on together, or not at all.
-                        let left_behind_ids: Vec<String> = left_behind.iter().cloned().collect();
-                        let written = store.lock().in_transaction(|s| -> std::result::Result<(), StoreError> {
-                            s.set_scanned_block(network, height, &hash)?;
-                            s.advance_caught_up_cursors(network, height, &left_behind_ids, now)
-                        });
-                        if let Err(e) = written {
-                            tracing::warn!(
-                                network = %network,
-                                height,
-                                error = %e,
-                                "recording a block as scanned failed - leaving it unscanned so the next tick retries it"
-                            );
-                            break 'heights;
+                    Ok(current_hash) if current_hash == hash => {}
+                    Ok(_) => { tracing::warn!("block {height} changed during scanning on {network}; retrying it"); break 'heights; }
+                    Err(e) => { tracing::warn!("rechecking block {height} on {network} failed: {e}"); break 'heights; }
+                }
+                let left_behind_ids: Vec<String> = left_behind.iter().cloned().collect();
+                let written = store.lock().in_transaction(|s| -> Result<Vec<String>> {
+                    let mut block_touched = Vec::new();
+                    for (tenant_id, _, _) in &still_live {
+                        if !left_behind.contains(tenant_id) {
+                            block_touched.extend(s.promote_partial_block(network, tenant_id, height, &hash, block_txs.len())?);
                         }
                     }
+                    s.set_scanned_block(network, height, &hash)?;
+                    s.advance_caught_up_cursors(network, height, &left_behind_ids, now)?;
+                    Ok(block_touched)
+                });
+                match written {
+                    Ok(block_touched) => touched.extend(block_touched),
                     Err(e) => {
-                        tracing::warn!(
-                            network = %network,
-                            height,
-                            error = %e,
-                            "reading a block's hash failed - leaving it unscanned so the next tick retries it rather \
-                             than leaving a gap in the reorg window"
-                        );
+                        tracing::warn!("committing block {height} on {network} failed; retrying: {e}");
                         break 'heights;
                     }
                 }
@@ -1391,8 +1459,59 @@ pub async fn run_scan_tick_with(
     // recorded by then and is not a candidate at all - and, like reconciliation,
     // before the recompute sweep, so a voided payment can never be announced as a
     // settlement moments before it is retracted.
-    let vanished = match &mempool_txids {
-        Some(txids) => check_vanished_mempool_payments(store, daemon, network, txids, current_height, now).await,
+    let mut vanished_failure: Option<ScannerError> = None;
+    let vanished: Result<VanishedPoolReport> = match &mempool_txids {
+        Some(txids) => {
+            let previous_cursor = *memory.unconfirmed_payment_cursor.lock();
+            let page: std::result::Result<_, crate::store::StoreError> = {
+                let s = store.lock();
+                s.unconfirmed_payments_page(network, previous_cursor, 64).and_then(|page| {
+                    if page.is_empty() && previous_cursor != 0 {
+                        s.unconfirmed_payments_page(network, 0, 64)
+                    } else {
+                        Ok(page)
+                    }
+                })
+            };
+            match page {
+                Ok(page) => {
+                    if page.is_empty() {
+                        *memory.unconfirmed_payment_cursor.lock() = 0;
+                    }
+                    let mut report = VanishedPoolReport { dirty_orders: Vec::new(), double_spent_orders: Vec::new() };
+                    let phase_end = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
+                    for (id, payment) in page {
+                        if tokio::time::Instant::now() >= phase_end {
+                            break;
+                        }
+                        match tokio::time::timeout_at(
+                            phase_end.min(tokio::time::Instant::now() + std::time::Duration::from_secs(2)),
+                            check_vanished_candidates(store, daemon, txids, current_height, now, vec![payment]),
+                        ).await {
+                            Ok(Ok(one)) => {
+                                report.dirty_orders.extend(one.dirty_orders);
+                                report.double_spent_orders.extend(one.double_spent_orders);
+                            }
+                            Ok(Err(error)) => {
+                                tracing::warn!("checking vanished mempool payments on {network} failed (retried next tick): {error}");
+                                if vanished_failure.is_none() { vanished_failure = Some(error); }
+                            }
+                            Err(_) => {
+                                tracing::warn!("checking a vanished mempool payment on {network} exceeded its deadline");
+                                if vanished_failure.is_none() {
+                                    vanished_failure = Some(ScannerError::Internal("vanished mempool lookup exceeded its deadline".into()));
+                                }
+                            }
+                        }
+                        // A failed row remains eligible on the next circuit;
+                        // moving past it lets other payments make progress.
+                        *memory.unconfirmed_payment_cursor.lock() = id;
+                    }
+                    Ok(report)
+                }
+                Err(error) => Err(error.into()),
+            }
+        }
         None => Ok(VanishedPoolReport { dirty_orders: vec![], double_spent_orders: vec![] }),
     };
     if let Ok(report) = &vanished {
@@ -1404,8 +1523,8 @@ pub async fn run_scan_tick_with(
         touched.extend(report.dirty_orders.iter().cloned());
     }
 
-    // Every non-terminal order on this network is recomputed, not only the orders
-    // whose transactions were matched this tick. An order's status depends on the
+    // A rotating page of non-terminal orders on this network is recomputed, along
+    // with pending payment obligations and orders touched this tick. An order's status depends on the
     // current chain height (confirmations are derived, never stored per payment) and
     // on wall-clock time (expiry), so an order with entirely unchanged payments still
     // changes status as the chain grows. Recomputing only the `touched` set meant an
@@ -1418,17 +1537,34 @@ pub async fn run_scan_tick_with(
     // at most once per tick, and `recompute_and_notify` only enqueues on an actual
     // status change.
     //
+    // The page cursor resumes on the next tick; a large order population may
+    // therefore take multiple ticks to reflect a new height or expiry.
     // Deliberately still runs when reconciliation above failed (its result is only
     // unwrapped afterwards): a node that went unreachable partway through
     // reconciliation leaves a pure retry for the next tick, and holding every order's
     // expiry and confirmation growth hostage to it would turn a transient node blip
     // into orders that silently stop advancing.
-    let to_recompute: HashSet<String> = store
-        .lock()
-        .non_terminal_order_ids(network, now, expired_order_grace_period_seconds)?
-        .into_iter()
-        .chain(touched.iter().cloned())
-        .collect();
+    const PENDING_STATUS_BATCH: usize = 128;
+    const ACTIVE_STATUS_BATCH: usize = 256;
+    let pending_cursor = memory.pending_order_cursor.lock().clone();
+    let active_cursor = memory.active_order_cursor.lock().clone();
+    let (pending, active): (Vec<String>, Vec<String>) = {
+        let s = store.lock();
+        let mut pending = s.pending_payment_recomputes_page(network, &pending_cursor, PENDING_STATUS_BATCH)?;
+        if pending.is_empty() && !pending_cursor.is_empty() {
+            pending = s.pending_payment_recomputes_page(network, "", PENDING_STATUS_BATCH)?;
+        }
+        let mut active = s.non_terminal_order_ids_page(
+            network, now, expired_order_grace_period_seconds, &active_cursor, ACTIVE_STATUS_BATCH,
+        )?;
+        if active.is_empty() && !active_cursor.is_empty() {
+            active = s.non_terminal_order_ids_page(network, now, expired_order_grace_period_seconds, "", ACTIVE_STATUS_BATCH)?;
+        }
+        (pending, active)
+    };
+    *memory.pending_order_cursor.lock() = pending.last().cloned().unwrap_or_default();
+    *memory.active_order_cursor.lock() = active.last().cloned().unwrap_or_default();
+    let to_recompute: HashSet<String> = pending.into_iter().chain(active).chain(touched).collect();
     for order_id in &to_recompute {
         let s = store.lock();
         recompute_and_notify(&s, order_id, current_height, now)?;
@@ -1443,6 +1579,7 @@ pub async fn run_scan_tick_with(
     // leaves every other order's confirmations and expiry advancing.
     let _ = report?;
     let _ = vanished?;
+    if let Some(error) = vanished_failure { return Err(error); }
 
     // Nothing reads a scanned-block row from further back than the reorg window, so
     // keeping every row this service has ever written is pure growth - a block every
@@ -1515,9 +1652,18 @@ pub async fn register_missing_wallets_reporting(
     handled_epoch: Option<&std::sync::atomic::AtomicU64>,
     network: &str,
 ) -> Registration {
+    const REGISTRATION_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+    const REGISTRATION_PASS_DEADLINE: std::time::Duration = std::time::Duration::from_secs(20);
+    const REGISTRATIONS_PER_PASS: usize = 16;
+    static NEXT_REGISTRATION_OFFSET: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, usize>>> =
+        std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+    let pass_end = tokio::time::Instant::now() + REGISTRATION_PASS_DEADLINE;
     if let Some(handled_epoch) = handled_epoch {
-        match key_custody.check_state().await {
-            Ok(epoch) => {
+        match tokio::time::timeout_at(
+            pass_end.min(tokio::time::Instant::now() + REGISTRATION_CALL_DEADLINE),
+            key_custody.check_state(),
+        ).await {
+            Ok(Ok(epoch)) => {
                 let seen = handled_epoch.load(std::sync::atomic::Ordering::SeqCst);
                 if epoch > seen
                     && handled_epoch
@@ -1538,7 +1684,8 @@ pub async fn register_missing_wallets_reporting(
                     }
                 }
             }
-            Err(e) => tracing::warn!(error = %e, "checking the key custody backend's state failed (retried later)"),
+            Ok(Err(e)) => tracing::warn!("checking the key custody backend's state failed (retried later): {e}"),
+            Err(_) => tracing::warn!("checking the key custody backend's state exceeded {REGISTRATION_CALL_DEADLINE:?} (retried later)"),
         }
     }
     let listed = store.lock().list_active_tenants();
@@ -1557,20 +1704,44 @@ pub async fn register_missing_wallets_reporting(
         let ids: HashSet<&str> = on_network.iter().map(|t| t.id.as_str()).collect();
         wallet_handles.write().retain(|id, handle| !ids.contains(id.as_str()) || key_custody.handle_is_live(*handle));
     }
-    let missing: Vec<crate::store::Tenant> = {
+    let mut missing: Vec<crate::store::Tenant> = {
         let handles = wallet_handles.read();
         on_network.into_iter().filter(|t| !handles.contains_key(&t.id)).collect()
     };
+    // Rotate a bounded pass. A failed tenant at the front must not prevent
+    // later tenants from ever getting a registration attempt or block scan.
+    missing.sort_by(|a, b| a.id.cmp(&b.id));
+    let deferred = missing.len().saturating_sub(REGISTRATIONS_PER_PASS);
+    if !missing.is_empty() {
+        // Keep offsets per network. A single global counter can starve a
+        // network when two loops alternate and both have 32 missing tenants.
+        let offset = {
+            let mut offsets = NEXT_REGISTRATION_OFFSET.lock();
+            let next = offsets.entry(network.to_string()).or_default();
+            let offset = *next % missing.len();
+            *next = next.wrapping_add(REGISTRATIONS_PER_PASS);
+            offset
+        };
+        missing.rotate_left(offset);
+        missing.truncate(REGISTRATIONS_PER_PASS);
+    }
     let mut registered = 0;
-    let mut failed = 0;
+    let mut failed = deferred;
     let mut first_error: Option<(String, String)> = None;
     for tenant in missing {
+        if tokio::time::Instant::now() >= pass_end {
+            failed += 1;
+            continue;
+        }
         let enabled = key_custody.enabled_backends();
         if !enabled.is_empty() && !enabled.contains(&tenant.key_custody_backend) {
             continue; // its backend is off: left unserved, not an error to log every minute
         }
-        match key_custody.unseal_and_register_in(&tenant.key_custody_backend, &tenant.sealed_key_material).await {
-            Ok(handle) => {
+        match tokio::time::timeout_at(
+            pass_end.min(tokio::time::Instant::now() + REGISTRATION_CALL_DEADLINE),
+            key_custody.unseal_and_register_in_idempotent(&tenant.key_custody_backend, &tenant.sealed_key_material, &tenant.id),
+        ).await {
+            Ok(Ok(handle)) => {
                 let winner = *wallet_handles.write().entry(tenant.id.clone()).or_insert(handle);
                 if winner != handle {
                     let _ = key_custody.remove_wallet(handle).await;
@@ -1578,9 +1749,13 @@ pub async fn register_missing_wallets_reporting(
                     registered += 1;
                 }
             }
-            Err(e) => {
+            Ok(Err(e)) => {
                 failed += 1;
                 first_error.get_or_insert_with(|| (tenant.id.clone(), e.to_string()));
+            }
+            Err(_) => {
+                failed += 1;
+                first_error.get_or_insert_with(|| (tenant.id.clone(), format!("registration exceeded {REGISTRATION_CALL_DEADLINE:?}")));
             }
         }
     }
@@ -1708,10 +1883,23 @@ async fn catch_up_lagging_tenants(
     }
 
     let per_group = (CATCH_UP_BLOCKS_PER_TICK / groups.len() as u64).max(CATCH_UP_MIN_BLOCKS_PER_GROUP);
+    static NEXT_CATCHUP_GROUP: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, usize>>> =
+        std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
+    let mut groups: Vec<_> = groups.into_iter().collect();
+    let start = {
+        let mut offsets = NEXT_CATCHUP_GROUP.lock();
+        let next = offsets.entry(network.to_string()).or_default();
+        let start = *next % groups.len();
+        *next = next.wrapping_add(1);
+        start
+    };
+    groups.rotate_left(start);
+    let phase_end = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
     for (cursor, mut group) in groups {
         let end = high_water.min(cursor + per_group);
         let mut height = cursor + 1;
         'group: while height <= end && !group.is_empty() {
+            if tokio::time::Instant::now() >= phase_end { return Ok(()); }
             let count = (end - height + 1).min(CATCH_UP_FETCH_BLOCKS);
             let chunk = match daemon.get_blocks_range(height, count).await {
                 Ok(chunk) if !chunk.is_empty() => chunk,
@@ -1732,66 +1920,78 @@ async fn catch_up_lagging_tenants(
                 // Bound first: a guard in the `if let` scrutinee would be held
                 // across the `.await` below.
                 let stored_hash = store.lock().get_scanned_block_hash(network, height)?;
-                if let Some(stored) = stored_hash {
-                    match daemon.get_block_hash(height).await {
-                        Ok(actual) if actual == stored => {}
-                        Ok(_) => {
-                            tracing::info!(
-                                network = %network,
-                                height,
-                                "catch-up: block differs from the one scanned earlier - stopping this group until the \
-                                 reorg check has run"
-                            );
-                            break 'group;
-                        }
-                        Err(e) => {
-                            tracing::warn!(network = %network, height, error = %e, "catch-up: reading a block's hash failed (retried next tick)");
-                            break 'group;
-                        }
+                let hash = match daemon.get_block_hash(height).await {
+                    Ok(actual) if stored_hash.as_ref().is_none_or(|stored| *stored == actual) => actual,
+                    Ok(_) => {
+                        tracing::warn!("catch-up on {network}: block {height} differs from the stored hash; waiting for reorg reconciliation");
+                        break 'group;
                     }
+                    Err(e) => {
+                        tracing::warn!("catch-up on {network}: reading the hash of block {height} failed: {e}");
+                        break 'group;
+                    }
+                };
+                let mut next_tx = HashMap::new();
+                for (tenant_id, _, window) in &group {
+                    let next = store.lock().start_partial_block(network, tenant_id, height, &hash, window.generation())?;
+                    if next > block_txs.len() { return Err(ScannerError::Internal(format!("invalid partial-block checkpoint for tenant {tenant_id} at {height}"))); }
+                    next_tx.insert(tenant_id.clone(), next);
                 }
                 let mut failed: HashSet<String> = HashSet::new();
-                for tx in block_txs {
+                for (tx_index, tx) in block_txs.iter().enumerate() {
                     let refs: Vec<&(String, WalletHandle, ScanIndices)> =
-                        group.iter().filter(|(tenant_id, _, _)| !failed.contains(tenant_id)).collect();
-                    for (tenant_id, result) in scan_for_tenants(key_custody, tx, &refs).await {
-                        match result {
-                            Ok(scan) => {
-                                let recorded = record_scan_match(&store.lock(), &tenant_id, &scan, now, Some(height));
-                                match recorded {
-                                    Ok(order_ids) => touched.extend(order_ids),
-                                    Err(e) => {
-                                        tracing::warn!(network = %network, height, error = %e, "catch-up: recording a match failed (retried next tick)");
+                        group.iter().filter(|(tenant_id, _, _)| !failed.contains(tenant_id) && next_tx.get(tenant_id).is_some_and(|next| *next <= tx_index)).collect();
+                    for batch in refs.chunks(SCAN_CONCURRENCY) {
+                        if tokio::time::Instant::now() >= phase_end { return Ok(()); }
+                        for (tenant_id, result) in scan_for_tenants(key_custody, tx, batch).await {
+                            match result {
+                                Ok(scan) => {
+                                    if scan.matches.is_empty()
+                                        && (tx_index + 1) % PARTIAL_CHECKPOINT_EVERY_TXS != 0
+                                        && tx_index + 1 != block_txs.len() {
+                                        continue;
+                                    }
+                                    let written = store.lock().in_transaction(|s| -> Result<()> {
+                                        stage_block_match(s, network, &tenant_id, &scan, now)?;
+                                        s.advance_partial_block(network, &tenant_id, tx_index + 1)?;
+                                        Ok(())
+                                    });
+                                    if let Err(e) = written {
+                                        tracing::warn!("catch-up on {network}: staging a match in block {height} failed: {e}");
                                         return Ok(());
                                     }
                                 }
-                            }
-                            Err(e) => {
-                                shared::throttled!(
-                                    format!("catch-up-scan:{tenant_id}"),
-                                    warn,
-                                    store.id = %tenant_id,
-                                    network = %network,
-                                    height,
-                                    left_at = height - 1,
-                                    error = %e,
-                                    "catch-up: scanning a block for a store failed, it stays behind for now"
-                                );
-                                failed.insert(tenant_id);
+                                Err(e) => {
+                                    shared::throttled!(format!("catch-up-scan:{tenant_id}"), warn, "catch-up on {network}: scanning block {height} for tenant {tenant_id} failed: {e}");
+                                    failed.insert(tenant_id);
+                                }
                             }
                         }
                     }
                 }
-                let s = store.lock();
+                match daemon.get_block_hash(height).await {
+                    Ok(current) if current == hash => {}
+                    Ok(_) => { tracing::warn!("catch-up on {network}: block {height} changed while scanning"); break 'group; }
+                    Err(e) => { tracing::warn!("catch-up on {network}: rechecking block {height} failed: {e}"); break 'group; }
+                }
                 group.retain(|(tenant_id, _, _)| {
                     if failed.contains(tenant_id) {
                         return false;
                     }
-                    // False if the cursor moved meanwhile (a reorg clamp), in
-                    // which case this tenant is regrouped next tick.
-                    s.advance_tenant_cursor(tenant_id, height - 1, height).unwrap_or(false)
+                    let committed = store.lock().in_transaction(|s| -> Result<Option<Vec<String>>> {
+                        // The cursor guard also protects promotion: a reorg
+                        // clamp cannot commit results for the wrong height.
+                        let promoted = s.promote_partial_block(network, tenant_id, height, &hash, block_txs.len())?;
+                        if !s.advance_tenant_cursor(tenant_id, height - 1, height)? {
+                            return Err(ScannerError::Internal("tenant cursor moved during catch-up".into()));
+                        }
+                        Ok(Some(promoted))
+                    });
+                    match committed {
+                        Ok(Some(orders)) => { touched.extend(orders); true }
+                        _ => false,
+                    }
                 });
-                drop(s);
                 height += 1;
                 if group.is_empty() {
                     break 'group;
@@ -2402,6 +2602,41 @@ mod tests {
     // -- Scanned block range (`docs/order_rescan_wbs.md` Phase 5.1) ---------
 
     #[tokio::test]
+    async fn partial_block_checkpoint_stages_matches_and_discards_a_changed_hash() {
+        let (store, custody, handle, tenant_id, order_id) = setup().await;
+        let window = ScanIndices::new([1]);
+        let scan = scan_transaction_in_window(&custody, handle, &fixture_tx(), &window).await.unwrap();
+        assert!(!scan.matches.is_empty());
+
+        assert_eq!(store.start_partial_block("mainnet", &tenant_id, 10, "old_hash", window.generation()).unwrap(), 0);
+        store.in_transaction(|s| -> Result<()> {
+            stage_block_match(s, "mainnet", &tenant_id, &scan, 1500)?;
+            s.advance_partial_block("mainnet", &tenant_id, 1)?;
+            Ok(())
+        }).unwrap();
+        assert_eq!(store.start_partial_block("mainnet", &tenant_id, 10, "old_hash", window.generation()).unwrap(), 1);
+        assert!(store.get_all_payments(&order_id).unwrap().is_empty(), "an unfinished block must not announce payment");
+
+        assert_eq!(store.start_partial_block("mainnet", &tenant_id, 10, "new_hash", window.generation()).unwrap(), 0);
+        assert!(store.promote_partial_block("mainnet", &tenant_id, 10, "new_hash", 1).is_err(), "an incomplete block cannot be promoted");
+        store.advance_partial_block("mainnet", &tenant_id, 1).unwrap();
+        assert!(store.promote_partial_block("mainnet", &tenant_id, 10, "new_hash", 1).unwrap().is_empty(), "the old fork's matches were discarded");
+        assert_eq!(store.start_partial_block("mainnet", &tenant_id, 10, "new_hash", window.generation()).unwrap(), 0);
+        store.in_transaction(|s| -> Result<()> {
+            stage_block_match(s, "mainnet", &tenant_id, &scan, 1500)?;
+            s.advance_partial_block("mainnet", &tenant_id, 1)?;
+            Ok(())
+        }).unwrap();
+        let promoted = store.in_transaction(|s| -> Result<Vec<String>> {
+            let promoted = s.promote_partial_block("mainnet", &tenant_id, 10, "new_hash", 1)?;
+            s.set_scanned_block("mainnet", 10, "new_hash")?;
+            Ok(promoted)
+        }).unwrap();
+        assert_eq!(promoted, vec![order_id.clone()]);
+        assert_eq!(store.get_all_payments(&order_id).unwrap().len(), 1);
+    }
+
+    #[tokio::test]
     async fn a_fresh_orders_first_scanned_height_is_set_on_its_very_first_tick_not_backfilled_to_created_at() {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let daemon = FakeDaemonClient::new();
@@ -2442,7 +2677,9 @@ mod tests {
         for h in 101..=150 {
             daemon.push_block(&format!("blk_{h}"), vec![]);
         }
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        for _ in 0..7 {
+            run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        }
         assert_eq!(
             store.lock().get_order(&tenant_id, &order_id).unwrap().unwrap().last_scanned_height,
             Some(150),
@@ -2457,7 +2694,9 @@ mod tests {
         for h in 152..=160 {
             daemon.push_block(&format!("blk_{h}"), vec![]);
         }
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        for _ in 0..2 {
+            run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        }
         let settled = store.lock().get_order(&tenant_id, &order_id).unwrap().unwrap();
         assert!(
             matches!(settled.status, crate::status::OrderStatus::Paid | crate::status::OrderStatus::Overpaid),
@@ -3731,6 +3970,8 @@ mod tests {
             "the status must not have advanced past a transition nothing will ever announce"
         );
 
+        assert_eq!(store.lock().pending_payment_recomputes("mainnet").unwrap(), vec![order_id.clone()]);
+
         // Once the store is healthy again, the next tick performs both halves.
         store.lock().execute_raw_for_test("DROP TRIGGER simulated_enqueue_failure;").unwrap();
         run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
@@ -3743,6 +3984,7 @@ mod tests {
         let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
         assert_eq!(due.len(), 1);
         assert_eq!(due[0].event_type, "order.confirming");
+        assert!(s.pending_payment_recomputes("mainnet").unwrap().is_empty());
     }
 
     // ---------------------------------------------------------------------
@@ -4871,12 +5113,15 @@ mod tests {
             }
             let daemon = DaemonFailingFrom::counting(fake, DaemonCall::BlocksRange);
 
-            run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 20, 0).await.unwrap();
+            for _ in 0..5 {
+                run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+                if store.lock().max_scanned_height("mainnet").unwrap() == Some(NEW_BLOCK_COUNT + 1) { break; }
+            }
 
             assert_eq!(
                 store.lock().max_scanned_height("mainnet").unwrap(),
                 Some(NEW_BLOCK_COUNT + 1),
-                "the whole wide range must still be fully scanned in one tick, batching or not"
+                "the wide range must be fully scanned across bounded ticks"
             );
             assert!(
                 daemon.call_count() < NEW_BLOCK_COUNT,
@@ -4908,7 +5153,10 @@ mod tests {
             }
             let daemon = DaemonFailingFrom::counting(fake, DaemonCall::BlockHash);
 
-            run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id, handle)], 0, 0).await.unwrap();
+            for _ in 0..5 {
+                run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 0, 0).await.unwrap();
+                if store.lock().max_scanned_height("mainnet").unwrap() == Some(NEW_BLOCK_COUNT + 1) { break; }
+            }
 
             assert_eq!(
                 daemon.call_count(),
@@ -4918,9 +5166,8 @@ mod tests {
                 // this change) still re-checks the current tip's own hash -
                 // `>= tip - 0` includes the tip itself. A real, pre-existing
                 // extra call, not batching leaking through.
-                NEW_BLOCK_COUNT + 1,
-                "get_block_hash must be called once per newly-arrived block (plus reconciliation's own tip check) \
-                 - it is deliberately never batched, and the already-scanned baseline block must not be re-fetched"
+                NEW_BLOCK_COUNT * 2 + 1,
+                "each block hash is checked before and after scanning, plus reconciliation's tip check"
             );
         }
     }
@@ -6518,18 +6765,23 @@ mod tests {
 
     // -- Fair, concurrent scanning within a tick (task 7.4) -------------------
 
-    /// Wraps a `PlainKeyCustody` and delays `scan_tx_outputs` for chosen
-    /// handles, the way a key-custody backend that answers slowly does.
+    /// Fixture-only backend with controlled async delays. Compute real matches
+    /// during registration, before any deadlines exist: paused-time tests must
+    /// not wait on CPU slots held by other tests' independent runtimes.
     #[derive(Default)]
     struct SlowKeyCustody {
         inner: PlainKeyCustody,
         delays: parking_lot::Mutex<HashMap<WalletHandle, Duration>>,
+        matches: parking_lot::Mutex<HashMap<WalletHandle, Vec<MatchedOutput>>>,
     }
 
     #[async_trait::async_trait]
     impl KeyCustody for SlowKeyCustody {
         async fn register_wallet(&self, material: WalletMaterial) -> std::result::Result<WalletHandle, KeyCustodyError> {
-            self.inner.register_wallet(material).await
+            let handle = self.inner.register_wallet(material).await?;
+            let matches = self.inner.scan_tx_outputs(handle, &fixture_tx(), 0..1, 1..2).await?;
+            self.matches.lock().insert(handle, matches);
+            Ok(handle)
         }
         async fn remove_wallet(&self, handle: WalletHandle) -> std::result::Result<(), KeyCustodyError> {
             self.inner.remove_wallet(handle).await
@@ -6559,7 +6811,12 @@ mod tests {
             if let Some(delay) = delay {
                 tokio::time::sleep(delay).await;
             }
-            self.inner.scan_tx_outputs(handle, tx, major_range, minor_range).await
+            assert_eq!(tx_id_hex(tx), tx_id_hex(&fixture_tx()), "this backend only scans the fixture transaction");
+            let matches = self.matches.lock();
+            let matches = matches.get(&handle).ok_or(KeyCustodyError::UnknownWallet)?;
+            Ok(matches.iter().copied().filter(|m| {
+                major_range.contains(&m.subaddress_index.major) && minor_range.contains(&m.subaddress_index.minor)
+            }).collect())
         }
     }
 
@@ -6592,6 +6849,39 @@ mod tests {
     }
 
     #[tokio::test(start_paused = true)]
+    async fn a_failed_tenants_mempool_scans_do_not_consume_every_tick_before_blocks() {
+        let store = Store::open_in_memory().unwrap();
+        let custody = SlowKeyCustody::default();
+        let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+        let store = store.into_shared();
+        let tenants = [(tenant, handle)];
+        let daemon = FakeDaemonClient::new();
+        let memory = MempoolMemory::default();
+        daemon.push_block("b1", vec![]);
+        daemon.push_block("b2", vec![]);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        custody.delays.lock().insert(handle, Duration::from_secs(600));
+        daemon.set_mempool((0..13).map(unrelated_tx).collect());
+        let deadline = crate::loops::tick_deadline(Duration::from_secs(1));
+        for height in 3..=4 {
+            daemon.push_block(&format!("b{height}"), vec![]);
+            let result = tokio::time::timeout(deadline, run_scan_tick_with(
+                &memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 64,
+            )).await;
+            assert!(result.is_ok(), "retrying the same failed tenant must not starve block scanning");
+            result.unwrap().unwrap();
+            assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(height));
+        }
+        custody.delays.lock().clear();
+        daemon.set_mempool(vec![fixture_tx()]);
+        run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 64).await.unwrap();
+        assert_eq!(store.lock().get_all_payments(&order).unwrap().len(), 1, "the tenant is retried after recovery");
+    }
+
+    // Real time, not a paused clock: the scans run on the blocking pool, one
+    // per core, and between two of them a paused clock jumps ahead to the
+    // next timer, which on a one- or two-core machine is the scan deadline.
+    #[tokio::test]
     async fn tenants_are_scanned_concurrently_not_one_after_another() {
         let store = Store::open_in_memory().unwrap();
         let custody = SlowKeyCustody::default();
@@ -6850,6 +7140,52 @@ mod tests {
             future.as_mut().poll(cx).map(Some)
         })
         .await
+    }
+
+    #[tokio::test]
+    async fn cancellation_after_a_closed_orders_payment_is_written_does_not_lose_its_status_or_webhook() {
+        use std::future::Future;
+        let store = Store::open_in_memory().unwrap();
+        let custody = PlainKeyCustody::default();
+        let now = crate::now_unix();
+        let (tenant, handle, order) = fixture_tenant(&store, &custody, now + 3600).await;
+        store.execute_raw_for_test(&format!(
+            "UPDATE orders SET confirmations_required_override = 0 WHERE id = '{order}'"
+        )).unwrap();
+        store.create_webhook(&tenant, "https://shop.example/hook", "{}", "whsec", now).unwrap();
+        store.record_payment_match(&order, "original", 0, 1, "[]", now, Some(1)).unwrap();
+        recompute_and_notify(&store, &order, 2, now).unwrap();
+        let store = store.into_shared();
+        assert_eq!(order_status(&store, &order), OrderStatus::Paid);
+        let tenants = [(tenant, handle)];
+        let daemon = YieldingDaemon(FakeDaemonClient::new());
+        daemon.0.push_block("b1", vec![]);
+        daemon.0.push_block("b2", vec![]);
+        run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600).await.unwrap();
+        daemon.0.push_block("b3", vec![fixture_tx()]);
+        {
+            let mut tick = Box::pin(run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600));
+            std::future::poll_fn(|cx| {
+                assert!(tick.as_mut().poll(cx).is_pending());
+                if store.lock().get_all_payments(&order).unwrap().len() == 2 {
+                    std::task::Poll::Ready(())
+                } else {
+                    std::task::Poll::Pending
+                }
+            }).await;
+            // This tick's volatile `touched` set disappears here.
+        }
+        // Let the closed order fall outside the scan window before recovery.
+        // Its already-persisted payment still needs a status update.
+        store.lock().execute_raw_for_test(&format!(
+            "UPDATE orders SET closed_at_utc = 1 WHERE id = '{order}'"
+        )).unwrap();
+        for _ in 0..2 {
+            run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
+        }
+        assert_eq!(order_status(&store, &order), OrderStatus::Overpaid);
+        let events = store.lock().due_webhook_deliveries(i64::MAX / 2, 100).unwrap();
+        assert_eq!(events.iter().filter(|d| d.order_id == order && d.event_type == "order.overpaid").count(), 1);
     }
 
     #[tokio::test]
