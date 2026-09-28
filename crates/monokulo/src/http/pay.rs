@@ -512,6 +512,32 @@ mod tests {
         assert!(engine.store().lock().list_orders(&tenant_id, None, 10, None).unwrap().is_empty());
     }
 
+    /// The plugin's forwarded errors (structured_logging.md 2.4) need the
+    /// store's own secret key, and are capped.
+    #[tokio::test]
+    async fn only_the_store_itself_can_forward_its_plugin_errors() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state.clone());
+        let session_token = signed_up_and_logged_in_session_token(&router, "plugin-logs@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let row = state.db.lock().get_store_connection_by_public_key(&pk).unwrap().unwrap();
+        let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted).unwrap();
+        let forward = |key: Option<&str>, entries: usize| {
+            let entries: Vec<_> = (0..entries)
+                .map(|n| serde_json::json!({ "level": "error", "message": format!("failure {n}"), "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736" }))
+                .collect();
+            let mut builder = Request::builder().method("POST").uri(format!("/pay/{pk}/logs")).header("content-type", "application/json");
+            if let Some(key) = key {
+                builder = builder.header("authorization", format!("Bearer {key}"));
+            }
+            builder.body(Body::from(serde_json::json!({ "entries": entries }).to_string())).unwrap()
+        };
+        assert_eq!(router.clone().oneshot(forward(Some(&sk), 2)).await.unwrap().status(), StatusCode::NO_CONTENT);
+        assert_eq!(router.clone().oneshot(forward(None, 1)).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(router.clone().oneshot(forward(Some("sk_wrong"), 1)).await.unwrap().status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(router.clone().oneshot(forward(Some(&sk), 21)).await.unwrap().status(), StatusCode::PAYLOAD_TOO_LARGE);
+    }
+
     #[tokio::test]
     async fn an_order_waits_for_its_stores_policy_edit() {
         let (state, engine) = test_state_with_real_engine().await;

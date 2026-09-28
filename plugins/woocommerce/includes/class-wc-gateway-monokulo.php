@@ -237,6 +237,32 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	private static $trace_id = null;
 
 	/**
+	 * Warnings and errors waiting to be sent to Monokulo at the end of this
+	 * PHP request (the "Send errors to Monokulo" option), at most
+	 * `MAX_FORWARDED` of them.
+	 *
+	 * @var array<int, array{level: string, message: string, trace_id: string}>
+	 */
+	private static $forward_queue = array();
+
+	/**
+	 * Whether the end-of-request send is already registered.
+	 *
+	 * @var bool
+	 */
+	private static $forward_registered = false;
+
+	/**
+	 * Most entries sent per PHP request; Monokulo refuses more.
+	 */
+	const MAX_FORWARDED = 20;
+
+	/**
+	 * WooCommerce log levels that are forwarded.
+	 */
+	const FORWARDED_LEVELS = array( 'warning', 'error', 'critical', 'alert', 'emergency' );
+
+	/**
 	 * Sets up the gateway's identity and settings fields.
 	 *
 	 * WooCommerce instantiates every class registered via the
@@ -530,6 +556,14 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 				'description' => __( 'Your Monokulo store\'s public key (starts with pk_). Filled in automatically by Connect above.', 'monokulo' ),
 				'default'     => '',
 				'placeholder' => 'pk_...',
+				'desc_tip'    => true,
+			),
+			'forward_errors' => array(
+				'title'       => __( 'Send errors to Monokulo', 'monokulo' ),
+				'type'        => 'checkbox',
+				'label'       => __( 'Also send this plugin\'s warnings and errors to Monokulo\'s Logs page', 'monokulo' ),
+				'description' => __( 'They stay in WooCommerce\'s own logs as well. Sent with your store\'s secret key, next to Monokulo\'s own lines for the same request.', 'monokulo' ),
+				'default'     => 'no',
 				'desc_tip'    => true,
 			),
 			'secret_token' => array(
@@ -2060,6 +2094,7 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 	 * @param string $level   A `WC_Log_Levels` level ('info'|'error'|...).
 	 */
 	private function log( $message, $level = 'info' ) {
+		$this->maybe_forward( $message, $level );
 		if ( function_exists( 'wc_get_logger' ) ) {
 			// The trace id goes in the message too: WooCommerce's file log
 			// handler writes only the message, not the context.
@@ -2073,5 +2108,64 @@ class WC_Gateway_Monokulo extends WC_Payment_Gateway {
 				)
 			);
 		}
+	}
+
+	/**
+	 * Queues a warning or error for Monokulo when "Send errors to
+	 * Monokulo" is on and the store is connected, and registers the send
+	 * for the end of this PHP request (once), so a page never waits on it.
+	 *
+	 * @param string $message Log message.
+	 * @param string $level   A `WC_Log_Levels` level.
+	 */
+	private function maybe_forward( $message, $level ) {
+		if ( 'yes' !== $this->get_option( 'forward_errors', 'no' ) || ! $this->has_credentials() ) {
+			return;
+		}
+		if ( ! in_array( $level, self::FORWARDED_LEVELS, true ) || count( self::$forward_queue ) >= self::MAX_FORWARDED ) {
+			return;
+		}
+		self::$forward_queue[] = array(
+			'level'    => $level,
+			'message'  => (string) $message,
+			'trace_id' => self::trace_id(),
+		);
+		if ( ! self::$forward_registered ) {
+			self::$forward_registered = true;
+			$url    = rtrim( $this->api_base_url, '/' ) . '/pay/' . rawurlencode( $this->tenant_public_key ) . '/logs';
+			$secret = $this->secret_token;
+			register_shutdown_function(
+				function () use ( $url, $secret ) {
+					WC_Gateway_Monokulo::flush_forwarded( $url, $secret );
+				}
+			);
+		}
+	}
+
+	/**
+	 * Sends the queued entries in one request that isn't waited for. A
+	 * failure is ignored: logging it would only queue another entry.
+	 *
+	 * @param string $url    Monokulo's `/pay/{pk}/logs` URL.
+	 * @param string $secret The store's secret key.
+	 * @return array|null The request arguments sent (for tests), or null if nothing was queued.
+	 */
+	public static function flush_forwarded( $url, $secret ) {
+		if ( empty( self::$forward_queue ) ) {
+			return null;
+		}
+		$args                = array(
+			'headers'  => array(
+				'Content-Type'  => 'application/json',
+				'Authorization' => 'Bearer ' . $secret,
+				'traceparent'   => self::traceparent(),
+			),
+			'body'     => wp_json_encode( array( 'entries' => self::$forward_queue ) ),
+			'timeout'  => 3,
+			'blocking' => false,
+		);
+		self::$forward_queue = array();
+		wp_remote_post( $url, $args );
+		return $args;
 	}
 }

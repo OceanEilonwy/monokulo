@@ -64,3 +64,65 @@ mod tests {
         assert_eq!(client_report(Bytes::from_static(ok)).await, StatusCode::NO_CONTENT);
     }
 }
+
+/// `POST /pay/{pk}/logs`: warnings and errors the WooCommerce plugin
+/// forwards when its "Send errors to Monokulo" option is on
+/// (structured_logging.md 2.4). Authenticated with the store's secret key,
+/// so the store is known and the level can be trusted as far as `error`;
+/// texts are still clipped. Each entry joins the plugin request's trace
+/// when it names one.
+pub mod plugin {
+    use axum::extract::{Path, State};
+    use axum::http::{HeaderMap, StatusCode};
+    use axum::Json;
+    use serde::Deserialize;
+
+    use super::clip;
+    use crate::http::store_key::{self, KeyCheck};
+    use crate::http::AppState;
+
+    /// Most entries one request may carry, and the route's body limit.
+    pub const MAX_ENTRIES: usize = 20;
+    pub const MAX_BODY_BYTES: usize = 32 * 1024;
+
+    #[derive(Deserialize)]
+    pub struct PluginLogs {
+        entries: Vec<PluginEntry>,
+    }
+
+    #[derive(Deserialize)]
+    struct PluginEntry {
+        /// WooCommerce's level names (`WC_Log_Levels`).
+        level: String,
+        message: String,
+        trace_id: Option<String>,
+    }
+
+    pub async fn forward(State(state): State<AppState>, Path(pk): Path<String>, headers: HeaderMap, Json(logs): Json<PluginLogs>) -> StatusCode {
+        if store_key::check(&state, &pk, &headers) != KeyCheck::Valid {
+            return StatusCode::UNAUTHORIZED;
+        }
+        let Ok(Some(store)) = state.db.lock().get_store_connection_by_public_key(&pk) else {
+            return StatusCode::UNAUTHORIZED;
+        };
+        if logs.entries.len() > MAX_ENTRIES {
+            return StatusCode::PAYLOAD_TOO_LARGE;
+        }
+        for entry in logs.entries {
+            let span = tracing::info_span!(parent: None, "woocommerce report", source = "woocommerce", store.id = %store.id);
+            if let Some(trace_id) = entry.trace_id.as_deref().filter(|t| telemetry::store::api::is_trace_id(t)) {
+                // The plugin names only its trace, not a span in it.
+                telemetry::trace::set_remote_parent(&span, &format!("00-{trace_id}-0000000000000001-01"));
+            }
+            let _entered = span.enter();
+            let message = clip(&entry.message);
+            match entry.level.as_str() {
+                "emergency" | "alert" | "critical" | "error" => tracing::error!("{message}"),
+                "warning" => tracing::warn!("{message}"),
+                // Anything quieter isn't forwarded by the plugin; ignore it.
+                _ => {}
+            }
+        }
+        StatusCode::NO_CONTENT
+    }
+}

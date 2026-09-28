@@ -232,6 +232,12 @@ pub fn build_router(state: AppState) -> Router {
         // shareable page wrapping the (nav-less) checkout page above in an
         // iframe - see `checkout::checkout_share_page`'s own doc comment.
         .route("/pay/{pk}/orders/{order_id}/share", axum::routing::get(checkout::checkout_share_page))
+        // Errors the WooCommerce plugin forwards (structured_logging.md 2.4).
+        .route(
+            "/pay/{pk}/logs",
+            post(telemetry_client::plugin::forward)
+                .layer(axum::extract::DefaultBodyLimit::max(telemetry_client::plugin::MAX_BODY_BYTES)),
+        )
         .layer(middleware::from_fn_with_state(state.clone(), embed_domains::embed_policy_middleware))
         // Identifies the client (and a store's secret key), spends its
         // budget and challenges it past its soft limit before anything else

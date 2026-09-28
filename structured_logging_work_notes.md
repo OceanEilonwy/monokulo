@@ -29,7 +29,7 @@ because it builds on the `live-settings` crate from that work).
 | 2.1 HTTP spans | done | "request spans and trace propagation" | `telemetry::http::server` middleware, outermost on both routers |
 | 2.2 background spans | done | same | webhook attempts (`info`), scan ticks, per-store scans, key-custody calls (`debug`) |
 | 2.3 propagation | done | same | `tracing-opentelemetry`; `traceparent` monokulo to engine (`shared::http_cache::build_traced_client`) and engine to merchant webhooks; `trace_id`/`span_id` on JSON lines |
-| 2.4 PHP plugin | done except error forwarding | same | `traceparent` on both `wp_remote_post` calls, adopted from incoming webhooks, trace id on every log line. "Forward errors to monokulo" waits for part 3's store |
+| 2.4 PHP plugin | done | same, and "plugin errors forwarded" | `traceparent` on both `wp_remote_post` calls, adopted from incoming webhooks, trace id on every log line. "Send errors to Monokulo" option: warnings and errors batched to `POST /pay/{pk}/logs` at the end of the PHP request, non-blocking |
 | 2.5 browser | done except checkout toggle | same | `static/telemetry.js`, `POST /telemetry/client`, `<meta name="traceparent">`. Only on pages with nav; the checkout toggle comes with part 8 |
 | 3.1 SQLite store | done | "log store" | `telemetry::store`: `<db stem>.logs.db` beside each main database; writer thread; spans via an SDK `SpanProcessor` |
 | 3.2 retention | done | same | `logging.retention_days` (14) and `logging.max_mb` (500) in both processes, applied once a minute by the writer thread |
@@ -41,9 +41,7 @@ because it builds on the `live-settings` crate from that work).
 ### Next
 
 Part 4 (fixi foundation), then part 5 (the Logs page, which uses
-`monokulo::logs` and `telemetry::query`). The PHP "forward errors" option
-(2.4) is still open; it needs a monokulo endpoint authenticated with the
-store's secret key.
+`monokulo::logs` and `telemetry::query`).
 
 ## Decisions and deviations from the plan
 
@@ -116,6 +114,12 @@ store's secret key.
   `detail`, and sit in a `browser report` span with `source = "browser"`
   that joins the page's trace. (`tracing::warn!(target: "browser", ...)`
   with dotted field names doesn't parse, so there is no `browser` target.)
+- **Plugin errors go to `POST /pay/{pk}/logs`**, not the plan's
+  `/api/v1/telemetry/logs`: the `/pay/{pk}` router already identifies
+  the store, counts requests in the abuse limits and checks the store's
+  secret key the way order creation does. At most 20 entries per request;
+  lines carry `source = "woocommerce"` and `store.id`, and join the
+  plugin request's trace.
 - **PHP**: one trace per PHP request (a static on the gateway class);
   `traceparent` gets a new span id per call; the trace id is appended to
   each log message as `[trace <id>]`, because WooCommerce's file handler
