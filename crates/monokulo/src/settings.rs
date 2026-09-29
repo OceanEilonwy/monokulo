@@ -87,12 +87,26 @@ settings! {
         description: "Where Coingecko's API is reached. Change it only to use a proxy or mirror.",
         example: "https://api.coingecko.com",
     },
+    EXCHANGE_RATE_COINMARKETCAP_ENABLED: bool {
+        key: "exchange_rate.coinmarketcap_enabled",
+        env: "MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED",
+        default: true,
+        description: "Whether stores can price orders in fiat currencies using CoinMarketCap's rates. Each store still chooses whether to use it, and in what order.",
+        example: "true",
+    },
+    EXCHANGE_RATE_COINMARKETCAP_BASE_URL: HttpUrl {
+        key: "exchange_rate.coinmarketcap_base_url",
+        env: "MONOKULO_EXCHANGE_RATE_COINMARKETCAP_BASE_URL",
+        default: live_settings::parsed_default("https://pro-api.coinmarketcap.com/public-api"),
+        description: "Where CoinMarketCap's keyless API is reached. Change it only to use a proxy or mirror.",
+        example: "https://pro-api.coinmarketcap.com/public-api",
+    },
     EXCHANGE_RATE_CACHE_SECONDS: u64 {
         key: "exchange_rate.cache_seconds",
         env: "MONOKULO_EXCHANGE_RATE_CACHE_SECONDS",
         default: 30,
         check: range(0, 86_400),
-        description: "Seconds a fetched exchange rate is reused before asking Coingecko again.",
+        description: "Seconds a fetched exchange rate is reused before asking its provider again.",
         example: "30",
     },
     HTTP_CACHE_MAX_MB: u64 {
@@ -372,12 +386,20 @@ impl Section for PerRequest {
 impl Section for ExchangeRateConfig {
     const NAME: &'static str = "exchange rates";
     fn keys() -> &'static [&'static dyn AnySetting] {
-        &[&EXCHANGE_RATE_COINGECKO_ENABLED, &EXCHANGE_RATE_COINGECKO_BASE_URL, &EXCHANGE_RATE_CACHE_SECONDS]
+        &[
+            &EXCHANGE_RATE_COINGECKO_ENABLED,
+            &EXCHANGE_RATE_COINGECKO_BASE_URL,
+            &EXCHANGE_RATE_COINMARKETCAP_ENABLED,
+            &EXCHANGE_RATE_COINMARKETCAP_BASE_URL,
+            &EXCHANGE_RATE_CACHE_SECONDS,
+        ]
     }
     fn from_snapshot(snapshot: &Snapshot) -> Result<Self, Vec<FieldError>> {
         Ok(ExchangeRateConfig {
             coingecko_enabled: snapshot.get(&EXCHANGE_RATE_COINGECKO_ENABLED),
             coingecko_base_url: snapshot.get(&EXCHANGE_RATE_COINGECKO_BASE_URL).as_str().to_string(),
+            coinmarketcap_enabled: snapshot.get(&EXCHANGE_RATE_COINMARKETCAP_ENABLED),
+            coinmarketcap_base_url: snapshot.get(&EXCHANGE_RATE_COINMARKETCAP_BASE_URL).as_str().to_string(),
             cache_seconds: snapshot.get(&EXCHANGE_RATE_CACHE_SECONDS),
         })
     }
@@ -804,13 +826,15 @@ mod tests {
         let registry = settings.registry.as_ref().unwrap();
         // Loading applied the saved (here: default) settings.
         assert_eq!(engine.base_url(), "http://127.0.0.1:8443");
-        assert_eq!(rates.available_providers(), vec!["coingecko"]);
+        assert_eq!(rates.available_providers(), vec!["coingecko", "coinmarketcap"]);
 
         let report = registry.save(change("engine.url", "http://127.0.0.1:2")).await.unwrap();
         assert_eq!(engine.base_url(), "http://127.0.0.1:2", "the next engine call goes to the new address");
         assert_eq!(report.warnings.len(), 1, "nothing answers there, and the save says so (D4)");
 
         registry.save(change("exchange_rate.coingecko_enabled", "false")).await.unwrap();
+        assert_eq!(rates.available_providers(), vec!["coinmarketcap"]);
+        registry.save(change("exchange_rate.coinmarketcap_enabled", "false")).await.unwrap();
         assert!(rates.available_providers().is_empty());
 
         registry.save(change("abuse.soft_per_min", "7")).await.unwrap();

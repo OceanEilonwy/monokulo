@@ -21,7 +21,7 @@
 //! picks between them per-order (`monokulo::exchange_rate_config::
 //! ExchangeRateProviders::piconero_per_unit_for`, dispatched on the order's
 //! own currency first - `"XMR"` always uses the identity provider regardless
-//! of the store's chosen FX provider - and the store's `fx_provider` column
+//! of the store's chosen FX provider - and the store's `fx_providers` column
 //! otherwise), and the two now have genuinely different call shapes:
 //! `XmrIdentityProvider::piconero_per_unit` is a plain constant, no I/O,
 //! while `CoingeckoRateProvider::piconero_per_unit_cached` is `async` (it

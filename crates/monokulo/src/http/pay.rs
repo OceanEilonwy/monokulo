@@ -99,7 +99,7 @@ pub async fn create_order(
     // for an unsupported currency or a malformed amount, before the engine
     // (which has no concept of currency at all) is ever called.
     // `"XMR"` always uses the trivial identity rate regardless of this
-    // store's chosen `fx_provider`; every other currency is dispatched by
+    // store's chosen ordered `fx_providers`; every other currency is dispatched by
     // *this store's own* chosen provider, a per-merchant setting, not one
     // shared instance-wide choice.
     let (piconero_per_unit, provider) = match state.exchange_rate.piconero_per_unit_for(&row, &req.currency).await {
@@ -750,6 +750,157 @@ mod tests {
 
         let response = router.oneshot(create_order_request("pk_nonexistent", "25.00", TEST_CURRENCY)).await.unwrap();
         assert_eq!(response.status(), StatusCode::NOT_FOUND);
+    }
+
+    /// A local server standing in for CoinMarketCap's keyless price
+    /// conversion. `usd_price` is what one XMR costs in USD; `None` answers
+    /// with a body-level error, as the real API does when it is unavailable.
+    async fn spawn_mock_coinmarketcap(usd_price: Option<f64>) -> String {
+        let body = match usd_price {
+            Some(price) => format!(
+                r#"{{"data":{{"id":328,"quote":{{"USD":{{"price":{price}}}}}}},"status":{{"error_code":0}}}}"#
+            ),
+            None => r#"{"status":{"error_code":"500","error_message":"The system is busy, please try again later!"}}"#.to_string(),
+        };
+        let app = Router::new().route(
+            "/v2/tools/price-conversion",
+            axum::routing::get(move || {
+                let body = body.clone();
+                async move {
+                    use axum::response::IntoResponse;
+                    ([("content-type", "application/json")], body).into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    /// Submits the store settings page's provider form (`use_<provider>` and
+    /// `position_<provider>` fields) as the store's owner.
+    async fn save_provider_settings(router: &Router, session_token: &str, connection_id: &str, fields: &[(&str, &str)]) {
+        let body = fields.iter().map(|(k, v)| format!("{k}={v}")).collect::<Vec<_>>().join("&");
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("POST")
+                    .uri(format!("/dashboard/stores/{connection_id}/settings/fx-provider"))
+                    .header("content-type", "application/x-www-form-urlencoded")
+                    .header("authorization", format!("Bearer {session_token}"))
+                    .body(Body::from(body))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            response.status().is_redirection() || response.status() == StatusCode::OK,
+            "saving provider settings failed: {}",
+            response.status()
+        );
+    }
+
+    /// Creates an order and returns (provider recorded, piconero-per-unit
+    /// recorded) from monokulo's own database.
+    async fn order_pricing(state: &AppState, router: &Router, pk: &str) -> (String, u64) {
+        let response = router.clone().oneshot(create_order_request(pk, "10.00", TEST_CURRENCY)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::OK, "order creation failed");
+        let order_id = body_json(response).await["order_id"].as_str().unwrap().to_string();
+        let connection_id = state.db.lock().get_store_connection_by_public_key(pk).unwrap().unwrap().id;
+        let metadata = state.db.lock().get_order_currency_metadata(&connection_id, &order_id).unwrap().unwrap();
+        (metadata.provider, metadata.piconero_per_unit)
+    }
+
+    /// Changing a store's providers, or their order, prices the very next
+    /// order - nothing between the settings page and order creation caches
+    /// the store's choice - and each order records the provider that priced it.
+    #[tokio::test]
+    async fn a_change_to_the_stores_provider_settings_prices_the_very_next_order() {
+        let (mut state, _engine) = test_state_with_real_engine().await;
+        let coingecko = spawn_mock_coingecko().await; // $1.00 per XMR
+        let coinmarketcap = spawn_mock_coinmarketcap(Some(2.0)).await; // $2.00 per XMR
+        state.exchange_rate =
+            std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::coingecko_and_coinmarketcap(coingecko, coinmarketcap));
+        let router = build_router(state.clone());
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "pay-provider-change@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let connection_id = state.db.lock().get_store_connection_by_public_key(&pk).unwrap().unwrap().id;
+
+        // A new store starts on Coingecko alone.
+        assert_eq!(order_pricing(&state, &router, &pk).await, ("coingecko".to_string(), 1_000_000_000_000));
+
+        // CoinMarketCap first, Coingecko second.
+        save_provider_settings(
+            &router,
+            &session_token,
+            &connection_id,
+            &[("use_coingecko", "on"), ("position_coingecko", "2"), ("use_coinmarketcap", "on"), ("position_coinmarketcap", "1")],
+        )
+        .await;
+        assert_eq!(order_pricing(&state, &router, &pk).await, ("coinmarketcap".to_string(), 500_000_000_000));
+
+        // Swapped back.
+        save_provider_settings(
+            &router,
+            &session_token,
+            &connection_id,
+            &[("use_coingecko", "on"), ("position_coingecko", "1"), ("use_coinmarketcap", "on"), ("position_coinmarketcap", "2")],
+        )
+        .await;
+        assert_eq!(order_pricing(&state, &router, &pk).await, ("coingecko".to_string(), 1_000_000_000_000));
+
+        // Coingecko switched off entirely.
+        save_provider_settings(&router, &session_token, &connection_id, &[("use_coinmarketcap", "on"), ("position_coinmarketcap", "1")]).await;
+        assert_eq!(order_pricing(&state, &router, &pk).await, ("coinmarketcap".to_string(), 500_000_000_000));
+    }
+
+    /// The first preferred provider being unavailable, or having no rate for
+    /// the currency, hands over to the next; and the order records the
+    /// provider that actually answered.
+    #[tokio::test]
+    async fn an_unavailable_or_rateless_provider_falls_through_to_the_next_preferred() {
+        let (mut state, _engine) = test_state_with_real_engine().await;
+        // Coingecko answers, but has no rate for USD; CoinMarketCap answers.
+        async fn no_usd() -> axum::response::Response {
+            use axum::response::IntoResponse;
+            ([("content-type", "application/json")], r#"{"monero":{"eur":1.0}}"#).into_response()
+        }
+        let app = Router::new().route("/api/v3/simple/price", axum::routing::get(no_usd));
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let coingecko = format!("http://{}", listener.local_addr().unwrap());
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        let coinmarketcap = spawn_mock_coinmarketcap(Some(2.0)).await;
+        state.exchange_rate =
+            std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::coingecko_and_coinmarketcap(coingecko, coinmarketcap));
+        let router = build_router(state.clone());
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "pay-provider-fallback@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let connection_id = state.db.lock().get_store_connection_by_public_key(&pk).unwrap().unwrap().id;
+        save_provider_settings(
+            &router,
+            &session_token,
+            &connection_id,
+            &[("use_coingecko", "on"), ("position_coingecko", "1"), ("use_coinmarketcap", "on"), ("position_coinmarketcap", "2")],
+        )
+        .await;
+
+        assert_eq!(order_pricing(&state, &router, &pk).await, ("coinmarketcap".to_string(), 500_000_000_000));
+
+        // Now the preferred provider is down altogether (nothing listening).
+        state.exchange_rate = std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::coingecko_and_coinmarketcap(
+            "http://127.0.0.1:1",
+            spawn_mock_coinmarketcap(Some(4.0)).await,
+        ));
+        let router = build_router(state.clone());
+        assert_eq!(order_pricing(&state, &router, &pk).await, ("coinmarketcap".to_string(), 250_000_000_000));
     }
 
     #[tokio::test]

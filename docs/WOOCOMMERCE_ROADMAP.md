@@ -651,13 +651,14 @@ Port Stage 5's mock webhook receiver into the plugin, for real this time:
 
 ### Stage 11 — Exchange-rate automation (parallel track, not blocking)
 
-`docs/DESIGN.md` §13 already sketches pluggable providers
-(`haveno | kraken | coingecko | fixed`); only `"fixed"` exists today. A
-WooCommerce store commonly needs several currencies without a human typing
-in a rate — implement at least one live provider (coingecko is the simplest
-to start with) before or shortly after Stage 10's public launch. Doesn't
-block the plugin working — a hosted instance could launch with a couple of
-hand-maintained rates and swap the provider under it later with zero plugin
+`docs/DESIGN.md` §13 already sketches pluggable providers. Live today:
+`coingecko` and `coinmarketcap` (both keyless). Each store turns providers on
+and orders them; an order is priced by the first that is available and has a
+rate, and records which one. Still to add: `haveno` (RetoSwap, via
+`haveno.markets`'s `/api/v1/tickers?network=reto`, bid/ask midpoint, fiat
+only). A WooCommerce store commonly needs several currencies without a human
+typing in a rate. Doesn't block the plugin working — the provider can change
+under it with zero plugin
 changes, since the plugin never sees exchange rates directly.
 
 ### Stage 12 — TEE-backed `KeyCustody` (hard go-live gate)

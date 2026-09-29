@@ -62,7 +62,8 @@ pub struct StoreSettingsData {
     /// The tenant's current confirmation threshold - `10` when the engine is
     /// currently unreachable.
     pub confirmations_required: u64,
-    pub fx_provider: String,
+    /// Every provider this instance offers: the store's enabled ones first,
+    /// in its order, then the rest.
     pub fx_provider_options: Vec<FxProviderOption>,
     pub base_currency: String,
     pub base_currency_options: Vec<crate::currencies::CurrencyOptionView>,
@@ -307,31 +308,40 @@ fn confirmations_section(store: &StoreSettingsData, in_place: bool) -> Markup {
     }
 }
 
-/// "Exchange rate provider".
+/// "Exchange rate providers": which providers this store uses, and in what
+/// order. Plain form fields (a checkbox and a position number per provider),
+/// so it works with no JavaScript.
 fn fx_provider_section(store: &StoreSettingsData, in_place: bool) -> Markup {
+    let action = format!("/dashboard/stores/{}/settings/fx-provider", store.connection_id);
     html! {
         section id=(StoreSection::FxProvider.id()) {
-                h2 { "Exchange rate provider" }
+                h2 { "Exchange rate providers" }
                 (section_error(store, StoreSection::FxProvider, in_place))
                 @if store.fx_provider_options.is_empty() {
-                    p { strong { "Exchange rate provider:" } " " span class="muted" { "none enabled on this instance" } }
+                    p { strong { "Exchange rate providers:" } " " span class="muted" { "none enabled on this instance" } }
                     p class="hint" {
                         "Only XMR-denominated orders can be created until an admin of this Monokulo instance "
                         "enables a provider (e.g. Coingecko)."
                     }
                 } @else {
-                    form method="post" action=(format!("/dashboard/stores/{}/settings/fx-provider", store.connection_id)) fx-action=(format!("/dashboard/stores/{}/settings/fx-provider", store.connection_id)) fx-method="POST" fx-target="#fx-provider" {
-                        label {
-                            "Exchange rate provider"
-                            select name="fx_provider" {
-                                @for opt in &store.fx_provider_options {
-                                    option value=(opt.name) selected[opt.selected] { (opt.name) }
+                    form method="post" action=(action) fx-action=(action) fx-method="POST" fx-target="#fx-provider" {
+                        span class="field-help" {
+                            "Where this store's orders get their live market rate from, for any currency other than "
+                            "XMR (which always works, needing no provider at all). Tick the providers to use and "
+                            "number them in order of preference: the first one that is reachable and has a rate for "
+                            "the order's currency is used, otherwise the next. The provider that priced each order is "
+                            "recorded on it. Changes apply to the next order created."
+                        }
+                        table class="fx-providers" {
+                            thead { tr { th { "Use" } th { "Provider" } th { "Order" } } }
+                            tbody {
+                                @for (index, opt) in store.fx_provider_options.iter().enumerate() {
+                                    tr {
+                                        td { input type="checkbox" name=(format!("use_{}", opt.name)) value="on" checked[opt.selected] aria-label=(format!("Use {}", opt.name)); }
+                                        td { (opt.name) }
+                                        td { input type="number" name=(format!("position_{}", opt.name)) value=(index + 1) min="1" max=(store.fx_provider_options.len()) aria-label=(format!("Preference order of {}", opt.name)); }
+                                    }
                                 }
-                            }
-                            span class="field-help" {
-                                "Where this store's orders get their live market rate from, for any currency other than "
-                                "XMR (which always works, needing no provider at all). \"coingecko\" looks up a "
-                                "live market rate (cached briefly before the next lookup refreshes it)."
                             }
                         }
                         button type="submit" { "Update" }
@@ -612,7 +622,6 @@ mod tests {
             connection_id: "conn_1".to_string(),
             display_name: "shop.example.com".to_string(),
             confirmations_required: 10,
-            fx_provider: "coingecko".to_string(),
             fx_provider_options: vec![FxProviderOption { name: "coingecko".to_string(), selected: true }],
             base_currency: "XMR".to_string(),
             base_currency_options: vec![],
