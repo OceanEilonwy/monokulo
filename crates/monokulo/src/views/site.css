@@ -112,8 +112,28 @@ fieldset.setting-field > legend { padding: 0; }
 .setting-field label.inline { display: inline-flex; gap: 0.3em; align-items: center; margin: 0.2em 1.2em 0.2em 0; font-weight: 400; }
 .setting-field input, .setting-field select, .setting-field textarea { max-width: 100%; }
 .setting-field textarea { width: 100%; font-family: ui-monospace, monospace; }
-.setting-field details pre { margin: 0.4em 0; }
 .setting-pending { display: block; color: var(--warning); font-weight: 700; margin-top: 0.15em; }
+/* The admin settings page's tabs: a row of plain links. On a phone the row
+   scrolls sideways inside itself rather than widening the page. */
+.tab-bar { position: relative; display: flex; gap: var(--space-xs); overflow-x: auto; margin: var(--space-md) 0 var(--space-lg); border-bottom: 1px solid var(--line); }
+.tab-bar a { flex: none; white-space: nowrap; padding: var(--space-sm) var(--space-md); color: var(--ink); text-decoration: none; border-bottom: 3px solid transparent; }
+.tab-bar a:hover { color: var(--accent-text); }
+.tab-bar a[aria-current="page"] { font-weight: 700; border-bottom-color: var(--tab-current); }
+.tab-marker { color: var(--tab-marker); margin-left: 0.35em; font-size: 0.8em; }
+.settings-actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-sm); }
+/* The Monero nodes tab: a block per network, a box per node row. */
+.node-network { margin: var(--space-lg) 0; }
+details.node-network > summary { cursor: pointer; font-weight: 700; }
+.node-row { border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md); margin: var(--space-sm) 0; min-width: 0; }
+.node-row-name { font-weight: 700; padding: 0 var(--space-xs); }
+.node-row .setting-field input[type="text"] { width: 100%; }
+.node-status { margin: var(--space-xs) 0; color: var(--muted); }
+.node-status.is-problem { color: var(--error); }
+.node-row-actions button { margin-top: var(--space-xs); }
+/* Controls that only work with JavaScript. */
+html:not(.js) .js-only { display: none; }
+/* Read out, not shown: words that go with something only visible. */
+.visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .setting-problem { display: block; color: var(--error); margin-top: 0.15em; }
 /* Store page embed warnings (`views::store_detail::embed_warnings`). */
 .embed-warning {

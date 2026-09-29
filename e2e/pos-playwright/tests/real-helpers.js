@@ -48,16 +48,66 @@ async function signInAsAdmin(page) {
   await page.locator('form[action="/dashboard/login"] button[type="submit"]').click();
 }
 
-/** The fake monerod as a `monero_node` JSON value. */
-function fakeNodeJson() {
-  const [host, port] = fixture().fake_monerod.split(':');
-  return JSON.stringify({ host, port: Number(port), ssl: false, accept_self_signed_certs: true, fallbacks: [] });
+/** The fake monerod's address, as the node form takes it. */
+function fakeNodeAddress() {
+  return fixture().fake_monerod;
 }
 
-/** Saves engine settings from the admin page; `fields` maps input names to values. */
-async function saveEngineSettings(page, fields) {
-  const { monokulo_url: base } = fixture();
-  await page.goto(base + '/dashboard/admin/settings');
+/** A network's node rows on the open Monero nodes tab (address boxes, the blank "Add a node" row last). */
+function nodeAddressBoxes(page, network) {
+  return page.locator(`[data-network="${network}"] input[name^="node_${network}_"][name$="_address"]`);
+}
+
+/**
+ * Fills the open Monero nodes tab so each network given has exactly these
+ * nodes, in order (`[]` clears it): the rows there are refilled, extra ones
+ * blanked (a blank row is dropped on save), and the blank row takes one
+ * more. Doesn't save.
+ */
+async function fillNodes(page, nodes) {
+  for (const [network, addresses] of Object.entries(nodes)) {
+    // A network with no nodes and no stores starts closed.
+    await page.locator(`details[data-network="${network}"]`).evaluateAll((all) => all.forEach((d) => { d.open = true; }));
+    const boxes = nodeAddressBoxes(page, network);
+    const count = await boxes.count();
+    if (addresses.length > count) throw new Error(`only ${count} rows for ${network}`);
+    for (let i = 0; i < count; i += 1) await boxes.nth(i).fill(addresses[i] || '');
+  }
+}
+
+/** Sets networks' nodes on the Monero nodes tab and saves, e.g. `{ stagenet: [fakeNodeAddress()] }`. */
+async function saveNodes(page, nodes) {
+  await openSettingsTab(page, 'nodes');
+  await fillNodes(page, nodes);
+  await page.locator('#settings-panel').getByRole('button', { name: 'Save', exact: true }).click();
+}
+
+/**
+ * The admin settings tab (its `?tab=` id) a form field is on, by its name:
+ * the same map as `setting_placement` in crates/monokulo/src/views/admin.rs.
+ */
+function settingsTabOf(name) {
+  const key = name.replace(/^clear:/, '');
+  if (key.startsWith('node_')) return 'nodes';
+  if (key === 'payment.scan_chunk_memory_budget_mb') return 'server';
+  if (/^(payment|webhooks|exchange_rate)\./.test(key)) return 'payments';
+  if (key.startsWith('key_custody.')) return 'custody';
+  if (/^(abuse|rate_limit)\./.test(key)) return 'abuse';
+  if (/^(server|http_cache)\./.test(key)) return 'server';
+  if (/^(engine:)?logging\./.test(key)) return 'logging';
+  return 'general';
+}
+
+/** Every tab of the admin settings page, in the tab bar's order (Other only shows when it has something). */
+const SETTINGS_TABS = ['general', 'nodes', 'payments', 'custody', 'abuse', 'server', 'logging'];
+
+/** Opens one tab of the admin settings page. */
+async function openSettingsTab(page, tab) {
+  await page.goto(`${fixture().monokulo_url}/dashboard/admin/settings?tab=${tab}`);
+}
+
+/** Fills the open tab's fields; `fields` maps input names to values. */
+async function fillSettings(page, fields) {
   // Lists of choices first: ticking a key custody backend shows its own
   // section, whose fields can then be filled.
   const isList = async (name) => (await page.locator(`input[type=checkbox][name="${name}"]`).count()) > 0;
@@ -75,7 +125,27 @@ async function saveEngineSettings(page, fields) {
     if ((await field.evaluate((el) => el.tagName)) === 'SELECT') await field.selectOption(value);
     else await field.fill(value);
   }
-  await page.getByRole('button', { name: 'Save engine settings' }).click();
+}
+
+/**
+ * Saves settings from the admin page; `fields` maps input names to values.
+ * Opens the tab holding them and presses its Save; fields on several tabs
+ * are saved one tab after another, each save finished before the next.
+ */
+async function saveEngineSettings(page, fields) {
+  const byTab = new Map();
+  for (const [name, value] of Object.entries(fields)) {
+    const tab = settingsTabOf(name);
+    if (!byTab.has(tab)) byTab.set(tab, {});
+    byTab.get(tab)[name] = value;
+  }
+  const tabs = [...byTab.keys()];
+  for (const [i, tab] of tabs.entries()) {
+    await openSettingsTab(page, tab);
+    await fillSettings(page, byTab.get(tab));
+    await page.locator('#settings-panel').getByRole('button', { name: 'Save', exact: true }).click();
+    if (i < tabs.length - 1) await expect(page.locator('#settings-panel .save-status')).toBeVisible();
+  }
 }
 
 // monokulo caches the engine's status for up to 10s, so a page reflects a
@@ -93,8 +163,8 @@ async function reloadUntil(page, url, check) {
  * first) and returns its dashboard path, `/dashboard/stores/{id}`. */
 async function connectStore(page, site) {
   const { monokulo_url: base } = fixture();
-  await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
-  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await saveNodes(page, { stagenet: [fakeNodeAddress()] });
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   await page.goto(base + '/dashboard/connect');
   await page.locator('input[name="site_url"]').fill(`https://${site}`);
   await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);
@@ -118,4 +188,8 @@ async function transitionDone(page) {
   await expect.poll(() => page.evaluate(() => !document.activeViewTransition)).toBe(true);
 }
 
-module.exports = { useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeJson, saveEngineSettings, reloadUntil, connectStore, VIEW_KEY, SPEND_PUBKEY };
+module.exports = {
+  useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, fillNodes, nodeAddressBoxes, saveEngineSettings,
+  settingsTabOf, openSettingsTab, fillSettings,
+  SETTINGS_TABS, reloadUntil, connectStore, VIEW_KEY, SPEND_PUBKEY,
+};

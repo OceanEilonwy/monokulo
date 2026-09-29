@@ -211,6 +211,71 @@ pub struct UpdateSettingsRequest {
     monero_node: HashMap<String, Option<serde_json::Value>>,
 }
 
+/// How long a node being saved has to say which network it's on.
+const NODE_INFO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+
+/// The nodes submitted for each network that can never work there
+/// (nicer_admin_screen.md T9): one listed twice, or one that answers that
+/// it's on another network. Only networks whose nodes changed are checked;
+/// their nodes are all asked at once, each for at most
+/// [`NODE_INFO_TIMEOUT`], with no lock held. A node that doesn't answer, or
+/// doesn't say (an old monerod, a `fakechain` one), is not refused: it may
+/// just be down for now (decision D2), and saving it is allowed.
+async fn nodes_that_cannot_work(
+    submitted: &HashMap<String, Option<serde_json::Value>>,
+    current: &crate::engine_settings::NodeConfig,
+) -> Vec<live_settings::FieldError> {
+    use crate::daemon::MoneroDaemonClient;
+    use crate::settings::MoneroNodeSetting;
+
+    let mut errors = Vec::new();
+    let mut probes = Vec::new();
+    for (network, value) in submitted {
+        let Some((name, setting)) = NETWORKS.iter().find(|(n, _)| n == network) else { continue };
+        // Not a node the registry would accept: its own check says why.
+        let Some(node) = value.as_ref().and_then(|v| serde_json::from_value::<MoneroNodeSetting>(v.clone()).ok()) else { continue };
+        if current.nodes.get(name) == Some(&node) {
+            continue;
+        }
+        let nodes: Vec<MoneroNodeSetting> = std::iter::once(node.clone()).chain(node.fallbacks.iter().cloned()).collect();
+        let mut seen = std::collections::HashSet::new();
+        if let Some(twice) = nodes.iter().find(|n| !seen.insert((n.host.to_ascii_lowercase(), n.port))) {
+            errors.push(live_settings::FieldError::new(setting.key, format!("{}:{} is listed twice.", twice.host, twice.port)));
+            continue;
+        }
+        for node in nodes {
+            let key = setting.key;
+            let network = *name;
+            probes.push(async move {
+                let client = crate::daemon_rpc::RpcDaemonClient::new(&node.host, node.port, node.ssl, node.accept_self_signed_certs).ok()?;
+                let info = tokio::time::timeout(NODE_INFO_TIMEOUT, client.get_info()).await.ok()?.ok()?;
+                let on = info.network()?;
+                (crate::network::network_str(on) != network).then(|| {
+                    live_settings::FieldError::new(key, format!("{}:{} is on {}, not {network}.", node.host, node.port, info.nettype))
+                })
+            });
+        }
+    }
+    let mut wrong: Vec<live_settings::FieldError> = futures_util::future::join_all(probes).await.into_iter().flatten().collect();
+    // One message per network: the first of its nodes in the order saved.
+    let mut reported = std::collections::HashSet::new();
+    wrong.retain(|e| reported.insert(e.key.clone()));
+    errors.extend(wrong);
+    errors.sort_by(|a, b| a.key.cmp(&b.key));
+    errors
+}
+
+fn refused(errors: &[live_settings::FieldError]) -> axum::response::Response {
+    (
+        StatusCode::BAD_REQUEST,
+        Json(json!({
+            "error": errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
+            "fields": errors.iter().map(|e| json!({ "key": e.key, "message": e.message })).collect::<Vec<_>>(),
+        })),
+    )
+        .into_response()
+}
+
 /// A network that stores use but that has no node configured after a save
 /// (decision D2): the save is accepted and the admin is told.
 #[derive(Serialize)]
@@ -236,6 +301,13 @@ pub async fn update_settings(
             .into_response();
     };
     let mut changes: live_settings::Changes = req.scalars.into_iter().map(|(k, v)| (k, Some(v))).collect();
+    // A node that can never work where it's being saved is refused before
+    // anything is stored (T9).
+    let current_nodes = state.settings.nodes.load();
+    let cannot_work = nodes_that_cannot_work(&req.monero_node, &current_nodes).await;
+    if !cannot_work.is_empty() {
+        return refused(&cannot_work);
+    }
     for (network, node) in req.monero_node {
         let Some((_, setting)) = NETWORKS.iter().find(|(n, _)| *n == network) else {
             return (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("unknown network {network:?}") }))).into_response();
@@ -291,14 +363,7 @@ pub async fn update_settings(
             )
                 .into_response()
         }
-        Err(live_settings::SaveError::Invalid(errors)) => (
-            StatusCode::BAD_REQUEST,
-            Json(json!({
-                "error": errors.iter().map(ToString::to_string).collect::<Vec<_>>().join("; "),
-                "fields": errors.iter().map(|e| json!({ "key": e.key, "message": e.message })).collect::<Vec<_>>(),
-            })),
-        )
-            .into_response(),
+        Err(live_settings::SaveError::Invalid(errors)) => refused(&errors),
         Err(live_settings::SaveError::UnknownKey(key)) => {
             (StatusCode::BAD_REQUEST, Json(json!({ "error": format!("there is no setting called {key:?}") }))).into_response()
         }

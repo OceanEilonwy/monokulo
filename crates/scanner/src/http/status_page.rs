@@ -51,6 +51,10 @@ pub struct NodeStatus {
     pub in_cooldown: bool,
     pub height: Option<u64>,
     pub error: Option<String>,
+    /// The network the node says it's on (`get_info`'s `nettype`:
+    /// `"mainnet"`, `"stagenet"`, `"testnet"` or `"fakechain"`), or `None`
+    /// when it didn't say. The admin page shows a node on the wrong one.
+    pub network: Option<String>,
 }
 
 #[derive(Serialize, Clone)]
@@ -170,10 +174,20 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
         let current_index = daemon.current_index();
         let mut nodes = Vec::with_capacity(daemon.nodes().len());
         for (i, node) in daemon.nodes().iter().enumerate() {
-            let (height, error) = match tokio::time::timeout(NODE_HEIGHT_TIMEOUT, node.client.get_height()).await {
+            // Its height and its network at once, each within the same
+            // timeout: a node slow to answer one doesn't hide the other.
+            let (height, info) = futures_util::join!(
+                tokio::time::timeout(NODE_HEIGHT_TIMEOUT, node.client.get_height()),
+                tokio::time::timeout(NODE_HEIGHT_TIMEOUT, node.client.get_info()),
+            );
+            let (height, error) = match height {
                 Ok(Ok(h)) => (Some(h), None),
                 Ok(Err(e)) => (None, Some(e.to_string())),
                 Err(_) => (None, Some(format!("timed out after {}s", NODE_HEIGHT_TIMEOUT.as_secs()))),
+            };
+            let network = match info {
+                Ok(Ok(info)) if info.nettype != crate::daemon::DaemonInfo::UNKNOWN => Some(info.nettype),
+                _ => None,
             };
             nodes.push(NodeStatus {
                 label: node.label.clone(),
@@ -181,6 +195,7 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
                 in_cooldown: daemon.in_cooldown(i),
                 height,
                 error,
+                network,
             });
         }
 
@@ -336,6 +351,7 @@ mod tests {
                 in_cooldown: false,
                 height: probe_ok.then_some(100),
                 error: (!probe_ok).then(|| "timed out".to_string()),
+                network: None,
             }],
             scanner: ScannerStatusView {
                 ever_ticked: true,

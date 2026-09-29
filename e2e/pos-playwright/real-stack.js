@@ -146,4 +146,20 @@ async function startStack() {
   return { fixture, stop };
 }
 
-module.exports = { buildBinaries, startStack };
+/**
+ * Starts one more fake monerod that says it's on `nettype` (for a node on
+ * the wrong network, or a second node on the right one); resolves to
+ * `{ address, stop }`.
+ */
+async function startFakeNode(nettype) {
+  const child = spawn(BIN('fake-monerod'), ['--height', '1000', '--nettype', nettype], { stdio: ['ignore', 'pipe', 'ignore'] });
+  const address = await readyLine(child, 'FAKE_MONEROD_READY ');
+  const stop = () => new Promise((resolve) => {
+    if (child.exitCode !== null || child.signalCode !== null) return resolve();
+    child.once('exit', () => resolve());
+    child.kill('SIGTERM');
+  });
+  return { address, stop };
+}
+
+module.exports = { buildBinaries, startStack, startFakeNode };

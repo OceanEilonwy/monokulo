@@ -9,6 +9,7 @@
 //! `main.rs` wires up `scanner::http::{AppState, build_router}`.
 
 pub mod abuse;
+pub mod admin_nodes;
 pub mod confirmation_thresholds;
 pub mod crypto;
 pub mod currencies;

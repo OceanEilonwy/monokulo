@@ -58,6 +58,10 @@
   --btn-primary-bg: var(--accent);
   --btn-primary-hover: var(--accent-hover);
   --btn-primary-ink: var(--accent-ink);
+  /* The admin settings tab bar: the rule under the open tab, and the dot
+     on a tab that needs attention (it also says so in words). */
+  --tab-current: var(--accent-text);
+  --tab-marker: var(--warning);
   /* Orange as a ring must clear 3:1 against the page; the brand orange is
      2.6:1 on paper, so the ring takes the orange used for text. */
   --focus-ring: var(--accent-text);
