@@ -85,16 +85,50 @@ impl XmrIdentityProvider {
 /// caller handling one has no reason to handle the other the same way.
 #[derive(Debug, thiserror::Error)]
 pub enum ExchangeRateError {
-    #[error("request to Coingecko failed: {0}")]
+    #[error("request to the rate provider failed: {0}")]
     Request(#[from] reqwest::Error),
     /// From the shared HTTP-cache-aware transport's own middleware layer
     /// (`shared::http_cache`) - distinct from `Request` above only in *which*
     /// crate's `Result` the `?` operator was unwrapping at the call site; both
-    /// ultimately mean "the request to Coingecko failed."
-    #[error("request to Coingecko failed: {0}")]
+    /// ultimately mean "the request to the rate provider failed."
+    #[error("request to the rate provider failed: {0}")]
     Middleware(#[from] reqwest_middleware::Error),
-    #[error("Coingecko response was not shaped as expected: {0}")]
+    #[error("rate provider response was not shaped as expected: {0}")]
     UnexpectedResponse(String),
+}
+
+/// Turns "price of 1 XMR in some currency" into "piconero per one unit of
+/// that currency" - the inversion every live provider shares. `None` (never
+/// an error, never a made-up value) when the price is non-finite, zero,
+/// negative, or derives a rate outside what a `u64` piconero count can hold -
+/// a bad value in one response must not price an order at effectively free.
+/// See the module doc comment for why an `f64` here doesn't violate §8.1's
+/// integer-money principle. Rounded (never truncated) before casting, since
+/// a market price essentially never divides evenly into 1e12 piconero.
+/// `provider` only labels the warning logged when the price is refused.
+pub(crate) fn piconero_per_unit_from_price(provider: &str, currency_upper: &str, price: f64) -> Option<u64> {
+    if !price.is_finite() || price <= 0.0 {
+        tracing::warn!(
+            provider,
+            currency = %currency_upper,
+            price,
+            "price was non-finite, zero, or negative - refusing to derive a rate from it, which would price every \
+             order in this currency at effectively free or nonsense"
+        );
+        return None;
+    }
+    let piconero_per_unit = (PICONERO_PER_XMR as f64 / price).round();
+    if !piconero_per_unit.is_finite() || piconero_per_unit > u64::MAX as f64 || piconero_per_unit < 1.0 {
+        tracing::warn!(
+            provider,
+            currency = %currency_upper,
+            piconero_per_unit,
+            "derived piconero-per-unit is out of u64 range or less than one piconero - treating as unpriced for \
+             this fetch"
+        );
+        return None;
+    }
+    Some(piconero_per_unit as u64)
 }
 
 /// Live exchange-rate provider backed by Coingecko's keyless public API
@@ -207,31 +241,7 @@ impl CoingeckoRateProvider {
             );
             return Ok(None);
         };
-        if !price.is_finite() || price <= 0.0 {
-            tracing::warn!(
-                currency = %currency_upper,
-                price,
-                "coingecko: price was non-finite, zero, or negative - refusing to derive a rate from it, which \
-                 would price every order in this currency at effectively free or nonsense"
-            );
-            return Ok(None);
-        }
-        // The inverse of "price of 1 XMR in this currency" is "piconero per
-        // one unit of this currency" - see the module doc comment for why an
-        // `f64` here doesn't violate §8.1's integer-money principle. Rounded
-        // deliberately (never truncated) before casting, since a market price
-        // essentially never divides evenly into 1e12 piconero.
-        let piconero_per_unit = (PICONERO_PER_XMR as f64 / price).round();
-        if !piconero_per_unit.is_finite() || piconero_per_unit > u64::MAX as f64 || piconero_per_unit < 1.0 {
-            tracing::warn!(
-                currency = %currency_upper,
-                piconero_per_unit,
-                "coingecko: derived piconero-per-unit is out of u64 range or less than one piconero - treating as \
-                 unpriced for this fetch"
-            );
-            return Ok(None);
-        }
-        Ok(Some(piconero_per_unit as u64))
+        Ok(piconero_per_unit_from_price("coingecko", currency_upper, price))
     }
 
     /// The real, production entry point for a rate lookup: returns the
