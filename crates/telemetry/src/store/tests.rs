@@ -221,3 +221,32 @@ fn watching_the_latest_id_sees_new_lines() {
     }
     assert!(*latest.borrow() > before);
 }
+
+#[test]
+fn a_store_made_before_session_ids_were_indexed_gets_the_column_and_finds_by_it() {
+    let dir = TempDir::new();
+    let path = dir.0.join("logs.db");
+    {
+        // The table as it was: no session_id column.
+        let conn = Connection::open(&path).unwrap();
+        let old = SCHEMA.replace(",\n    session_id TEXT GENERATED ALWAYS AS (json_extract(attributes, '$.\"session.id\"')) VIRTUAL", "");
+        assert_ne!(old, SCHEMA);
+        conn.execute_batch(&old).unwrap();
+        conn.execute(
+            "INSERT INTO logs (ts, level, service, target, message, attributes, spans) VALUES (1, 9, 'monokulo', 't', 'signed in', ?1, '[]')",
+            [r#"{"session.id":"5e55"}"#],
+        )
+        .unwrap();
+        let has: i64 = conn.query_row("SELECT count(*) FROM pragma_table_xinfo('logs') WHERE name = 'session_id'", [], |r| r.get(0)).unwrap();
+        assert_eq!(has, 0, "the old table really lacks it");
+    }
+    let conn = open_writer(&path).unwrap();
+    let plan: String = conn.query_row("EXPLAIN QUERY PLAN SELECT id FROM logs WHERE session_id = '5e55'", [], |r| r.get(3)).unwrap();
+    assert!(plan.contains("logs_session"), "{plan}");
+    drop(conn);
+    let (telemetry, subscriber) = build("monokulo", Format::Json, false, "info", std::io::sink);
+    let _guard = tracing::subscriber::set_default(subscriber);
+    let store = telemetry.open_store(&path).unwrap();
+    assert_eq!(filtered(&store, "session.id = '5e55'"), vec!["signed in".to_string()]);
+    assert!(filtered(&store, "session.id = 'other'").is_empty());
+}

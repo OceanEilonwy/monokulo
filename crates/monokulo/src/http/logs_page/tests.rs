@@ -3,6 +3,7 @@ use axum::http::{Request, StatusCode};
 use axum::Router;
 use http_body_util::BodyExt;
 use tower::ServiceExt;
+use tracing::instrument::WithSubscriber;
 
 use crate::db::{TEST_ADMIN_EMAIL, TEST_ADMIN_PASSWORD};
 use crate::http::{build_router, AppState};
@@ -55,7 +56,11 @@ async fn setup(extra: usize) -> Setup {
     let state = AppState { log_store: Some(store), ..AppState::for_tests() };
     let router = build_router(state.clone());
     let login = form("/dashboard/login", &[("email", TEST_ADMIN_EMAIL), ("password", TEST_ADMIN_PASSWORD)], None);
-    let response = router.clone().oneshot(login).await.unwrap();
+    // Under a subscriber of its own, which stores nothing: tracing turns a
+    // callsite off for good when it's first reached with none in scope,
+    // and the requests tests send later would lose their spans.
+    let (_, quiet) = telemetry::build("monokulo", telemetry::Format::Json, false, "info", std::io::sink);
+    let response = router.clone().oneshot(login).with_subscriber(tracing::Dispatch::new(quiet)).await.unwrap();
     let cookie = response.headers()["set-cookie"].to_str().unwrap().split(';').next().unwrap().to_string();
     Setup { router, state, cookie, trace_id, dispatch, _dir: dir }
 }
@@ -353,7 +358,6 @@ async fn live_streams_new_lines_to_the_top_of_the_list() {
 /// late, shown as one timeline in the order the tablet recorded it.
 #[tokio::test]
 async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
-    use tracing::instrument::WithSubscriber;
     let s = setup(0).await;
     let admin = s.state.db.lock().get_user_by_email(TEST_ADMIN_EMAIL).unwrap().unwrap();
     {
@@ -419,4 +423,79 @@ async fn a_pos_session_reads_as_one_timeline_in_the_tablets_order() {
     assert!(fragment.contains(&format!(r#"href="/dashboard/admin/logs/pos/{session}""#)) && fragment.contains("Show the POS session timeline"), "{fragment}");
     let (status, _, _) = s.get("/dashboard/admin/logs/pos/not-a-session!", false).await;
     assert_eq!(status, StatusCode::NOT_FOUND);
+}
+
+/// Requests through the real router: a signed-in person's lines carry
+/// their user and session, a store's pages and its public checkout carry
+/// the store, and a visitor's carry no session. The Logs page shows them
+/// first on a line, and every line of the session is one link away.
+#[tokio::test]
+async fn lines_say_who_they_were_for_and_a_session_is_one_link_away() {
+    let s = setup(0).await;
+    let admin = s.state.db.lock().get_user_by_email(TEST_ADMIN_EMAIL).unwrap().unwrap();
+    s.state
+        .db
+        .lock()
+        .create_store_connection("c_who", &admin.id, "woocommerce", "https://who-shop.example.com", "pk_who", "enc", "http://engine", 1, "XMR")
+        .unwrap();
+    let call = |uri: &str, cookie: Option<&str>| {
+        let mut builder = Request::get(uri);
+        if let Some(cookie) = cookie {
+            builder = builder.header("cookie", cookie);
+        }
+        s.router.clone().oneshot(builder.body(Body::empty()).unwrap()).with_subscriber(s.dispatch.clone())
+    };
+    call("/dashboard", Some(&s.cookie)).await.unwrap();
+    call("/dashboard/stores/c_who", Some(&s.cookie)).await.unwrap();
+    call("/pay/pk_who/orders/o_nowhere/status", None).await.unwrap();
+
+    let store = s.state.log_store.clone().unwrap();
+    let finished = |route: &str| {
+        let route = route.to_string();
+        let store = store.clone();
+        async move {
+            let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+            loop {
+                let rows = store.query(&telemetry::store::LogQuery { limit: 1000, ..Default::default() }).unwrap();
+                if let Some(row) = rows.into_iter().find(|r| r.attributes.get("http.route").and_then(|v| v.as_str()) == Some(&route) && r.attributes.contains_key("http.response.status_code")) {
+                    return row;
+                }
+                assert!(std::time::Instant::now() < deadline, "no line for {route}: {:?}", store.query(&telemetry::store::LogQuery { limit: 1000, ..Default::default() }).unwrap().iter().map(|r| (&r.message, &r.attributes)).collect::<Vec<_>>());
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+        }
+    };
+    let token = s.cookie.split_once('=').unwrap().1;
+    let session = crate::http::session_log_id(&shared::auth::hash_secret_token(token));
+    assert_eq!(session.len(), 16);
+    assert!(!session.contains(token) && !shared::auth::hash_secret_token(token).contains(&session), "nothing that finds the session");
+
+    let dashboard = finished("/dashboard").await;
+    assert_eq!(dashboard.attributes["user.id"], admin.id.as_str());
+    assert_eq!(dashboard.attributes["session.id"], session.as_str());
+    assert!(!dashboard.attributes.contains_key("store.id"), "{:?}", dashboard.attributes);
+    let store_page = finished("/dashboard/stores/{id}").await;
+    assert_eq!(store_page.attributes["store.id"], "c_who");
+    assert_eq!(store_page.attributes["session.id"], session.as_str());
+    let checkout = finished("/pay/{pk}/orders/{order_id}/status").await;
+    assert_eq!(checkout.attributes["store.id"], "c_who", "found from the public key");
+    assert!(!checkout.attributes.contains_key("session.id") && !checkout.attributes.contains_key("user.id"), "a visitor has no session: {:?}", checkout.attributes);
+
+    // In Logs: the line links to its session, whose search finds the
+    // session's lines and no one else's.
+    let (_, _, html) = s.get(&logs_url("http.route = '/dashboard/stores/{id}'", "&logs_requests=show"), false).await;
+    let session_search = logs_url(&format!("session.id = '{session}'"), "&range=all").replace('&', "&amp;");
+    assert!(html.contains(&format!(r#"<a href="{session_search}" title="Show session""#)), "{html}");
+    let (_, _, found) = s.get(&session_search.replace("&amp;", "&"), false).await;
+    assert!(found.contains("GET /dashboard 200") && found.contains("GET /dashboard/stores/{id} 500"), "{found}");
+    assert!(!found.contains("/pay/{pk}"), "{found}");
+
+    // Opened: who first, with names beside the ids.
+    let (_, _, fragment) = s.get(&properties_url(&html, "GET /dashboard/stores/{id} 500"), true).await;
+    let at = |needle: &str| fragment.find(needle).unwrap_or_else(|| panic!("{needle} missing: {fragment}"));
+    assert!(at("<th>service</th>") < at("<th>session.id</th>") && at("<th>session.id</th>") < at("<th>user.id</th>"));
+    assert!(at("<th>user.id</th>") < at("<th>store.id</th>") && at("<th>store.id</th>") < at("<th>http.route</th>"));
+    assert!(fragment.contains(&format!(r#"<span class="muted">{TEST_ADMIN_EMAIL}</span>"#)), "{fragment}");
+    assert!(fragment.contains(r#"<span class="muted">who-shop.example.com</span>"#), "{fragment}");
+    assert!(fragment.contains("Show the whole session"), "{fragment}");
 }

@@ -84,6 +84,8 @@ pub(super) fn authenticate(state: &AppState, email: &str, password: &str) -> Res
         .lock()
         .create_session(&token_hash, &user.id, now_unix())
         .map_err(|_| LoginError::Internal)?;
+    // The sign-in's own lines start the session's.
+    super::record_identity(&user.id, &token_hash);
 
     Ok((user, raw_token))
 }

@@ -74,9 +74,29 @@ their properties, each with **Find** and **Exclude** links; **Show the whole
 trace** opens the request's spans as a waterfall. Searches can be saved and
 downloaded as NDJSON or CSV. Order and store pages link to their lines.
 
-Without JavaScript the page is ordinary forms and links, with a **Refresh**
-link. With it, searches update in place, **Older** appends the next page and
-**Live** streams new lines as they are written.
+Every request's lines say who it was for, once the server knows:
+
+- `session.id`: the signed-in session, a short name derived from it that
+  can't be used to find or present the session. Visitors who aren't signed
+  in (a customer at the checkout) have none, and no cookie is set to give
+  them one.
+- `user.id`: the signed-in user. An opened line shows their email beside it.
+- `store.id`: the store the request concerns: monokulo's id for its store
+  pages and `/pay/{pk}/...` routes, the engine's own id for a request
+  authenticated with a store's secret key. The two services number stores
+  separately.
+
+An opened line lists these first. Each line also has **Show trace** and
+**Show session** buttons, so a request's trace, or every line of the
+session it was part of, is one click away without opening it. For a POS
+line with no signed-in session, Show session opens the POS session timeline.
+
+The histogram above the search shows lines over the time range; a bar
+narrows the search to its slice. **Refresh** in the title bar runs the
+search again up to now. Without JavaScript the page is ordinary forms and
+links. With it, searches update in place, **Older** appends the next page
+and **Live**, beside Refresh, streams new lines as they are written until
+**Pause**.
 
 ## Browser, POS and plugin reports
 

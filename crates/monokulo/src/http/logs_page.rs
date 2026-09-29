@@ -223,6 +223,26 @@ fn find_links(params: &LogsParams, user: Option<&Expr>, field: &str, value: Opti
     (Some(with(condition.clone())), Some(with(Expr::Not(Box::new(condition)))))
 }
 
+/// Properties shown first when a line has them: who it was for.
+const WHO: [&str; 3] = ["session.id", "user.id", "store.id"];
+
+/// Names beside ids a person can't read: a user's email, a store's site
+/// (monokulo's own stores; the engine's ids are its own).
+fn add_notes(state: &AppState, row: &mut RowView) {
+    let db = state.db.lock();
+    for property in &mut row.properties {
+        property.note = match property.name.as_str() {
+            "user.id" => db.get_user_by_id(&property.value).ok().flatten().map(|user| user.email),
+            "store.id" if row.service == "monokulo" => db
+                .get_store_connection_by_id(&property.value)
+                .ok()
+                .flatten()
+                .map(|store| super::orders::display_name_for(&store.site_url)),
+            _ => None,
+        };
+    }
+}
+
 /// A line as shown. `lazy`: its properties load when it opens (lists),
 /// rather than coming with the page.
 fn row_view(row: &LogRow, params: &LogsParams, user: Option<&Expr>, zone: &jiff::tz::TimeZone, lazy: bool) -> RowView {
@@ -230,11 +250,16 @@ fn row_view(row: &LogRow, params: &LogsParams, user: Option<&Expr>, zone: &jiff:
     let mut properties = Vec::new();
     let mut push = |name: &str, shown: String, value: Option<QValue>| {
         let (find_url, exclude_url) = find_links(params, user, name, value);
-        properties.push(PropertyView { name: name.to_string(), value: shown, find_url, exclude_url });
+        properties.push(PropertyView { name: name.to_string(), value: shown, find_url, exclude_url, note: None });
     };
     push("level", severity.name().to_string(), Some(QValue::Level(severity)));
     push("service", row.service.clone(), Some(QValue::Text(row.service.clone())));
-    for (name, value) in &row.attributes {
+    // Who and what the line is about first, in the same place on every
+    // line; then the rest by name.
+    let pinned = |name: &str| WHO.iter().position(|who| *who == name).unwrap_or(WHO.len());
+    let mut attributes: Vec<_> = row.attributes.iter().collect();
+    attributes.sort_by_key(|(name, _)| pinned(name));
+    for (name, value) in attributes {
         let shown = match value {
             Value::String(s) => s.clone(),
             other => other.to_string(),
@@ -555,7 +580,15 @@ pub async fn trace_page(
     let vm = view::TraceViewModel {
         trace_id: trace_id.clone(),
         spans,
-        rows: trace.logs.iter().map(|row| row_view(row, &search, user.as_ref(), &zone, false)).collect(),
+        rows: trace
+            .logs
+            .iter()
+            .map(|row| {
+                let mut row = row_view(row, &search, user.as_ref(), &zone, false);
+                add_notes(&state, &mut row);
+                row
+            })
+            .collect(),
         problems: engine_problem.into_iter().collect(),
         logs_url: search.url(LOGS),
     };
@@ -589,7 +622,11 @@ pub async fn row_page(
         None => None,
     };
     let user = parse(&search.q).ok().flatten();
-    let row = found.map(|row| RowView { open: true, ..row_view(&row, &search, user.as_ref(), &zone, false) });
+    let row = found.map(|row| {
+        let mut row = RowView { open: true, ..row_view(&row, &search, user.as_ref(), &zone, false) };
+        add_notes(&state, &mut row);
+        row
+    });
     if fx.0 {
         return match &row {
             Some(row) => Html(view::properties(row).into_string()).into_response(),

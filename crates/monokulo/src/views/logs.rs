@@ -44,6 +44,8 @@ pub struct PropertyView {
     pub value: String,
     pub find_url: Option<String>,
     pub exclude_url: Option<String>,
+    /// What the value names, when it's an id ("someone@example.com").
+    pub note: Option<String>,
 }
 
 /// One bar of the histogram strip: a slice of the time range, linking to
@@ -143,8 +145,9 @@ const PAGE_STYLE: &str = r#"
 .logs-head h1 { flex: 1; margin: 0; padding: 0; border: 0; }
 .logs-head .btn, .logs-head button { display: inline-flex; align-items: center; gap: .4em; margin: 0; padding: .35em .8em; }
 .logs-head svg { width: 1.1em; height: 1.1em; flex: none; }
+.log-live > span { display: inline-flex; }
 .log-live .i-pause, .log-live[aria-pressed="true"] .i-play { display: none; }
-.log-live[aria-pressed="true"] .i-pause { display: inline; }
+.log-live[aria-pressed="true"] .i-pause { display: inline-flex; }
 .log-live:disabled { opacity: .5; cursor: not-allowed; }
 /* The histogram sits above the search it narrows, but comes with the
    results (a search swaps both), so the results box lets its parts lay
@@ -180,7 +183,8 @@ const PAGE_STYLE: &str = r#"
 .lvl-debug, .lvl-trace { color: var(--muted); }
 .log-paging { display: flex; gap: .5em; margin: .8em 0; flex-wrap: wrap; align-items: center; }
 .log-paging .btn { margin: 0; }
-.log-live[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+/* Pressed, not a second primary: the page's one orange button is Search. */
+.log-live[aria-pressed="true"] { background: var(--surface-sunken); border-color: var(--accent); }
 html:not(.js) .js-only { display: none; }
 .trace-waterfall { font-size: .85em; }
 .trace-span { display: grid; grid-template-columns: minmax(12em, 30%) 1fr 6em; gap: .5em; align-items: center; padding: .15em 0; border-bottom: 1px solid var(--line); }
@@ -370,7 +374,10 @@ pub fn properties(row: &RowView) -> Markup {
                     @for property in &row.properties {
                         tr {
                             th { (property.name) }
-                            td { code { (property.value) } }
+                            td {
+                                code { (property.value) }
+                                @if let Some(note) = &property.note { " " span class="muted" { (note) } }
+                            }
                             td class="act" {
                                 @if let Some(find) = &property.find_url {
                                     a href=(find) title=(format!("Only lines where {} is this", property.name)) { "Find" }

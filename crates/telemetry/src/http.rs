@@ -29,6 +29,11 @@ pub const TRACERESPONSE: &str = "traceresponse";
 /// record the real client over it (`Span::current().record(..)`) once it
 /// has worked it out. Either way it is truncated to its network when
 /// written out.
+///
+/// Who the request is for is recorded the same way, once the server knows:
+/// `user.id` and `session.id` for a signed-in person (never the session's
+/// token), `store.id` for the store it concerns. A field nothing records
+/// is left off the request's lines.
 pub async fn server(request: Request, next: Next) -> Response {
     let method = request.method().clone();
     let route = request.extensions().get::<MatchedPath>().map(|p| p.as_str().to_string());
@@ -47,6 +52,9 @@ pub async fn server(request: Request, next: Next) -> Response {
         url.path = %path,
         client.address = Empty,
         http.response.status_code = Empty,
+        user.id = Empty,
+        session.id = Empty,
+        store.id = Empty,
     );
     if let Some(ConnectInfo(peer)) = request.extensions().get::<ConnectInfo<SocketAddr>>() {
         span.record("client.address", peer.ip().to_string());
@@ -102,6 +110,13 @@ mod tests {
         Router::new()
             .route("/stores/{id}", get(|| async { tracing::info!(store.id = "s_1", "looked up"); "ok" }))
             .route("/boom", get(|| async { (axum::http::StatusCode::BAD_GATEWAY, "no") }))
+            .route(
+                "/me",
+                get(|| async {
+                    tracing::Span::current().record("user.id", "u_1").record("session.id", "5e55").record("store.id", "s_2");
+                    "me"
+                }),
+            )
             .route("/static/x.js", get(|| async { "js" }))
             .layer(axum::middleware::from_fn(super::server))
     }
@@ -130,6 +145,21 @@ mod tests {
         assert_eq!(handler["trace_id"], finished["trace_id"]);
         assert!(traceresponse.contains(finished["trace_id"].as_str().unwrap()), "{traceresponse}");
         assert!(!capture.text().contains("secret"));
+    }
+
+    #[tokio::test]
+    async fn who_a_request_is_for_is_on_its_lines_once_recorded() {
+        let (_telemetry, capture, _guard) = subscriber(Format::Json, "info");
+        call(router(), axum::http::Request::get("/me").body(Body::empty()).unwrap()).await;
+        call(router(), axum::http::Request::get("/boom").body(Body::empty()).unwrap()).await;
+        let lines = lines(&capture);
+        assert_eq!(lines.len(), 2, "{}", capture.text());
+        assert_eq!(lines[0]["attributes"]["user.id"], "u_1");
+        assert_eq!(lines[0]["attributes"]["session.id"], "5e55");
+        assert_eq!(lines[0]["attributes"]["store.id"], "s_2");
+        for name in ["user.id", "session.id", "store.id"] {
+            assert!(lines[1]["attributes"].get(name).is_none(), "not recorded, not shown: {}", lines[1]);
+        }
     }
 
     #[tokio::test]

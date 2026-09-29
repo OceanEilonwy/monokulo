@@ -580,6 +580,7 @@ fn column(field: &str, params: &mut Vec<SqlValue>) -> String {
         // Generated, indexed columns (see `store::SCHEMA`).
         "store.id" => "store_id".into(),
         "order.id" => "order_id".into(),
+        "session.id" => "session_id".into(),
         _ => {
             params.push(SqlValue::Text(json_path(field)));
             "json_extract(attributes, ?)".into()
