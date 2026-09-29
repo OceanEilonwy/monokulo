@@ -43,6 +43,7 @@ const SHAPES = ['desktop', 'tablet-portrait', 'tablet-landscape', 'mobile-portra
 const SHAPE_LABELS = {
   desktop: 'Desktop', 'tablet-portrait': 'Tablet, portrait', 'tablet-landscape': 'Tablet, landscape',
   'mobile-portrait': 'Mobile, portrait', 'mobile-landscape': 'Mobile, landscape', 'small-portrait': 'Small phone (320px), portrait',
+  'as-is': 'at the size the test set',
 };
 const THEMES = ['light', 'dark'];
 // Captures made before shapes had device names.
@@ -113,7 +114,8 @@ function shapeRules() {
     const figure = `figure[data-shape="${shape}"][data-theme="${theme}"]`;
     return `${chosen} .card ${figure} { display: block; }\n`
       + `${chosen} .card.sized:not(:has(${figure})) .missing { display: grid; }`;
-  })).join('\n');
+  })).concat(THEMES.map(theme => // At the test's own size, whichever size is chosen.
+    `body:has(#theme-${theme}:checked) .card figure[data-shape="as-is"][data-theme="${theme}"] { display: block; }`)).join('\n');
 }
 
 function page(entries) {
