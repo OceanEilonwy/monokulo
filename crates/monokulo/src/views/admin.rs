@@ -629,29 +629,99 @@ fn notices(items: &[Notice]) -> Markup {
     }
 }
 
-/// With JavaScript, confirm before saving a Monero nodes tab that clears a
-/// network stores still use (task 4.4). Without it, the form posts and the
-/// red banner after the save says what happened. Listens on the document,
-/// before fixi (capture), so it still works on the form fixi swaps in after
-/// a save; cancelling stops fixi too (`static/fx-glue.js`).
+/// With JavaScript, confirm before a save (or a Remove) on the Monero nodes
+/// tab that would leave a network stores use with no node (task 4.4): a
+/// network's rows are counted as the save would see them, blank ones not
+/// counted and the row a pressed Remove is for left out. Without
+/// JavaScript, the form posts and the red banner after the save says what
+/// happened. Listens on the document, before fixi (capture), so it still
+/// works on the form fixi swaps in after a save; cancelling stops fixi too
+/// (`static/fx-glue.js`).
 const CONFIRM_CLEARED_NETWORK_SCRIPT: &str = r#"(function () {
+  function filled(block, skip) {
+    var rows = block.querySelectorAll("[data-node-row]"), count = 0, before = 0;
+    for (var i = 0; i < rows.length; i++) {
+      var box = rows[i].querySelector('input[name$="_address"]');
+      if (!box) continue;
+      if (box.defaultValue.trim() !== "") before++;
+      if (rows[i].getAttribute("data-node-row") !== skip && box.value.trim() !== "") count++;
+    }
+    return { now: count, before: before };
+  }
   document.addEventListener("submit", function (event) {
     var form = event.target;
     if (form.id !== "settings-form") return;
-    var fields = form.querySelectorAll("textarea[data-tenant-count]");
-    for (var i = 0; i < fields.length; i++) {
-      var field = fields[i];
-      var count = parseInt(field.getAttribute("data-tenant-count"), 10) || 0;
-      if (count > 0 && field.value.trim() === "" && field.defaultValue.trim() !== "") {
-        var network = field.getAttribute("data-network");
-        var stores = count === 1 ? "1 store uses" : count + " stores use";
-        if (!window.confirm(stores + " the " + network + " network. Without a node, their payments won't be detected. Save anyway?")) {
+    var pressed = event.submitter && event.submitter.name === "node_action" ? event.submitter.value.split(":") : [];
+    var blocks = form.querySelectorAll(".node-network[data-tenant-count]");
+    for (var i = 0; i < blocks.length; i++) {
+      var block = blocks[i];
+      var stores = parseInt(block.getAttribute("data-tenant-count"), 10) || 0;
+      var network = block.getAttribute("data-network");
+      var skip = pressed[0] === "remove" && pressed[1] === network ? pressed[2] : null;
+      var rows = filled(block, skip);
+      if (stores > 0 && rows.now === 0 && rows.before > 0) {
+        var use = stores === 1 ? "1 store uses" : stores + " stores use";
+        if (!window.confirm(use + " the " + network + " network. Without a node, their payments won't be detected. Save anyway?")) {
           event.preventDefault();
           return;
         }
       }
     }
   }, true);
+})();"#;
+
+/// With JavaScript, the node form's conveniences, all bound on the document
+/// so they keep working on a panel fixi swaps in:
+/// - "Add another" adds a blank row after the others, numbered after the
+///   highest row, and puts the cursor in its address. Without JavaScript
+///   the one blank row does the same, a save at a time.
+/// - A row's self-signed box shows only while its Use TLS box is ticked
+///   (without JavaScript it's always there, and ignored without TLS).
+const NODE_FORM_SCRIPT: &str = r#"(function () {
+  function showSelfSigned(root) {
+    var boxes = root.querySelectorAll("[data-node-tls]");
+    for (var i = 0; i < boxes.length; i++) {
+      var row = boxes[i].closest("[data-node-row]");
+      var field = row && row.querySelector("[data-node-self-signed]");
+      if (field) field.hidden = !boxes[i].checked;
+    }
+  }
+  document.addEventListener("change", function (event) {
+    if (event.target.matches && event.target.matches("[data-node-tls]")) showSelfSigned(event.target.closest("[data-node-row]"));
+  });
+  document.addEventListener("click", function (event) {
+    var button = event.target.closest && event.target.closest("[data-node-add-another]");
+    if (!button) return;
+    var network = button.getAttribute("data-node-add-another");
+    var list = document.querySelector('[data-node-rows="' + network + '"]');
+    var blank = list && list.querySelector("[data-node-add]:last-of-type");
+    if (!blank) return;
+    var next = 0;
+    list.querySelectorAll("[data-node-row]").forEach(function (row) {
+      next = Math.max(next, (parseInt(row.getAttribute("data-node-row"), 10) || 0) + 1);
+    });
+    var old = blank.getAttribute("data-node-row");
+    var row = blank.cloneNode(true);
+    row.setAttribute("data-node-row", String(next));
+    var renamed = function (value) {
+      return value.split("node_" + network + "_" + old + "_").join("node_" + network + "_" + next + "_")
+        .split("node-" + network + "-" + old + "-").join("node-" + network + "-" + next + "-");
+    };
+    row.querySelectorAll("[name],[id],[for],[aria-describedby]").forEach(function (el) {
+      ["name", "id", "for", "aria-describedby"].forEach(function (attr) {
+        if (el.hasAttribute(attr)) el.setAttribute(attr, renamed(el.getAttribute(attr)));
+      });
+    });
+    row.querySelectorAll('input[type="text"]').forEach(function (box) { box.value = ""; box.defaultValue = ""; });
+    row.querySelectorAll("[data-node-tls]").forEach(function (box) { box.checked = false; box.defaultChecked = false; });
+    row.querySelectorAll('input[name$="_self_signed"]').forEach(function (box) { box.checked = true; box.defaultChecked = true; });
+    list.appendChild(row);
+    showSelfSigned(row);
+    var address = row.querySelector('input[name$="_address"]');
+    if (address) address.focus();
+  });
+  document.addEventListener("fx:swapped", function () { showSelfSigned(document); });
+  showSelfSigned(document);
 })();"#;
 
 const ENABLED_BACKENDS: &str = "key_custody.enabled_backends";
@@ -1068,6 +1138,7 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
             (settings_panel(data, false))
             script { (maud::PreEscaped(CONFIRM_CLEARED_NETWORK_SCRIPT)) }
             script { (maud::PreEscaped(CUSTODY_BACKENDS_SCRIPT)) }
+            script { (maud::PreEscaped(NODE_FORM_SCRIPT)) }
         }
     };
     layout(chrome, &format!("{} - Admin settings - Monokulo", data.tab.label()), body)

@@ -13,19 +13,19 @@ Work pack: `docs/workpacks/nicer_admin_screen.md`. Decisions:
 | 3 | The tabbed page | done | `admin settings: the tabbed page` |
 | 4 | Engine learns a node's network | done | `scanner: a node saved for the wrong network is refused` |
 | 5 | The node form | done | `admin settings: node form rows and addresses`, `admin settings: the Monero nodes form` |
-| 6 | JavaScript enhancements | not started | |
+| 6 | JavaScript enhancements | done | `admin settings: node form scripts` |
 | 7 | Playwright | not started | |
 | 8 | Docs and cleanup | not started | |
 
 ## Resume here
 
-Start step 6: JavaScript for the node form, in the page's inline scripts in
-`crates/monokulo/src/views/admin.rs`. "Add another" (`[data-node-add-another]`)
-clones the blank row (`[data-node-add]`) with the next index and focuses its
-address; the TLS box (`[data-node-tls]`) shows or hides its row's
-`[data-node-self-signed]`; `CONFIRM_CLEARED_NETWORK_SCRIPT` counts non-blank
-rows per `.node-network[data-tenant-count]` (after a pending Remove, from
-`event.submitter`). Six Playwright tests are red until then (decision D20).
+Start step 7: Playwright. New tests (with and without JavaScript) for tab
+switching and Back, every tab's help and width at 320/390/1280, adding,
+moving and removing nodes, a wrong-network node (second fake-monerod with
+`--nettype mainnet`), the TLS toggle, the confirmation, the Nodes marker
+with `/fake/offline`, and gallery captures of every tab in
+`real-8-theme.spec.js`. Helpers already exist in `real-helpers.js`
+(`saveEngineSettings`, `openSettingsTab`, `saveNodes`, `fillNodes`).
 
 ## Test status at last commit
 
@@ -53,6 +53,11 @@ rows per `.node-network[data-tenant-count]` (after a pending Remove, from
 - After step 5: `cargo test --workspace` 1288 passed, 0 failed, 24 ignored;
   clippy 68 warnings (none new); Playwright real-binaries 20 passed,
   6 failed, all waiting on step 6's confirmation script (decision D20).
+
+- After step 6: `cargo test --workspace` 1288 passed, 0 failed, 24 ignored;
+  clippy 68 warnings (none new); Playwright real-binaries 26 passed (the
+  six red at step 5 are green again). `node --check` passes on the three
+  inline scripts (extracted to files to check).
 
 ## Notes per step
 
@@ -251,3 +256,19 @@ rows per `.node-network[data-tenant-count]` (after a pending Remove, from
 - Playwright: `real-helpers.js` gains `fakeNodeAddress`, `fillNodes`,
   `saveNodes`, `nodeAddressBoxes`; every spec that saved node JSON on the
   page uses them (`real-4` still saves JSON through the API).
+
+### Step 6
+
+- `crates/monokulo/src/views/admin.rs`: `CONFIRM_CLEARED_NETWORK_SCRIPT`
+  rewritten: on submit of `#settings-form` (capture, before fixi), for each
+  `.node-network` with stores, counts rows whose address isn't blank, not
+  counting the row a pressed Remove (`event.submitter`,
+  `remove:<network>:<index>`) is for; asks when that leaves none where
+  there were some (`defaultValue`). New `NODE_FORM_SCRIPT`: "Add another"
+  clones the blank row with the next index (renaming `name`, `id`, `for`,
+  `aria-describedby`), resets it and focuses its address; Use TLS shows or
+  hides its row's self-signed field. All listeners are on the document,
+  plus a pass on `fx:swapped`, so a swapped panel works.
+- Checked: `node --check` on each inline script; the Playwright suite
+  (the confirmation tests in `real-1` and `real-3`); step 7 adds tests for
+  "Add another" and the TLS toggle.
