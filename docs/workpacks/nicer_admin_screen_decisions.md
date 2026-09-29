@@ -201,3 +201,29 @@ made.
 - **Alternatives:** start a second fake node for testnet.
 - **Why:** the test only needs testnet to have some node and no stores;
   step 7 adds the wrong-network Playwright test with a second fake node.
+
+## D16 (step 5): an IPv6 node is saved with its brackets in `host`
+
+- **Decision:** `[::1]:18081` is saved as `host: "[::1]", port: 18081`.
+  A saved bare IPv6 host (possible through the API) shows as `[::1]:18081`
+  in the address box.
+- **Alternatives:** save `host: "::1"` and change the engine to add
+  brackets when it builds its URL and label.
+- **Why:** the engine builds its RPC URL as `{scheme}://{host}:{port}`
+  and its `/status` label as `{host}:{port}`; with the brackets in `host`
+  both are right without touching the engine, and the label matches the
+  address the admin typed, so the row's status is found.
+
+## D17 (step 5): a fallback's own fallbacks are not carried by the form
+
+- **Decision:** `MoneroNodeSetting` lets a fallback have a `fallbacks` list
+  of its own, but the engine never reads it (`build_daemon_client` only
+  walks the primary's list, one level). The form shows the primary and its
+  fallbacks and, on save, writes every fallback with `fallbacks: []`, so
+  any nested list saved through the API is dropped at the next save from
+  the page.
+- **Alternatives:** flatten nested fallbacks into the list (would start
+  using nodes the engine ignores today, changing behaviour); keep them in a
+  hidden field (a page field nobody can see or edit).
+- **Why:** they have no effect now, and the four row fields cover every
+  field of `MoneroNodeSetting` that does. Nothing that works stops working.

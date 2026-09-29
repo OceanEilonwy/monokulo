@@ -12,20 +12,23 @@ Work pack: `docs/workpacks/nicer_admin_screen.md`. Decisions:
 | 2 | One save for a whole tab | done | `admin settings: one save for a whole tab` |
 | 3 | The tabbed page | done | `admin settings: the tabbed page` |
 | 4 | Engine learns a node's network | done | `scanner: a node saved for the wrong network is refused` |
-| 5 | The node form | not started | |
+| 5 | The node form | in progress | `admin settings: node form rows and addresses` (pure module) |
 | 6 | JavaScript enhancements | not started | |
 | 7 | Playwright | not started | |
 | 8 | Docs and cleanup | not started | |
 
 ## Resume here
 
-Start step 5: the node form. New module `crates/monokulo/src/admin_nodes.rs`
-(address parsing, `node_<n>_<i>_*` fields to rows, `node_action`, rows to
-and from `MoneroNodeSetting` JSON), then replace
-`AdminNetworkFieldView.value_json` with rows and render the Monero nodes
-tab as in section 2 of the work pack; the save goes through `SplitForm` in
-`http/admin_settings.rs`. `NodeStatus` in monokulo now has `in_cooldown`
-and `network` for the row status.
+Step 5 is half done: the pure module `crates/monokulo/src/admin_nodes.rs`
+is written and tested (`parse_address`, `NodeForm::from_form` with
+`node_action` applied and rows checked, `rows_to_setting`,
+`rows_from_setting`). Next: replace `AdminNetworkFieldView.value_json` with
+rows in `crates/monokulo/src/views/admin.rs` and render the node form
+(section 2 of the work pack), route `node_*` fields through `SplitForm` in
+`http/admin_settings.rs` (stop on row errors, send `monero_node`, show the
+engine's `fields` message on the network's block, clear the status cache
+after a node change), drop the textarea, its Example and the JSON error
+message, then the HTTP and view tests.
 
 ## Test status at last commit
 
@@ -196,3 +199,16 @@ and `network` for the row status.
   monokulo `a_status_parses_with_and_without_each_nodes_network`.
   `real-4-crash.spec.js` (direct API save of the stagenet fake node) passes
   unchanged. `real-3` needed one change (decision D15).
+
+### Step 5
+
+- `crates/monokulo/src/admin_nodes.rs` (pure, unit-tested on its own):
+  `parse_address` (host:port, `http://`/`https://` with https ticking TLS,
+  `[IPv6]:port`, port required, 1-65535, no path; the host keeps an IPv6
+  address's brackets, see decision D16), `format_address`, `NodeForm::from_form`
+  (rows by network and index; blank rows dropped; the `node_action` applied;
+  each row's address checked and a repeated address marked on the second
+  row), `NodeAction` (`remove|up|down:<network>:<index>`), `rows_to_setting`
+  (first row primary, the rest `fallbacks`; none clears the network) and
+  `rows_from_setting` (with the engine's `host:port` label for matching
+  `/status`; a fallback's own fallbacks are dropped, decision D17).
