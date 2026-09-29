@@ -14,8 +14,16 @@ bash scripts/coverage-rust-tools.sh
 
 # Both reports use the same profile data. The report subcommand never reruns
 # tests. The normal cargo-llvm-cov exclusion rules omit test and vendor source.
-cargo +nightly llvm-cov --workspace --locked --branch --html \
-  --output-dir "$COVERAGE_OUTPUT" --exclude xtask
+# nextest (.config/nextest.toml's ci profile) runs the test binaries side by
+# side and leaves a JUnit report, kept next to the coverage for the job
+# summary whether or not the tests passed.
+status=0
+rm -f "${CARGO_TARGET_DIR:-target}/nextest/ci/junit.xml"
+cargo +nightly llvm-cov nextest --workspace --locked --branch --html \
+  --output-dir "$COVERAGE_OUTPUT" --exclude xtask --profile ci || status=$?
+junit="${CARGO_TARGET_DIR:-target}/nextest/ci/junit.xml"
+if test -f "$junit"; then cp "$junit" "$COVERAGE_OUTPUT/junit.xml"; fi
+if test "$status" != 0; then exit "$status"; fi
 cargo +nightly llvm-cov report --branch --json \
   --output-path "$COVERAGE_OUTPUT/raw.json"
 

@@ -1,22 +1,35 @@
 use serde_json::{json, Value};
-use std::{collections::{BTreeMap, BTreeSet}, env, fs, io, path::{Path, PathBuf}, process::{Command, ExitCode, Stdio}};
+use std::{collections::{BTreeMap, BTreeSet}, env, fs, io, path::{Path, PathBuf}, process::{Command, ExitCode, Stdio}, sync::mpsc, thread};
 
 fn root() -> PathBuf {
     Path::new(env!("CARGO_MANIFEST_DIR")).parent().unwrap().to_path_buf()
 }
 
 fn help() {
-    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|open>\n\n\
+    println!("Usage: cargo xtask coverage <rust|browser|woocommerce|stagenet|all|report|open>\n\n\
         rust          Refresh nightly and cargo-llvm-cov; run workspace tests and collect Rust coverage\n\
         browser       Run deterministic Playwright tests and collect authored browser source coverage\n\
         woocommerce   Run default PHPUnit tests in wp-env and collect plugin coverage\n\
         stagenet      Explicit extended run: paid browser tests and separate instrumented report\n\
-        all           Run every collector; preserve successful reports if another fails\n\
+        all           Run rust, browser and woocommerce side by side; preserve successful reports if another fails\n\
+        report        Combine rust, browser and woocommerce outputs already in target/coverage (as CI's\n\
+                      separate jobs leave them) into one index; validate it once all three passed\n\
         open          Open target/coverage/index.html in the default browser\n\
         --help        Show this help");
 }
 
+/// The collectors `all` runs, in the order the index and validation expect.
+const ALL: [&str; 3] = ["rust", "browser", "woocommerce"];
+
+/// Runs one collector and leaves its result in `<component>/result.json`, so
+/// `report` can combine collectors that ran separately.
 fn run(component: &str, output: &Path) -> io::Result<Value> {
+    let result = run_collector(component, output)?;
+    fs::write(output.join(component).join("result.json"), serde_json::to_vec_pretty(&result)?)?;
+    Ok(result)
+}
+
+fn run_collector(component: &str, output: &Path) -> io::Result<Value> {
     let script = root().join("scripts").join(format!("coverage-{component}.sh"));
     let dir = output.join(component);
     let manifest_path = output.join(format!("{component}.json"));
@@ -356,31 +369,77 @@ fn coverage(command: &str) -> io::Result<bool> {
         "browser" => &["browser"],
         "woocommerce" => &["woocommerce"],
         "stagenet" => &["stagenet"],
-        "all" => &["rust", "browser", "woocommerce"],
+        "all" => &ALL,
+        "report" => return report(&output),
         _ => { help(); return Ok(false); }
     };
-    let revision = Command::new("git").args(["rev-parse", "HEAD"])
-        .current_dir(root()).output()?;
-    let revision = String::from_utf8_lossy(&revision.stdout).trim().to_owned();
-    let mut results = Vec::new();
-    fs::write(output.join("run.json"), serde_json::to_vec_pretty(&json!({
-        "revision":revision,"components":results
-    }))?)?;
-    for name in names {
-        results.push(run(name, &output)?);
-        // Write after every collector so an interrupted run retains progress.
-        let manifest = json!({"revision":revision,"components":results});
-        fs::write(output.join("run.json"), serde_json::to_vec_pretty(&manifest)?)?;
-        render_index(&output, manifest["components"].as_array().unwrap())?;
-    }
+    let revision = version("git", &["rev-parse", "HEAD"])?;
+    write_run(&output, &revision, &[])?;
+    // The collectors share nothing (each has its own target directory,
+    // processes and ports), so they run side by side, each logging to its
+    // own test.log.
+    let (done, finished) = mpsc::channel();
+    let results = thread::scope(|scope| -> io::Result<Vec<Value>> {
+        for name in names {
+            let (done, output) = (done.clone(), &output);
+            scope.spawn(move || done.send(run(name, output)));
+        }
+        drop(done);
+        let mut results = Vec::new();
+        for result in finished {
+            results.push(result?);
+            results.sort_by_key(|r| names.iter().position(|n| r["component"] == *n));
+            // Write after every collector so an interrupted run retains progress.
+            write_run(&output, &revision, &results)?;
+        }
+        Ok(results)
+    })?;
     let passed = results.iter().all(|r| r["status"] == "passed");
-    if passed && command == "all" {
-        let validation = Command::new("python3").arg(root().join("scripts/validate-coverage.py"))
-            .current_dir(root()).status()
-            .map_err(|e| io::Error::other(format!("missing prerequisite: python3 ({e})")))?;
-        if !validation.success() { return Ok(false); }
-    }
+    if passed && command == "all" { return validate(); }
     Ok(passed)
+}
+
+/// Writes `run.json` for `results` and renders the index from it.
+fn write_run(output: &Path, revision: &str, results: &[Value]) -> io::Result<()> {
+    let manifest = json!({"revision":revision,"components":results});
+    fs::write(output.join("run.json"), serde_json::to_vec_pretty(&manifest)?)?;
+    render_index(output, results)
+}
+
+/// `coverage report`: the index and validation for collectors that ran
+/// separately. CI runs each in a job of its own and gathers their outputs
+/// into one `target/coverage`; a collector that left no result is
+/// unavailable, and the run fails.
+fn report(output: &Path) -> io::Result<bool> {
+    let mut results = Vec::new();
+    for name in ALL {
+        let path = output.join(name).join("result.json");
+        results.push(if path.is_file() {
+            serde_json::from_slice(&fs::read(path)?)?
+        } else {
+            json!({"component":name,"status":"unavailable","exit_code":null,"log":format!("{name}/test.log"),
+                "reason":"no result: the collector did not run or did not finish"})
+        });
+    }
+    // The collectors' own revision (validation rejects a mix), or this
+    // checkout's when none recorded one.
+    let revision = ALL.iter().find_map(|name| {
+        let manifest: Value = serde_json::from_slice(&fs::read(output.join(format!("{name}.json"))).ok()?).ok()?;
+        manifest["revision"].as_str().map(str::to_owned)
+    });
+    let revision = match revision { Some(r) => r, None => version("git", &["rev-parse", "HEAD"])? };
+    write_run(output, &revision, &results)?;
+    for result in &results {
+        eprintln!("coverage {}: {}", result["component"].as_str().unwrap_or("?"), result["status"].as_str().unwrap_or("?"));
+    }
+    if results.iter().all(|r| r["status"] == "passed") { validate() } else { Ok(false) }
+}
+
+fn validate() -> io::Result<bool> {
+    let validation = Command::new("python3").arg(root().join("scripts/validate-coverage.py"))
+        .current_dir(root()).status()
+        .map_err(|e| io::Error::other(format!("missing prerequisite: python3 ({e})")))?;
+    Ok(validation.success())
 }
 
 fn main() -> ExitCode {
