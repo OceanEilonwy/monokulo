@@ -295,6 +295,135 @@ pub enum Notice {
     Info(String),
 }
 
+/// Which process a setting belongs to: monokulo's own registry, or the
+/// engine's (fetched and saved over its admin API).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingOwner {
+    Monokulo,
+    Engine,
+}
+
+/// The admin settings page's tabs, grouped by job rather than by which
+/// process owns a setting (nicer_admin_screen.md T1). Each is its own URL,
+/// `/dashboard/admin/settings?tab=<id>`, so switching works as a plain link
+/// and a save can send the browser back to the tab it came from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SettingsTab {
+    General,
+    Nodes,
+    Payments,
+    Custody,
+    Abuse,
+    Server,
+    Logging,
+    /// Engine (or monokulo) settings added after this map was written and
+    /// not placed yet. Only shown while something is in it.
+    Other,
+}
+
+impl SettingsTab {
+    /// Every tab, in the order the tab bar shows them. General comes first:
+    /// the engine's tabs stay empty until its connection there works.
+    pub const ALL: [SettingsTab; 8] = [
+        SettingsTab::General,
+        SettingsTab::Nodes,
+        SettingsTab::Payments,
+        SettingsTab::Custody,
+        SettingsTab::Abuse,
+        SettingsTab::Server,
+        SettingsTab::Logging,
+        SettingsTab::Other,
+    ];
+
+    /// The tab's `?tab=` value.
+    pub fn id(self) -> &'static str {
+        match self {
+            SettingsTab::General => "general",
+            SettingsTab::Nodes => "nodes",
+            SettingsTab::Payments => "payments",
+            SettingsTab::Custody => "custody",
+            SettingsTab::Abuse => "abuse",
+            SettingsTab::Server => "server",
+            SettingsTab::Logging => "logging",
+            SettingsTab::Other => "other",
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            SettingsTab::General => "General",
+            SettingsTab::Nodes => "Monero nodes",
+            SettingsTab::Payments => "Payments",
+            SettingsTab::Custody => "Key custody",
+            SettingsTab::Abuse => "Abuse protection",
+            SettingsTab::Server => "Server",
+            SettingsTab::Logging => "Logging",
+            SettingsTab::Other => "Other",
+        }
+    }
+
+    /// The tab a `?tab=` value names; General for a missing or unknown one,
+    /// so an old bookmark or a typo still lands somewhere useful.
+    pub fn from_id(id: Option<&str>) -> SettingsTab {
+        SettingsTab::ALL.into_iter().find(|tab| Some(tab.id()) == id).unwrap_or(SettingsTab::General)
+    }
+
+    /// The tab's page.
+    pub fn href(self) -> String {
+        format!("/dashboard/admin/settings?tab={}", self.id())
+    }
+
+    /// The groups the tab's settings are shown in, in order: an optional
+    /// heading and whose settings go under it. The Nodes tab's one group is
+    /// the node form, not scalar fields.
+    pub fn groups(self) -> &'static [(Option<&'static str>, SettingOwner)] {
+        use SettingOwner::{Engine, Monokulo};
+        match self {
+            SettingsTab::General | SettingsTab::Abuse => &[(None, Monokulo)],
+            SettingsTab::Nodes | SettingsTab::Custody => &[(None, Engine)],
+            SettingsTab::Payments => &[(None, Engine), (Some("Webhooks"), Engine), (Some("Exchange rates"), Monokulo)],
+            SettingsTab::Server | SettingsTab::Other => &[(None, Engine), (None, Monokulo)],
+            SettingsTab::Logging => &[(Some("Monokulo"), Monokulo), (Some("Engine"), Engine)],
+        }
+    }
+
+    /// Whether every setting on this tab is the engine's, so the tab has
+    /// nothing to show or save while the engine can't be reached.
+    pub fn engine_only(self) -> bool {
+        self.groups().iter().all(|(_, owner)| *owner == SettingOwner::Engine)
+    }
+}
+
+/// Where a setting shows on the admin page: its tab, and the heading it
+/// sits under on a tab that has more than one group. The one map both the
+/// page and the save use, so a setting can't be shown on one tab and then
+/// dropped when that tab is saved.
+pub fn setting_placement(key: &str, owner: SettingOwner) -> (SettingsTab, Option<&'static str>) {
+    let prefix = key.split('.').next().unwrap_or("");
+    match owner {
+        SettingOwner::Monokulo => match prefix {
+            "signup" | "engine" | "public_url" => (SettingsTab::General, None),
+            "exchange_rate" => (SettingsTab::Payments, Some("Exchange rates")),
+            "abuse" | "rate_limit" => (SettingsTab::Abuse, None),
+            "http_cache" => (SettingsTab::Server, None),
+            "logging" => (SettingsTab::Logging, Some("Monokulo")),
+            _ => (SettingsTab::Other, None),
+        },
+        SettingOwner::Engine => match prefix {
+            "monero_node" => (SettingsTab::Nodes, None),
+            // How much memory a scan may use is about the machine, not
+            // about payments.
+            "payment" if key == "payment.scan_chunk_memory_budget_mb" => (SettingsTab::Server, None),
+            "payment" => (SettingsTab::Payments, None),
+            "webhooks" => (SettingsTab::Payments, Some("Webhooks")),
+            "key_custody" => (SettingsTab::Custody, None),
+            "server" => (SettingsTab::Server, None),
+            "logging" => (SettingsTab::Logging, Some("Engine")),
+            _ => (SettingsTab::Other, None),
+        },
+    }
+}
+
 /// The two halves of the admin settings page, each saved (and, with
 /// fixi, swapped back) on its own.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -713,6 +842,118 @@ mod tests {
 
     fn chrome() -> PageChrome {
         PageChrome::from_user(None, "/dashboard/admin/settings")
+    }
+
+    /// Every setting both registries have today, with the tab (and
+    /// heading) the page shows it on (nicer_admin_screen.md section 2). A
+    /// setting added later fails the registry cross-checks below until it
+    /// is given a place here.
+    const PLACEMENTS: &[(&str, SettingOwner, SettingsTab, Option<&str>)] = {
+        use SettingOwner::{Engine as E, Monokulo as M};
+        use SettingsTab::*;
+        &[
+            ("signup.mode", M, General, None),
+            ("engine.url", M, General, None),
+            ("engine.admin_token", M, General, None),
+            ("public_url", M, General, None),
+            ("exchange_rate.coingecko_enabled", M, Payments, Some("Exchange rates")),
+            ("exchange_rate.coingecko_base_url", M, Payments, Some("Exchange rates")),
+            ("exchange_rate.coinmarketcap_enabled", M, Payments, Some("Exchange rates")),
+            ("exchange_rate.coinmarketcap_base_url", M, Payments, Some("Exchange rates")),
+            ("exchange_rate.haveno_enabled", M, Payments, Some("Exchange rates")),
+            ("exchange_rate.haveno_base_url", M, Payments, Some("Exchange rates")),
+            ("exchange_rate.cache_seconds", M, Payments, Some("Exchange rates")),
+            ("http_cache.max_mb", M, Server, None),
+            ("abuse.soft_per_min", M, Abuse, None),
+            ("abuse.hard_per_min", M, Abuse, None),
+            ("abuse.signed_in_per_min", M, Abuse, None),
+            ("abuse.client_logs_per_min", M, Abuse, None),
+            ("abuse.challenge_bits", M, Abuse, None),
+            ("abuse.under_attack", M, Abuse, None),
+            ("abuse.trusted_proxies", M, Abuse, None),
+            ("abuse.onion_listener", M, Abuse, None),
+            ("abuse.stream_cap", M, Abuse, None),
+            ("rate_limit.per_store_key_per_min", M, Abuse, None),
+            ("logging.level", M, Logging, Some("Monokulo")),
+            ("logging.dev_mode_until", M, Logging, Some("Monokulo")),
+            ("logging.retention_days", M, Logging, Some("Monokulo")),
+            ("logging.max_mb", M, Logging, Some("Monokulo")),
+            ("logging.otlp_endpoint", M, Logging, Some("Monokulo")),
+            ("logging.otlp_headers", M, Logging, Some("Monokulo")),
+            ("monero_node.mainnet", E, Nodes, None),
+            ("monero_node.stagenet", E, Nodes, None),
+            ("monero_node.testnet", E, Nodes, None),
+            ("key_custody.enabled_backends", E, Custody, None),
+            ("key_custody.default_backend", E, Custody, None),
+            ("key_custody.socket_path", E, Custody, None),
+            ("payment.confirmations_required", E, Payments, None),
+            ("payment.order_expiry_minutes", E, Payments, None),
+            ("payment.expired_order_grace_period_minutes", E, Payments, None),
+            ("payment.reorg_check_depth", E, Payments, None),
+            ("payment.mempool_poll_interval_ms", E, Payments, None),
+            ("payment.scan_chunk_memory_budget_mb", E, Server, None),
+            ("webhooks.allow_private_urls", E, Payments, Some("Webhooks")),
+            ("webhooks.delivery_timeout_ms", E, Payments, Some("Webhooks")),
+            ("webhooks.max_attempts", E, Payments, Some("Webhooks")),
+            ("server.bind", E, Server, None),
+            ("server.worker_threads", E, Server, None),
+            ("server.max_body_bytes", E, Server, None),
+            ("server.rate_limit_per_token_per_min", E, Server, None),
+            ("logging.level", E, Logging, Some("Engine")),
+            ("logging.dev_mode_until", E, Logging, Some("Engine")),
+            ("logging.retention_days", E, Logging, Some("Engine")),
+            ("logging.max_mb", E, Logging, Some("Engine")),
+            ("logging.otlp_endpoint", E, Logging, Some("Engine")),
+            ("logging.otlp_headers", E, Logging, Some("Engine")),
+        ]
+    };
+
+    #[test]
+    fn every_setting_known_today_has_a_named_tab() {
+        for (key, owner, tab, heading) in PLACEMENTS {
+            assert_eq!(setting_placement(key, *owner), (*tab, *heading), "{key} ({owner:?})");
+            assert_ne!(*tab, SettingsTab::Other, "{key}");
+            // The heading is one the tab actually shows, for that owner.
+            assert!(tab.groups().contains(&(*heading, *owner)), "{key} is placed under a group {tab:?} doesn't have");
+        }
+    }
+
+    /// The list above is every setting of both registries, not a sample.
+    #[test]
+    fn the_tab_list_covers_both_registries() {
+        let listed = |owner: SettingOwner| -> Vec<&str> {
+            PLACEMENTS.iter().filter(|(_, o, _, _)| *o == owner).map(|(key, ..)| *key).collect()
+        };
+        let mut monokulo: Vec<&str> = crate::settings::ALL.iter().map(|s| s.key()).collect();
+        monokulo.sort_unstable();
+        let mut monokulo_listed = listed(SettingOwner::Monokulo);
+        monokulo_listed.sort_unstable();
+        assert_eq!(monokulo_listed, monokulo, "every monokulo setting has a tab");
+
+        let mut engine: Vec<&str> = scanner::engine_settings::ALL.iter().map(|s| s.key()).collect();
+        engine.sort_unstable();
+        let mut engine_listed = listed(SettingOwner::Engine);
+        engine_listed.sort_unstable();
+        assert_eq!(engine_listed, engine, "every engine setting has a tab");
+    }
+
+    #[test]
+    fn a_setting_the_map_does_not_know_goes_to_other() {
+        assert_eq!(setting_placement("telemetry.sample_rate", SettingOwner::Engine), (SettingsTab::Other, None));
+        assert_eq!(setting_placement("brand_new", SettingOwner::Engine), (SettingsTab::Other, None));
+        assert_eq!(setting_placement("brand.new", SettingOwner::Monokulo), (SettingsTab::Other, None));
+    }
+
+    #[test]
+    fn a_tab_is_found_by_its_id_and_anything_else_is_general() {
+        for tab in SettingsTab::ALL {
+            assert_eq!(SettingsTab::from_id(Some(tab.id())), tab);
+        }
+        assert_eq!(SettingsTab::from_id(None), SettingsTab::General);
+        assert_eq!(SettingsTab::from_id(Some("nope")), SettingsTab::General);
+        assert_eq!(SettingsTab::Nodes.href(), "/dashboard/admin/settings?tab=nodes");
+        assert!(SettingsTab::Nodes.engine_only() && SettingsTab::Custody.engine_only());
+        assert!(!SettingsTab::Payments.engine_only() && !SettingsTab::Server.engine_only() && !SettingsTab::Logging.engine_only());
     }
 
     #[test]
