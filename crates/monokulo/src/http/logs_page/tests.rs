@@ -104,6 +104,7 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     assert!(html.contains(r#"class="log-histogram""#), "{html}");
     assert!(html.contains(">Refresh</a>"), "a Refresh link, never a refresh by itself");
     assert!(!html.contains("http-equiv=\"refresh\""));
+    assert!(!html.contains("Times in"), "the header's tz already says which zone: {html}");
     // Syntax help: a link to its own page, opened as a dialog by script.
     assert!(html.contains(r#"id="query-help-link" href="/dashboard/admin/logs/syntax""#), "{html}");
     assert!(html.contains(r#"<dialog id="query-help""#) && html.contains(r#"<button type="button" class="qh-chip">order.id</button>"#), "property names listed in the help: {html}");
@@ -134,6 +135,7 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     assert_eq!(status, StatusCode::OK);
     assert!(fragment.starts_with(r#"<div class="props" id="log-monokulo-"#), "{fragment}");
     assert!(fragment.contains("<th>order.id</th>") && fragment.contains("Only lines where order.id is this"), "{fragment}");
+    assert!(fragment.contains(r#"<td class="act"><a href="#), "Find and Exclude sit in their own column: {fragment}");
 
     // A line retention has deleted.
     let (status, _, page) = s.get("/dashboard/admin/logs/row/1.999999.monokulo", false).await;

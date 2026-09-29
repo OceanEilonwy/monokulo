@@ -306,7 +306,7 @@ fn histogram_view(counts: &[u64], params: &LogsParams, from: i64, to: i64, zone:
 }
 
 async fn build(state: &AppState, admin: &crate::db::UserRow, params: &LogsParams, tz: &Timezone) -> LogsViewModel {
-    let (zone, zone_label) = zone(tz, admin);
+    let (zone, _) = zone(tz, admin);
     let now = now_nanos();
     let (from, to) = time_range(params, &zone, now);
     let search = params.search_only();
@@ -338,7 +338,6 @@ async fn build(state: &AppState, admin: &crate::db::UserRow, params: &LogsParams
         saved,
         saved_error: None,
         attribute_names: Vec::new(),
-        zone_label,
     };
 
     let (user, combined) = match filters(params) {
@@ -496,7 +495,7 @@ pub async fn trace_page(
     if !is_trace_id(&trace_id) {
         return (StatusCode::NOT_FOUND, "No such trace.").into_response();
     }
-    let (zone, zone_label) = zone(&tz, &admin);
+    let (zone, _) = zone(&tz, &admin);
     let sources = Sources::from_state(&state);
     let (trace, engine_problem) = crate::logs::trace(&sources, &trace_id).await;
     let search = LogsParams { q: format!("trace_id = '{trace_id}'"), range: "all".into(), ..LogsParams::default() };
@@ -543,7 +542,6 @@ pub async fn trace_page(
         rows: trace.logs.iter().map(|row| row_view(row, &search, user.as_ref(), &zone, false)).collect(),
         problems: engine_problem.into_iter().collect(),
         logs_url: search.url(LOGS),
-        zone_label,
     };
     let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/trace/{trace_id}"));
     Html(view::trace_page(&chrome, &vm).into_string()).into_response()

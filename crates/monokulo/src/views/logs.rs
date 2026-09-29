@@ -103,8 +103,6 @@ pub struct LogsViewModel {
     pub saved: Vec<SavedLogSearch>,
     pub saved_error: Option<String>,
     pub attribute_names: Vec<String>,
-    /// Which zone times are shown in (`UTC`, or the browser's).
-    pub zone_label: String,
 }
 
 const RANGES: &[(&str, &str)] = &[
@@ -148,7 +146,10 @@ const PAGE_STYLE: &str = r#"
 .log-row[open] > summary .msg { white-space: normal; overflow-wrap: anywhere; }
 .log-row .props { margin: .2em 0 .6em 1em; font-size: .85em; }
 .log-row .props td { overflow-wrap: anywhere; }
-.log-row .props .act a { margin-right: .5em; }
+/* Find and Exclude: a column just wide enough for both, never wrapping;
+   a long value wraps in its own column instead. */
+.log-row .props td.act { width: 1%; white-space: nowrap; overflow-wrap: normal; }
+.log-row .props .act a + a { margin-left: .5em; }
 .lvl { font-weight: 700; }
 .lvl-error { color: var(--error); }
 .lvl-warn { color: var(--warning); }
@@ -194,6 +195,7 @@ html:not(.js) .js-only { display: none; }
   .log-row > summary { grid-template-columns: 1fr auto; }
   .log-row > summary .svc { display: none; }
   .log-row > summary .msg { grid-column: 1 / -1; }
+  .log-row .props td.act { width: auto; }
 }
 "#;
 
@@ -299,7 +301,7 @@ pub fn properties(row: &RowView) -> Markup {
         div class="props" id=(format!("{}-props", row.dom_id)) {
             table class="kv-table" {
                 tbody {
-                    tr { th { "target" } td { code { (row.target) } } td {} }
+                    tr { th { "target" } td { code { (row.target) } } td class="act" {} }
                     @for property in &row.properties {
                         tr {
                             th { (property.name) }
@@ -413,7 +415,6 @@ pub fn results(vm: &LogsViewModel) -> Markup {
                         "Live"
                     }
                 }
-                span class="hint" { "Times in " (vm.zone_label) "." }
             }
             @if vm.rows.is_empty() && vm.query_error.is_none() {
                 p class="muted" { "No lines match." }
@@ -745,7 +746,6 @@ pub struct TraceViewModel {
     pub rows: Vec<RowView>,
     pub problems: Vec<String>,
     pub logs_url: String,
-    pub zone_label: String,
 }
 
 /// `/dashboard/admin/logs/trace/{id}`: the spans as a waterfall (bars
@@ -783,10 +783,7 @@ pub fn trace_page(chrome: &PageChrome, vm: &TraceViewModel) -> Markup {
                 }
             }
             h2 { "Lines" }
-            p class="hint" {
-                "Times in " (vm.zone_label) ". "
-                a href=(vm.logs_url) { "Search these lines" }
-            }
+            p class="hint" { a href=(vm.logs_url) { "Search these lines" } }
             div class="log-rows" { @for r in &vm.rows { (row(r)) } }
         }
     };
