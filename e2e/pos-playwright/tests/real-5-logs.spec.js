@@ -166,7 +166,9 @@ test('live adds new lines at the top without a reload, and pauses', async ({ pag
   const before = await page.locator('#log-rows .log-row').count();
   const live = page.locator('#log-live');
   await live.click();
-  await expect(live).toHaveText('Pause');
+  // At once, not when the stream first has something to say.
+  await expect(live).toHaveText('Pause', { timeout: 1_000 });
+  await expect(live).toHaveAttribute('aria-pressed', 'true');
   await request.get(`${fixture().monokulo_url}/status`);
   await expect(page.locator('#log-rows .log-row')).toHaveCount(before + 1, { timeout: 15_000 });
   await stage(page, 'logs-live');
@@ -190,12 +192,12 @@ test.describe('without JavaScript', () => {
     for (const service of await page.locator('#log-rows .log-row .svc').allTextContents()) {
       expect(service).toBe('monokulo');
     }
-    // Refresh is a plain link to the same search.
-    const refresh = page.getByRole('link', { name: 'Refresh' });
-    expect(await refresh.getAttribute('href')).toContain("q=service+%3D+%27monokulo%27");
+    // Refresh submits the search as it stands: a plain GET.
+    const refresh = page.locator('.logs-head').getByRole('button', { name: 'Refresh' });
+    await expect(refresh).toHaveAttribute('form', 'log-search');
     await transitionDone(page);
     await refresh.click();
-    await expect(page).toHaveURL(/q=service/);
+    await expect(page).toHaveURL(/q=service\+%3D\+%27monokulo%27/);
     await stage(page, 'logs-search-no-js');
     // A line opens without script to a link to its properties' page.
     const row = page.locator('#log-rows .log-row').first();
@@ -246,3 +248,60 @@ test("a caller's traceparent (as the WooCommerce plugin sends it) is followed th
     }, { timeout: 15_000, intervals: [500] })
     .toBe(true);
 });
+
+test('Refresh and Live sit in the title bar, the histogram above the search, and every line has trace and session buttons', async ({ page }) => {
+  await signInAsAdmin(page);
+  await page.goto(`${fixture().monokulo_url}/dashboard/admin/settings`);
+  await page.goto(logsUrl(`?q=${encodeURIComponent("http.route = '/dashboard/admin/settings'")}`));
+  for (const width of [1280, 390]) {
+    await page.setViewportSize({ width, height: 800 });
+    const head = page.locator('.logs-head');
+    const title = await head.getByRole('heading', { name: 'Logs', level: 1 }).boundingBox();
+    for (const name of ['Refresh', 'Live']) {
+      const button = head.getByRole('button', { name });
+      await expect(button.locator('svg').first(), `${name} has an icon`).toBeVisible();
+      const box = await button.boundingBox();
+      expect(Math.abs((box.y + box.height / 2) - (title.y + title.height / 2)), `${name} beside the title at ${width}px`).toBeLessThan(title.height / 2);
+    }
+    await expect(page.locator('.hint', { hasText: 'Times in' })).toHaveCount(0);
+    const histogram = await page.locator('.log-histogram').boundingBox();
+    const search = await page.locator('#log-search').boundingBox();
+    expect(histogram.y + histogram.height, `histogram above the search at ${width}px`).toBeLessThanOrEqual(search.y);
+  }
+  await page.setViewportSize({ width: 1280, height: 800 });
+
+  // A line of a signed-in request: its trace and its session, without
+  // opening it.
+  const row = page.locator('#log-rows .log-row').first();
+  await expect(row.getByRole('link', { name: 'Show trace' })).toBeVisible();
+  const session = row.getByRole('link', { name: 'Show session' });
+  await expect(session).toBeVisible();
+  await expect(row).not.toHaveAttribute('open', '');
+
+  // Opened: who it was for first, and Find/Exclude on one line each, even
+  // beside a long value.
+  await row.locator('summary').click();
+  const props = row.locator('.props table');
+  await expect(props).toBeVisible();
+  const names = await props.locator('th').allTextContents();
+  expect(names.slice(0, 5)).toEqual(['target', 'level', 'service', 'session.id', 'user.id']);
+  await expect(props.locator('tr', { has: page.locator('th', { hasText: /^user\.id$/ }) })).toContainText('@');
+  for (const cell of await props.locator('td.act').all()) {
+    const links = cell.locator('a');
+    if (await links.count() < 2) continue;
+    const [find, exclude] = [await links.nth(0).boundingBox(), await links.nth(1).boundingBox()];
+    expect(Math.round(exclude.y), 'Exclude beside Find, not under it').toBe(Math.round(find.y));
+  }
+  await stage(page, 'logs-line-who');
+
+  // The session: every line of it, and only it.
+  await session.click();
+  await expect(page).toHaveURL(/q=session\.id/);
+  await expect(page.locator('#log-rows .log-row').first()).toBeVisible();
+  const sessionId = (await page.locator('#log-q').inputValue()).match(/'([0-9a-f]+)'/)[1];
+  const first = page.locator('#log-rows .log-row').first();
+  await first.locator('summary').click();
+  await expect(first.locator('tr', { has: page.locator('th', { hasText: /^session\.id$/ }) }).locator('code')).toHaveText(sessionId);
+  await stage(page, 'logs-session');
+});
+
