@@ -147,11 +147,15 @@ A separate, quick suite that needs no stagenet node and no funds:
 npx playwright test -c real-binaries.config.js
 ```
 
-Its global setup (`real-binaries-setup.js`) builds and starts the real
-`scanner` and `monokulo` binaries - their real `main` and boot wiring -
-against empty databases in a temporary directory, plus `fake-monerod`
+Its global setup (`real-binaries-setup.js`) builds the binaries once. Each
+spec file (`tests/real-*.spec.js`) then starts its own real `scanner` and
+`monokulo` - their real `main` and boot wiring - against empty databases in
+a temporary directory, plus `fake-monerod`
 (`crates/scanner-test-support/src/bin/fake-monerod.rs`), a stand-in node
-serving a fixed chain of empty blocks. Specs are `tests/real-*.spec.js`, run in name order (the first needs the fresh instance).
+serving a fixed chain of empty blocks (`real-stack.js`, through
+`useRealStack(test)` at the top of the spec). So every file starts from a
+fresh instance, a file's tests run in order against its own processes, and
+files run side by side on four workers (`E2E_WORKERS=1` runs one at a time).
 The fake node can't produce payments, so payment flows stay in the Rust
 integration tests. `KEEP_E2E_LOGS=1` keeps the processes' logs and
 databases; `E2E_SCANNER_BIN=<path>` runs another engine build, for
@@ -162,8 +166,7 @@ fails against the engine from before 8830c92, at the status page step).
 (`coverage-real-binaries.config.js`), after the fixture suite: its stages
 join the screenshot gallery, and specs that use `coverage-test.js`
 (`real-5-logs`, `real-7-pos-timeline`) are served the instrumented browser
-assets and add to the browser coverage. `real-7-pos-timeline` ends by
-spending the anonymous client's log-report budget, so it runs last.
+assets and add to the browser coverage.
 
 ## Screenshot stages
 

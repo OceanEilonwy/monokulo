@@ -9,7 +9,9 @@
 const { test, expect } = require('../coverage-test');
 const { serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
-const { fixture, signInAsAdmin, connectStore } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, connectStore } = require('./real-helpers');
+
+useRealStack(test);
 
 test.beforeEach(async ({ context }) => {
   if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);

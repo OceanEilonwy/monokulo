@@ -1,0 +1,393 @@
+name: CI
+
+# Stages, each a set of jobs that run side by side:
+#   tests     the workspace's Rust tests on every platform we build for
+#   coverage  each coverage collector in a job of its own (Linux only), then
+#             one report job that joins their outputs into the artifact
+#   publish   release binaries and the Docker image (main and version tags),
+#             once tests and coverage passed; a version tag also makes a
+#             GitHub release and pushes the image to ghcr.io
+# tests and coverage start together: neither needs the other's build.
+# Every job writes a summary table and lists its failures.
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+    paths:
+      - 'crates/**'
+      - 'plugins/woocommerce/**'
+      - 'e2e/**'
+      - 'scripts/**'
+      - 'xtask/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.config/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/ci.yml'
+  pull_request:
+    paths:
+      - 'crates/**'
+      - 'plugins/woocommerce/**'
+      - 'e2e/**'
+      - 'scripts/**'
+      - 'xtask/**'
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - '.config/**'
+      - 'Dockerfile'
+      - '.dockerignore'
+      - '.github/workflows/ci.yml'
+  workflow_dispatch:
+
+# A newer push to the same pull request replaces its run still going.
+concurrency:
+  group: ci-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Debug and test builds keep file and line numbers for backtraces but
+  # none of the rest of the debug info, which CI never reads: our own crates
+  # (which the Rust cache does not keep) compile and link faster.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+
+jobs:
+  tests:
+    name: tests (${{ matrix.os }})
+    strategy:
+      fail-fast: false
+      matrix:
+        # Not Windows: key custody talks over Unix sockets.
+        os: [ubuntu-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: crates/monokulo/pos-ui/package-lock.json
+      - name: Install POS app dependencies
+        # monokulo's build script builds the POS app from them.
+        run: npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-nextest
+      - name: Run tests
+        id: nextest
+        continue-on-error: true
+        run: cargo nextest run --workspace --locked --exclude xtask --profile ci
+      - name: Run doctests
+        id: doctest
+        continue-on-error: true
+        # nextest does not run doctests.
+        run: cargo test --workspace --locked --exclude xtask --doc
+      - name: Summarize
+        if: always()
+        shell: bash
+        run: |
+          python3 scripts/test-summary.py 'Tests (${{ matrix.os }})' \
+            rust=target/nextest/ci/junit.xml >> "$GITHUB_STEP_SUMMARY"
+          echo "Doctests: ${{ steps.doctest.outcome }}" >> "$GITHUB_STEP_SUMMARY"
+      - name: Fail on test failure
+        if: always()
+        run: test '${{ steps.nextest.outcome }}' = success && test '${{ steps.doctest.outcome }}' = success
+
+  coverage-rust:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: crates/monokulo/pos-ui/package-lock.json
+      - name: Install POS app dependencies
+        run: npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
+      # The latest nightly and collector, as scripts/coverage-rust-tools.sh
+      # installs locally, but prebuilt.
+      - uses: dtolnay/rust-toolchain@nightly
+        with:
+          components: llvm-tools-preview
+      - uses: Swatinem/rust-cache@v2
+      - uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-llvm-cov,cargo-nextest
+      - name: Collect Rust coverage
+        id: collect
+        continue-on-error: true
+        env:
+          COVERAGE_TOOLS_PREINSTALLED: '1'
+        run: cargo xtask coverage rust
+      - name: Summarize
+        if: always()
+        run: |
+          python3 scripts/test-summary.py 'Rust coverage tests' \
+            rust=target/coverage/rust/junit.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload Rust coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-rust-${{ github.sha }}
+          path: target/coverage/
+          if-no-files-found: warn
+      - name: Fail on collector or test failure
+        if: always()
+        run: test '${{ steps.collect.outcome }}' = success
+
+  coverage-browser:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: |
+            e2e/pos-playwright/package-lock.json
+            crates/monokulo/pos-ui/package-lock.json
+      - name: Install browser and POS dependencies
+        run: |
+          npm ci --prefix e2e/pos-playwright --no-audit --no-fund
+          npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
+      - name: Cache Playwright's Chromium
+        id: chromium
+        uses: actions/cache@v6
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ hashFiles('e2e/pos-playwright/package-lock.json') }}
+      - name: Install Chromium
+        working-directory: e2e/pos-playwright
+        run: |
+          if test '${{ steps.chromium.outputs.cache-hit }}' = true; then
+            npx playwright install-deps chromium
+          else
+            npx playwright install --with-deps chromium
+          fi
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Collect browser coverage
+        id: collect
+        continue-on-error: true
+        run: cargo xtask coverage browser
+      - name: Summarize
+        if: always()
+        run: |
+          python3 scripts/test-summary.py 'Browser coverage tests' \
+            fixture=target/coverage/browser/junit-fixture.xml \
+            real-binaries=target/coverage/browser/junit-real-binaries.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload browser coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-browser-${{ github.sha }}
+          path: target/coverage/
+          if-no-files-found: warn
+      - name: Fail on collector or test failure
+        if: always()
+        run: test '${{ steps.collect.outcome }}' = success
+
+  coverage-woocommerce:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+      - name: Install PHP and Composer
+        uses: shivammathur/setup-php@v2
+        with:
+          # Matches the wp-env test container (`phpVersion` in
+          # plugins/woocommerce/.wp-env*.json) and composer.json's platform
+          # pin, so the lock file always suits the PHP the tests run on.
+          php-version: '8.5'
+          tools: composer:v2
+      - name: Install WooCommerce test dependencies
+        env:
+          NODE_OPTIONS: --dns-result-order=ipv4first --network-family-autoselection-attempt-timeout=5000
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y ripgrep
+          composer install --working-dir=plugins/woocommerce --no-interaction --prefer-dist
+          npm install --global @wordpress/env@latest
+          cd plugins/woocommerce
+          wp-env start --config=.wp-env.coverage.json
+      - name: Collect WooCommerce coverage
+        id: collect
+        continue-on-error: true
+        run: cargo xtask coverage woocommerce
+      - name: Summarize
+        if: always()
+        run: |
+          python3 scripts/test-summary.py 'WooCommerce coverage tests' \
+            woocommerce=target/coverage/woocommerce/junit.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload WooCommerce coverage
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-woocommerce-${{ github.sha }}
+          path: target/coverage/
+          if-no-files-found: warn
+      - name: Fail on collector or test failure
+        if: always()
+        run: test '${{ steps.collect.outcome }}' = success
+
+  coverage:
+    # One artifact and index from the three collectors, validated as
+    # `cargo xtask coverage all` validates a local run.
+    needs: [coverage-rust, coverage-browser, coverage-woocommerce]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: coverage-*-${{ github.sha }}
+          path: target/coverage
+          merge-multiple: true
+      - name: Combine and validate the coverage report
+        id: report
+        continue-on-error: true
+        run: cargo xtask coverage report
+      - name: Summarize
+        if: always()
+        run: |
+          python3 scripts/coverage-job-summary.py >> "$GITHUB_STEP_SUMMARY"
+          python3 scripts/test-summary.py 'Coverage tests' \
+            rust=target/coverage/rust/junit.xml \
+            browser-fixture=target/coverage/browser/junit-fixture.xml \
+            browser-real-binaries=target/coverage/browser/junit-real-binaries.xml \
+            woocommerce=target/coverage/woocommerce/junit.xml >> "$GITHUB_STEP_SUMMARY"
+      - name: Upload offline coverage artifact
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: coverage-${{ github.sha }}
+          path: target/coverage/
+          if-no-files-found: warn
+      - name: Fail on collector, test or validation failure
+        if: always()
+        run: test '${{ steps.report.outcome }}' = success
+
+  publish:
+    name: publish (${{ matrix.target }})
+    needs: [tests, coverage]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # Ubuntu 22.04's glibc, so the binaries run on older distributions too.
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu }
+          - { os: ubuntu-22.04-arm, target: aarch64-unknown-linux-gnu }
+          - { os: macos-latest, target: aarch64-apple-darwin }
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '24'
+          cache: npm
+          cache-dependency-path: crates/monokulo/pos-ui/package-lock.json
+      - name: Install POS app dependencies
+        run: npm ci --prefix crates/monokulo/pos-ui --no-audit --no-fund
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Build release binaries
+        run: >-
+          cargo build --release --locked
+          -p scanner --bin scanner
+          -p monokulo --bin monokulo
+          -p key-custody-server --bin key-custody-server
+      - name: Package
+        id: package
+        shell: bash
+        run: |
+          version="${GITHUB_REF_NAME#v}"
+          if test "$GITHUB_REF_TYPE" != tag; then version="main-${GITHUB_SHA::7}"; fi
+          name="monokulo-${version}-${{ matrix.target }}"
+          mkdir -p "dist/$name"
+          cp target/release/scanner target/release/monokulo target/release/key-custody-server README.md "dist/$name/"
+          tar -C dist -czf "dist/$name.tar.gz" "$name"
+          (cd dist && shasum -a 256 "$name.tar.gz" > "$name.tar.gz.sha256")
+          echo "name=$name" >> "$GITHUB_OUTPUT"
+          {
+            echo "## Release binaries (${{ matrix.target }})"
+            echo
+            echo "| File | Size |"
+            echo "| --- | ---: |"
+            for f in scanner monokulo key-custody-server; do
+              echo "| \`$f\` | $(du -h "dist/$name/$f" | cut -f1) |"
+            done
+          } >> "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v7
+        with:
+          name: ${{ steps.package.outputs.name }}
+          path: |
+            dist/*.tar.gz
+            dist/*.sha256
+          if-no-files-found: error
+
+  docker:
+    # The production image (Dockerfile): built on main, and on a version tag
+    # also pushed to ghcr.io/<owner>/monokulo as that version and latest.
+    needs: [tests, coverage]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/monokulo
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha
+      - uses: docker/login-action@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  release:
+    # A version tag's binaries as a GitHub release, for merchants to download.
+    needs: [publish]
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v8
+        with:
+          pattern: monokulo-*
+          path: dist
+          merge-multiple: true
+      - uses: softprops/action-gh-release@v3
+        with:
+          files: dist/*
+          generate_release_notes: true

@@ -45,6 +45,9 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
 
 
 @keyframes pos-spin { to { transform: rotate(360deg); } }
+/* Keyframes stay at the top level: nested in a style rule (#pos-root below)
+   they are not valid CSS, so browsers drop them and the minifier refuses them. */
+@keyframes pos-qr-new { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--state-partial-border) 55%, transparent); } to { box-shadow: 0 0 0 14px transparent; } }
 
 /* Component rules are nested under #pos-root so they outrank both the
    reset above and the site stylesheet's element rules. */
@@ -204,7 +207,6 @@ body { margin: 0; padding: 0; background: var(--paper); color: var(--ink); }
     position: absolute; top: 0; left: 50%; transform: translate(-50%, -55%); white-space: nowrap; padding: 1px 8px;
     border: 1px solid var(--state-partial-border); border-radius: 999px; background: var(--state-partial-bg); color: var(--state-partial-ink); font-size: 10px; font-weight: 800;
   }
-  @keyframes pos-qr-new { from { box-shadow: 0 0 0 0 color-mix(in srgb, var(--state-partial-border) 55%, transparent); } to { box-shadow: 0 0 0 14px transparent; } }
   @media (prefers-reduced-motion: reduce) { .pos-qr-new { animation: none; } }
   .pos-quiet-label { font-size: 11px; color: var(--muted); margin-top: 6px; }
   .pos-address { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 8px; border: 1px solid var(--pos-border); border-radius: 3px; background: var(--pos-field); }

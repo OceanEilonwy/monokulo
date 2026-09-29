@@ -1,0 +1,39 @@
+# Monokulo with Docker Compose: the engine and monokulo as two containers from
+# the image the Dockerfile builds. Only monokulo is published; the engine's
+# admin API stays on the compose network.
+#
+# Put the two secrets in a .env file beside this one (never commit it):
+#
+#   MONOKULO_ENCRYPTION_KEY=<openssl rand -hex 32>   # encrypts monokulo's data at rest; keep it
+#   SCANNER_ADMIN_TOKEN=<openssl rand -hex 32>       # the engine's instance-admin token
+#
+# then `docker compose up -d` and open http://localhost:8081 to create the
+# admin account. Monero nodes and everything else are set on its admin page.
+
+services:
+  engine:
+    build: .
+    image: monokulo
+    command: ["scanner"]
+    environment:
+      SCANNER_ADMIN_TOKEN: ${SCANNER_ADMIN_TOKEN:?set SCANNER_ADMIN_TOKEN in .env}
+    volumes:
+      - engine-data:/var/lib/monokulo
+    restart: unless-stopped
+
+  monokulo:
+    image: monokulo
+    depends_on: [engine]
+    environment:
+      MONOKULO_ENCRYPTION_KEY: ${MONOKULO_ENCRYPTION_KEY:?set MONOKULO_ENCRYPTION_KEY in .env}
+      MONOKULO_ENGINE_URL: http://engine:8443
+      MONOKULO_SCANNER_ADMIN_TOKEN: ${SCANNER_ADMIN_TOKEN:?set SCANNER_ADMIN_TOKEN in .env}
+    ports:
+      - "8081:8081"
+    volumes:
+      - monokulo-data:/var/lib/monokulo
+    restart: unless-stopped
+
+volumes:
+  engine-data:
+  monokulo-data:

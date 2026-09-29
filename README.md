@@ -13,6 +13,30 @@ default, and each store can move by entering its keys again.
 
 ## Running in production
 
+### With Docker
+
+The `Dockerfile` builds one image with both binaries (and
+`key-custody-server`); `compose.yaml` runs the engine and monokulo from it
+as two containers, publishing only monokulo on port 8081. Put the two
+secrets in a `.env` file beside it:
+
+```sh
+printf 'MONOKULO_ENCRYPTION_KEY=%s\nSCANNER_ADMIN_TOKEN=%s\n' "$(openssl rand -hex 32)" "$(openssl rand -hex 32)" > .env
+docker compose up -d
+```
+
+then open http://localhost:8081 and continue from step 4 below. Each
+version tag's image is also on `ghcr.io/oceaneilonwy/monokulo`. Keep
+`MONOKULO_ENCRYPTION_KEY`: it encrypts monokulo's data at rest. The
+databases live in the `engine-data` and `monokulo-data` volumes.
+
+### From release binaries or source
+
+Each version tag's GitHub release has `scanner`, `monokulo` and
+`key-custody-server` for Linux (x86_64, aarch64) and macOS (arm64); CI's
+`publish` jobs also keep them for every push to main. With those, skip
+step 1.
+
 1. Build release binaries from the repository root. Building monokulo
    also builds its POS app, so it needs Node 24 or later and the app's
    dependencies, installed once from the lockfile:

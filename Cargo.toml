@@ -14,3 +14,12 @@ members = [
     "crates/snp-attest",
     "xtask",
 ]
+
+# Password hashing (Argon2id) is deliberately slow; unoptimised, as in debug
+# and test builds, one hash takes about a second, and most HTTP tests sign
+# users up and in. Optimising just these dependencies keeps our own code
+# unoptimised for debugging and coverage while tests run several times faster.
+[profile.dev.package.argon2]
+opt-level = 3
+[profile.dev.package.blake2]
+opt-level = 3
