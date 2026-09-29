@@ -1028,6 +1028,109 @@ mod tests {
         assert_eq!(order_pricing(&state, &router, &pk).await, ("haveno".to_string(), 250_000_000_000));
     }
 
+    /// A local haveno.markets whose tickers request is counted.
+    async fn spawn_counting_haveno(usd_price: f64) -> (String, std::sync::Arc<std::sync::atomic::AtomicUsize>) {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let counter = calls.clone();
+        let body = format!(r#"{{"USD":{{"pair":"XMR_USD","highest_bid":{},"lowest_ask":{}}}}}"#, usd_price - 0.05, usd_price + 0.05);
+        let app = Router::new().route(
+            "/api/v1/tickers",
+            axum::routing::get(move || {
+                counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let body = body.clone();
+                async move {
+                    use axum::response::IntoResponse;
+                    ([("content-type", "application/json")], body).into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        (format!("http://{addr}"), calls)
+    }
+
+    /// Two merchants on one instance, sharing its one provider cache, with
+    /// different Haveno limits: each store's orders are priced by its own
+    /// limits, however their orders interleave, from a single upstream
+    /// fetch; and neither merchant can read or change the other's settings.
+    #[tokio::test]
+    async fn two_merchants_with_different_haveno_limits_are_priced_by_their_own_limits_from_one_shared_cache() {
+        let (mut state, _engine) = test_state_with_real_engine().await;
+        let (haveno, tickers_calls) = spawn_counting_haveno(4.0).await; // a 2.5% spread
+        state.exchange_rate = std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::all(
+            spawn_mock_coingecko().await, // $1.00 per XMR
+            "http://127.0.0.1:1",
+            haveno,
+        ));
+        let router = build_router(state.clone());
+
+        let token_a = signed_up_and_logged_in_session_token(&router, "pay-user-a@example.com", "correct horse battery staple").await;
+        let token_b = signed_up_and_logged_in_session_token(&router, "pay-user-b@example.com", "correct horse battery staple").await;
+        let pk_a = create_connection(&router, &token_a).await;
+        let pk_b = create_connection(&router, &token_b).await;
+        let id_a = state.db.lock().get_store_connection_by_public_key(&pk_a).unwrap().unwrap().id;
+        let id_b = state.db.lock().get_store_connection_by_public_key(&pk_b).unwrap().unwrap().id;
+
+        let haveno_first = |spread: &'static str| {
+            vec![
+                ("use_haveno", "on"),
+                ("position_haveno", "1"),
+                ("use_coingecko", "on"),
+                ("position_coingecko", "2"),
+                ("haveno_currencies", ""),
+                ("haveno_max_spread_pct", spread),
+                ("haveno_min_offers_per_side", "1"),
+                ("haveno_min_depth_xmr_per_side", "0"),
+            ]
+        };
+        save_provider_settings(&router, &token_a, &id_a, &haveno_first("5")).await; // accepts 2.5%
+        save_provider_settings(&router, &token_b, &id_b, &haveno_first("1")).await; // does not
+
+        let haveno_price = ("haveno".to_string(), 250_000_000_000);
+        let coingecko_price = ("coingecko".to_string(), 1_000_000_000_000);
+        for round in 0..3 {
+            assert_eq!(order_pricing(&state, &router, &pk_a).await, haveno_price, "A, round {round}");
+            assert_eq!(order_pricing(&state, &router, &pk_b).await, coingecko_price, "B, round {round}");
+            assert_eq!(order_pricing(&state, &router, &pk_b).await, coingecko_price, "B again, round {round}");
+            assert_eq!(order_pricing(&state, &router, &pk_a).await, haveno_price, "A again, round {round}");
+        }
+        assert_eq!(tickers_calls.load(std::sync::atomic::Ordering::SeqCst), 1, "both merchants were served from one upstream fetch");
+
+        // B loosening its own limit changes B's next order and nothing of A's.
+        save_provider_settings(&router, &token_b, &id_b, &haveno_first("3")).await;
+        assert_eq!(order_pricing(&state, &router, &pk_b).await, haveno_price);
+        assert_eq!(order_pricing(&state, &router, &pk_a).await, haveno_price);
+        assert_eq!(state.db.lock().get_store_connection_by_id(&id_a).unwrap().unwrap().fx_provider_settings.haveno.max_spread_pct, 5.0);
+
+        // A merchant cannot change, or see, another merchant's store settings.
+        let before_a = state.db.lock().get_store_connection_by_id(&id_a).unwrap().unwrap();
+        let body = "use_coingecko=on&position_coingecko=1&haveno_currencies=EUR&haveno_max_spread_pct=0.5&haveno_min_offers_per_side=9&haveno_min_depth_xmr_per_side=9";
+        let forged = |token: &str, uri: String, method: &str, body: &str| {
+            Request::builder()
+                .method(method)
+                .uri(uri)
+                .header("content-type", "application/x-www-form-urlencoded")
+                .header("authorization", format!("Bearer {token}"))
+                .body(Body::from(body.to_string()))
+                .unwrap()
+        };
+        let response = router
+            .clone()
+            .oneshot(forged(&token_b, format!("/dashboard/stores/{id_a}/settings/fx-provider"), "POST", body))
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "B may not change A's store");
+        let response =
+            router.clone().oneshot(forged(&token_b, format!("/dashboard/stores/{id_a}/settings"), "GET", "")).await.unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "B may not view A's store settings");
+        let after_a = state.db.lock().get_store_connection_by_id(&id_a).unwrap().unwrap();
+        assert_eq!((after_a.fx_providers, after_a.fx_provider_settings), (before_a.fx_providers, before_a.fx_provider_settings));
+        assert_eq!(order_pricing(&state, &router, &pk_a).await, haveno_price, "A's pricing is unchanged by B's attempt");
+    }
+
     #[tokio::test]
     async fn creating_an_order_with_an_unknown_currency_is_rejected_before_ever_reaching_the_engine() {
         let (state, _engine) = test_state_with_real_engine().await;

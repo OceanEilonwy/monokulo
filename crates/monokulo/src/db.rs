@@ -1827,6 +1827,32 @@ mod tests {
     }
 
     #[test]
+    fn saving_one_stores_settings_leaves_every_other_store_untouched() {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user("user-a", "a@example.com", "hash", false, 1000).unwrap();
+        db.create_user("user-b", "b@example.com", "hash", false, 1000).unwrap();
+        for (id, user, pk) in [("conn-a", "user-a", "pk_a"), ("conn-b", "user-b", "pk_b"), ("conn-a2", "user-a", "pk_a2")] {
+            db.create_store_connection(id, user, "woocommerce", &format!("https://{id}.example.com"), pk, "sk", "http://127.0.0.1:8080", 3000, "XMR").unwrap();
+        }
+        let before_b = db.get_store_connection_by_id("conn-b").unwrap().unwrap();
+        let before_a2 = db.get_store_connection_by_id("conn-a2").unwrap().unwrap();
+
+        let mut settings = FxProviderSettings::default();
+        settings.haveno.max_spread_pct = 0.5;
+        settings.haveno.currencies = vec!["USD".to_string()];
+        db.update_store_connection_fx("conn-a", &["haveno".to_string(), "coingecko".to_string()], &settings).unwrap();
+
+        let a = db.get_store_connection_by_id("conn-a").unwrap().unwrap();
+        assert_eq!((a.fx_providers, a.fx_provider_settings), (vec!["haveno".to_string(), "coingecko".to_string()], settings));
+        for (id, before) in [("conn-b", before_b), ("conn-a2", before_a2)] {
+            let after = db.get_store_connection_by_id(id).unwrap().unwrap();
+            assert_eq!(after.fx_providers, before.fx_providers, "{id}: providers unchanged");
+            assert_eq!(after.fx_provider_settings, before.fx_provider_settings, "{id}: settings unchanged");
+            assert_eq!(after.fx_provider_settings, FxProviderSettings::default(), "{id}: still the defaults");
+        }
+    }
+
+    #[test]
     fn a_corrupt_settings_cell_reads_as_the_defaults_not_a_failed_lookup() {
         let db = db_with_store();
         db.conn.execute("UPDATE store_connections SET fx_provider_settings = 'garbage' WHERE id = 'conn-1'", []).unwrap();

@@ -545,6 +545,142 @@ mod tests {
         assert_eq!(provider.piconero_per_unit_cached("USD", TTL, &strict).await.unwrap(), None);
     }
 
+    /// Every limit the policy has, chosen so each one passes for some and
+    /// fails for others against `TICKERS`/`DEPTH` (USD: 1.98% spread; bids 3
+    /// offers / 5 XMR, asks 2 offers / 1.5 XMR).
+    fn every_kind_of_policy() -> Vec<HavenoPolicy> {
+        vec![
+            policy(),
+            HavenoPolicy { max_spread_pct: 1.0, ..policy() },
+            HavenoPolicy { max_spread_pct: 2.0, ..policy() },
+            HavenoPolicy { min_offers_per_side: 2, ..policy() },
+            HavenoPolicy { min_offers_per_side: 3, ..policy() },
+            HavenoPolicy { min_depth_xmr_per_side: 1.5, ..policy() },
+            HavenoPolicy { min_depth_xmr_per_side: 1.6, ..policy() },
+            HavenoPolicy { max_spread_pct: 1.0, min_offers_per_side: 3, min_depth_xmr_per_side: 9.0 },
+        ]
+    }
+
+    /// The answer a policy gets must not depend on which policies asked
+    /// before it: cached data is the market, never a verdict on it.
+    #[tokio::test]
+    async fn a_policys_answer_never_depends_on_which_policy_asked_first() {
+        let policies = every_kind_of_policy();
+
+        let mut expected = Vec::new();
+        for policy in &policies {
+            let fresh = HavenoRateProvider::new(&standard().await.url);
+            expected.push(fresh.piconero_per_unit_cached("USD", TTL, policy).await.unwrap());
+        }
+        assert!(expected.iter().any(Option::is_some) && expected.iter().any(Option::is_none), "the set must include both passes and rejections");
+
+        let n = policies.len();
+        let orders: Vec<Vec<usize>> = vec![
+            (0..n).collect(),
+            (0..n).rev().collect(),
+            (0..n).map(|i| (i + 3) % n).collect(),
+            (0..n).flat_map(|i| [i, (i + 1) % n]).collect(), // repeats, alternating neighbours
+        ];
+        for order in orders {
+            let server = standard().await;
+            let shared = HavenoRateProvider::new(&server.url);
+            for &i in &order {
+                let got = shared.piconero_per_unit_cached("USD", TTL, &policies[i]).await.unwrap();
+                assert_eq!(got, expected[i], "policy {i} ({:?}) after order {order:?}", policies[i]);
+            }
+            assert_eq!(server.tickers_calls.load(Ordering::SeqCst), 1, "one ticker fetch serves every policy ({order:?})");
+            assert_eq!(server.depth_calls.load(Ordering::SeqCst), 1, "one depth fetch serves every policy ({order:?})");
+        }
+    }
+
+    /// A rejection under a strict policy must not be remembered: the currency
+    /// is still priced for the next, looser, caller - and vice versa.
+    #[tokio::test]
+    async fn a_rejection_is_not_cached_for_the_next_caller() {
+        let server = standard().await;
+        let provider = HavenoRateProvider::new(&server.url);
+        let strict_spread = HavenoPolicy { max_spread_pct: 1.0, ..policy() };
+        let strict_depth = HavenoPolicy { min_depth_xmr_per_side: 9.0, ..policy() };
+        for _ in 0..2 {
+            assert!(provider.piconero_per_unit_cached("USD", TTL, &strict_spread).await.unwrap().is_none());
+            assert!(provider.piconero_per_unit_cached("USD", TTL, &policy()).await.unwrap().is_some());
+            assert!(provider.piconero_per_unit_cached("USD", TTL, &strict_depth).await.unwrap().is_none());
+            assert!(provider.piconero_per_unit_cached("USD", TTL, &policy()).await.unwrap().is_some());
+        }
+    }
+
+    /// The price itself is the market's, whatever the policy that let it through.
+    #[tokio::test]
+    async fn every_policy_that_passes_gets_the_same_price() {
+        let server = standard().await;
+        let provider = HavenoRateProvider::new(&server.url);
+        let mut prices = std::collections::HashSet::new();
+        for policy in every_kind_of_policy() {
+            if let Some(price) = provider.piconero_per_unit_cached("USD", TTL, &policy).await.unwrap() {
+                prices.insert(price);
+            }
+        }
+        assert_eq!(prices, std::collections::HashSet::from([9_900_990_099]));
+    }
+
+    /// Many callers with different policies at once: still one fetch each,
+    /// and each gets the answer its own policy gives.
+    #[tokio::test]
+    async fn concurrent_callers_with_different_policies_share_one_fetch_and_keep_their_own_answers() {
+        let server = standard().await;
+        let provider = Arc::new(HavenoRateProvider::new(&server.url));
+        let policies = every_kind_of_policy();
+        let mut expected = Vec::new();
+        for policy in &policies {
+            expected.push(HavenoRateProvider::new(&standard().await.url).piconero_per_unit_cached("USD", TTL, policy).await.unwrap());
+        }
+
+        let mut tasks = Vec::new();
+        for _round in 0..4 {
+            for (i, policy) in policies.iter().enumerate() {
+                let provider = provider.clone();
+                let policy = *policy;
+                tasks.push(tokio::spawn(async move { (i, provider.piconero_per_unit_cached("USD", TTL, &policy).await.unwrap()) }));
+            }
+        }
+        for task in tasks {
+            let (i, got) = task.await.unwrap();
+            assert_eq!(got, expected[i], "policy {i}");
+        }
+        assert_eq!(server.tickers_calls.load(Ordering::SeqCst), 1);
+        assert_eq!(server.depth_calls.load(Ordering::SeqCst), 1);
+    }
+
+    /// Depth cached for one currency serves every policy, and another
+    /// currency's depth is separate.
+    #[tokio::test]
+    async fn depth_is_cached_per_currency_and_shared_by_policies() {
+        let tickers = r#"{
+            "USD":{"pair":"XMR_USD","highest_bid":100.0,"lowest_ask":101.0},
+            "EUR":{"pair":"XMR_EUR","highest_bid":90.0,"lowest_ask":91.0}
+        }"#;
+        let server = spawn_server(move |_| json_body(tickers), |pair, _| {
+            // EUR is deeper than USD.
+            if pair == "XMR_EUR" {
+                json_body(r#"{"bids":[{"amount":9.0,"offer_count":9}],"asks":[{"amount":9.0,"offer_count":9}]}"#)
+            } else {
+                json_body(r#"{"bids":[{"amount":1.0,"offer_count":1}],"asks":[{"amount":1.0,"offer_count":1}]}"#)
+            }
+        })
+        .await;
+        let provider = HavenoRateProvider::new(&server.url);
+        let wants_5_offers = HavenoPolicy { min_offers_per_side: 5, ..policy() };
+        let wants_5_xmr = HavenoPolicy { min_depth_xmr_per_side: 5.0, ..policy() };
+        for _ in 0..2 {
+            assert!(provider.piconero_per_unit_cached("USD", TTL, &wants_5_offers).await.unwrap().is_none());
+            assert!(provider.piconero_per_unit_cached("EUR", TTL, &wants_5_offers).await.unwrap().is_some());
+            assert!(provider.piconero_per_unit_cached("USD", TTL, &wants_5_xmr).await.unwrap().is_none());
+            assert!(provider.piconero_per_unit_cached("EUR", TTL, &wants_5_xmr).await.unwrap().is_some());
+        }
+        assert_eq!(server.depth_calls.load(Ordering::SeqCst), 2, "one depth fetch per currency, whichever policy asked");
+        assert_eq!(server.tickers_calls.load(Ordering::SeqCst), 1);
+    }
+
     #[test]
     fn the_default_policy_is_a_five_percent_spread_and_needs_no_depth() {
         let policy = HavenoPolicy::default();
