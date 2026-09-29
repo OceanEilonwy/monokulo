@@ -102,7 +102,20 @@ async fn the_page_works_without_javascript_and_says_why_engine_lines_are_missing
     assert!(html.find("the page test failed").unwrap() < html.find("payment seen for the page test").unwrap(), "newest first");
     assert!(html.contains("set the engine admin token"), "{html}");
     assert!(html.contains(r#"class="log-histogram""#), "{html}");
-    assert!(html.contains(">Refresh</a>"), "a Refresh link, never a refresh by itself");
+    // The title bar: Refresh submits the search as it stands (a plain GET
+    // without script), Live streams after the newest line shown.
+    let head = &html[html.find(r#"<div class="logs-head">"#).expect("a title bar")..html.find(r#"<div class="logs-body">"#).unwrap()];
+    assert!(head.contains("<h1>Logs</h1>") && head.contains(r#"<button type="submit" form="log-search""#) && head.contains("<span>Refresh</span>"), "{head}");
+    assert!(head.contains(r#"id="log-live""#) && head.contains("<svg") && !head.contains("disabled"), "{head}");
+    assert!(html.contains(r#"<div id="log-rows" class="log-rows" data-tail-url="/dashboard/admin/logs/tail?"#), "{html}");
+    // The histogram comes with the results, and its style puts it above
+    // the search form.
+    assert!(html.contains(r#"<div class="log-histogram-box">"#) && html.contains(".log-histogram-box { order: -1;"), "{html}");
+    // Every line: its trace, or an empty slot so the next lines up.
+    let payment = &html[html[..html.find("payment seen for the page test").unwrap()].rfind("<summary>").unwrap()..];
+    let payment = &payment[..payment.find("</summary>").unwrap()];
+    assert!(payment.contains(&format!(r#"<a href="/dashboard/admin/logs/trace/{}" title="Show trace""#, s.trace_id)), "{payment}");
+    assert!(payment.contains(r#"<span class="row-acts">"#) && !payment.contains("Show session"), "no session outside a signed-in request: {payment}");
     assert!(!html.contains("http-equiv=\"refresh\""));
     assert!(!html.contains("Times in"), "the header's tz already says which zone: {html}");
     // Syntax help: a link to its own page, opened as a dialog by script.
@@ -215,6 +228,9 @@ async fn older_pages_follow_as_links_or_appended_by_fixi() {
     let (_, _, page_two) = s.get(&older, false).await;
     assert_eq!(page_two.matches(r#"<details class="log-row""#).count(), 3);
     assert!(page_two.contains("filler line 0") && page_two.contains(">Newer</a>"));
+    // Live adds to the newest page only.
+    assert!(page_two.contains(r#"<div id="log-rows" class="log-rows">"#), "no tail on an older page: {page_two}");
+    assert!(page_two.contains(r#"aria-pressed="false" disabled"#), "{page_two}");
 
     let (_, _, more) = s.get(&format!("{older}&part=more"), true).await;
     assert!(more.starts_with(r#"<details class="log-row""#), "{more}");
@@ -299,7 +315,7 @@ async fn live_streams_new_lines_to_the_top_of_the_list() {
     let s = setup(0).await;
     // After the error line: only lines newer than it come.
     let (_, _, html) = s.get("/dashboard/admin/logs", false).await;
-    let tail = html.split(r#"fx-action=""#).find(|part| part.starts_with("/dashboard/admin/logs/tail")).unwrap();
+    let tail = html.split(r#"data-tail-url=""#).nth(1).unwrap();
     let tail = tail.split('"').next().unwrap().replace("&amp;", "&");
     assert!(tail.contains("after="), "{tail}");
     let response = s
@@ -310,6 +326,9 @@ async fn live_streams_new_lines_to_the_top_of_the_list() {
         .unwrap();
     assert_eq!(response.headers()["content-type"], "text/event-stream");
     let mut body = response.into_body();
+    // Open at once: a comment before there's anything to send.
+    let opened = tokio::time::timeout(std::time::Duration::from_millis(300), body.frame()).await.expect("the stream opens at once").unwrap().unwrap();
+    assert_eq!(opened.data_ref().map(|d| std::str::from_utf8(d).unwrap()), Some(": live\n\n"));
     let first = tokio::time::timeout(std::time::Duration::from_millis(300), body.frame()).await;
     assert!(first.is_err(), "nothing newer than the newest line yet");
 

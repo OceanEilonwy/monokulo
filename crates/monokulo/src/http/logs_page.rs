@@ -25,6 +25,7 @@ use axum::extract::{Form, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use serde::{Deserialize, Serialize};
+use futures_util::StreamExt;
 use serde_json::Value;
 use telemetry::query::{and_also, parse, Expr, Op, ParseError, Severity, Value as QValue};
 use telemetry::store::api::{is_trace_id, HistogramRequest, LogsRequest};
@@ -43,6 +44,8 @@ const BARS: u32 = 60;
 const EXPORT_MAX: usize = 10_000;
 /// Most saved searches per admin.
 const MAX_SAVED: usize = 50;
+/// How often Live asks the engine for new lines (monokulo's own wake it).
+const ENGINE_POLL: Duration = Duration::from_secs(1);
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
 /// The page's URL parameters. Empty values mean "not set".
@@ -253,6 +256,7 @@ fn row_view(row: &LogRow, params: &LogsParams, user: Option<&Expr>, zone: &jiff:
         target: row.target.clone(),
         message: row.message.clone(),
         trace_url: row.trace_id.as_ref().map(|id| format!("{LOGS}/trace/{id}")),
+        session_url: row.attributes.get("session.id").and_then(Value::as_str).map(session_url),
         pos_session_url: row
             .attributes
             .get("pos.session")
@@ -263,6 +267,12 @@ fn row_view(row: &LogRow, params: &LogsParams, user: Option<&Expr>, zone: &jiff:
         open: false,
         properties,
     }
+}
+
+/// Every line of one signed-in session, whenever it was.
+fn session_url(session: &str) -> String {
+    let condition = Expr::Compare { field: "session.id".into(), op: Op::Eq, value: QValue::Text(session.to_string()) };
+    LogsParams { q: condition.to_string(), range: "all".into(), ..LogsParams::default() }.url(LOGS)
 }
 
 fn request(combined: Option<&Expr>, from: Option<i64>, to: Option<i64>, before: &str, after: &str, limit: u32) -> LogsRequest {
@@ -331,7 +341,7 @@ async fn build(state: &AppState, admin: &crate::db::UserRow, params: &LogsParams
         more_url: None,
         newer_url: None,
         refresh_url: search.url(LOGS),
-        tail_url: search.url(&format!("{LOGS}/tail")),
+        tail_url: None,
         export_ndjson_url: LogsParams { format: "ndjson".into(), ..search.clone() }.url(&format!("{LOGS}/export")),
         export_csv_url: LogsParams { format: "csv".into(), ..search.clone() }.url(&format!("{LOGS}/export")),
         query_string: search.query_string(),
@@ -384,9 +394,12 @@ async fn build(state: &AppState, admin: &crate::db::UserRow, params: &LogsParams
             vm.newer_url = Some(LogsParams { after: first.cursor().encode(), ..search.clone() }.url(LOGS));
         }
     }
-    // Live starts after the newest line shown (or now).
-    let start = page.rows.first().map(LogRow::cursor).unwrap_or(Cursor { ts: now, service: String::new(), id: 0 });
-    vm.tail_url = LogsParams { after: start.encode(), ..search }.url(&format!("{LOGS}/tail"));
+    // Live starts after the newest line shown (or now), and only from the
+    // newest page.
+    if params.before.is_empty() && params.after.is_empty() {
+        let start = page.rows.first().map(LogRow::cursor).unwrap_or(Cursor { ts: now, service: String::new(), id: 0 });
+        vm.tail_url = Some(LogsParams { after: start.encode(), ..search }.url(&format!("{LOGS}/tail")));
+    }
     vm
 }
 
@@ -463,9 +476,9 @@ pub async fn tail(
                     // polled.
                     match tail.changed.as_mut() {
                         Some(changed) => {
-                            let _ = tokio::time::timeout(Duration::from_secs(2), changed.changed()).await;
+                            let _ = tokio::time::timeout(ENGINE_POLL, changed.changed()).await;
                         }
-                        None => tokio::time::sleep(Duration::from_secs(2)).await,
+                        None => tokio::time::sleep(ENGINE_POLL).await,
                     }
                 }
                 tail.first = false;
@@ -482,7 +495,10 @@ pub async fn tail(
             }
         }
     });
-    crate::live::sse(stream)
+    // A comment first, so the stream is open (and Live shows it) at once,
+    // before there's a line to send.
+    let opened = futures_util::stream::once(async { Ok(axum::response::sse::Event::default().comment("live")) });
+    crate::live::sse(opened.chain(stream))
 }
 
 /// `GET /dashboard/admin/logs/trace/{trace_id}`.

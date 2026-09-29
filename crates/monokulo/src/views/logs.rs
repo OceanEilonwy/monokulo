@@ -25,6 +25,8 @@ pub struct RowView {
     pub target: String,
     pub message: String,
     pub trace_url: Option<String>,
+    /// Every line of the signed-in session this line was written in.
+    pub session_url: Option<String>,
     /// The POS session this line belongs to, as a timeline.
     pub pos_session_url: Option<String>,
     pub properties: Vec<PropertyView>,
@@ -94,8 +96,9 @@ pub struct LogsViewModel {
     pub newer_url: Option<String>,
     /// The first page of this search, now.
     pub refresh_url: String,
-    /// The live stream of new lines for this search (JavaScript only).
-    pub tail_url: String,
+    /// The live stream of new lines for this search (JavaScript only);
+    /// `None` on an older page, which Live wouldn't add to.
+    pub tail_url: Option<String>,
     pub export_ndjson_url: String,
     pub export_csv_url: String,
     /// The current search's query string, for "Save this search".
@@ -134,16 +137,37 @@ const PAGE_STYLE: &str = r#"
 .logs-search .quick { display: flex; flex-wrap: wrap; gap: .5em; align-items: center; }
 .logs-search .quick label { display: inline-flex; gap: .3em; align-items: center; }
 .query-error mark { background: var(--tint-error); color: inherit; border-bottom: 2px solid currentColor; }
+/* The title bar holds Refresh and Live, which act on the whole page. */
+.logs-head { display: flex; align-items: center; flex-wrap: wrap; gap: .5em; margin: var(--space-lg) 0 var(--space-sm); padding-bottom: .3em; border-bottom: 2px solid var(--line); }
+.context-nav + .logs-head { margin-top: var(--space-xs); }
+.logs-head h1 { flex: 1; margin: 0; padding: 0; border: 0; }
+.logs-head .btn, .logs-head button { display: inline-flex; align-items: center; gap: .4em; margin: 0; padding: .35em .8em; }
+.logs-head svg { width: 1.1em; height: 1.1em; flex: none; }
+.log-live .i-pause, .log-live[aria-pressed="true"] .i-play { display: none; }
+.log-live[aria-pressed="true"] .i-pause { display: inline; }
+.log-live:disabled { opacity: .5; cursor: not-allowed; }
+/* The histogram sits above the search it narrows, but comes with the
+   results (a search swaps both), so the results box lets its parts lay
+   out in the page's column and the histogram moves up. */
+.logs-body { display: flex; flex-direction: column; }
+.logs-body > * { min-width: 0; }
+.logs-body > #log-results { display: contents; }
+.log-histogram-box { order: -1; margin-bottom: .6em; }
 .log-histogram { display: flex; align-items: flex-end; gap: 1px; height: 3.5em; margin: .5em 0 .2em; }
 .log-histogram a { flex: 1; background: var(--accent); min-height: 1px; opacity: .8; }
 .log-histogram a:hover, .log-histogram a:focus { opacity: 1; }
 .log-histogram-axis { display: flex; justify-content: space-between; font-size: .8em; color: var(--muted); }
 .log-rows { border-top: 1px solid var(--line); }
 .log-row { border-bottom: 1px solid var(--line); }
-.log-row > summary { display: grid; grid-template-columns: 13em 4.5em 6em 1fr; gap: .5em; padding: .25em .3em; cursor: pointer; list-style: none; font-size: .9em; }
+.log-row > summary { display: grid; grid-template-columns: 13em 4.5em 6em 1fr 3.4em; gap: .5em; align-items: center; padding: .25em .3em; cursor: pointer; list-style: none; font-size: .9em; }
 .log-row > summary::-webkit-details-marker { display: none; }
 .log-row > summary .msg { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .log-row[open] > summary .msg { white-space: normal; overflow-wrap: anywhere; }
+/* Trace and session, on every line: a slot each, so they line up. */
+.row-acts { display: flex; gap: .2em; justify-content: flex-end; }
+.row-acts > * { display: inline-flex; align-items: center; justify-content: center; width: 1.6em; height: 1.6em; border-radius: var(--radius-sm); color: var(--muted); }
+.row-acts a:hover, .row-acts a:focus-visible { background: var(--surface-sunken); color: var(--ink); }
+.row-acts svg { width: 1.1em; height: 1.1em; }
 .log-row .props { margin: .2em 0 .6em 1em; font-size: .85em; }
 .log-row .props td { overflow-wrap: anywhere; }
 /* Find and Exclude: a column just wide enough for both, never wrapping;
@@ -155,7 +179,8 @@ const PAGE_STYLE: &str = r#"
 .lvl-warn { color: var(--warning); }
 .lvl-debug, .lvl-trace { color: var(--muted); }
 .log-paging { display: flex; gap: .5em; margin: .8em 0; flex-wrap: wrap; align-items: center; }
-.log-live[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); }
+.log-paging .btn { margin: 0; }
+.log-live[aria-pressed="true"] { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
 html:not(.js) .js-only { display: none; }
 .trace-waterfall { font-size: .85em; }
 .trace-span { display: grid; grid-template-columns: minmax(12em, 30%) 1fr 6em; gap: .5em; align-items: center; padding: .15em 0; border-bottom: 1px solid var(--line); }
@@ -192,8 +217,9 @@ html:not(.js) .js-only { display: none; }
   .q-help-label { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 }
 @media (max-width: 40em) {
-  .log-row > summary { grid-template-columns: 1fr auto; }
+  .log-row > summary { grid-template-columns: 1fr auto auto; }
   .log-row > summary .svc { display: none; }
+  .log-row > summary .row-acts { grid-row: 1; grid-column: 3; }
   .log-row > summary .msg { grid-column: 1 / -1; }
   .log-row .props td.act { width: auto; }
 }
@@ -203,12 +229,22 @@ html:not(.js) .js-only { display: none; }
 /// Starting a new search stops the stream, since its lines would belong
 /// to the old one.
 const PAGE_SCRIPT: &str = r##"(function () {
-  var MAX_ROWS = 1000, stream = null;
+  var MAX_ROWS = 1000, live = null;
   function button() { return document.getElementById("log-live"); }
-  function stop() {
-    if (stream) { stream.close(); stream = null; }
+  function tailUrl() { var rows = document.getElementById("log-rows"); return rows && rows.dataset.tailUrl; }
+  // Pause shows the moment Live is pressed, not when the stream answers.
+  function show(on) {
     var b = button();
-    if (b) { b.setAttribute("aria-pressed", "false"); b.textContent = "Live"; }
+    if (!b) return;
+    b.setAttribute("aria-pressed", on ? "true" : "false");
+    b.querySelector(".log-live-label").textContent = on ? "Pause" : "Live";
+    b.disabled = !on && !tailUrl();
+  }
+  function stop() {
+    var cfg = live;
+    live = null;
+    if (cfg) { if (cfg.sse) cfg.sse.close(); else cfg.abort(); }
+    show(false);
   }
   document.addEventListener("fx:config", function (evt) {
     // A line's properties load the first time it opens, never on close.
@@ -218,17 +254,21 @@ const PAGE_SCRIPT: &str = r##"(function () {
       return;
     }
     if (evt.target.id === "log-live") {
-      if (stream) { evt.preventDefault(); stop(); } else evt.detail.cfg.logLive = true;
+      // Live follows the search shown: its stream starts after the newest
+      // line the results hold.
+      if (live || !tailUrl()) { evt.preventDefault(); stop(); return; }
+      evt.detail.cfg.action = tailUrl();
+      live = evt.detail.cfg;
+      show(true);
     } else if (evt.target.id === "log-search") stop();
   });
-  document.addEventListener("fx:sse:open", function (evt) {
-    if (evt.detail.cfg.logLive) {
-      stream = evt.detail.cfg.sse;
-      var b = button();
-      b.setAttribute("aria-pressed", "true");
-      b.textContent = "Pause";
-    }
+  // The stream ended for good (or never opened).
+  document.addEventListener("fx:finally", function (evt) {
+    if (evt.target.id === "log-live" && live === evt.detail.cfg) { live = null; show(false); }
   });
+  // New results: Live starts after their newest line, or not at all on an
+  // older page.
+  document.addEventListener("fx:swapped", function () { if (!live) show(false); });
   document.addEventListener("fx:sse:swapped", function () {
     var rows = document.querySelectorAll("#log-rows > .log-row");
     for (var i = MAX_ROWS; i < rows.length; i++) rows[i].remove();
@@ -290,9 +330,34 @@ fn summary(row: &RowView) -> Markup {
             span class=(level_class(row.severity)) { (row.severity.upper()) }
             span class="svc" { (row.service) }
             span class="msg" { (row.message) }
+            span class="row-acts" {
+                @if let Some(trace) = &row.trace_url {
+                    a href=(trace) title="Show trace" aria-label="Show trace" { (icon(TRACE_ICON)) }
+                } @else { span {} }
+                @if let Some(session) = row.session_url.as_ref().or(row.pos_session_url.as_ref()) {
+                    a href=(session) title="Show session" aria-label="Show session" { (icon(SESSION_ICON)) }
+                } @else { span {} }
+            }
         }
     }
 }
+
+/// An icon drawn in the text's colour; `paths` is its SVG content.
+fn icon(paths: &str) -> Markup {
+    html! {
+        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false" {
+            (PreEscaped(paths))
+        }
+    }
+}
+
+/// A waterfall: a trace's spans.
+const TRACE_ICON: &str = r#"<path d="M4 6h9M8 12h9M12 18h8"/>"#;
+/// A person: whoever was signed in.
+const SESSION_ICON: &str = r#"<circle cx="12" cy="8" r="3.5"/><path d="M5 20a7 7 0 0 1 14 0"/>"#;
+const REFRESH_ICON: &str = r#"<path d="M20 12a8 8 0 1 1-2.34-5.66"/><path d="M20 4v5h-5"/>"#;
+const PLAY_ICON: &str = r#"<path d="M8 5.5v13l10.5-6.5z" fill="currentColor"/>"#;
+const PAUSE_ICON: &str = r#"<path d="M9 5.5v13M15 5.5v13" stroke-width="3"/>"#;
 
 /// A line's properties, with links that narrow or widen the search by
 /// each; also what fixi swaps in when a line opens.
@@ -320,6 +385,9 @@ pub fn properties(row: &RowView) -> Markup {
             }
             @if let Some(trace) = &row.trace_url {
                 p { a href=(trace) { "Show the whole trace" } }
+            }
+            @if let Some(session) = &row.session_url {
+                p { a href=(session) { "Show the whole session" } }
             }
             @if let Some(session) = &row.pos_session_url {
                 p { a href=(session) { "Show the POS session timeline" } }
@@ -379,12 +447,14 @@ pub fn live_rows(rows: &[RowView]) -> Markup {
 
 fn histogram(histogram: &HistogramView) -> Markup {
     html! {
-        div class="log-histogram" role="img" aria-label="Lines over time" {
-            @for bar in &histogram.bars {
-                a href=(bar.href) style=(format!("height:{}%", bar.height_pct)) title=(bar.label) aria-label=(bar.label) {}
+        div class="log-histogram-box" {
+            div class="log-histogram" role="img" aria-label="Lines over time" {
+                @for bar in &histogram.bars {
+                    a href=(bar.href) style=(format!("height:{}%", bar.height_pct)) title=(bar.label) aria-label=(bar.label) {}
+                }
             }
+            div class="log-histogram-axis" { span { (histogram.from_label) } span { (histogram.to_label) } }
         }
-        div class="log-histogram-axis" { span { (histogram.from_label) } span { (histogram.to_label) } }
     }
 }
 
@@ -402,24 +472,15 @@ pub fn results(vm: &LogsViewModel) -> Markup {
             @for problem in &vm.problems {
                 p class="error" role="status" { (problem) }
             }
+            // Shown above the search form (`.log-histogram-box`).
             @if let Some(h) = &vm.histogram { (histogram(h)) }
-            p class="log-paging" {
-                a class="btn btn-secondary" href=(vm.refresh_url) fx-action=(vm.refresh_url) fx-target="#log-results" fx-swap="outerHTML" fx-push-url {
-                    "Refresh"
-                }
-                @if let Some(newer) = &vm.newer_url {
-                    a class="btn btn-secondary" href=(newer) { "Newer" }
-                } @else {
-                    button type="button" id="log-live" class="btn btn-secondary log-live js-only" aria-pressed="false"
-                        fx-action=(vm.tail_url) fx-target="#log-rows" fx-swap="afterbegin" fx-sse-reconnect {
-                        "Live"
-                    }
-                }
+            @if let Some(newer) = &vm.newer_url {
+                p class="log-paging" { a class="btn btn-secondary" href=(newer) { "Newer" } }
             }
             @if vm.rows.is_empty() && vm.query_error.is_none() {
                 p class="muted" { "No lines match." }
             }
-            div id="log-rows" class="log-rows" {
+            div id="log-rows" class="log-rows" data-tail-url=[vm.tail_url.as_deref()] {
                 @for r in &vm.rows { (row(r)) }
                 (more(vm.more_url.as_deref(), vm.older_url.as_deref()))
             }
@@ -564,43 +625,60 @@ pub fn syntax_page(chrome: &PageChrome, names: &[String]) -> Markup {
     layout_with_head(chrome, "Search syntax - Monokulo", extra_head, body)
 }
 
+/// Live's stream when the page opens on an older page; the script takes
+/// the URL from the results anyway.
+const LIVE_NONE: &str = "/dashboard/admin/logs/tail";
+
 pub fn page(chrome: &PageChrome, vm: &LogsViewModel) -> Markup {
     let extra_head = html! { style { (PreEscaped(PAGE_STYLE)) } };
     let body = html! {
         div class="wrap wrap-wide" {
             nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
-            h1 { "Logs" }
-            form id="log-search" class="logs-search" method="get" action="/dashboard/admin/logs"
-                fx-action="/dashboard/admin/logs" fx-target="#log-results" fx-swap="outerHTML" fx-push-url fx-replace fx-submit-on-change {
-                div class="q-row" {
-                    label for="log-q" class="sr-only" { "Search" }
-                    input type="search" id="log-q" name="q" value=(vm.form.q) autocomplete="off" spellcheck="false"
-                        placeholder="level >= warn and order.id = 'o_1'";
-                    // A page of its own without script; a dialog with it.
-                    a class="btn q-help" id="query-help-link" href=(SYNTAX_PAGE) aria-haspopup="dialog" {
-                        svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false" {
-                            circle cx="12" cy="12" r="9.5" {}
-                            path d="M9.5 9.2a2.6 2.6 0 0 1 5 .8c0 1.8-2.5 2.2-2.5 3.8" {}
-                            circle cx="12" cy="17.3" r=".6" fill="currentColor" {}
-                        }
-                        span class="q-help-label" { "Syntax" }
-                    }
-                    button type="submit" class="btn-primary" { "Search" }
-                }
-                div class="quick" {
-                    (select("level", "Level", LEVELS, &vm.form.level))
-                    (select("service", "Service", SERVICES, &vm.form.service))
-                    (select("range", "Time range", RANGES, &vm.form.range))
-                    label { "From " input type="datetime-local" name="from" value=(vm.form.from); }
-                    label { "To " input type="datetime-local" name="to" value=(vm.form.to); }
-                    label class="own-requests" {
-                        input type="checkbox" name="logs_requests" value="show" checked[vm.form.logs_requests];
-                        "Show the Logs page's own requests"
-                    }
+            div class="logs-head" {
+                h1 { "Logs" }
+                // Submits the search as it stands: its newest lines.
+                button type="submit" form="log-search" class="btn-secondary" { (icon(REFRESH_ICON)) span { "Refresh" } }
+                // Streams from `#log-rows`' tail URL (the page's script).
+                button type="button" id="log-live" class="btn-secondary log-live js-only" aria-pressed="false" disabled[vm.tail_url.is_none()]
+                    fx-action=(vm.tail_url.as_deref().unwrap_or(LIVE_NONE)) fx-target="#log-rows" fx-swap="afterbegin" fx-sse-reconnect {
+                    span class="i-play" { (icon(PLAY_ICON)) }
+                    span class="i-pause" { (icon(PAUSE_ICON)) }
+                    span class="log-live-label" { "Live" }
                 }
             }
+            div class="logs-body" {
+                form id="log-search" class="logs-search" method="get" action="/dashboard/admin/logs"
+                    fx-action="/dashboard/admin/logs" fx-target="#log-results" fx-swap="outerHTML" fx-push-url fx-replace fx-submit-on-change {
+                    div class="q-row" {
+                        label for="log-q" class="sr-only" { "Search" }
+                        input type="search" id="log-q" name="q" value=(vm.form.q) autocomplete="off" spellcheck="false"
+                            placeholder="level >= warn and order.id = 'o_1'";
+                        // A page of its own without script; a dialog with it.
+                        a class="btn q-help" id="query-help-link" href=(SYNTAX_PAGE) aria-haspopup="dialog" {
+                            svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true" focusable="false" {
+                                circle cx="12" cy="12" r="9.5" {}
+                                path d="M9.5 9.2a2.6 2.6 0 0 1 5 .8c0 1.8-2.5 2.2-2.5 3.8" {}
+                                circle cx="12" cy="17.3" r=".6" fill="currentColor" {}
+                            }
+                            span class="q-help-label" { "Syntax" }
+                        }
+                        button type="submit" class="btn-primary" { "Search" }
+                    }
+                    div class="quick" {
+                        (select("level", "Level", LEVELS, &vm.form.level))
+                        (select("service", "Service", SERVICES, &vm.form.service))
+                        (select("range", "Time range", RANGES, &vm.form.range))
+                        label { "From " input type="datetime-local" name="from" value=(vm.form.from); }
+                        label { "To " input type="datetime-local" name="to" value=(vm.form.to); }
+                        label class="own-requests" {
+                            input type="checkbox" name="logs_requests" value="show" checked[vm.form.logs_requests];
+                            "Show the Logs page's own requests"
+                        }
+                    }
+                }
+                (results(vm))
+            }
             (syntax_dialog(&vm.attribute_names))
-            (results(vm))
             (saved_searches(&vm.saved, &vm.query_string, vm.saved_error.as_deref()))
         }
         script { (PreEscaped(PAGE_SCRIPT)) }
