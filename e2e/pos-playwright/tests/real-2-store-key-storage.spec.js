@@ -39,7 +39,7 @@ test('a store moves its keys to another backend and keeps working; outages and a
       'key_custody.enabled_backends': 'plain,socket',
       'key_custody.default_backend': 'plain',
     });
-    await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+    await expect(page.getByText('Settings saved and applied.')).toBeVisible();
 
     // A new store, choosing where its keys go (the form offers the choice
     // once the engine's status says there is one).
@@ -97,7 +97,7 @@ test('a store moves its keys to another backend and keeps working; outages and a
     // The socket backend is turned off: the owner is told, and the store's
     // settings page offers to move back.
     await saveEngineSettings(page, { 'key_custody.enabled_backends': 'plain', 'key_custody.default_backend': 'plain' });
-    await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+    await expect(page.getByText('Settings saved and applied.')).toBeVisible();
     await reloadUntil(page, base + '/dashboard', (html) => html.includes('turned off'));
     await reloadUntil(page, settings, (html) => html.includes('has been turned off on this instance'));
     await page.locator('select[name="backend"]').selectOption('plain');

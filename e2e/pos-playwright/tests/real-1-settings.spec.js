@@ -26,7 +26,7 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
   await page.goto(base + '/dashboard/admin/settings');
   await page.locator('textarea[name="monero_node_stagenet"]').fill(node);
   await page.getByRole('button', { name: 'Save engine settings' }).click();
-  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
 
   // 3. The status page shows stagenet, reachable, with no restart.
   await reloadUntil(page, base + '/status', (html) => html.includes('<h2>stagenet</h2>') && html.includes('reachable'));
@@ -46,7 +46,7 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
   await page.goto(base + '/dashboard/admin/settings');
   await page.locator('input[name="payment.mempool_poll_interval_ms"]').fill('2000');
   await page.getByRole('button', { name: 'Save engine settings' }).click();
-  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   await reloadUntil(page, base + '/status', (html) => html.includes('polls every 2s'));
 
   // 6. A restart-only setting says so.
@@ -75,6 +75,6 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
   await page.goto(base + '/dashboard/admin/settings');
   await page.locator('textarea[name="monero_node_stagenet"]').fill(node);
   await page.getByRole('button', { name: 'Save engine settings' }).click();
-  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   await reloadUntil(page, base + '/dashboard', (html) => !html.includes('payments aren'));
 });

@@ -23,7 +23,7 @@ test('saving the engine half of the admin settings keeps edits in the monokulo h
   expect(scrolled).toBeGreaterThan(0);
   await save.click();
 
-  await expect(page.locator('#engine-settings').getByText('Engine settings saved and applied.')).toBeVisible();
+  await expect(page.locator('#engine-settings').getByText('Settings saved and applied.')).toBeVisible();
   // Focus lands by the button that was pressed, without scrolling away.
   await expect(page.locator('#engine-settings .save-status')).toBeFocused();
   await expect(page.locator('#engine-settings .save-status')).toHaveText('Saved.');
@@ -39,7 +39,7 @@ test('a store settings form that is refused shows why inside its own section', a
   // A store needs its network to have a node (run on its own, this spec
   // starts from a fresh instance).
   await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
-  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   await page.goto(base + '/dashboard/connect');
   await page.locator('input[name="site_url"]').fill('https://sections.example.com');
   await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);

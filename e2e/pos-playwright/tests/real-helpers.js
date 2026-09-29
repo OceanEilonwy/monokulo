@@ -94,7 +94,7 @@ async function reloadUntil(page, url, check) {
 async function connectStore(page, site) {
   const { monokulo_url: base } = fixture();
   await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
-  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   await page.goto(base + '/dashboard/connect');
   await page.locator('input[name="site_url"]').fill(`https://${site}`);
   await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);

@@ -220,6 +220,12 @@ pub(crate) fn redirect_302(location: &str) -> Response {
     (StatusCode::FOUND, [(header::LOCATION, location)]).into_response()
 }
 
+/// After a form post: "see this page", fetched with a `GET` whatever the
+/// post was, so reloading it never posts again.
+pub(crate) fn redirect_303(location: &str) -> Response {
+    (StatusCode::SEE_OTHER, [(header::LOCATION, location)]).into_response()
+}
+
 pub async fn signup_form(State(state): State<AppState>, Query(query): Query<SignupQuery>) -> Response {
     render_signup(&state, None, query.invite.as_deref().unwrap_or(""))
 }

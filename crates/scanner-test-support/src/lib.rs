@@ -420,6 +420,8 @@ pub struct TestEngineConfig {
     rate_limit_per_minute: Option<u32>,
     /// Served by the engine's log API (`with_log_store`).
     log_store: Option<telemetry::store::LogStore>,
+    /// `true` when [`TestEngineConfig::with_live_nodes`] has been used.
+    live_nodes: bool,
 }
 
 impl TestEngineConfig {
@@ -548,6 +550,19 @@ impl TestEngineConfig {
         self
     }
 
+    /// Applies saved `monero_node.<network>` settings to the engine's daemon
+    /// clients, as a production engine does, instead of keeping this
+    /// harness's fixed fakes: a saved node gets a real RPC client, a cleared
+    /// network goes, and the settings API probes the saved nodes (and warns
+    /// about networks stores use that no node answers for). Networks from
+    /// [`with_networks`] keep their inert fake until the first node save.
+    ///
+    /// [`with_networks`]: TestEngineConfig::with_networks
+    pub fn with_live_nodes(mut self) -> Self {
+        self.live_nodes = true;
+        self
+    }
+
     /// Points the spawned engine at a real, already-listening `key-custody-server`
     /// (WBS 2.1.2/2.1.3) instead of the default in-process `PlainKeyCustody` -
     /// `SocketKeyCustody::connect(socket_path)` is called during [`spawn`], so
@@ -654,12 +669,42 @@ impl TestEngineConfig {
         let admin_rate_limiter = Arc::new(RateLimiter::new(self.rate_limit_per_minute.unwrap_or(10_000)));
         // Real settings, so the instance-admin settings API works; node
         // settings are saved but not applied (this harness's daemons are
-        // fixed fakes). The rate limit keeps this harness's own value unless
-        // a test saves one.
+        // fixed fakes) unless `with_live_nodes`. The rate limit keeps this
+        // harness's own value unless a test saves one.
+        let daemons = scanner::engine_settings::Daemons::fixed(if self.admin_lookup_daemon {
+            self.networks
+                .iter()
+                .map(|&network| {
+                    (
+                        network,
+                        Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+                            label: "lookup-test-daemon".to_string(),
+                            client: Arc::new(LookupDaemonClient { mempool: lookup_mempool.clone() }),
+                        }])),
+                    )
+                })
+                .collect::<HashMap<_, _>>()
+        } else {
+            // A network is "configured" exactly when it has a daemon client
+            // (admin_settings_v2.md task 2.1), so each configured network gets
+            // an inert one: tenants can be created on it, nothing is scanned.
+            self.networks
+                .iter()
+                .map(|&network| {
+                    (
+                        network,
+                        Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
+                            label: "noop-test-daemon".to_string(),
+                            client: Arc::new(NoopDaemonClient),
+                        }])),
+                    )
+                })
+                .collect::<HashMap<_, _>>()
+        });
         let engine_settings =
             scanner::engine_settings::EngineSettings::load_with(
                 store.clone(),
-                None,
+                self.live_nodes.then(|| scanner::engine_settings::NodesReloadable { daemons: daemons.clone(), strict_tls: false }),
                 Arc::new(RateLimiter::new(1)),
                 live_settings::Env::process(),
             )
@@ -679,36 +724,12 @@ impl TestEngineConfig {
             // default, so an empty map here is honest, not a stub standing in
             // for something real. See [`TestEngineConfig::
             // with_admin_lookup_daemon`] for the opt-in that wires one in.
-            daemons: scanner::engine_settings::Daemons::fixed(if self.admin_lookup_daemon {
-                self.networks
-                    .iter()
-                    .map(|&network| {
-                        (
-                            network,
-                            Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-                                label: "lookup-test-daemon".to_string(),
-                                client: Arc::new(LookupDaemonClient { mempool: lookup_mempool.clone() }),
-                            }])),
-                        )
-                    })
-                    .collect::<HashMap<_, _>>()
-            } else {
-                // A network is "configured" exactly when it has a daemon client
-                // (admin_settings_v2.md task 2.1), so each configured network gets
-                // an inert one: tenants can be created on it, nothing is scanned.
-                self.networks
-                    .iter()
-                    .map(|&network| {
-                        (
-                            network,
-                            Arc::new(FallbackDaemonClient::new(vec![FallbackNode {
-                                label: "noop-test-daemon".to_string(),
-                                client: Arc::new(NoopDaemonClient),
-                            }])),
-                        )
-                    })
-                    .collect::<HashMap<_, _>>()
-            }),
+            // Fixed fakes unless `with_live_nodes`: this harness's own
+            // background scan loop (below) talks to a bare `NoopDaemonClient`
+            // directly, never through `AppState::daemons` - see
+            // [`TestEngineConfig::with_admin_lookup_daemon`] for the opt-in
+            // that wires a lookup fake in instead.
+            daemons,
             scanner_status: scanner::scanner_status::new_scanner_status_map(),
             log_store: self.log_store.clone(),
             settings: engine_settings,

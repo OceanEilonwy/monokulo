@@ -436,6 +436,9 @@ pub enum SettingsSection {
 pub struct AdminSettingsViewModel {
     /// Which half was just saved: its banners show inside it.
     pub saved_section: Option<SettingsSection>,
+    /// The tab a save was for, or the tab holding the setting a refused
+    /// save was about: its banners show there.
+    pub saved_tab: Option<SettingsTab>,
     pub error: Option<String>,
     pub success: Option<String>,
     pub notices: Vec<Notice>,

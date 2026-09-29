@@ -221,7 +221,7 @@ test("a caller's traceparent (as the WooCommerce plugin sends it) is followed th
   const base = fixture().monokulo_url;
   await signInAsAdmin(page);
   await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
-  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   await page.goto(base + '/dashboard/connect');
   await page.locator('input[name="site_url"]').fill('https://traced.example.com');
   await page.locator('input[name="view_key_hex"]').fill(VIEW_KEY);

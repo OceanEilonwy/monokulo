@@ -40,7 +40,7 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   const base = fixture().monokulo_url;
   await signInAsAdmin(page);
   await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson(), monero_node_testnet: fakeNodeJson() });
-  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
 
   await page.goto(base + '/dashboard/admin/settings');
   if (Number(await page.locator('textarea[name="monero_node_stagenet"]').getAttribute('data-tenant-count')) === 0) {
@@ -83,12 +83,12 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   page.once('dialog', async (dialog) => { testnetAsked = true; await dialog.accept(); });
   await page.locator('textarea[name="monero_node_testnet"]').fill('');
   await page.getByRole('button', { name: 'Save engine settings' }).click();
-  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   expect(testnetAsked).toBe(false);
   expect(posts).toBe(2);
 
   await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
-  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
 });
 
 for (const scheme of ['light', 'dark']) {
@@ -120,7 +120,7 @@ for (const scheme of ['light', 'dark']) {
       const sideways = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       expect(sideways).toBeLessThanOrEqual(0);
       await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
-      await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+      await expect(page.getByText('Settings saved and applied.')).toBeVisible();
     });
   }
 }
