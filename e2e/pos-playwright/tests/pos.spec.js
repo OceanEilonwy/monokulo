@@ -117,7 +117,10 @@ test.describe.serial('POS terminal - real stagenet payments', () => {
     // With 0-conf trusted, the order is paid as soon as the real tx is seen
     // in the mempool, before any confirmations at all.
     await expect(page.locator('.pos-order-heading .pos-badge')).toContainText('Paid', { timeout: 150_000 });
-    await expect(page.locator('.pos-outcome')).toBeVisible();
+    // Paid straight away: the track has no Confirm step, and the code fades.
+    await expect(page.locator('.pos-stage')).toContainText('Paid.');
+    await expect(page.locator('.pos-track li')).toHaveCount(2);
+    await expect(page.locator('.pos-pay-card.is-spent')).toBeVisible();
     await captureCoverageStage(page, 'pos-stagenet-paid-terminal', test.info());
     await page.getByRole('button', { name: 'New order' }).click();
     await expect(page.locator('.pos-keypad')).toBeVisible();

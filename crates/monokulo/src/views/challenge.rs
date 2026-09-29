@@ -26,9 +26,21 @@ pub struct ChallengePageView {
     pub error: Option<String>,
 }
 
+/// A stage card, as the checkout shows its own state, so a checkout frame
+/// goes from this check to the payment without changing look. The card
+/// (what's happening, and without JavaScript the continue link) comes first
+/// and fits a frame as small as a browser's default 300 x 150.
 const STYLE: &str = r#"
-.challenge-wrap { max-width: 34rem; margin: 3rem auto; padding: 0 1rem; }
-.challenge-progress { font-weight: 600; }
+body { padding-bottom: 0; }
+.challenge-wrap { max-width: 34rem; margin: clamp(.5rem, 5vh, 3rem) auto; padding: 0 .75rem; }
+.challenge-stage { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: .65em; align-items: start; padding: .65em .8em; border: 1px solid var(--state-border); border-radius: var(--radius-md); background: var(--state-bg); color: var(--state-ink); }
+.challenge-stage h1 { margin: 0; padding: 0; border: 0; font-size: 1.05rem; font-weight: 800; }
+.challenge-stage p { margin: .15em 0 0; font-size: .85em; line-height: 1.4; }
+.challenge-stage a { color: inherit; font-weight: 800; }
+.challenge-spin { width: 1.1em; height: 1.1em; margin-top: .2em; border-radius: 50%; border: 2px solid color-mix(in srgb, currentColor 25%, transparent); border-top-color: currentColor; animation: challenge-spin 1.4s linear infinite; }
+@keyframes challenge-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .challenge-spin { animation: none; } }
+.challenge-why { margin: .8em 0 0; color: var(--muted); font-size: .85em; }
 "#;
 
 pub fn challenge_page(chrome: &PageChrome, view: &ChallengePageView) -> Markup {
@@ -42,20 +54,24 @@ pub fn challenge_page(chrome: &PageChrome, view: &ChallengePageView) -> Markup {
             data-difficulty=(view.difficulty)
             data-continue=(view.continue_url)
             data-wait=(view.wait_url) {
-            h1 { "Checking your connection" }
-            p {
-                "This page has had a lot of requests from your connection, so we're making sure it's a real visitor "
-                "before continuing. Nothing is stored on your device, and you won't be asked again for a while."
+            div class="challenge-stage state-confirming" {
+                span class="challenge-spin" aria-hidden="true" {}
+                div {
+                    h1 { "Checking your connection" }
+                    noscript {
+                        p class="challenge-progress" role="status" {
+                            "This page continues in 10 seconds. If it doesn't, " a href=(view.wait_url) { "continue" } "."
+                        }
+                    }
+                    p class="challenge-progress" id="challenge-progress" role="status" aria-live="polite" hidden { "Working…" }
+                }
             }
             @if let Some(error) = &view.error {
                 p class="error" role="alert" { (error) }
             }
-            noscript {
-                p class="challenge-progress" role="status" { "Checking your connection, this page continues in 10 seconds." }
-                p { "If it doesn't, wait 10 seconds and " a href=(view.wait_url) { "continue" } "." }
-            }
-            p class="challenge-progress" id="challenge-progress" role="status" aria-live="polite" hidden {
-                "Checking your connection…"
+            p class="challenge-why" {
+                "This page has had a lot of requests from your connection, so we're making sure it's a real visitor "
+                "before continuing. Nothing is stored on your device, and you won't be asked again for a while."
             }
         }
         script src="/static/challenge.js" {}
@@ -92,7 +108,11 @@ mod tests {
         };
         let html = challenge_page(&PageChrome::from_user(None, "/"), &view).into_string();
         assert!(html.contains(r#"<meta http-equiv="refresh" content="10;url=/pay/pk/orders/o1?monokulo_wait=tok">"#), "{html}");
-        assert!(html.contains("this page continues in 10 seconds"));
+        assert!(html.contains("This page continues in 10 seconds."));
+        // The state and the way on come before the explanation, so a small
+        // frame shows them.
+        assert!(html.find(r#"class="challenge-stage"#).unwrap() < html.find(r#"class="challenge-why""#).unwrap());
+        assert!(html.find(">continue</a>").unwrap() < html.find(r#"class="challenge-why""#).unwrap());
         assert!(html.contains(r#"role="status""#));
         assert!(html.contains(r#"data-challenge="abc.def""#));
         assert!(html.contains(r#"src="/static/challenge.js""#));

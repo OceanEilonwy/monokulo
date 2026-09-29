@@ -175,9 +175,9 @@ test('real checkout renders a paid order without opening a live stream', async (
   expect(paid.status()).toBe(204);
   await page.goto(url);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
-  // A receipt, not a code: nothing invites a second payment.
-  await expect(page.locator('.receipt')).toContainText('Payment received');
-  await expect(page.locator('.qr-wrap')).toHaveCount(0);
+  // The stage says it's paid over a faded code: nothing invites a second payment.
+  await expect(page.locator('.stage-track')).toContainText('Paid.');
+  await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   await captureCoverageStage(page, 'checkout-paid', test.info());
 });
 
@@ -283,9 +283,9 @@ test('real checkout open while the customer pays shows paid and stops following 
   expect(paid.status()).toBe(204);
   // The live stream carries the new state in; no reload.
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
-  // A receipt, not a code: nothing invites a second payment.
-  await expect(page.locator('.receipt')).toContainText('Payment received');
-  await expect(page.locator('.qr-wrap')).toHaveCount(0);
+  // The stage says it's paid over a faded code: nothing invites a second payment.
+  await expect(page.locator('.stage-track')).toContainText('Paid.');
+  await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   // A final order closes its stream for good rather than reconnecting.
   await page.waitForTimeout(5000);
   expect(streams).toBe(1);
@@ -432,6 +432,9 @@ test('real checkout follows the customer payment from the mempool to confirmed a
   await expect(page.locator('#status-badge')).toHaveText('Waiting for payment');
   await customerSends(request, orderId, 1);
   await expect(page.locator('#status-badge')).toHaveText('Payment seen, unconfirmed');
+  // Seen in full: the track is at Confirm, and the code fades so it isn't paid twice.
+  await expect(page.locator('.track .step-now')).toContainText('Confirm');
+  await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   // The payment is listed by a shortened txid, not yet confirmed.
   await expect(page.locator('.payments-table')).toContainText(`test-pay…`);
   await expect(page.locator('.progress-fill')).toHaveAttribute('style', /width: 0%/);
@@ -449,9 +452,9 @@ test('real checkout guides a customer who underpays and then sends too much', as
   const first = await code();
   await customerSends(request, orderId, 0.25, 20);
   await expect(page.locator('#status-badge')).toHaveText('Partial payment received');
-  // Two steps: what arrived, then the rest with a new code that asks for it.
-  await expect(page.locator('.pay-steps')).toContainText('Received 0.00025 XMR');
-  await expect(page.locator('.pay-steps')).toContainText('Send the remaining 0.00075 XMR');
+  // The stage: what arrived, then the rest, with a new code that asks for it.
+  await expect(page.locator('.stage-track')).toContainText('Send the remaining 0.00075 XMR.');
+  await expect(page.locator('.stage-track')).toContainText('0.00025 of 0.001 XMR received.');
   await expect(page.locator('#xmr-amount')).toHaveText('0.00075 XMR');
   await expect(page.locator('.qr-wrap.qr-new svg')).toBeVisible();
   expect(await code()).not.toBe(first);
@@ -459,7 +462,8 @@ test('real checkout guides a customer who underpays and then sends too much', as
   await customerSends(request, orderId, 1, 20);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'overpaid');
   await expect(page.locator('#status-badge')).toHaveText('Overpaid');
-  await expect(page.locator('.receipt')).toContainText('(0.00025 XMR extra). Do not send more. Contact the merchant about the extra amount.');
+  await expect(page.locator('.stage-track')).toContainText('(0.00025 XMR extra). Do not send more. Contact the merchant about the extra amount.');
+  await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
   await expect(page.locator('.payments-table tbody tr')).toHaveCount(2);
 });
 
@@ -565,45 +569,42 @@ test('real checkout payment problems as the customer sees them (UI stages)', asy
     await page.goto(url);
     await happen(url.split('/').pop());
     await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', status);
-    if (stage === 'checkout-double-spend') await expect(page.locator('#double-spend-banner')).toBeVisible();
-    else if (status === 'partial') await expect(page.locator('.pay-steps')).toBeVisible();
-    else if (status === 'overpaid') await expect(page.locator('.receipt')).toBeVisible();
+    if (stage === 'checkout-double-spend') await expect(page.locator('.stage-track.state-double-spend')).toBeVisible();
+    else await expect(page.locator(`.stage-track.state-${status}`)).toBeVisible();
     await captureCoverageStage(page, stage, test.info());
   }
 });
 
-test('real checkout centres its status and time-left badges and swaps the QR for a receipt once paid', async ({ page, request }) => {
+test('real checkout leads with the stage in one column and fades the code once paid', async ({ page, request }) => {
   const url = await checkoutUrl(request);
   const orderId = url.split('/').pop();
-  for (const width of [390, 1280]) {
-    await page.setViewportSize({ width, height: 900 });
+  for (const [width, height, columns] of [[390, 844, 1], [820, 1180, 1], [1280, 800, 1], [844, 390, 2]]) {
+    await page.setViewportSize({ width, height });
     await page.goto(url);
     const layout = await page.evaluate(() => {
-      const header = document.querySelector('.pay-header').getBoundingClientRect();
-      const status = document.getElementById('status-badge').getBoundingClientRect();
-      const expiry = document.querySelector('.expiry-pill').getBoundingClientRect();
-      const style = getComputedStyle(document.getElementById('status-badge'));
-      return {
-        sameRow: Math.abs(status.top - expiry.top) < 2, sameHeight: Math.abs(status.height - expiry.height) < 1,
-        centred: Math.abs((status.left + expiry.right) / 2 - (header.left + header.right) / 2) < 2,
-        height: status.height, paddingX: parseFloat(style.paddingLeft),
-      };
+      const stage = document.querySelector('.stage-track').getBoundingClientRect();
+      const code = document.querySelector('.qr-wrap').getBoundingClientRect();
+      const refund = document.querySelector('.pay-col-secondary').getBoundingClientRect();
+      return { stageAbove: stage.bottom <= code.top, beside: refund.left >= code.right, stageTop: stage.top < code.bottom };
     });
-    expect(layout, `${width}px`).toMatchObject({ sameRow: true, sameHeight: true, centred: true });
-    expect(layout.height, `${width}px badge height`).toBeGreaterThanOrEqual(24);
-    expect(layout.paddingX, `${width}px badge padding`).toBeGreaterThanOrEqual(9);
+    // One column: the stage over the code, the rest under it. Two columns
+    // (a short landscape screen): the stage heads the column beside the code.
+    if (columns === 1) expect(layout, `${width}x${height}`).toMatchObject({ stageAbove: true, beside: false });
+    else expect(layout, `${width}x${height}`).toMatchObject({ beside: true, stageTop: true });
+    await expect(page.locator('.stage-expiry')).toHaveText(/left$/);
   }
   // The code stays black on white while it's payable.
   expect(await page.evaluate(() => getComputedStyle(document.querySelector('.qr-wrap svg path')).fill)).toBe('rgb(0, 0, 0)');
   await request.post(`${fixture.base_url}/__coverage/orders/${orderId}/paid`);
   await expect(page.locator('#checkout-root')).toHaveAttribute('data-status', 'paid');
-  // Paid: the receipt replaces the code and the address, and the progress
-  // bar takes the paid colour (--state-paid-border).
-  await expect(page.locator('.receipt')).toBeVisible();
-  await expect(page.locator('.qr-wrap')).toHaveCount(0);
-  await expect(page.locator('.address-block')).toBeHidden();
+  // Paid: the code and the address fade in place (the copy button goes),
+  // and the progress bar takes the paid colour (--state-paid-border).
+  await expect(page.locator('.qr-wrap.is-spent')).toBeVisible();
+  await expect.poll(() => page.evaluate(() => Number(getComputedStyle(document.querySelector('.qr-wrap svg')).opacity))).toBeLessThan(0.2);
+  await expect(page.locator('.address-block')).toBeVisible();
+  await expect(page.locator('#copy-address')).toBeHidden();
   await expect.poll(() => page.evaluate(() => getComputedStyle(document.getElementById('progress-fill')).backgroundColor)).toBe('rgb(26, 127, 55)');
-  await captureCoverageStage(page, 'checkout-paid-receipt', test.info());
+  await captureCoverageStage(page, 'checkout-paid-faded', test.info());
 });
 
 test('real checkout shows times in the customer\'s own zone, or the one ?timezone= names', async ({ browser, request }) => {
