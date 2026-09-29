@@ -13,6 +13,22 @@
 // under (`logs`, `pos-timeline`, ...); without it the gallery guesses from
 // the spec's file name (checkout, pos, challenge). `options.shapes` limits
 // the sizes: the POS timeline, read at a desk, is captured on desktop only. `options.themes` limits the themes the same way.
+//
+// Each shot goes straight into the gallery's `images/` as a lossless WebP
+// (about half a PNG's size), and the test gets a text attachment naming it,
+// read back by coverage-gallery-reporter.js. Attaching the image itself
+// would store it twice: Playwright's HTML report keeps a copy of every
+// attachment.
+const crypto = require('node:crypto');
+const fs = require('node:fs');
+const path = require('node:path');
+const sharp = require('sharp');
+
+const output = process.env.COVERAGE_OUTPUT;
+const enabled = process.env.COVERAGE_SCREENSHOTS === '1' && output;
+const gallery = output && (process.env.COVERAGE_PROFILE === 'stagenet' ? path.join(output, 'screenshots') : path.join(output, '..', 'screenshots'));
+const images = gallery && path.join(gallery, 'images');
+
 const SHAPES = {
   'mobile-portrait': { width: 390, height: 844 },
   'mobile-landscape': { width: 844, height: 390 },
@@ -50,9 +66,33 @@ async function restoreTheme(page, colorScheme) {
   }
 }
 const GROUP = /^[a-z][a-z0-9-]*$/;
+/** How many shots each test attempt has saved, for unique file names. */
+const saved = new WeakMap();
+
+/** The group of a stage that names none, from its spec's file name. */
+function guessGroup(file) {
+  const name = path.basename(file);
+  return name.includes('challenge') ? 'challenge' : name.includes('pos') || name.includes('fit') ? 'pos' : 'checkout';
+}
+
+/** Saves the PNG `body` to the gallery as a WebP and attaches its path
+ * under `name`. The test ID and retry in the file name keep parallel
+ * workers and retries from overwriting each other. */
+async function save(testInfo, name, { group, stage, shape, theme }, body) {
+  const sequence = saved.get(testInfo) || 0;
+  saved.set(testInfo, sequence + 1);
+  group = group || guessGroup(testInfo.file);
+  const id = crypto.createHash('sha256')
+    .update(`${testInfo.testId}:${testInfo.retry}:${testInfo.workerIndex}:${sequence}:${group}:${stage}:${shape}:${theme}`)
+    .digest('hex').slice(0, 16);
+  const filename = `${group}-${stage}-${shape}${theme === 'light' ? '' : `-${theme}`}-r${testInfo.retry}-${id}.webp`;
+  fs.mkdirSync(images, { recursive: true });
+  await sharp(body).webp({ lossless: true, effort: 6 }).toFile(path.join(images, filename));
+  await testInfo.attach(name, { body: `images/${filename}`, contentType: 'text/plain' });
+}
 
 async function captureCoverageStage(target, stage, testInfo, options = {}) {
-  if (process.env.COVERAGE_SCREENSHOTS !== '1') return;
+  if (!enabled) return;
   if (!NAME.test(stage)) throw new Error(`invalid coverage stage: ${stage}`);
   const group = options.group || '';
   if (group && !GROUP.test(group)) throw new Error(`invalid coverage group: ${group}`);
@@ -66,7 +106,7 @@ async function captureCoverageStage(target, stage, testInfo, options = {}) {
   const isPage = typeof target.setViewportSize === 'function';
   if (!isPage) {
     const body = await target.screenshot({ animations: 'disabled', caret: 'hide' });
-    await testInfo.attach(name('element'), { body, contentType: 'image/png' });
+    await save(testInfo, name('element'), { group, stage, shape: 'element', theme: 'light' }, body);
     return;
   }
   const original = target.viewportSize();
@@ -79,11 +119,11 @@ async function captureCoverageStage(target, stage, testInfo, options = {}) {
       // the clock).
       await target.evaluate(() => document.documentElement.getBoundingClientRect().height);
       const body = await target.screenshot({ animations: 'disabled', caret: 'hide', fullPage: true });
-      await testInfo.attach(name(shape, theme), { body, contentType: 'image/png' });
+      await save(testInfo, name(shape, theme), { group, stage, shape, theme }, body);
     }
   }
   await restoreTheme(target, colorScheme);
   if (original) await target.setViewportSize(original);
 }
 
-module.exports = { captureCoverageStage, SHAPES, THEMES };
+module.exports = { captureCoverageStage, guessGroup, gallery, SHAPES, THEMES };

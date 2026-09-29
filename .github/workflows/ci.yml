@@ -135,7 +135,10 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: coverage-rust-${{ github.sha }}
-          path: target/coverage/
+          # raw.json was only read to write rust.json and rust-crates.json.
+          path: |
+            target/coverage/
+            !target/coverage/rust/raw.json
           if-no-files-found: warn
       - name: Fail on collector or test failure
         if: always()
@@ -188,7 +191,11 @@ jobs:
         uses: actions/upload-artifact@v7
         with:
           name: coverage-browser-${{ github.sha }}
-          path: target/coverage/
+          # raw/ holds the per-test frame coverage collect-browser-report.js
+          # already merged into the report.
+          path: |
+            target/coverage/
+            !target/coverage/browser/raw
           if-no-files-found: warn
       - name: Fail on collector or test failure
         if: always()
