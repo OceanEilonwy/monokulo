@@ -14,18 +14,17 @@ Work pack: `docs/workpacks/nicer_admin_screen.md`. Decisions:
 | 4 | Engine learns a node's network | done | `scanner: a node saved for the wrong network is refused` |
 | 5 | The node form | done | `admin settings: node form rows and addresses`, `admin settings: the Monero nodes form` |
 | 6 | JavaScript enhancements | done | `admin settings: node form scripts` |
-| 7 | Playwright | not started | |
+| 7 | Playwright | done | `e2e: the tabbed admin settings page and its node form` |
 | 8 | Docs and cleanup | not started | |
 
 ## Resume here
 
-Start step 7: Playwright. New tests (with and without JavaScript) for tab
-switching and Back, every tab's help and width at 320/390/1280, adding,
-moving and removing nodes, a wrong-network node (second fake-monerod with
-`--nettype mainnet`), the TLS toggle, the confirmation, the Nodes marker
-with `/fake/offline`, and gallery captures of every tab in
-`real-8-theme.spec.js`. Helpers already exist in `real-helpers.js`
-(`saveEngineSettings`, `openSettingsTab`, `saveNodes`, `fillNodes`).
+Start step 8: docs and cleanup. Update `docs/DESIGN.md`, `README.md`,
+`docs/WOOCOMMERCE_ROADMAP.md` and `docs/txid_lookup_and_scan_chunking_wbs.md`
+where they describe the admin settings page or editing `monero_node` JSON
+on it (`grep -n 'admin/settings\|monero_node'`); remove dead code; check
+the acceptance grep; run everything once more. Then the rebase, retest and
+push described in the task.
 
 ## Test status at last commit
 
@@ -58,6 +57,9 @@ with `/fake/offline`, and gallery captures of every tab in
   clippy 68 warnings (none new); Playwright real-binaries 26 passed (the
   six red at step 5 are green again). `node --check` passes on the three
   inline scripts (extracted to files to check).
+
+- After step 7: `cargo test --workspace` 1288 passed, 0 failed, 24 ignored
+  (no Rust changes); Playwright real-binaries 39 passed, 0 failed.
 
 ## Notes per step
 
@@ -272,3 +274,33 @@ with `/fake/offline`, and gallery captures of every tab in
 - Checked: `node --check` on each inline script; the Playwright suite
   (the confirmation tests in `real-1` and `real-3`); step 7 adds tests for
   "Add another" and the TLS toggle.
+
+### Step 7
+
+- `e2e/pos-playwright/tests/real-helpers.js` (done in steps 3 and 5):
+  `saveEngineSettings` opens the tab holding the given fields and presses
+  Save (several tabs in turn); `openSettingsTab`, `fillSettings`,
+  `settingsTabOf`, `SETTINGS_TABS`; node helpers `fakeNodeAddress`,
+  `nodeAddressBoxes`, `fillNodes`, `saveNodes`. `real-4` still saves JSON
+  through the engine API.
+- `real-1`, `real-3`, `real-6` moved to the tabbed page (steps 3 and 5,
+  decision D12); `real-3` now checks every tab at 320px as well.
+- `e2e/pos-playwright/real-stack.js`: `startFakeNode(nettype)`.
+- New `tests/real-9-admin-settings.spec.js` (decision D21), each of the
+  first three with and without JavaScript:
+  tab switching through the tab bar and Back (with JavaScript also that
+  the page wasn't reloaded); adding a node (with JavaScript through "Add
+  another", which focuses the new address; without through the blank
+  row), moving it up to primary and removing nodes, each read back after a
+  reload, and no question when removing the last node of a network no
+  store uses; a node on mainnet saved for testnet refused with the
+  engine's message on the block and in the banners, the typed rows kept
+  and nothing changed after reload. With JavaScript: Use TLS shows and
+  hides the self-signed box; removing stagenet's last node while a store
+  uses it asks, and dismissing sends nothing; the Monero nodes marker
+  appears while the only stagenet node is offline and goes when it's back
+  (decision D22). Gallery: every tab captured in light and dark at phone
+  and desktop, group "Admin settings" (checked with
+  `COVERAGE_SCREENSHOTS=1`: 28 images).
+- Without JavaScript, clicks wait for the page's view transition to end
+  (`transitionDone`), as the helpers' note explains.

@@ -17,7 +17,7 @@ test.afterEach(async ({ page }) => {
   await saveNodes(page, { stagenet: [fakeNodeAddress()] });
 });
 
-const SIZES = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } };
+const SIZES = { 'small phone': { width: 320, height: 568 }, phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } };
 
 for (const [name, size] of Object.entries(SIZES)) {
   test(`every setting is described, with examples, and nothing scrolls sideways (${name})`, async ({ page }) => {

@@ -268,3 +268,32 @@ made.
   plan says not to mix steps).
 - **Why:** keeping each commit to one step; the window is one commit wide
   and recorded here and in the progress notes.
+
+## D21 (step 7): the new browser tests live in their own spec, `real-9-admin-settings.spec.js`
+
+- **Decision:** the tab, node form, wrong-network, TLS, confirmation, marker
+  and gallery tests are one new spec file (own stack, like every
+  `real-*.spec.js`). It starts three extra fake nodes (two saying testnet,
+  one mainnet) with `startFakeNode` in `real-stack.js`, rather than making
+  the stack's own node's network switchable. The gallery captures every
+  tab at phone (390px) and desktop sizes in both themes under a new
+  "Admin settings" group (`coverage-gallery-reporter.js`), which the
+  coverage run now requires (`coverage-real-binaries.config.js`). The
+  320px, 390px and 1280px width checks for every tab are `real-3`'s first
+  test, now run at 320px too.
+- **Alternatives:** add these tests to `real-3` and `real-8`; a
+  `--nettype` switch at runtime on the stack's fake node.
+- **Why:** one file per feature keeps each spec's shared state small (these
+  tests change testnet's and stagenet's nodes), and separate nodes keep the
+  stack's stagenet node, which other specs rely on, untouched.
+
+## D22 (step 7): the marker test polls through the Monero nodes tab
+
+- **Decision:** the test for the Nodes marker takes stagenet's only node
+  down (`/fake/offline`) and then, until the marker shows (up to 90s),
+  opens the Monero nodes tab (which waits for a fresh `/status`) and reads
+  the marker on General (which uses what's cached, decision D10). Then it
+  brings the node back and waits for the marker to go.
+- **Why:** the engine only reports a network's stores as unserved once its
+  scan loop is failing too, and monokulo caches `/status` for 10s; polling
+  is how the page itself learns it.

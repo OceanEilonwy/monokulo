@@ -38,6 +38,7 @@ const GROUPS = [
   ['pos-timeline', 'POS session timeline'],
   ['store-settings', 'Store settings'],
   ['logs', 'Logs'],
+  ['admin-settings', 'Admin settings'],
 ];
 const SHAPES = ['desktop', 'tablet-portrait', 'tablet-landscape', 'mobile-portrait', 'mobile-landscape', 'small-portrait'];
 const SHAPE_LABELS = {
