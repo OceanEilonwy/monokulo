@@ -60,7 +60,8 @@ CREATE TABLE IF NOT EXISTS logs (
     attributes TEXT NOT NULL,
     spans TEXT NOT NULL,
     store_id TEXT GENERATED ALWAYS AS (json_extract(attributes, '$."store.id"')) VIRTUAL,
-    order_id TEXT GENERATED ALWAYS AS (json_extract(attributes, '$."order.id"')) VIRTUAL
+    order_id TEXT GENERATED ALWAYS AS (json_extract(attributes, '$."order.id"')) VIRTUAL,
+    session_id TEXT GENERATED ALWAYS AS (json_extract(attributes, '$."session.id"')) VIRTUAL
 );
 CREATE INDEX IF NOT EXISTS logs_ts ON logs (ts, service, id);
 CREATE INDEX IF NOT EXISTS logs_trace ON logs (trace_id) WHERE trace_id IS NOT NULL;
@@ -402,7 +403,20 @@ fn open_writer(path: &Path) -> Result<Connection, StoreError> {
     conn.pragma_update(None, "journal_mode", "WAL")?;
     conn.pragma_update(None, "synchronous", "NORMAL")?;
     conn.execute_batch(SCHEMA)?;
+    add_session_column(&conn)?;
     Ok(conn)
+}
+
+/// `logs.session_id` and its index, for a store made before they were
+/// part of [`SCHEMA`]. A virtual column costs nothing to add: no row is
+/// rewritten.
+fn add_session_column(conn: &Connection) -> Result<(), StoreError> {
+    let has: bool = conn.query_row("SELECT count(*) FROM pragma_table_xinfo('logs') WHERE name = 'session_id'", [], |r| r.get::<_, i64>(0))? > 0;
+    if !has {
+        conn.execute_batch(r#"ALTER TABLE logs ADD COLUMN session_id TEXT GENERATED ALWAYS AS (json_extract(attributes, '$."session.id"')) VIRTUAL;"#)?;
+    }
+    conn.execute_batch("CREATE INDEX IF NOT EXISTS logs_session ON logs (session_id, ts) WHERE session_id IS NOT NULL;")?;
+    Ok(())
 }
 
 impl LogStore {

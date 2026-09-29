@@ -395,6 +395,8 @@ impl FromRequestParts<AppState> for AuthedTenant {
             .read_store(move |store| store.find_tenant_by_secret_token(&token))
             .await?
             .ok_or(ApiError::Unauthorized)?;
+        // The request's lines name the store (`telemetry::http::server`).
+        tracing::Span::current().record("store.id", tenant.id.as_str());
         Ok(AuthedTenant(tenant))
     }
 }

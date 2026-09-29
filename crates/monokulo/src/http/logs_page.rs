@@ -25,6 +25,7 @@ use axum::extract::{Form, Path, Query, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::response::{Html, IntoResponse, Response};
 use serde::{Deserialize, Serialize};
+use futures_util::StreamExt;
 use serde_json::Value;
 use telemetry::query::{and_also, parse, Expr, Op, ParseError, Severity, Value as QValue};
 use telemetry::store::api::{is_trace_id, HistogramRequest, LogsRequest};
@@ -43,6 +44,8 @@ const BARS: u32 = 60;
 const EXPORT_MAX: usize = 10_000;
 /// Most saved searches per admin.
 const MAX_SAVED: usize = 50;
+/// How often Live asks the engine for new lines (monokulo's own wake it).
+const ENGINE_POLL: Duration = Duration::from_secs(1);
 const NANOS_PER_SECOND: i64 = 1_000_000_000;
 
 /// The page's URL parameters. Empty values mean "not set".
@@ -220,6 +223,26 @@ fn find_links(params: &LogsParams, user: Option<&Expr>, field: &str, value: Opti
     (Some(with(condition.clone())), Some(with(Expr::Not(Box::new(condition)))))
 }
 
+/// Properties shown first when a line has them: who it was for.
+const WHO: [&str; 3] = ["session.id", "user.id", "store.id"];
+
+/// Names beside ids a person can't read: a user's email, a store's site
+/// (monokulo's own stores; the engine's ids are its own).
+fn add_notes(state: &AppState, row: &mut RowView) {
+    let db = state.db.lock();
+    for property in &mut row.properties {
+        property.note = match property.name.as_str() {
+            "user.id" => db.get_user_by_id(&property.value).ok().flatten().map(|user| user.email),
+            "store.id" if row.service == "monokulo" => db
+                .get_store_connection_by_id(&property.value)
+                .ok()
+                .flatten()
+                .map(|store| super::orders::display_name_for(&store.site_url)),
+            _ => None,
+        };
+    }
+}
+
 /// A line as shown. `lazy`: its properties load when it opens (lists),
 /// rather than coming with the page.
 fn row_view(row: &LogRow, params: &LogsParams, user: Option<&Expr>, zone: &jiff::tz::TimeZone, lazy: bool) -> RowView {
@@ -227,11 +250,16 @@ fn row_view(row: &LogRow, params: &LogsParams, user: Option<&Expr>, zone: &jiff:
     let mut properties = Vec::new();
     let mut push = |name: &str, shown: String, value: Option<QValue>| {
         let (find_url, exclude_url) = find_links(params, user, name, value);
-        properties.push(PropertyView { name: name.to_string(), value: shown, find_url, exclude_url });
+        properties.push(PropertyView { name: name.to_string(), value: shown, find_url, exclude_url, note: None });
     };
     push("level", severity.name().to_string(), Some(QValue::Level(severity)));
     push("service", row.service.clone(), Some(QValue::Text(row.service.clone())));
-    for (name, value) in &row.attributes {
+    // Who and what the line is about first, in the same place on every
+    // line; then the rest by name.
+    let pinned = |name: &str| WHO.iter().position(|who| *who == name).unwrap_or(WHO.len());
+    let mut attributes: Vec<_> = row.attributes.iter().collect();
+    attributes.sort_by_key(|(name, _)| pinned(name));
+    for (name, value) in attributes {
         let shown = match value {
             Value::String(s) => s.clone(),
             other => other.to_string(),
@@ -253,6 +281,7 @@ fn row_view(row: &LogRow, params: &LogsParams, user: Option<&Expr>, zone: &jiff:
         target: row.target.clone(),
         message: row.message.clone(),
         trace_url: row.trace_id.as_ref().map(|id| format!("{LOGS}/trace/{id}")),
+        session_url: row.attributes.get("session.id").and_then(Value::as_str).map(session_url),
         pos_session_url: row
             .attributes
             .get("pos.session")
@@ -263,6 +292,12 @@ fn row_view(row: &LogRow, params: &LogsParams, user: Option<&Expr>, zone: &jiff:
         open: false,
         properties,
     }
+}
+
+/// Every line of one signed-in session, whenever it was.
+fn session_url(session: &str) -> String {
+    let condition = Expr::Compare { field: "session.id".into(), op: Op::Eq, value: QValue::Text(session.to_string()) };
+    LogsParams { q: condition.to_string(), range: "all".into(), ..LogsParams::default() }.url(LOGS)
 }
 
 fn request(combined: Option<&Expr>, from: Option<i64>, to: Option<i64>, before: &str, after: &str, limit: u32) -> LogsRequest {
@@ -306,7 +341,7 @@ fn histogram_view(counts: &[u64], params: &LogsParams, from: i64, to: i64, zone:
 }
 
 async fn build(state: &AppState, admin: &crate::db::UserRow, params: &LogsParams, tz: &Timezone) -> LogsViewModel {
-    let (zone, zone_label) = zone(tz, admin);
+    let (zone, _) = zone(tz, admin);
     let now = now_nanos();
     let (from, to) = time_range(params, &zone, now);
     let search = params.search_only();
@@ -331,14 +366,13 @@ async fn build(state: &AppState, admin: &crate::db::UserRow, params: &LogsParams
         more_url: None,
         newer_url: None,
         refresh_url: search.url(LOGS),
-        tail_url: search.url(&format!("{LOGS}/tail")),
+        tail_url: None,
         export_ndjson_url: LogsParams { format: "ndjson".into(), ..search.clone() }.url(&format!("{LOGS}/export")),
         export_csv_url: LogsParams { format: "csv".into(), ..search.clone() }.url(&format!("{LOGS}/export")),
         query_string: search.query_string(),
         saved,
         saved_error: None,
         attribute_names: Vec::new(),
-        zone_label,
     };
 
     let (user, combined) = match filters(params) {
@@ -385,9 +419,12 @@ async fn build(state: &AppState, admin: &crate::db::UserRow, params: &LogsParams
             vm.newer_url = Some(LogsParams { after: first.cursor().encode(), ..search.clone() }.url(LOGS));
         }
     }
-    // Live starts after the newest line shown (or now).
-    let start = page.rows.first().map(LogRow::cursor).unwrap_or(Cursor { ts: now, service: String::new(), id: 0 });
-    vm.tail_url = LogsParams { after: start.encode(), ..search }.url(&format!("{LOGS}/tail"));
+    // Live starts after the newest line shown (or now), and only from the
+    // newest page.
+    if params.before.is_empty() && params.after.is_empty() {
+        let start = page.rows.first().map(LogRow::cursor).unwrap_or(Cursor { ts: now, service: String::new(), id: 0 });
+        vm.tail_url = Some(LogsParams { after: start.encode(), ..search }.url(&format!("{LOGS}/tail")));
+    }
     vm
 }
 
@@ -464,9 +501,9 @@ pub async fn tail(
                     // polled.
                     match tail.changed.as_mut() {
                         Some(changed) => {
-                            let _ = tokio::time::timeout(Duration::from_secs(2), changed.changed()).await;
+                            let _ = tokio::time::timeout(ENGINE_POLL, changed.changed()).await;
                         }
-                        None => tokio::time::sleep(Duration::from_secs(2)).await,
+                        None => tokio::time::sleep(ENGINE_POLL).await,
                     }
                 }
                 tail.first = false;
@@ -483,7 +520,10 @@ pub async fn tail(
             }
         }
     });
-    crate::live::sse(stream)
+    // A comment first, so the stream is open (and Live shows it) at once,
+    // before there's a line to send.
+    let opened = futures_util::stream::once(async { Ok(axum::response::sse::Event::default().comment("live")) });
+    crate::live::sse(opened.chain(stream))
 }
 
 /// `GET /dashboard/admin/logs/trace/{trace_id}`.
@@ -496,7 +536,7 @@ pub async fn trace_page(
     if !is_trace_id(&trace_id) {
         return (StatusCode::NOT_FOUND, "No such trace.").into_response();
     }
-    let (zone, zone_label) = zone(&tz, &admin);
+    let (zone, _) = zone(&tz, &admin);
     let sources = Sources::from_state(&state);
     let (trace, engine_problem) = crate::logs::trace(&sources, &trace_id).await;
     let search = LogsParams { q: format!("trace_id = '{trace_id}'"), range: "all".into(), ..LogsParams::default() };
@@ -540,10 +580,17 @@ pub async fn trace_page(
     let vm = view::TraceViewModel {
         trace_id: trace_id.clone(),
         spans,
-        rows: trace.logs.iter().map(|row| row_view(row, &search, user.as_ref(), &zone, false)).collect(),
+        rows: trace
+            .logs
+            .iter()
+            .map(|row| {
+                let mut row = row_view(row, &search, user.as_ref(), &zone, false);
+                add_notes(&state, &mut row);
+                row
+            })
+            .collect(),
         problems: engine_problem.into_iter().collect(),
         logs_url: search.url(LOGS),
-        zone_label,
     };
     let chrome = super::page_chrome(&state, Some(&admin), format!("{LOGS}/trace/{trace_id}"));
     Html(view::trace_page(&chrome, &vm).into_string()).into_response()
@@ -575,7 +622,11 @@ pub async fn row_page(
         None => None,
     };
     let user = parse(&search.q).ok().flatten();
-    let row = found.map(|row| RowView { open: true, ..row_view(&row, &search, user.as_ref(), &zone, false) });
+    let row = found.map(|row| {
+        let mut row = RowView { open: true, ..row_view(&row, &search, user.as_ref(), &zone, false) };
+        add_notes(&state, &mut row);
+        row
+    });
     if fx.0 {
         return match &row {
             Some(row) => Html(view::properties(row).into_string()).into_response(),

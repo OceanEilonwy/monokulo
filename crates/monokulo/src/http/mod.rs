@@ -336,8 +336,12 @@ pub fn build_router(state: AppState) -> Router {
     let router = router.route("/_test/whoami", axum::routing::get(test_whoami));
 
     // Outermost, so every line from the middleware above (abuse, embed
-    // policy) carries the request's span (structured_logging.md 2.1).
-    router.layer(middleware::from_fn(telemetry::http::server)).with_state(state)
+    // policy) carries the request's span (structured_logging.md 2.1), with
+    // the store it concerns recorded first.
+    router
+        .layer(middleware::from_fn_with_state(state.clone(), record_store))
+        .layer(middleware::from_fn(telemetry::http::server))
+        .with_state(state)
 }
 
 /// Resolves a session token to the user that session belongs to - either
@@ -516,7 +520,40 @@ pub(crate) fn resolve_authed_user(state: &AppState, headers: &HeaderMap) -> Opti
     let session = db.find_session(&token_hash).ok().flatten()?;
     let mut user = db.get_user_by_id(&session.user_id).ok().flatten()?;
     user.browser_timezone = fx::browser_zone(headers);
+    record_identity(&user.id, &token_hash);
     Some((user, token_hash))
+}
+
+/// Puts who's signed in on the request's lines (`user.id`, `session.id`;
+/// `telemetry::http::server`), so the Logs page can show every line of one
+/// session. Visitors who aren't signed in have neither.
+pub(crate) fn record_identity(user_id: &str, token_hash: &str) {
+    tracing::Span::current().record("user.id", user_id).record("session.id", session_log_id(token_hash));
+}
+
+/// A session's name in the logs: stable for the session, and no use for
+/// finding or presenting it (it is derived from the stored hash, which is
+/// itself only a lookup key, and cut short).
+pub(crate) fn session_log_id(token_hash: &str) -> String {
+    use sha2::{Digest, Sha256};
+    hex::encode(&Sha256::digest(format!("monokulo log session:{token_hash}").as_bytes())[..8])
+}
+
+/// Puts the store a request concerns on its lines (`store.id`): the one in
+/// a dashboard store page's path, or the one whose public key a `/pay/`
+/// route carries.
+async fn record_store(axum::extract::State(state): axum::extract::State<AppState>, request: axum::extract::Request, next: middleware::Next) -> Response {
+    let path = request.uri().path();
+    let store = match path.strip_prefix("/dashboard/stores/").and_then(|rest| rest.split('/').next()).filter(|id| !id.is_empty()) {
+        Some(id) => Some(id.to_string()),
+        None => embed_domains::public_key_of_pay_path(path)
+            .and_then(|pk| state.db.lock().get_store_connection_by_public_key(pk).ok().flatten())
+            .map(|row| row.id),
+    };
+    if let Some(store) = store {
+        tracing::Span::current().record("store.id", store);
+    }
+    next.run(request).await
 }
 
 /// Test-only dummy protected route (see WBS 1.1.2): its only purpose is
