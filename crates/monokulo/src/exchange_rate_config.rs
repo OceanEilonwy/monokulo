@@ -15,7 +15,8 @@
 //! or has no rate for the order's currency hands over to the next one, and
 //! the provider that finally answered is recorded on the order (the reason
 //! it is recorded per order). Providers today are `coingecko` and
-//! `coinmarketcap`, both keyless. (The "fixed" admin-pegged provider that
+//! `coinmarketcap` (both keyless) and `haveno` (RetoSwap's order book via
+//! `haveno.markets`, off by default - see `shared::haveno`). (The "fixed" admin-pegged provider that
 //! used to exist has been removed entirely as a product feature: real user
 //! feedback was that a hand-pegged rate doesn't make sense given dynamic
 //! crypto pricing.)
@@ -74,6 +75,7 @@ use std::time::Duration;
 
 use shared::coinmarketcap::CoinMarketCapRateProvider;
 use shared::exchange_rate::{CoingeckoRateProvider, ExchangeRateError, XmrIdentityProvider};
+use shared::haveno::HavenoRateProvider;
 
 use crate::db::StoreConnectionRow;
 
@@ -83,6 +85,8 @@ pub enum ExchangeRateConfigError {
     InvalidCoingeckoEnabled(String),
     #[error("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED must be \"true\" or \"false\", got {0:?}")]
     InvalidCoinMarketCapEnabled(String),
+    #[error("MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED must be \"true\" or \"false\", got {0:?}")]
+    InvalidHavenoEnabled(String),
     #[error("MONOKULO_EXCHANGE_RATE_CACHE_SECONDS must be a positive integer, got {0:?}")]
     InvalidCacheSeconds(String),
 }
@@ -90,6 +94,7 @@ pub enum ExchangeRateConfigError {
 const DEFAULT_CACHE_SECONDS: u64 = 30;
 const DEFAULT_COINGECKO_BASE_URL: &str = "https://api.coingecko.com";
 const DEFAULT_COINMARKETCAP_BASE_URL: &str = "https://pro-api.coinmarketcap.com/public-api";
+const DEFAULT_HAVENO_BASE_URL: &str = "https://haveno.markets";
 
 /// Already-validated, ready-to-build configuration - `main.rs` calls
 /// `ExchangeRateProviders::build` on this once, at boot.
@@ -99,14 +104,18 @@ pub struct ExchangeRateConfig {
     pub coingecko_base_url: String,
     pub coinmarketcap_enabled: bool,
     pub coinmarketcap_base_url: String,
+    pub haveno_enabled: bool,
+    pub haveno_base_url: String,
     pub cache_seconds: u64,
 }
 
-fn parse_enabled(raw: Option<String>, invalid: fn(String) -> ExchangeRateConfigError) -> Result<bool, ExchangeRateConfigError> {
+fn parse_enabled(
+    raw: Option<String>,
+    default: bool,
+    invalid: fn(String) -> ExchangeRateConfigError,
+) -> Result<bool, ExchangeRateConfigError> {
     match raw {
-        // On by default - both keyless public APIs need no key, so a fresh
-        // instance can already price fiat orders with zero configuration.
-        None => Ok(true),
+        None => Ok(default),
         Some(raw) => match raw.as_str() {
             "true" => Ok(true),
             "false" => Ok(false),
@@ -119,21 +128,35 @@ fn parse_enabled(raw: Option<String>, invalid: fn(String) -> ExchangeRateConfigE
 /// `std::env::var` wrapper in production, an in-memory map in tests - see
 /// this module's own doc comment for why).
 pub fn parse<F: Fn(&str) -> Option<String>>(get_env: F) -> Result<ExchangeRateConfig, ExchangeRateConfigError> {
-    let coingecko_enabled = parse_enabled(get_env("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED"), ExchangeRateConfigError::InvalidCoingeckoEnabled)?;
+    let coingecko_enabled = parse_enabled(get_env("MONOKULO_EXCHANGE_RATE_COINGECKO_ENABLED"), true, ExchangeRateConfigError::InvalidCoingeckoEnabled)?;
     let coingecko_base_url =
         get_env("MONOKULO_EXCHANGE_RATE_COINGECKO_BASE_URL").unwrap_or_else(|| DEFAULT_COINGECKO_BASE_URL.to_string());
 
     let coinmarketcap_enabled =
-        parse_enabled(get_env("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED"), ExchangeRateConfigError::InvalidCoinMarketCapEnabled)?;
+        parse_enabled(get_env("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_ENABLED"), true, ExchangeRateConfigError::InvalidCoinMarketCapEnabled)?;
     let coinmarketcap_base_url =
         get_env("MONOKULO_EXCHANGE_RATE_COINMARKETCAP_BASE_URL").unwrap_or_else(|| DEFAULT_COINMARKETCAP_BASE_URL.to_string());
+
+    // Off by default, unlike the two above: it prices from a thin
+    // peer-to-peer order book rather than an index (see `shared::haveno`), so
+    // an operator opts in.
+    let haveno_enabled = parse_enabled(get_env("MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED"), false, ExchangeRateConfigError::InvalidHavenoEnabled)?;
+    let haveno_base_url = get_env("MONOKULO_EXCHANGE_RATE_HAVENO_BASE_URL").unwrap_or_else(|| DEFAULT_HAVENO_BASE_URL.to_string());
 
     let cache_seconds = match get_env("MONOKULO_EXCHANGE_RATE_CACHE_SECONDS") {
         None => DEFAULT_CACHE_SECONDS,
         Some(raw) => raw.parse::<u64>().map_err(|_| ExchangeRateConfigError::InvalidCacheSeconds(raw))?,
     };
 
-    Ok(ExchangeRateConfig { coingecko_enabled, coingecko_base_url, coinmarketcap_enabled, coinmarketcap_base_url, cache_seconds })
+    Ok(ExchangeRateConfig {
+        coingecko_enabled,
+        coingecko_base_url,
+        coinmarketcap_enabled,
+        coinmarketcap_base_url,
+        haveno_enabled,
+        haveno_base_url,
+        cache_seconds,
+    })
 }
 
 /// Real `main.rs` entry point - reads the actual process environment.
@@ -169,6 +192,7 @@ pub struct ExchangeRateProviders {
 struct FiatProviders {
     coingecko: Option<Arc<CoingeckoRateProvider>>,
     coinmarketcap: Option<Arc<CoinMarketCapRateProvider>>,
+    haveno: Option<Arc<HavenoRateProvider>>,
     cache_seconds: u64,
 }
 
@@ -178,6 +202,7 @@ struct FiatProviders {
 /// *not* a name a store ever needs for XMR - see the module doc comment.
 pub const COINGECKO: &str = "coingecko";
 pub const COINMARKETCAP: &str = "coinmarketcap";
+pub const HAVENO: &str = "haveno";
 
 impl ExchangeRateProviders {
     /// Builds a dispatcher directly with a live Coingecko provider pointed
@@ -189,6 +214,7 @@ impl ExchangeRateProviders {
         ExchangeRateProviders::with(FiatProviders {
             coingecko: Some(Arc::new(CoingeckoRateProvider::new(base_url))),
             coinmarketcap: None,
+            haveno: None,
             cache_seconds: DEFAULT_CACHE_SECONDS,
         })
     }
@@ -198,6 +224,7 @@ impl ExchangeRateProviders {
         ExchangeRateProviders::with(FiatProviders {
             coingecko: None,
             coinmarketcap: Some(Arc::new(CoinMarketCapRateProvider::new(base_url))),
+            haveno: None,
             cache_seconds: DEFAULT_CACHE_SECONDS,
         })
     }
@@ -207,6 +234,27 @@ impl ExchangeRateProviders {
         ExchangeRateProviders::with(FiatProviders {
             coingecko: Some(Arc::new(CoingeckoRateProvider::new(coingecko_base_url))),
             coinmarketcap: Some(Arc::new(CoinMarketCapRateProvider::new(coinmarketcap_base_url))),
+            haveno: None,
+            cache_seconds: DEFAULT_CACHE_SECONDS,
+        })
+    }
+
+    /// Like [`Self::coingecko_only`], for Haveno (RetoSwap).
+    pub fn haveno_only(base_url: impl Into<String>) -> Self {
+        ExchangeRateProviders::with(FiatProviders {
+            coingecko: None,
+            coinmarketcap: None,
+            haveno: Some(Arc::new(HavenoRateProvider::new(base_url))),
+            cache_seconds: DEFAULT_CACHE_SECONDS,
+        })
+    }
+
+    /// All three providers, each pointed at its own (test) server.
+    pub fn all(coingecko_base_url: impl Into<String>, coinmarketcap_base_url: impl Into<String>, haveno_base_url: impl Into<String>) -> Self {
+        ExchangeRateProviders::with(FiatProviders {
+            coingecko: Some(Arc::new(CoingeckoRateProvider::new(coingecko_base_url))),
+            coinmarketcap: Some(Arc::new(CoinMarketCapRateProvider::new(coinmarketcap_base_url))),
+            haveno: Some(Arc::new(HavenoRateProvider::new(haveno_base_url))),
             cache_seconds: DEFAULT_CACHE_SECONDS,
         })
     }
@@ -218,7 +266,7 @@ impl ExchangeRateProviders {
     /// tests just use `currency = "XMR"`, per
     /// `docs/fx_refactor.md`'s follow-up).
     pub fn xmr_only() -> Self {
-        ExchangeRateProviders::with(FiatProviders { coingecko: None, coinmarketcap: None, cache_seconds: DEFAULT_CACHE_SECONDS })
+        ExchangeRateProviders::with(FiatProviders { coingecko: None, coinmarketcap: None, haveno: None, cache_seconds: DEFAULT_CACHE_SECONDS })
     }
 
     fn with(fiat: FiatProviders) -> Self {
@@ -233,7 +281,9 @@ impl ExchangeRateProviders {
         } else {
             None
         };
-        FiatProviders { coingecko, coinmarketcap, cache_seconds: config.cache_seconds }
+        let haveno =
+            if config.haveno_enabled { Some(Arc::new(HavenoRateProvider::new(config.haveno_base_url.clone()))) } else { None };
+        FiatProviders { coingecko, coinmarketcap, haveno, cache_seconds: config.cache_seconds }
     }
 
     pub fn build(config: &ExchangeRateConfig) -> Self {
@@ -288,6 +338,10 @@ impl ExchangeRateProviders {
                 },
                 COINMARKETCAP => match &fiat.coinmarketcap {
                     Some(provider) => provider.piconero_per_unit_cached(currency, max_age).await.map(|rate| (COINMARKETCAP, rate)),
+                    None => continue,
+                },
+                HAVENO => match &fiat.haveno {
+                    Some(provider) => provider.piconero_per_unit_cached(currency, max_age).await.map(|rate| (HAVENO, rate)),
                     None => continue,
                 },
                 _ => continue,
@@ -355,6 +409,14 @@ impl ExchangeRateProviders {
                         extend(known_currencies.iter().map(|c| c.to_uppercase()).collect());
                     }
                 }
+                HAVENO => {
+                    let Some(provider) = &fiat.haveno else { continue };
+                    consulted = true;
+                    match provider.supported_currencies_cached(Duration::from_secs(fiat.cache_seconds)).await {
+                        Ok(list) => extend(list),
+                        Err(error) => last_error = Some(error),
+                    }
+                }
                 _ => {}
             }
         }
@@ -376,6 +438,9 @@ impl ExchangeRateProviders {
         }
         if fiat.coinmarketcap.is_some() {
             providers.push(COINMARKETCAP);
+        }
+        if fiat.haveno.is_some() {
+            providers.push(HAVENO);
         }
         providers
     }
@@ -419,6 +484,8 @@ mod tests {
                 coingecko_base_url: DEFAULT_COINGECKO_BASE_URL.to_string(),
                 coinmarketcap_enabled: true,
                 coinmarketcap_base_url: DEFAULT_COINMARKETCAP_BASE_URL.to_string(),
+                haveno_enabled: false,
+                haveno_base_url: DEFAULT_HAVENO_BASE_URL.to_string(),
                 cache_seconds: DEFAULT_CACHE_SECONDS,
             }
         );
@@ -626,5 +693,44 @@ mod tests {
             parse(|k| env.get(k).cloned()).unwrap_err(),
             ExchangeRateConfigError::InvalidCoinMarketCapEnabled("maybe".to_string())
         );
+    }
+
+    const HAVENO_PATH: &str = "/api/v1/tickers";
+    // Midpoint 100.0 USD per XMR -> 1e10 piconero per USD. EUR has no ask.
+    const HAVENO_TICKERS: &str = r#"{"USD":{"pair":"XMR_USD","highest_bid":99.0,"lowest_ask":101.0},"EUR":{"pair":"XMR_EUR","highest_bid":90.0,"lowest_ask":null}}"#;
+
+    #[test]
+    fn haveno_is_off_by_default_and_env_switchable() {
+        assert!(!parse(|_| None).unwrap().haveno_enabled);
+        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED", "true")]);
+        assert!(parse(|k| env.get(k).cloned()).unwrap().haveno_enabled);
+        let env = env_map(&[("MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED", "1")]);
+        assert_eq!(parse(|k| env.get(k).cloned()).unwrap_err(), ExchangeRateConfigError::InvalidHavenoEnabled("1".to_string()));
+    }
+
+    #[tokio::test]
+    async fn haveno_prices_from_its_book_and_a_one_sided_book_hands_over_to_the_next() {
+        let hv = spawn_json(HAVENO_PATH, HAVENO_TICKERS, 200).await;
+        let providers = ExchangeRateProviders::haveno_only(hv.clone());
+        let (rate, name) = providers.piconero_per_unit_for(&test_store(&[HAVENO]), "USD").await.unwrap().unwrap();
+        assert_eq!((rate, name), (10_000_000_000, HAVENO));
+        assert!(providers.piconero_per_unit_for(&test_store(&[HAVENO]), "EUR").await.unwrap().is_none());
+
+        // EUR: haveno has no ask, so the next preferred provider prices it.
+        let cg = spawn_json(CG_PATH, r#"{"monero":{"eur":2.0}}"#, 200).await;
+        let providers = ExchangeRateProviders::all(cg, "http://127.0.0.1:1", hv);
+        let (_, name) = providers.piconero_per_unit_for(&test_store(&[HAVENO, COINGECKO]), "EUR").await.unwrap().unwrap();
+        assert_eq!(name, COINGECKO);
+        let (_, name) = providers.piconero_per_unit_for(&test_store(&[HAVENO, COINGECKO]), "USD").await.unwrap().unwrap();
+        assert_eq!(name, HAVENO, "and USD, which has a book, stays with haveno");
+    }
+
+    #[tokio::test]
+    async fn haveno_lists_only_currencies_it_can_price_right_now() {
+        let hv = spawn_json(HAVENO_PATH, HAVENO_TICKERS, 200).await;
+        let providers = ExchangeRateProviders::haveno_only(hv);
+        let known = vec!["USD".to_string(), "EUR".to_string(), "JPY".to_string()];
+        assert_eq!(providers.supported_currencies_for(&test_store(&[HAVENO]), &known).await.unwrap(), vec!["XMR", "USD"]);
+        assert_eq!(providers.available_providers(), vec![HAVENO]);
     }
 }

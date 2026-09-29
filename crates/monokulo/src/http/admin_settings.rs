@@ -728,6 +728,8 @@ mod tests {
             ("exchange_rate.coingecko_base_url", "http://127.0.0.1:9999"),
             ("exchange_rate.coinmarketcap_enabled", "false"),
             ("exchange_rate.coinmarketcap_base_url", "http://127.0.0.1:9998"),
+            ("exchange_rate.haveno_enabled", "true"),
+            ("exchange_rate.haveno_base_url", "http://127.0.0.1:9997"),
             ("exchange_rate.cache_seconds", "77"),
             ("http_cache.max_mb", "42"),
             ("abuse.soft_per_min", "33"),

@@ -903,6 +903,74 @@ mod tests {
         assert_eq!(order_pricing(&state, &router, &pk).await, ("coinmarketcap".to_string(), 250_000_000_000));
     }
 
+    /// A local server standing in for haveno.markets: a two-sided USD book
+    /// whose midpoint is `usd_price`, or (`None`) a one-sided one.
+    async fn spawn_mock_haveno(usd_price: Option<f64>) -> String {
+        let body = match usd_price {
+            Some(p) => format!(r#"{{"USD":{{"pair":"XMR_USD","highest_bid":{},"lowest_ask":{}}}}}"#, p - 1.0, p + 1.0),
+            None => r#"{"USD":{"pair":"XMR_USD","highest_bid":1.0,"lowest_ask":null}}"#.to_string(),
+        };
+        let app = Router::new().route(
+            "/api/v1/tickers",
+            axum::routing::get(move || {
+                let body = body.clone();
+                async move {
+                    use axum::response::IntoResponse;
+                    ([("content-type", "application/json")], body).into_response()
+                }
+            }),
+        );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
+    }
+
+    /// Haveno slots into the same per-store order: preferred first it prices
+    /// the next order and is recorded on it; when its book is one-sided the
+    /// next provider takes over.
+    #[tokio::test]
+    async fn haveno_can_be_ordered_first_and_falls_through_when_its_book_is_one_sided() {
+        let (mut state, _engine) = test_state_with_real_engine().await;
+        let coingecko = spawn_mock_coingecko().await; // $1.00 per XMR
+        let coinmarketcap = spawn_mock_coinmarketcap(Some(2.0)).await;
+        let haveno = spawn_mock_haveno(Some(4.0)).await; // midpoint $4.00 per XMR
+        state.exchange_rate = std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::all(coingecko, coinmarketcap, haveno));
+        let router = build_router(state.clone());
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "pay-provider-haveno@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let connection_id = state.db.lock().get_store_connection_by_public_key(&pk).unwrap().unwrap().id;
+
+        save_provider_settings(
+            &router,
+            &session_token,
+            &connection_id,
+            &[
+                ("use_haveno", "on"),
+                ("position_haveno", "1"),
+                ("use_coinmarketcap", "on"),
+                ("position_coinmarketcap", "2"),
+                ("use_coingecko", "on"),
+                ("position_coingecko", "3"),
+            ],
+        )
+        .await;
+        assert_eq!(order_pricing(&state, &router, &pk).await, ("haveno".to_string(), 250_000_000_000));
+
+        // Same settings, but haveno's book has lost its ask: the next order
+        // falls to coinmarketcap without touching the settings.
+        state.exchange_rate = std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::all(
+            spawn_mock_coingecko().await,
+            spawn_mock_coinmarketcap(Some(2.0)).await,
+            spawn_mock_haveno(None).await,
+        ));
+        let router = build_router(state.clone());
+        assert_eq!(order_pricing(&state, &router, &pk).await, ("coinmarketcap".to_string(), 500_000_000_000));
+    }
+
     #[tokio::test]
     async fn creating_an_order_with_an_unknown_currency_is_rejected_before_ever_reaching_the_engine() {
         let (state, _engine) = test_state_with_real_engine().await;

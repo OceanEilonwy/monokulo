@@ -101,6 +101,20 @@ settings! {
         description: "Where CoinMarketCap's keyless API is reached. Change it only to use a proxy or mirror.",
         example: "https://pro-api.coinmarketcap.com/public-api",
     },
+    EXCHANGE_RATE_HAVENO_ENABLED: bool {
+        key: "exchange_rate.haveno_enabled",
+        env: "MONOKULO_EXCHANGE_RATE_HAVENO_ENABLED",
+        default: false,
+        description: "Whether stores can price orders using the RetoSwap (Haveno) order book, read through haveno.markets. It is a thin peer-to-peer market, so it prices only currencies with both buyers and sellers listed right now.",
+        example: "false",
+    },
+    EXCHANGE_RATE_HAVENO_BASE_URL: HttpUrl {
+        key: "exchange_rate.haveno_base_url",
+        env: "MONOKULO_EXCHANGE_RATE_HAVENO_BASE_URL",
+        default: live_settings::parsed_default("https://haveno.markets"),
+        description: "Where the haveno.markets API is reached. Change it only to use a proxy or mirror.",
+        example: "https://haveno.markets",
+    },
     EXCHANGE_RATE_CACHE_SECONDS: u64 {
         key: "exchange_rate.cache_seconds",
         env: "MONOKULO_EXCHANGE_RATE_CACHE_SECONDS",
@@ -391,6 +405,8 @@ impl Section for ExchangeRateConfig {
             &EXCHANGE_RATE_COINGECKO_BASE_URL,
             &EXCHANGE_RATE_COINMARKETCAP_ENABLED,
             &EXCHANGE_RATE_COINMARKETCAP_BASE_URL,
+            &EXCHANGE_RATE_HAVENO_ENABLED,
+            &EXCHANGE_RATE_HAVENO_BASE_URL,
             &EXCHANGE_RATE_CACHE_SECONDS,
         ]
     }
@@ -400,6 +416,8 @@ impl Section for ExchangeRateConfig {
             coingecko_base_url: snapshot.get(&EXCHANGE_RATE_COINGECKO_BASE_URL).as_str().to_string(),
             coinmarketcap_enabled: snapshot.get(&EXCHANGE_RATE_COINMARKETCAP_ENABLED),
             coinmarketcap_base_url: snapshot.get(&EXCHANGE_RATE_COINMARKETCAP_BASE_URL).as_str().to_string(),
+            haveno_enabled: snapshot.get(&EXCHANGE_RATE_HAVENO_ENABLED),
+            haveno_base_url: snapshot.get(&EXCHANGE_RATE_HAVENO_BASE_URL).as_str().to_string(),
             cache_seconds: snapshot.get(&EXCHANGE_RATE_CACHE_SECONDS),
         })
     }
@@ -826,14 +844,17 @@ mod tests {
         let registry = settings.registry.as_ref().unwrap();
         // Loading applied the saved (here: default) settings.
         assert_eq!(engine.base_url(), "http://127.0.0.1:8443");
-        assert_eq!(rates.available_providers(), vec!["coingecko", "coinmarketcap"]);
+        assert_eq!(rates.available_providers(), vec!["coingecko", "coinmarketcap"], "haveno is off until an admin turns it on");
+        registry.save(change("exchange_rate.haveno_enabled", "true")).await.unwrap();
+        assert_eq!(rates.available_providers(), vec!["coingecko", "coinmarketcap", "haveno"]);
 
         let report = registry.save(change("engine.url", "http://127.0.0.1:2")).await.unwrap();
         assert_eq!(engine.base_url(), "http://127.0.0.1:2", "the next engine call goes to the new address");
         assert_eq!(report.warnings.len(), 1, "nothing answers there, and the save says so (D4)");
 
         registry.save(change("exchange_rate.coingecko_enabled", "false")).await.unwrap();
-        assert_eq!(rates.available_providers(), vec!["coinmarketcap"]);
+        assert_eq!(rates.available_providers(), vec!["coinmarketcap", "haveno"]);
+        registry.save(change("exchange_rate.haveno_enabled", "false")).await.unwrap();
         registry.save(change("exchange_rate.coinmarketcap_enabled", "false")).await.unwrap();
         assert!(rates.available_providers().is_empty());
 
