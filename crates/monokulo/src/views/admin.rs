@@ -1,6 +1,5 @@
 //! Admin-only pages: first-run setup (`GET`/`POST /admin/setup`), the
-//! settings page (`GET`/`POST /dashboard/admin/settings`,
-//! `POST /dashboard/admin/scanner-settings`), the invites page
+//! settings page (`GET`/`POST /dashboard/admin/settings?tab=<id>`), the invites page
 //! (`GET /dashboard/admin/invites` and its create-link/delete actions), and
 //! the public `GET`/`POST /request-invite` form.
 
@@ -250,8 +249,12 @@ impl From<live_settings::SettingKind> for SettingKindView {
 /// own settings or one of the engine's, fetched live over HTTP.
 #[derive(Debug, Clone, Default)]
 pub struct AdminScalarFieldView {
-    /// The stable settings-table key (also the form field's `name`).
+    /// The stable settings-table key.
     pub key: String,
+    /// The form field's `name`, when it isn't `key`: an engine setting
+    /// whose key monokulo also has (`logging.level`) is sent as
+    /// `engine:<key>`, so the two can share a tab (and a form).
+    pub name: String,
     pub label: String,
     /// The field's current *effective* value - what wins under
     /// `env > database > default`. Masked for secrets.
@@ -307,8 +310,9 @@ pub enum SettingOwner {
 /// process owns a setting (nicer_admin_screen.md T1). Each is its own URL,
 /// `/dashboard/admin/settings?tab=<id>`, so switching works as a plain link
 /// and a save can send the browser back to the tab it came from.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum SettingsTab {
+    #[default]
     General,
     Nodes,
     Payments,
@@ -424,20 +428,13 @@ pub fn setting_placement(key: &str, owner: SettingOwner) -> (SettingsTab, Option
     }
 }
 
-/// The two halves of the admin settings page, each saved (and, with
-/// fixi, swapped back) on its own.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum SettingsSection {
-    Monokulo,
-    Engine,
-}
-
 #[derive(Default)]
 pub struct AdminSettingsViewModel {
-    /// Which half was just saved: its banners show inside it.
-    pub saved_section: Option<SettingsSection>,
+    /// The tab on show.
+    pub tab: SettingsTab,
     /// The tab a save was for, or the tab holding the setting a refused
-    /// save was about: its banners show there.
+    /// save was about: set only on the page a save answers with, so the
+    /// word beside the Save button says how it went.
     pub saved_tab: Option<SettingsTab>,
     pub error: Option<String>,
     pub success: Option<String>,
@@ -451,6 +448,9 @@ pub struct AdminSettingsViewModel {
     pub scanner_error: Option<String>,
     pub scanner_fields: Vec<AdminScalarFieldView>,
     pub scanner_networks: Vec<AdminNetworkFieldView>,
+    /// Networks stores use that no node answers for, as far as monokulo
+    /// knows (the engine's `/status`): the Monero nodes tab is marked.
+    pub unreachable_networks: Vec<String>,
 }
 
 /// The id of a setting's control, which its label and help point at.
@@ -460,11 +460,18 @@ fn field_id(key: &str) -> String {
 
 /// The id of a setting's help text, when it has some.
 fn help_id(field: &AdminScalarFieldView) -> Option<String> {
-    field.help.as_ref().map(|_| format!("setting-help-{}", field.key))
+    field.help.as_ref().map(|_| format!("setting-help-{}", field.form_name()))
+}
+
+impl AdminScalarFieldView {
+    /// The name the setting's control is sent under.
+    pub fn form_name(&self) -> &str {
+        if self.name.is_empty() { &self.key } else { &self.name }
+    }
 }
 
 fn scalar_input(field: &AdminScalarFieldView) -> Markup {
-    let name = field.key.as_str();
+    let name = field.form_name();
     let id = field_id(name);
     let help = help_id(field);
     match &field.kind {
@@ -549,7 +556,7 @@ fn scalar_field(field: &AdminScalarFieldView) -> Markup {
             }
         } @else {
             div class="setting-field" {
-                label class="setting-label" for=(field_id(&field.key)) { (field.label) }
+                label class="setting-label" for=(field_id(field.form_name())) { (field.label) }
                 (help)
                 (scalar_input(field))
                 (field_status(field))
@@ -591,15 +598,15 @@ fn notices(items: &[Notice]) -> Markup {
     }
 }
 
-/// With JavaScript, confirm before saving an engine settings form that
-/// clears a network stores still use (task 4.4). Without it, the form posts
-/// and the red banner after the save says what happened. Listens on the
-/// document, before fixi (capture), so it still works on the form fixi
-/// swaps in after a save; cancelling stops fixi too (`static/fx-glue.js`).
+/// With JavaScript, confirm before saving a Monero nodes tab that clears a
+/// network stores still use (task 4.4). Without it, the form posts and the
+/// red banner after the save says what happened. Listens on the document,
+/// before fixi (capture), so it still works on the form fixi swaps in after
+/// a save; cancelling stops fixi too (`static/fx-glue.js`).
 const CONFIRM_CLEARED_NETWORK_SCRIPT: &str = r#"(function () {
   document.addEventListener("submit", function (event) {
     var form = event.target;
-    if (form.id !== "scanner-settings-form") return;
+    if (form.id !== "settings-form") return;
     var fields = form.querySelectorAll("textarea[data-tenant-count]");
     for (var i = 0; i < fields.length; i++) {
       var field = fields[i];
@@ -616,36 +623,7 @@ const CONFIRM_CLEARED_NETWORK_SCRIPT: &str = r#"(function () {
   }, true);
 })();"#;
 
-/// Settings shown under "Abuse protection" (`crate::abuse`).
-fn is_abuse_field(key: &str) -> bool {
-    key.starts_with("abuse.") || key.starts_with("rate_limit.")
-}
-
-/// Settings shown under "Logging".
-fn is_logging_field(key: &str) -> bool {
-    key.starts_with("logging.")
-}
-
-/// The engine's settings, grouped (task 4.7).
-fn engine_group(key: &str) -> &'static str {
-    match key.split('.').next().unwrap_or("") {
-        "key_custody" => "Key custody",
-        "payment" => "Payments",
-        "server" => "Server",
-        "webhooks" => "Webhooks",
-        "logging" => "Logging",
-        _ => "Other",
-    }
-}
-
 const ENABLED_BACKENDS: &str = "key_custody.enabled_backends";
-
-/// A group's settings, in the engine's order except that the key custody
-/// backends to turn on come before the choice among them.
-fn in_group<'a>(fields: &'a [AdminScalarFieldView], group: &'a str) -> impl Iterator<Item = &'a AdminScalarFieldView> {
-    let fields = move || fields.iter().filter(move |f| engine_group(&f.key) == group);
-    fields().filter(|f| f.key == ENABLED_BACKENDS).chain(fields().filter(|f| f.key != ENABLED_BACKENDS))
-}
 
 /// The key custody backends the engine offers, and whether each is turned
 /// on. Empty from an engine that doesn't say.
@@ -699,9 +677,9 @@ const CUSTODY_BACKENDS_SCRIPT: &str = r#"(function () {
 /// A short word on the save beside the Save button, where the person who
 /// pressed it is looking; focused after a fixi swap (the banners above say
 /// more).
-fn save_status(data: &AdminSettingsViewModel, section: SettingsSection) -> Markup {
+fn save_status(data: &AdminSettingsViewModel) -> Markup {
     html! {
-        @if data.saved_section == Some(section) {
+        @if data.saved_tab == Some(data.tab) {
             @if data.error.is_some() {
                 span class="save-status error" role="alert" data-fx-focus tabindex="-1" { "Not saved - see the message above." }
             } @else if data.success.is_some() {
@@ -711,11 +689,13 @@ fn save_status(data: &AdminSettingsViewModel, section: SettingsSection) -> Marku
     }
 }
 
-/// The page's banners after a save: the error, the success message and
-/// any notices.
-fn banners(data: &AdminSettingsViewModel) -> Markup {
+/// The page-wide banners (nicer_admin_screen.md T4): a save's error, its
+/// success and any notices, above the tab bar on every tab. `oob` marks it
+/// for fixi's glue to put in place of the page's own copy when it comes
+/// back with a swapped panel.
+pub fn banners(data: &AdminSettingsViewModel, oob: bool) -> Markup {
     html! {
-        div class="save-banners" {
+        div id="settings-banners" class="save-banners" data-fx-oob[oob] {
             @if let Some(error) = &data.error {
                 p class="error" role="alert" { (error) }
             }
@@ -727,100 +707,189 @@ fn banners(data: &AdminSettingsViewModel) -> Markup {
     }
 }
 
-/// Monokulo's own settings: one form, saved and swapped back as a whole.
-pub fn monokulo_section(data: &AdminSettingsViewModel) -> Markup {
+/// The engine is configured and answered, so its settings are on hand.
+fn engine_available(data: &AdminSettingsViewModel) -> bool {
+    data.scanner_configured && data.scanner_reachable
+}
+
+/// Where the engine's settings would be, while it can't be reached
+/// (nicer_admin_screen.md T6).
+fn engine_unavailable(data: &AdminSettingsViewModel) -> Markup {
     html! {
-        section id="monokulo-settings" {
-            h2 { "Monokulo" }
-            @if data.saved_section == Some(SettingsSection::Monokulo) { (banners(data)) }
-            p class="hint" { "Saved settings apply straight away. An environment variable, where set, always wins over the value saved here - saving still works, it just won't take effect until that variable is unset." }
-            form method="post" action="/dashboard/admin/settings" fx-action="/dashboard/admin/settings" fx-method="POST" fx-target="#monokulo-settings" {
-                @for field in data.monokulo_fields.iter().filter(|f| !is_abuse_field(&f.key) && !is_logging_field(&f.key)) {
-                    (scalar_field(field))
+        @if !data.scanner_configured {
+            p class="engine-unavailable" {
+                "Set " code { "engine.url" } " and " code { "engine.admin_token" } " on the "
+                a href=(SettingsTab::General.href()) { "General" } " tab and save to manage this instance's engine settings from here."
+            }
+        } @else {
+            p class="error engine-unavailable" role="alert" {
+                "Could not reach the configured engine: "
+                @if let Some(scanner_error) = &data.scanner_error { (scanner_error) }
+            }
+        }
+    }
+}
+
+/// A tab's settings from one owner under one heading, in the order they
+/// are shown: the engine's in its (alphabetical) order, except that the key
+/// custody backends to turn on come before the choice among them, and on
+/// Server the engine's own `server.*` come before the scan memory budget.
+fn group_fields<'a>(data: &'a AdminSettingsViewModel, tab: SettingsTab, heading: Option<&str>, owner: SettingOwner) -> Vec<&'a AdminScalarFieldView> {
+    let fields = match owner {
+        SettingOwner::Monokulo => &data.monokulo_fields,
+        SettingOwner::Engine => &data.scanner_fields,
+    };
+    let mut own: Vec<&AdminScalarFieldView> = fields.iter().filter(|f| setting_placement(&f.key, owner) == (tab, heading)).collect();
+    if owner == SettingOwner::Engine {
+        own.sort_by_key(|f| (f.key != ENABLED_BACKENDS, f.key.starts_with("payment.") && tab == SettingsTab::Server));
+    }
+    own
+}
+
+/// Whether a tab has anything to show: always, except Other, which only
+/// shows while a setting nobody placed is in it.
+fn tab_shown(data: &AdminSettingsViewModel, tab: SettingsTab) -> bool {
+    tab != SettingsTab::Other
+        || tab.groups().iter().any(|(heading, owner)| !group_fields(data, tab, *heading, *owner).is_empty())
+}
+
+/// Whether a tab's label carries the marker (T5): a network stores use has
+/// no node that answers (Monero nodes), or a saved setting on it waits for
+/// a restart.
+fn needs_attention(data: &AdminSettingsViewModel, tab: SettingsTab) -> bool {
+    let unserved = tab == SettingsTab::Nodes
+        && (!data.unreachable_networks.is_empty()
+            || data.scanner_networks.iter().any(|n| n.tenant_count > 0 && n.value_json.trim().is_empty()));
+    let restart = tab.groups().iter().any(|(heading, owner)| group_fields(data, tab, *heading, *owner).iter().any(|f| f.pending_restart));
+    unserved || restart
+}
+
+/// The tab bar: plain links, each its own page, so it works without
+/// JavaScript; with fixi they swap just the panel and push the URL. Marked
+/// tabs say so in words as well as with the dot.
+pub fn tab_bar(data: &AdminSettingsViewModel, oob: bool) -> Markup {
+    html! {
+        nav id="settings-tabs" class="tab-bar" aria-label="Settings sections" data-fx-oob[oob] {
+            @for tab in SettingsTab::ALL.into_iter().filter(|tab| tab_shown(data, *tab)) {
+                @let href = tab.href();
+                a href=(href) fx-action=(href) fx-target="#settings-panel" fx-push-url aria-current=[(tab == data.tab).then_some("page")] {
+                    (tab.label())
+                    @if needs_attention(data, tab) {
+                        span class="tab-marker" aria-hidden="true" { "\u{25CF}" }
+                        span class="visually-hidden" { " (needs attention)" }
+                    }
                 }
-                h3 id="abuse-protection" { "Abuse protection" }
+            }
+        }
+    }
+}
+
+/// The Monero nodes tab's fields.
+fn node_fields(data: &AdminSettingsViewModel) -> Markup {
+    html! {
+        @for network in &data.scanner_networks {
+            @let id = format!("setting-monero_node_{}", network.network);
+            @let help = network.description.as_ref().map(|_| format!("setting-help-monero_node_{}", network.network));
+            div class="setting-field" {
+                label class="setting-label" for=(id) { "Monero node (" (network.network) ")" }
+                @if let (Some(description), Some(help)) = (&network.description, &help) {
+                    span class="field-help" id=(help) { (description) }
+                }
+                textarea name=(format!("monero_node_{}", network.network)) rows="4" id=(id) aria-describedby=[help]
+                    data-network=(network.network) data-tenant-count=(network.tenant_count) { (network.value_json) }
+                span class="setting-source" {
+                    @if network.tenant_count == 1 { "Used by 1 store." } @else { "Used by " (network.tenant_count) " stores." }
+                }
+                @if let Some(example) = &network.example {
+                    details class="field-help" {
+                        summary { "Example" }
+                        pre { code { (example) } }
+                        p {
+                            code { "host" } " and " code { "port" } ": the node's address. "
+                            code { "ssl" } " (default false): connect with TLS. "
+                            code { "accept_self_signed_certs" } " (default true): accept a self-signed TLS certificate. "
+                            code { "fallbacks" } ": more nodes in the same shape, tried in order when the one before fails; a fallback can't have fallbacks of its own."
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// One tab's settings, group by group (`SettingsTab::groups`). Where the
+/// engine's settings would be while it can't be reached, its message
+/// stands in, once.
+fn tab_fields(data: &AdminSettingsViewModel, tab: SettingsTab) -> Markup {
+    let backends = custody_backends(&data.scanner_fields);
+    let engine_down = !engine_available(data);
+    let first_engine_group = tab.groups().iter().position(|(_, owner)| *owner == SettingOwner::Engine);
+    html! {
+        @for (i, (heading, owner)) in tab.groups().iter().enumerate() {
+            @if *owner == SettingOwner::Engine && engine_down {
+                @if first_engine_group == Some(i) {
+                    @if let Some(heading) = heading { h3 { (heading) } }
+                    (engine_unavailable(data))
+                }
+            } @else if tab == SettingsTab::Nodes {
+                (node_fields(data))
+            } @else {
+                @let fields = group_fields(data, tab, *heading, *owner);
+                @if !fields.is_empty() {
+                    @if let Some(heading) = heading { h3 { (heading) } }
+                    @for field in fields.iter().filter(|f| custody_backend_of(f, &backends).is_none()) {
+                        (scalar_field(field))
+                    }
+                    @if tab == SettingsTab::Custody { (custody_backend_sections(&data.scanner_fields, &backends)) }
+                }
+            }
+        }
+    }
+}
+
+/// The open tab: its heading, its one form and its one Save button. What
+/// fixi swaps, for a tab link or a save. `focus` marks the heading for the
+/// glue to focus after a tab switch, so keyboard and screen reader users
+/// land on the new tab's content.
+pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
+    let tab = data.tab;
+    html! {
+        section id="settings-panel" aria-labelledby="settings-panel-title" {
+            h2 id="settings-panel-title" tabindex="-1" data-fx-focus[focus] { (tab.label()) }
+            p class="hint" { "Saved settings apply straight away. An environment variable, where set, always wins over the value saved here - saving still works, it just won't take effect until that variable is unset." }
+            @if tab == SettingsTab::Abuse {
                 p class="hint" {
                     "How this instance tells visitors apart and slows down anyone sending too many requests. A visitor "
                     "past the soft limit is asked to pass a short check (automatic with JavaScript, a 10-second wait "
                     "without); past the hard limit they're refused until the minute is up. Signed-in merchants and "
                     "plugins using their store's secret key are never checked."
                 }
-                @for field in data.monokulo_fields.iter().filter(|f| is_abuse_field(&f.key)) {
-                    (scalar_field(field))
+            }
+            @if tab.engine_only() && !engine_available(data) {
+                (engine_unavailable(data))
+            } @else {
+                form method="post" action="/dashboard/admin/settings" id="settings-form"
+                    fx-action="/dashboard/admin/settings" fx-method="POST" fx-target="#settings-panel" {
+                    input type="hidden" name="tab" value=(tab.id());
+                    (tab_fields(data, tab))
+                    div class="settings-actions" {
+                        button type="submit" class="btn-primary" { "Save" }
+                        (save_status(data))
+                    }
                 }
-                h3 id="logging" { "Logging" }
-                @for field in data.monokulo_fields.iter().filter(|f| is_logging_field(&f.key)) {
-                    (scalar_field(field))
-                }
-                button type="submit" { "Save monokulo settings" }
-                (save_status(data, SettingsSection::Monokulo))
             }
         }
     }
 }
 
-/// The engine's settings. `oob` marks it for fixi's glue to put in place
-/// of the page's own copy when it comes back with the monokulo section
-/// (saving the engine connection there changes this half too).
-pub fn engine_section(data: &AdminSettingsViewModel, oob: bool) -> Markup {
-    let groups = ["Key custody", "Payments", "Server", "Webhooks", "Logging", "Other"];
-    let backends = custody_backends(&data.scanner_fields);
+/// What fixi gets back for a tab link or a save: the panel, with the
+/// banners and the tab bar out of band (a save can change both: a marker
+/// comes or goes, a banner appears).
+pub fn settings_fragment(data: &AdminSettingsViewModel, focus_heading: bool) -> Markup {
     html! {
-        section id="engine-settings" data-fx-oob[oob] {
-            h2 { "Engine" }
-            @if data.saved_section == Some(SettingsSection::Engine) { (banners(data)) }
-            @if !data.scanner_configured {
-                p { "Set " code { "engine.url" } " and " code { "engine.admin_token" } " above and save to manage this instance's engine settings from here." }
-            } @else if data.scanner_reachable {
-                form method="post" action="/dashboard/admin/scanner-settings" id="scanner-settings-form"
-                    fx-action="/dashboard/admin/scanner-settings" fx-method="POST" fx-target="#engine-settings" {
-                    h3 { "Monero nodes" }
-                    @for network in &data.scanner_networks {
-                        @let id = format!("setting-monero_node_{}", network.network);
-                        @let help = network.description.as_ref().map(|_| format!("setting-help-monero_node_{}", network.network));
-                        div class="setting-field" {
-                            label class="setting-label" for=(id) { "Monero node (" (network.network) ")" }
-                            @if let (Some(description), Some(help)) = (&network.description, &help) {
-                                span class="field-help" id=(help) { (description) }
-                            }
-                            textarea name=(format!("monero_node_{}", network.network)) rows="4" id=(id) aria-describedby=[help]
-                                data-network=(network.network) data-tenant-count=(network.tenant_count) { (network.value_json) }
-                            span class="setting-source" {
-                                @if network.tenant_count == 1 { "Used by 1 store." } @else { "Used by " (network.tenant_count) " stores." }
-                            }
-                            @if let Some(example) = &network.example {
-                                details class="field-help" {
-                                    summary { "Example" }
-                                    pre { code { (example) } }
-                                    p {
-                                        code { "host" } " and " code { "port" } ": the node's address. "
-                                        code { "ssl" } " (default false): connect with TLS. "
-                                        code { "accept_self_signed_certs" } " (default true): accept a self-signed TLS certificate. "
-                                        code { "fallbacks" } ": more nodes in the same shape, tried in order when the one before fails; a fallback can't have fallbacks of its own."
-                                    }
-                                }
-                            }
-                        }
-                    }
-                    @for group in groups {
-                        @if in_group(&data.scanner_fields, group).next().is_some() {
-                            h3 { (group) }
-                            @for field in in_group(&data.scanner_fields, group).filter(|f| custody_backend_of(f, &backends).is_none()) {
-                                (scalar_field(field))
-                            }
-                            @if group == "Key custody" { (custody_backend_sections(&data.scanner_fields, &backends)) }
-                        }
-                    }
-                    button type="submit" { "Save engine settings" }
-                    (save_status(data, SettingsSection::Engine))
-                }
-            } @else {
-                p class="error" role="alert" {
-                    "Could not reach the configured engine: "
-                    @if let Some(scanner_error) = &data.scanner_error { (scanner_error) }
-                }
-            }
-        }
+        (settings_panel(data, focus_heading))
+        (banners(data, true))
+        (tab_bar(data, true))
     }
 }
 
@@ -829,14 +898,14 @@ pub fn admin_settings_page(chrome: &PageChrome, data: &AdminSettingsViewModel) -
         div class="wrap" {
             nav class="context-nav" aria-label="Breadcrumb" { a href="/dashboard" { "Dashboard" } }
             h1 { "Admin settings" }
-            @if data.saved_section.is_none() { (banners(data)) }
-            (monokulo_section(data))
-            (engine_section(data, false))
+            (banners(data, false))
+            (tab_bar(data, false))
+            (settings_panel(data, false))
             script { (maud::PreEscaped(CONFIRM_CLEARED_NETWORK_SCRIPT)) }
             script { (maud::PreEscaped(CUSTODY_BACKENDS_SCRIPT)) }
         }
     };
-    layout(chrome, "Admin settings - Monokulo", body)
+    layout(chrome, &format!("{} - Admin settings - Monokulo", data.tab.label()), body)
 }
 
 #[cfg(test)]
@@ -1056,31 +1125,214 @@ mod tests {
         assert!(!html.contains("No pending invite requests."));
     }
 
-    #[test]
-    fn admin_settings_page_prompts_for_scanner_configuration_when_unconfigured() {
-        let data = AdminSettingsViewModel { monokulo_fields: vec![], scanner_configured: false, ..Default::default() };
-        let html = admin_settings_page(&chrome(), &data).into_string();
-        assert!(html.contains("Set <code>engine.url</code>"));
-        assert!(!html.contains("/dashboard/admin/scanner-settings"));
-    }
-
-    #[test]
-    fn admin_settings_page_shows_an_unreachable_scanner_error() {
-        let data = AdminSettingsViewModel {
-            monokulo_fields: vec![],
-            scanner_configured: true,
-            scanner_reachable: false,
-            scanner_error: Some("connection refused".to_string()),
+    /// A field as the handler builds it: an engine setting monokulo also
+    /// has is sent as `engine:<key>`.
+    fn field_for(key: &str, owner: SettingOwner) -> AdminScalarFieldView {
+        let shared = owner == SettingOwner::Engine && PLACEMENTS.iter().any(|(k, o, ..)| *k == key && *o == SettingOwner::Monokulo);
+        AdminScalarFieldView {
+            key: key.to_string(),
+            name: if shared { format!("engine:{key}") } else { String::new() },
+            label: key.replace(['.', '_'], " "),
+            value: "1".to_string(),
+            source_label: "default".to_string(),
+            help: Some(format!("What {key} is for.")),
+            kind: SettingKindView::Text,
             ..Default::default()
+        }
+    }
+
+    /// The whole page's data, every setting known today, on `tab`.
+    fn full_view(tab: SettingsTab) -> AdminSettingsViewModel {
+        let fields = |owner: SettingOwner| -> Vec<AdminScalarFieldView> {
+            PLACEMENTS
+                .iter()
+                .filter(|(key, o, ..)| *o == owner && !key.starts_with("monero_node."))
+                .map(|(key, ..)| field_for(key, owner))
+                .collect()
         };
-        let html = admin_settings_page(&chrome(), &data).into_string();
-        assert!(html.contains("Could not reach the configured engine"));
-        assert!(html.contains("connection refused"));
+        AdminSettingsViewModel {
+            tab,
+            monokulo_fields: fields(SettingOwner::Monokulo),
+            scanner_configured: true,
+            scanner_reachable: true,
+            scanner_fields: fields(SettingOwner::Engine),
+            scanner_networks: ["mainnet", "stagenet", "testnet"]
+                .into_iter()
+                .map(|network| AdminNetworkFieldView {
+                    network: network.to_string(),
+                    value_json: r#"{"host":"node.example.com","port":18081}"#.to_string(),
+                    description: Some(format!("The {network} node.")),
+                    example: Some(r#"{"host":"node.example.com","port":18089}"#.to_string()),
+                    tenant_count: 0,
+                })
+                .collect(),
+            ..Default::default()
+        }
+    }
+
+    fn page(data: &AdminSettingsViewModel) -> String {
+        admin_settings_page(&chrome(), data).into_string()
+    }
+
+    /// The tab bar's link to `tab`, with `aria-current` or not.
+    fn tab_link(tab: SettingsTab, current: bool) -> String {
+        let href = tab.href();
+        let current = if current { r#" aria-current="page""# } else { "" };
+        format!(r##"<a href="{href}" fx-action="{href}" fx-target="#settings-panel" fx-push-url{current}>{}"##, tab.label())
     }
 
     #[test]
-    fn admin_settings_page_shows_scanner_fields_and_networks_when_reachable() {
-        let data = AdminSettingsViewModel {
+    fn each_tab_shows_only_its_own_settings() {
+        for tab in SettingsTab::ALL {
+            let html = page(&full_view(tab));
+            for (key, owner, placed, _) in PLACEMENTS.iter().filter(|(key, ..)| !key.starts_with("monero_node.")) {
+                let name = field_for(key, *owner).form_name().to_string();
+                let shown = html.contains(&format!(r#"name="{name}""#));
+                assert_eq!(shown, *placed == tab, "{name} on {tab:?}");
+            }
+            assert_eq!(html.contains(r#"name="monero_node_stagenet""#), tab == SettingsTab::Nodes, "{tab:?}");
+            // One form, one Save, and the tab it's for.
+            assert_eq!(html.matches("<form ").count(), 1, "{tab:?}");
+            assert!(html.contains(&format!(r#"<input type="hidden" name="tab" value="{}">"#, tab.id())), "{tab:?}");
+            assert_eq!(html.matches(r#"<button type="submit" class="btn-primary">Save</button>"#).count(), 1, "{tab:?}");
+        }
+    }
+
+    #[test]
+    fn tabs_with_two_owners_head_each_group() {
+        let payments = page(&full_view(SettingsTab::Payments));
+        let order = ["name=\"payment.confirmations_required\"", "<h3>Webhooks</h3>", "name=\"webhooks.max_attempts\"", "<h3>Exchange rates</h3>", "name=\"exchange_rate.cache_seconds\""];
+        let at: Vec<usize> = order.iter().map(|needle| payments.find(needle).unwrap_or_else(|| panic!("{needle}: {payments}"))).collect();
+        assert!(at.windows(2).all(|w| w[0] < w[1]), "{at:?}");
+
+        let logging = page(&full_view(SettingsTab::Logging));
+        let monokulo = logging.find("<h3>Monokulo</h3>").expect(&logging);
+        let engine = logging.find("<h3>Engine</h3>").expect(&logging);
+        assert!(monokulo < logging.find(r#"name="logging.level""#).unwrap());
+        assert!(engine < logging.find(r#"name="engine:logging.level""#).unwrap() && monokulo < engine);
+
+        let server = page(&full_view(SettingsTab::Server));
+        assert!(server.find(r#"name="server.worker_threads""#).unwrap() < server.find(r#"name="payment.scan_chunk_memory_budget_mb""#).unwrap());
+        assert!(server.contains(r#"name="http_cache.max_mb""#));
+
+        let abuse = page(&full_view(SettingsTab::Abuse));
+        assert!(abuse.contains("How this instance tells visitors apart"), "the explanation stays with its settings");
+        assert!(!page(&full_view(SettingsTab::General)).contains("How this instance tells visitors apart"));
+    }
+
+    #[test]
+    fn general_is_the_default_and_the_open_tab_is_marked_current() {
+        let html = page(&AdminSettingsViewModel { ..full_view(SettingsTab::General) });
+        assert_eq!(AdminSettingsViewModel::default().tab, SettingsTab::General);
+        assert!(html.contains(&tab_link(SettingsTab::General, true)), "{html}");
+        assert!(html.contains(&tab_link(SettingsTab::Nodes, false)), "{html}");
+        for tab in SettingsTab::ALL.into_iter().filter(|tab| *tab != SettingsTab::Other) {
+            let html = page(&full_view(tab));
+            let bar = &html[html.find(r#"<nav id="settings-tabs""#).unwrap()..];
+            let bar = &bar[..bar.find("</nav>").unwrap()];
+            assert_eq!(bar.matches(r#"aria-current="page""#).count(), 1, "{tab:?}");
+            assert!(html.contains(&tab_link(tab, true)), "{tab:?}: {html}");
+            assert!(html.contains(&format!("<title>{} - Admin settings - Monokulo</title>", tab.label())), "{tab:?}");
+        }
+    }
+
+    /// Other only appears while a setting nobody placed is in it.
+    #[test]
+    fn the_other_tab_shows_only_with_something_in_it() {
+        let html = page(&full_view(SettingsTab::General));
+        assert!(!html.contains("tab=other"), "{html}");
+        let mut data = full_view(SettingsTab::Other);
+        data.scanner_fields.push(field_for("telemetry.sample_rate", SettingOwner::Engine));
+        let html = page(&data);
+        assert!(html.contains(&tab_link(SettingsTab::Other, true)), "{html}");
+        assert!(html.contains(r#"name="telemetry.sample_rate""#), "{html}");
+    }
+
+    #[test]
+    fn banners_are_above_the_tab_bar_on_every_tab() {
+        for tab in SettingsTab::ALL {
+            let data = AdminSettingsViewModel {
+                error: Some("Something was refused.".into()),
+                notices: vec![Notice::Warning("Saved. These settings take effect after the engine restarts: server.bind.".into())],
+                ..full_view(tab)
+            };
+            let html = page(&data);
+            let banner = html.find("Something was refused.").expect(&html);
+            let notice = html.find("take effect after the engine restarts").expect(&html);
+            let bar = html.find(r#"<nav id="settings-tabs""#).expect(&html);
+            let panel = html.find(r#"<section id="settings-panel""#).expect(&html);
+            assert!(banner < bar && notice < bar && bar < panel, "{tab:?}");
+        }
+    }
+
+    #[test]
+    fn a_tab_is_marked_while_something_on_it_needs_attention() {
+        let marked = |html: &str, tab: SettingsTab| {
+            let start = html.find(&format!(r#"href="{}""#, tab.href())).unwrap();
+            let end = start + html[start..].find("</a>").unwrap();
+            html[start..end].contains(r#"<span class="tab-marker" aria-hidden="true">●</span><span class="visually-hidden"> (needs attention)</span>"#)
+        };
+        let html = page(&full_view(SettingsTab::General));
+        assert!(SettingsTab::ALL.iter().filter(|t| **t != SettingsTab::Other).all(|t| !marked(&html, *t)), "nothing to see: {html}");
+
+        // A network stores use that no node answers for.
+        let html = page(&AdminSettingsViewModel { unreachable_networks: vec!["stagenet".into()], ..full_view(SettingsTab::General) });
+        assert!(marked(&html, SettingsTab::Nodes), "{html}");
+        assert!(!marked(&html, SettingsTab::Server));
+
+        // A network stores use with no node at all.
+        let mut data = full_view(SettingsTab::General);
+        data.scanner_networks[1].value_json.clear();
+        data.scanner_networks[1].tenant_count = 2;
+        assert!(marked(&page(&data), SettingsTab::Nodes));
+
+        // A saved setting waiting for a restart, whichever process owns it.
+        let mut data = full_view(SettingsTab::General);
+        data.scanner_fields.iter_mut().find(|f| f.key == "server.worker_threads").unwrap().pending_restart = true;
+        let html = page(&data);
+        assert!(marked(&html, SettingsTab::Server) && !marked(&html, SettingsTab::Nodes), "{html}");
+        let mut data = full_view(SettingsTab::General);
+        data.monokulo_fields.iter_mut().find(|f| f.key == "logging.level").unwrap().pending_restart = true;
+        assert!(marked(&page(&data), SettingsTab::Logging));
+    }
+
+    /// T6: an engine that isn't set up or doesn't answer. Its own tabs say
+    /// so instead of a form; the mixed ones still show and save monokulo's
+    /// settings, with the message where the engine's would be.
+    #[test]
+    fn every_tab_copes_with_an_engine_it_cannot_reach() {
+        let unreachable = |tab| AdminSettingsViewModel {
+            scanner_reachable: false,
+            scanner_error: Some("connection refused".into()),
+            scanner_fields: vec![],
+            ..full_view(tab)
+        };
+        let unconfigured = |tab| AdminSettingsViewModel { scanner_configured: false, scanner_reachable: false, scanner_fields: vec![], ..full_view(tab) };
+        for tab in SettingsTab::ALL.into_iter().filter(|tab| *tab != SettingsTab::Other) {
+            for (data, message) in [
+                (unreachable(tab), "Could not reach the configured engine: connection refused"),
+                (unconfigured(tab), "Set <code>engine.url</code> and <code>engine.admin_token</code> on the"),
+            ] {
+                let html = page(&data);
+                let engine_part = tab.groups().iter().any(|(_, owner)| *owner == SettingOwner::Engine);
+                assert_eq!(html.matches(message).count(), usize::from(engine_part), "{tab:?}: {html}");
+                if tab.engine_only() {
+                    assert!(!html.contains("<form "), "nothing to save on {tab:?}");
+                } else {
+                    assert!(html.contains("<form ") && html.contains(r#"class="btn-primary">Save</button>"#), "{tab:?}");
+                    assert!(!html.contains("<h3>Webhooks</h3>"), "one message, not a heading per group: {html}");
+                }
+            }
+        }
+        let payments = page(&unreachable(SettingsTab::Payments));
+        assert!(payments.contains(r#"name="exchange_rate.cache_seconds""#), "{payments}");
+        let logging = page(&unreachable(SettingsTab::Logging));
+        assert!(logging.find("<h3>Engine</h3>").unwrap() < logging.find("Could not reach").unwrap(), "{logging}");
+    }
+
+    #[test]
+    fn a_setting_shows_its_name_then_help_then_control() {
+        let html = page(&AdminSettingsViewModel {
             monokulo_fields: vec![AdminScalarFieldView {
                 key: "engine.url".to_string(),
                 label: "engine url".to_string(),
@@ -1090,43 +1342,24 @@ mod tests {
                 kind: SettingKindView::Url,
                 ..Default::default()
             }],
-            scanner_configured: true,
-            scanner_reachable: true,
-            scanner_fields: vec![AdminScalarFieldView {
-                key: "payment.confirmations_required".to_string(),
-                label: "payment confirmations required".to_string(),
-                value: "10".to_string(),
-                source_label: "default".to_string(),
-                kind: SettingKindView::Integer { min: Some(0), max: Some(720) },
-                example: Some("10".to_string()),
-                ..Default::default()
-            }],
-            scanner_networks: vec![AdminNetworkFieldView {
-                network: "mainnet".to_string(),
-                value_json: "{}".to_string(),
-                description: Some("The mainnet node.".to_string()),
-                example: Some(r#"{"host":"node.example.com","port":18089}"#.to_string()),
-                tenant_count: 2,
-            }],
             ..Default::default()
-        };
-        let html = admin_settings_page(&chrome(), &data).into_string();
-        assert!(html.contains("engine url"));
-        // The name, then what it's for, then the box.
+        });
         assert!(
             html.contains(concat!(
                 r#"<label class="setting-label" for="setting-engine.url">engine url</label>"#,
                 r#"<span class="field-help" id="setting-help-engine.url">Where the engine listens.</span>"#,
-                r#"<input type="url" name="engine.url""#,
+                r#"<input type="url" name="engine.url" value="http://scanner.internal""#,
             )),
             "{html}"
         );
         assert!(html.contains(r#"aria-describedby="setting-help-engine.url""#), "{html}");
-        assert!(html.contains("Abuse protection"));
-        assert!(html.contains(r#"type="url" name="engine.url" value="http://scanner.internal""#), "{html}");
-        assert!(html.contains("payment confirmations required"));
-        assert!(html.contains(r#"type="number" name="payment.confirmations_required" value="10" min="0" max="720""#), "{html}");
-        assert!(html.contains("Example: <code>10</code>"));
+    }
+
+    #[test]
+    fn the_nodes_tab_shows_each_network_with_its_example() {
+        let mut data = full_view(SettingsTab::Nodes);
+        data.scanner_networks[0].tenant_count = 2;
+        let html = page(&data);
         assert!(
             html.contains(concat!(
                 r#"<label class="setting-label" for="setting-monero_node_mainnet">Monero node (mainnet)</label>"#,
@@ -1134,7 +1367,6 @@ mod tests {
             )),
             "{html}"
         );
-        assert!(html.contains(r#"name="monero_node_mainnet""#));
         assert!(html.contains(r#"data-tenant-count="2""#));
         assert!(html.contains("Used by 2 stores."));
         assert!(html.contains("fallbacks"), "the node field explains its shape");
@@ -1153,11 +1385,12 @@ mod tests {
         let backends = || SettingKindView::ChoiceList { choices: vec!["plain".into(), "socket".into()] };
         let page = |enabled: &str| {
             let data = AdminSettingsViewModel {
+                tab: SettingsTab::Custody,
                 scanner_configured: true,
                 scanner_reachable: true,
                 scanner_fields: vec![
-                    field("key_custody.enabled_backends", enabled, backends()),
                     field("key_custody.default_backend", "plain", SettingKindView::Choice { choices: vec!["plain".into(), "socket".into()] }),
+                    field("key_custody.enabled_backends", enabled, backends()),
                     field("key_custody.socket_path", "/run/kc.sock", SettingKindView::Path),
                 ],
                 ..Default::default()
@@ -1167,10 +1400,11 @@ mod tests {
 
         let html = page("plain");
         // The backends are boxes to tick, after an empty value so ticking
-        // none still says so.
+        // none still says so; they come before the choice among them.
         assert!(html.contains(r#"<input type="hidden" name="key_custody.enabled_backends" value="">"#), "{html}");
         assert!(html.contains(r#"<input type="checkbox" name="key_custody.enabled_backends" value="plain" checked>"#), "{html}");
         assert!(html.contains(r#"<input type="checkbox" name="key_custody.enabled_backends" value="socket">"#), "{html}");
+        assert!(html.find(r#"name="key_custody.enabled_backends""#).unwrap() < html.find(r#"name="key_custody.default_backend""#).unwrap());
         // The socket's path sits in the socket's own section, hidden while
         // socket is off; plain has nothing to set.
         let socket = html.find(r#"<section class="custody-backend" data-custody-backend="socket" hidden>"#).expect(&html);
@@ -1234,6 +1468,7 @@ mod tests {
                 Notice::Warning("Saved. These settings take effect after the engine restarts: server.worker_threads.".into()),
                 Notice::Info("Saved, but set by an environment variable.".into()),
             ],
+            tab: SettingsTab::Server,
             scanner_configured: true,
             scanner_reachable: true,
             scanner_fields: vec![AdminScalarFieldView {

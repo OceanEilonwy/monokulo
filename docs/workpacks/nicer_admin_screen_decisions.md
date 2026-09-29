@@ -80,3 +80,87 @@ made.
 - **Why:** step 2's acceptance asks for an HTTP test showing the unserved
   network notice still appears, and step 5 needs saved nodes to be probed in
   HTTP tests too. The harness's default (fixed fakes) is unchanged.
+
+## D7 (step 3): an engine setting that shares a key with monokulo is sent as `engine:<key>`
+
+- **Decision:** both processes have `logging.level`, `logging.dev_mode_until`,
+  `logging.retention_days`, `logging.max_mb`, `logging.otlp_endpoint` and
+  `logging.otlp_headers`. On the Logging tab they share one form, so the
+  engine's controls are named `engine:<key>` (and its "Clear it" box
+  `clear:engine:<key>`); their ids follow. The save handler strips the
+  prefix and sends the key to the engine. Only colliding keys get the
+  prefix (`AdminScalarFieldView::name`, `engine_form_name`); every other
+  engine field keeps its plain key as its name.
+- **Alternatives:** prefix every engine field (changes every field name
+  and every test and helper that fills by name, for no gain); separate
+  forms on the Logging tab (breaks T3's one Save per tab).
+- **Why:** without it the two `logging.level` boxes would be joined into one
+  comma-separated value and both saved to monokulo. The HTTP test
+  `every_scanner_setting_on_the_admin_page_saves_correctly` now posts the
+  engine's logging settings as the page does and checks the engine got them.
+
+## D8 (step 3): an empty engine secret keeps its value; its box clears it
+
+- **Decision:** the engine's own `logging.otlp_headers` (a secret) now
+  behaves like monokulo's on the page: left empty it is kept, and its
+  "Clear it" box clears it. Monokulo asks the engine which of the submitted
+  settings are secrets (one extra `GET /api/v1/admin/settings`, only when a
+  submitted engine value is empty or a box is ticked).
+- **Alternatives:** leave it as it was, where every engine save sent the
+  empty box and so wiped the engine's saved headers (and a ticked "Clear it"
+  was sent as an unknown setting and refused).
+- **Why:** with both processes' logging settings on one tab, saving any
+  logging setting would otherwise silently wipe the engine's OTLP headers.
+  The setting's meaning is unchanged; only the page's handling of its empty
+  box is fixed. Tested by `the_logging_tab_keeps_each_processs_secret_apart`.
+
+## D9 (step 3): the "set the engine connection" message points at General
+
+- **Decision:** the T6 message for an unconfigured engine now reads "Set
+  `engine.url` and `engine.admin_token` on the General tab and save to
+  manage this instance's engine settings from here", with General a link.
+- **Alternatives:** keep "... above and save ...".
+- **Why:** those fields are no longer above it; they are on another tab.
+  The "Could not reach the configured engine: ..." message is unchanged.
+
+## D10 (step 3): markers on other tabs use what monokulo already knows
+
+- **Decision:** the Monero nodes marker comes from the engine's `/status`
+  (stores reported as `no_reachable_node`, grouped by network), plus any
+  network stores use that has no node saved at all. The Monero nodes tab
+  itself waits for `get_status_cached` (10s cache); every other tab reads
+  the cache without waiting (`known_unserved`), as the nav's status dot
+  does, so opening, say, Logging never waits on node probes.
+- **Alternatives:** await `/status` on every tab (each tab load could wait
+  up to 5s per node while the engine probes); mark only after a save.
+- **Why:** T5 wants the marker on every tab; this shows it on every tab as
+  soon as monokulo has heard, without slowing tabs that don't need it.
+
+## D11 (step 3): tab links use fx-glue's existing `fx-push-url`
+
+- **Decision:** each tab link carries `fx-action`, `fx-target="#settings-panel"`
+  and `fx-push-url`. fx-glue already pushes the URL after a successful GET
+  swap and reloads the page on Back/Forward for entries it made (the Logs
+  page's and Invites' pattern), so no new JavaScript was needed. A tab
+  link's response is the panel with the tab bar and banners out of band;
+  the new panel's heading gets focus.
+- **Alternatives:** plain navigation.
+- **Why:** the plan prefers the fixi swap when fx-glue has the pattern, and
+  it does.
+
+## D12 (step 3): the Playwright helpers follow the tabs from step 3 on
+
+- **Decision:** step 3 already rewrites `saveEngineSettings` in
+  `real-helpers.js` to open the tab holding the given fields (several tabs
+  are saved in turn) and press "Save", adds `settingsTabOf`,
+  `openSettingsTab`, `fillSettings` and `SETTINGS_TABS`, and moves
+  `real-1`, `real-3` and `real-6` onto the tabbed page, so the suite stays
+  green at every commit. `real-6`'s "keeps edits in the other half" part is
+  dropped (there is no other half on the page any more) and replaced by the
+  check the plan asks for: a fixi save leaves one tab bar with the same
+  links and one banners area. The red/yellow banner test saves the
+  restart-only setting and the node on their own tabs, one after the
+  other. The new tests step 7 lists are still written in step 7.
+- **Alternatives:** leave the suite red until step 7.
+- **Why:** the work pack asks for the suite to pass before every commit
+  that touches the page.

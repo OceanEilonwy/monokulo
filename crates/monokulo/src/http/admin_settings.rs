@@ -49,7 +49,7 @@ use crate::db::{Db, UserRow};
 use crate::views;
 use crate::views::admin::{
     setting_placement, AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel, Notice, SettingKindView, SettingOwner,
-    SettingsSection, SettingsTab,
+    SettingsTab,
 };
 
 use super::fx::FxRequest;
@@ -90,6 +90,7 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
         .into_iter()
         .map(|view| AdminScalarFieldView {
             key: view.key.to_string(),
+            name: String::new(),
             label: humanize_key(view.key),
             value: view.value,
             source_label: source_label(live_source(view.source)),
@@ -101,6 +102,18 @@ fn monokulo_fields(state: &AppState) -> Vec<AdminScalarFieldView> {
             problem: view.problem.map(|p| p.message),
         })
         .collect()
+}
+
+/// Whether `key` is one of monokulo's own settings.
+fn is_monokulo_key(key: &str) -> bool {
+    crate::settings::ALL.iter().any(|s| s.key() == key)
+}
+
+/// The name an engine setting's control is sent under: its key, unless
+/// monokulo has a setting with the same key (both have `logging.level`),
+/// when it's `engine:<key>` so the two can sit in one form on one tab.
+fn engine_form_name(key: &str) -> String {
+    if is_monokulo_key(key) { format!("engine:{key}") } else { String::new() }
 }
 
 /// A request to the engine carrying this request's trace
@@ -188,6 +201,7 @@ async fn fetch_scanner_settings(
         .into_iter()
         .map(|(key, s)| AdminScalarFieldView {
             label: humanize_key(&key),
+            name: engine_form_name(&key),
             key,
             value: s.value,
             source_label: source_label(&s.source),
@@ -228,11 +242,17 @@ fn with_time_limits(fields: &mut [AdminScalarFieldView]) {
     }
 }
 
-async fn build_view_model(state: &AppState, error: Option<String>, success: Option<String>, notices: Vec<Notice>) -> AdminSettingsViewModel {
+async fn build_view_model(
+    state: &AppState,
+    tab: SettingsTab,
+    error: Option<String>,
+    success: Option<String>,
+    notices: Vec<Notice>,
+) -> AdminSettingsViewModel {
     let mut monokulo_fields = monokulo_fields(state);
     with_time_limits(&mut monokulo_fields);
     let (engine_url, admin_token) = engine_connection(&state.db.lock());
-    let mut view = AdminSettingsViewModel { error, success, notices, monokulo_fields, ..Default::default() };
+    let mut view = AdminSettingsViewModel { tab, error, success, notices, monokulo_fields, ..Default::default() };
     match fetch_scanner_settings(&engine_url, &admin_token).await {
         Ok(Some((mut fields, networks))) => {
             with_time_limits(&mut fields);
@@ -250,30 +270,33 @@ async fn build_view_model(state: &AppState, error: Option<String>, success: Opti
             view.scanner_error = Some(e);
         }
     }
+    if view.scanner_reachable {
+        view.unreachable_networks = unreachable_networks(state, tab).await;
+    }
     view
+}
+
+/// Networks stores use that no node answers for, from the engine's
+/// `/status` (it reports each such store as `no_reachable_node`). The
+/// Monero nodes tab waits for a current answer (monokulo's short cache);
+/// every other tab only marks the tab bar with whatever is already known,
+/// rather than wait on node probes to show, say, the Logging tab.
+async fn unreachable_networks(state: &AppState, tab: SettingsTab) -> Vec<String> {
+    let unserved = if tab == SettingsTab::Nodes {
+        super::status_page::get_status_cached(state).await.map(|status| status.unserved_tenants).unwrap_or_default()
+    } else {
+        super::status_page::known_unserved(state)
+    };
+    let mut networks: Vec<String> =
+        unserved.into_iter().filter(|tenant| tenant.reason == "no_reachable_node").map(|tenant| tenant.network).collect();
+    networks.sort();
+    networks.dedup();
+    networks
 }
 
 fn render(state: &AppState, admin_user: &UserRow, view: AdminSettingsViewModel) -> Response {
     let chrome = super::page_chrome(state, Some(admin_user), "/dashboard/admin/settings");
     views::admin::admin_settings_page(&chrome, &view).into_response()
-}
-
-/// What a save answers with fixi: just the section that was saved (`422`
-/// when nothing was saved), plus the engine section when saving monokulo
-/// changed how to reach the engine.
-fn render_fragment(view: &AdminSettingsViewModel, section: SettingsSection, engine_changed: bool) -> Response {
-    let fragment = match section {
-        SettingsSection::Monokulo => maud::html! {
-            (views::admin::monokulo_section(view))
-            @if engine_changed { (views::admin::engine_section(view, true)) }
-        },
-        SettingsSection::Engine => views::admin::engine_section(view, false),
-    };
-    if view.error.is_some() {
-        super::fx::invalid(fragment)
-    } else {
-        axum::response::Html(fragment.into_string()).into_response()
-    }
 }
 
 #[derive(Deserialize)]
@@ -284,19 +307,27 @@ pub struct SettingsPageQuery {
     saved: Option<String>,
 }
 
-/// `GET /dashboard/admin/settings`.
-pub async fn page(State(state): State<AppState>, AuthedAdmin(admin_user, _): AuthedAdmin, Query(query): Query<SettingsPageQuery>) -> Response {
-    let _ = query.tab;
-    let flash = query.saved.as_deref().and_then(take_flash);
-    let view = match flash {
+/// `GET /dashboard/admin/settings?tab=<id>` - one tab of the page
+/// (General when `tab` is missing or unknown). With fixi (a tab link), just
+/// the panel, with the tab bar and banners out of band.
+pub async fn page(
+    State(state): State<AppState>,
+    AuthedAdmin(admin_user, _): AuthedAdmin,
+    fx: FxRequest,
+    Query(query): Query<SettingsPageQuery>,
+) -> Response {
+    let tab = SettingsTab::from_id(query.tab.as_deref());
+    let view = match query.saved.as_deref().and_then(take_flash) {
         Some(flash) => {
-            let mut view = build_view_model(&state, None, Some(flash.success), flash.notices).await;
+            let mut view = build_view_model(&state, tab, None, Some(flash.success), flash.notices).await;
             view.saved_tab = Some(flash.tab);
-            view.saved_section = Some(flash.section);
             view
         }
-        None => build_view_model(&state, None, None, Vec::new()).await,
+        None => build_view_model(&state, tab, None, None, Vec::new()).await,
     };
+    if fx.0 {
+        return axum::response::Html(views::admin::settings_fragment(&view, true).into_string()).into_response();
+    }
     render(&state, &admin_user, view)
 }
 
@@ -328,6 +359,8 @@ fn joined(pairs: Vec<(String, String)>) -> HashMap<String, String> {
 struct SplitForm {
     monokulo: HashMap<String, String>,
     engine: RemoteUpdateRequest,
+    /// Engine secrets whose "Clear it" box was ticked.
+    engine_clears: Vec<String>,
 }
 
 impl SplitForm {
@@ -337,9 +370,17 @@ impl SplitForm {
             if name == "tab" {
                 continue;
             }
-            let bare = name.strip_prefix("clear:").unwrap_or(name);
-            if crate::settings::ALL.iter().any(|s| s.key() == bare) {
+            let (clear, bare) = match name.strip_prefix("clear:") {
+                Some(bare) => (true, bare),
+                None => (false, name.as_str()),
+            };
+            let engine_key = bare.strip_prefix("engine:");
+            if engine_key.is_none() && is_monokulo_key(bare) {
                 split.monokulo.insert(name.clone(), value.clone());
+            } else if clear {
+                split.engine_clears.push(engine_key.unwrap_or(bare).to_string());
+            } else if let Some(key) = engine_key {
+                split.engine.scalars.insert(key.to_string(), value.clone());
             } else if let Some(network) = name.strip_prefix("monero_node_") {
                 let node = if value.trim().is_empty() {
                     None
@@ -363,10 +404,6 @@ struct SaveOutcome {
     /// the tab holding it.
     error_key: Option<(String, SettingOwner)>,
     notices: Vec<Notice>,
-    /// Saving monokulo changed how to reach the engine.
-    engine_changed: bool,
-    /// The engine half was sent (or refused on its way there).
-    engine_saved: bool,
 }
 
 impl SaveOutcome {
@@ -413,7 +450,6 @@ async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> Save
         })
         .collect();
 
-    let engine_before = engine_connection(&state.db.lock());
     match registry.save(changes).await {
         Ok(report) => {
             let mut notices = Vec::new();
@@ -434,8 +470,7 @@ async fn save_monokulo(state: &AppState, form: &HashMap<String, String>) -> Save
                     report.restart_required.join(", ")
                 )));
             }
-            let engine_changed = engine_connection(&state.db.lock()) != engine_before;
-            SaveOutcome { notices, engine_changed, ..Default::default() }
+            SaveOutcome { notices, ..Default::default() }
         }
         Err(live_settings::SaveError::Invalid(errors)) => SaveOutcome {
             error_key: errors.first().map(|e| (e.key.clone(), SettingOwner::Monokulo)),
@@ -527,17 +562,59 @@ fn scanner_save_notices(warnings: RemoteSaveWarnings, submitted_bind: Option<&st
     notices
 }
 
+/// An engine secret is never shown on the page, so an empty one means
+/// "keep it", as for monokulo's; its "Clear it" box sends an empty value.
+/// Which of the submitted settings are secrets is the engine's to say, so
+/// it's asked, only when there's an empty value or a ticked box to decide.
+async fn apply_engine_secrets(
+    engine_url: &str,
+    admin_token: &str,
+    req: &mut RemoteUpdateRequest,
+    clears: &[String],
+) -> Result<(), SaveOutcome> {
+    if clears.is_empty() && !req.scalars.values().any(String::is_empty) {
+        return Ok(());
+    }
+    let fields = match fetch_scanner_settings(engine_url, admin_token).await {
+        Ok(Some((fields, _))) => fields,
+        Ok(None) => Vec::new(),
+        Err(e) => return Err(SaveOutcome::refused(format!("Could not reach the configured engine: {e}"))),
+    };
+    for key in clears {
+        if req.scalars.get(key).is_some_and(|value| !value.is_empty()) {
+            return Err(SaveOutcome {
+                error_key: Some((key.clone(), SettingOwner::Engine)),
+                ..SaveOutcome::refused(format!("{key}: either type a new value or tick \"Clear it\", not both."))
+            });
+        }
+    }
+    for field in fields.iter().filter(|f| f.kind == SettingKindView::Secret) {
+        if clears.contains(&field.key) {
+            req.scalars.insert(field.key.clone(), String::new());
+        } else if req.scalars.get(&field.key).is_some_and(String::is_empty) {
+            req.scalars.remove(&field.key);
+        }
+    }
+    Ok(())
+}
+
 /// Forwards the engine half of a tab to the engine's own
 /// `POST /api/v1/admin/settings`, which checks it. Whatever the engine
 /// refuses comes back as the page's error, verbatim; what it accepts comes
 /// back with its warnings as banners.
-async fn save_engine(state: &AppState, req: &RemoteUpdateRequest) -> SaveOutcome {
+async fn save_engine(state: &AppState, mut req: RemoteUpdateRequest, clears: &[String]) -> SaveOutcome {
     let (engine_url, admin_token) = engine_connection(&state.db.lock());
     if engine_url.trim().is_empty() || admin_token.trim().is_empty() {
         return SaveOutcome::refused("No engine connection is configured.".to_string());
     }
+    if let Err(refused) = apply_engine_secrets(&engine_url, &admin_token, &mut req, clears).await {
+        return refused;
+    }
+    if req.is_empty() {
+        return SaveOutcome::default();
+    }
     let url = format!("{}/api/v1/admin/settings", engine_url.trim_end_matches('/'));
-    let result = traced(reqwest::Client::new().post(&url)).bearer_auth(&admin_token).json(req).send().await;
+    let result = traced(reqwest::Client::new().post(&url)).bearer_auth(&admin_token).json(&req).send().await;
     match result {
         Ok(response) if response.status().is_success() => {
             let saved: RemoteSaveResponse = response.json().await.unwrap_or_default();
@@ -565,7 +642,7 @@ async fn save_engine(state: &AppState, req: &RemoteUpdateRequest) -> SaveOutcome
 async fn save_tab(state: &AppState, form: &HashMap<String, String>) -> SaveOutcome {
     let split = match SplitForm::new(form) {
         Ok(split) => split,
-        Err(message) => return SaveOutcome { engine_saved: true, ..SaveOutcome::refused(message) },
+        Err(message) => return SaveOutcome::refused(message),
     };
     let mut outcome = SaveOutcome::default();
     if !split.monokulo.is_empty() {
@@ -574,12 +651,11 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>) -> SaveOutco
             return outcome;
         }
     }
-    if !split.engine.is_empty() {
-        let engine = save_engine(state, &split.engine).await;
+    if !split.engine.is_empty() || !split.engine_clears.is_empty() {
+        let engine = save_engine(state, split.engine, &split.engine_clears).await;
         outcome.error = engine.error;
         outcome.error_key = engine.error_key;
         outcome.notices.extend(engine.notices);
-        outcome.engine_saved = true;
     }
     outcome
 }
@@ -588,7 +664,6 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>) -> SaveOutco
 /// redirects to (post, redirect, get), shown once.
 struct Flash {
     tab: SettingsTab,
-    section: SettingsSection,
     success: String,
     notices: Vec<Notice>,
     created: std::time::Instant,
@@ -629,7 +704,8 @@ fn take_flash(token: &str) -> Option<Flash> {
 /// JavaScript a successful save redirects back to its tab (303), its
 /// banners carried across in a flash; a refused one renders the page again
 /// with the error, on the tab holding the setting it's about. With fixi,
-/// the saved section comes back instead.
+/// that tab's panel comes back (`422` when nothing was saved), with the
+/// banners and the tab bar out of band.
 pub async fn save(
     State(state): State<AppState>,
     AuthedAdmin(admin_user, _): AuthedAdmin,
@@ -640,25 +716,23 @@ pub async fn save(
     let submitted_tab = SettingsTab::from_id(form.get("tab").map(String::as_str));
     let outcome = save_tab(&state, &form).await;
     let tab = outcome.error_key.as_ref().map(|(key, owner)| setting_placement(key, *owner).0).unwrap_or(submitted_tab);
-    // Which of the page's two sections shows the result, until the page
-    // has tabs (step 3).
-    let section = match (&outcome.error_key, outcome.engine_saved) {
-        (Some((_, SettingOwner::Monokulo)), _) | (None, false) => SettingsSection::Monokulo,
-        _ => SettingsSection::Engine,
-    };
     let success = "Settings saved and applied.".to_string();
     if outcome.error.is_none() && !fx.0 {
-        let token = put_flash(Flash { tab, section, success, notices: outcome.notices, created: std::time::Instant::now() });
+        let token = put_flash(Flash { tab, success, notices: outcome.notices, created: std::time::Instant::now() });
         return super::dashboard::redirect_303(&format!("{}&saved={token}", tab.href()));
     }
-    let success = outcome.error.is_none().then_some(success);
-    let mut view = build_view_model(&state, outcome.error, success, outcome.notices).await;
+    let refused = outcome.error.is_some();
+    let success = (!refused).then_some(success);
+    let mut view = build_view_model(&state, tab, outcome.error, success, outcome.notices).await;
     view.saved_tab = Some(tab);
-    view.saved_section = Some(section);
-    if fx.0 {
-        render_fragment(&view, section, outcome.engine_changed)
+    if !fx.0 {
+        return render(&state, &admin_user, view);
+    }
+    let fragment = views::admin::settings_fragment(&view, false);
+    if refused {
+        super::fx::invalid(fragment)
     } else {
-        render(&state, &admin_user, view)
+        axum::response::Html(fragment.into_string()).into_response()
     }
 }
 
@@ -777,6 +851,16 @@ mod tests {
         body_text(page).await
     }
 
+    /// Every tab of the page, one after another: what a test looking for a
+    /// setting anywhere on the page reads.
+    async fn settings_tabs_html(router: &Router, cookie: &str) -> String {
+        let mut html = String::new();
+        for tab in crate::views::admin::SettingsTab::ALL {
+            html.push_str(&body_text(get(router, &tab.href(), Some(cookie)).await).await);
+        }
+        html
+    }
+
     async fn get_settings_page(router: &Router, cookie: &str) -> axum::response::Response {
         router
             .clone()
@@ -829,7 +913,7 @@ mod tests {
 
         let response = get_settings_page(&router, &cookie).await;
         assert_eq!(response.status(), StatusCode::OK);
-        let html = body_text(response).await;
+        let html = settings_tabs_html(&router, &cookie).await;
         assert!(html.contains("engine url"), "expected monokulo's own settings listed, got: {html}");
         assert!(html.contains("payment confirmations required"), "expected the scanner's own settings proxied in, got: {html}");
         assert!(html.contains("value=\"10\""), "expected the scanner's real default value, got: {html}");
@@ -843,7 +927,7 @@ mod tests {
 
         let save = router
             .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("abuse.soft_per_min", "5")]))
+            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("tab", "abuse"), ("abuse.soft_per_min", "5")]))
             .await
             .unwrap();
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
@@ -851,8 +935,7 @@ mod tests {
         assert!(html.contains("Settings saved and applied."), "expected a success banner, got: {html}");
         assert!(html.contains("value=\"5\""), "expected the just-saved value reflected immediately, got: {html}");
 
-        let reload = get_settings_page(&router, &cookie).await;
-        let html = body_text(reload).await;
+        let html = settings_tabs_html(&router, &cookie).await;
         assert!(html.contains("value=\"5\""), "expected the saved value to survive a fresh page load, got: {html}");
         assert!(html.contains("saved value"), "expected the source label to say this came from a saved value, got: {html}");
     }
@@ -909,8 +992,7 @@ mod tests {
         assert!(html.contains("Settings saved and applied."), "expected a success banner, got: {html}");
         assert!(html.contains("didn&#39;t answer") || html.contains("didn't answer"), "the new engine URL doesn't answer, and the page says so (D4): {html}");
 
-        let reload = get_settings_page(&router, &cookie).await;
-        let html = body_text(reload).await;
+        let html = settings_tabs_html(&router, &cookie).await;
         for (key, value) in new_values {
             if *key == "engine.admin_token" || *key == "logging.otlp_headers" {
                 assert!(!html.contains(value), "a secret is never echoed back");
@@ -949,12 +1031,14 @@ mod tests {
             ("webhooks.allow_private_urls", "true"),
             ("webhooks.delivery_timeout_ms", "10000"),
             ("webhooks.max_attempts", "12"),
-            ("logging.level", "warn,scanner::loops=debug"),
-            ("logging.dev_mode_until", "4102444800"),
-            ("logging.retention_days", "30"),
-            ("logging.max_mb", "250"),
-            ("logging.otlp_endpoint", "http://127.0.0.1:4318"),
-            ("logging.otlp_headers", "x-team=ops"),
+            // Monokulo has settings with these keys too: the page sends the
+            // engine's as `engine:<key>`.
+            ("engine:logging.level", "warn,scanner::loops=debug"),
+            ("engine:logging.dev_mode_until", "4102444800"),
+            ("engine:logging.retention_days", "30"),
+            ("engine:logging.max_mb", "250"),
+            ("engine:logging.otlp_endpoint", "http://127.0.0.1:4318"),
+            ("engine:logging.otlp_headers", "x-team=ops"),
         ];
         assert_eq!(
             new_values.len(),
@@ -969,8 +1053,7 @@ mod tests {
         assert!(html.contains("take effect after the engine restarts"), "worker threads and bind are restart-only: {html}");
         assert!(html.contains("set monokulo&#39;s engine.url to http://127.0.0.1:9443") || html.contains("set monokulo's engine.url to http://127.0.0.1:9443"), "{html}");
 
-        let reload = get_settings_page(&router, &cookie).await;
-        let html = body_text(reload).await;
+        let html = settings_tabs_html(&router, &cookie).await;
         for (key, value) in new_values {
             // `key_custody.socket_path`'s new value is the empty string - an
             // empty `value=""` attribute is still real output to look for,
@@ -980,12 +1063,15 @@ mod tests {
             if value.is_empty() {
                 continue;
             }
-            if *key == "logging.otlp_headers" {
+            if *key == "engine:logging.otlp_headers" {
                 assert!(!html.contains(value), "a secret is never echoed back");
                 continue;
             }
             assert!(shows_value(&html, value), "expected {key}={value:?} to have round-tripped, got: {html}");
         }
+        let engine_view = engine_settings(&engine).await;
+        assert_eq!(engine_view["scalars"]["logging.level"]["value"], "warn,scanner::loops=debug", "the engine's own logging level");
+        assert_eq!(engine_view["scalars"]["logging.otlp_headers"]["source"], "database", "{engine_view}");
     }
 
     #[test]
@@ -1066,14 +1152,16 @@ mod tests {
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
-        assert!(body_text(get_settings_page(&router, &cookie).await).await.contains("Save engine settings"), "the right token");
+        let engine_tab = crate::views::admin::SettingsTab::Payments.href();
+        let reachable = |html: String| html.contains(r#"name="payment.confirmations_required""#);
+        assert!(reachable(body_text(get(&router, &engine_tab, Some(&cookie)).await).await), "the right token");
 
         router
             .clone()
             .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(crate::settings::SCANNER_ADMIN_TOKEN.key, "wrong-token")]))
             .await
             .unwrap();
-        let page = body_text(get_settings_page(&router, &cookie).await).await;
+        let page = body_text(get(&router, &engine_tab, Some(&cookie)).await).await;
         assert!(page.contains("Could not reach the configured engine"), "the wrong one, used at once: {page}");
 
         router
@@ -1081,7 +1169,7 @@ mod tests {
             .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(crate::settings::SCANNER_ADMIN_TOKEN.key, SCANNER_ADMIN_TOKEN)]))
             .await
             .unwrap();
-        assert!(body_text(get_settings_page(&router, &cookie).await).await.contains("Save engine settings"), "and back");
+        assert!(reachable(body_text(get(&router, &engine_tab, Some(&cookie)).await).await), "and back");
     }
 
     #[tokio::test]
@@ -1135,8 +1223,7 @@ mod tests {
         let html = body_text(save).await;
         assert!(html.contains("abuse.soft_per_min: Enter a whole number"), "expected a clear validation error, got: {html}");
 
-        let reload = get_settings_page(&router, &cookie).await;
-        let html = body_text(reload).await;
+        let html = settings_tabs_html(&router, &cookie).await;
         assert!(html.contains("value=\"60\""), "the rejected save must not have changed the default, got: {html}");
     }
 
@@ -1176,7 +1263,7 @@ mod tests {
 
         let save = router
             .clone()
-            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("payment.confirmations_required", "5")]))
+            .oneshot(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("tab", "payments"), ("payment.confirmations_required", "5")]))
             .await
             .unwrap();
         assert_eq!(save.status(), StatusCode::SEE_OTHER);
@@ -1184,8 +1271,7 @@ mod tests {
         assert!(html.contains("Settings saved and applied."), "expected a success banner, got: {html}");
         assert!(html.contains("value=\"5\""), "expected the scanner's own just-saved value reflected, got: {html}");
 
-        let reload = get_settings_page(&router, &cookie).await;
-        let html = body_text(reload).await;
+        let html = settings_tabs_html(&router, &cookie).await;
         assert!(html.contains("value=\"5\""), "expected the scanner's change to survive a fresh page load, got: {html}");
     }
 
@@ -1194,68 +1280,77 @@ mod tests {
         request
     }
 
-    /// With fixi, a save answers with just the section that was saved, its
-    /// banner inside it, so the rest of the page (and any edits there)
-    /// stays as it was (structured_logging.md part 6).
+    /// With fixi, a save answers with the tab's panel, and the banners and
+    /// the tab bar out of band (a save can add a banner or a marker), so
+    /// nothing else on the page is replaced.
     #[tokio::test]
-    async fn a_fixi_save_answers_with_only_the_saved_section() {
+    async fn a_fixi_save_answers_with_the_panel_and_the_banners_and_tab_bar_out_of_band() {
         let engine = spawn_scanner_with_known_admin_token().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
-        let page = body_text(get_settings_page(&router, &cookie).await).await;
-        assert!(page.contains(r##"fx-action="/dashboard/admin/settings" fx-method="POST" fx-target="#monokulo-settings""##), "{page}");
-        assert!(page.contains(r##"fx-target="#engine-settings""##), "{page}");
+        let page = body_text(get(&router, "/dashboard/admin/settings?tab=abuse", Some(&cookie)).await).await;
+        assert!(page.contains(r##"fx-action="/dashboard/admin/settings" fx-method="POST" fx-target="#settings-panel""##), "{page}");
 
         let save = router
             .clone()
-            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("abuse.soft_per_min", "70")])))
+            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("tab", "abuse"), ("abuse.soft_per_min", "70")])))
             .await
             .unwrap();
         assert_eq!(save.status(), StatusCode::OK);
         let html = body_text(save).await;
-        assert!(html.starts_with(r#"<section id="monokulo-settings">"#), "{html}");
-        assert!(html.contains("Settings saved and applied.") && html.contains(r#"value="70""#), "{html}");
-        assert!(!html.contains("engine-settings") && !html.contains("<html"), "only the saved section: {html}");
+        assert!(html.starts_with(r#"<section id="settings-panel" aria-labelledby="settings-panel-title">"#), "{html}");
+        assert!(html.contains(r#"<div id="settings-banners" class="save-banners" data-fx-oob><p class="success" role="status">Settings saved and applied."#), "{html}");
+        assert!(html.contains(r#"<nav id="settings-tabs" class="tab-bar" aria-label="Settings sections" data-fx-oob>"#), "{html}");
+        assert!(html.contains(r#"value="70""#) && !html.contains("<html"), "{html}");
+        assert!(html.contains(r#"<span class="save-status success" role="status" data-fx-focus"#), "a word by the button gets focus: {html}");
 
         let refused = router
             .clone()
-            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("payment.confirmations_required", "-1")])))
+            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("tab", "payments"), ("payment.confirmations_required", "-1")])))
             .await
             .unwrap();
         assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
         let html = body_text(refused).await;
-        assert!(html.starts_with(r#"<section id="engine-settings">"#) && html.contains("The engine refused the change"), "{html}");
+        assert!(html.starts_with(r#"<section id="settings-panel""#) && html.contains("The engine refused the change"), "{html}");
         assert!(html.contains(r#"<span class="save-status error" role="alert" data-fx-focus"#), "a word by the button gets focus: {html}");
 
         let saved = router
             .clone()
-            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("payment.confirmations_required", "4")])))
+            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("tab", "payments"), ("payment.confirmations_required", "4")])))
             .await
             .unwrap();
         assert_eq!(saved.status(), StatusCode::OK);
         assert!(body_text(saved).await.contains("Settings saved and applied."));
     }
 
-    /// Saving the engine connection in the monokulo section changes the
-    /// engine section too: it comes back marked out of band.
+    /// Saving a wrong engine token on General with fixi: the engine's tabs
+    /// say at once that the engine can't be reached.
     #[tokio::test]
-    async fn a_fixi_save_that_changes_the_engine_connection_brings_the_engine_section_too() {
+    async fn a_fixi_save_that_breaks_the_engine_connection_shows_on_the_engine_tabs() {
         let engine = spawn_scanner_with_known_admin_token().await;
         let state = test_app_state_connected_to(engine.addr).await;
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let key = crate::settings::SCANNER_ADMIN_TOKEN.key;
 
-        let unchanged = router.clone().oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(key, "")]))).await.unwrap();
-        assert!(!body_text(unchanged).await.contains("engine-settings"), "the token was kept, so the engine half didn't change");
-
-        let changed =
-            router.clone().oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[(key, "wrong-token")]))).await.unwrap();
-        let html = body_text(changed).await;
-        assert!(html.contains(r#"<section id="engine-settings" data-fx-oob>"#), "{html}");
+        let changed = router
+            .clone()
+            .oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &[("tab", "general"), (key, "wrong-token")])))
+            .await
+            .unwrap();
+        assert_eq!(changed.status(), StatusCode::OK);
+        let tab = router
+            .clone()
+            .oneshot(fixi(Request::builder().uri("/dashboard/admin/settings?tab=nodes").header("cookie", &cookie).body(Body::empty()).unwrap()))
+            .await
+            .unwrap();
+        let html = body_text(tab).await;
+        assert!(html.starts_with(r#"<section id="settings-panel""#), "a tab link gets just the panel: {html}");
         assert!(html.contains("Could not reach the configured engine"), "{html}");
+        assert!(html.contains(r#"<h2 id="settings-panel-title" tabindex="-1" data-fx-focus>Monero nodes</h2>"#), "{html}");
+        assert!(html.contains(r##"href="/dashboard/admin/settings?tab=nodes" fx-action="/dashboard/admin/settings?tab=nodes" fx-target="#settings-panel" fx-push-url aria-current="page""##), "{html}");
     }
 
     #[tokio::test]
@@ -1281,8 +1376,7 @@ mod tests {
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
 
-        let response = get_settings_page(&router, &cookie).await;
-        let html = body_text(response).await;
+        let html = body_text(get(&router, "/dashboard/admin/settings?tab=payments", Some(&cookie)).await).await;
         assert!(html.contains("Set <code>engine.url</code>"), "expected the configure-first prompt, got: {html}");
     }
 
@@ -1380,8 +1474,8 @@ mod tests {
         assert!(html.contains("Settings saved and applied."), "{html}");
         assert_eq!(engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["value"], "7");
         assert_eq!(db.lock().get_setting("exchange_rate.cache_seconds").unwrap().as_deref(), Some("88"));
-        let page = body_text(get_settings_page(&router, &cookie).await).await;
-        assert!(shows_value(&page, "7") && shows_value(&page, "88"), "{page}");
+        let page = body_text(get(&router, "/dashboard/admin/settings?tab=payments", Some(&cookie)).await).await;
+        assert!(shows_value(&page, "7") && shows_value(&page, "88"), "one tab shows both: {page}");
     }
 
     /// Monokulo's half is checked first; when it's refused, the engine's
@@ -1403,6 +1497,7 @@ mod tests {
         assert_eq!(save.status(), StatusCode::OK, "a refused save shows the page again");
         let html = unescaped(&body_text(save).await);
         assert!(html.contains("exchange_rate.cache_seconds: Enter a whole number, 0 or more."), "{html}");
+        assert!(html.contains(r##"href="/dashboard/admin/settings?tab=payments" fx-action="/dashboard/admin/settings?tab=payments" fx-target="#settings-panel" fx-push-url aria-current="page""##), "shown on the tab holding it: {html}");
         assert_eq!(engine_settings(&engine).await["scalars"]["payment.confirmations_required"]["value"], "10", "the engine half wasn't sent");
         assert_eq!(db.lock().get_setting("exchange_rate.cache_seconds").unwrap(), None);
     }
@@ -1483,5 +1578,72 @@ mod tests {
         assert!(follow(&router, &cookie, save).await.contains("Settings saved and applied."));
         let again = body_text(get(&router, &location, Some(&cookie)).await).await;
         assert!(!again.contains("Settings saved and applied."), "{again}");
+    }
+
+    // -- The tabbed page (nicer_admin_screen.md step 3) -------------------
+
+    #[tokio::test]
+    async fn every_tab_opens() {
+        let engine = spawn_scanner_with_known_admin_token().await;
+        let state = test_app_state_connected_to(engine.addr).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        for tab in crate::views::admin::SettingsTab::ALL {
+            let response = get(&router, &tab.href(), Some(&cookie)).await;
+            assert_eq!(response.status(), StatusCode::OK, "{tab:?}");
+            let html = body_text(response).await;
+            assert!(html.contains(&format!(r#"<h2 id="settings-panel-title" tabindex="-1">{}</h2>"#, tab.label())), "{tab:?}: {html}");
+        }
+        let unknown = body_text(get(&router, "/dashboard/admin/settings?tab=nope", Some(&cookie)).await).await;
+        assert!(unknown.contains(r#"<h2 id="settings-panel-title" tabindex="-1">General</h2>"#), "{unknown}");
+    }
+
+    /// Both processes have `logging.otlp_headers`, a secret: on the Logging
+    /// tab each keeps its own when left empty, and each is cleared only by
+    /// its own box.
+    #[tokio::test]
+    async fn the_logging_tab_keeps_each_processs_secret_apart() {
+        let engine = spawn_scanner_with_known_admin_token().await;
+        let state = test_app_state_connected_to(engine.addr).await;
+        let db = state.db.clone();
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+
+        let set = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "logging"), ("logging.otlp_headers", "x-monokulo=1"), ("engine:logging.otlp_headers", "x-engine=1")],
+        )
+        .await;
+        assert_eq!(set.status(), StatusCode::SEE_OTHER);
+        assert_eq!(db.lock().get_setting("logging.otlp_headers").unwrap().as_deref(), Some("x-monokulo=1"));
+        assert_eq!(engine_settings(&engine).await["scalars"]["logging.otlp_headers"]["source"], "database");
+
+        let page = body_text(get(&router, "/dashboard/admin/settings?tab=logging", Some(&cookie)).await).await;
+        assert!(page.contains(r#"name="clear:logging.otlp_headers""#) && page.contains(r#"name="clear:engine:logging.otlp_headers""#), "{page}");
+        assert!(page.contains(r#"id="setting-engine:logging.level""#) && page.contains(r#"id="setting-logging.level""#), "one id each: {page}");
+
+        // Saved as the page sends it: both empty, so both kept.
+        let kept = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "logging"), ("logging.otlp_headers", ""), ("engine:logging.otlp_headers", ""), ("engine:logging.max_mb", "300")],
+        )
+        .await;
+        assert_eq!(kept.status(), StatusCode::SEE_OTHER);
+        assert_eq!(db.lock().get_setting("logging.otlp_headers").unwrap().as_deref(), Some("x-monokulo=1"));
+        let engine_view = engine_settings(&engine).await;
+        assert_ne!(engine_view["scalars"]["logging.otlp_headers"]["value"], "", "{engine_view}");
+        assert_eq!(engine_view["scalars"]["logging.max_mb"]["value"], "300");
+
+        let cleared = post_settings(
+            &router,
+            &cookie,
+            &[("tab", "logging"), ("engine:logging.otlp_headers", ""), ("clear:engine:logging.otlp_headers", "on")],
+        )
+        .await;
+        assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
+        assert_eq!(engine_settings(&engine).await["scalars"]["logging.otlp_headers"]["value"], "");
+        assert_eq!(db.lock().get_setting("logging.otlp_headers").unwrap().as_deref(), Some("x-monokulo=1"), "monokulo's own is untouched");
     }
 }
