@@ -15,6 +15,9 @@
 
 use std::collections::{HashMap, HashSet};
 
+/// The networks the engine can scan, in the order the page shows them.
+pub const NETWORKS: [&str; 3] = ["mainnet", "stagenet", "testnet"];
+
 /// One node row as submitted (or as saved): what the admin typed and
 /// ticked, and what's wrong with it, if anything.
 #[derive(Debug, Clone, PartialEq, Default)]

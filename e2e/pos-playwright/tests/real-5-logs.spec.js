@@ -7,7 +7,7 @@
 const { test, expect } = require('../coverage-test');
 const { serveInstrumentedAssets } = require('../coverage-fixture');
 const { captureCoverageStage } = require('../coverage-screenshot');
-const { useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeJson, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
 
 useRealStack(test);
 
@@ -220,7 +220,7 @@ test.describe('without JavaScript', () => {
 test("a caller's traceparent (as the WooCommerce plugin sends it) is followed through monokulo to the engine", async ({ page, request }) => {
   const base = fixture().monokulo_url;
   await signInAsAdmin(page);
-  await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
+  await saveNodes(page, { stagenet: [fakeNodeAddress()] });
   await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   await page.goto(base + '/dashboard/connect');
   await page.locator('input[name="site_url"]').fill('https://traced.example.com');

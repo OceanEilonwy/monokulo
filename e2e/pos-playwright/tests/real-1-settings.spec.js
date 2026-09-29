@@ -5,14 +5,12 @@
 // can then be connected, and the warnings for restart-only settings and
 // for clearing a network stores use work.
 const { test, expect } = require('@playwright/test');
-const { useRealStack, fixture, reloadUntil, saveEngineSettings, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, reloadUntil, saveEngineSettings, saveNodes, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
 
 useRealStack(test);
 
 test('a node saved on a fresh instance applies straight away, and the warnings work', async ({ page }) => {
-  const { monokulo_url: base, fake_monerod: fakeAddress } = fixture();
-  const [fakeHost, fakePort] = fakeAddress.split(':');
-  const node = JSON.stringify({ host: fakeHost, port: Number(fakePort), ssl: false, accept_self_signed_certs: true, fallbacks: [] });
+  const { monokulo_url: base, fake_monerod: node } = fixture();
 
   // 1. Fresh instance: the first-run wizard creates the admin account.
   await page.goto(base + '/');
@@ -23,7 +21,7 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
   await page.getByRole('button', { name: 'Create admin account' }).click();
 
   // 2. Save a stagenet node on the admin page.
-  await saveEngineSettings(page, { monero_node_stagenet: node });
+  await saveNodes(page, { stagenet: [node] });
   await expect(page.getByText('Settings saved and applied.')).toBeVisible();
 
   // 3. The status page shows stagenet, reachable, with no restart.
@@ -56,7 +54,7 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
     dialogText = dialog.message();
     await dialog.accept();
   });
-  await saveEngineSettings(page, { monero_node_stagenet: '' });
+  await saveNodes(page, { stagenet: [] });
   expect(dialogText).toContain('1 store uses the stagenet network');
   await expect(page.getByText(/the stagenet network, which no longer has any reachable nodes/)).toBeVisible();
   await reloadUntil(page, base + '/dashboard', (html) => html.includes('shop.example.com: payments aren'));
@@ -64,7 +62,7 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
   expect(await page.content()).not.toContain('payments aren');
 
   // 8. Restoring the node clears the alert.
-  await saveEngineSettings(page, { monero_node_stagenet: node });
+  await saveNodes(page, { stagenet: [node] });
   await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   await reloadUntil(page, base + '/dashboard', (html) => !html.includes('payments aren'));
 });

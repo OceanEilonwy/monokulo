@@ -8,7 +8,7 @@ const { test, expect } = require('@playwright/test');
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const path = require('node:path');
-const { useRealStack, fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, reloadUntil, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, reloadUntil, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
 
 useRealStack(test);
 
@@ -33,8 +33,9 @@ test('a store moves its keys to another backend and keeps working; outages and a
   try {
     await signInAsAdmin(page);
     // Stagenet on the fake node, and both backends enabled.
+    await saveNodes(page, { stagenet: [fakeNodeAddress()] });
+    await expect(page.getByText('Settings saved and applied.')).toBeVisible();
     await saveEngineSettings(page, {
-      monero_node_stagenet: fakeNodeJson(),
       'key_custody.socket_path': socketPath,
       'key_custody.enabled_backends': 'plain,socket',
       'key_custody.default_backend': 'plain',

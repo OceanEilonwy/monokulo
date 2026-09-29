@@ -273,17 +273,48 @@ pub struct AdminScalarFieldView {
     pub problem: Option<String>,
 }
 
-/// One `monero_node.<network>` entry on the engine half of the page - shown
-/// and edited as a single JSON text field.
+/// A node's status from the engine's `/status`, for its row.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct NodeStatusView {
+    /// Its height, when it answered.
+    pub height: Option<u64>,
+    /// Why it didn't answer.
+    pub error: Option<String>,
+    /// The network it says it's on, when that isn't the one it's saved for.
+    pub wrong_network: Option<String>,
+    /// The node the engine is using now.
+    pub in_use: bool,
+    /// Skipped for a while after failing.
+    pub resting: bool,
+}
+
+/// One node row on the Monero nodes tab.
+#[derive(Debug, Clone, Default)]
+pub struct NodeRowView {
+    pub row: crate::admin_nodes::NodeRow,
+    /// The engine's label for the node (`host:port` as saved), which its
+    /// `/status` is found by. Empty for a row that isn't a node yet.
+    pub label: String,
+    /// `None` for a node with no status yet (just saved, or `/status`
+    /// didn't answer).
+    pub status: Option<NodeStatusView>,
+}
+
+/// One network's block on the Monero nodes tab: its nodes as rows, primary
+/// first.
 #[derive(Debug, Clone, Default)]
 pub struct AdminNetworkFieldView {
     pub network: String,
     /// Empty when this network has no node configured yet.
-    pub value_json: String,
-    pub description: Option<String>,
-    pub example: Option<String>,
+    pub rows: Vec<NodeRowView>,
+    /// An address to show as the example in the address help, from the
+    /// engine's example for this network.
+    pub example_address: Option<String>,
     /// Stores on this network, for the confirmation before clearing it.
     pub tenant_count: u64,
+    /// Why the engine refused this network's nodes (a node on another
+    /// network), shown at the top of its block.
+    pub error: Option<String>,
 }
 
 /// A banner shown at the top of the page after a save (task 4.5).
@@ -759,7 +790,7 @@ fn tab_shown(data: &AdminSettingsViewModel, tab: SettingsTab) -> bool {
 fn needs_attention(data: &AdminSettingsViewModel, tab: SettingsTab) -> bool {
     let unserved = tab == SettingsTab::Nodes
         && (!data.unreachable_networks.is_empty()
-            || data.scanner_networks.iter().any(|n| n.tenant_count > 0 && n.value_json.trim().is_empty()));
+            || data.scanner_networks.iter().any(|n| n.tenant_count > 0 && n.rows.is_empty()));
     let restart = tab.groups().iter().any(|(heading, owner)| group_fields(data, tab, *heading, *owner).iter().any(|f| f.pending_restart));
     unserved || restart
 }
@@ -784,36 +815,164 @@ pub fn tab_bar(data: &AdminSettingsViewModel, oob: bool) -> Markup {
     }
 }
 
-/// The Monero nodes tab's fields.
-fn node_fields(data: &AdminSettingsViewModel) -> Markup {
+/// `1234567` as `1,234,567`.
+fn thousands(n: u64) -> String {
+    let digits = n.to_string();
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i).is_multiple_of(3) {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// A row's status line: whether the node answers and on which network,
+/// then whether it's the one in use or resting after failures. Nothing
+/// for a node with no status yet.
+fn node_status(status: &NodeStatusView) -> Markup {
+    let problem = status.wrong_network.is_some() || status.height.is_none();
+    let mut parts: Vec<String> = Vec::new();
+    if let Some(network) = &status.wrong_network {
+        parts.push(format!("Wrong network: this node is on {network}"));
+    } else if let Some(height) = status.height {
+        parts.push(format!("Reachable, height {}", thousands(height)));
+    } else if let Some(error) = &status.error {
+        parts.push(format!("Not reachable: {error}"));
+    }
+    if status.in_use {
+        parts.push("In use".to_string());
+    }
+    if status.resting {
+        parts.push("Resting after failures".to_string());
+    }
     html! {
-        @for network in &data.scanner_networks {
-            @let id = format!("setting-monero_node_{}", network.network);
-            @let help = network.description.as_ref().map(|_| format!("setting-help-monero_node_{}", network.network));
+        @if !parts.is_empty() {
+            p class=(if problem { "node-status is-problem" } else { "node-status" }) { (parts.join(". ")) "." }
+        }
+    }
+}
+
+/// One node row: its address, TLS and self-signed boxes, its status and
+/// its buttons. `position` is its place in the list (`None` for the blank
+/// "Add a node" row, which has no status or buttons); `index` numbers its
+/// fields. The buttons are submit buttons of the tab's form: pressing one
+/// applies it to the submitted rows and saves, with or without JavaScript.
+fn node_row(network: &AdminNetworkFieldView, index: usize, row: &NodeRowView, position: Option<(usize, usize)>) -> Markup {
+    let n = &network.network;
+    let name = |field: &str| format!("node_{n}_{index}_{field}");
+    let id = |field: &str| format!("node-{n}-{index}-{field}");
+    let legend = match position {
+        None => "Add a node".to_string(),
+        Some((0, _)) => "Primary".to_string(),
+        Some((at, _)) => format!("Fallback {at}"),
+    };
+    let example = network.example_address.as_deref().unwrap_or("node.example.com:18081");
+    let error_id = row.row.error.as_ref().map(|_| id("error"));
+    let described = match &error_id {
+        Some(error) => format!("{} {error}", id("address-help")),
+        None => id("address-help"),
+    };
+    html! {
+        fieldset class="node-row" data-node-row=(index) data-node-add[position.is_none()] {
+            legend class="node-row-name" { (legend) }
             div class="setting-field" {
-                label class="setting-label" for=(id) { "Monero node (" (network.network) ")" }
-                @if let (Some(description), Some(help)) = (&network.description, &help) {
-                    span class="field-help" id=(help) { (description) }
+                label class="setting-label" for=(id("address")) { "Address" }
+                span class="field-help" id=(id("address-help")) {
+                    "The node's host and port, like " code { (example) } ". "
+                    code { "http://" } " or " code { "https://" } " in front is fine (" code { "https://" } " also ticks Use TLS); "
+                    "an IPv6 address goes in brackets, like " code { "[::1]:18081" } "."
                 }
-                textarea name=(format!("monero_node_{}", network.network)) rows="4" id=(id) aria-describedby=[help]
-                    data-network=(network.network) data-tenant-count=(network.tenant_count) { (network.value_json) }
-                span class="setting-source" {
-                    @if network.tenant_count == 1 { "Used by 1 store." } @else { "Used by " (network.tenant_count) " stores." }
+                input type="text" name=(name("address")) id=(id("address")) value=(row.row.address) aria-describedby=(described)
+                    aria-invalid=[row.row.error.as_ref().map(|_| "true")] autocomplete="off" spellcheck="false" inputmode="url";
+                @if let (Some(error), Some(error_id)) = (&row.row.error, &error_id) {
+                    span class="setting-problem" id=(error_id) { (error) }
                 }
-                @if let Some(example) = &network.example {
-                    details class="field-help" {
-                        summary { "Example" }
-                        pre { code { (example) } }
-                        p {
-                            code { "host" } " and " code { "port" } ": the node's address. "
-                            code { "ssl" } " (default false): connect with TLS. "
-                            code { "accept_self_signed_certs" } " (default true): accept a self-signed TLS certificate. "
-                            code { "fallbacks" } ": more nodes in the same shape, tried in order when the one before fails; a fallback can't have fallbacks of its own."
-                        }
+            }
+            div class="setting-field node-tls" {
+                label class="setting-label" for=(id("ssl")) { "Use TLS" }
+                span class="field-help" id=(id("ssl-help")) { "Connect with TLS (https). Off by default; most nodes on port 18081 or 18089 don't use it." }
+                input type="checkbox" name=(name("ssl")) id=(id("ssl")) value="on" checked[row.row.ssl] aria-describedby=(id("ssl-help")) data-node-tls;
+            }
+            div class="setting-field node-self-signed" data-node-self-signed {
+                label class="setting-label" for=(id("self_signed")) { "Accept a self-signed certificate" }
+                span class="field-help" id=(id("self_signed-help")) {
+                    "Many community nodes use a self-signed TLS certificate; tick this to accept one. Only used with TLS."
+                }
+                input type="checkbox" name=(name("self_signed")) id=(id("self_signed")) value="on" checked[row.row.self_signed] aria-describedby=(id("self_signed-help"));
+            }
+            @if let Some(status) = &row.status { (node_status(status)) }
+            @if let Some((at, count)) = position {
+                div class="node-row-actions" {
+                    @if at > 0 {
+                        button type="submit" name="node_action" value=(format!("up:{n}:{index}")) { "Move up" }
                     }
+                    @if at + 1 < count {
+                        button type="submit" name="node_action" value=(format!("down:{n}:{index}")) { "Move down" }
+                    }
+                    button type="submit" name="node_action" value=(format!("remove:{n}:{index}")) data-node-remove { "Remove" }
                 }
             }
         }
+    }
+}
+
+/// `stagenet` as `Stagenet`, for a heading.
+fn capitalized(word: &str) -> String {
+    let mut chars = word.chars();
+    chars.next().map(|first| first.to_uppercase().chain(chars).collect()).unwrap_or_default()
+}
+
+/// One network's block: its rows in order, then a blank "Add a node" row
+/// (adding needs no JavaScript: fill it in and save). A network with no
+/// nodes that no store uses starts closed, as "Add a node for <network>".
+fn network_block(network: &AdminNetworkFieldView) -> Markup {
+    let n = &network.network;
+    let count = network.rows.len();
+    let rows = html! {
+        @if let Some(error) = &network.error {
+            p class="error" role="alert" { (error) }
+        }
+        p class="hint" { "Fallbacks are tried in order when the one before fails." }
+        div class="node-rows" data-node-rows=(n) {
+            @for (at, row) in network.rows.iter().enumerate() {
+                (node_row(network, at, row, Some((at, count))))
+            }
+            (node_row(network, count, &NodeRowView { row: crate::admin_nodes::NodeRow { self_signed: true, ..Default::default() }, ..Default::default() }, None))
+        }
+        button type="button" class="js-only node-add-another" data-node-add-another=(n) { "Add another" }
+    };
+    let used_by = html! {
+        p class="setting-source" {
+            @if network.tenant_count == 1 { "Used by 1 store." } @else { "Used by " (network.tenant_count) " stores." }
+        }
+    };
+    html! {
+        @if count > 0 || network.tenant_count > 0 || network.error.is_some() {
+            section class="node-network" data-network=(n) data-tenant-count=(network.tenant_count) aria-labelledby=(format!("node-network-{n}")) {
+                h3 id=(format!("node-network-{n}")) { (capitalized(n)) }
+                (used_by)
+                (rows)
+            }
+        } @else {
+            details class="node-network" data-network=(n) data-tenant-count=(network.tenant_count) {
+                summary { "Add a node for " (n) }
+                (used_by)
+                (rows)
+            }
+        }
+    }
+}
+
+/// The Monero nodes tab's fields: a block per network.
+fn node_fields(data: &AdminSettingsViewModel) -> Markup {
+    html! {
+        p class="hint" {
+            "The Monero nodes the engine reads each network's chain from: a primary, and fallbacks tried when it fails. "
+            "A network with no nodes isn't used. A node that doesn't answer is still saved; one on another network is refused."
+        }
+        @for network in &data.scanner_networks { (network_block(network)) }
     }
 }
 
@@ -871,6 +1030,12 @@ pub fn settings_panel(data: &AdminSettingsViewModel, focus: bool) -> Markup {
                 form method="post" action="/dashboard/admin/settings" id="settings-form"
                     fx-action="/dashboard/admin/settings" fx-method="POST" fx-target="#settings-panel" {
                     input type="hidden" name="tab" value=(tab.id());
+                    @if tab == SettingsTab::Nodes {
+                        // Enter in a text box presses a form's first submit
+                        // button; here that would be a row's Move or Remove.
+                        // This one, first and out of sight, is Save.
+                        button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true" { "Save" }
+                    }
                     (tab_fields(data, tab))
                     div class="settings-actions" {
                         button type="submit" class="btn-primary" { "Save" }
@@ -1160,13 +1325,21 @@ mod tests {
                 .into_iter()
                 .map(|network| AdminNetworkFieldView {
                     network: network.to_string(),
-                    value_json: r#"{"host":"node.example.com","port":18081}"#.to_string(),
-                    description: Some(format!("The {network} node.")),
-                    example: Some(r#"{"host":"node.example.com","port":18089}"#.to_string()),
+                    rows: vec![node_row_view("node.example.com:18081")],
+                    example_address: Some("node.example.com:18089".to_string()),
                     tenant_count: 0,
+                    error: None,
                 })
                 .collect(),
             ..Default::default()
+        }
+    }
+
+    fn node_row_view(address: &str) -> NodeRowView {
+        NodeRowView {
+            row: crate::admin_nodes::NodeRow { address: address.to_string(), ssl: false, self_signed: true, error: None },
+            label: address.to_string(),
+            status: None,
         }
     }
 
@@ -1190,7 +1363,7 @@ mod tests {
                 let shown = html.contains(&format!(r#"name="{name}""#));
                 assert_eq!(shown, *placed == tab, "{name} on {tab:?}");
             }
-            assert_eq!(html.contains(r#"name="monero_node_stagenet""#), tab == SettingsTab::Nodes, "{tab:?}");
+            assert_eq!(html.contains(r#"name="node_stagenet_0_address""#), tab == SettingsTab::Nodes, "{tab:?}");
             // One form, one Save, and the tab it's for.
             assert_eq!(html.matches("<form ").count(), 1, "{tab:?}");
             assert!(html.contains(&format!(r#"<input type="hidden" name="tab" value="{}">"#, tab.id())), "{tab:?}");
@@ -1282,7 +1455,7 @@ mod tests {
 
         // A network stores use with no node at all.
         let mut data = full_view(SettingsTab::General);
-        data.scanner_networks[1].value_json.clear();
+        data.scanner_networks[1].rows.clear();
         data.scanner_networks[1].tenant_count = 2;
         assert!(marked(&page(&data), SettingsTab::Nodes));
 
@@ -1355,22 +1528,96 @@ mod tests {
         assert!(html.contains(r#"aria-describedby="setting-help-engine.url""#), "{html}");
     }
 
+    /// A network with no nodes that no store uses starts closed; one with
+    /// nodes, or stores, is an open block with its store count.
     #[test]
-    fn the_nodes_tab_shows_each_network_with_its_example() {
+    fn a_network_is_closed_until_it_has_nodes_or_stores() {
         let mut data = full_view(SettingsTab::Nodes);
         data.scanner_networks[0].tenant_count = 2;
+        data.scanner_networks[2].rows.clear();
         let html = page(&data);
         assert!(
-            html.contains(concat!(
-                r#"<label class="setting-label" for="setting-monero_node_mainnet">Monero node (mainnet)</label>"#,
-                r#"<span class="field-help" id="setting-help-monero_node_mainnet">The mainnet node.</span><textarea"#,
-            )),
+            html.contains(r#"<section class="node-network" data-network="mainnet" data-tenant-count="2" aria-labelledby="node-network-mainnet"><h3 id="node-network-mainnet">Mainnet</h3><p class="setting-source">Used by 2 stores.</p>"#),
             "{html}"
         );
-        assert!(html.contains(r#"data-tenant-count="2""#));
-        assert!(html.contains("Used by 2 stores."));
-        assert!(html.contains("fallbacks"), "the node field explains its shape");
-        assert!(html.contains("window.confirm"), "confirms before clearing a network in use");
+        assert!(html.contains(r#"<details class="node-network" data-network="testnet" data-tenant-count="0"><summary>Add a node for testnet</summary>"#), "{html}");
+        assert!(!html.contains("<textarea"), "no JSON box");
+        assert!(!html.contains("<summary>Example</summary>"), "no JSON example");
+
+        // With stores but no node, it's open, so the admin sees the gap.
+        data.scanner_networks[2].tenant_count = 1;
+        let html = page(&data);
+        assert!(html.contains(r#"<h3 id="node-network-testnet">Testnet</h3><p class="setting-source">Used by 1 store.</p>"#), "{html}");
+    }
+
+    #[test]
+    fn node_rows_are_named_in_order_with_their_buttons_and_a_blank_row_to_add_one() {
+        let mut data = full_view(SettingsTab::Nodes);
+        data.scanner_networks[1].rows = vec![node_row_view("a.example:1"), node_row_view("b.example:2"), node_row_view("c.example:3")];
+        data.scanner_networks[1].rows[1].row.ssl = true;
+        data.scanner_networks[1].rows[1].row.self_signed = false;
+        let html = page(&data);
+        let block = &html[html.find(r#"data-network="stagenet""#).unwrap()..html.find(r#"data-network="testnet""#).unwrap()];
+        let legends: Vec<&str> = block.match_indices("<legend class=\"node-row-name\">").map(|(at, m)| &block[at + m.len()..at + m.len() + block[at + m.len()..].find('<').unwrap()]).collect();
+        assert_eq!(legends, ["Primary", "Fallback 1", "Fallback 2", "Add a node"]);
+        assert!(block.contains("Fallbacks are tried in order when the one before fails."));
+        // The fields, named by network and row.
+        assert!(block.contains(r#"<input type="text" name="node_stagenet_1_address" id="node-stagenet-1-address" value="b.example:2""#), "{block}");
+        assert!(block.contains(r#"<input type="checkbox" name="node_stagenet_1_ssl" id="node-stagenet-1-ssl" value="on" checked"#), "{block}");
+        assert!(block.contains(r#"<input type="checkbox" name="node_stagenet_1_self_signed" id="node-stagenet-1-self_signed" value="on" aria-describedby"#), "{block}");
+        assert!(block.contains(r#"name="node_stagenet_3_address" id="node-stagenet-3-address" value="""#), "the blank row: {block}");
+        assert!(block.contains(r#"<input type="checkbox" name="node_stagenet_3_self_signed" id="node-stagenet-3-self_signed" value="on" checked"#), "self-signed is ticked by default: {block}");
+        // No Move up on the first row, no Move down on the last, none on the blank one.
+        let buttons: Vec<&str> = block.match_indices(r#"name="node_action" value=""#).map(|(at, m)| &block[at + m.len()..at + m.len() + block[at + m.len()..].find('"').unwrap()]).collect();
+        assert_eq!(
+            buttons,
+            ["down:stagenet:0", "remove:stagenet:0", "up:stagenet:1", "down:stagenet:1", "remove:stagenet:1", "up:stagenet:2", "remove:stagenet:2"]
+        );
+        // Each field: its name, then what it's for, then the control.
+        assert!(block.contains(r#"<label class="setting-label" for="node-stagenet-0-address">Address</label><span class="field-help" id="node-stagenet-0-address-help">The node's host and port, like <code>node.example.com:18089</code>."#), "{block}");
+        // Enter in an address box saves, rather than pressing a row's button.
+        let form = &html[html.find("<form ").unwrap()..];
+        assert!(form.find(r#"<button type="submit" class="visually-hidden" tabindex="-1" aria-hidden="true">Save</button>"#).unwrap() < form.find(r#"name="node_action""#).unwrap());
+    }
+
+    #[test]
+    fn a_nodes_status_is_said_in_words() {
+        let mut data = full_view(SettingsTab::Nodes);
+        let statuses = [
+            NodeStatusView { height: Some(1_234_567), in_use: true, ..Default::default() },
+            NodeStatusView { error: Some("connection refused".into()), resting: true, ..Default::default() },
+            NodeStatusView { height: Some(10), wrong_network: Some("mainnet".into()), ..Default::default() },
+        ];
+        data.scanner_networks[1].rows = statuses
+            .iter()
+            .enumerate()
+            .map(|(i, status)| NodeRowView { status: Some(status.clone()), ..node_row_view(&format!("n{i}.example:1")) })
+            .collect();
+        data.scanner_networks[1].rows.push(node_row_view("new.example:1"));
+        let html = page(&data);
+        assert!(html.contains(r#"<p class="node-status">Reachable, height 1,234,567. In use.</p>"#), "{html}");
+        assert!(html.contains(r#"<p class="node-status is-problem">Not reachable: connection refused. Resting after failures.</p>"#), "{html}");
+        assert!(html.contains(r#"<p class="node-status is-problem">Wrong network: this node is on mainnet.</p>"#), "{html}");
+        assert_eq!(html.matches(r#"class="node-status"#).count(), 3, "nothing for a node with no status yet");
+        assert_eq!(super::thousands(0), "0");
+        assert_eq!(super::thousands(999), "999");
+        assert_eq!(super::thousands(1000), "1,000");
+    }
+
+    #[test]
+    fn what_is_wrong_shows_where_it_is() {
+        let mut data = full_view(SettingsTab::Nodes);
+        data.scanner_networks[1].rows[0].row.address = "node.example.com".into();
+        data.scanner_networks[1].rows[0].row.error = Some("Add the port, like node.example.com:18081.".into());
+        data.scanner_networks[2].error = Some("node.example.com:18081 is on mainnet, not testnet.".into());
+        let html = page(&data);
+        assert!(
+            html.contains(r#"value="node.example.com" aria-describedby="node-stagenet-0-address-help node-stagenet-0-error" aria-invalid="true""#),
+            "{html}"
+        );
+        assert!(html.contains(r#"<span class="setting-problem" id="node-stagenet-0-error">Add the port, like node.example.com:18081.</span>"#), "{html}");
+        let testnet = &html[html.find(r#"data-network="testnet""#).unwrap()..];
+        assert!(testnet.contains(r#"<p class="error" role="alert">node.example.com:18081 is on mainnet, not testnet.</p><p class="hint">Fallbacks"#), "at the top of its block: {testnet}");
     }
 
     #[test]

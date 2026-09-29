@@ -5,7 +5,7 @@
 // one tab at a time (nicer_admin_screen.md): its panel is swapped, and the
 // tab bar and page-wide banners come back whole.
 const { test, expect } = require('@playwright/test');
-const { useRealStack, fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, openSettingsTab, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, saveEngineSettings, openSettingsTab, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
 
 useRealStack(test);
 
@@ -43,7 +43,7 @@ test('a store settings form that is refused shows why inside its own section', a
   await signInAsAdmin(page);
   // A store needs its network to have a node (run on its own, this spec
   // starts from a fresh instance).
-  await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
+  await saveNodes(page, { stagenet: [fakeNodeAddress()] });
   await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   await page.goto(base + '/dashboard/connect');
   await page.locator('input[name="site_url"]').fill('https://sections.example.com');

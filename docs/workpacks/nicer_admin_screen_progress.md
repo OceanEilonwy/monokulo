@@ -12,23 +12,20 @@ Work pack: `docs/workpacks/nicer_admin_screen.md`. Decisions:
 | 2 | One save for a whole tab | done | `admin settings: one save for a whole tab` |
 | 3 | The tabbed page | done | `admin settings: the tabbed page` |
 | 4 | Engine learns a node's network | done | `scanner: a node saved for the wrong network is refused` |
-| 5 | The node form | in progress | `admin settings: node form rows and addresses` (pure module) |
+| 5 | The node form | done | `admin settings: node form rows and addresses`, `admin settings: the Monero nodes form` |
 | 6 | JavaScript enhancements | not started | |
 | 7 | Playwright | not started | |
 | 8 | Docs and cleanup | not started | |
 
 ## Resume here
 
-Step 5 is half done: the pure module `crates/monokulo/src/admin_nodes.rs`
-is written and tested (`parse_address`, `NodeForm::from_form` with
-`node_action` applied and rows checked, `rows_to_setting`,
-`rows_from_setting`). Next: replace `AdminNetworkFieldView.value_json` with
-rows in `crates/monokulo/src/views/admin.rs` and render the node form
-(section 2 of the work pack), route `node_*` fields through `SplitForm` in
-`http/admin_settings.rs` (stop on row errors, send `monero_node`, show the
-engine's `fields` message on the network's block, clear the status cache
-after a node change), drop the textarea, its Example and the JSON error
-message, then the HTTP and view tests.
+Start step 6: JavaScript for the node form, in the page's inline scripts in
+`crates/monokulo/src/views/admin.rs`. "Add another" (`[data-node-add-another]`)
+clones the blank row (`[data-node-add]`) with the next index and focuses its
+address; the TLS box (`[data-node-tls]`) shows or hides its row's
+`[data-node-self-signed]`; `CONFIRM_CLEARED_NETWORK_SCRIPT` counts non-blank
+rows per `.node-network[data-tenant-count]` (after a pending Remove, from
+`event.submitter`). Six Playwright tests are red until then (decision D20).
 
 ## Test status at last commit
 
@@ -52,6 +49,10 @@ message, then the HTTP and view tests.
 - After step 4: `cargo test --workspace` 1270 passed, 0 failed, 24 ignored;
   clippy 68 warnings (none new; `scanner/src/daemon.rs` keeps its one
   pre-existing warning); Playwright real-binaries 26 passed.
+
+- After step 5: `cargo test --workspace` 1288 passed, 0 failed, 24 ignored;
+  clippy 68 warnings (none new); Playwright real-binaries 20 passed,
+  6 failed, all waiting on step 6's confirmation script (decision D20).
 
 ## Notes per step
 
@@ -212,3 +213,41 @@ message, then the HTTP and view tests.
   (first row primary, the rest `fallbacks`; none clears the network) and
   `rows_from_setting` (with the engine's `host:port` label for matching
   `/status`; a fallback's own fallbacks are dropped, decision D17).
+- View (`views/admin.rs`): `AdminNetworkFieldView` now holds `rows`
+  (`NodeRowView`: the row, the engine's label, its `NodeStatusView`),
+  `example_address`, `tenant_count` and `error`. `network_block` renders a
+  `section.node-network` (heading, "Used by N stores.") or, with no nodes
+  and no stores, a closed `details` "Add a node for <network>"; then the
+  block's engine error, the fallbacks hint, the rows (`node_row`: legend
+  Primary / Fallback N; Address, Use TLS, Accept a self-signed certificate,
+  each name, help, control; the status line; Move up / Move down / Remove
+  as `name="node_action"` submit buttons, not on the edges), and a blank
+  "Add a node" row with self-signed ticked. "Add another" is rendered
+  `js-only` for step 6. A hidden Save leads the form (decision D18). Field
+  help is written on the page (decision D19). The textarea, its Example
+  and the JSON error message are gone.
+- Save (`http/admin_settings.rs`): `SplitForm` notes `node_*` fields;
+  `save_tab` builds a `NodeForm` (button applied), refuses with every row
+  kept when any row has an error ("Nothing was saved: some node addresses
+  need fixing (marked below)."), else sends each submitted network as
+  `monero_node`. An engine refusal's `fields` go on their network's block
+  and the submitted rows are shown again. A save whose `changed` includes a
+  `monero_node.*` key clears monokulo's `/status` cache.
+- Status (`build_view_model`): on the Monero nodes tab `get_status_cached`
+  fills each row's status by label (`attach_node_status`); a node reporting
+  another known network shows "Wrong network". If `/status` fails, rows
+  show no status.
+- Acceptance: unit tests in `admin_nodes.rs` (step 5's first commit);
+  HTTP tests `a_node_is_added_through_the_blank_row_and_ordered_by_its_buttons`
+  (add through the blank row; up, down and remove, each one POST with
+  `node_action`, the saved order read back from the engine and the page),
+  `a_bad_address_is_shown_on_its_row_and_nothing_is_saved` (also with
+  fixi: 422), `a_node_on_another_network_is_refused_on_its_block`,
+  `clearing_a_network_stores_use_is_saved_and_says_so`,
+  `a_saved_node_shows_its_status`; view tests
+  `a_network_is_closed_until_it_has_nodes_or_stores`,
+  `node_rows_are_named_in_order_with_their_buttons_and_a_blank_row_to_add_one`,
+  `a_nodes_status_is_said_in_words`, `what_is_wrong_shows_where_it_is`.
+- Playwright: `real-helpers.js` gains `fakeNodeAddress`, `fillNodes`,
+  `saveNodes`, `nodeAddressBoxes`; every spec that saved node JSON on the
+  page uses them (`real-4` still saves JSON through the API).

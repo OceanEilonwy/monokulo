@@ -48,10 +48,38 @@ async function signInAsAdmin(page) {
   await page.locator('form[action="/dashboard/login"] button[type="submit"]').click();
 }
 
-/** The fake monerod as a `monero_node` JSON value. */
-function fakeNodeJson() {
-  const [host, port] = fixture().fake_monerod.split(':');
-  return JSON.stringify({ host, port: Number(port), ssl: false, accept_self_signed_certs: true, fallbacks: [] });
+/** The fake monerod's address, as the node form takes it. */
+function fakeNodeAddress() {
+  return fixture().fake_monerod;
+}
+
+/** A network's node rows on the open Monero nodes tab (address boxes, the blank "Add a node" row last). */
+function nodeAddressBoxes(page, network) {
+  return page.locator(`[data-network="${network}"] input[name^="node_${network}_"][name$="_address"]`);
+}
+
+/**
+ * Fills the open Monero nodes tab so each network given has exactly these
+ * nodes, in order (`[]` clears it): the rows there are refilled, extra ones
+ * blanked (a blank row is dropped on save), and the blank row takes one
+ * more. Doesn't save.
+ */
+async function fillNodes(page, nodes) {
+  for (const [network, addresses] of Object.entries(nodes)) {
+    // A network with no nodes and no stores starts closed.
+    await page.locator(`details[data-network="${network}"]`).evaluateAll((all) => all.forEach((d) => { d.open = true; }));
+    const boxes = nodeAddressBoxes(page, network);
+    const count = await boxes.count();
+    if (addresses.length > count) throw new Error(`only ${count} rows for ${network}`);
+    for (let i = 0; i < count; i += 1) await boxes.nth(i).fill(addresses[i] || '');
+  }
+}
+
+/** Sets networks' nodes on the Monero nodes tab and saves, e.g. `{ stagenet: [fakeNodeAddress()] }`. */
+async function saveNodes(page, nodes) {
+  await openSettingsTab(page, 'nodes');
+  await fillNodes(page, nodes);
+  await page.locator('#settings-panel').getByRole('button', { name: 'Save', exact: true }).click();
 }
 
 /**
@@ -60,7 +88,7 @@ function fakeNodeJson() {
  */
 function settingsTabOf(name) {
   const key = name.replace(/^clear:/, '');
-  if (key.startsWith('monero_node_') || key.startsWith('node_')) return 'nodes';
+  if (key.startsWith('node_')) return 'nodes';
   if (key === 'payment.scan_chunk_memory_budget_mb') return 'server';
   if (/^(payment|webhooks|exchange_rate)\./.test(key)) return 'payments';
   if (key.startsWith('key_custody.')) return 'custody';
@@ -135,7 +163,7 @@ async function reloadUntil(page, url, check) {
  * first) and returns its dashboard path, `/dashboard/stores/{id}`. */
 async function connectStore(page, site) {
   const { monokulo_url: base } = fixture();
-  await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
+  await saveNodes(page, { stagenet: [fakeNodeAddress()] });
   await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   await page.goto(base + '/dashboard/connect');
   await page.locator('input[name="site_url"]').fill(`https://${site}`);
@@ -161,6 +189,7 @@ async function transitionDone(page) {
 }
 
 module.exports = {
-  useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeJson, saveEngineSettings, settingsTabOf, openSettingsTab, fillSettings,
+  useRealStack, fixture, signInAsAdmin, transitionDone, fakeNodeAddress, saveNodes, fillNodes, nodeAddressBoxes, saveEngineSettings,
+  settingsTabOf, openSettingsTab, fillSettings,
   SETTINGS_TABS, reloadUntil, connectStore, VIEW_KEY, SPEND_PUBKEY,
 };

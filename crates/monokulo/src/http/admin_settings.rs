@@ -47,9 +47,10 @@ use serde::Deserialize;
 
 use crate::db::{Db, UserRow};
 use crate::views;
+use crate::admin_nodes::{self, NodeForm};
 use crate::views::admin::{
-    setting_placement, AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel, Notice, SettingKindView, SettingOwner,
-    SettingsTab,
+    setting_placement, AdminNetworkFieldView, AdminScalarFieldView, AdminSettingsViewModel, NodeRowView, NodeStatusView, Notice,
+    SettingKindView, SettingOwner, SettingsTab,
 };
 
 use super::fx::FxRequest;
@@ -156,8 +157,6 @@ struct RemoteScalarSetting {
 #[derive(Deserialize, Default)]
 struct RemoteNetwork {
     #[serde(default)]
-    description: Option<String>,
-    #[serde(default)]
     example: Option<String>,
     #[serde(default)]
     tenant_count: u64,
@@ -214,20 +213,30 @@ async fn fetch_scanner_settings(
         })
         .collect();
     let mut networks_meta = parsed.networks;
-    let networks = parsed
+    let mut networks: Vec<AdminNetworkFieldView> = parsed
         .monero_node
         .into_iter()
         .map(|(network, value)| {
             let meta = networks_meta.remove(&network).unwrap_or_default();
+            // The engine's example node for this network, as an address.
+            let example_address = meta
+                .example
+                .and_then(|example| serde_json::from_str::<serde_json::Value>(&example).ok())
+                .and_then(|example| admin_nodes::rows_from_setting(Some(&example)).into_iter().next())
+                .map(|(_, row)| row.address);
             AdminNetworkFieldView {
-                value_json: value.map(|v| serde_json::to_string_pretty(&v).unwrap_or_default()).unwrap_or_default(),
+                rows: admin_nodes::rows_from_setting(value.as_ref())
+                    .into_iter()
+                    .map(|(label, row)| NodeRowView { row, label, status: None })
+                    .collect(),
                 network,
-                description: meta.description,
-                example: meta.example,
+                example_address,
                 tenant_count: meta.tenant_count,
+                error: None,
             }
         })
         .collect();
+    networks.sort_by_key(|n| admin_nodes::NETWORKS.iter().position(|known| *known == n.network).unwrap_or(usize::MAX));
     Ok(Some((fields, networks)))
 }
 
@@ -242,13 +251,21 @@ fn with_time_limits(fields: &mut [AdminScalarFieldView]) {
     }
 }
 
-async fn build_view_model(
-    state: &AppState,
-    tab: SettingsTab,
+/// What the page says about a save, when it answers one.
+#[derive(Default)]
+struct SaveResult {
     error: Option<String>,
     success: Option<String>,
     notices: Vec<Notice>,
-) -> AdminSettingsViewModel {
+    /// The node rows as submitted, shown again (with what's wrong) when
+    /// the save was refused.
+    nodes: Option<NodeForm>,
+    /// The engine's refusal of particular settings (its `fields`), by key.
+    field_errors: Vec<(String, String)>,
+}
+
+async fn build_view_model(state: &AppState, tab: SettingsTab, result: SaveResult) -> AdminSettingsViewModel {
+    let SaveResult { error, success, notices, nodes, field_errors } = result;
     let mut monokulo_fields = monokulo_fields(state);
     with_time_limits(&mut monokulo_fields);
     let (engine_url, admin_token) = engine_connection(&state.db.lock());
@@ -270,28 +287,78 @@ async fn build_view_model(
             view.scanner_error = Some(e);
         }
     }
+    // A refused save shows the rows as they were submitted, not as saved,
+    // with the engine's word on a network at the top of its block.
+    if let Some(nodes) = &nodes {
+        for network in &mut view.scanner_networks {
+            if let Some(rows) = nodes.rows(&network.network) {
+                network.rows = rows
+                    .iter()
+                    .map(|row| NodeRowView {
+                        label: admin_nodes::parse_address(&row.address).map(|a| a.label()).unwrap_or_default(),
+                        row: row.clone(),
+                        status: None,
+                    })
+                    .collect();
+            }
+        }
+    }
+    for network in &mut view.scanner_networks {
+        let key = format!("monero_node.{}", network.network);
+        network.error = field_errors.iter().find(|(k, _)| *k == key).map(|(_, message)| message.clone());
+    }
     if view.scanner_reachable {
-        view.unreachable_networks = unreachable_networks(state, tab).await;
+        // The Monero nodes tab waits for a current answer (monokulo's short
+        // cache) to show each node's status; every other tab only marks the
+        // tab bar with whatever is already known, rather than wait on node
+        // probes to show, say, the Logging tab (decision D10).
+        let unserved = if tab == SettingsTab::Nodes {
+            match super::status_page::get_status_cached(state).await {
+                Ok(status) => {
+                    attach_node_status(&mut view.scanner_networks, &status);
+                    status.unserved_tenants
+                }
+                Err(_) => Vec::new(),
+            }
+        } else {
+            super::status_page::known_unserved(state)
+        };
+        view.unreachable_networks = unreachable_networks(unserved);
     }
     view
 }
 
 /// Networks stores use that no node answers for, from the engine's
-/// `/status` (it reports each such store as `no_reachable_node`). The
-/// Monero nodes tab waits for a current answer (monokulo's short cache);
-/// every other tab only marks the tab bar with whatever is already known,
-/// rather than wait on node probes to show, say, the Logging tab.
-async fn unreachable_networks(state: &AppState, tab: SettingsTab) -> Vec<String> {
-    let unserved = if tab == SettingsTab::Nodes {
-        super::status_page::get_status_cached(state).await.map(|status| status.unserved_tenants).unwrap_or_default()
-    } else {
-        super::status_page::known_unserved(state)
-    };
+/// `/status` (it reports each such store as `no_reachable_node`).
+fn unreachable_networks(unserved: Vec<crate::engine_client::UnservedTenant>) -> Vec<String> {
     let mut networks: Vec<String> =
         unserved.into_iter().filter(|tenant| tenant.reason == "no_reachable_node").map(|tenant| tenant.network).collect();
     networks.sort();
     networks.dedup();
     networks
+}
+
+/// Each row's status from `/status`, found by the engine's label for the
+/// node (`host:port`). A node on a network other than its block's says so;
+/// one that reports `fakechain`, or nothing, isn't called wrong.
+fn attach_node_status(networks: &mut [AdminNetworkFieldView], status: &crate::engine_client::EngineStatusResponse) {
+    for network in networks {
+        let Some(reported) = status.networks.iter().find(|n| n.network == network.network) else { continue };
+        for row in &mut network.rows {
+            let Some(node) = reported.nodes.iter().find(|node| !row.label.is_empty() && node.label == row.label) else { continue };
+            let wrong_network = node
+                .network
+                .clone()
+                .filter(|on| admin_nodes::NETWORKS.contains(&on.as_str()) && *on != network.network);
+            row.status = Some(NodeStatusView {
+                height: node.height,
+                error: node.error.clone(),
+                wrong_network,
+                in_use: node.is_active,
+                resting: node.in_cooldown,
+            });
+        }
+    }
 }
 
 fn render(state: &AppState, admin_user: &UserRow, view: AdminSettingsViewModel) -> Response {
@@ -319,11 +386,12 @@ pub async fn page(
     let tab = SettingsTab::from_id(query.tab.as_deref());
     let view = match query.saved.as_deref().and_then(take_flash) {
         Some(flash) => {
-            let mut view = build_view_model(&state, tab, None, Some(flash.success), flash.notices).await;
+            let result = SaveResult { success: Some(flash.success), notices: flash.notices, ..Default::default() };
+            let mut view = build_view_model(&state, tab, result).await;
             view.saved_tab = Some(flash.tab);
             view
         }
-        None => build_view_model(&state, tab, None, None, Vec::new()).await,
+        None => build_view_model(&state, tab, SaveResult::default()).await,
     };
     if fx.0 {
         return axum::response::Html(views::admin::settings_fragment(&view, true).into_string()).into_response();
@@ -361,13 +429,19 @@ struct SplitForm {
     engine: RemoteUpdateRequest,
     /// Engine secrets whose "Clear it" box was ticked.
     engine_clears: Vec<String>,
+    /// The node form was submitted (`node_*` fields: `admin_nodes`).
+    nodes: bool,
 }
 
 impl SplitForm {
-    fn new(form: &HashMap<String, String>) -> Result<SplitForm, String> {
+    fn new(form: &HashMap<String, String>) -> SplitForm {
         let mut split = SplitForm::default();
         for (name, value) in form {
             if name == "tab" {
+                continue;
+            }
+            if admin_nodes::is_node_field(name) {
+                split.nodes = true;
                 continue;
             }
             let (clear, bare) = match name.strip_prefix("clear:") {
@@ -379,20 +453,11 @@ impl SplitForm {
                 split.monokulo.insert(name.clone(), value.clone());
             } else if clear {
                 split.engine_clears.push(engine_key.unwrap_or(bare).to_string());
-            } else if let Some(key) = engine_key {
-                split.engine.scalars.insert(key.to_string(), value.clone());
-            } else if let Some(network) = name.strip_prefix("monero_node_") {
-                let node = if value.trim().is_empty() {
-                    None
-                } else {
-                    Some(serde_json::from_str::<serde_json::Value>(value).map_err(|e| format!("Monero node config for {network} is not valid JSON: {e}"))?)
-                };
-                split.engine.monero_node.insert(network.to_string(), node);
             } else {
-                split.engine.scalars.insert(name.clone(), value.clone());
+                split.engine.scalars.insert(engine_key.unwrap_or(bare).to_string(), value.clone());
             }
         }
-        Ok(split)
+        split
     }
 }
 
@@ -404,6 +469,11 @@ struct SaveOutcome {
     /// the tab holding it.
     error_key: Option<(String, SettingOwner)>,
     notices: Vec<Notice>,
+    /// The node rows as submitted, for the page to show again when the
+    /// save is refused.
+    nodes: Option<NodeForm>,
+    /// The engine's refusal of particular settings (its `fields`), by key.
+    field_errors: Vec<(String, String)>,
 }
 
 impl SaveOutcome {
@@ -520,6 +590,9 @@ struct RemoteUnserved {
 
 #[derive(Deserialize, Default)]
 struct RemoteSaveResponse {
+    /// The keys whose saved value changed.
+    #[serde(default)]
+    changed: Vec<String>,
     #[serde(default)]
     warnings: RemoteSaveWarnings,
 }
@@ -618,16 +691,31 @@ async fn save_engine(state: &AppState, mut req: RemoteUpdateRequest, clears: &[S
     match result {
         Ok(response) if response.status().is_success() => {
             let saved: RemoteSaveResponse = response.json().await.unwrap_or_default();
+            // New nodes: the next page shows their status, not the cached
+            // one of the nodes they replaced.
+            if saved.changed.iter().any(|key| key.starts_with("monero_node.")) {
+                super::status_page::invalidate_status_cache(state);
+            }
             SaveOutcome { notices: scanner_save_notices(saved.warnings, req.scalars.get("server.bind").map(String::as_str)), ..Default::default() }
         }
         Ok(response) => {
             let status = response.status();
             let body = response.text().await.unwrap_or_default();
             let parsed = serde_json::from_str::<serde_json::Value>(&body).ok();
-            let key = parsed.as_ref().and_then(|v| v["fields"][0]["key"].as_str().map(str::to_string));
+            let field_errors: Vec<(String, String)> = parsed
+                .as_ref()
+                .and_then(|v| v["fields"].as_array())
+                .map(|fields| {
+                    fields
+                        .iter()
+                        .filter_map(|f| Some((f["key"].as_str()?.to_string(), f["message"].as_str()?.to_string())))
+                        .collect()
+                })
+                .unwrap_or_default();
             let message = parsed.as_ref().and_then(|v| v["error"].as_str().map(str::to_string)).unwrap_or(body);
             SaveOutcome {
-                error_key: key.map(|key| (key, SettingOwner::Engine)),
+                error_key: field_errors.first().map(|(key, _)| (key.clone(), SettingOwner::Engine)),
+                field_errors,
                 ..SaveOutcome::refused(format!("The engine refused the change ({status}): {message}"))
             }
         }
@@ -640,10 +728,23 @@ async fn save_engine(state: &AppState, mut req: RemoteUpdateRequest, clears: &[S
 /// monokulo refuses its half, the engine's isn't sent, so a refused tab
 /// changes nothing.
 async fn save_tab(state: &AppState, form: &HashMap<String, String>) -> SaveOutcome {
-    let split = match SplitForm::new(form) {
-        Ok(split) => split,
-        Err(message) => return SaveOutcome::refused(message),
-    };
+    let mut split = SplitForm::new(form);
+    // The node form: the rows as submitted, with a row button applied.
+    // Nothing is saved while any row has something to fix.
+    let nodes = split.nodes.then(|| NodeForm::from_form(form, &admin_nodes::NETWORKS));
+    if let Some(nodes) = &nodes {
+        if nodes.has_errors() {
+            let first = nodes.networks.iter().find(|(_, rows)| rows.iter().any(|row| row.error.is_some())).map(|(n, _)| n.clone());
+            return SaveOutcome {
+                error_key: first.map(|network| (format!("monero_node.{network}"), SettingOwner::Engine)),
+                nodes: Some(nodes.clone()),
+                ..SaveOutcome::refused("Nothing was saved: some node addresses need fixing (marked below).".to_string())
+            };
+        }
+        for (network, rows) in &nodes.networks {
+            split.engine.monero_node.insert(network.clone(), admin_nodes::rows_to_setting(rows));
+        }
+    }
     let mut outcome = SaveOutcome::default();
     if !split.monokulo.is_empty() {
         outcome = save_monokulo(state, &split.monokulo).await;
@@ -653,8 +754,12 @@ async fn save_tab(state: &AppState, form: &HashMap<String, String>) -> SaveOutco
     }
     if !split.engine.is_empty() || !split.engine_clears.is_empty() {
         let engine = save_engine(state, split.engine, &split.engine_clears).await;
+        if engine.error.is_some() {
+            outcome.nodes = nodes;
+        }
         outcome.error = engine.error;
         outcome.error_key = engine.error_key;
+        outcome.field_errors = engine.field_errors;
         outcome.notices.extend(engine.notices);
     }
     outcome
@@ -722,8 +827,14 @@ pub async fn save(
         return super::dashboard::redirect_303(&format!("{}&saved={token}", tab.href()));
     }
     let refused = outcome.error.is_some();
-    let success = (!refused).then_some(success);
-    let mut view = build_view_model(&state, tab, outcome.error, success, outcome.notices).await;
+    let result = SaveResult {
+        error: outcome.error,
+        success: (!refused).then_some(success),
+        notices: outcome.notices,
+        nodes: outcome.nodes,
+        field_errors: outcome.field_errors,
+    };
+    let mut view = build_view_model(&state, tab, result).await;
     view.saved_tab = Some(tab);
     if !fx.0 {
         return render(&state, &admin_user, view);
@@ -1541,17 +1652,10 @@ mod tests {
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         // A store on stagenet, which needs a stagenet node saved first.
-        let first = post_settings(&router, &cookie, &[("tab", "nodes"), ("monero_node_stagenet", r#"{"host":"127.0.0.1","port":9}"#)]).await;
+        let first = post_settings(&router, &cookie, &[("tab", "nodes"), ("node_stagenet_0_address", "127.0.0.1:9")]).await;
         assert_eq!(first.status(), StatusCode::SEE_OTHER);
         engine_client
-            .create_tenant(crate::engine_client::CreateTenantRequest {
-                view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707".to_string(),
-                spend_pubkey_hex: "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90".to_string(),
-                network: Some("stagenet".to_string()),
-                confirmations_required: None,
-                order_expiry_seconds: None,
-                key_custody_backend: None,
-            })
+            .create_tenant(stagenet_tenant())
             .await
             .unwrap();
 
@@ -1560,7 +1664,7 @@ mod tests {
         assert!(html.contains("Saved. These settings take effect after the engine restarts: server.worker_threads."), "{html}");
 
         // Nothing answers on ports 9 or 10.
-        let unserved = post_settings(&router, &cookie, &[("tab", "nodes"), ("monero_node_stagenet", r#"{"host":"127.0.0.1","port":10}"#)]).await;
+        let unserved = post_settings(&router, &cookie, &[("tab", "nodes"), ("node_stagenet_0_address", "127.0.0.1:10")]).await;
         assert_eq!(unserved.status(), StatusCode::SEE_OTHER, "an unreachable node is still saved");
         let html = unescaped(&follow(&router, &cookie, unserved).await);
         assert!(html.contains("1 store uses the stagenet network, which no longer has any reachable nodes."), "{html}");
@@ -1645,5 +1749,198 @@ mod tests {
         assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
         assert_eq!(engine_settings(&engine).await["scalars"]["logging.otlp_headers"]["value"], "");
         assert_eq!(db.lock().get_setting("logging.otlp_headers").unwrap().as_deref(), Some("x-monokulo=1"), "monokulo's own is untouched");
+    }
+
+    // -- The node form (nicer_admin_screen.md step 5) -----------------------
+
+    /// A stand-in node answering `get_height`, and `get_info` with
+    /// `nettype`.
+    async fn spawn_node_on(nettype: &'static str) -> std::net::SocketAddr {
+        use axum::routing::post;
+        let app = Router::new()
+            .route("/get_height", post(|| async { axum::Json(serde_json::json!({ "height": 100, "status": "OK" })) }))
+            .route(
+                "/json_rpc",
+                post(move |axum::Json(request): axum::Json<serde_json::Value>| async move {
+                    axum::Json(serde_json::json!({ "jsonrpc": "2.0", "id": request["id"], "result": { "nettype": nettype, "status": "OK" } }))
+                }),
+            );
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        addr
+    }
+
+    /// The addresses of a network's saved nodes, primary first, as the
+    /// engine has them.
+    async fn saved_nodes(engine: &scanner_test_support::TestEngineHandle, network: &str) -> Vec<String> {
+        let node = engine_settings(engine).await["monero_node"][network].clone();
+        if node.is_null() {
+            return Vec::new();
+        }
+        std::iter::once(&node)
+            .chain(node["fallbacks"].as_array().unwrap().iter())
+            .map(|n| format!("{}:{}", n["host"].as_str().unwrap(), n["port"]))
+            .collect()
+    }
+
+    /// The Monero nodes tab's form as a browser without JavaScript sends it:
+    /// every row, the blank "Add a node" row, and (for a row button) the
+    /// button pressed.
+    fn nodes_form<'a>(network: &str, rows: &[&'a str], add: &'a str, action: Option<&'a str>) -> Vec<(String, String)> {
+        let mut fields = vec![("tab".to_string(), "nodes".to_string())];
+        for (i, address) in rows.iter().chain(std::iter::once(&add)).enumerate() {
+            fields.push((format!("node_{network}_{i}_address"), address.to_string()));
+            fields.push((format!("node_{network}_{i}_self_signed"), "on".to_string()));
+        }
+        if let Some(action) = action {
+            fields.push(("node_action".to_string(), action.to_string()));
+        }
+        fields
+    }
+
+    async fn post_nodes(router: &Router, cookie: &str, fields: &[(String, String)]) -> axum::response::Response {
+        let fields: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        post_settings(router, cookie, &fields).await
+    }
+
+    #[tokio::test]
+    async fn a_node_is_added_through_the_blank_row_and_ordered_by_its_buttons() {
+        let engine = spawn_scanner_with_known_admin_token().await;
+        let state = test_app_state_connected_to(engine.addr).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let (a, b, c) = (spawn_node_on("stagenet").await, spawn_node_on("stagenet").await, spawn_node_on("stagenet").await);
+        let (a, b, c) = (a.to_string(), b.to_string(), c.to_string());
+
+        // Adding: fill in the blank row and save.
+        let added = post_nodes(&router, &cookie, &nodes_form("stagenet", &[], &a, None)).await;
+        assert_eq!(added.status(), StatusCode::SEE_OTHER);
+        assert_eq!(saved_nodes(&engine, "stagenet").await, std::slice::from_ref(&a));
+        let page = follow(&router, &cookie, added).await;
+        assert!(page.contains(&format!(r#"name="node_stagenet_0_address" id="node-stagenet-0-address" value="{a}""#)), "{page}");
+        assert!(page.contains(r#"name="node_stagenet_1_address" id="node-stagenet-1-address" value="""#), "a fresh blank row: {page}");
+
+        post_nodes(&router, &cookie, &nodes_form("stagenet", &[&a], &b, None)).await;
+        post_nodes(&router, &cookie, &nodes_form("stagenet", &[&a, &b], &c, None)).await;
+        assert_eq!(saved_nodes(&engine, "stagenet").await, [a.clone(), b.clone(), c.clone()]);
+
+        // Each button is one post, and the saved order reads back.
+        let moved = post_nodes(&router, &cookie, &nodes_form("stagenet", &[&a, &b, &c], "", Some("up:stagenet:2"))).await;
+        assert_eq!(moved.status(), StatusCode::SEE_OTHER);
+        assert_eq!(saved_nodes(&engine, "stagenet").await, [a.clone(), c.clone(), b.clone()]);
+        post_nodes(&router, &cookie, &nodes_form("stagenet", &[&a, &c, &b], "", Some("down:stagenet:0"))).await;
+        assert_eq!(saved_nodes(&engine, "stagenet").await, [c.clone(), a.clone(), b.clone()]);
+        post_nodes(&router, &cookie, &nodes_form("stagenet", &[&c, &a, &b], "", Some("remove:stagenet:1"))).await;
+        assert_eq!(saved_nodes(&engine, "stagenet").await, [c.clone(), b.clone()]);
+
+        let page = body_text(get(&router, "/dashboard/admin/settings?tab=nodes", Some(&cookie)).await).await;
+        let first = page.find(&format!(r#"value="{c}""#)).expect(&page);
+        assert!(first < page.find(&format!(r#"value="{b}""#)).unwrap(), "the page shows the saved order");
+        assert!(page.contains(r#"<legend class="node-row-name">Primary</legend>"#), "{page}");
+    }
+
+    /// A row that can't be a node: nothing is saved, and the page comes
+    /// back with every value as typed and the problem under its address.
+    #[tokio::test]
+    async fn a_bad_address_is_shown_on_its_row_and_nothing_is_saved() {
+        let engine = spawn_scanner_with_known_admin_token().await;
+        let state = test_app_state_connected_to(engine.addr).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let good = spawn_node_on("stagenet").await.to_string();
+
+        let mut fields = nodes_form("stagenet", &[&good], "node.example.com", None);
+        fields.push(("node_stagenet_1_ssl".to_string(), "on".to_string()));
+        let refused = post_nodes(&router, &cookie, &fields).await;
+        assert_eq!(refused.status(), StatusCode::OK, "the page again, not a redirect");
+        let html = body_text(refused).await;
+        assert!(html.contains("Nothing was saved: some node addresses need fixing (marked below)."), "{html}");
+        assert!(html.contains(&format!(r#"name="node_stagenet_0_address" id="node-stagenet-0-address" value="{good}""#)), "{html}");
+        assert!(html.contains(r#"name="node_stagenet_1_address" id="node-stagenet-1-address" value="node.example.com""#), "{html}");
+        assert!(html.contains(r#"name="node_stagenet_1_ssl" id="node-stagenet-1-ssl" value="on" checked"#), "a ticked box stays ticked: {html}");
+        assert!(html.contains(r#"<span class="setting-problem" id="node-stagenet-1-error">Add the port, like node.example.com:18081.</span>"#), "{html}");
+        assert!(html.contains(r##"href="/dashboard/admin/settings?tab=nodes" fx-action="/dashboard/admin/settings?tab=nodes" fx-target="#settings-panel" fx-push-url aria-current="page""##), "{html}");
+        assert!(saved_nodes(&engine, "stagenet").await.is_empty(), "not even the good row");
+
+        // With fixi: the panel, 422.
+        let fields: Vec<(&str, &str)> = fields.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        let refused = router.clone().oneshot(fixi(authed_form_request("POST", "/dashboard/admin/settings", &cookie, &fields))).await.unwrap();
+        assert_eq!(refused.status(), StatusCode::UNPROCESSABLE_ENTITY);
+        assert!(body_text(refused).await.contains(r#"id="node-stagenet-1-error""#));
+    }
+
+    #[tokio::test]
+    async fn a_node_on_another_network_is_refused_on_its_block() {
+        let engine = spawn_scanner_with_known_admin_token().await;
+        let state = test_app_state_connected_to(engine.addr).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let mainnet = spawn_node_on("mainnet").await;
+
+        let refused = post_nodes(&router, &cookie, &nodes_form("testnet", &[], &mainnet.to_string(), None)).await;
+        assert_eq!(refused.status(), StatusCode::OK);
+        let html = unescaped(&body_text(refused).await);
+        let message = format!("127.0.0.1:{} is on mainnet, not testnet.", mainnet.port());
+        let block = &html[html.find(r#"data-network="testnet""#).expect(&html)..];
+        assert!(block.contains(&format!(r#"<p class="error" role="alert">{message}</p>"#)), "{block}");
+        assert!(block.contains(&format!(r#"value="{mainnet}""#)), "the submitted row is still there: {block}");
+        assert!(html.contains(&format!("The engine refused the change (400 Bad Request): monero_node.testnet: {message}")), "{html}");
+        assert!(saved_nodes(&engine, "testnet").await.is_empty());
+    }
+
+    /// Clearing a network stores use is saved (D2), and the page after it
+    /// says what that means.
+    #[tokio::test]
+    async fn clearing_a_network_stores_use_is_saved_and_says_so() {
+        let engine = spawn_configured_scanner(
+            scanner_test_support::TestEngineConfig::new().with_networks(&[monero::Network::Stagenet]).with_live_nodes(),
+        )
+        .await;
+        let state = test_app_state_connected_to(engine.addr).await;
+        let engine_client = state.engine_client.clone();
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let node = spawn_node_on("stagenet").await.to_string();
+        post_nodes(&router, &cookie, &nodes_form("stagenet", &[], &node, None)).await;
+        engine_client.create_tenant(stagenet_tenant()).await.unwrap();
+
+        let page = body_text(get(&router, "/dashboard/admin/settings?tab=nodes", Some(&cookie)).await).await;
+        assert!(page.contains(r#"data-network="stagenet" data-tenant-count="1""#), "{page}");
+
+        let cleared = post_nodes(&router, &cookie, &nodes_form("stagenet", &[&node], "", Some("remove:stagenet:0"))).await;
+        assert_eq!(cleared.status(), StatusCode::SEE_OTHER);
+        let html = unescaped(&follow(&router, &cookie, cleared).await);
+        assert!(html.contains("1 store uses the stagenet network, which no longer has any reachable nodes."), "{html}");
+        assert!(saved_nodes(&engine, "stagenet").await.is_empty());
+    }
+
+    /// Once saved, a node's row says how it's doing, from the engine's
+    /// `/status`: the save clears monokulo's cached copy, so the new node
+    /// shows at once.
+    #[tokio::test]
+    async fn a_saved_node_shows_its_status() {
+        let engine = spawn_configured_scanner(scanner_test_support::TestEngineConfig::new().with_live_nodes()).await;
+        let state = test_app_state_connected_to(engine.addr).await;
+        let router = build_router(state);
+        let cookie = admin_session_cookie(&router).await;
+        let page = body_text(get(&router, "/dashboard/admin/settings?tab=nodes", Some(&cookie)).await).await;
+        assert!(!page.contains(r#"class="node-status"#), "no nodes, no status");
+
+        let node = spawn_node_on("stagenet").await.to_string();
+        let saved = post_nodes(&router, &cookie, &nodes_form("stagenet", &[], &node, None)).await;
+        let html = follow(&router, &cookie, saved).await;
+        assert!(html.contains(r#"<p class="node-status">Reachable, height 99. In use.</p>"#), "{html}");
+    }
+
+    fn stagenet_tenant() -> crate::engine_client::CreateTenantRequest {
+        crate::engine_client::CreateTenantRequest {
+            view_key_hex: "0707070707070707070707070707070707070707070707070707070707070707".to_string(),
+            spend_pubkey_hex: "8621f587cfc4d6f869720476565ecd0972451ff7b8dada3498c9d3c2ca54fc90".to_string(),
+            network: Some("stagenet".to_string()),
+            confirmations_required: None,
+            order_expiry_seconds: None,
+            key_custody_backend: None,
+        }
     }
 }

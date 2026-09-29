@@ -122,6 +122,17 @@ fieldset.setting-field > legend { padding: 0; }
 .tab-bar a[aria-current="page"] { font-weight: 700; border-bottom-color: var(--tab-current); }
 .tab-marker { color: var(--tab-marker); margin-left: 0.35em; font-size: 0.8em; }
 .settings-actions { display: flex; flex-wrap: wrap; align-items: baseline; gap: var(--space-sm); }
+/* The Monero nodes tab: a block per network, a box per node row. */
+.node-network { margin: var(--space-lg) 0; }
+details.node-network > summary { cursor: pointer; font-weight: 700; }
+.node-row { border: 1px solid var(--line); border-radius: var(--radius-md); padding: var(--space-sm) var(--space-md); margin: var(--space-sm) 0; min-width: 0; }
+.node-row-name { font-weight: 700; padding: 0 var(--space-xs); }
+.node-row .setting-field input[type="text"] { width: 100%; }
+.node-status { margin: var(--space-xs) 0; color: var(--muted); }
+.node-status.is-problem { color: var(--error); }
+.node-row-actions button { margin-top: var(--space-xs); }
+/* Controls that only work with JavaScript. */
+html:not(.js) .js-only { display: none; }
 /* Read out, not shown: words that go with something only visible. */
 .visually-hidden { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .setting-problem { display: block; color: var(--error); margin-top: 0.15em; }

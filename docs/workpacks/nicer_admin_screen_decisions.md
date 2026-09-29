@@ -227,3 +227,44 @@ made.
   hidden field (a page field nobody can see or edit).
 - **Why:** they have no effect now, and the four row fields cover every
   field of `MoneroNodeSetting` that does. Nothing that works stops working.
+
+## D18 (step 5): a hidden Save comes first in the Monero nodes form
+
+- **Decision:** the Monero nodes tab's form starts with a visually hidden
+  submit button, "Save" (`tabindex="-1"`, `aria-hidden="true"`).
+- **Alternatives:** put the row buttons after the Save button (they belong
+  with their rows); a script to catch Enter (must work without JavaScript).
+- **Why:** pressing Enter in a text box presses the form's first submit
+  button, which would otherwise be the first row's "Move down" or
+  "Remove". Keyboard users get Save, as on every other tab.
+
+## D19 (step 5): the node fields' help is written on the page
+
+- **Decision:** the engine's per-network descriptions describe the JSON
+  shape ("as JSON: host, port, ssl ..."), which no longer matches what the
+  admin fills in, so the node form doesn't show them. The page writes the
+  same facts as help on each field (address: host and port, with the
+  network's example address taken from the engine's own example; TLS, off
+  by default; self-signed, on by default and only used with TLS;
+  fallbacks tried in order; a network with no nodes isn't used). The
+  engine's descriptions stay as they are for its API.
+- **Alternatives:** show the JSON-worded description anyway; change the
+  engine's descriptions (they still describe the API's JSON, which is
+  right there).
+- **Why:** every field must say what it's for (rule 4), in terms of the
+  field in front of the admin.
+
+## D20 (step 5): two Playwright confirmation tests are red between steps 5 and 6
+
+- **Decision:** at the step 5 commit the page has no textarea, so the old
+  confirmation script (still reading textareas until step 6 rewrites it)
+  asks nothing. `real-1`'s clearing step and `real-3`'s "clearing a network
+  stores use asks first" fail there, and `real-3`'s four banner tests fail
+  after it (they rely on the store that test makes). The step 5 commit
+  already moves the specs to the node form (`saveNodes`, `fillNodes`,
+  `fakeNodeAddress` in `real-helpers.js`), so step 6's script makes them
+  pass again without further spec changes.
+- **Alternatives:** rewrite the confirmation in step 5 (a step 6 item; the
+  plan says not to mix steps).
+- **Why:** keeping each commit to one step; the window is one commit wide
+  and recorded here and in the progress notes.

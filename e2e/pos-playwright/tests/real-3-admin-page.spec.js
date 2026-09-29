@@ -6,7 +6,7 @@
 // both themes.
 const { test, expect } = require('@playwright/test');
 const {
-  useRealStack, fixture, signInAsAdmin, fakeNodeJson, saveEngineSettings, openSettingsTab, SETTINGS_TABS, VIEW_KEY, SPEND_PUBKEY,
+  useRealStack, fixture, signInAsAdmin, fakeNodeAddress, saveNodes, fillNodes, saveEngineSettings, openSettingsTab, SETTINGS_TABS, VIEW_KEY, SPEND_PUBKEY,
 } = require('./real-helpers');
 
 useRealStack(test);
@@ -14,13 +14,13 @@ useRealStack(test);
 // Whatever a test did to the stagenet node, the next one starts with it set.
 test.afterEach(async ({ page }) => {
   await signInAsAdmin(page);
-  await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
+  await saveNodes(page, { stagenet: [fakeNodeAddress()] });
 });
 
 const SIZES = { phone: { width: 390, height: 844 }, desktop: { width: 1280, height: 900 } };
 
 for (const [name, size] of Object.entries(SIZES)) {
-  test(`every setting is described, the node example opens, and nothing scrolls sideways (${name})`, async ({ page }) => {
+  test(`every setting is described, with examples, and nothing scrolls sideways (${name})`, async ({ page }) => {
     await page.setViewportSize(size);
     await signInAsAdmin(page);
     let total = 0;
@@ -33,9 +33,11 @@ for (const [name, size] of Object.entries(SIZES)) {
         await expect(field.locator('.field-help').first()).toBeVisible();
       }
       if (tab === 'nodes') {
-        const example = page.locator('details.field-help').first();
-        await example.locator('summary').click();
-        await expect(example.locator('pre')).toBeVisible();
+        // A network with no nodes and no stores starts closed; opened, its
+        // address help carries an example address for that network.
+        const closed = page.locator('details[data-network="stagenet"] > summary');
+        if (await closed.count()) await closed.click();
+        await expect(page.locator('[data-network="stagenet"] .field-help code').first()).toBeVisible();
       }
       const sideways = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       expect(sideways, tab).toBeLessThanOrEqual(0);
@@ -49,12 +51,12 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   await signInAsAdmin(page);
   // Testnet gets a node no store uses. The fake node says it's on
   // stagenet, so testnet gets one that doesn't answer, which is saved.
-  const silent = JSON.stringify({ host: '127.0.0.1', port: 9 });
-  await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson(), monero_node_testnet: silent });
+  await saveNodes(page, { stagenet: [fakeNodeAddress()], testnet: ['127.0.0.1:9'] });
   await expect(page.getByText('Settings saved and applied.')).toBeVisible();
 
   await openSettingsTab(page, 'nodes');
-  if (Number(await page.locator('textarea[name="monero_node_stagenet"]').getAttribute('data-tenant-count')) === 0) {
+  const stagenet = page.locator('.node-network[data-network="stagenet"]');
+  if (Number(await stagenet.getAttribute('data-tenant-count')) === 0) {
     // Run on its own: make a store on stagenet to protect.
     await page.goto(base + '/dashboard/connect');
     await page.locator('input[name="site_url"]').fill('https://guarded.example.com');
@@ -65,7 +67,6 @@ test('clearing a network stores use asks first; one no store uses does not', asy
     await expect(page.getByRole('heading', { name: 'Store connected' })).toBeVisible();
     await openSettingsTab(page, 'nodes');
   }
-  const stagenet = page.locator('textarea[name="monero_node_stagenet"]');
   const count = Number(await stagenet.getAttribute('data-tenant-count'));
   expect(count).toBeGreaterThan(0);
   const expected = count === 1 ? '1 store uses the stagenet network' : `${count} stores use the stagenet network`;
@@ -75,7 +76,7 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   });
 
   // Dismissed: nothing is sent.
-  await stagenet.fill('');
+  await fillNodes(page, { stagenet: [] });
   let asked = '';
   page.once('dialog', async (dialog) => { asked = dialog.message(); await dialog.dismiss(); });
   await page.locator('#settings-panel').getByRole('button', { name: 'Save', exact: true }).click();
@@ -92,13 +93,13 @@ test('clearing a network stores use asks first; one no store uses does not', asy
   // Testnet has no stores: no question.
   let testnetAsked = false;
   page.once('dialog', async (dialog) => { testnetAsked = true; await dialog.accept(); });
-  await page.locator('textarea[name="monero_node_testnet"]').fill('');
+  await fillNodes(page, { testnet: [] });
   await page.locator('#settings-panel').getByRole('button', { name: 'Save', exact: true }).click();
   await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   expect(testnetAsked).toBe(false);
   expect(posts).toBe(2);
 
-  await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
+  await saveNodes(page, { stagenet: [fakeNodeAddress()] });
   await expect(page.getByText('Settings saved and applied.')).toBeVisible();
 });
 
@@ -117,7 +118,7 @@ for (const scheme of ['light', 'dark']) {
       // the second save are the node's; the restart shows on its field.
       await saveEngineSettings(page, { 'server.worker_threads': String((threads % 8) + 1) });
       await expect(page.locator('p.warning').first()).toBeVisible();
-      await saveEngineSettings(page, { monero_node_stagenet: '' });
+      await saveNodes(page, { stagenet: [] });
       const red = page.locator('p.error[role="alert"]').first();
       await expect(red).toBeVisible();
       const [color, token] = await red.evaluate((el) => {
@@ -133,7 +134,7 @@ for (const scheme of ['light', 'dark']) {
       expect(color).toBe(scheme === 'dark' ? 'rgb(255, 107, 107)' : 'rgb(176, 0, 32)');
       const sideways = await page.evaluate(() => document.documentElement.scrollWidth - document.documentElement.clientWidth);
       expect(sideways).toBeLessThanOrEqual(0);
-      await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson() });
+      await saveNodes(page, { stagenet: [fakeNodeAddress()] });
       await expect(page.getByText('Settings saved and applied.')).toBeVisible();
     });
   }
