@@ -48,6 +48,10 @@ concurrency:
 
 env:
   CARGO_TERM_COLOR: always
+  # Debug and test builds keep file and line numbers for backtraces but
+  # none of the rest of the debug info, which CI never reads: our own crates
+  # (which the Rust cache does not keep) compile and link faster.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
 
 jobs:
   tests:

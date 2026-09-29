@@ -5,6 +5,10 @@
 # JUnit report that scripts/test-summary.py turns into the job summary.
 [profile.ci]
 fail-fast = false
+# A test that fails and then passes on its retry does not fail the run, but
+# is reported as flaky: the JUnit report keeps the failed attempt, and the
+# job summary lists it under Flaky.
+retries = 1
 failure-output = "immediate-final"
 status-level = "fail"
 final-status-level = "slow"

@@ -36,6 +36,11 @@ def outcome(case):
             return 'failed', found
     if case.find('skipped') is not None:
         return 'skipped', None
+    # cargo-nextest's JUnit keeps a retried test's failed attempts.
+    for tag in ('flakyFailure', 'flakyError'):
+        found = case.find(tag)
+        if found is not None:
+            return 'flaky', found
     return 'passed', None
 
 
@@ -54,14 +59,14 @@ def main():
         print(__doc__, file=sys.stderr)
         return 2
     title, rows = sys.argv[1], []
-    failures = []
+    failures, flaky = [], []
     for argument in sys.argv[2:]:
         label, _, path = argument.partition('=')
         path = Path(path)
         if not path.is_file():
             rows.append((label, None))
             continue
-        counts = {'passed': 0, 'failed': 0, 'skipped': 0}
+        counts = {'passed': 0, 'failed': 0, 'flaky': 0, 'skipped': 0}
         try:
             found, seconds = read(path)
             for case in found:
@@ -69,7 +74,7 @@ def main():
                 counts[state] += 1
                 if detail is not None:
                     name = ' › '.join(part for part in (case.get('classname'), case.get('name')) if part)
-                    failures.append((label, name, message(detail)))
+                    (flaky if state == 'flaky' else failures).append((label, name, message(detail)))
         except ET.ParseError as error:
             rows.append((label, f'unreadable report: {error}'))
             continue
@@ -77,24 +82,26 @@ def main():
 
     print(f'## {title}')
     print()
-    print('| Suite | Result | Passed | Failed | Skipped | Time |')
-    print('| --- | --- | ---: | ---: | ---: | ---: |')
-    total = {'passed': 0, 'failed': 0, 'skipped': 0}
+    print('| Suite | Result | Passed | Failed | Flaky | Skipped | Time |')
+    print('| --- | --- | ---: | ---: | ---: | ---: | ---: |')
+    total = {'passed': 0, 'failed': 0, 'flaky': 0, 'skipped': 0}
     for label, data in rows:
         if not isinstance(data, tuple):
-            print(f'| {label} | ⚠️ {data or "no report"} | | | | |')
+            print(f'| {label} | ⚠️ {data or "no report"} | | | | | |')
             continue
         counts, seconds = data
         for key in total:
             total[key] += counts[key]
-        result = '❌ failed' if counts['failed'] else '✅ passed'
-        print(f"| {label} | {result} | {counts['passed']} | {counts['failed']} | {counts['skipped']} | {seconds:.0f}s |")
-    print(f"| **Total** | | **{total['passed']}** | **{total['failed']}** | **{total['skipped']}** | |")
+        result = '❌ failed' if counts['failed'] else '⚠️ passed on retry' if counts['flaky'] else '✅ passed'
+        print(f"| {label} | {result} | {counts['passed']} | {counts['failed']} | {counts['flaky']} | {counts['skipped']} | {seconds:.0f}s |")
+    print(f"| **Total** | | **{total['passed']}** | **{total['failed']}** | **{total['flaky']}** | **{total['skipped']}** | |")
     print()
-    if failures:
-        print(f'### Failures ({len(failures)})')
+    for heading, listed in (('Failures', failures), ('Flaky: failed, then passed on retry', flaky)):
+        if not listed:
+            continue
+        print(f'### {heading} ({len(listed)})')
         print()
-        for label, name, text in failures:
+        for label, name, text in listed:
             first = text.splitlines()[0] if text else 'no message'
             print(f'<details><summary><b>{label}</b>: <code>{escape(name)}</code>: {escape(first[:200])}</summary>')
             print()
