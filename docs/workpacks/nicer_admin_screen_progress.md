@@ -15,16 +15,15 @@ Work pack: `docs/workpacks/nicer_admin_screen.md`. Decisions:
 | 5 | The node form | done | `admin settings: node form rows and addresses`, `admin settings: the Monero nodes form` |
 | 6 | JavaScript enhancements | done | `admin settings: node form scripts` |
 | 7 | Playwright | done | `e2e: the tabbed admin settings page and its node form` |
-| 8 | Docs and cleanup | not started | |
+| 8 | Docs and cleanup | done | `docs: the tabbed admin settings page` |
 
 ## Resume here
 
-Start step 8: docs and cleanup. Update `docs/DESIGN.md`, `README.md`,
-`docs/WOOCOMMERCE_ROADMAP.md` and `docs/txid_lookup_and_scan_chunking_wbs.md`
-where they describe the admin settings page or editing `monero_node` JSON
-on it (`grep -n 'admin/settings\|monero_node'`); remove dead code; check
-the acceptance grep; run everything once more. Then the rebase, retest and
-push described in the task.
+All eight steps are done. What's left is outside the work pack: rebase
+onto the latest `origin/main`, rerun `cargo test --workspace`, clippy and
+the real-binaries Playwright suite, fix anything the rebase broke in
+commits of its own (`admin settings: adapt to <what landed>`), and push
+`nicer-admin-screen`. Don't open a PR.
 
 ## Test status at last commit
 
@@ -60,6 +59,11 @@ push described in the task.
 
 - After step 7: `cargo test --workspace` 1288 passed, 0 failed, 24 ignored
   (no Rust changes); Playwright real-binaries 39 passed, 0 failed.
+
+- After step 8: `cargo test --workspace` 1288 passed, 0 failed, 24 ignored;
+  clippy 68 warnings, none in lines this work added (the pre-existing ones
+  in `scanner/src/daemon.rs` and `scanner-test-support/src/lib.rs` remain);
+  Playwright real-binaries 39 passed, 0 failed.
 
 ## Notes per step
 
@@ -304,3 +308,21 @@ push described in the task.
   `COVERAGE_SCREENSHOTS=1`: 28 images).
 - Without JavaScript, clicks wait for the page's view transition to end
   (`transitionDone`), as the helpers' note explains.
+
+### Step 8
+
+- Docs: `README.md` (the page's tabs; nodes as JSON through the API or as
+  a form on the Monero nodes tab), `docs/LOGGING.md` and
+  `docs/ABUSE_PROTECTION.md` (settings are on tabs now, not "halves"),
+  `docs/txid_lookup_and_scan_chunking_wbs.md` (a new engine setting needs a
+  tab in `setting_placement`; it referred to a removed test). `docs/DESIGN.md`
+  and `docs/WOOCOMMERCE_ROADMAP.md` only mention `[monero_node]` as the old
+  config file, nothing about the admin page, so they are unchanged.
+- Cleanup: the `.setting-field details pre` rule (the node Example's) is
+  gone; `.setting-field textarea` stays, as `SettingKindView::Json` still
+  renders one. The old section helpers, the `scanner-settings` route and
+  `value_json` went in steps 3 and 5. A module comment in
+  `http/admin_settings.rs` no longer mentions two forms.
+- Acceptance: `grep -rn 'scanner-settings\|monokulo_section\|engine_section\|monero_node_' crates e2e`
+  finds only two engine API tests in `crates/scanner/src/http/tests.rs`
+  whose names contain `monero_node_` (they test the engine's JSON API).

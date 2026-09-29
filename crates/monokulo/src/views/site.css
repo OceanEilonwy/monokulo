@@ -112,7 +112,6 @@ fieldset.setting-field > legend { padding: 0; }
 .setting-field label.inline { display: inline-flex; gap: 0.3em; align-items: center; margin: 0.2em 1.2em 0.2em 0; font-weight: 400; }
 .setting-field input, .setting-field select, .setting-field textarea { max-width: 100%; }
 .setting-field textarea { width: 100%; font-family: ui-monospace, monospace; }
-.setting-field details pre { margin: 0.4em 0; }
 .setting-pending { display: block; color: var(--warning); font-weight: 700; margin-top: 0.15em; }
 /* The admin settings page's tabs: a row of plain links. On a phone the row
    scrolls sideways inside itself rather than widening the page. */

@@ -118,7 +118,7 @@ the parameter.
 
 ## Settings
 
-All on the admin settings page, under "Abuse protection", with help text and
+All on the admin settings page's "Abuse protection" tab, with help text and
 validation; everything but the onion listener applies immediately.
 
 | Setting | Env var | Default |

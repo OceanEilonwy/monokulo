@@ -513,6 +513,6 @@ mod tests {
     #[test]
     fn only_node_form_fields_are_node_fields() {
         assert!(is_node_field("node_stagenet_0_address") && is_node_field("node_action") && is_node_field("node_mainnet_12_self_signed"));
-        assert!(!is_node_field("node.stagenet") && !is_node_field("monero_node_stagenet") && !is_node_field("node_Stagenet_0_address"));
+        assert!(!is_node_field("node.stagenet") && !is_node_field("nodes_stagenet_0_address") && !is_node_field("node_Stagenet_0_address"));
     }
 }

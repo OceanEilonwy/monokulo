@@ -22,7 +22,7 @@
 //! multi-tenant "one monokulo, many engines" design - see this crate's own
 //! `EngineClient`, which already assumes exactly one engine base URL.
 //!
-//! Every field on both forms always carries its *current effective* value (secrets excepted: they are never echoed back, and an empty secret field keeps the current one)
+//! Every field on every tab always carries its *current effective* value (secrets excepted: they are never echoed back, and an empty secret field keeps the current one)
 //! (`value="..."`, `env > database > default`) - per the explicit "the
 //! settings should have a value='' that corresponds to the active setting"
 //! requirement - and the save button can always be clicked: submitting the

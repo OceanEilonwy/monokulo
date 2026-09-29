@@ -69,14 +69,14 @@ other knob uses (`settings.rs:95-121`'s pattern), e.g.:
 PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB => { key: "payment.scan_chunk_memory_budget_mb", env: "SCANNER_PAYMENT_SCAN_CHUNK_MEMORY_BUDGET_MB", default: "8" },
 ```
 
-Appearing in the admin settings page requires **no monokulo UI code at all** -
-confirmed by reading `instance_admin.rs:135-143`: `GET /api/v1/admin/settings`
-already iterates `engine_settings::ALL` generically, and monokulo's own
-`admin_settings_page` view renders whatever `scanner_fields` that response
-carries (confirmed via `admin_settings_page_shows_scanner_fields_and_networks_
-when_reachable`'s own test, `crates/monokulo/src/views/admin.rs:405-432`) -
-adding the setting to the macro list is the entire "add this as a setting to
-the admin page" task.
+Appearing in the admin settings page needs almost no monokulo UI code:
+`GET /api/v1/admin/settings` iterates `engine_settings::ALL` generically, and
+monokulo's `admin_settings_page` view renders whatever `scanner_fields` that
+response carries. Which tab it shows on is decided by
+`views::admin::setting_placement`; a key it doesn't place lands on an
+"Other" tab, and the test `every_setting_known_today_has_a_named_tab` fails
+until it's given a tab (this one is on Server, next to the other
+machine-sizing settings).
 
 - test: `settings::tests::all_knobs_load_with_defaults` (`settings.rs:158-161`'s
   neighborhood) gains this knob, same pattern as its siblings.
