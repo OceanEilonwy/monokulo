@@ -722,12 +722,11 @@ pub(super) async fn render_store_settings_page(
     // field to read.
     let zero_conf_enabled = tenant_result.as_ref().is_ok_and(|t| t.confirmations_required == 0);
 
-    let fx_provider_options = state
+    let fx_provider_options = fx_provider_options(&state.exchange_rate.available_providers(), &row.fx_providers);
+    let haveno_settings = state
         .exchange_rate
-        .available_providers()
-        .into_iter()
-        .map(|name| views::store_settings::FxProviderOption { selected: name == row.fx_provider, name: name.to_string() })
-        .collect();
+        .is_available(crate::exchange_rate_config::HAVENO)
+        .then(|| views::store_settings::HavenoSettingsView::from(&row.fx_provider_settings.haveno));
     let (base_currency_options, confirmation_thresholds) = {
         let db = state.db.lock();
         let options = crate::currencies::currency_options(&db, &row.base_currency).unwrap_or_default();
@@ -771,8 +770,8 @@ pub(super) async fn render_store_settings_page(
             connection_id: row.id,
             display_name: display_name_for(&row.site_url),
             confirmations_required,
-            fx_provider: row.fx_provider,
             fx_provider_options,
+            haveno_settings,
             base_currency: row.base_currency,
             base_currency_options,
             confirmation_thresholds,
@@ -823,7 +822,14 @@ async fn order_currency_options_for(state: &AppState, row: &StoreConnectionRow) 
     // failing this whole page - same "show something real-ish rather than
     // fail outright" approach the store overview page's own health check
     // already takes for its own engine-reachability failures.
-    let order_currency_options = state.exchange_rate.supported_currencies_for(row).await.unwrap_or_else(|_| vec!["XMR".to_string()]);
+    let known_currencies: Vec<String> = state
+        .db
+        .lock()
+        .list_currencies()
+        .map(|rows| rows.into_iter().map(|c| c.canonical_code).collect())
+        .unwrap_or_default();
+    let order_currency_options =
+        state.exchange_rate.supported_currencies_for(row, &known_currencies).await.unwrap_or_else(|_| vec!["XMR".to_string()]);
     let order_currency_is_locked_to_xmr = order_currency_options.len() == 1 && order_currency_options[0] == "XMR";
     (order_currency_options, order_currency_is_locked_to_xmr)
 }
@@ -921,7 +927,7 @@ pub async fn create_order(
     // Phase 3) - monokulo's own exchange rate does the same computation
     // `http::pay::create_order` does for a real storefront call. `"XMR"`
     // always uses the trivial identity rate regardless of this store's
-    // chosen `fx_provider`; every other currency goes through it.
+    // chosen ordered `fx_providers`; every other currency goes through it.
     let (piconero_per_unit, provider) = match state.exchange_rate.piconero_per_unit_for(&row, currency).await {
         Ok(Some(result)) => result,
         Ok(None) => {
@@ -1144,29 +1150,74 @@ pub async fn update_diagnostics(
     }
 }
 
-#[derive(Deserialize)]
-pub struct UpdateFxProviderForm {
-    pub fx_provider: String,
+/// Every provider this instance offers, for the store settings form: the
+/// store's enabled ones first in the store's own order, then the rest in the
+/// instance's order. `selected` means "the store uses it".
+fn fx_provider_options(available: &[&'static str], enabled: &[String]) -> Vec<views::store_settings::FxProviderOption> {
+    let mut options: Vec<views::store_settings::FxProviderOption> = enabled
+        .iter()
+        .filter(|name| available.contains(&name.as_str()))
+        .map(|name| views::store_settings::FxProviderOption { name: name.clone(), selected: true })
+        .collect();
+    for name in available {
+        if !options.iter().any(|o| o.name == *name) {
+            options.push(views::store_settings::FxProviderOption { name: name.to_string(), selected: false });
+        }
+    }
+    options
+}
+
+/// Reads the store settings form (`use_<provider>` checkbox and
+/// `position_<provider>` number per provider) into the store's ordered
+/// provider list: the ticked providers, sorted by their position number,
+/// with ties (and a missing or unreadable number) falling back to the order
+/// the instance lists them in. A field naming a provider this instance
+/// hasn't enabled is an error rather than being ignored - it means the form
+/// is stale or forged, and silently dropping it would save something other
+/// than what the merchant asked for.
+fn parse_fx_providers_form(available: &[&'static str], form: &HashMap<String, String>) -> Result<Vec<String>, String> {
+    for key in form.keys() {
+        let Some(name) = key.strip_prefix("use_").or_else(|| key.strip_prefix("position_")) else { continue };
+        if !available.contains(&name) {
+            return Err(format!("{name:?} is not an available exchange rate provider on this instance."));
+        }
+    }
+    let mut chosen: Vec<(u32, usize, &str)> = available
+        .iter()
+        .enumerate()
+        .filter(|(_, name)| form.get(&format!("use_{name}")).is_some())
+        .map(|(index, name)| {
+            let position = form.get(&format!("position_{name}")).and_then(|p| p.trim().parse::<u32>().ok()).unwrap_or(u32::MAX);
+            (position, index, *name)
+        })
+        .collect();
+    chosen.sort();
+    Ok(chosen.into_iter().map(|(_, _, name)| name.to_string()).collect())
 }
 
 /// `POST /dashboard/stores/{id}/settings/fx-provider` - a per-store
-/// choice of exchange-rate provider (a real follow-up to
-/// `docs/fx_refactor.md`: "the FX provider should be configurable on a
-/// per-store basis"). Unlike `update_confirmations_required`, this never
-/// calls the engine at all - `fx_provider` is entirely monokulo's own
-/// concept (`db::StoreConnectionRow::fx_provider`), so a plain local update
-/// plus a redirect is the whole handler. Validated against
-/// `ExchangeRateProviders::available_providers` (this instance's own real
-/// configuration) rather than accepted verbatim - a merchant selecting
-/// `"coingecko"` on an instance with no Coingecko currencies configured
-/// would otherwise silently create orders that fail at order-creation time
-/// instead of being told clearly, right here, that the choice doesn't work.
-pub async fn update_fx_provider(
+/// choice of which exchange-rate providers to use and in what order (a real
+/// follow-up to `docs/fx_refactor.md`: "the FX provider should be
+/// configurable on a per-store basis"). Unlike `update_confirmations_required`,
+/// this never calls the engine at all - the provider list is entirely
+/// monokulo's own concept (`db::StoreConnectionRow::fx_providers`), so a
+/// plain local update plus a redirect is the whole handler. Every provider is
+/// validated against `ExchangeRateProviders::available_providers` (this
+/// instance's own real configuration) rather than accepted verbatim - a
+/// merchant selecting a provider this instance has not enabled would
+/// otherwise silently create orders that skip it, instead of being told
+/// clearly, right here, that the choice doesn't work.
+///
+/// Takes effect on the very next order: order creation reads the store row
+/// afresh on every request and nothing between caches it. The same form
+/// carries Haveno's per-store limits (`crate::fx_provider_settings`), saved
+/// together with the provider list.
+pub async fn update_fx_providers(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
     Path(id): Path<String>,
-    Form(form): Form<UpdateFxProviderForm>,
+    Form(form): Form<HashMap<String, String>>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::FxProvider;
     let row = match load_owned_connection(&state, &user, &id) {
@@ -1175,16 +1226,27 @@ pub async fn update_fx_provider(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    if !state.exchange_rate.is_available(&form.fx_provider) {
-        return render_store_settings_page(
-            &state,
-            row,
-            &user,
-            Some(format!("{:?} is not an available exchange rate provider on this instance.", form.fx_provider)),
-            None,
-            Some((SECTION, fx)),
-        )
-        .await;
+    let providers = match parse_fx_providers_form(&state.exchange_rate.available_providers(), &form) {
+        Ok(providers) => providers,
+        Err(message) => return render_store_settings_page(&state, row, &user, Some(message), None, Some((SECTION, fx))).await,
+    };
+
+    // Haveno's per-store limits ride along in the same form, but only when
+    // this instance offers Haveno (otherwise the page never rendered them).
+    // Parsed in a block of its own so the database lock is dropped before
+    // any `.await`.
+    let mut settings = row.fx_provider_settings.clone();
+    if state.exchange_rate.is_available(crate::exchange_rate_config::HAVENO) {
+        let parsed = {
+            let db = state.db.lock();
+            let resolve = |input: &str| crate::currencies::resolve_currency(&db, input).map_err(|_| ());
+            crate::fx_provider_settings::parse_haveno_form(&form, &resolve)
+        };
+        match parsed {
+            Ok(Some(haveno)) => settings.haveno = haveno,
+            Ok(None) => {}
+            Err(message) => return render_store_settings_page(&state, row, &user, Some(message), None, Some((SECTION, fx))).await,
+        }
     }
 
     // Bound to a local first, not matched on directly: a `MutexGuard`
@@ -1192,7 +1254,7 @@ pub async fn update_fx_provider(
     // of that match (a real Rust footgun, not an oversight) - held across
     // the `Err` arm's own `.await` below, it would make this handler's
     // future `!Send` and fail to compile as an axum route at all.
-    let update_result = state.db.lock().update_store_connection_fx_provider(&row.id, &form.fx_provider);
+    let update_result = state.db.lock().update_store_connection_fx(&row.id, &providers, &settings);
     match update_result {
         Ok(()) => saved(&state, row, &user, SECTION, fx, &format!("/dashboard/stores/{id}/settings")).await,
         Err(_) => {
@@ -1232,7 +1294,7 @@ pub async fn update_base_currency(
     };
 
     // Bound to a local first, not matched on directly - see
-    // `update_fx_provider`'s own doc comment on exactly this footgun
+    // `update_fx_providers`'s own doc comment on exactly this footgun
     // (a `MutexGuard` temporary in a `match` scrutinee stays alive across
     // every arm, including one that `.await`s, which would make this
     // handler's future `!Send`).
@@ -1431,6 +1493,8 @@ pub async fn save_confirmation_thresholds(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::HashMap;
+
     use axum::Router;
     use axum::body::Body;
     use axum::http::{Request, StatusCode};
@@ -1441,6 +1505,8 @@ mod tests {
     use crate::views::orders::{OrderDetailData, OrderDetailViewModel};
 
     use super::super::{AppState, build_router};
+    use super::{fx_provider_options, parse_fx_providers_form};
+    use crate::views;
     use super::parse_extra_headers;
 
     /// Same fixed-scalar construction `engine_client.rs`'s and
@@ -1917,6 +1983,199 @@ mod tests {
             }
         }
         out
+    }
+
+    /// A state whose only rate provider is Haveno (never contacted by these
+    /// tests - nothing here asks for a quote).
+    async fn haveno_state() -> (AppState, scanner_test_support::TestEngineHandle) {
+        let (mut state, engine) = test_state_with_real_engine().await;
+        state.exchange_rate = std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::haveno_only("http://127.0.0.1:1"));
+        (state, engine)
+    }
+
+    async fn get_with_bearer(router: &Router, uri: &str, bearer: &str) -> String {
+        let response = router
+            .clone()
+            .oneshot(Request::builder().method("GET").uri(uri).header("authorization", format!("Bearer {bearer}")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        body_text(response).await
+    }
+
+    fn haveno_form<'a>(currencies: &'a str, spread: &'a str, offers: &'a str, depth: &'a str) -> Vec<(&'a str, &'a str)> {
+        vec![
+            ("use_haveno", "on"),
+            ("position_haveno", "1"),
+            ("haveno_currencies", currencies),
+            ("haveno_max_spread_pct", spread),
+            ("haveno_min_offers_per_side", offers),
+            ("haveno_min_depth_xmr_per_side", depth),
+        ]
+    }
+
+    #[tokio::test]
+    async fn the_haveno_limits_are_shown_and_saved_with_the_provider_list() {
+        let (state, _engine) = haveno_state().await;
+        let router = build_router(state.clone());
+        let session = signed_up_and_logged_in_session_token(&router, "haveno-limits@example.com", "correct horse battery staple").await;
+        let (connection_id, _pk) = create_connection(&router, &session).await;
+        let settings_uri = format!("/dashboard/stores/{connection_id}/settings");
+        let fx_uri = format!("{settings_uri}/fx-provider");
+
+        let html = get_with_bearer(&router, &settings_uri, &session).await;
+        assert!(html.contains("Haveno (RetoSwap) limits"), "the limits are offered while haveno is: {html}");
+        assert!(html.contains(r#"name="haveno_max_spread_pct" value="5""#), "defaults are shown: {html}");
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(&fx_uri, &session, &haveno_form("eur, $", "2.5", "3", "1.5")))
+            .await
+            .unwrap();
+        assert!(response.status().is_redirection() || response.status() == StatusCode::OK, "got {}", response.status());
+
+        let row = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        assert_eq!(row.fx_providers, vec!["haveno"]);
+        let haveno = row.fx_provider_settings.haveno;
+        assert_eq!(haveno.currencies, vec!["EUR", "USD"], "tickers resolve to canonical codes");
+        assert_eq!((haveno.max_spread_pct, haveno.min_offers_per_side, haveno.min_depth_xmr_per_side), (2.5, 3, 1.5));
+
+        let html = get_with_bearer(&router, &settings_uri, &session).await;
+        assert!(html.contains(r#"name="haveno_currencies" value="EUR, USD""#), "the saved values come back: {html}");
+        assert!(html.contains(r#"name="haveno_max_spread_pct" value="2.5""#), "{html}");
+    }
+
+    #[tokio::test]
+    async fn an_invalid_haveno_limit_is_rejected_and_nothing_is_saved() {
+        let (state, _engine) = haveno_state().await;
+        let router = build_router(state.clone());
+        let session = signed_up_and_logged_in_session_token(&router, "haveno-invalid@example.com", "correct horse battery staple").await;
+        let (connection_id, _pk) = create_connection(&router, &session).await;
+        let fx_uri = format!("/dashboard/stores/{connection_id}/settings/fx-provider");
+        let before = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+
+        for (form, expected) in [
+            (haveno_form("USD, ZZZ", "5", "1", "0"), "not a known currency"),
+            (haveno_form("USD, XMR", "5", "1", "0"), "XMR is never priced"),
+            (haveno_form("", "0", "1", "0"), "Maximum spread"),
+            (haveno_form("", "5", "0", "0"), "Minimum offers"),
+            (haveno_form("", "5", "1", "-1"), "Minimum XMR"),
+        ] {
+            let response = router.clone().oneshot(form_post_request(&fx_uri, &session, &form)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "a rejected form re-renders the page");
+            let html = body_text(response).await;
+            assert!(html.contains(expected), "expected {expected:?}, got: {html}");
+            let after = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+            assert_eq!(after.fx_providers, before.fx_providers, "nothing is saved on a rejected form ({expected})");
+            assert_eq!(after.fx_provider_settings, before.fx_provider_settings, "nothing is saved on a rejected form ({expected})");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_form_without_the_haveno_fields_keeps_the_stores_haveno_limits() {
+        let (state, _engine) = haveno_state().await;
+        let router = build_router(state.clone());
+        let session = signed_up_and_logged_in_session_token(&router, "haveno-keep@example.com", "correct horse battery staple").await;
+        let (connection_id, _pk) = create_connection(&router, &session).await;
+        let fx_uri = format!("/dashboard/stores/{connection_id}/settings/fx-provider");
+        router.clone().oneshot(form_post_request(&fx_uri, &session, &haveno_form("USD", "2", "2", "1"))).await.unwrap();
+
+        // Only the provider fields: the limits are not part of this submission.
+        router.clone().oneshot(form_post_request(&fx_uri, &session, &[("use_haveno", "on"), ("position_haveno", "1")])).await.unwrap();
+
+        let haveno = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap().fx_provider_settings.haveno;
+        assert_eq!((haveno.currencies, haveno.max_spread_pct, haveno.min_offers_per_side), (vec!["USD".to_string()], 2.0, 2));
+    }
+
+    #[tokio::test]
+    async fn haveno_fields_are_ignored_and_not_shown_when_the_instance_does_not_offer_haveno() {
+        let (mut state, _engine) = test_state_with_real_engine().await;
+        state.exchange_rate = std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::coingecko_only("http://127.0.0.1:1"));
+        let router = build_router(state.clone());
+        let session = signed_up_and_logged_in_session_token(&router, "haveno-off@example.com", "correct horse battery staple").await;
+        let (connection_id, _pk) = create_connection(&router, &session).await;
+
+        let html = get_with_bearer(&router, &format!("/dashboard/stores/{connection_id}/settings"), &session).await;
+        assert!(!html.contains("haveno_max_spread_pct"), "no haveno limits without haveno: {html}");
+
+        let fx_uri = format!("/dashboard/stores/{connection_id}/settings/fx-provider");
+        let mut form = haveno_form("USD", "1", "1", "0");
+        form.retain(|(k, _)| k.starts_with("haveno_"));
+        form.push(("use_coingecko", "on"));
+        router.clone().oneshot(form_post_request(&fx_uri, &session, &form)).await.unwrap();
+        let row = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        assert_eq!(row.fx_provider_settings, crate::fx_provider_settings::FxProviderSettings::default(), "forged haveno fields change nothing");
+        assert_eq!(row.fx_providers, vec!["coingecko"]);
+    }
+
+    #[tokio::test]
+    async fn the_order_currency_dropdown_for_a_haveno_store_is_its_own_list_without_asking_haveno() {
+        let (state, _engine) = haveno_state().await; // haveno at an address nothing listens on
+        let router = build_router(state.clone());
+        let session = signed_up_and_logged_in_session_token(&router, "haveno-dropdown@example.com", "correct horse battery staple").await;
+        let (connection_id, _pk) = create_connection(&router, &session).await;
+        let fx_uri = format!("/dashboard/stores/{connection_id}/settings/fx-provider");
+        let orders_uri = format!("/dashboard/stores/{connection_id}/orders/new");
+
+        // Empty list: every currency in the table.
+        router.clone().oneshot(form_post_request(&fx_uri, &session, &haveno_form("", "5", "1", "0"))).await.unwrap();
+        let html = get_with_bearer(&router, &orders_uri, &session).await;
+        for code in ["XMR", "USD", "EUR", "GBP"] {
+            assert!(html.contains(&format!(r#"<option value="{code}">{code}</option>"#)), "{code} missing: {html}");
+        }
+
+        // A list: only those (and XMR).
+        router.clone().oneshot(form_post_request(&fx_uri, &session, &haveno_form("EUR", "5", "1", "0"))).await.unwrap();
+        let html = get_with_bearer(&router, &orders_uri, &session).await;
+        assert!(html.contains(r#"<option value="EUR">EUR</option>"#) && html.contains(r#"<option value="XMR">XMR</option>"#), "{html}");
+        assert!(!html.contains(r#"<option value="USD">USD</option>"#), "USD is off the store's list: {html}");
+    }
+
+    fn form(fields: &[(&str, &str)]) -> HashMap<String, String> {
+        fields.iter().map(|(k, v)| (k.to_string(), v.to_string())).collect()
+    }
+
+    #[test]
+    fn the_provider_form_yields_the_ticked_providers_in_position_order() {
+        let available = ["coingecko", "coinmarketcap"];
+        let both_swapped =
+            form(&[("use_coingecko", "on"), ("position_coingecko", "2"), ("use_coinmarketcap", "on"), ("position_coinmarketcap", "1")]);
+        assert_eq!(parse_fx_providers_form(&available, &both_swapped).unwrap(), vec!["coinmarketcap", "coingecko"]);
+
+        // An unticked provider is off whatever its position says.
+        let one_off = form(&[("use_coinmarketcap", "on"), ("position_coinmarketcap", "1"), ("position_coingecko", "1")]);
+        assert_eq!(parse_fx_providers_form(&available, &one_off).unwrap(), vec!["coinmarketcap"]);
+
+        // Ties and unreadable positions fall back to the instance's order.
+        let tied = form(&[("use_coingecko", "on"), ("position_coingecko", "1"), ("use_coinmarketcap", "on"), ("position_coinmarketcap", "1")]);
+        assert_eq!(parse_fx_providers_form(&available, &tied).unwrap(), vec!["coingecko", "coinmarketcap"]);
+        let junk = form(&[("use_coingecko", "on"), ("position_coingecko", "abc"), ("use_coinmarketcap", "on"), ("position_coinmarketcap", "3")]);
+        assert_eq!(parse_fx_providers_form(&available, &junk).unwrap(), vec!["coinmarketcap", "coingecko"]);
+
+        assert!(parse_fx_providers_form(&available, &form(&[])).unwrap().is_empty(), "everything unticked turns every provider off");
+    }
+
+    #[test]
+    fn the_provider_form_rejects_a_provider_the_instance_does_not_offer() {
+        let err = parse_fx_providers_form(&["coingecko"], &form(&[("use_haveno", "on")])).unwrap_err();
+        assert!(err.contains("not an available exchange rate provider"), "{err}");
+        assert!(parse_fx_providers_form(&["coingecko"], &form(&[("position_haveno", "1")])).is_err());
+    }
+
+    #[test]
+    fn the_provider_options_list_the_stores_choices_first_in_its_order_then_the_rest() {
+        let names = |options: Vec<views::store_settings::FxProviderOption>| -> Vec<(String, bool)> {
+            options.into_iter().map(|o| (o.name, o.selected)).collect()
+        };
+        let available = ["coingecko", "coinmarketcap"];
+        assert_eq!(
+            names(fx_provider_options(&available, &["coinmarketcap".to_string()])),
+            vec![("coinmarketcap".to_string(), true), ("coingecko".to_string(), false)]
+        );
+        // A stale name the instance no longer offers is dropped.
+        assert_eq!(
+            names(fx_provider_options(&available, &["fixed".to_string(), "coingecko".to_string()])),
+            vec![("coingecko".to_string(), true), ("coinmarketcap".to_string(), false)]
+        );
     }
 
     fn form_post_request(uri: &str, bearer: &str, fields: &[(&str, &str)]) -> Request<Body> {
@@ -2590,7 +2849,7 @@ mod tests {
             .await
             .unwrap();
         let settings_html = body_text(settings_response).await;
-        // Every new store is created with `fx_provider = "coingecko"` (the
+        // Every new store is created with `fx_providers = ["coingecko"]` (the
         // only real provider left - see `Db::create_store_connection`), shown
         // as this store's current choice even though this test's instance
         // (`test_exchange_rate_provider()`, `xmr_only()`) never actually
@@ -2675,7 +2934,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn updating_the_fx_provider_to_an_unconfigured_one_is_a_clear_error_not_silently_accepted() {
+    async fn choosing_an_fx_provider_the_instance_has_not_enabled_is_a_clear_error_not_silently_accepted() {
         let (state, _engine) = test_state_with_real_engine().await;
         let router = build_router(state);
 
@@ -2688,7 +2947,7 @@ mod tests {
             .oneshot(form_post_request(
                 &format!("/dashboard/stores/{connection_id}/settings/fx-provider"),
                 &session_token,
-                &[("fx_provider", "coingecko")],
+                &[("use_coingecko", "on"), ("position_coingecko", "1")],
             ))
             .await
             .unwrap();

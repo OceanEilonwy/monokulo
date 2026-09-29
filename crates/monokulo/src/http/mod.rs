@@ -112,7 +112,7 @@ pub struct AppState {
     /// ever calling the engine. Dispatches per-request to whichever
     /// provider the *store* (not this instance globally) has chosen - see
     /// `exchange_rate_config::ExchangeRateProviders` and
-    /// `db::StoreConnectionRow::fx_provider`.
+    /// `db::StoreConnectionRow::fx_providers`.
     pub exchange_rate: Arc<crate::exchange_rate_config::ExchangeRateProviders>,
     /// Rate limits, the open-stream cap and (later) challenges, per client
     /// (`crate::abuse`, `http::abuse`).
@@ -219,7 +219,7 @@ pub fn build_router(state: AppState) -> Router {
         )
         .route(
             "/dashboard/stores/{id}/settings/fx-provider",
-            axum::routing::post(orders::update_fx_provider),
+            axum::routing::post(orders::update_fx_providers),
         )
         .route("/dashboard/stores/{id}/settings/diagnostics", axum::routing::post(orders::update_diagnostics))
         .route(

@@ -16,6 +16,7 @@ pub mod db;
 pub mod embed_domains;
 pub mod engine_client;
 pub mod exchange_rate_config;
+pub mod fx_provider_settings;
 pub mod http;
 pub mod live;
 pub mod logs;
