@@ -164,3 +164,40 @@ made.
 - **Alternatives:** leave the suite red until step 7.
 - **Why:** the work pack asks for the suite to pass before every commit
   that touches the page.
+
+## D13 (step 4): only changed networks are probed; the probe trusts the node's own TLS choice
+
+- **Decision:** `update_settings` asks a network's nodes for `get_info` only
+  when that network's submitted value differs from what the engine runs
+  with now (`state.settings.nodes`). The probe client is built from the
+  node's own `ssl` / `accept_self_signed_certs`; the engine's
+  `--strict-tls` flag isn't in `AppState`, so it isn't applied to this one
+  question. One message per network is kept (the first wrong node in saved
+  order), and a duplicate is reported before any probing of that network.
+- **Alternatives:** probe every submitted network on every save (the
+  Monero nodes tab always submits all three, so every save could wait up to
+  3s on a node that doesn't answer); thread `strict_tls` into `AppState`.
+- **Why:** an unchanged node was already accepted, so asking again can't
+  change the outcome and only slows the save. The probe only reads which
+  network a node says it's on; with `--strict-tls` the real client would
+  refuse a self-signed node anyway, and `/status` shows that.
+
+## D14 (step 4): `/status` reports the node's raw nettype, `fakechain` included
+
+- **Decision:** `NodeStatus.network` is whatever the node's `get_info`
+  said (`mainnet`, `stagenet`, `testnet` or `fakechain`), or `null` when
+  it didn't answer or didn't say. Only a known network different from the
+  block's is treated as wrong, by the engine's save check and by the page.
+- **Alternatives:** report only the three known networks.
+- **Why:** the plan says "the node's reported nettype"; keeping
+  `fakechain` visible is more honest, and both readers already ignore it.
+
+## D15 (step 4): the Playwright spec that gave testnet the stagenet fake node
+
+- **Decision:** `real-3`'s "clearing a network stores use" test saved the
+  one fake node (which says it's on stagenet) as testnet's node too. That
+  is now refused, correctly. The test gives testnet `127.0.0.1:9` instead,
+  a node that doesn't answer, which is still saved (D2).
+- **Alternatives:** start a second fake node for testnet.
+- **Why:** the test only needs testnet to have some node and no stores;
+  step 7 adds the wrong-network Playwright test with a second fake node.

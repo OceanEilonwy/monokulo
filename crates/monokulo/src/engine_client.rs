@@ -747,8 +747,16 @@ struct CreateWebhookResponse {
 pub struct NodeStatus {
     pub label: String,
     pub is_active: bool,
+    /// Skipped for now after failing. Absent from an older engine.
+    #[serde(default)]
+    pub in_cooldown: bool,
     pub height: Option<u64>,
     pub error: Option<String>,
+    /// The network the node says it's on (`"mainnet"`, `"stagenet"`,
+    /// `"testnet"`, `"fakechain"`), or `None` when it didn't say. Absent
+    /// from an older engine.
+    #[serde(default)]
+    pub network: Option<String>,
 }
 
 /// Mirrors the engine's own `ScannerStatusView`.
@@ -922,6 +930,41 @@ mod tests {
         assert_eq!(status.networks.len(), 1);
         assert_eq!(status.networks[0].network, "mainnet");
         assert!(status.poll_interval_secs > 0);
+    }
+
+    /// Each node's network (nicer_admin_screen.md step 4) is read when the
+    /// engine sends it, and an older engine that doesn't still parses.
+    #[test]
+    fn a_status_parses_with_and_without_each_nodes_network() {
+        let body = |node: serde_json::Value| {
+            serde_json::json!({
+                "networks": [{
+                    "network": "stagenet",
+                    "nodes": [node],
+                    "scanner": {
+                        "ever_ticked": true, "last_tick_started_at": 1, "last_tick_finished_at": 2, "tick_count": 3,
+                        "tenants_scanned": 1, "last_tick_ok": true, "last_error": null, "is_stale": false
+                    }
+                }],
+                "poll_interval_secs": 2,
+                "generated_at": 3
+            })
+        };
+        let newer: EngineStatusResponse = serde_json::from_value(body(serde_json::json!({
+            "label": "node.example.com:38081", "is_active": true, "in_cooldown": true, "height": 5, "error": null, "network": "mainnet"
+        })))
+        .unwrap();
+        let node = &newer.networks[0].nodes[0];
+        assert_eq!(node.network.as_deref(), Some("mainnet"));
+        assert!(node.in_cooldown);
+
+        let older: EngineStatusResponse = serde_json::from_value(body(serde_json::json!({
+            "label": "node.example.com:38081", "is_active": true, "height": 5, "error": null
+        })))
+        .unwrap();
+        let node = &older.networks[0].nodes[0];
+        assert_eq!(node.network, None);
+        assert!(!node.in_cooldown);
     }
 
     /// Proves `create_order`'s own `confirmations_required` argument

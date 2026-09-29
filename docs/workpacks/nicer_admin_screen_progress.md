@@ -11,7 +11,7 @@ Work pack: `docs/workpacks/nicer_admin_screen.md`. Decisions:
 | 1 | One map from setting to tab | done | see `git log` (`admin settings: one map from setting to tab`) |
 | 2 | One save for a whole tab | done | `admin settings: one save for a whole tab` |
 | 3 | The tabbed page | done | `admin settings: the tabbed page` |
-| 4 | Engine learns a node's network | not started | |
+| 4 | Engine learns a node's network | done | `scanner: a node saved for the wrong network is refused` |
 | 5 | The node form | not started | |
 | 6 | JavaScript enhancements | not started | |
 | 7 | Playwright | not started | |
@@ -19,13 +19,13 @@ Work pack: `docs/workpacks/nicer_admin_screen.md`. Decisions:
 
 ## Resume here
 
-Start step 4: the engine learns which network a node is on. `get_info` on
-`MoneroDaemonClient` (`crates/scanner/src/daemon.rs`, default "unknown"),
-implemented in `daemon_rpc.rs`; `NodeStatus.network` in
-`crates/scanner/src/http/status_page.rs` and monokulo's copy in
-`crates/monokulo/src/engine_client.rs`; the wrong-network and duplicate
-checks in `update_settings` (`crates/scanner/src/http/instance_admin.rs`);
-`--nettype` for `fake-monerod`.
+Start step 5: the node form. New module `crates/monokulo/src/admin_nodes.rs`
+(address parsing, `node_<n>_<i>_*` fields to rows, `node_action`, rows to
+and from `MoneroNodeSetting` JSON), then replace
+`AdminNetworkFieldView.value_json` with rows and render the Monero nodes
+tab as in section 2 of the work pack; the save goes through `SplitForm` in
+`http/admin_settings.rs`. `NodeStatus` in monokulo now has `in_cooldown`
+and `network` for the row status.
 
 ## Test status at last commit
 
@@ -46,6 +46,9 @@ checks in `update_settings` (`crates/scanner/src/http/instance_admin.rs`);
 - After step 3: `cargo test --workspace` 1264 passed, 0 failed, 24 ignored;
   clippy 68 warnings (none in touched files but the pre-existing ones);
   Playwright real-binaries 26 passed.
+- After step 4: `cargo test --workspace` 1270 passed, 0 failed, 24 ignored;
+  clippy 68 warnings (none new; `scanner/src/daemon.rs` keeps its one
+  pre-existing warning); Playwright real-binaries 26 passed.
 
 ## Notes per step
 
@@ -158,3 +161,38 @@ checks in `update_settings` (`crates/scanner/src/http/instance_admin.rs`);
 - Phone width: `real-3`'s first test now opens every tab at 390px and
   1280px and checks nothing scrolls sideways; 320px is added in step 7.
 - Playwright helpers and specs adapted (decision D12).
+
+### Step 4
+
+- `crates/scanner/src/daemon.rs`: `DaemonInfo { nettype }` with
+  `DaemonInfo::unknown()` and `network()` (only mainnet/stagenet/testnet
+  map to a network); `MoneroDaemonClient::get_info` defaults to unknown, so
+  no test double changed.
+- `crates/scanner/src/daemon_rpc.rs`: `RpcDaemonClient::get_info` calls
+  JSON-RPC `get_info` through `post_json_rpc` (same client, 15s timeout and
+  response cap as `get_height`); `GetInfoResult` reads `nettype`, or the
+  older `mainnet`/`stagenet`/`testnet` flags, else "unknown".
+- `crates/scanner/src/http/status_page.rs`: `NodeStatus.network`; the probe
+  runs `get_height` and `get_info` together, each within the 5s timeout
+  (decision D14).
+- `crates/scanner/src/http/instance_admin.rs`: `nodes_that_cannot_work`
+  runs before anything is saved, with no lock held: duplicates ("<host>:<port>
+  is listed twice.") and nodes answering a different known network
+  ("<host>:<port> is on <nettype>, not <network>.") are refused with 400 and
+  `fields: [{ key: "monero_node.<network>", message }]`, the same body shape
+  as other refusals (`refused`). Unchanged networks aren't probed (D13).
+- `crates/monokulo/src/engine_client.rs`: `NodeStatus` gains `in_cooldown`
+  and `network`, both `#[serde(default)]`.
+- `crates/scanner-test-support/src/bin/fake-monerod.rs`: `--nettype`
+  (default `stagenet`), served by JSON-RPC `get_info` and `/get_info`.
+- Acceptance: engine tests in `crates/scanner/src/http/tests.rs`
+  (`a_stagenet_node_that_says_it_is_on_mainnet_is_refused_and_nothing_changes`,
+  also covering a wrong fallback and that the rest of the request isn't
+  saved; `nodes_that_do_not_answer_or_do_not_say_are_saved` for a node that
+  doesn't answer, one reporting `fakechain` and one without `get_info`;
+  `a_node_listed_twice_in_one_network_is_refused`;
+  `status_says_which_network_each_node_is_on`), a parsing test in
+  `daemon_rpc.rs` (`get_info_says_which_network_a_node_is_on`), and in
+  monokulo `a_status_parses_with_and_without_each_nodes_network`.
+  `real-4-crash.spec.js` (direct API save of the stagenet fake node) passes
+  unchanged. `real-3` needed one change (decision D15).

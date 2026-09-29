@@ -47,7 +47,10 @@ for (const [name, size] of Object.entries(SIZES)) {
 test('clearing a network stores use asks first; one no store uses does not', async ({ page }) => {
   const base = fixture().monokulo_url;
   await signInAsAdmin(page);
-  await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson(), monero_node_testnet: fakeNodeJson() });
+  // Testnet gets a node no store uses. The fake node says it's on
+  // stagenet, so testnet gets one that doesn't answer, which is saved.
+  const silent = JSON.stringify({ host: '127.0.0.1', port: 9 });
+  await saveEngineSettings(page, { monero_node_stagenet: fakeNodeJson(), monero_node_testnet: silent });
   await expect(page.getByText('Settings saved and applied.')).toBeVisible();
 
   await openSettingsTab(page, 'nodes');

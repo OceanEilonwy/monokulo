@@ -32,9 +32,46 @@ pub enum DaemonError {
     Request(String),
 }
 
+/// What a node says about itself (monerod's `get_info`). Only the network
+/// it's on is used: the settings API refuses a node saved for the wrong
+/// network, and `/status` reports it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct DaemonInfo {
+    /// `"mainnet"`, `"stagenet"`, `"testnet"`, `"fakechain"`, or
+    /// [`DaemonInfo::UNKNOWN`] when the node didn't say.
+    pub nettype: String,
+}
+
+impl DaemonInfo {
+    pub const UNKNOWN: &'static str = "unknown";
+
+    pub fn unknown() -> Self {
+        DaemonInfo { nettype: Self::UNKNOWN.to_string() }
+    }
+
+    /// The network the node is on, when it's one the engine knows. A
+    /// `fakechain` (a regtest node) or a node that didn't say is `None`:
+    /// never taken as being on the wrong network.
+    pub fn network(&self) -> Option<monero::Network> {
+        match self.nettype.as_str() {
+            "mainnet" => Some(monero::Network::Mainnet),
+            "stagenet" => Some(monero::Network::Stagenet),
+            "testnet" => Some(monero::Network::Testnet),
+            _ => None,
+        }
+    }
+}
+
 #[async_trait::async_trait]
 pub trait MoneroDaemonClient: Send + Sync {
     async fn get_height(&self) -> Result<u64, DaemonError>;
+
+    /// What the node says about itself. The default says nothing
+    /// ([`DaemonInfo::unknown`]), which every test double gets for free;
+    /// `RpcDaemonClient` asks monerod.
+    async fn get_info(&self) -> Result<DaemonInfo, DaemonError> {
+        Ok(DaemonInfo::unknown())
+    }
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError>;
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError>;
 

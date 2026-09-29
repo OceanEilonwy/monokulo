@@ -2601,3 +2601,131 @@ async fn without_a_log_store_the_log_api_says_so() {
     let request = Request::builder().uri("/api/v1/admin/logs").header("authorization", "Bearer admin_test_token").body(Body::empty()).unwrap();
     assert_eq!(router.oneshot(request).await.unwrap().status(), StatusCode::SERVICE_UNAVAILABLE);
 }
+
+// -- A node saved for the wrong network (nicer_admin_screen.md step 4) --
+
+/// A stand-in node that answers `get_height` and, when `nettype` is set,
+/// `get_info` with that network; with `None` it doesn't know `get_info`
+/// (an old or odd node).
+async fn spawn_node_on(nettype: Option<&'static str>) -> std::net::SocketAddr {
+    use axum::routing::post;
+    let app = Router::new()
+        .route("/get_height", post(|| async { axum::Json(serde_json::json!({ "height": 10, "status": "OK" })) }))
+        .route(
+            "/json_rpc",
+            post(move |axum::Json(request): axum::Json<serde_json::Value>| async move {
+                let id = request["id"].clone();
+                match (request["method"].as_str(), nettype) {
+                    (Some("get_info"), Some(nettype)) => {
+                        axum::Json(serde_json::json!({ "jsonrpc": "2.0", "id": id, "result": { "nettype": nettype, "status": "OK" } }))
+                    }
+                    _ => axum::Json(serde_json::json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": "Method not found" } })),
+                }
+            }),
+        );
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let addr = listener.local_addr().unwrap();
+    tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+    addr
+}
+
+fn node_json(addr: std::net::SocketAddr, fallbacks: &[std::net::SocketAddr]) -> serde_json::Value {
+    serde_json::json!({
+        "host": addr.ip().to_string(), "port": addr.port(), "ssl": false, "accept_self_signed_certs": true,
+        "fallbacks": fallbacks.iter().map(|f| serde_json::json!({ "host": f.ip().to_string(), "port": f.port(), "ssl": false, "accept_self_signed_certs": true, "fallbacks": [] })).collect::<Vec<_>>(),
+    })
+}
+
+async fn settings_router() -> Router {
+    let (state, _daemon) = test_app_state_with_real_daemon().await;
+    crate::http::instance_admin::seed_admin_token_for_tests(&state.store.lock(), "admin_test_token");
+    build_router(state, 1_000_000)
+}
+
+async fn saved_node(router: &Router, network: &str) -> serde_json::Value {
+    let get = router.clone().oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
+    body_json(get).await["monero_node"][network].clone()
+}
+
+async fn try_save(router: &Router, body: serde_json::Value) -> (StatusCode, serde_json::Value) {
+    let response = router.clone().oneshot(settings_request("POST", Some("admin_test_token"), Some(body))).await.unwrap();
+    let status = response.status();
+    (status, body_json(response).await)
+}
+
+#[tokio::test]
+async fn a_stagenet_node_that_says_it_is_on_mainnet_is_refused_and_nothing_changes() {
+    let router = settings_router().await;
+    let mainnet = spawn_node_on(Some("mainnet")).await;
+    let stagenet = spawn_node_on(Some("stagenet")).await;
+
+    let (status, body) = try_save(
+        &router,
+        serde_json::json!({ "scalars": { "payment.confirmations_required": "4" }, "monero_node": { "stagenet": node_json(mainnet, &[]) } }),
+    )
+    .await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    let message = format!("127.0.0.1:{} is on mainnet, not stagenet.", mainnet.port());
+    assert_eq!(body["fields"], serde_json::json!([{ "key": "monero_node.stagenet", "message": message }]), "{body}");
+    assert_eq!(saved_node(&router, "stagenet").await, serde_json::Value::Null, "nothing saved");
+    let get = router.clone().oneshot(settings_request("GET", Some("admin_test_token"), None)).await.unwrap();
+    assert_eq!(body_json(get).await["scalars"]["payment.confirmations_required"]["value"], "10", "not even the rest of the request");
+
+    // A fallback on the wrong network is refused the same way.
+    let (status, body) = try_save(&router, serde_json::json!({ "monero_node": { "stagenet": node_json(stagenet, &[mainnet]) } })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(body["fields"][0]["message"], message, "{body}");
+
+    // On the right network, it's saved.
+    let (status, body) = try_save(&router, serde_json::json!({ "monero_node": { "mainnet": node_json(mainnet, &[]) } })).await;
+    assert_eq!(status, StatusCode::OK, "{body}");
+}
+
+/// Only a node that answers with a network it isn't being saved for is
+/// refused: one that doesn't answer may just be down (D2), and one that
+/// doesn't say, or is a regtest node, might be right.
+#[tokio::test]
+async fn nodes_that_do_not_answer_or_do_not_say_are_saved() {
+    let router = settings_router().await;
+    let fakechain = spawn_node_on(Some("fakechain")).await;
+    let old = spawn_node_on(None).await;
+    let nothing: std::net::SocketAddr = "127.0.0.1:9".parse().unwrap();
+
+    for (network, node) in [("stagenet", nothing), ("testnet", fakechain), ("mainnet", old)] {
+        let (status, body) = try_save(&router, serde_json::json!({ "monero_node": { network: node_json(node, &[]) } })).await;
+        assert_eq!(status, StatusCode::OK, "{network}: {body}");
+        assert_eq!(saved_node(&router, network).await["port"], node.port(), "{network}");
+    }
+}
+
+#[tokio::test]
+async fn a_node_listed_twice_in_one_network_is_refused() {
+    let router = settings_router().await;
+    let node = spawn_node_on(Some("stagenet")).await;
+    let (status, body) = try_save(&router, serde_json::json!({ "monero_node": { "stagenet": node_json(node, &[node]) } })).await;
+    assert_eq!(status, StatusCode::BAD_REQUEST, "{body}");
+    assert_eq!(
+        body["fields"],
+        serde_json::json!([{ "key": "monero_node.stagenet", "message": format!("127.0.0.1:{} is listed twice.", node.port()) }])
+    );
+    assert_eq!(saved_node(&router, "stagenet").await, serde_json::Value::Null);
+}
+
+#[tokio::test]
+async fn status_says_which_network_each_node_is_on() {
+    let mainnet = spawn_node_on(Some("mainnet")).await;
+    let mut state = AppState::for_tests();
+    let daemon = Arc::new(FallbackDaemonClient::new(vec![
+        FallbackNode {
+            label: format!("127.0.0.1:{}", mainnet.port()),
+            client: Arc::new(crate::daemon_rpc::RpcDaemonClient::new("127.0.0.1", mainnet.port(), false, true).unwrap()),
+        },
+        FallbackNode { label: "fake-node:18081".to_string(), client: Arc::new(FakeDaemonClient::new()) },
+    ]));
+    state.daemons = crate::engine_settings::Daemons::fixed(HashMap::from([(Network::Stagenet, daemon)]));
+    let body = get_status_json(build_router(state, 1_000_000)).await;
+    let nodes = &body["networks"][0]["nodes"];
+    assert_eq!(nodes[0]["network"], "mainnet", "{body}");
+    assert_eq!(nodes[0]["height"], 9, "{body}");
+    assert!(nodes[1]["network"].is_null(), "a node that doesn't say: {body}");
+}
