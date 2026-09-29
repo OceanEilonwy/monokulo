@@ -1,6 +1,8 @@
 // Collects the coverage stages (coverage-screenshot.js) into the published
 // screenshot gallery: `images/`, `manifest.json` and `index.html` beside the
-// coverage report. More than one Playwright run can feed one gallery (the
+// coverage report. The stages' images are already in `images/`, saved there
+// by the test; failed tests' screenshots are copied in here. More than one
+// Playwright run can feed one gallery (the
 // browser suite, then the real-binaries suite): each run adds its entries to
 // the manifest already there and rewrites the page from all of them.
 //
@@ -16,11 +18,10 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
+const { guessGroup, gallery } = require('./coverage-screenshot.js');
 
-const output = process.env.COVERAGE_OUTPUT;
-const enabled = process.env.COVERAGE_SCREENSHOTS === '1' && output;
+const enabled = process.env.COVERAGE_SCREENSHOTS === '1' && process.env.COVERAGE_OUTPUT;
 const stagenet = process.env.COVERAGE_PROFILE === 'stagenet';
-const gallery = output && (stagenet ? path.join(output, 'screenshots') : path.join(output, '..', 'screenshots'));
 const images = gallery && path.join(gallery, 'images');
 const defaultReport = stagenet ? '../playwright-report/index.html' : '../browser/playwright-report/index.html';
 const escapeHtml = value => String(value).replace(/&/g, '&amp;').replace(/</g, '&lt;')
@@ -173,23 +174,25 @@ class CoverageGalleryReporter {
   onBegin() { if (enabled) fs.mkdirSync(images, { recursive: true }); }
   onTestEnd(test, result) {
     if (!enabled) return;
-    const sourceFile = path.basename(test.location.file);
-    const guessed = sourceFile.includes('challenge') ? 'challenge'
-      : sourceFile.includes('pos') || sourceFile.includes('fit') ? 'pos' : 'checkout';
+    const guessed = guessGroup(test.location.file);
     let sequence = 0;
     for (const attachment of result.attachments) {
-      if (attachment.contentType !== 'image/png') continue;
-      let parsed;
-      if (attachment.name.startsWith('coverage-stage:')) parsed = parseStage(attachment.name.slice('coverage-stage:'.length), guessed);
-      else if (attachment.name === 'screenshot') parsed = { group: guessed, stage: 'failure', shape: 'failure', theme: 'light' };
-      else continue;
+      let parsed, image;
+      if (attachment.name.startsWith('coverage-stage:') && attachment.contentType === 'text/plain') {
+        // Already in `images/`: the attachment names the file.
+        parsed = parseStage(attachment.name.slice('coverage-stage:'.length), guessed);
+        image = attachment.body.toString();
+      } else if (attachment.name === 'screenshot' && attachment.contentType === 'image/png') {
+        // Playwright's own screenshot of a failed test.
+        parsed = { group: guessed, stage: 'failure', shape: 'failure', theme: 'light' };
+        const id = crypto.createHash('sha256').update(`${test.id}:${result.retry}:${result.workerIndex}:${sequence}:failure`)
+          .digest('hex').slice(0, 16);
+        image = `images/${guessed}-failure-r${result.retry}-${id}.png`;
+        fs.writeFileSync(path.join(gallery, image), attachment.body || fs.readFileSync(attachment.path));
+      } else continue;
       const { group, stage, shape, theme } = parsed;
-      const id = crypto.createHash('sha256').update(`${test.id}:${result.retry}:${result.workerIndex}:${sequence}:${group}:${stage}:${shape}:${theme}`)
-        .digest('hex').slice(0, 16);
-      const filename = `${group}-${stage}-${shape}${theme === 'light' ? '' : `-${theme}`}-r${result.retry}-${id}.png`;
-      fs.writeFileSync(path.join(images, filename), attachment.body || fs.readFileSync(attachment.path));
       this.entries.push({ group, test: test.title, test_id: test.id, retry: result.retry, worker: result.workerIndex,
-        stage, shape, theme, sequence, status: result.status, image: `images/${filename}`, report: this.report });
+        stage, shape, theme, sequence, status: result.status, image, report: this.report });
       sequence++;
     }
   }

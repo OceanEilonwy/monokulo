@@ -28,7 +28,7 @@ async function main() {
   const groups = new Set();
   for (const entry of entries) {
     if (!/^[a-z][a-z0-9-]*$/.test(entry.group)) throw new Error(`invalid screenshot group ${entry.group}`);
-    if (!/^images\/[a-z0-9-]+\.png$/.test(entry.image)) throw new Error(`invalid screenshot path ${entry.image}`);
+    if (!/^images\/[a-z0-9-]+\.(webp|png)$/.test(entry.image)) throw new Error(`invalid screenshot path ${entry.image}`);
     if (imageSet.has(entry.image)) throw new Error(`duplicate screenshot path ${entry.image}`);
     imageSet.add(entry.image);
     if (!fs.statSync(path.join(gallery, entry.image)).size) throw new Error(`empty screenshot ${entry.image}`);
