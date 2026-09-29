@@ -1,0 +1,16 @@
+# Only what `cargo build` of the workspace needs goes into the build context.
+.git
+.claude
+.dev-run
+target
+**/node_modules
+e2e
+plugins
+docs
+deploy
+*.md
+!README.md
+*.db
+*.db-shm
+*.db-wal
+.env

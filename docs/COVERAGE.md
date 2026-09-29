@@ -10,21 +10,29 @@ cargo xtask coverage rust
 cargo xtask coverage browser
 cargo xtask coverage woocommerce
 cargo xtask coverage all
+cargo xtask coverage report
 cargo xtask coverage open
 ```
 
-`--help` lists the commands. Each collector writes its own test log and
-machine-readable manifest under `target/coverage/`; `all` also writes
-`index.html`, `run.json`, and a validated offline artifact. A collector only
-cleans its own output directory. Completed component reports remain if a
-later component fails. An unavailable metric is labeled `unavailable`, not
-0%.
+`--help` lists the commands. Each collector writes its own test log,
+JUnit report, result (`<component>/result.json`) and machine-readable
+manifest under `target/coverage/`; `all` runs the three collectors side by
+side and also writes `index.html`, `run.json`, and a validated offline
+artifact. `report` does the same from collector outputs already in
+`target/coverage/`, which is how CI joins its separate collector jobs. A
+collector only cleans its own output directory. Completed component reports
+remain if another component fails. An unavailable metric is labeled
+`unavailable`, not 0%.
 
 ## Local setup
 
 - Rust: `rustup`, Cargo, a network connection for `rustup update nightly`
-  and the latest unpinned `cargo-llvm-cov` installation. The Rust command
-  refreshes both on every run and installs nightly LLVM tools.
+  and the latest unpinned `cargo-llvm-cov` and `cargo-nextest`
+  installations. The Rust command refreshes them on every run and installs
+  nightly LLVM tools (CI installs them prebuilt and sets
+  `COVERAGE_TOOLS_PREINSTALLED=1` to skip this). Tests run under nextest
+  (`.config/nextest.toml`, profile `ci`), which runs the test binaries side
+  by side.
 - Browser: Node 24, `npm ci --prefix e2e/pos-playwright`,
   `npm ci --prefix crates/monokulo/pos-ui` (Cargo builds
   the POS app from it, see `crates/monokulo/build.rs`), and Chromium from
@@ -65,7 +73,19 @@ against a fixture server, then the real-binaries tests
 (`real-*.spec.js`: the real engine and monokulo binaries with a fake
 monerod), which add their stages to the same gallery, their own report
 (`browser/playwright-report-real`), and, in specs using `coverage-test.js`,
-their instrumented browser coverage.
+their instrumented browser coverage. Both run on four workers: the fixture
+suite test by test, the real-binaries suite file by file, each spec file
+with processes of its own.
+
+## In CI
+
+`.github/workflows/ci.yml` runs each collector in a job of its own
+(`coverage-rust`, `coverage-browser`, `coverage-woocommerce`), side by side
+with the `tests` jobs, then the `coverage` job joins their outputs with
+`cargo xtask coverage report` and uploads the combined artifact
+(`coverage-<sha>`). Each job's summary has a table of passed, failed and
+skipped tests (`scripts/test-summary.py`, from the JUnit reports) with the
+failures listed; the `coverage` job's also has the coverage table.
 
 Rust metrics include production source in Cargo workspace crates, with a
 separate `mock-woocommerce` row. Browser metrics include checked-in

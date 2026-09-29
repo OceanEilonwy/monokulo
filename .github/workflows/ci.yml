@@ -4,8 +4,9 @@ name: CI
 #   tests     the workspace's Rust tests on every platform we build for
 #   coverage  each coverage collector in a job of its own (Linux only), then
 #             one report job that joins their outputs into the artifact
-#   publish   release binaries (main and version tags), once tests and
-#             coverage passed; a version tag also makes a GitHub release
+#   publish   release binaries and the Docker image (main and version tags),
+#             once tests and coverage passed; a version tag also makes a
+#             GitHub release and pushes the image to ghcr.io
 # tests and coverage start together: neither needs the other's build.
 # Every job writes a summary table and lists its failures.
 
@@ -332,6 +333,42 @@ jobs:
             dist/*.tar.gz
             dist/*.sha256
           if-no-files-found: error
+
+  docker:
+    # The production image (Dockerfile): built on main, and on a version tag
+    # also pushed to ghcr.io/<owner>/monokulo as that version and latest.
+    needs: [tests, coverage]
+    if: github.event_name == 'push' && (github.ref == 'refs/heads/main' || startsWith(github.ref, 'refs/tags/v'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v7
+      - uses: docker/setup-buildx-action@v4
+      - uses: docker/metadata-action@v6
+        id: meta
+        with:
+          images: ghcr.io/${{ github.repository_owner }}/monokulo
+          tags: |
+            type=semver,pattern={{version}}
+            type=raw,value=latest,enable=${{ startsWith(github.ref, 'refs/tags/v') }}
+            type=sha
+      - uses: docker/login-action@v4
+        if: startsWith(github.ref, 'refs/tags/v')
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/build-push-action@v7
+        with:
+          context: .
+          push: ${{ startsWith(github.ref, 'refs/tags/v') }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
 
   release:
     # A version tag's binaries as a GitHub release, for merchants to download.
