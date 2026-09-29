@@ -13,6 +13,10 @@
 // under (`logs`, `pos-timeline`, ...); without it the gallery guesses from
 // the spec's file name (checkout, pos, challenge). `options.shapes` limits
 // the sizes: the POS timeline, read at a desk, is captured on desktop only. `options.themes` limits the themes the same way.
+// `options.asIs` captures the page once at the size the test gave it (as
+// `as-is`), for a stage whose point is that size, such as the POS on an
+// iPhone SE on its side. Without it a size the test set is lost: the stage
+// is resized to the shapes above like any other.
 //
 // Each shot goes straight into the gallery's `images/` as a lossless WebP
 // (about half a PNG's size), and the test gets a text attachment naming it,
@@ -96,8 +100,8 @@ async function captureCoverageStage(target, stage, testInfo, options = {}) {
   if (!NAME.test(stage)) throw new Error(`invalid coverage stage: ${stage}`);
   const group = options.group || '';
   if (group && !GROUP.test(group)) throw new Error(`invalid coverage group: ${group}`);
-  const shapes = options.shapes || Object.keys(SHAPES);
-  for (const shape of shapes) if (!SHAPES[shape]) throw new Error(`unknown screenshot shape: ${shape}`);
+  const shapes = options.asIs ? ['as-is'] : options.shapes || Object.keys(SHAPES);
+  for (const shape of shapes) if (!SHAPES[shape] && shape !== 'as-is') throw new Error(`unknown screenshot shape: ${shape}`);
   const themes = options.themes || THEMES;
   for (const theme of themes) if (!THEMES.includes(theme)) throw new Error(`unknown screenshot theme: ${theme}`);
   // `coverage-stage:<group>/<stage>@<shape>`, plus `+dark` for the dark
@@ -112,7 +116,7 @@ async function captureCoverageStage(target, stage, testInfo, options = {}) {
   const original = target.viewportSize();
   const colorScheme = await target.evaluate(() => (matchMedia('(prefers-color-scheme: dark)').matches ? 'dark' : 'light'));
   for (const shape of shapes) {
-    await target.setViewportSize(SHAPES[shape]);
+    if (SHAPES[shape]) await target.setViewportSize(SHAPES[shape]);
     for (const theme of themes) {
       await showTheme(target, theme);
       // Force layout at the new size and theme (no timers: some tests fake

@@ -18,7 +18,7 @@ async function assertNoOuterScroll(page, stage) {
 
 /** Loads the POS at `w`x`h`, then checks the keypad, a filled keypad and the
  * payment screen each fit with no outer scrolling. `captures` names the
- * screenshot checkpoints to take (Chromium only). */
+ * screenshot checkpoints to take (Chromium only), at this size. */
 async function checkFit(page, context, label, w, h, captures = {}) {
   const fixture = await startCoverageFixture();
   try {
@@ -30,7 +30,7 @@ async function checkFit(page, context, label, w, h, captures = {}) {
     await page.getByRole('button', { name: 'Background order', exact: true }).click();
     await expect(page.locator('.pos-keypad')).toBeVisible();
     await assertNoOuterScroll(page, `${label} keypad`);
-    if (captures.keypad) await captureCoverageStage(page, captures.keypad, test.info());
+    if (captures.keypad) await captureCoverageStage(page, captures.keypad, test.info(), { asIs: true });
     for (const digit of ['1', '2', '3', '4', '5']) await page.getByRole('button', { name: digit, exact: true }).click();
     await page.locator('#pos-reference').fill('A Fairly Long Customer Name Here');
     await assertNoOuterScroll(page, `${label} filled`);
@@ -45,7 +45,7 @@ async function checkFit(page, context, label, w, h, captures = {}) {
       await expect(page.getByRole('button', { name: 'Background order', exact: true }), `${label}: Background order on screen`).toBeInViewport({ ratio: 1 });
       await expect(page.getByRole('button', { name: 'Cancel order' }), `${label}: Cancel order on screen`).toBeInViewport({ ratio: 1 });
     }
-    if (captures.payment) await captureCoverageStage(page, captures.payment, test.info());
+    if (captures.payment) await captureCoverageStage(page, captures.payment, test.info(), { asIs: true });
   } finally { await stopCoverageFixture(fixture.process); }
 }
 
