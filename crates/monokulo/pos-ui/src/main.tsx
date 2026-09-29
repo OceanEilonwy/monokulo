@@ -123,8 +123,68 @@ function adoptSiteBrand(slot: HTMLElement) {
   brand.remove();
 }
 
+type Step = 'done' | 'now' | 'part' | 'fail' | 'todo';
+const stepWords: Record<Step, string> = { done: 'done', now: 'now', part: 'partly done', fail: 'stopped', todo: 'to come' };
+/** Whether the customer still owes something: only then is the code live. */
+const awaitingPayment = (o: Order) => ['pending', 'partial'].includes(o.status) && !o.cancelled_at;
+
+/** The stage's track: Send, Confirm, Paid - without Confirm when the store
+ * counts a payment as soon as it's seen (`confirmations_required` 0). */
+function stageSteps(o: Order): [string, Step][] {
+  const state = stateOf(o);
+  const [send, confirm, paid]: Step[] =
+    o.cancelled_at || (state === 'double-spend' && !awaitingPayment(o)) ? ['fail', 'todo', 'todo']
+    : o.status === 'pending' ? ['now', 'todo', 'todo']
+    : o.status === 'partial' ? ['part', 'todo', 'todo']
+    : ['unconfirmed', 'confirming'].includes(o.status) ? ['done', 'now', 'todo']
+    : ['paid', 'overpaid'].includes(o.status) ? ['done', 'done', 'done']
+    : ['fail', 'todo', 'todo'];
+  return o.confirmations_required === 0
+    ? [['Send', send], ['Paid', confirm === 'now' ? 'now' : paid]]
+    : [['Send', send], ['Confirm', confirm], ['Paid', paid]];
+}
+
+/** The stage's words: a short title, then what to do now. */
+function stageMessage(o: Order, at: number): [string, string] {
+  const received = trimXmr(o.received_xmr || '0'), total = trimXmr(o.xmr_amount), rest = trimXmr(o.remaining_xmr || o.xmr_amount);
+  const left = `${durationUntil(o.expires_at, at)} left`;
+  if (o.cancelled_at) return ['Cancelled', o.status === 'pending' ? 'If money still arrives at its address, it will show in the order for review.' : 'Payment activity arrived after this order was cancelled. Review it in the order details.'];
+  switch (stateOf(o)) {
+    case 'double-spend': return ['Payment reversed', o.error || 'Double spend detected. Do not treat this payment as paid.'];
+    case 'pending': return [`Send ${total} XMR`, `Scan the code or copy the address. ${left}`];
+    case 'partial': return [`Send the remaining ${rest} XMR`, `${received} of ${total} XMR received. This new code asks for the rest. ${left}`];
+    case 'unconfirmed': return ['Waiting for confirmation', 'Payment seen. Waiting for its first confirmation.'];
+    case 'confirming': return ['Confirming', `${o.confirmations} of ${o.confirmations_required} confirmations.`];
+    case 'paid': return ['Paid', `${trimXmr(o.received_xmr || o.xmr_amount)} XMR received${o.confirmations_required ? ' and confirmed' : ''}.`];
+    case 'overpaid': return ['Paid, with extra', o.error || 'More than the order amount arrived. Review the extra in the order.'];
+    case 'expired': return ['Expired', o.error || 'This order expired before it was paid.'];
+    default: return [statusName[stateOf(o)] || o.status, o.error || ''];
+  }
+}
+
+const trackIcon = (step: Step) => step === 'done'
+  ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><path d="m4.5 12.5 5 5 10-11"/></svg>
+  : step === 'fail' ? <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round"><path d="M7 7l10 10M17 7 7 17"/></svg> : null;
+
+/** The stage at the top of the payment card, in every state (the checkout
+ * shows the same): where the order is, and what to do now. */
+function Stage(props: { order: Order }) {
+  const steps = () => stageSteps(props.order);
+  const message = () => stageMessage(props.order, now());
+  return <div class={['pos-stage', `state-${stateOf(props.order)}`]}>
+    <ol class={['pos-track', { 'pos-track-2': steps().length === 2 }]} aria-label="Payment progress">
+      {steps().map(([name, step]) => <li class={`step-${step}`}>
+        <span class="pos-track-dot" aria-hidden="true">{trackIcon(step)}</span>
+        <span class="pos-track-name">{name}<span class="sr-only">, {stepWords[step]}</span></span>
+      </li>)}
+    </ol>
+    <p class="pos-stage-msg" role="status"><strong>{message()[0]}.</strong> {message()[1]}</p>
+  </div>;
+}
+
 /** Sketch 2's payment card: what the customer pays, where, and where a
- * refund would go. */
+ * refund would go - in every state, with the stage on top. Once the code
+ * shouldn't be paid (the payment is in, or the order is over) it fades. */
 function PaymentCard(props: { order: Order }) {
   // A memo, so an order refresh carrying the same QR doesn't rebuild it.
   const qr = createMemo(() => props.order.qr_svg);
@@ -143,20 +203,9 @@ function PaymentCard(props: { order: Order }) {
   onSettled(() => () => { stopScan?.(); window.clearTimeout(saveTimer); });
 
   // Awaiting: the customer still has to pay (all of it, or the rest).
-  // Otherwise the payment has been seen and the card says what arrived
-  // instead of inviting a second payment.
-  const awaiting = () => ['pending', 'partial'].includes(props.order.status) && !props.order.cancelled_at;
-  const partial = () => props.order.status === 'partial';
-  const detail = () => {
-    const o = props.order;
-    switch (stateOf(o)) {
-      case 'double-spend': return o.error || 'Double spend detected. Do not treat this payment as paid.';
-      case 'unconfirmed': return 'Payment seen. Waiting for its first confirmation.';
-      case 'confirming': return `Payment seen · ${o.confirmations} of ${o.confirmations_required} confirmations`;
-      case 'partial': return `${trimXmr(o.received_xmr || '0')} of ${trimXmr(o.xmr_amount)} XMR received`;
-      default: return '';
-    }
-  };
+  // Otherwise the code fades rather than inviting a second payment.
+  const awaiting = () => awaitingPayment(props.order);
+  const partial = () => props.order.status === 'partial' && !props.order.cancelled_at;
 
   async function copy() {
     try { await navigator.clipboard.writeText(props.order.address); setCopied(true); window.setTimeout(() => setCopied(false), 2000); }
@@ -216,28 +265,22 @@ function PaymentCard(props: { order: Order }) {
     if (fileInput) fileInput.value = '';
   }
 
-  return <section class="pos-pay-card" aria-label="Payment details">
-    <Show when={detail()}><p class={['pos-pay-detail', `state-${stateOf(props.order)}`]}>{detail()}</p></Show>
-    <Show when={awaiting()} fallback={<>
-      <p class="pos-pay-caption">Received</p>
-      <p class="pos-pay-xmr">{trimXmr(props.order.received_xmr || props.order.xmr_amount)} <span>XMR</span></p>
-      <Show when={props.order.currency !== 'XMR'}><p class="pos-pay-fiat">for {props.order.amount} {props.order.currency}</p></Show>
-    </>}>
-      <p class="pos-pay-caption">{partial() ? 'Send the remaining amount' : 'Send exactly this amount'}</p>
-      <p class="pos-pay-xmr">{trimXmr(partial() ? props.order.remaining_xmr || props.order.xmr_amount : props.order.xmr_amount)} <span>XMR</span></p>
-      <Show when={props.order.currency !== 'XMR' && !partial()}><p class="pos-pay-fiat">≈ {props.order.amount} {props.order.currency}</p></Show>
-      {/* After a partial payment the code is redrawn for the rest, and says so. */}
-      <Show when={qr()}>
-        <Show when={partial()} fallback={<div class="pos-qr" innerHTML={qr()}/>}>
-          <div class="pos-qr-new"><span class="pos-qr-new-tab">New code · {trimXmr(props.order.remaining_xmr || props.order.xmr_amount)} XMR</span><div class="pos-qr" innerHTML={qr()}/></div>
-        </Show>
+  return <section class={['pos-pay-card', { 'is-spent': !awaiting() }]} aria-label="Payment details">
+    <Stage order={props.order}/>
+    <p class="pos-pay-caption">{partial() ? 'Still to pay' : awaiting() ? 'Send exactly this amount' : 'Order total'}</p>
+    <p class="pos-pay-xmr">{trimXmr(partial() ? props.order.remaining_xmr || props.order.xmr_amount : props.order.xmr_amount)} <span>XMR</span></p>
+    <Show when={props.order.currency !== 'XMR' && !partial()}><p class="pos-pay-fiat">≈ {props.order.amount} {props.order.currency}</p></Show>
+    {/* After a partial payment the code is redrawn for the rest, and says so. */}
+    <Show when={qr()}>
+      <Show when={partial()} fallback={<div class="pos-qr" innerHTML={qr()}/>}>
+        <div class="pos-qr-new"><span class="pos-qr-new-tab">New code · {trimXmr(props.order.remaining_xmr || props.order.xmr_amount)} XMR</span><div class="pos-qr" innerHTML={qr()}/></div>
       </Show>
-      <p class="pos-quiet-label">Payment address</p>
-      <div class="pos-address">
-        <code title={props.order.address}>{shortAddress(props.order.address)}</code>
-        <button type="button" onClick={() => void copy()} aria-label="Copy payment address">{copied() ? 'Copied' : 'Copy'}</button>
-      </div>
     </Show>
+    <p class="pos-quiet-label">Payment address</p>
+    <div class="pos-address">
+      <code title={props.order.address}>{shortAddress(props.order.address)}</code>
+      <Show when={awaiting()}><button type="button" onClick={() => void copy()} aria-label="Copy payment address">{copied() ? 'Copied' : 'Copy'}</button></Show>
+    </div>
     <hr/>
     <label class="pos-field-label" for="pos-refund">Refund address <span>(optional)</span></label>
     <div class={['pos-refund', `state-${refundState()}`]}>
@@ -265,25 +308,6 @@ function PaymentCard(props: { order: Order }) {
     <video ref={el => { video = el; }} class="pos-camera" autoplay playsinline muted hidden={!scanning()}/>
     <Show when={refundMessage()}><p class="pos-refund-message" role="alert">{refundMessage()}</p></Show>
     <p class="pos-note" id="pos-refund-note">Recorded for the merchant if a refund is needed. Refunds are not sent automatically.</p>
-  </section>;
-}
-
-/** A finished order (paid, overpaid, expired, cancelled): the outcome,
- * never a live payment prompt. */
-function Outcome(props: { order: Order }) {
-  const message = () => {
-    const o = props.order;
-    if (o.cancelled_at) return o.status === 'pending' ? 'This order was cancelled. If money still arrives at its address, it will show in the order for review.' : 'Payment activity arrived after this order was cancelled. Review it in the order details.';
-    if (o.error) return o.error;
-    if (o.status === 'paid') return 'Payment received and confirmed.';
-    if (o.status === 'expired') return 'This order expired before it was paid.';
-    return statusName[stateOf(o)] || o.status;
-  };
-  return <section class={['pos-outcome', `state-${stateOf(props.order)}`]}>
-    <StatusIcon order={props.order}/>
-    <p class="pos-outcome-title">{statusName[stateOf(props.order)]}</p>
-    <p>{message()}</p>
-    <p class="pos-outcome-amount">{trimXmr(props.order.xmr_amount)} XMR<Show when={props.order.currency !== 'XMR'}> · {props.order.amount} {props.order.currency}</Show></p>
   </section>;
 }
 
@@ -594,25 +618,23 @@ function App() {
       <main class="pos-payment">
         <div class="pos-order-heading">
           <div><h1>{label(order())}</h1><p>{order().merchant_order_id ? 'Reference · ' : ''}Order {shortId(order().order_id)}</p></div>
-          {/* The status, and while the customer still has to pay, the time left. */}
+          {/* The status at a glance; the stage in the card says the rest,
+              the time left included. */}
           <div class="pos-status-row">
             <StatusBadge order={order()} offline={offline() && !terminal(order())}/>
-            <Show when={['pending', 'partial'].includes(order().status) && !order().cancelled_at}>
-              <span class="pos-expiry"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 2h12M6 22h12M7 2v4a5 5 0 0 0 2 4l3 2-3 2a5 5 0 0 0-2 4v4m10-20v4a5 5 0 0 1-2 4l-3 2 3 2a5 5 0 0 1 2 4v4"/></svg>{durationUntil(order().expires_at, now())} left</span>
-            </Show>
           </div>
         </div>
-        <Show when={!terminal(order())} fallback={<Outcome order={order()}/>}>
-          <PaymentCard order={order()}/>
-        </Show>
-        <Show when={error()}><p class="pos-error" role="alert">{error()}</p></Show>
-        <Show when={!terminal(order())} fallback={<button type="button" class="pos-primary" onClick={resetKeypad}>New order</button>}>
-          <button type="button" class="pos-primary" disabled={busy()} onClick={() => void backgroundOrder()}>Background order</button>
-          <Show when={order().status === 'pending' && !order().error} fallback={<p class="pos-action-hint">Background keeps this payment open while you serve the next customer</p>}>
-            <button type="button" class="pos-cancel" disabled={busy()} onClick={() => void cancelOrder()}>Cancel order</button>
-            <p class="pos-action-hint">Background keeps this payment open · Cancel asks for confirmation</p>
+        <PaymentCard order={order()}/>
+        <div class="pos-actions">
+          <Show when={error()}><p class="pos-error" role="alert">{error()}</p></Show>
+          <Show when={!terminal(order())} fallback={<button type="button" class="pos-primary" onClick={resetKeypad}>New order</button>}>
+            <button type="button" class="pos-primary" disabled={busy()} onClick={() => void backgroundOrder()}>Background order</button>
+            <Show when={order().status === 'pending' && !order().error} fallback={<p class="pos-action-hint">Background keeps this payment open while you serve the next customer</p>}>
+              <button type="button" class="pos-cancel" disabled={busy()} onClick={() => void cancelOrder()}>Cancel order</button>
+              <p class="pos-action-hint">Background keeps this payment open · Cancel asks for confirmation</p>
+            </Show>
           </Show>
-        </Show>
+        </div>
       </main>
     )}</Show>}</Show>
 

@@ -844,7 +844,7 @@ mod tests {
         // response - this page must stay meaningful with JavaScript
         // disabled, so nothing on it may rely on `data-timestamp` +
         // client-side formatting any more.
-        assert!(html.contains("Send payment within"), "expected a server-rendered payment deadline, got: {html}");
+        assert!(html.contains(" left</span>"), "expected a server-rendered payment deadline, got: {html}");
         assert!(!html.contains("data-timestamp"), "the checkout page must not depend on JS to format any timestamp, got: {html}");
         // The server-rendered page remains meaningful without JavaScript.
         assert!(html.contains("/static/checkout.js"));
@@ -1036,7 +1036,7 @@ mod tests {
         let (event, fragment) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
         assert_eq!(event, "fragment");
         assert!(fragment.contains(r#"id="live-status""#), "got: {fragment}");
-        assert!(!fragment.contains("double-spend-banner"));
+        assert!(!fragment.contains("state-double-spend"));
         let (event, status) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
         assert_eq!(event, "status");
         let status: serde_json::Value = serde_json::from_str(&status).unwrap();
@@ -1049,7 +1049,7 @@ mod tests {
 
         let (event, fragment) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
         assert_eq!(event, "fragment");
-        assert!(fragment.contains("double-spend-banner"), "got: {fragment}");
+        assert!(fragment.contains("state-double-spend"), "got: {fragment}");
         let (event, status) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
         assert_eq!(event, "status");
         assert!(status.contains("Double-spend"), "got: {status}");
@@ -1098,12 +1098,12 @@ mod tests {
                 r##"{"target":"#live-payments","swap":"outerHTML"}"##,
             ]
         );
-        assert!(first[0].1.starts_with(r#"<div id="live-status" data-live"#), "{}", first[0].1);
+        assert!(first[0].1.starts_with(r#"<div id="live-status" class="stage-slot" data-live"#), "{}", first[0].1);
 
         assert!(engine.store().lock().mark_double_spend_detected(&order_id, crate::now_unix()).unwrap());
         let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
         assert_eq!(event, r##"{"target":"#live-status","swap":"outerHTML"}"##, "only what changed");
-        assert!(data.contains("double-spend-banner"), "{data}");
+        assert!(data.contains("state-double-spend"), "{data}");
         let (event, _) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser).await.unwrap();
         assert_eq!(event, "status");
     }

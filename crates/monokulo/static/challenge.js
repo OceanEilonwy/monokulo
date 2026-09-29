@@ -35,8 +35,10 @@
     return url + (url.indexOf('?') === -1 ? '?' : '&') + name + '=' + encodeURIComponent(value);
   }
 
+  // The heading above already says "Checking your connection"; this line
+  // says how it's going.
   if (!window.crypto || !window.crypto.subtle || !window.TextEncoder) {
-    say('Checking your connection, this page continues in 10 seconds.');
+    say('This page continues in 10 seconds.');
     setTimeout(function () { location.replace(waitUrl); }, 10500);
     return;
   }
@@ -73,13 +75,13 @@
         return;
       }
       var seconds = Math.floor((Date.now() - started) / 1000);
-      say(seconds < 2 ? 'Checking your connection…' : 'Checking your connection… (' + seconds + 's)');
+      say(seconds < 2 ? 'Working…' : 'Working… (' + seconds + 's)');
       setTimeout(step, 0);
     }).catch(function () {
-      say('Checking your connection, this page continues in 10 seconds.');
+      say('This page continues in 10 seconds.');
       setTimeout(function () { location.replace(waitUrl); }, 10500);
     });
   }
-  say('Checking your connection…');
+  say('Working…');
   step();
 })();

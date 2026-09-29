@@ -38,12 +38,18 @@ test('real challenge continues inside a cross-site checkout frame with and witho
       if (process.env.COVERAGE_INSTRUMENT === '1') await serveInstrumentedAssets(context);
       const page = await context.newPage();
       await page.goto(`${shop}/__coverage/ready`);
-      await page.setContent(`<iframe id="payment" title="Payment" src="${fixture.base_url}/__coverage/challenge"></iframe>`);
+      // Framed the way the embed library frames the checkout (420 x 900).
+      await page.setContent(`<iframe id="payment" title="Payment" style="width:420px;height:900px;border:0" src="${fixture.base_url}/__coverage/challenge"></iframe>`);
       const frame = page.frameLocator('#payment');
       if (!javaScriptEnabled) {
         await expect(frame.getByRole('heading', { name: 'Checking your connection' })).toBeVisible();
-        await captureCoverageStage(frame.locator('body'), 'challenge-cross-site', test.info());
         await expect(frame.getByRole('link', { name: 'continue' })).toBeVisible();
+        await captureCoverageStage(page.locator('#payment'), 'challenge-cross-site', test.info());
+        // A frame left at the browser's default 300 x 150 still shows the
+        // state and the way on.
+        await page.locator('#payment').evaluate(element => { element.style.width = '300px'; element.style.height = '150px'; });
+        await expect(frame.getByRole('link', { name: 'continue' })).toBeInViewport();
+        await captureCoverageStage(page.locator('#payment'), 'challenge-cross-site-small', test.info());
       }
       await expect(frame.locator('#checkout-root')).toBeVisible({ timeout: 20000 });
     } finally { await context.close(); }
@@ -56,7 +62,7 @@ test('real challenge on a plain-HTTP onion (no Web Crypto) waits ten seconds and
   await page.addInitScript(() => { Object.defineProperty(window.crypto, 'subtle', { get: () => undefined }); });
   await page.clock.install();
   await page.goto(`${fixture.base_url}/__coverage/challenge`);
-  await expect(page.locator('#challenge-progress')).toHaveText('Checking your connection, this page continues in 10 seconds.');
+  await expect(page.locator('#challenge-progress')).toHaveText('This page continues in 10 seconds.');
   await page.clock.runFor(9000);
   expect(page.url()).toContain('/__coverage/challenge');
   await page.clock.runFor(2000);
