@@ -161,7 +161,10 @@ test('find narrows the search to a property of a line', async ({ page }) => {
 
 test('live adds new lines at the top without a reload, and pauses', async ({ page, request }) => {
   await signInAsAdmin(page);
-  await page.goto(logsUrl(`?q=${encodeURIComponent("url.path = '/status'")}`));
+  // Only this test's request: the stack is shared, and other workers'
+  // tests fetch /status too.
+  const traceId = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
+  await page.goto(logsUrl(`?q=${encodeURIComponent(`url.path = '/status' and trace_id = '${traceId}'`)}`));
   await page.evaluate(() => { window.__notReloaded = true; });
   const before = await page.locator('#log-rows .log-row').count();
   const live = page.locator('#log-live');
@@ -169,7 +172,7 @@ test('live adds new lines at the top without a reload, and pauses', async ({ pag
   // At once, not when the stream first has something to say.
   await expect(live).toHaveText('Pause', { timeout: 1_000 });
   await expect(live).toHaveAttribute('aria-pressed', 'true');
-  await request.get(`${fixture().monokulo_url}/status`);
+  await request.get(`${fixture().monokulo_url}/status`, { headers: { traceparent: `00-${traceId}-00f067aa0ba902b7-01` } });
   await expect(page.locator('#log-rows .log-row')).toHaveCount(before + 1, { timeout: 15_000 });
   await stage(page, 'logs-live');
   await live.click();

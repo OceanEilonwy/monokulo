@@ -666,7 +666,7 @@ test('on a tablet or desktop the POS uses the whole screen, with the open orders
   await page.goto(posUrl());
   await page.getByRole('button', { name: 'Background order', exact: true }).click();
   await expect(page.locator('.pos-stack-card')).toHaveCount(3);
-  for (const [shape, width, height] of [['iPad portrait', 820, 1180], ['iPad landscape', 1180, 820], ['desktop', 1280, 800]]) {
+  for (const [shape, width, height, size] of [['iPad portrait', 820, 1180, 'tablet-portrait'], ['iPad landscape', 1180, 820, 'tablet-landscape'], ['desktop', 1280, 800, 'desktop']]) {
     await page.setViewportSize({ width, height });
     await expect(page.locator('.pos-keypad')).toBeVisible();
     const top = await box('.pos-top');
@@ -687,7 +687,8 @@ test('on a tablet or desktop the POS uses the whole screen, with the open orders
     expect((await box('.pos-actions')).y, `${shape}: actions under the card`).toBeGreaterThan(card.y + card.h - 1);
     await expect(page.getByRole('button', { name: 'Background order', exact: true }), `${shape}: actions on screen`).toBeInViewport({ ratio: 1 });
     expect(await noOuterScroll(), `${shape}: payment`).toBe(true);
-    await captureCoverageStage(page, `pos-tablet-${shape.replace(/ /g, '-').toLowerCase()}`, test.info());
+    // One stage, at this size only: each size is one of the gallery's.
+    await captureCoverageStage(page, 'pos-tablet-payment', test.info(), { shapes: [size] });
     await page.getByRole('button', { name: 'Background order', exact: true }).click();
     await expect(page.locator('.pos-keypad')).toBeVisible();
   }
