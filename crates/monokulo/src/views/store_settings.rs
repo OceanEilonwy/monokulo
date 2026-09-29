@@ -18,6 +18,27 @@ pub struct FxProviderOption {
     pub selected: bool,
 }
 
+/// Haveno's per-store limits as the settings form shows them (see
+/// `crate::fx_provider_settings`).
+pub struct HavenoSettingsView {
+    /// Comma-separated currency codes; empty means every currency.
+    pub currencies: String,
+    pub max_spread_pct: String,
+    pub min_offers_per_side: String,
+    pub min_depth_xmr_per_side: String,
+}
+
+impl From<&crate::fx_provider_settings::HavenoSettings> for HavenoSettingsView {
+    fn from(settings: &crate::fx_provider_settings::HavenoSettings) -> Self {
+        HavenoSettingsView {
+            currencies: settings.currencies.join(", "),
+            max_spread_pct: settings.max_spread_pct.to_string(),
+            min_offers_per_side: settings.min_offers_per_side.to_string(),
+            min_depth_xmr_per_side: settings.min_depth_xmr_per_side.to_string(),
+        }
+    }
+}
+
 /// One custom confirmation threshold.
 pub struct ConfirmationThresholdView {
     pub id: String,
@@ -65,6 +86,8 @@ pub struct StoreSettingsData {
     /// Every provider this instance offers: the store's enabled ones first,
     /// in its order, then the rest.
     pub fx_provider_options: Vec<FxProviderOption>,
+    /// `Some` while this instance offers Haveno - its per-store limits.
+    pub haveno_settings: Option<HavenoSettingsView>,
     pub base_currency: String,
     pub base_currency_options: Vec<crate::currencies::CurrencyOptionView>,
     pub confirmation_thresholds: Vec<ConfirmationThresholdView>,
@@ -341,6 +364,36 @@ fn fx_provider_section(store: &StoreSettingsData, in_place: bool) -> Markup {
                                         td { (opt.name) }
                                         td { input type="number" name=(format!("position_{}", opt.name)) value=(index + 1) min="1" max=(store.fx_provider_options.len()) aria-label=(format!("Preference order of {}", opt.name)); }
                                     }
+                                }
+                            }
+                        }
+                        @if let Some(haveno) = &store.haveno_settings {
+                            fieldset class="haveno-settings" {
+                                legend { "Haveno (RetoSwap) limits" }
+                                span class="field-help" {
+                                    "Haveno prices from a thin peer-to-peer order book, so it only quotes when the book "
+                                    "meets the limits below; otherwise the next provider in your order is used. These "
+                                    "only matter while Haveno is ticked above."
+                                }
+                                label {
+                                    "Currencies Haveno may quote"
+                                    input type="text" name=(crate::fx_provider_settings::HAVENO_CURRENCIES) value=(haveno.currencies) placeholder="USD, EUR, GBP" autocomplete="off";
+                                    span class="field-help" { "Comma-separated. Leave empty to allow every currency." }
+                                }
+                                label {
+                                    "Maximum spread (%)"
+                                    input type="number" name=(crate::fx_provider_settings::HAVENO_MAX_SPREAD_PCT) value=(haveno.max_spread_pct) min="0.01" max="100" step="any";
+                                    span class="field-help" { "The largest gap between the best buy and sell offer, as a percentage of their midpoint." }
+                                }
+                                label {
+                                    "Minimum offers on each side"
+                                    input type="number" name=(crate::fx_provider_settings::HAVENO_MIN_OFFERS_PER_SIDE) value=(haveno.min_offers_per_side) min="1" max="1000" step="1";
+                                    span class="field-help" { "Buy offers and sell offers must each number at least this many." }
+                                }
+                                label {
+                                    "Minimum XMR on each side"
+                                    input type="number" name=(crate::fx_provider_settings::HAVENO_MIN_DEPTH_XMR_PER_SIDE) value=(haveno.min_depth_xmr_per_side) min="0" max="1000000" step="any";
+                                    span class="field-help" { "Total XMR offered on each side must be at least this much. 0 turns the check off." }
                                 }
                             }
                         }
@@ -623,6 +676,7 @@ mod tests {
             display_name: "shop.example.com".to_string(),
             confirmations_required: 10,
             fx_provider_options: vec![FxProviderOption { name: "coingecko".to_string(), selected: true }],
+            haveno_settings: None,
             base_currency: "XMR".to_string(),
             base_currency_options: vec![],
             confirmation_thresholds: vec![],
@@ -638,6 +692,59 @@ mod tests {
             active_section: None,
             client_logging: false,
         }
+    }
+
+    fn with_haveno(settings: crate::fx_provider_settings::HavenoSettings) -> String {
+        let store = StoreSettingsData {
+            fx_provider_options: vec![
+                FxProviderOption { name: "coingecko".to_string(), selected: true },
+                FxProviderOption { name: "haveno".to_string(), selected: false },
+            ],
+            haveno_settings: Some(HavenoSettingsView::from(&settings)),
+            ..base_store()
+        };
+        page(&chrome(), &StoreSettingsViewModel { store: Some(store) }).into_string()
+    }
+
+    #[test]
+    fn the_haveno_limits_are_shown_only_while_the_instance_offers_haveno() {
+        let html = page(&chrome(), &StoreSettingsViewModel { store: Some(base_store()) }).into_string();
+        assert!(!html.contains("haveno_max_spread_pct") && !html.contains("Haveno (RetoSwap) limits"), "got: {html}");
+
+        let html = with_haveno(Default::default());
+        assert!(html.contains("Haveno (RetoSwap) limits"), "got: {html}");
+        for name in ["haveno_currencies", "haveno_max_spread_pct", "haveno_min_offers_per_side", "haveno_min_depth_xmr_per_side"] {
+            assert!(html.contains(&format!(r#"name="{name}""#)), "missing {name}: {html}");
+        }
+    }
+
+    #[test]
+    fn the_haveno_limits_show_the_stores_current_values() {
+        let html = with_haveno(crate::fx_provider_settings::HavenoSettings {
+            currencies: vec!["USD".to_string(), "EUR".to_string()],
+            max_spread_pct: 2.5,
+            min_offers_per_side: 3,
+            min_depth_xmr_per_side: 1.5,
+        });
+        assert!(html.contains(r#"name="haveno_currencies" value="USD, EUR""#), "got: {html}");
+        assert!(html.contains(r#"name="haveno_max_spread_pct" value="2.5""#), "got: {html}");
+        assert!(html.contains(r#"name="haveno_min_offers_per_side" value="3""#), "got: {html}");
+        assert!(html.contains(r#"name="haveno_min_depth_xmr_per_side" value="1.5""#), "got: {html}");
+    }
+
+    #[test]
+    fn the_default_haveno_limits_render_as_plain_numbers() {
+        let html = with_haveno(Default::default());
+        assert!(html.contains(r#"name="haveno_currencies" value="""#), "got: {html}");
+        assert!(html.contains(r#"name="haveno_max_spread_pct" value="5""#), "got: {html}");
+        assert!(html.contains(r#"name="haveno_min_offers_per_side" value="1""#), "got: {html}");
+        assert!(html.contains(r#"name="haveno_min_depth_xmr_per_side" value="0""#), "got: {html}");
+    }
+
+    #[test]
+    fn a_hostile_currency_list_is_escaped() {
+        let html = with_haveno(crate::fx_provider_settings::HavenoSettings { currencies: vec![r#""><script>x</script>"#.to_string()], ..Default::default() });
+        assert!(!html.contains("<script>x</script>"), "got: {html}");
     }
 
     #[test]

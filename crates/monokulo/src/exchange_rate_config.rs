@@ -341,7 +341,18 @@ impl ExchangeRateProviders {
                     None => continue,
                 },
                 HAVENO => match &fiat.haveno {
-                    Some(provider) => provider.piconero_per_unit_cached(currency, max_age).await.map(|rate| (HAVENO, rate)),
+                    Some(provider) => {
+                        let settings = &store.fx_provider_settings.haveno;
+                        if settings.allows(currency) {
+                            provider.piconero_per_unit_cached(currency, max_age, &settings.policy()).await.map(|rate| (HAVENO, rate))
+                        } else {
+                            // Not one of the currencies this store lets
+                            // Haveno quote: no request, and it counts as
+                            // "no rate" so the next provider is tried.
+                            tracing::info!(provider = HAVENO, currency, "currency is not on this store's Haveno list - trying the next");
+                            Ok((HAVENO, None))
+                        }
+                    }
                     None => continue,
                 },
                 _ => continue,
@@ -373,7 +384,8 @@ impl ExchangeRateProviders {
     /// own live list; CoinMarketCap's keyless tier has no such list, so it
     /// is taken to support every code in `known_currencies` (monokulo's own
     /// `currencies` table - which is also why its client never needs to be
-    /// asked about a code outside it). A provider that fails to list is
+    /// asked about a code outside it); Haveno is taken to support the
+    /// store's own currency list, or `known_currencies` when that is empty. A provider that fails to list is
     /// skipped; the whole call fails only if every consulted provider did.
     /// Drives UI that wants a real list rather than relying solely on
     /// `piconero_per_unit_for` returning `None` after the fact.
@@ -410,11 +422,19 @@ impl ExchangeRateProviders {
                     }
                 }
                 HAVENO => {
-                    let Some(provider) = &fiat.haveno else { continue };
-                    consulted = true;
-                    match provider.supported_currencies_cached(Duration::from_secs(fiat.cache_seconds)).await {
-                        Ok(list) => extend(list),
-                        Err(error) => last_error = Some(error),
+                    if fiat.haveno.is_some() {
+                        consulted = true;
+                        // The store's own list (validated against the
+                        // `currencies` table when saved), or every known
+                        // currency when it left the list empty. Whether
+                        // Haveno has a live book is decided per quote, not
+                        // here - see `crate::fx_provider_settings`.
+                        let listed = &store.fx_provider_settings.haveno.currencies;
+                        if listed.is_empty() {
+                            extend(known_currencies.iter().map(|c| c.to_uppercase()).collect());
+                        } else {
+                            extend(listed.iter().map(|c| c.to_uppercase()).collect());
+                        }
                     }
                 }
                 _ => {}
@@ -453,6 +473,7 @@ impl ExchangeRateProviders {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::fx_provider_settings::{FxProviderSettings, HavenoSettings};
     use std::collections::HashMap;
 
     fn env_map(pairs: &[(&str, &str)]) -> HashMap<String, String> {
@@ -471,6 +492,7 @@ mod tests {
             created_at: 0,
             fx_providers: fx_providers.iter().map(|p| p.to_string()).collect(),
             base_currency: "XMR".to_string(),
+            fx_provider_settings: FxProviderSettings::default(),
         }
     }
 
@@ -726,11 +748,87 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn haveno_lists_only_currencies_it_can_price_right_now() {
-        let hv = spawn_json(HAVENO_PATH, HAVENO_TICKERS, 200).await;
-        let providers = ExchangeRateProviders::haveno_only(hv);
-        let known = vec!["USD".to_string(), "EUR".to_string(), "JPY".to_string()];
-        assert_eq!(providers.supported_currencies_for(&test_store(&[HAVENO]), &known).await.unwrap(), vec!["XMR", "USD"]);
+    async fn haveno_lists_the_stores_currencies_or_every_known_one_without_asking_haveno() {
+        // Nothing is listening: the list must not depend on a live book.
+        let providers = ExchangeRateProviders::haveno_only("http://127.0.0.1:1");
+        let known = vec!["XMR".to_string(), "USD".to_string(), "EUR".to_string(), "JPY".to_string()];
         assert_eq!(providers.available_providers(), vec![HAVENO]);
+
+        assert_eq!(
+            providers.supported_currencies_for(&test_store(&[HAVENO]), &known).await.unwrap(),
+            vec!["XMR", "USD", "EUR", "JPY"],
+            "an empty list means every known currency"
+        );
+
+        let mut store = test_store(&[HAVENO]);
+        store.fx_provider_settings.haveno = HavenoSettings { currencies: vec!["EUR".to_string(), "USD".to_string()], ..Default::default() };
+        assert_eq!(providers.supported_currencies_for(&store, &known).await.unwrap(), vec!["XMR", "EUR", "USD"]);
+    }
+
+    fn store_with_haveno(settings: HavenoSettings, providers: &[&str]) -> StoreConnectionRow {
+        let mut store = test_store(providers);
+        store.fx_provider_settings.haveno = settings;
+        store
+    }
+
+    #[tokio::test]
+    async fn a_currency_off_the_stores_haveno_list_skips_haveno_without_any_request() {
+        // Haveno is unreachable: were it asked, the lookup would be an error.
+        let cg = spawn_json(CG_PATH, CG_USD_1, 200).await;
+        let providers = ExchangeRateProviders::all(cg, "http://127.0.0.1:1", "http://127.0.0.1:1");
+        let store = store_with_haveno(HavenoSettings { currencies: vec!["EUR".to_string()], ..Default::default() }, &[HAVENO, COINGECKO]);
+        let (_, name) = providers.piconero_per_unit_for(&store, "USD").await.unwrap().unwrap();
+        assert_eq!(name, COINGECKO, "USD is not on the list, so haveno is not asked and coingecko answers");
+
+        // And with haveno as the only provider: "no rate", not an error.
+        let only = store_with_haveno(HavenoSettings { currencies: vec!["EUR".to_string()], ..Default::default() }, &[HAVENO]);
+        assert!(providers.piconero_per_unit_for(&only, "USD").await.unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn each_stores_own_limits_decide_whether_haveno_quotes_from_the_same_book() {
+        // USD: bid 99, ask 101 -> a 2% spread.
+        let hv = spawn_json(HAVENO_PATH, HAVENO_TICKERS, 200).await;
+        let cg = spawn_json(CG_PATH, CG_USD_1, 200).await;
+        let providers = ExchangeRateProviders::all(cg, "http://127.0.0.1:1", hv);
+
+        let loose = store_with_haveno(HavenoSettings { max_spread_pct: 5.0, ..Default::default() }, &[HAVENO, COINGECKO]);
+        let strict = store_with_haveno(HavenoSettings { max_spread_pct: 1.0, ..Default::default() }, &[HAVENO, COINGECKO]);
+        assert_eq!(providers.piconero_per_unit_for(&loose, "USD").await.unwrap().unwrap().1, HAVENO);
+        assert_eq!(providers.piconero_per_unit_for(&strict, "USD").await.unwrap().unwrap().1, COINGECKO, "too wide for this store");
+        assert_eq!(providers.piconero_per_unit_for(&loose, "USD").await.unwrap().unwrap().1, HAVENO, "the other store's answer did not stick");
+    }
+
+    #[tokio::test]
+    async fn a_depth_limit_reaches_haveno_and_a_thin_book_hands_over() {
+        let hv = spawn_router(
+            axum::Router::new()
+                .route(
+                    HAVENO_PATH,
+                    axum::routing::get(|| async { ([("content-type", "application/json")], HAVENO_TICKERS) }),
+                )
+                .route(
+                    "/api/v1/depth/{pair}",
+                    axum::routing::get(|| async {
+                        ([("content-type", "application/json")], r#"{"bids":[{"amount":0.5,"offer_count":1}],"asks":[{"amount":0.5,"offer_count":1}]}"#)
+                    }),
+                ),
+        )
+        .await;
+        let cg = spawn_json(CG_PATH, CG_USD_1, 200).await;
+        let providers = ExchangeRateProviders::all(cg, "http://127.0.0.1:1", hv);
+        let deep = store_with_haveno(HavenoSettings { min_depth_xmr_per_side: 5.0, ..Default::default() }, &[HAVENO, COINGECKO]);
+        let shallow = store_with_haveno(HavenoSettings { min_depth_xmr_per_side: 0.4, min_offers_per_side: 1, ..Default::default() }, &[HAVENO, COINGECKO]);
+        assert_eq!(providers.piconero_per_unit_for(&deep, "USD").await.unwrap().unwrap().1, COINGECKO);
+        assert_eq!(providers.piconero_per_unit_for(&shallow, "USD").await.unwrap().unwrap().1, HAVENO);
+    }
+
+    async fn spawn_router(app: axum::Router) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            axum::serve(listener, app).await.unwrap();
+        });
+        format!("http://{addr}")
     }
 }

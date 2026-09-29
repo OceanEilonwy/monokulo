@@ -723,6 +723,10 @@ pub(super) async fn render_store_settings_page(
     let zero_conf_enabled = tenant_result.as_ref().is_ok_and(|t| t.confirmations_required == 0);
 
     let fx_provider_options = fx_provider_options(&state.exchange_rate.available_providers(), &row.fx_providers);
+    let haveno_settings = state
+        .exchange_rate
+        .is_available(crate::exchange_rate_config::HAVENO)
+        .then(|| views::store_settings::HavenoSettingsView::from(&row.fx_provider_settings.haveno));
     let (base_currency_options, confirmation_thresholds) = {
         let db = state.db.lock();
         let options = crate::currencies::currency_options(&db, &row.base_currency).unwrap_or_default();
@@ -767,6 +771,7 @@ pub(super) async fn render_store_settings_page(
             display_name: display_name_for(&row.site_url),
             confirmations_required,
             fx_provider_options,
+            haveno_settings,
             base_currency: row.base_currency,
             base_currency_options,
             confirmation_thresholds,
@@ -1204,7 +1209,9 @@ fn parse_fx_providers_form(available: &[&'static str], form: &HashMap<String, St
 /// clearly, right here, that the choice doesn't work.
 ///
 /// Takes effect on the very next order: order creation reads the store row
-/// afresh on every request and nothing between caches it.
+/// afresh on every request and nothing between caches it. The same form
+/// carries Haveno's per-store limits (`crate::fx_provider_settings`), saved
+/// together with the provider list.
 pub async fn update_fx_providers(
     State(state): State<AppState>,
     AuthedUser(user, _): AuthedUser,
@@ -1224,12 +1231,30 @@ pub async fn update_fx_providers(
         Err(message) => return render_store_settings_page(&state, row, &user, Some(message), None, Some((SECTION, fx))).await,
     };
 
+    // Haveno's per-store limits ride along in the same form, but only when
+    // this instance offers Haveno (otherwise the page never rendered them).
+    // Parsed in a block of its own so the database lock is dropped before
+    // any `.await`.
+    let mut settings = row.fx_provider_settings.clone();
+    if state.exchange_rate.is_available(crate::exchange_rate_config::HAVENO) {
+        let parsed = {
+            let db = state.db.lock();
+            let resolve = |input: &str| crate::currencies::resolve_currency(&db, input).map_err(|_| ());
+            crate::fx_provider_settings::parse_haveno_form(&form, &resolve)
+        };
+        match parsed {
+            Ok(Some(haveno)) => settings.haveno = haveno,
+            Ok(None) => {}
+            Err(message) => return render_store_settings_page(&state, row, &user, Some(message), None, Some((SECTION, fx))).await,
+        }
+    }
+
     // Bound to a local first, not matched on directly: a `MutexGuard`
     // temporary created in a `match` scrutinee is kept alive for every arm
     // of that match (a real Rust footgun, not an oversight) - held across
     // the `Err` arm's own `.await` below, it would make this handler's
     // future `!Send` and fail to compile as an axum route at all.
-    let update_result = state.db.lock().update_store_connection_fx_providers(&row.id, &providers);
+    let update_result = state.db.lock().update_store_connection_fx(&row.id, &providers, &settings);
     match update_result {
         Ok(()) => saved(&state, row, &user, SECTION, fx, &format!("/dashboard/stores/{id}/settings")).await,
         Err(_) => {
@@ -1958,6 +1983,151 @@ mod tests {
             }
         }
         out
+    }
+
+    /// A state whose only rate provider is Haveno (never contacted by these
+    /// tests - nothing here asks for a quote).
+    async fn haveno_state() -> (AppState, scanner_test_support::TestEngineHandle) {
+        let (mut state, engine) = test_state_with_real_engine().await;
+        state.exchange_rate = std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::haveno_only("http://127.0.0.1:1"));
+        (state, engine)
+    }
+
+    async fn get_with_bearer(router: &Router, uri: &str, bearer: &str) -> String {
+        let response = router
+            .clone()
+            .oneshot(Request::builder().method("GET").uri(uri).header("authorization", format!("Bearer {bearer}")).body(Body::empty()).unwrap())
+            .await
+            .unwrap();
+        body_text(response).await
+    }
+
+    fn haveno_form<'a>(currencies: &'a str, spread: &'a str, offers: &'a str, depth: &'a str) -> Vec<(&'a str, &'a str)> {
+        vec![
+            ("use_haveno", "on"),
+            ("position_haveno", "1"),
+            ("haveno_currencies", currencies),
+            ("haveno_max_spread_pct", spread),
+            ("haveno_min_offers_per_side", offers),
+            ("haveno_min_depth_xmr_per_side", depth),
+        ]
+    }
+
+    #[tokio::test]
+    async fn the_haveno_limits_are_shown_and_saved_with_the_provider_list() {
+        let (state, _engine) = haveno_state().await;
+        let router = build_router(state.clone());
+        let session = signed_up_and_logged_in_session_token(&router, "haveno-limits@example.com", "correct horse battery staple").await;
+        let (connection_id, _pk) = create_connection(&router, &session).await;
+        let settings_uri = format!("/dashboard/stores/{connection_id}/settings");
+        let fx_uri = format!("{settings_uri}/fx-provider");
+
+        let html = get_with_bearer(&router, &settings_uri, &session).await;
+        assert!(html.contains("Haveno (RetoSwap) limits"), "the limits are offered while haveno is: {html}");
+        assert!(html.contains(r#"name="haveno_max_spread_pct" value="5""#), "defaults are shown: {html}");
+
+        let response = router
+            .clone()
+            .oneshot(form_post_request(&fx_uri, &session, &haveno_form("eur, $", "2.5", "3", "1.5")))
+            .await
+            .unwrap();
+        assert!(response.status().is_redirection() || response.status() == StatusCode::OK, "got {}", response.status());
+
+        let row = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        assert_eq!(row.fx_providers, vec!["haveno"]);
+        let haveno = row.fx_provider_settings.haveno;
+        assert_eq!(haveno.currencies, vec!["EUR", "USD"], "tickers resolve to canonical codes");
+        assert_eq!((haveno.max_spread_pct, haveno.min_offers_per_side, haveno.min_depth_xmr_per_side), (2.5, 3, 1.5));
+
+        let html = get_with_bearer(&router, &settings_uri, &session).await;
+        assert!(html.contains(r#"name="haveno_currencies" value="EUR, USD""#), "the saved values come back: {html}");
+        assert!(html.contains(r#"name="haveno_max_spread_pct" value="2.5""#), "{html}");
+    }
+
+    #[tokio::test]
+    async fn an_invalid_haveno_limit_is_rejected_and_nothing_is_saved() {
+        let (state, _engine) = haveno_state().await;
+        let router = build_router(state.clone());
+        let session = signed_up_and_logged_in_session_token(&router, "haveno-invalid@example.com", "correct horse battery staple").await;
+        let (connection_id, _pk) = create_connection(&router, &session).await;
+        let fx_uri = format!("/dashboard/stores/{connection_id}/settings/fx-provider");
+        let before = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+
+        for (form, expected) in [
+            (haveno_form("USD, ZZZ", "5", "1", "0"), "not a known currency"),
+            (haveno_form("USD, XMR", "5", "1", "0"), "XMR is never priced"),
+            (haveno_form("", "0", "1", "0"), "Maximum spread"),
+            (haveno_form("", "5", "0", "0"), "Minimum offers"),
+            (haveno_form("", "5", "1", "-1"), "Minimum XMR"),
+        ] {
+            let response = router.clone().oneshot(form_post_request(&fx_uri, &session, &form)).await.unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "a rejected form re-renders the page");
+            let html = body_text(response).await;
+            assert!(html.contains(expected), "expected {expected:?}, got: {html}");
+            let after = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+            assert_eq!(after.fx_providers, before.fx_providers, "nothing is saved on a rejected form ({expected})");
+            assert_eq!(after.fx_provider_settings, before.fx_provider_settings, "nothing is saved on a rejected form ({expected})");
+        }
+    }
+
+    #[tokio::test]
+    async fn a_form_without_the_haveno_fields_keeps_the_stores_haveno_limits() {
+        let (state, _engine) = haveno_state().await;
+        let router = build_router(state.clone());
+        let session = signed_up_and_logged_in_session_token(&router, "haveno-keep@example.com", "correct horse battery staple").await;
+        let (connection_id, _pk) = create_connection(&router, &session).await;
+        let fx_uri = format!("/dashboard/stores/{connection_id}/settings/fx-provider");
+        router.clone().oneshot(form_post_request(&fx_uri, &session, &haveno_form("USD", "2", "2", "1"))).await.unwrap();
+
+        // Only the provider fields: the limits are not part of this submission.
+        router.clone().oneshot(form_post_request(&fx_uri, &session, &[("use_haveno", "on"), ("position_haveno", "1")])).await.unwrap();
+
+        let haveno = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap().fx_provider_settings.haveno;
+        assert_eq!((haveno.currencies, haveno.max_spread_pct, haveno.min_offers_per_side), (vec!["USD".to_string()], 2.0, 2));
+    }
+
+    #[tokio::test]
+    async fn haveno_fields_are_ignored_and_not_shown_when_the_instance_does_not_offer_haveno() {
+        let (mut state, _engine) = test_state_with_real_engine().await;
+        state.exchange_rate = std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::coingecko_only("http://127.0.0.1:1"));
+        let router = build_router(state.clone());
+        let session = signed_up_and_logged_in_session_token(&router, "haveno-off@example.com", "correct horse battery staple").await;
+        let (connection_id, _pk) = create_connection(&router, &session).await;
+
+        let html = get_with_bearer(&router, &format!("/dashboard/stores/{connection_id}/settings"), &session).await;
+        assert!(!html.contains("haveno_max_spread_pct"), "no haveno limits without haveno: {html}");
+
+        let fx_uri = format!("/dashboard/stores/{connection_id}/settings/fx-provider");
+        let mut form = haveno_form("USD", "1", "1", "0");
+        form.retain(|(k, _)| k.starts_with("haveno_"));
+        form.push(("use_coingecko", "on"));
+        router.clone().oneshot(form_post_request(&fx_uri, &session, &form)).await.unwrap();
+        let row = state.db.lock().get_store_connection_by_id(&connection_id).unwrap().unwrap();
+        assert_eq!(row.fx_provider_settings, crate::fx_provider_settings::FxProviderSettings::default(), "forged haveno fields change nothing");
+        assert_eq!(row.fx_providers, vec!["coingecko"]);
+    }
+
+    #[tokio::test]
+    async fn the_order_currency_dropdown_for_a_haveno_store_is_its_own_list_without_asking_haveno() {
+        let (state, _engine) = haveno_state().await; // haveno at an address nothing listens on
+        let router = build_router(state.clone());
+        let session = signed_up_and_logged_in_session_token(&router, "haveno-dropdown@example.com", "correct horse battery staple").await;
+        let (connection_id, _pk) = create_connection(&router, &session).await;
+        let fx_uri = format!("/dashboard/stores/{connection_id}/settings/fx-provider");
+        let orders_uri = format!("/dashboard/stores/{connection_id}/orders/new");
+
+        // Empty list: every currency in the table.
+        router.clone().oneshot(form_post_request(&fx_uri, &session, &haveno_form("", "5", "1", "0"))).await.unwrap();
+        let html = get_with_bearer(&router, &orders_uri, &session).await;
+        for code in ["XMR", "USD", "EUR", "GBP"] {
+            assert!(html.contains(&format!(r#"<option value="{code}">{code}</option>"#)), "{code} missing: {html}");
+        }
+
+        // A list: only those (and XMR).
+        router.clone().oneshot(form_post_request(&fx_uri, &session, &haveno_form("EUR", "5", "1", "0"))).await.unwrap();
+        let html = get_with_bearer(&router, &orders_uri, &session).await;
+        assert!(html.contains(r#"<option value="EUR">EUR</option>"#) && html.contains(r#"<option value="XMR">XMR</option>"#), "{html}");
+        assert!(!html.contains(r#"<option value="USD">USD</option>"#), "USD is off the store's list: {html}");
     }
 
     fn form(fields: &[(&str, &str)]) -> HashMap<String, String> {

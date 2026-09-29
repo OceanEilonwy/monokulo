@@ -907,7 +907,7 @@ mod tests {
     /// whose midpoint is `usd_price`, or (`None`) a one-sided one.
     async fn spawn_mock_haveno(usd_price: Option<f64>) -> String {
         let body = match usd_price {
-            Some(p) => format!(r#"{{"USD":{{"pair":"XMR_USD","highest_bid":{},"lowest_ask":{}}}}}"#, p - 1.0, p + 1.0),
+            Some(p) => format!(r#"{{"USD":{{"pair":"XMR_USD","highest_bid":{},"lowest_ask":{}}}}}"#, p - 0.05, p + 0.05),
             None => r#"{"USD":{"pair":"XMR_USD","highest_bid":1.0,"lowest_ask":null}}"#.to_string(),
         };
         let app = Router::new().route(
@@ -969,6 +969,63 @@ mod tests {
         ));
         let router = build_router(state.clone());
         assert_eq!(order_pricing(&state, &router, &pk).await, ("coinmarketcap".to_string(), 500_000_000_000));
+    }
+
+    /// Haveno's per-store limits apply to the very next order: tightening
+    /// the spread limit, or taking the currency off the store's list, sends
+    /// the next order to the next provider; loosening restores it.
+    #[tokio::test]
+    async fn a_change_to_the_stores_haveno_limits_prices_the_very_next_order() {
+        let (mut state, _engine) = test_state_with_real_engine().await;
+        let haveno = spawn_mock_haveno(Some(4.0)).await; // bid 3.95 / ask 4.05: a 2.5% spread
+        state.exchange_rate = std::sync::Arc::new(crate::exchange_rate_config::ExchangeRateProviders::all(
+            spawn_mock_coingecko().await, // $1.00 per XMR
+            "http://127.0.0.1:1",
+            haveno,
+        ));
+        let router = build_router(state.clone());
+        let session_token =
+            signed_up_and_logged_in_session_token(&router, "pay-haveno-limits@example.com", "correct horse battery staple").await;
+        let pk = create_connection(&router, &session_token).await;
+        let connection_id = state.db.lock().get_store_connection_by_public_key(&pk).unwrap().unwrap().id;
+        let save = |spread: &'static str, currencies: &'static str| {
+            let router = router.clone();
+            let session_token = session_token.clone();
+            let connection_id = connection_id.clone();
+            async move {
+                save_provider_settings(
+                    &router,
+                    &session_token,
+                    &connection_id,
+                    &[
+                        ("use_haveno", "on"),
+                        ("position_haveno", "1"),
+                        ("use_coingecko", "on"),
+                        ("position_coingecko", "2"),
+                        ("haveno_currencies", currencies),
+                        ("haveno_max_spread_pct", spread),
+                        ("haveno_min_offers_per_side", "1"),
+                        ("haveno_min_depth_xmr_per_side", "0"),
+                    ],
+                )
+                .await
+            }
+        };
+
+        save("5", "").await;
+        assert_eq!(order_pricing(&state, &router, &pk).await, ("haveno".to_string(), 250_000_000_000));
+
+        save("1", "").await; // 2.5% is now too wide
+        assert_eq!(order_pricing(&state, &router, &pk).await, ("coingecko".to_string(), 1_000_000_000_000));
+
+        save("5", "").await;
+        assert_eq!(order_pricing(&state, &router, &pk).await, ("haveno".to_string(), 250_000_000_000));
+
+        save("5", "EUR").await; // USD is no longer on the store's list
+        assert_eq!(order_pricing(&state, &router, &pk).await, ("coingecko".to_string(), 1_000_000_000_000));
+
+        save("5", "EUR,USD").await;
+        assert_eq!(order_pricing(&state, &router, &pk).await, ("haveno".to_string(), 250_000_000_000));
     }
 
     #[tokio::test]

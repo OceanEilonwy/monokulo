@@ -16,6 +16,7 @@ use parking_lot::Mutex;
 use std::sync::Arc;
 
 use rusqlite::{Connection, OptionalExtension, params};
+use crate::fx_provider_settings::FxProviderSettings;
 
 /// Reads a `store_connections.fx_providers` cell: a JSON array of provider
 /// names (migration 0027). A bare name is tolerated as a one-element list, so
@@ -61,6 +62,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (25, include_str!("../migrations/0025_store_client_logging.sql")),
     (26, include_str!("../migrations/0026_user_timezone.sql")),
     (27, include_str!("../migrations/0027_store_fx_provider_order.sql")),
+    (28, include_str!("../migrations/0028_store_fx_provider_settings.sql")),
 ];
 
 fn apply_migrations(conn: &Connection) -> rusqlite::Result<()> {
@@ -366,6 +368,10 @@ pub struct StoreConnectionRow {
     /// explicitly at store creation; changing it later clears every custom
     /// threshold (`Db::set_store_base_currency`'s own doc comment).
     pub base_currency: String,
+    /// Per-provider limits this store sets - today when Haveno may quote
+    /// for it (`crate::fx_provider_settings`). Defaults for a store that
+    /// never touched them.
+    pub fx_provider_settings: FxProviderSettings,
 }
 
 /// A row from `order_currency_metadata` (`docs/fx_refactor.md` Phase 1.2) -
@@ -740,7 +746,7 @@ impl Db {
     pub fn get_store_connection_by_id(&self, id: &str) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency
+                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency, fx_provider_settings
                  FROM store_connections WHERE id = ?1",
                 params![id],
                 |row| {
@@ -755,6 +761,7 @@ impl Db {
                         created_at: row.get(7)?,
                         fx_providers: parse_fx_providers(&row.get::<_, String>(8)?),
                     base_currency: row.get(9)?,
+                    fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(10)?),
                     })
                 },
             )
@@ -762,15 +769,21 @@ impl Db {
             .map_err(DbError::from)
     }
 
-    /// Updates a store's ordered exchange-rate provider list - the
-    /// settings-page counterpart to `create_store_connection`'s explicit
-    /// initial `["coingecko"]`. The caller (`http::orders::update_fx_providers`)
-    /// is responsible for validating every name against `ExchangeRateProviders::
-    /// available_providers` first; this layer stores whatever it's given,
-    /// same as every other plain column update in this file.
-    pub fn update_store_connection_fx_providers(&self, id: &str, fx_providers: &[String]) -> Result<()> {
-        let json = serde_json::to_string(fx_providers).expect("a list of strings always serializes");
-        self.conn.execute("UPDATE store_connections SET fx_providers = ?2 WHERE id = ?1", params![id, json])?;
+    /// Updates a store's ordered exchange-rate provider list together with
+    /// its per-provider settings, in one statement so the two can never be
+    /// seen half-changed - the settings-page counterpart to
+    /// `create_store_connection`'s explicit initial `["coingecko"]`. The
+    /// caller (`http::orders::update_fx_providers`) is responsible for
+    /// validating every name against `ExchangeRateProviders::
+    /// available_providers` and every setting first; this layer stores
+    /// whatever it's given, same as every other plain column update in this
+    /// file.
+    pub fn update_store_connection_fx(&self, id: &str, fx_providers: &[String], settings: &FxProviderSettings) -> Result<()> {
+        let providers_json = serde_json::to_string(fx_providers).expect("a list of strings always serializes");
+        self.conn.execute(
+            "UPDATE store_connections SET fx_providers = ?2, fx_provider_settings = ?3 WHERE id = ?1",
+            params![id, providers_json, settings.to_json()],
+        )?;
         Ok(())
     }
 
@@ -781,7 +794,7 @@ impl Db {
     /// growing a field nothing else needs; see `http/home.rs::display_name`.
     pub fn list_store_connections_for_user(&self, user_id: &str) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency
+            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency, fx_provider_settings
              FROM store_connections WHERE user_id = ?1 ORDER BY created_at_utc DESC",
         )?;
         let rows = stmt
@@ -797,6 +810,7 @@ impl Db {
                     created_at: row.get(7)?,
                     fx_providers: parse_fx_providers(&row.get::<_, String>(8)?),
                     base_currency: row.get(9)?,
+                    fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(10)?),
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -990,7 +1004,7 @@ impl Db {
     pub fn get_store_connection_by_public_key(&self, tenant_public_key: &str) -> Result<Option<StoreConnectionRow>> {
         self.conn
             .query_row(
-                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency
+                "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency, fx_provider_settings
                  FROM store_connections WHERE tenant_public_key = ?1",
                 params![tenant_public_key],
                 |row| {
@@ -1005,6 +1019,7 @@ impl Db {
                         created_at: row.get(7)?,
                         fx_providers: parse_fx_providers(&row.get::<_, String>(8)?),
                     base_currency: row.get(9)?,
+                    fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(10)?),
                     })
                 },
             )
@@ -1240,7 +1255,7 @@ impl Db {
     /// into `store_domains` yet (see migration `0020_embed_restriction.sql`).
     pub fn list_store_connections_awaiting_domain_import(&self) -> Result<Vec<StoreConnectionRow>> {
         let mut stmt = self.conn.prepare(
-            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency
+            "SELECT id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency, fx_provider_settings
              FROM store_connections WHERE domains_imported = 0",
         )?;
         let rows = stmt.query_map([], |row| {
@@ -1255,6 +1270,7 @@ impl Db {
                 created_at: row.get(7)?,
                 fx_providers: parse_fx_providers(&row.get::<_, String>(8)?),
                 base_currency: row.get(9)?,
+                fx_provider_settings: FxProviderSettings::parse(&row.get::<_, String>(10)?),
             })
         })?;
         rows.collect::<rusqlite::Result<Vec<_>>>().map_err(DbError::from)
@@ -1769,13 +1785,74 @@ mod tests {
         .unwrap();
 
         let order = vec!["coinmarketcap".to_string(), "coingecko".to_string()];
-        db.update_store_connection_fx_providers("conn-1", &order).unwrap();
+        db.update_store_connection_fx("conn-1", &order, &FxProviderSettings::default()).unwrap();
 
         let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
         assert_eq!(row.fx_providers, order, "the saved order is the order read back");
         // Nothing else changed.
         assert_eq!(row.site_url, "https://shop.example.com");
         assert_eq!(row.tenant_public_key, "pk_abc");
+    }
+
+    fn db_with_store() -> Db {
+        let db = Db::open_in_memory().unwrap();
+        db.create_user("user-1", "a@example.com", "hash", false, 1000).unwrap();
+        db.create_store_connection("conn-1", "user-1", "woocommerce", "https://shop.example.com", "pk_abc", "sk_abc", "http://127.0.0.1:8080", 3000, "XMR")
+            .unwrap();
+        db
+    }
+
+    #[test]
+    fn a_new_store_has_default_provider_settings() {
+        let row = db_with_store().get_store_connection_by_id("conn-1").unwrap().unwrap();
+        assert_eq!(row.fx_provider_settings, FxProviderSettings::default());
+    }
+
+    #[test]
+    fn provider_settings_are_saved_with_the_order_and_read_back_on_every_lookup() {
+        let db = db_with_store();
+        let mut settings = FxProviderSettings::default();
+        settings.haveno.currencies = vec!["USD".to_string(), "EUR".to_string()];
+        settings.haveno.max_spread_pct = 2.5;
+        settings.haveno.min_offers_per_side = 3;
+        settings.haveno.min_depth_xmr_per_side = 1.5;
+        db.update_store_connection_fx("conn-1", &["haveno".to_string()], &settings).unwrap();
+
+        let by_id = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
+        assert_eq!(by_id.fx_provider_settings, settings);
+        assert_eq!(by_id.fx_providers, vec!["haveno"]);
+        // The other lookups read the same column.
+        assert_eq!(db.get_store_connection_by_public_key("pk_abc").unwrap().unwrap().fx_provider_settings, settings);
+        assert_eq!(db.list_store_connections_for_user("user-1").unwrap()[0].fx_provider_settings, settings);
+    }
+
+    #[test]
+    fn a_corrupt_settings_cell_reads_as_the_defaults_not_a_failed_lookup() {
+        let db = db_with_store();
+        db.conn.execute("UPDATE store_connections SET fx_provider_settings = 'garbage' WHERE id = 'conn-1'", []).unwrap();
+        let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
+        assert_eq!(row.fx_provider_settings, FxProviderSettings::default());
+    }
+
+    #[test]
+    fn migration_0028_gives_existing_stores_the_default_settings() {
+        let conn = Connection::open_in_memory().unwrap();
+        shared::migrations::apply(&conn, &MIGRATIONS[..27]).unwrap();
+        conn.execute("INSERT INTO users (id, email, password_hash, created_at_utc) VALUES ('user-1', 'a@example.com', 'hash', 1000)", []).unwrap();
+        conn.execute(
+            "INSERT INTO store_connections
+                (id, user_id, platform, site_url, tenant_public_key, tenant_secret_token_encrypted, moneropay_endpoint, created_at_utc, fx_providers, base_currency)
+             VALUES ('conn-1', 'user-1', 'woocommerce', 'https://shop.example.com', 'pk_abc', 'sk_abc', 'http://127.0.0.1:8080', 3000, '[\"coingecko\"]', 'XMR')",
+            [],
+        )
+        .unwrap();
+
+        shared::migrations::apply(&conn, MIGRATIONS).unwrap();
+
+        let db = Db { conn };
+        let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
+        assert_eq!(row.fx_provider_settings, FxProviderSettings::default());
+        assert_eq!(row.fx_providers, vec!["coingecko"]);
     }
 
     #[test]

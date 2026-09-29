@@ -654,7 +654,9 @@ Port Stage 5's mock webhook receiver into the plugin, for real this time:
 `docs/DESIGN.md` §13 already sketches pluggable providers. Live today:
 `coingecko` and `coinmarketcap` (both keyless, on by default) and `haveno`
 (RetoSwap's order book via `haveno.markets`, off by default: bid/ask midpoint,
-fiat only, priced only where both sides of the book exist). Each store turns
+fiat only, priced only where both sides of the book exist and the store's
+own limits are met: currency list, maximum spread, minimum offers and XMR
+depth per side, set per store on its settings page). Each store turns
 providers on and orders them; an order is priced by the first that is
 available and has a rate, and records which one. A WooCommerce store commonly needs several currencies without a human
 typing in a rate. Doesn't block the plugin working — the provider can change
