@@ -69,6 +69,19 @@ impl DaemonInfo {
     }
 }
 
+/// Requests made to one endpoint of a node (a path, or a JSON-RPC method),
+/// and the bytes they cost ([`MoneroDaemonClient::rpc_stats`]).
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
+pub struct EndpointStats {
+    pub endpoint: String,
+    /// Requests sent, answered or not.
+    pub requests: u64,
+    /// Request body bytes.
+    pub bytes_sent: u64,
+    /// Response body bytes read.
+    pub bytes_received: u64,
+}
+
 /// One block as the node has it, contents and identity together
 /// ([`MoneroDaemonClient::get_chain_blocks`]).
 #[derive(Clone, Debug, PartialEq)]
@@ -145,6 +158,13 @@ pub struct FetchedTx {
 
 #[async_trait::async_trait]
 pub trait MoneroDaemonClient: Send + Sync {
+    /// What this client has asked its node since it was built, by endpoint,
+    /// busiest first: for `/status`, so what the engine costs a node can be
+    /// seen rather than estimated. Nothing for a client that doesn't count.
+    fn rpc_stats(&self) -> Vec<EndpointStats> {
+        Vec::new()
+    }
+
     async fn get_height(&self) -> Result<u64, DaemonError>;
 
     /// The tip's height and, when the node gives both in one answer, its
@@ -276,8 +296,9 @@ pub trait MoneroDaemonClient: Send + Sync {
 
     /// The txids in the mempool, without their bodies, so a scanner that
     /// has already seen most of the pool only fetches what's new (task 7.3).
-    /// The default fetches the whole pool; `RpcDaemonClient` asks monerod
-    /// for hashes only.
+    /// The default fetches the whole pool; `RpcDaemonClient` follows the
+    /// pool by its changes, asking monerod only for what entered and left
+    /// since it last asked.
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         use monero::cryptonote::hash::Hashable;
         Ok(self
@@ -756,6 +777,40 @@ pub mod fake {
                     timestamp: block.timestamp,
                     txs: block.txs.clone(),
                     txids: None,
+                });
+            }
+            if out.is_empty() {
+                return Err(DaemonError::Request(format!(
+                    "no block at height {start_height}"
+                )));
+            }
+            Ok(out)
+        }
+
+        /// Headers from the scripted chain itself, as a real node answers
+        /// for headers without reading any block's transactions.
+        async fn get_chain_headers(
+            &self,
+            start_height: u64,
+            count: u64,
+        ) -> Result<Vec<ChainHeader>, DaemonError> {
+            self.require_online()?;
+            let state = self.state.lock();
+            let mut out = Vec::new();
+            for height in start_height..start_height.saturating_add(count) {
+                let Some(block) = state.blocks.get(&height) else {
+                    break;
+                };
+                let prev_hash = height
+                    .checked_sub(1)
+                    .and_then(|p| state.blocks.get(&p))
+                    .map(|b| b.hash.clone())
+                    .unwrap_or_default();
+                out.push(ChainHeader {
+                    height,
+                    hash: block.hash.clone(),
+                    prev_hash,
+                    timestamp: block.timestamp,
                 });
             }
             if out.is_empty() {

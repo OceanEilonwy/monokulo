@@ -51,6 +51,12 @@ long catch-up range this still cuts round trips roughly in half (from ~2N to
 instead of N separate `get_block`+`get_transactions` pairs) without touching
 block-hashing at all.
 
+*Superseded.* The premise above was wrong: `monero` 0.22.0 does compute a
+block's id (`Block::id`, not a `Hashable` impl). The scanner now reads each
+block's id, parent id and time from the blob `get_blocks.bin` already
+returns with its transactions (`MoneroDaemonClient::get_chain_blocks`), so a
+block costs no hash call at all. See `docs/node_rpc_efficiency.md`.
+
 ---
 
 ## Part A - dynamic, memory-budget-based chunk sizing (live-scanner catch-up)

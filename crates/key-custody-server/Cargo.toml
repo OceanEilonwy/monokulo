@@ -28,6 +28,8 @@ tracing = "0.1.44"
 # hand in the garbage-input tests, matching the rest of the wire-protocol test
 # suite's own conventions.
 hex = "0.4.3"
+# A pruned transaction for the scan test (`shared::monero_tx`).
+shared = { path = "../shared" }
 
 [lints]
 workspace = true

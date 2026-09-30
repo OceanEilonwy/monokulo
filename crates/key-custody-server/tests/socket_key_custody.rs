@@ -229,6 +229,44 @@ async fn scan_tx_outputs_finds_output_paid_to_subaddress() {
     assert!(matches[0].amount_piconero.unwrap() > 0);
 }
 
+/// The engine sends transactions pruned, as its node gave them (their
+/// prefix and RingCT base, without signatures and proofs). Across the
+/// socket, one scans to the same match, amount and all, as the whole
+/// transaction.
+#[tokio::test]
+async fn a_pruned_transaction_scans_to_the_same_match_as_the_whole_one() {
+    let whole = fixture_tx();
+    let mut blob = monero::consensus::encode::serialize(&whole.prefix);
+    blob.extend(monero::consensus::encode::serialize(
+        whole.rct_signatures.sig.as_ref().unwrap(),
+    ));
+    let pruned = shared::monero_tx::decode_pruned(&blob).unwrap();
+    assert!(shared::monero_tx::is_pruned(&pruned));
+    let ts = spawn_server_and_client("scan-pruned").await;
+    let handle = ts
+        .client
+        .register_wallet(WalletMaterial::new(
+            fixture_view_key().to_bytes(),
+            fixture_spend_pubkey().to_bytes(),
+        ))
+        .await
+        .unwrap();
+
+    let from_whole = ts
+        .client
+        .scan_tx_outputs(handle, &whole, 0..2, 0..3)
+        .await
+        .unwrap();
+    let from_pruned = ts
+        .client
+        .scan_tx_outputs(handle, &pruned, 0..2, 0..3)
+        .await
+        .unwrap();
+    assert_eq!(from_whole.len(), 1);
+    assert!(from_whole[0].amount_piconero.unwrap() > 0);
+    assert_eq!(from_pruned, from_whole);
+}
+
 /// Ported *partially*, on purpose - see the WBS 2.1.2 brief's own framing of
 /// this exact test. The original asserts `rebuild_count(&custody, handle) ==
 /// 1` after three same-range scans and `== 2` after a range change, reading

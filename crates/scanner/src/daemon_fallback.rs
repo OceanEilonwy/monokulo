@@ -63,15 +63,9 @@ struct NodeHealth {
     cooldown_until: Option<Instant>,
 }
 
-/// How long a height a node reported to the scanner stands in for asking
-/// it again ([`FallbackDaemonClient::recent_height`]).
-pub const RECENT_HEIGHT_MAX_AGE: Duration = Duration::from_secs(15);
-
 pub struct FallbackDaemonClient {
     nodes: Vec<FallbackNode>,
     health: Vec<Mutex<NodeHealth>>,
-    /// The height each node last reported through this client, and when.
-    heights: Vec<Mutex<Option<(u64, Instant)>>>,
     /// Index into `nodes` of whichever node most recently answered successfully -
     /// where the *next* call starts trying from. Relaxed ordering is enough: this is
     /// an optimization (skip nodes already known-bad) rather than a correctness
@@ -89,26 +83,10 @@ impl FallbackDaemonClient {
             .iter()
             .map(|_| Mutex::new(NodeHealth::default()))
             .collect();
-        let heights = nodes.iter().map(|_| Mutex::new(None)).collect();
         Self {
             nodes,
             health,
-            heights,
             current: AtomicUsize::new(0),
-        }
-    }
-
-    /// The height node `idx` reported to the scanner within
-    /// [`RECENT_HEIGHT_MAX_AGE`], if it did: the scanner asks its node every
-    /// round, so a status page needn't ask that node again.
-    pub fn recent_height(&self, idx: usize) -> Option<u64> {
-        let seen = (*self.heights.get(idx)?.lock())?;
-        (seen.1.elapsed() < RECENT_HEIGHT_MAX_AGE).then_some(seen.0)
-    }
-
-    fn note_height(&self, idx: usize, height: u64) {
-        if let Some(slot) = self.heights.get(idx) {
-            *slot.lock() = Some((height, Instant::now()));
         }
     }
 
@@ -210,15 +188,6 @@ impl FallbackDaemonClient {
         F: Fn(&'a dyn MoneroDaemonClient) -> Fut,
         Fut: std::future::Future<Output = Result<T, DaemonError>> + 'a,
     {
-        self.failover_from(call).await.map(|(_, value)| value)
-    }
-
-    /// [`Self::failover`], also saying which node answered.
-    async fn failover_from<'a, T, F, Fut>(&'a self, call: F) -> Result<(usize, T), DaemonError>
-    where
-        F: Fn(&'a dyn MoneroDaemonClient) -> Fut,
-        Fut: std::future::Future<Output = Result<T, DaemonError>> + 'a,
-    {
         let deadline = Instant::now() + CALL_DEADLINE;
         let mut last_err = None;
         let order = self.attempt_order();
@@ -246,7 +215,7 @@ impl FallbackDaemonClient {
             match outcome {
                 Ok(v) => {
                     self.note_success(idx);
-                    return Ok((idx, v));
+                    return Ok(v);
                 }
                 Err(e) => {
                     self.note_failure(idx, &e);
@@ -295,14 +264,10 @@ impl PinnedDaemon<'_> {
 #[async_trait::async_trait]
 impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_height(&self) -> Result<u64, DaemonError> {
-        let height = self.one(|c| c.get_height()).await?;
-        self.inner.note_height(self.idx, height);
-        Ok(height)
+        self.one(|c| c.get_height()).await
     }
     async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
-        let tip = self.one(|c| c.get_tip()).await?;
-        self.inner.note_height(self.idx, tip.height);
-        Ok(tip)
+        self.one(|c| c.get_tip()).await
     }
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
         self.one(|c| c.get_block_hash(height)).await
@@ -386,15 +351,11 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
 #[async_trait::async_trait]
 impl MoneroDaemonClient for FallbackDaemonClient {
     async fn get_height(&self) -> Result<u64, DaemonError> {
-        let (idx, height) = self.failover_from(|c| c.get_height()).await?;
-        self.note_height(idx, height);
-        Ok(height)
+        self.failover(|c| c.get_height()).await
     }
 
     async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
-        let (idx, tip) = self.failover_from(|c| c.get_tip()).await?;
-        self.note_height(idx, tip.height);
-        Ok(tip)
+        self.failover(|c| c.get_tip()).await
     }
 
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {

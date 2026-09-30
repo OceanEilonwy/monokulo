@@ -353,8 +353,7 @@ pub async fn check_for_reorg_and_reconcile(
     let db = crate::store::Db::over_shared(store.clone());
     let parsed = crate::network::parse_network(network)
         .map_err(|e| ScannerError::Internal(e.to_string()))?;
-    let chain =
-        Chain::new(&db, daemon, parsed, reorg_check_depth, now).with_tip_hash(tip_hash);
+    let chain = Chain::new(&db, daemon, parsed, reorg_check_depth, now).with_tip_hash(tip_hash);
     if let Some(fork) = chain.detect(tip).await? {
         chain.open(fork).await?;
     }
@@ -910,8 +909,7 @@ pub(crate) async fn voided_key_image_statuses(
     if spans.len() < 2 {
         return Ok(Default::default());
     }
-    let statuses =
-        crate::work::bounded(daemon.is_key_image_spent_corroborated(&images)).await?;
+    let statuses = crate::work::bounded(daemon.is_key_image_spent_corroborated(&images)).await?;
     if statuses.len() != images.len() {
         return Ok(Default::default());
     }
@@ -2090,8 +2088,8 @@ pub(crate) mod tests {
             &fixture_tx(),
             &window,
         )
-            .await
-            .unwrap();
+        .await
+        .unwrap();
         assert!(!scan.matches.is_empty());
         let checkpoint = |hash: &str| crate::store::BlockCheckpoint {
             height: 10,
@@ -10517,6 +10515,33 @@ pub(crate) mod tests {
         );
     }
 
+    /// What the node client fetches: a pruned transaction, with its id
+    /// alongside. It scans to the same match, amount and key images as the
+    /// whole one, under the same id.
+    #[tokio::test]
+    async fn a_pruned_transaction_scans_to_the_same_result_as_the_whole_one() {
+        let (_store, key_custody, handle, _tenant_id, _order_id) = setup().await;
+        let whole = fixture_tx();
+        let mut blob = monero::consensus::encode::serialize(&whole.prefix);
+        blob.extend(monero::consensus::encode::serialize(
+            whole.rct_signatures.sig.as_ref().unwrap(),
+        ));
+        let pruned = shared::monero_tx::decode_pruned(&blob).unwrap();
+        let txid = tx_id_hex(&whole);
+
+        let from_whole = scan_transaction(&key_custody, handle, &whole, 0..3)
+            .await
+            .unwrap();
+        let from_pruned = scan_transaction_as(&key_custody, handle, &txid, &pruned, 0..3)
+            .await
+            .unwrap();
+        assert_eq!(from_whole.matches.len(), 1);
+        assert!(from_whole.matches[0].amount_piconero.unwrap() > 0);
+        assert_eq!(from_pruned.matches, from_whole.matches);
+        assert_eq!(from_pruned.txid, from_whole.txid);
+        assert_eq!(from_pruned.key_images_json, from_whole.key_images_json);
+    }
+
     #[tokio::test]
     async fn a_store_whose_window_changed_has_the_pool_scanned_again_for_it() {
         let store = Store::open_in_memory().unwrap();
@@ -10857,9 +10882,11 @@ pub(crate) mod tests {
         socket.remove_wallet(handle).await.unwrap();
         let tx = unrelated_tx(1);
         let window = ScanIndices::range(0..1);
-        assert!(scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
-            .await
-            .is_err());
+        assert!(
+            scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
+                .await
+                .is_err()
+        );
         assert_eq!(
             register_missing_wallets_checking_state(
                 &store,
@@ -10872,9 +10899,11 @@ pub(crate) mod tests {
             1
         );
         let handle = handles.read()[&tenant.id];
-        assert!(scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
-            .await
-            .is_ok());
+        assert!(
+            scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
+                .await
+                .is_ok()
+        );
 
         // The socket backend is pointed at another server (a new instance
         // under the same name): the store is registered there on the next tick.
@@ -10902,9 +10931,11 @@ pub(crate) mod tests {
             .derive_subaddress(handle, SubaddressIndex::default(), Network::Mainnet)
             .await
             .is_ok());
-        assert!(scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
-            .await
-            .is_ok());
+        assert!(
+            scan_transaction_in_window(&router, handle, &tx_id_hex(&tx), &tx, &window)
+                .await
+                .is_ok()
+        );
     }
 
     #[tokio::test]

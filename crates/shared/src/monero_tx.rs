@@ -67,12 +67,10 @@ pub fn is_pruned(tx: &Transaction) -> bool {
 }
 
 fn has_ring_inputs(tx: &Transaction) -> bool {
-    tx.prefix.inputs.iter().any(|input| {
-        matches!(
-            input,
-            monero::blockdata::transaction::TxIn::ToKey { .. }
-        )
-    })
+    tx.prefix
+        .inputs
+        .iter()
+        .any(|input| matches!(input, monero::blockdata::transaction::TxIn::ToKey { .. }))
 }
 
 /// The id of a version 2 transaction from its pruned form and the hash of

@@ -19,7 +19,7 @@ use axum::http::{StatusCode, Uri};
 use axum::Router;
 use monero::consensus::serialize;
 use monero::TxIn;
-use scanner::daemon::{KeyImageStatus, MoneroDaemonClient, TxLocation};
+use scanner::daemon::{ChainBlock, KeyImageStatus, MoneroDaemonClient, TxLocation};
 use scanner::daemon_rpc::RpcDaemonClient;
 use scanner::scanner::tx_id_hex;
 use serde::{Deserialize, Serialize};
@@ -37,6 +37,8 @@ const KNOWN_TX: &str = "098e6e358b7d66a9e85a211d6917d1b8d720e74c6ae267d4d9b10ed4
 const KNOWN_TX_HEIGHT: u64 = 2_210_331;
 /// Well-formed but never spent.
 const UNSPENT_KEY_IMAGE: &str = "1111111111111111111111111111111111111111111111111111111111111111";
+/// Well-formed, but no transaction's id.
+const ABSENT_TX: &str = "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
 
 #[derive(Serialize, Deserialize, Clone)]
 struct Exchange {
@@ -104,8 +106,11 @@ fn key_images(tx: &monero::Transaction) -> Vec<String> {
 /// Every call the scanner makes, as it makes them. Returns what the recorder
 /// needs to know about the chain.
 async fn exercise(client: &RpcDaemonClient) {
-    let tip = client.get_height().await.unwrap();
-    assert!(tip >= KNOWN_TX_HEIGHT, "tip {tip}");
+    assert!(client.get_height().await.unwrap() >= KNOWN_TX_HEIGHT);
+    // The tip's height comes with its id, in one answer.
+    let tip = client.get_tip().await.unwrap();
+    assert!(tip.height >= KNOWN_TX_HEIGHT, "tip {}", tip.height);
+    assert_eq!(tip.hash.as_ref().map(String::len), Some(64), "{tip:?}");
 
     // One get_blocks.bin round trip for the chunk matches fetching each block
     // with get_block + get_transactions, transaction for transaction.
@@ -129,15 +134,81 @@ async fn exercise(client: &RpcDaemonClient) {
         .find(|tx| tx_id_hex(tx) == KNOWN_TX)
         .expect("known transaction in its block");
 
+    // What the scanner reads blocks with: the same chunk with pruned
+    // transactions. Each block names itself and its parent, and each
+    // transaction carries the id its whole form hashes to, with the prefix
+    // (output keys, key images) a scan reads unchanged.
+    let chain = client.get_chain_blocks(START, COUNT).await.unwrap();
+    assert_eq!(chain.len(), COUNT as usize);
+    let mut pruned_bytes = 0;
+    let mut whole_bytes = 0;
+    for (offset, block) in chain.iter().enumerate() {
+        let height = START + offset as u64;
+        assert_eq!(block.height, height);
+        assert_eq!(block.hash, client.get_block_hash(height).await.unwrap());
+        if offset > 0 {
+            assert_eq!(block.prev_hash, chain[offset - 1].hash);
+        }
+        let whole = &batched[offset];
+        assert_eq!(block.txs.len(), whole.len(), "block {height}");
+        for (index, (pruned, whole)) in block.txs.iter().zip(whole).enumerate() {
+            assert_eq!(block.txid(index), Some(tx_id_hex(whole)), "block {height}");
+            assert!(shared::monero_tx::is_pruned(pruned), "block {height}");
+            assert_eq!(pruned.prefix, whole.prefix);
+            assert_eq!(pruned.rct_signatures.sig, whole.rct_signatures.sig);
+            pruned_bytes += serialize(pruned).len();
+            whole_bytes += serialize(whole).len();
+        }
+    }
+    assert!(
+        pruned_bytes * 3 < whole_bytes,
+        "pruned {pruned_bytes} of {whole_bytes} bytes"
+    );
+
+    // Headers alone say the same about each block as the blocks do.
+    let headers = client.get_chain_headers(START, COUNT).await.unwrap();
+    assert_eq!(
+        headers,
+        chain.iter().map(ChainBlock::header).collect::<Vec<_>>()
+    );
+    // A range past the node's tip gives what there is, not an error.
+    let at_tip = client.get_chain_headers(tip.height, 5).await.unwrap();
+    assert_eq!(at_tip[0].height, tip.height);
+
     // Looking the transaction up directly finds the same one, mined at its height.
     assert_eq!(
         client.locate_transaction(KNOWN_TX).await.unwrap(),
         TxLocation::InBlock(KNOWN_TX_HEIGHT)
     );
     assert_eq!(
+        client.locate_transaction(ABSENT_TX).await.unwrap(),
+        TxLocation::NotFound
+    );
+    assert_eq!(
         tx_id_hex(&client.get_transaction(KNOWN_TX).await.unwrap()),
         KNOWN_TX
     );
+    // Several at once: each one placed or affirmatively missed.
+    let both = [KNOWN_TX.to_string(), ABSENT_TX.to_string()];
+    let located = client.locate_transactions(&both).await.unwrap();
+    assert_eq!(
+        located.get(KNOWN_TX),
+        Some(&TxLocation::InBlock(KNOWN_TX_HEIGHT))
+    );
+    assert_eq!(located.get(ABSENT_TX), Some(&TxLocation::NotFound));
+    assert_eq!(located.len(), 2);
+    // The transaction and where it is, in one answer, pruned, under its id.
+    let (found, location) = client.find_transaction(KNOWN_TX).await.unwrap().unwrap();
+    assert_eq!(location, TxLocation::InBlock(KNOWN_TX_HEIGHT));
+    assert_eq!(found.txid, KNOWN_TX);
+    assert!(shared::monero_tx::is_pruned(&found.tx));
+    assert_eq!(found.tx.prefix, known.prefix);
+    assert!(client.find_transaction(ABSENT_TX).await.unwrap().is_none());
+    // Fetched by id: the one the node has, pruned; the other left out.
+    let fetched = client.get_transactions_with_ids(&both).await.unwrap();
+    assert_eq!(fetched.len(), 1);
+    assert_eq!(fetched[0].txid, KNOWN_TX);
+    assert_eq!(fetched[0].tx.prefix, known.prefix);
 
     // Its inputs' key images are spent on chain; a made-up one is not.
     let mut images = key_images(known);
@@ -152,11 +223,39 @@ async fn exercise(client: &RpcDaemonClient) {
         "{statuses:?}"
     );
 
-    let hash = client.get_block_hash(KNOWN_TX_HEIGHT).await.unwrap();
-    assert_eq!(hash.len(), 64);
     let timestamp = client.get_block_timestamp(KNOWN_TX_HEIGHT).await.unwrap();
     assert!(timestamp > 1_750_000_000, "timestamp {timestamp}");
-    // Whatever is in the pool decodes (possibly nothing).
+    assert_eq!(
+        timestamp,
+        chain[(KNOWN_TX_HEIGHT - START) as usize].timestamp
+    );
+
+    // The pool, followed by its changes: the node describes its pool in
+    // answer to the wallet-style request, so the plain list of ids is never
+    // asked for, and the bodies that came with the answer are handed over
+    // under their ids without another request.
+    let pool = client.get_mempool_txids().await.unwrap();
+    let requests = |endpoint: &str| {
+        client
+            .stats()
+            .iter()
+            .find(|stats| stats.endpoint == endpoint)
+            .map_or(0, |stats| stats.requests)
+    };
+    assert_eq!(requests("/get_blocks.bin (pool changes)"), 1);
+    assert_eq!(requests("/get_transaction_pool_hashes"), 0);
+    let fetches_before = requests("/get_transactions");
+    let bodies = client.get_transactions_with_ids(&pool).await.unwrap();
+    assert!(bodies.len() <= pool.len());
+    assert!(bodies.iter().all(|body| pool.contains(&body.txid)));
+    if pool.len() <= 100 {
+        assert_eq!(bodies.len(), pool.len(), "every body came with the pool");
+        assert_eq!(requests("/get_transactions"), fetches_before);
+    }
+    // Asked again at once, the last answer stands: no request.
+    assert_eq!(client.get_mempool_txids().await.unwrap().len(), pool.len());
+    assert_eq!(requests("/get_blocks.bin (pool changes)"), 1);
+    // Whatever is in the pool decodes whole too (possibly nothing).
     client.get_mempool_transactions().await.unwrap();
 }
 
@@ -181,6 +280,17 @@ async fn scanner_node_client_reports_a_node_that_does_not_answer_as_it_expects()
     let error = client.get_block_hash(1).await.unwrap_err().to_string();
     assert!(error.contains("invalid JSON response"), "{error}");
     assert!(client.get_blocks_range(START, COUNT).await.is_err());
+    assert!(client.get_chain_blocks(START, COUNT).await.is_err());
+    assert!(client.get_chain_headers(START, COUNT).await.is_err());
+    assert!(client.get_tip().await.is_err());
+    // The pool: neither the request for its changes nor the plain list is
+    // answered, and that is an error, never an empty pool.
+    assert!(client.get_mempool_txids().await.is_err());
+    assert!(client
+        .locate_transactions(&[ABSENT_TX.to_string()])
+        .await
+        .is_err());
+    assert!(client.find_transaction(ABSENT_TX).await.is_err());
     assert!(client
         .is_key_image_spent(&[UNSPENT_KEY_IMAGE.to_string()])
         .await

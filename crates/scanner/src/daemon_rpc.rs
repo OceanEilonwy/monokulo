@@ -30,8 +30,8 @@ use serde_json::{json, Value};
 use tokio::time::Instant;
 
 use crate::daemon::{
-    ChainBlock, ChainHeader, ChainTip, DaemonError, DaemonInfo, FetchedTx, KeyImageStatus,
-    MoneroDaemonClient, TxLocation,
+    ChainBlock, ChainHeader, ChainTip, DaemonError, DaemonInfo, EndpointStats, FetchedTx,
+    KeyImageStatus, MoneroDaemonClient, TxLocation,
 };
 
 pub struct RpcDaemonClient {
@@ -45,19 +45,9 @@ pub struct RpcDaemonClient {
     /// at a time, held across its round trip, so two loops polling at once
     /// can't apply the same changes out of order.
     pool: tokio::sync::Mutex<PoolView>,
-}
-
-/// Requests made to one endpoint of a node (a path, or a JSON-RPC method),
-/// and the bytes they cost: [`RpcDaemonClient::stats`].
-#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize)]
-pub struct EndpointStats {
-    pub endpoint: String,
-    /// Requests sent, answered or not.
-    pub requests: u64,
-    /// Request body bytes.
-    pub bytes_sent: u64,
-    /// Response body bytes read.
-    pub bytes_received: u64,
+    /// `POOL_REUSE` and `POOL_RESYNC_INTERVAL`; tests shorten them.
+    pool_reuse: Duration,
+    pool_resync: Duration,
 }
 
 /// Default cap on one response body: comfortably above a full mempool under
@@ -126,7 +116,18 @@ impl RpcDaemonClient {
             max_response_bytes: MAX_RESPONSE_BYTES,
             stats: Default::default(),
             pool: Default::default(),
+            pool_reuse: POOL_REUSE,
+            pool_resync: POOL_RESYNC_INTERVAL,
         })
+    }
+
+    /// Other pool timings, for tests: how long an answer is reused, and how
+    /// often the plain list of ids replaces what was followed.
+    #[cfg(test)]
+    fn with_pool_timing(mut self, reuse: Duration, resync: Duration) -> Self {
+        self.pool_reuse = reuse;
+        self.pool_resync = resync;
+        self
     }
 
     /// Every endpoint asked since this client was built, busiest (by bytes
@@ -509,7 +510,10 @@ fn epee_request(fields: &[(&str, EpeeField)]) -> Vec<u8> {
     request.extend_from_slice(&monero_epee::HEADER);
     request.push(monero_epee::VERSION);
     let count = u8::try_from(fields.len()).expect("more request fields than fit a u8");
-    assert!(count < 64, "more request fields than the 1-byte varint holds");
+    assert!(
+        count < 64,
+        "more request fields than the 1-byte varint holds"
+    );
     request.push(count << 2);
     for (name, value) in fields {
         request.push(u8::try_from(name.len()).expect("field name literal longer than 255 bytes"));
@@ -852,11 +856,11 @@ struct PoolChanges {
 
 /// Parses a pool-only `get_blocks.bin` response. `Ok(None)` when the node
 /// answered without describing its pool: one that doesn't know the request
-/// (older than monerod 0.18.3), to be asked the old way instead.
+/// (an older monerod), to be asked the old way instead.
 fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> {
     let epee_err = |e| epee_err("pool get_blocks.bin", e);
     fn ids(blob: &[u8]) -> Vec<String> {
-        blob.chunks_exact(32).map(hex::encode).collect()
+        blob.as_chunks::<32>().0.iter().map(hex::encode).collect()
     }
 
     let mut epee = monero_epee::Epee::new(bytes).map_err(epee_err)?;
@@ -938,6 +942,9 @@ const POOL_RESYNC_INTERVAL: Duration = Duration::from_secs(60);
 /// How long a node that didn't describe its pool is asked the old way
 /// before it is tried again (it may have been upgraded).
 const POOL_CHANGES_RETRY: Duration = Duration::from_secs(10 * 60);
+/// After this many requests for changes in a row that a node which used to
+/// answer them didn't, it is asked the old way.
+const POOL_CHANGES_GIVE_UP: u32 = 3;
 /// Most transaction bodies that arrived with pool changes kept until they
 /// are asked for. Past this (a flood) they are fetched on demand instead.
 const POOL_BODIES_MAX: usize = 5_000;
@@ -950,6 +957,8 @@ struct PoolView {
     /// yes, or no (asked the old way until `retry_changes_at`).
     follows_changes: Option<bool>,
     retry_changes_at: Option<Instant>,
+    /// Requests for changes in a row that got no description of the pool.
+    unanswered: u32,
     /// The node's clock at its last answer.
     since: u64,
     txids: HashSet<String>,
@@ -1247,6 +1256,10 @@ impl RpcDaemonClient {
 
 #[async_trait::async_trait]
 impl MoneroDaemonClient for RpcDaemonClient {
+    fn rpc_stats(&self) -> Vec<EndpointStats> {
+        self.stats()
+    }
+
     async fn get_height(&self) -> Result<u64, DaemonError> {
         let resp: GetHeightResponse = self.post_plain("/get_height", json!({})).await?;
         // monerod's `/get_height` "height" field is the block *count*, not the
@@ -1466,8 +1479,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         let mut pool = self.pool.lock().await;
         let now = Instant::now();
-        if pool.follows_changes == Some(false)
-            && pool.retry_changes_at.is_some_and(|at| now >= at)
+        if pool.follows_changes == Some(false) && pool.retry_changes_at.is_some_and(|at| now >= at)
         {
             pool.follows_changes = None;
         }
@@ -1477,18 +1489,18 @@ impl MoneroDaemonClient for RpcDaemonClient {
         if pool.follows_changes == Some(true) {
             if pool
                 .polled_at
-                .is_some_and(|at| now.saturating_duration_since(at) < POOL_REUSE)
+                .is_some_and(|at| now.saturating_duration_since(at) < self.pool_reuse)
             {
                 return Ok(pool.list());
             }
             if pool
                 .resynced_at
-                .is_none_or(|at| now.saturating_duration_since(at) >= POOL_RESYNC_INTERVAL)
+                .is_none_or(|at| now.saturating_duration_since(at) >= self.pool_resync)
             {
                 let txids = self.pool_hashes().await?;
                 pool.resync(txids);
-                pool.resynced_at = Some(now);
-                pool.polled_at = Some(now);
+                pool.resynced_at = Some(Instant::now());
+                pool.polled_at = Some(Instant::now());
                 return Ok(pool.list());
             }
         }
@@ -1500,20 +1512,22 @@ impl MoneroDaemonClient for RpcDaemonClient {
                 false,
             )
             .await?;
-        // An answer that isn't a description of the pool (or isn't epee at
-        // all) is a node that doesn't know the request.
-        match parse_pool_changes(&response).ok().flatten() {
-            Some(changes) => {
-                if changes.full {
-                    // A whole pool is as good as a resync.
-                    pool.resynced_at = Some(now);
+        let changes = match parse_pool_changes(&response) {
+            Ok(Some(changes)) => changes,
+            // An answer that isn't a description of the pool (or isn't epee
+            // at all). From a node that has never given one, that is a node
+            // that doesn't know the request: it is asked for the plain list
+            // from now on. From a node that has, it is a failed answer (a
+            // busy node, an error page from something in front of it),
+            // unless it keeps happening.
+            unanswered => {
+                pool.unanswered += 1;
+                if pool.follows_changes == Some(true) && pool.unanswered < POOL_CHANGES_GIVE_UP {
+                    return Err(DaemonError::Request(match unanswered {
+                        Err(error) => error.to_string(),
+                        _ => "the node did not describe its mempool".to_string(),
+                    }));
                 }
-                pool.apply(changes);
-                pool.follows_changes = Some(true);
-                pool.polled_at = Some(now);
-                Ok(pool.list())
-            }
-            None => {
                 if pool.follows_changes == Some(true) {
                     tracing::warn!(
                         node = %self.base_url,
@@ -1525,9 +1539,18 @@ impl MoneroDaemonClient for RpcDaemonClient {
                     retry_changes_at: Some(now + POOL_CHANGES_RETRY),
                     ..PoolView::default()
                 };
-                self.pool_hashes().await
+                return self.pool_hashes().await;
             }
+        };
+        if changes.full {
+            // A whole pool is as good as a resync.
+            pool.resynced_at = Some(Instant::now());
         }
+        pool.apply(changes);
+        pool.follows_changes = Some(true);
+        pool.unanswered = 0;
+        pool.polled_at = Some(Instant::now());
+        Ok(pool.list())
     }
 
     async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
@@ -1716,7 +1739,7 @@ mod tests {
 
     /// A real mainnet block with only its coinbase (from the `monero` crate's
     /// own serialisation test).
-    const COINBASE_ONLY_BLOCK_HEX: &str = "0c0c94debaf805beb3489c722a285c092a32e7c6893abfc7d069699c8326fc3445a749c5276b6200000000029b892201ffdf882201b699d4c8b1ec020223df524af2a2ef5f870adb6e1ceb03a475c39f8b9ef76aa50b46ddd2a18349402b012839bfa19b7524ec7488917714c216ca254b38ed0424ca65ae828a7c006aeaf10208f5316a7f6b99cca60000";
+    pub(super) const COINBASE_ONLY_BLOCK_HEX: &str = "0c0c94debaf805beb3489c722a285c092a32e7c6893abfc7d069699c8326fc3445a749c5276b6200000000029b892201ffdf882201b699d4c8b1ec020223df524af2a2ef5f870adb6e1ceb03a475c39f8b9ef76aa50b46ddd2a18349402b012839bfa19b7524ec7488917714c216ca254b38ed0424ca65ae828a7c006aeaf10208f5316a7f6b99cca60000";
 
     /// A block's identity comes from its own blob: the id the node reports
     /// for it, its parent's id and its timestamp. A blob that doesn't match
@@ -2162,6 +2185,808 @@ mod tests {
 
 #[cfg(test)]
 #[cfg_attr(coverage_nightly, coverage(off))]
+mod wire_tests {
+    //! The requests that keep a node's work small, against a scripted node:
+    //! the pool followed by its changes, several transactions asked about at
+    //! once, pruned transactions checked against their ids, and the counts
+    //! kept of all of it.
+
+    use super::*;
+    use monero::consensus::encode::serialize;
+    use parking_lot::Mutex;
+    use std::collections::VecDeque;
+    use std::sync::Arc;
+
+    const FIXTURE_TX_HEX: &str = include_str!("../tests/fixtures/subaddress_tx.hex");
+
+    fn whole_tx() -> Transaction {
+        deserialize(&hex::decode(FIXTURE_TX_HEX.trim()).unwrap()).unwrap()
+    }
+
+    /// The fixture transaction as a node sends it pruned: its id, its
+    /// prefix and RingCT base, and the hash of what was left out.
+    fn pruned_fixture() -> (String, Vec<u8>, [u8; 32]) {
+        let whole = whole_tx();
+        let base = whole.rct_signatures.sig.as_ref().unwrap();
+        let mut blob = serialize(&whole.prefix);
+        blob.extend(serialize(base));
+        let mut prunable = std::io::Cursor::new(Vec::new());
+        whole
+            .rct_signatures
+            .p
+            .as_ref()
+            .unwrap()
+            .consensus_encode(&mut prunable, base.rct_type)
+            .unwrap();
+        (
+            hex::encode(whole.hash().to_bytes()),
+            blob,
+            monero::Hash::new(prunable.into_inner()).to_bytes(),
+        )
+    }
+
+    // -- A minimal epee writer, for scripted responses ----------------------
+
+    enum V {
+        Str(Vec<u8>),
+        U8(u8),
+        U64(u64),
+        Objects(Vec<Vec<(&'static str, V)>>),
+    }
+
+    fn varint(n: usize) -> Vec<u8> {
+        if n < 64 {
+            vec![(n as u8) << 2]
+        } else if n < 16_384 {
+            (((n as u16) << 2) | 1).to_le_bytes().to_vec()
+        } else {
+            (((n as u32) << 2) | 2).to_le_bytes().to_vec()
+        }
+    }
+
+    fn write_fields(fields: &[(&'static str, V)], out: &mut Vec<u8>) {
+        out.extend(varint(fields.len()));
+        for (name, value) in fields {
+            out.push(name.len() as u8);
+            out.extend_from_slice(name.as_bytes());
+            match value {
+                V::Str(bytes) => {
+                    out.push(monero_epee::Type::String as u8);
+                    out.extend(varint(bytes.len()));
+                    out.extend_from_slice(bytes);
+                }
+                V::U8(value) => {
+                    out.push(monero_epee::Type::Uint8 as u8);
+                    out.push(*value);
+                }
+                V::U64(value) => {
+                    out.push(monero_epee::Type::Uint64 as u8);
+                    out.extend_from_slice(&value.to_le_bytes());
+                }
+                V::Objects(objects) => {
+                    out.push(monero_epee::Type::Object as u8 | 0x80);
+                    out.extend(varint(objects.len()));
+                    for object in objects {
+                        write_fields(object, out);
+                    }
+                }
+            }
+        }
+    }
+
+    fn epee(fields: &[(&'static str, V)]) -> Vec<u8> {
+        let mut out = monero_epee::HEADER.to_vec();
+        out.push(monero_epee::VERSION);
+        write_fields(fields, &mut out);
+        out
+    }
+
+    fn ids_blob(txids: &[&str]) -> Vec<u8> {
+        txids
+            .iter()
+            .flat_map(|txid| hex::decode(txid).unwrap())
+            .collect()
+    }
+
+    /// A pool answer: `extent` 2 for the whole pool, 1 for changes.
+    fn pool_answer(
+        extent: u8,
+        daemon_time: u64,
+        added: &[(&str, &[u8])],
+        added_ids: &[&str],
+        removed: &[&str],
+    ) -> Vec<u8> {
+        let mut fields = vec![
+            ("status", V::Str(b"OK".to_vec())),
+            ("pool_info_extent", V::U8(extent)),
+            ("daemon_time", V::U64(daemon_time)),
+        ];
+        if !added.is_empty() {
+            fields.push((
+                "added_pool_txs",
+                V::Objects(
+                    added
+                        .iter()
+                        .map(|(txid, blob)| {
+                            vec![
+                                ("tx_hash", V::Str(hex::decode(txid).unwrap())),
+                                ("tx_blob", V::Str(blob.to_vec())),
+                                ("double_spend_seen", V::U8(0)),
+                            ]
+                        })
+                        .collect(),
+                ),
+            ));
+        }
+        if !added_ids.is_empty() {
+            fields.push(("remaining_added_pool_txids", V::Str(ids_blob(added_ids))));
+        }
+        if !removed.is_empty() {
+            fields.push(("removed_pool_txids", V::Str(ids_blob(removed))));
+        }
+        epee(&fields)
+    }
+
+    // -- A scripted node -----------------------------------------------------
+
+    /// Answers each path from a queue (the last answer repeats), and keeps
+    /// every request it got.
+    #[derive(Default)]
+    struct Script {
+        answers: Mutex<HashMap<String, VecDeque<Vec<u8>>>>,
+        requests: Mutex<Vec<(String, Vec<u8>)>>,
+    }
+
+    impl Script {
+        fn answer(&self, path: &str, body: impl Into<Vec<u8>>) {
+            self.answers
+                .lock()
+                .entry(path.to_string())
+                .or_default()
+                .push_back(body.into());
+        }
+
+        fn requests_to(&self, path: &str) -> Vec<Vec<u8>> {
+            self.requests
+                .lock()
+                .iter()
+                .filter(|(p, _)| p == path)
+                .map(|(_, body)| body.clone())
+                .collect()
+        }
+    }
+
+    async fn scripted() -> (RpcDaemonClient, Arc<Script>) {
+        use axum::extract::State;
+        let script = Arc::new(Script::default());
+        let app = axum::Router::new()
+            .fallback(
+                |State(script): State<Arc<Script>>,
+                 uri: axum::http::Uri,
+                 body: axum::body::Bytes| async move {
+                    let path = uri.path().to_string();
+                    script.requests.lock().push((path.clone(), body.to_vec()));
+                    let mut answers = script.answers.lock();
+                    match answers.get_mut(&path) {
+                        Some(queue) if queue.len() > 1 => {
+                            (axum::http::StatusCode::OK, queue.pop_front().unwrap())
+                        }
+                        Some(queue) if !queue.is_empty() => {
+                            (axum::http::StatusCode::OK, queue[0].clone())
+                        }
+                        _ => (
+                            axum::http::StatusCode::NOT_FOUND,
+                            b"<html>no such thing</html>".to_vec(),
+                        ),
+                    }
+                },
+            )
+            .with_state(script.clone());
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let client = RpcDaemonClient::new("127.0.0.1", port, false, false)
+            .unwrap()
+            // Every poll asks; the plain list is never due.
+            .with_pool_timing(Duration::ZERO, Duration::from_secs(3600));
+        (client, script)
+    }
+
+    fn sorted(mut txids: Vec<String>) -> Vec<String> {
+        txids.sort();
+        txids
+    }
+
+    /// The `pool_info_since` a pool request carried.
+    fn since_of(request: &[u8]) -> u64 {
+        let mut epee = monero_epee::Epee::new(request).unwrap();
+        let mut fields = epee.entry().unwrap().fields().unwrap();
+        while let Some(entry) = fields.next() {
+            let (key, value) = entry.unwrap();
+            if key.consume() == b"pool_info_since" {
+                return value.to_u64().unwrap();
+            }
+        }
+        panic!("no pool_info_since in the request");
+    }
+
+    const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+    const C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    const D: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
+
+    /// The blocks request is, byte for byte, the one recorded against real
+    /// nodes; asking for pruned transactions changes one byte of it.
+    #[test]
+    fn the_blocks_request_is_the_recorded_one() {
+        assert_eq!(
+            hex::encode(get_blocks_bin_request(2_210_330, 4, false)),
+            "0111010101010201010c057072756e650b000c73746172745f686569676874051aba2100000000000f6d61785f626c6f636b5f636f756e74050400000000000000"
+        );
+        let pruned = get_blocks_bin_request(2_210_330, 4, true);
+        let whole = get_blocks_bin_request(2_210_330, 4, false);
+        assert_eq!(pruned.iter().zip(&whole).filter(|(a, b)| a != b).count(), 1);
+        assert_eq!(since_of(&pool_changes_request(77)), 77);
+    }
+
+    /// The first poll gets the whole pool, with bodies; each later one asks
+    /// only for what changed since the node's own clock at the last answer,
+    /// and applies it. Bodies that came with an answer are handed over
+    /// without a request, once.
+    #[tokio::test]
+    async fn the_pool_is_followed_by_its_changes() {
+        let (client, node) = scripted().await;
+        let (a, blob, _) = pruned_fixture();
+        node.answer(
+            "/get_blocks.bin",
+            pool_answer(POOL_INFO_FULL, 100, &[(&a, &blob)], &[B], &[]),
+        );
+        node.answer(
+            "/get_blocks.bin",
+            pool_answer(POOL_INFO_INCREMENTAL, 105, &[], &[C], &[B]),
+        );
+        node.answer(
+            "/get_blocks.bin",
+            pool_answer(POOL_INFO_INCREMENTAL, 110, &[], &[], &[]),
+        );
+
+        assert_eq!(
+            sorted(client.get_mempool_txids().await.unwrap()),
+            sorted(vec![a.clone(), B.to_string()])
+        );
+        // The body came with the pool: no request for it, and it is pruned
+        // and carries its id.
+        let bodies = client
+            .get_transactions_with_ids(std::slice::from_ref(&a))
+            .await
+            .unwrap();
+        assert_eq!(bodies.len(), 1);
+        assert_eq!(bodies[0].txid, a);
+        assert!(shared::monero_tx::is_pruned(&bodies[0].tx));
+        assert_eq!(bodies[0].tx.prefix, whole_tx().prefix);
+        assert!(node.requests_to("/get_transactions").is_empty());
+
+        assert_eq!(
+            sorted(client.get_mempool_txids().await.unwrap()),
+            sorted(vec![a.clone(), C.to_string()])
+        );
+        assert_eq!(
+            sorted(client.get_mempool_txids().await.unwrap()),
+            sorted(vec![a.clone(), C.to_string()]),
+            "nothing changed"
+        );
+        let polls = node.requests_to("/get_blocks.bin");
+        assert_eq!(
+            polls.iter().map(|r| since_of(r)).collect::<Vec<_>>(),
+            vec![0, 100, 105],
+            "each poll asks for changes since the last answer's time"
+        );
+        assert!(
+            node.requests_to("/get_transaction_pool_hashes").is_empty(),
+            "the plain list is never asked for"
+        );
+        // All of it counted, under its own name.
+        let stats = client.stats();
+        let pool = stats
+            .iter()
+            .find(|s| s.endpoint == POOL_CHANGES_ENDPOINT)
+            .unwrap();
+        assert_eq!(pool.requests, 3);
+        assert!(pool.bytes_sent > 0 && pool.bytes_received > 0);
+        assert_eq!(MoneroDaemonClient::rpc_stats(&client), stats);
+    }
+
+    /// An answer reused within `POOL_REUSE` costs no request; a whole-pool
+    /// answer replaces what was followed; and the plain list, when due,
+    /// replaces it too (dropping a transaction whose removal was missed).
+    #[tokio::test]
+    async fn a_followed_pool_is_reused_briefly_and_corrected_by_the_plain_list() {
+        let (client, node) = scripted().await;
+        let client = client.with_pool_timing(Duration::from_secs(3600), Duration::ZERO);
+        node.answer(
+            "/get_blocks.bin",
+            pool_answer(POOL_INFO_FULL, 100, &[], &[B, C], &[]),
+        );
+        node.answer(
+            "/get_transaction_pool_hashes",
+            format!(r#"{{"status":"OK","tx_hashes":["{C}","{D}"]}}"#),
+        );
+        assert_eq!(client.get_mempool_txids().await.unwrap().len(), 2);
+        assert_eq!(client.get_mempool_txids().await.unwrap().len(), 2);
+        assert_eq!(node.requests_to("/get_blocks.bin").len(), 1, "reused");
+
+        // Reuse over, and the plain list due: it is what the pool now is.
+        let client = client.with_pool_timing(Duration::ZERO, Duration::ZERO);
+        assert_eq!(
+            sorted(client.get_mempool_txids().await.unwrap()),
+            sorted(vec![C.to_string(), D.to_string()])
+        );
+        assert_eq!(node.requests_to("/get_transaction_pool_hashes").len(), 1);
+        assert_eq!(node.requests_to("/get_blocks.bin").len(), 1);
+    }
+
+    /// A node that answers the pool request without describing its pool
+    /// (an older monerod), or not in epee at all, is asked for the plain
+    /// list instead, and not asked for changes again for a while.
+    #[tokio::test]
+    async fn a_node_that_cannot_say_pool_changes_is_asked_for_the_list() {
+        for answer in [
+            epee(&[("status", V::Str(b"OK".to_vec()))]),
+            epee(&[("status", V::Str(b"Failed".to_vec()))]),
+            b"<html>502 Bad Gateway</html>".to_vec(),
+        ] {
+            let (client, node) = scripted().await;
+            node.answer("/get_blocks.bin", answer);
+            node.answer(
+                "/get_transaction_pool_hashes",
+                format!(r#"{{"status":"OK","tx_hashes":["{B}"]}}"#),
+            );
+            for _ in 0..3 {
+                assert_eq!(
+                    client.get_mempool_txids().await.unwrap(),
+                    vec![B.to_string()]
+                );
+            }
+            assert_eq!(node.requests_to("/get_blocks.bin").len(), 1);
+            assert_eq!(node.requests_to("/get_transaction_pool_hashes").len(), 3);
+        }
+    }
+
+    /// A node that has described its pool and then, once or twice, doesn't
+    /// (a busy node, an error page) has failed those polls: what was
+    /// followed is kept and the next poll carries on from it. Only if it
+    /// keeps failing is it asked for the plain list instead.
+    #[tokio::test]
+    async fn a_node_that_stops_saying_pool_changes_fails_the_poll_before_it_is_given_up_on() {
+        let (client, node) = scripted().await;
+        let garbage = || b"<html>502 Bad Gateway</html>".to_vec();
+        node.answer(
+            "/get_blocks.bin",
+            pool_answer(POOL_INFO_FULL, 100, &[], &[B], &[]),
+        );
+        node.answer("/get_blocks.bin", garbage());
+        node.answer(
+            "/get_blocks.bin",
+            pool_answer(POOL_INFO_INCREMENTAL, 105, &[], &[C], &[]),
+        );
+        for _ in 0..POOL_CHANGES_GIVE_UP {
+            node.answer("/get_blocks.bin", garbage());
+        }
+        node.answer(
+            "/get_transaction_pool_hashes",
+            format!(r#"{{"status":"OK","tx_hashes":["{D}"]}}"#),
+        );
+        assert_eq!(
+            client.get_mempool_txids().await.unwrap(),
+            vec![B.to_string()]
+        );
+        // One bad answer: an error, and nothing forgotten.
+        assert!(client.get_mempool_txids().await.is_err());
+        assert_eq!(
+            sorted(client.get_mempool_txids().await.unwrap()),
+            sorted(vec![B.to_string(), C.to_string()])
+        );
+        assert_eq!(since_of(&node.requests_to("/get_blocks.bin")[2]), 100);
+        assert!(node.requests_to("/get_transaction_pool_hashes").is_empty());
+        // It keeps happening: the plain list, from then on.
+        for _ in 1..POOL_CHANGES_GIVE_UP {
+            assert!(client.get_mempool_txids().await.is_err());
+        }
+        assert_eq!(
+            client.get_mempool_txids().await.unwrap(),
+            vec![D.to_string()]
+        );
+        assert_eq!(
+            client.get_mempool_txids().await.unwrap(),
+            vec![D.to_string()]
+        );
+        assert_eq!(
+            node.requests_to("/get_blocks.bin").len(),
+            3 + POOL_CHANGES_GIVE_UP as usize
+        );
+    }
+
+    /// A node that answers neither way is an error, never an empty pool.
+    #[tokio::test]
+    async fn a_pool_that_cannot_be_read_is_an_error() {
+        let (client, _node) = scripted().await;
+        assert!(client.get_mempool_txids().await.is_err());
+    }
+
+    #[test]
+    fn pool_answers_parse_in_every_shape_a_node_sends() {
+        let (a, blob, _) = pruned_fixture();
+        let full = parse_pool_changes(&pool_answer(POOL_INFO_FULL, 9, &[(&a, &blob)], &[B], &[C]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            full,
+            PoolChanges {
+                full: true,
+                daemon_time: 9,
+                added: vec![(a.clone(), blob.clone())],
+                added_ids: vec![B.to_string()],
+                removed: vec![C.to_string()],
+            }
+        );
+        // Nothing changed: no lists at all.
+        let quiet = parse_pool_changes(&pool_answer(POOL_INFO_INCREMENTAL, 10, &[], &[], &[]))
+            .unwrap()
+            .unwrap();
+        assert_eq!(
+            quiet,
+            PoolChanges {
+                daemon_time: 10,
+                ..Default::default()
+            }
+        );
+        // No extent, extent 0, no time, a failed status: not a description
+        // of the pool.
+        for fields in [
+            vec![("status", V::Str(b"OK".to_vec()))],
+            vec![
+                ("status", V::Str(b"OK".to_vec())),
+                ("pool_info_extent", V::U8(0)),
+                ("daemon_time", V::U64(1)),
+            ],
+            vec![
+                ("status", V::Str(b"OK".to_vec())),
+                ("pool_info_extent", V::U8(1)),
+            ],
+            vec![
+                ("status", V::Str(b"BUSY".to_vec())),
+                ("pool_info_extent", V::U8(1)),
+                ("daemon_time", V::U64(1)),
+            ],
+        ] {
+            assert_eq!(parse_pool_changes(&epee(&fields)).unwrap(), None);
+        }
+        assert!(parse_pool_changes(b"not epee").is_err());
+    }
+
+    /// The view of the pool: changes applied in order, a whole pool
+    /// replacing it, the plain list correcting it, and bodies kept only for
+    /// transactions still there.
+    #[test]
+    fn the_pool_view_applies_changes_and_corrections() {
+        let (a, blob, _) = pruned_fixture();
+        let mut view = PoolView::default();
+        view.apply(PoolChanges {
+            full: true,
+            daemon_time: 5,
+            added: vec![(a.clone(), blob.clone())],
+            added_ids: vec![B.to_string()],
+            removed: vec![],
+        });
+        assert_eq!(view.since, 5);
+        assert_eq!(sorted(view.list()), sorted(vec![a.clone(), B.to_string()]));
+        assert!(view.bodies.contains_key(&a));
+        // An undecodable body is a known id without a body.
+        view.apply(PoolChanges {
+            full: false,
+            daemon_time: 6,
+            added: vec![(C.to_string(), vec![1, 2, 3])],
+            added_ids: vec![],
+            removed: vec![B.to_string()],
+        });
+        assert_eq!(sorted(view.list()), sorted(vec![a.clone(), C.to_string()]));
+        assert!(!view.bodies.contains_key(C));
+        // The plain list drops what it doesn't have, body and all.
+        view.resync(vec![C.to_string(), D.to_string()]);
+        assert_eq!(
+            sorted(view.list()),
+            sorted(vec![C.to_string(), D.to_string()])
+        );
+        assert!(view.bodies.is_empty());
+        assert_eq!(view.since, 6, "the list doesn't move the clock");
+        // A whole pool replaces everything.
+        view.apply(PoolChanges {
+            full: true,
+            daemon_time: 7,
+            added: vec![],
+            added_ids: vec![B.to_string()],
+            removed: vec![],
+        });
+        assert_eq!(view.list(), vec![B.to_string()]);
+    }
+
+    /// A pruned transaction is taken under an id only if it hashes to it
+    /// (with the hash of its pruned part); where nothing can be computed,
+    /// the id it was sent under stands; with neither, it is refused.
+    #[test]
+    fn a_transaction_blob_is_checked_against_the_id_it_came_under() {
+        let (txid, blob, prunable) = pruned_fixture();
+        let whole = hex::decode(FIXTURE_TX_HEX.trim()).unwrap();
+        // Whole: hashed, whatever was claimed.
+        assert_eq!(decode_tx_blob(&whole, None, None).unwrap().txid, txid);
+        assert_eq!(
+            decode_tx_blob(&whole, None, Some(&txid)).unwrap().txid,
+            txid
+        );
+        let error = decode_tx_blob(&whole, None, Some(B)).unwrap_err();
+        assert!(error.contains("hashes to"), "{error}");
+        // Pruned, with the hash of the rest: computed, and checked.
+        let fetched = decode_tx_blob(&blob, Some(&prunable), None).unwrap();
+        assert_eq!(fetched.txid, txid);
+        assert!(shared::monero_tx::is_pruned(&fetched.tx));
+        assert_eq!(
+            decode_tx_blob(&blob, Some(&prunable), Some(&txid))
+                .unwrap()
+                .txid,
+            txid
+        );
+        assert!(decode_tx_blob(&blob, Some(&prunable), Some(B)).is_err());
+        assert!(decode_tx_blob(&blob, Some(&[7; 32]), Some(&txid)).is_err());
+        // Pruned, no hash of the rest (or the all-zero "none"): as claimed.
+        assert_eq!(decode_tx_blob(&blob, None, Some(&txid)).unwrap().txid, txid);
+        assert_eq!(
+            decode_tx_blob(&blob, Some(&[0; 32]), Some(B)).unwrap().txid,
+            B
+        );
+        // ...and refused with no usable id at all.
+        assert!(decode_tx_blob(&blob, None, None).is_err());
+        assert!(decode_tx_blob(&blob, None, Some("not an id")).is_err());
+        assert!(decode_tx_blob(&[1, 2, 3], None, Some(&txid)).is_err());
+    }
+
+    fn tx_entry(txid: &str, in_pool: bool, block_height: Option<u64>) -> Value {
+        let mut entry = json!({ "tx_hash": txid, "in_pool": in_pool, "as_hex": "" });
+        if let Some(height) = block_height {
+            entry["block_height"] = json!(height);
+        }
+        entry
+    }
+
+    /// Several transactions are asked about in one request. Only an
+    /// affirmative answer is passed on: a miss the node names, or an entry
+    /// that places the transaction. A non-answer is left out.
+    #[tokio::test]
+    async fn several_transactions_are_located_in_one_request() {
+        let (client, node) = scripted().await;
+        let (a, _, _) = pruned_fixture();
+        let unasked = "e".repeat(64);
+        node.answer(
+            "/get_transactions",
+            json!({
+                "status": "OK",
+                "txs": [
+                    tx_entry(&a, false, Some(77)),
+                    tx_entry(B, true, None),
+                    // Confirmed, but not saying where: a non-answer.
+                    tx_entry(C, false, None),
+                    // Not asked about.
+                    tx_entry(&unasked, false, Some(1)),
+                ],
+                "missed_tx": [D, unasked],
+            })
+            .to_string(),
+        );
+        let asked = [a.clone(), B.to_string(), C.to_string(), D.to_string()];
+        let located = client.locate_transactions(&asked).await.unwrap();
+        assert_eq!(located.get(&a), Some(&TxLocation::InBlock(77)));
+        assert_eq!(located.get(B), Some(&TxLocation::InPool));
+        assert_eq!(located.get(D), Some(&TxLocation::NotFound));
+        assert_eq!(located.len(), 3, "{located:?}");
+        let requests = node.requests_to("/get_transactions");
+        assert_eq!(requests.len(), 1);
+        let request: Value = serde_json::from_slice(&requests[0]).unwrap();
+        assert_eq!(request["prune"], json!(true));
+        assert_eq!(request["txs_hashes"].as_array().unwrap().len(), 4);
+
+        // A transaction the node names both as missed and as found has not
+        // been answered about.
+        let (client, node) = scripted().await;
+        node.answer(
+            "/get_transactions",
+            json!({ "status": "OK", "txs": [tx_entry(B, true, None)], "missed_tx": [B] })
+                .to_string(),
+        );
+        assert!(client
+            .locate_transactions(&[B.to_string()])
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    /// Transactions fetched by id come pruned under their ids: one the node
+    /// doesn't have is left out, one that can't be read is left out, and
+    /// one that wasn't asked for is an error.
+    #[tokio::test]
+    async fn transactions_are_fetched_pruned_under_their_ids() {
+        let (client, node) = scripted().await;
+        let (a, blob, prunable) = pruned_fixture();
+        let pruned_entry = |txid: &str, blob: &[u8]| {
+            json!({
+                "tx_hash": txid, "in_pool": true, "as_hex": "",
+                "pruned_as_hex": hex::encode(blob), "prunable_hash": hex::encode(prunable),
+            })
+        };
+        node.answer(
+            "/get_transactions",
+            json!({
+                "status": "OK",
+                "txs": [pruned_entry(&a, &blob), pruned_entry(C, &[1, 2, 3])],
+                "missed_tx": [B],
+            })
+            .to_string(),
+        );
+        let asked = [a.clone(), B.to_string(), C.to_string()];
+        let fetched = client.get_transactions_with_ids(&asked).await.unwrap();
+        assert_eq!(fetched.len(), 1);
+        assert_eq!(fetched[0].txid, a);
+        assert!(shared::monero_tx::is_pruned(&fetched[0].tx));
+
+        // The same transaction, found with where it is.
+        let (client, node) = scripted().await;
+        node.answer(
+            "/get_transactions",
+            json!({ "status": "OK", "txs": [pruned_entry(&a, &blob)] }).to_string(),
+        );
+        let (found, location) = client.find_transaction(&a).await.unwrap().unwrap();
+        assert_eq!(
+            (found.txid.as_str(), location),
+            (a.as_str(), TxLocation::InPool)
+        );
+        assert_eq!(node.requests_to("/get_transactions").len(), 1);
+        // Asked for one transaction and sent another: refused.
+        assert!(client.find_transaction(B).await.is_err());
+        assert!(client
+            .get_transactions_with_ids(&[B.to_string()])
+            .await
+            .is_err());
+        // A named miss is "not found", in one request.
+        let (client, node) = scripted().await;
+        node.answer(
+            "/get_transactions",
+            json!({ "status": "OK", "missed_tx": [B] }).to_string(),
+        );
+        assert!(client.find_transaction(B).await.unwrap().is_none());
+    }
+
+    /// The tip's id comes with its height, unless it isn't an id.
+    #[tokio::test]
+    async fn the_tip_comes_with_its_id_when_the_node_gives_one() {
+        for (hash, expected) in [
+            (json!(B.to_uppercase()), Some(B.to_string())),
+            (json!("nonsense"), None),
+            (Value::Null, None),
+        ] {
+            let (client, node) = scripted().await;
+            let mut answer = json!({ "status": "OK", "height": 101 });
+            if !hash.is_null() {
+                answer["hash"] = hash;
+            }
+            node.answer("/get_height", answer.to_string());
+            assert_eq!(
+                client.get_tip().await.unwrap(),
+                ChainTip {
+                    height: 100,
+                    hash: expected
+                }
+            );
+        }
+    }
+
+    fn header(height: u64, hash: &str, prev_hash: &str) -> Value {
+        json!({ "height": height, "hash": hash, "prev_hash": prev_hash, "timestamp": 1_000 + height })
+    }
+
+    fn rpc_result(result: Value) -> String {
+        json!({ "id": "0", "jsonrpc": "2.0", "result": result }).to_string()
+    }
+
+    /// Headers come a range at a time; a header for another height than the
+    /// one asked for is refused; and a lone hash is asked for as just that.
+    #[tokio::test]
+    async fn headers_and_hashes_are_asked_for_as_just_that() {
+        let (client, node) = scripted().await;
+        node.answer(
+            "/json_rpc",
+            rpc_result(json!({ "status": "OK", "headers": [header(5, B, "aa"), header(6, C, B)] })),
+        );
+        let headers = client.get_chain_headers(5, 2).await.unwrap();
+        assert_eq!(
+            headers,
+            vec![
+                ChainHeader {
+                    height: 5,
+                    hash: B.to_string(),
+                    prev_hash: "aa".to_string(),
+                    timestamp: 1_005
+                },
+                ChainHeader {
+                    height: 6,
+                    hash: C.to_string(),
+                    prev_hash: B.to_string(),
+                    timestamp: 1_006
+                },
+            ]
+        );
+        let request: Value = serde_json::from_slice(&node.requests_to("/json_rpc")[0]).unwrap();
+        assert_eq!(request["method"], json!("get_block_headers_range"));
+        assert_eq!(
+            request["params"],
+            json!({ "start_height": 5, "end_height": 6 })
+        );
+        // The node answered from another height.
+        assert!(client.get_chain_headers(9, 2).await.is_err());
+        assert!(client.get_chain_headers(5, 0).await.unwrap().is_empty());
+
+        let (client, node) = scripted().await;
+        node.answer("/json_rpc", rpc_result(json!(B)));
+        assert_eq!(client.get_block_hash(7).await.unwrap(), B);
+        let request: Value = serde_json::from_slice(&node.requests_to("/json_rpc")[0]).unwrap();
+        assert_eq!(request["method"], json!("on_get_block_hash"));
+        assert_eq!(request["params"], json!([7]));
+        let (client, node) = scripted().await;
+        node.answer("/json_rpc", rpc_result(json!("not a hash")));
+        assert!(client.get_block_hash(7).await.is_err());
+    }
+
+    /// A whole `get_blocks.bin` entry with pruned transactions: each
+    /// transaction's id is the one the block lists for it, checked against
+    /// the pruned body and the hash of the rest.
+    #[test]
+    fn a_blocks_pruned_transactions_are_checked_against_its_own_list() {
+        let (txid, blob, prunable) = pruned_fixture();
+        let template: monero::Block =
+            deserialize(&hex::decode(super::tests::COINBASE_ONLY_BLOCK_HEX).unwrap()).unwrap();
+        let height = match &template.miner_tx.prefix.inputs[0] {
+            monero::blockdata::transaction::TxIn::Gen { height } => height.0,
+            _ => unreachable!("a coinbase input"),
+        };
+        let block_listing = |listed: &str| {
+            let mut block = template.clone();
+            block.tx_hashes = vec![monero::Hash::from_slice(&hex::decode(listed).unwrap())];
+            serialize(&block)
+        };
+        let entry = |listed: &str, prunable_hash| BinBlock {
+            block: Some(block_listing(listed)),
+            txs: vec![BinTx {
+                blob: blob.clone(),
+                prunable_hash,
+            }],
+        };
+        let block = entry(&txid, Some(prunable))
+            .into_chain_block(height)
+            .unwrap();
+        assert_eq!(block.txid(0), Some(txid.clone()));
+        assert!(shared::monero_tx::is_pruned(&block.txs[0]));
+        assert_eq!(block.txids, Some(vec![txid.clone()]));
+        // The block lists another transaction than the one that came.
+        let error = entry(B, Some(prunable))
+            .into_chain_block(height)
+            .unwrap_err();
+        assert!(error.to_string().contains("hashes to"), "{error}");
+        // No hash of the pruned part: the block's list is what names it.
+        assert_eq!(
+            entry(&txid, None).into_chain_block(height).unwrap().txid(0),
+            Some(txid)
+        );
+    }
+}
+
+#[cfg(test)]
+#[cfg_attr(coverage_nightly, coverage(off))]
 mod live_node_tests {
     //! These hit a real public Monero node over the network and are excluded from
     //! the default `cargo test` run (`#[ignore]`) so the main suite stays hermetic
@@ -2177,8 +3002,15 @@ mod live_node_tests {
     const TEST_NODE_HOST: &str = "node.hollingworth.xyz";
     const TEST_NODE_PORT: u16 = 18089;
 
+    /// The test node, or the mainnet node named by `SCANNER_LIVE_TEST_NODE`
+    /// (`host:port`, TLS) when the usual one is down or behind.
     fn client() -> RpcDaemonClient {
-        RpcDaemonClient::new(TEST_NODE_HOST, TEST_NODE_PORT, true, true).unwrap()
+        let named = std::env::var("SCANNER_LIVE_TEST_NODE").ok();
+        let (host, port) = match named.as_deref().and_then(|node| node.rsplit_once(':')) {
+            Some((host, port)) => (host, port.parse().expect("a port number")),
+            None => (TEST_NODE_HOST, TEST_NODE_PORT),
+        };
+        RpcDaemonClient::new(host, port, true, true).unwrap()
     }
 
     #[tokio::test]
@@ -2284,6 +3116,101 @@ mod live_node_tests {
                 individually.iter().map(Hashable::hash).collect::<Vec<_>>(),
                 "get_blocks_range's block {height} didn't match get_block_transactions for the same height"
             );
+        }
+    }
+
+    /// What the scanner reads blocks with, against mainnet blocks full of
+    /// every current transaction shape: the pruned transactions carry the
+    /// ids their whole forms hash to, each block names itself as
+    /// `on_get_block_hash` names it, and the headers say the same.
+    #[tokio::test]
+    #[ignore]
+    async fn real_node_pruned_chain_blocks_match_the_whole_ones() {
+        let c = client();
+        let (start, count) = (3_755_688, 4);
+        let whole = c.get_blocks_range(start, count).await.unwrap();
+        let chain = c.get_chain_blocks(start, count).await.unwrap();
+        assert_eq!(chain.len() as u64, count);
+        let mut transactions = 0;
+        for (offset, block) in chain.iter().enumerate() {
+            let height = start + offset as u64;
+            assert_eq!(block.height, height);
+            assert_eq!(block.hash, c.get_block_hash(height).await.unwrap());
+            assert_eq!(block.txs.len(), whole[offset].len());
+            for (index, (pruned, whole)) in block.txs.iter().zip(&whole[offset]).enumerate() {
+                assert_eq!(
+                    block.txid(index),
+                    Some(hex::encode(whole.hash().to_bytes())),
+                    "block {height}, transaction {index}"
+                );
+                assert!(shared::monero_tx::is_pruned(pruned));
+                assert_eq!(pruned.prefix, whole.prefix);
+                transactions += 1;
+            }
+        }
+        assert!(transactions > 0, "blocks with transactions in them");
+        assert_eq!(
+            c.get_chain_headers(start, count).await.unwrap(),
+            chain.iter().map(ChainBlock::header).collect::<Vec<_>>()
+        );
+        // The genesis block, the ordinary way, then block 1 from the batch.
+        let first = c.get_chain_blocks(0, 2).await.unwrap();
+        assert_eq!((first[0].height, first[1].height), (0, 1));
+        assert_eq!(first[1].prev_hash, first[0].hash);
+        assert_eq!(first[0].hash, c.get_block_hash(0).await.unwrap());
+    }
+
+    /// The pool as a real node describes it: followed by its changes, the
+    /// bodies that came with them handed over under their ids.
+    #[tokio::test]
+    #[ignore]
+    async fn real_node_pool_is_followed_by_its_changes() {
+        let c = client();
+        let pool = c.get_mempool_txids().await.unwrap();
+        let stats = c.stats();
+        assert!(
+            stats
+                .iter()
+                .any(|s| s.endpoint == POOL_CHANGES_ENDPOINT && s.requests == 1),
+            "{stats:?}"
+        );
+        assert!(
+            !stats
+                .iter()
+                .any(|s| s.endpoint == "/get_transaction_pool_hashes"),
+            "the node described its pool: the plain list wasn't needed"
+        );
+        let asked: Vec<String> = pool.iter().take(150).cloned().collect();
+        let bodies = c.get_transactions_with_ids(&asked).await.unwrap();
+        assert!(bodies.iter().all(|body| asked.contains(&body.txid)));
+        let tip = c.get_tip().await.unwrap();
+        assert_eq!(tip.hash.map(|hash| hash.len()), Some(64));
+    }
+
+    /// Pool transactions fetched by id (as for a node that can't say pool
+    /// changes, or past the bodies it sends with them) come pruned, with the
+    /// hash of the rest, and hash to the ids they were asked for by.
+    #[tokio::test]
+    #[ignore]
+    async fn real_node_pool_transactions_fetched_by_id_hash_to_their_ids() {
+        let c = client();
+        let pool: Vec<String> = c
+            .pool_hashes()
+            .await
+            .unwrap()
+            .into_iter()
+            .take(20)
+            .collect();
+        assert!(!pool.is_empty(), "needs a non-empty live mempool");
+        let resp = c.request_transactions(&pool, true).await.unwrap();
+        let entries = resp.txs.unwrap_or_default();
+        assert!(!entries.is_empty());
+        for entry in &entries {
+            assert_ne!(entry.prunable_hash, "0".repeat(64), "a real hash");
+            assert_eq!(entry.prunable_hash.len(), 64);
+            let fetched = entry.fetched().unwrap();
+            assert!(pool.contains(&fetched.txid));
+            assert!(shared::monero_tx::is_pruned(&fetched.tx));
         }
     }
 

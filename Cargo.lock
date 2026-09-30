@@ -1972,6 +1972,7 @@ dependencies = [
  "key-custody-service",
  "monero",
  "scanner",
+ "shared",
  "telemetry",
  "tokio",
  "tracing",

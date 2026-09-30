@@ -55,6 +55,43 @@ pub struct NodeStatus {
     /// `"mainnet"`, `"stagenet"`, `"testnet"` or `"fakechain"`), or `None`
     /// when it didn't say. The admin page shows a node on the wrong one.
     pub network: Option<String>,
+    /// What the engine has asked this node since the node was configured
+    /// (or the engine started), by endpoint, busiest first.
+    pub rpc: Vec<crate::daemon::EndpointStats>,
+}
+
+/// One node's height, the error if it couldn't be read, and its network.
+///
+/// `get_info` says both the network and the height, so a node is asked once;
+/// only a client whose `get_info` has no height (or a node that failed it) is
+/// asked for the height on its own, which is also where the error shown comes
+/// from.
+async fn probe_node(
+    client: &dyn crate::daemon::MoneroDaemonClient,
+) -> (Option<u64>, Option<String>, Option<String>) {
+    let info = tokio::time::timeout(NODE_HEIGHT_TIMEOUT, client.get_info()).await;
+    let (network, height) = match info {
+        Ok(Ok(info)) => (
+            Some(info.nettype).filter(|nettype| nettype != crate::daemon::DaemonInfo::UNKNOWN),
+            info.height,
+        ),
+        _ => (None, None),
+    };
+    if height.is_some() {
+        return (height, None, network);
+    }
+    match tokio::time::timeout(NODE_HEIGHT_TIMEOUT, client.get_height()).await {
+        Ok(Ok(height)) => (Some(height), None, network),
+        Ok(Err(e)) => (None, Some(e.to_string()), network),
+        Err(_) => (
+            None,
+            Some(format!(
+                "timed out after {}s",
+                NODE_HEIGHT_TIMEOUT.as_secs()
+            )),
+            network,
+        ),
+    }
 }
 
 #[derive(Serialize, Clone)]
@@ -178,40 +215,30 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
     let mut network_views = Vec::with_capacity(networks.len());
     for (network, daemon) in networks {
         let current_index = daemon.current_index();
-        let mut nodes = Vec::with_capacity(daemon.nodes().len());
-        for (i, node) in daemon.nodes().iter().enumerate() {
-            // Its height and its network at once, each within the same
-            // timeout: a node slow to answer one doesn't hide the other.
-            let (height, info) = futures_util::join!(
-                tokio::time::timeout(NODE_HEIGHT_TIMEOUT, node.client.get_height()),
-                tokio::time::timeout(NODE_HEIGHT_TIMEOUT, node.client.get_info()),
-            );
-            let (height, error) = match height {
-                Ok(Ok(h)) => (Some(h), None),
-                Ok(Err(e)) => (None, Some(e.to_string())),
-                Err(_) => (
-                    None,
-                    Some(format!(
-                        "timed out after {}s",
-                        NODE_HEIGHT_TIMEOUT.as_secs()
-                    )),
-                ),
-            };
-            let network = match info {
-                Ok(Ok(info)) if info.nettype != crate::daemon::DaemonInfo::UNKNOWN => {
-                    Some(info.nettype)
-                }
-                _ => None,
-            };
-            nodes.push(NodeStatus {
+        // Every node at once: the page waits for the slowest node, not for
+        // each in turn.
+        let probes = futures_util::future::join_all(
+            daemon
+                .nodes()
+                .iter()
+                .map(|node| probe_node(node.client.as_ref())),
+        )
+        .await;
+        let nodes: Vec<NodeStatus> = daemon
+            .nodes()
+            .iter()
+            .zip(probes)
+            .enumerate()
+            .map(|(i, (node, (height, error, network)))| NodeStatus {
                 label: node.label.clone(),
                 is_active: i == current_index,
                 in_cooldown: daemon.in_cooldown(i),
                 height,
                 error,
                 network,
-            });
-        }
+                rpc: node.client.rpc_stats(),
+            })
+            .collect();
 
         let scan_status = state.networks.scanner_status.read().get(&network).cloned();
         let scanner = match scan_status {
@@ -417,6 +444,7 @@ mod tests {
                 height: probe_ok.then_some(100),
                 error: (!probe_ok).then(|| "timed out".to_string()),
                 network: None,
+                rpc: Vec::new(),
             }],
             scanner: ScannerStatusView {
                 ever_ticked: true,
@@ -478,6 +506,100 @@ mod tests {
             !is_stale(1000, 1000, 0),
             "a poll_interval of 0 must still get the 15s floor, not read as instantly stale"
         );
+    }
+
+    /// A node for `probe_node`: `get_info` says (or doesn't) its height and
+    /// network, and every request for the height alone is counted.
+    struct ProbedNode {
+        info: Option<crate::daemon::DaemonInfo>,
+        height: Option<u64>,
+        height_requests: std::sync::atomic::AtomicUsize,
+    }
+
+    #[async_trait::async_trait]
+    impl crate::daemon::MoneroDaemonClient for ProbedNode {
+        async fn get_info(&self) -> Result<crate::daemon::DaemonInfo, crate::daemon::DaemonError> {
+            self.info
+                .clone()
+                .ok_or_else(|| crate::daemon::DaemonError::Request("no info".into()))
+        }
+        async fn get_height(&self) -> Result<u64, crate::daemon::DaemonError> {
+            self.height_requests
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            self.height
+                .ok_or_else(|| crate::daemon::DaemonError::Request("connection refused".into()))
+        }
+        async fn get_block_hash(&self, _: u64) -> Result<String, crate::daemon::DaemonError> {
+            unimplemented!("not probed")
+        }
+        async fn get_block_transactions(
+            &self,
+            _: u64,
+        ) -> Result<Vec<monero::Transaction>, crate::daemon::DaemonError> {
+            unimplemented!("not probed")
+        }
+        async fn get_mempool_transactions(
+            &self,
+        ) -> Result<Vec<monero::Transaction>, crate::daemon::DaemonError> {
+            unimplemented!("not probed")
+        }
+        async fn locate_transaction(
+            &self,
+            _: &str,
+        ) -> Result<crate::daemon::TxLocation, crate::daemon::DaemonError> {
+            unimplemented!("not probed")
+        }
+        async fn get_transaction(
+            &self,
+            _: &str,
+        ) -> Result<monero::Transaction, crate::daemon::DaemonError> {
+            unimplemented!("not probed")
+        }
+        async fn is_key_image_spent(
+            &self,
+            _: &[String],
+        ) -> Result<Vec<crate::daemon::KeyImageStatus>, crate::daemon::DaemonError> {
+            unimplemented!("not probed")
+        }
+        async fn get_block_timestamp(&self, _: u64) -> Result<u64, crate::daemon::DaemonError> {
+            unimplemented!("not probed")
+        }
+    }
+
+    /// A node whose `get_info` says its height is asked once, not twice; one
+    /// whose `get_info` doesn't (or fails) is asked for the height, and that
+    /// request's failure is the error shown.
+    #[tokio::test]
+    async fn a_node_is_asked_once_when_its_info_says_its_height() {
+        let node = |info: Option<(&str, Option<u64>)>, height| ProbedNode {
+            info: info.map(|(nettype, height)| crate::daemon::DaemonInfo {
+                nettype: nettype.to_string(),
+                height,
+            }),
+            height,
+            height_requests: Default::default(),
+        };
+        let asked = |node: &ProbedNode| {
+            node.height_requests
+                .load(std::sync::atomic::Ordering::Relaxed)
+        };
+
+        let says_both = node(Some(("stagenet", Some(7))), Some(99));
+        assert_eq!(
+            probe_node(&says_both).await,
+            (Some(7), None, Some("stagenet".to_string()))
+        );
+        assert_eq!(asked(&says_both), 0);
+
+        let no_height = node(Some(("unknown", None)), Some(9));
+        assert_eq!(probe_node(&no_height).await, (Some(9), None, None));
+        assert_eq!(asked(&no_height), 1);
+
+        let down = node(None, None);
+        let (height, error, network) = probe_node(&down).await;
+        assert_eq!((height, network), (None, None));
+        assert!(error.unwrap().contains("connection refused"));
+        assert_eq!(asked(&down), 1);
     }
 
     /// The real bug this whole formula change fixes, reproduced directly:

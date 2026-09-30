@@ -1647,8 +1647,7 @@ async fn the_fast_path_defers_what_its_budget_does_not_cover() {
 async fn the_fast_path_reports_an_unreadable_pool() {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
-    let (tenant, handle, _order) =
-        fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let (tenant, handle, _order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
     let store = store.into_shared();
     let fake = FakeDaemonClient::new();
     fake.set_online(false);
@@ -3837,4 +3836,397 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
             .len(),
         0
     );
+}
+
+// -- What a round asks of the node (docs/node_rpc_efficiency.md) --------------
+
+/// A fake node that keeps the name of every call made to it, in order.
+struct Asked<'a> {
+    inner: &'a FakeDaemonClient,
+    calls: parking_lot::Mutex<Vec<&'static str>>,
+}
+
+impl<'a> Asked<'a> {
+    fn new(inner: &'a FakeDaemonClient) -> Self {
+        Self {
+            inner,
+            calls: Default::default(),
+        }
+    }
+
+    fn note(&self, call: &'static str) {
+        self.calls.lock().push(call);
+    }
+
+    /// The calls made since the last `take`.
+    fn take(&self) -> Vec<&'static str> {
+        std::mem::take(&mut self.calls.lock())
+    }
+}
+
+#[async_trait::async_trait]
+impl MoneroDaemonClient for Asked<'_> {
+    async fn get_height(&self) -> Result<u64, DaemonError> {
+        self.note("get_height");
+        self.inner.get_height().await
+    }
+    async fn get_tip(&self) -> Result<crate::daemon::ChainTip, DaemonError> {
+        self.note("get_tip");
+        self.inner.get_tip().await
+    }
+    async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
+        self.note("get_block_hash");
+        self.inner.get_block_hash(height).await
+    }
+    async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
+        self.note("get_block_transactions");
+        self.inner.get_block_transactions(height).await
+    }
+    async fn get_chain_blocks(
+        &self,
+        start: u64,
+        count: u64,
+    ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
+        self.note("get_chain_blocks");
+        self.inner.get_chain_blocks(start, count).await
+    }
+    async fn get_chain_headers(
+        &self,
+        start: u64,
+        count: u64,
+    ) -> Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
+        self.note("get_chain_headers");
+        self.inner.get_chain_headers(start, count).await
+    }
+    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        self.note("get_mempool_transactions");
+        self.inner.get_mempool_transactions().await
+    }
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        self.note("get_mempool_txids");
+        self.inner.get_mempool_txids().await
+    }
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
+        self.note("get_transactions");
+        self.inner.get_transactions(txids).await
+    }
+    async fn get_transactions_with_ids(
+        &self,
+        txids: &[String],
+    ) -> Result<Vec<crate::daemon::FetchedTx>, DaemonError> {
+        self.note("get_transactions_with_ids");
+        self.inner.get_transactions_with_ids(txids).await
+    }
+    async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
+        self.note("locate_transaction");
+        self.inner.locate_transaction(txid).await
+    }
+    async fn locate_transactions(
+        &self,
+        txids: &[String],
+    ) -> Result<std::collections::HashMap<String, TxLocation>, DaemonError> {
+        self.note("locate_transactions");
+        self.inner.locate_transactions(txids).await
+    }
+    async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
+        self.note("get_transaction");
+        self.inner.get_transaction(txid).await
+    }
+    async fn is_key_image_spent(
+        &self,
+        key_images: &[String],
+    ) -> Result<Vec<KeyImageStatus>, DaemonError> {
+        self.note("is_key_image_spent");
+        self.inner.is_key_image_spent(key_images).await
+    }
+    async fn get_block_timestamp(&self, height: u64) -> Result<u64, DaemonError> {
+        self.note("get_block_timestamp");
+        self.inner.get_block_timestamp(height).await
+    }
+}
+
+fn recorded_height(store: &SharedStore) -> Option<u64> {
+    store
+        .lock()
+        .max_scanned_height(monero::Network::Mainnet)
+        .unwrap()
+}
+
+/// While no store has an order in scope and no payment is unconfirmed, a
+/// round asks the node one thing: its tip. The pool isn't polled, no block
+/// hash is looked up (the tip's id came with its height), and a new block is
+/// recorded from its header, with no transactions fetched. The fast mempool
+/// path asks nothing at all.
+#[tokio::test]
+async fn a_network_with_nothing_to_watch_costs_one_small_request_a_round() {
+    let store = Store::open_in_memory().unwrap().into_shared();
+    let custody = FlakyKeyCustody::default();
+    let fake = FakeDaemonClient::new();
+    for h in 1..=3 {
+        fake.push_block(&format!("a{h}"), vec![]);
+    }
+    let node = Asked::new(&fake);
+    let db = Db::over_shared(store.clone());
+    let state = ScanState::default();
+
+    // The first round starts the network just below the tip and records
+    // the tip's block: from its header.
+    run_round(&state, &inputs(&db, &custody, &node, &[]), ROUND_BUDGET)
+        .await
+        .into_result()
+        .unwrap();
+    assert_eq!(recorded_height(&store), Some(3));
+    assert_eq!(
+        node.take(),
+        vec!["get_tip", "get_block_hash", "get_chain_headers"]
+    );
+
+    // Nothing new, and a pool with a transaction in it: one request.
+    fake.set_mempool(vec![unrelated_tx(1)]);
+    for _ in 0..3 {
+        run_round(&state, &inputs(&db, &custody, &node, &[]), ROUND_BUDGET)
+            .await
+            .into_result()
+            .unwrap();
+        assert_eq!(node.take(), vec!["get_tip"]);
+    }
+    assert_eq!(
+        fast_pass(&state, &inputs(&db, &custody, &node, &[])).await,
+        Some(FastReport::default())
+    );
+    assert!(node.take().is_empty(), "the fast path asks nothing");
+
+    // A new block: one hash (does the recorded chain still hold below the
+    // new tip?) and the block's header.
+    fake.push_block("a4", vec![fixture_tx()]);
+    run_round(&state, &inputs(&db, &custody, &node, &[]), ROUND_BUDGET)
+        .await
+        .into_result()
+        .unwrap();
+    assert_eq!(recorded_height(&store), Some(4));
+    assert_eq!(
+        node.take(),
+        vec!["get_tip", "get_block_hash", "get_chain_headers"]
+    );
+}
+
+/// A store that gets an order after the network sat idle misses nothing: from
+/// the next round the pool is polled and its transactions fetched and
+/// scanned, and the next block is fetched whole and scanned, for that store.
+#[tokio::test]
+#[allow(clippy::await_holding_lock)] // the fixture writes to the store it is given
+async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_round() {
+    let store = Store::open_in_memory().unwrap().into_shared();
+    let custody = FlakyKeyCustody::default();
+    let fake = FakeDaemonClient::new();
+    for h in 1..=3 {
+        fake.push_block(&format!("a{h}"), vec![]);
+    }
+    let node = Asked::new(&fake);
+    let db = Db::over_shared(store.clone());
+    let state = ScanState::default();
+    for _ in 0..2 {
+        run_round(&state, &inputs(&db, &custody, &node, &[]), ROUND_BUDGET)
+            .await
+            .into_result()
+            .unwrap();
+    }
+    assert_eq!(node.take().last(), Some(&"get_tip"));
+
+    // The store and its order arrive; its payment is in the pool.
+    let (tenant, handle, order) = {
+        let guard = store.lock();
+        fixture_tenant(&guard, &custody, crate::now_unix() + 3600).await
+    };
+    let tenants = [(tenant.clone(), handle)];
+    fake.set_mempool(vec![fixture_tx()]);
+    run_round(
+        &state,
+        &inputs(&db, &custody, &node, &tenants),
+        ROUND_BUDGET,
+    )
+    .await
+    .into_result()
+    .unwrap();
+    let asked = node.take();
+    assert!(asked.contains(&"get_mempool_txids"), "{asked:?}");
+    assert!(asked.contains(&"get_transactions_with_ids"), "{asked:?}");
+    let payments = || store.lock().get_all_payments(&order).unwrap();
+    assert_eq!(payments().len(), 1, "seen in the pool");
+    assert_eq!(payments()[0].block_height, None);
+
+    // Its block: fetched whole, scanned, and the payment given its height.
+    fake.set_mempool(vec![]);
+    let height = fake.push_block("a4", vec![fixture_tx()]);
+    run_round(
+        &state,
+        &inputs(&db, &custody, &node, &tenants),
+        ROUND_BUDGET,
+    )
+    .await
+    .into_result()
+    .unwrap();
+    let asked = node.take();
+    assert!(asked.contains(&"get_chain_blocks"), "{asked:?}");
+    assert!(!asked.contains(&"get_chain_headers"), "{asked:?}");
+    assert_eq!(payments().len(), 1);
+    assert_eq!(payments()[0].block_height, Some(height as i64));
+    assert_eq!(cursor_of(&store, tenant.as_str()), Some(height));
+}
+
+/// A store with an order in scope but no keys registered can't be scanned:
+/// the pool is polled (its orders are being watched for) but no bodies are
+/// fetched, and new blocks are recorded from their headers. The store stays
+/// behind, and catches up on whole blocks once its keys are registered.
+#[tokio::test]
+async fn nothing_is_fetched_for_a_store_whose_keys_are_not_registered() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let fake = FakeDaemonClient::new();
+    for h in 1..=3 {
+        fake.push_block(&format!("a{h}"), vec![]);
+    }
+    let node = Asked::new(&fake);
+    let db = Db::over_shared(store.clone());
+    let state = ScanState::default();
+    run_round(&state, &inputs(&db, &custody, &node, &[]), ROUND_BUDGET)
+        .await
+        .into_result()
+        .unwrap();
+    node.take();
+
+    fake.set_mempool(vec![unrelated_tx(3)]);
+    let paid_in = fake.push_block("a4", vec![fixture_tx()]);
+    run_round(&state, &inputs(&db, &custody, &node, &[]), ROUND_BUDGET)
+        .await
+        .into_result()
+        .unwrap();
+    let asked = node.take();
+    assert!(asked.contains(&"get_mempool_txids"), "{asked:?}");
+    assert!(asked.contains(&"get_chain_headers"), "{asked:?}");
+    for fetch in ["get_transactions_with_ids", "get_chain_blocks"] {
+        assert!(!asked.contains(&fetch), "{asked:?}");
+    }
+    assert_eq!(recorded_height(&store), Some(paid_in));
+    assert!(cursor_of(&store, tenant.as_str()) < Some(paid_in));
+
+    // Its keys are registered: it catches up on the whole block it missed.
+    let tenants = [(tenant.clone(), handle)];
+    run_round(
+        &state,
+        &inputs(&db, &custody, &node, &tenants),
+        ROUND_BUDGET,
+    )
+    .await
+    .into_result()
+    .unwrap();
+    assert!(node.take().contains(&"get_chain_blocks"));
+    assert_eq!(cursor_of(&store, tenant.as_str()), Some(paid_in));
+    let payments = store.lock().get_all_payments(&order).unwrap();
+    assert_eq!(payments.len(), 1);
+    assert_eq!(payments[0].block_height, Some(paid_in as i64));
+}
+
+/// Records an unconfirmed payment with this txid and (well-formed) key image.
+fn unconfirmed_with_image(
+    store: &SharedStore,
+    order: &crate::store::OrderId,
+    txid: &str,
+    output: i64,
+    image: &str,
+) {
+    store
+        .lock()
+        .record_payment_match(
+            order,
+            txid,
+            output,
+            1,
+            &format!("[\"{image}\"]"),
+            crate::now_unix(),
+            None,
+        )
+        .unwrap();
+}
+
+/// A page of payments that left the pool is asked about in two round trips
+/// (where they are; then the key images of those that are nowhere), however
+/// many there are. Those still nowhere and unproven are looked at again at
+/// once, then less and less often; one later proven double-spent is voided
+/// when its turn comes.
+#[tokio::test(start_paused = true)]
+async fn a_page_of_vanished_payments_costs_two_round_trips_and_the_stuck_ones_back_off() {
+    let (store, custody, fake, tenants, orders) = seeded_network(1, 20).await;
+    let txid = |n: u8| hex::encode([n; 32]);
+    let image = |n: u8| hex::encode([0x40 + n; 32]);
+    for n in 0..5u8 {
+        unconfirmed_with_image(&store, &orders[0], &txid(n), i64::from(n), &image(n));
+    }
+    let node = Asked::new(&fake);
+    let db = Db::over_shared(store.clone());
+    let state = ScanState::default();
+    let lookups = |asked: &[&'static str]| -> Vec<&'static str> {
+        asked
+            .iter()
+            .copied()
+            .filter(|call| call.starts_with("locate") || call.starts_with("is_key_image"))
+            .collect()
+    };
+
+    // The first rounds look at once: a transaction may only be slow to arrive.
+    for _ in 0..3 {
+        run_round(
+            &state,
+            &inputs(&db, &custody, &node, &tenants),
+            ROUND_BUDGET,
+        )
+        .await
+        .into_result()
+        .unwrap();
+        assert_eq!(
+            lookups(&node.take()),
+            vec!["locate_transactions", "is_key_image_spent"],
+            "five payments, two round trips"
+        );
+    }
+    // Still nowhere, still unproven: now they wait.
+    run_round(
+        &state,
+        &inputs(&db, &custody, &node, &tenants),
+        ROUND_BUDGET,
+    )
+    .await
+    .into_result()
+    .unwrap();
+    assert!(lookups(&node.take()).is_empty());
+    let voided = || {
+        store
+            .lock()
+            .get_all_payments(&orders[0])
+            .unwrap()
+            .iter()
+            .filter(|p| p.voided_at.is_some())
+            .count()
+    };
+    assert_eq!(voided(), 0, "never voided on absence alone");
+
+    // One of them is proven double-spent; within a minute it is looked at
+    // again and voided.
+    fake.set_key_image_status(&image(2), KeyImageStatus::SpentInBlockchain);
+    tokio::time::advance(Duration::from_secs(61)).await;
+    run_round(
+        &state,
+        &inputs(&db, &custody, &node, &tenants),
+        ROUND_BUDGET,
+    )
+    .await
+    .into_result()
+    .unwrap();
+    assert_eq!(
+        lookups(&node.take()),
+        vec!["locate_transactions", "is_key_image_spent"]
+    );
+    assert_eq!(voided(), 1);
 }
