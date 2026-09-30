@@ -348,7 +348,12 @@ async fn register_all_tenants(store: &SharedStore, key_custody: &Arc<dyn KeyCust
     let mut delay = Duration::from_millis(500);
     let tenants = loop {
         // Bound first: the lock must not be held through the retry's sleep.
-        let listed = store.lock().list_active_tenants();
+        let listed = {
+            let store = store.clone();
+            tokio::task::spawn_blocking(move || store.lock().list_active_tenants())
+                .await
+                .unwrap_or_else(|e| Err(scanner::store::StoreError::WorkerUnavailable(e.to_string())))
+        };
         match listed {
             Ok(tenants) => break tenants,
             Err(e) => {

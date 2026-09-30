@@ -68,14 +68,11 @@ pub async fn run_webhook_delivery_loop(db: Db, settings: Arc<EngineSettings>) {
 
 /// A `'static` name per (loop, network) for `supervise`, which labels logs
 /// and restart counts with it.
-pub fn loop_name(kind: &'static str, network: Network) -> &'static str {
-    match (kind, network) {
-        ("chain scanner", Network::Mainnet) => "chain scanner (mainnet)",
-        ("chain scanner", Network::Stagenet) => "chain scanner (stagenet)",
-        ("chain scanner", Network::Testnet) => "chain scanner (testnet)",
-        (_, Network::Mainnet) => "double-spend revalidation (mainnet)",
-        (_, Network::Stagenet) => "double-spend revalidation (stagenet)",
-        (_, Network::Testnet) => "double-spend revalidation (testnet)",
+pub fn scanner_loop_name(network: Network) -> &'static str {
+    match network {
+        Network::Mainnet => "chain scanner (mainnet)",
+        Network::Stagenet => "chain scanner (stagenet)",
+        Network::Testnet => "chain scanner (testnet)",
     }
 }
 
@@ -126,7 +123,7 @@ pub async fn manage_network_loops(
                 scanner_status.clone(),
                 settings.clone(),
             );
-            supervise_until(loop_name("chain scanner", network), stopped, move || {
+            supervise_until(scanner_loop_name(network), stopped, move || {
                 run_scanner_loop(
                     store.clone(),
                     db.clone(),

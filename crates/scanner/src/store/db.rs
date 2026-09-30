@@ -37,6 +37,13 @@ impl Class {
     }
 }
 
+/// Longest an inline job waits for the shared store's lock.
+const INLINE_LOCK_WAIT: Duration = if cfg!(test) { Duration::from_millis(200) } else { Duration::from_secs(30) };
+
+/// Tests only: makes the worker's loop panic once, between jobs.
+#[cfg(test)]
+static PANIC_LOOP_ONCE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
 /// Jobs queued per class before callers wait for room.
 const QUEUE_CAPACITY: usize = 64;
 
@@ -106,7 +113,15 @@ impl Db {
         let counters = Arc::new(Counters::default());
                 std::thread::Builder::new()
             .name("scanner-db".into())
-            .spawn(move || serve(store, receivers, woken))
+            .spawn(move || {
+                let mut receivers = receivers;
+                // Jobs catch their own panics; this only restarts the loop
+                // itself if it ever panics, so the worker never silently dies
+                // with its queues open.
+                while let Err(panic) = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| serve(&store, &mut receivers, &woken))) {
+                    tracing::error!(panic = ?panic.downcast_ref::<&str>(), "the database worker's loop panicked; restarting it");
+                }
+            })
             .map_err(|e| StoreError::WorkerUnavailable(e.to_string()))?;
         let senders: [tokio::sync::mpsc::Sender<Job>; 3] =
             senders.try_into().map_err(|_| StoreError::WorkerUnavailable("queue setup".into()))?;
@@ -121,10 +136,18 @@ impl Db {
         T: Send + 'static,
         E: From<StoreError> + Send + 'static,
     {
+        use Inner::Inline;
         let (senders, wake) = match &self.inner {
-            Inner::Inline(store) => {
+            Inline(store) => {
+                // Bounded: a caller that (wrongly) holds the store's lock
+                // while calling this gets an error instead of a deadlock.
+                let Some(guard) = store.try_lock_for(INLINE_LOCK_WAIT) else {
+                    return Err(E::from(StoreError::WorkerUnavailable(format!(
+                        "the store stayed locked for {INLINE_LOCK_WAIT:?} (is the caller holding it?)"
+                    ))));
+                };
                 let started = Instant::now();
-                let result = f(&store.lock());
+                let result = f(&guard);
                 record(&self.counters, started, started);
                 return result;
             }
@@ -163,11 +186,7 @@ fn record(counters: &Counters, queued_at: Instant, started: Instant) {
     counters.completed.fetch_add(1, Ordering::Relaxed);
 }
 
-fn serve(
-    store: Store,
-    mut receivers: Vec<tokio::sync::mpsc::Receiver<Job>>,
-    woken: std::sync::mpsc::Receiver<()>,
-) {
+fn serve(store: &Store, receivers: &mut [tokio::sync::mpsc::Receiver<Job>], woken: &std::sync::mpsc::Receiver<()>) {
     let mut next = 0;
     loop {
         // Round-robin: the first non-empty queue after the last one served.
@@ -194,15 +213,48 @@ fn serve(
             continue;
         };
         next = (index + 1) % receivers.len();
+        #[cfg(test)]
+        if PANIC_LOOP_ONCE.swap(false, Ordering::SeqCst) {
+            // Put the job back first, as a real bug's panic would not; the
+            // test checks the worker carries on serving.
+            job(store);
+            panic!("injected worker loop panic");
+        }
         // A panicking job loses its own reply (its caller gets an error), not
         // the worker.
-        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(&store)));
+        let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| job(store)));
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// An inline handle whose store is already locked (by a caller that
+    /// shouldn't be holding it) fails the job instead of deadlocking.
+    #[tokio::test]
+    async fn an_inline_job_on_a_held_store_fails_instead_of_deadlocking() {
+        let shared = Store::open_in_memory().unwrap().into_shared();
+        let db = Db::over_shared(shared.clone());
+        let held = shared.lock();
+        let result = db.run(Class::Admin, |s| s.count_tenants()).await;
+        assert!(matches!(result, Err(StoreError::WorkerUnavailable(_))), "{result:?}");
+        drop(held);
+        assert_eq!(db.run(Class::Admin, |s| s.count_tenants()).await.unwrap(), 0);
+    }
+
+    /// If the worker's own loop panics, it restarts and keeps serving.
+    #[tokio::test]
+    async fn the_worker_loop_restarts_after_a_panic() {
+        let (store, path) = file_store();
+        let db = Db::open(&path, &store).unwrap();
+        PANIC_LOOP_ONCE.store(true, Ordering::SeqCst);
+        db.run(Class::Admin, |s| s.set_setting("first", "1")).await.unwrap();
+        db.run(Class::Admin, |s| s.set_setting("second", "2")).await.unwrap();
+        assert_eq!(store.get_setting("second").unwrap().as_deref(), Some("2"));
+        drop(db);
+        cleanup(&path);
+    }
 
     fn file_store() -> (Store, String) {
         let path = std::env::temp_dir().join(format!("scanner_db_{}.db", uuid::Uuid::new_v4()));

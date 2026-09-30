@@ -880,7 +880,14 @@ pub async fn register_missing_wallets_reporting(
             Err(_) => tracing::warn!("checking the key custody backend's state exceeded {REGISTRATION_CALL_DEADLINE:?} (retried later)"),
         }
     }
-    let listed = store.lock().list_active_tenants();
+    // On the blocking pool: this runs from the async scanner loop, and the
+    // store's lock may be waiting on SQLite's write lock.
+    let listed = {
+        let store = store.clone();
+        tokio::task::spawn_blocking(move || store.lock().list_active_tenants())
+            .await
+            .unwrap_or_else(|e| Err(crate::store::StoreError::WorkerUnavailable(e.to_string())))
+    };
     let on_network: Vec<crate::store::Tenant> = match listed {
         Ok(tenants) => tenants.into_iter().filter(|t| t.network == network).collect(),
         Err(e) => {

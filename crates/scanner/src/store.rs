@@ -953,7 +953,9 @@ impl Store {
     /// index (the conditional UPDATE leaves the counter untouched when it doesn't
     /// match), so two concurrent creations can never end up sharing an address.
     pub fn create_order_claiming_minor_index(&self, expected_index: u32, new: NewOrder) -> Result<Option<Order>> {
-        let tx = self.conn.unchecked_transaction()?;
+        // IMMEDIATE, like every other write transaction: the write lock from
+        // the start, so its reads and writes see one snapshot.
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)?;
         let claimed = tx.execute(
             "UPDATE tenants SET next_minor_index = next_minor_index + 1
              WHERE id = ?1 AND next_minor_index = ?2",
