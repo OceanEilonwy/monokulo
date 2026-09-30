@@ -230,9 +230,20 @@ impl Database {
         self.reads.query(f).await
     }
 
-    /// The database worker, for writes (`Db::run` with the caller's class).
-    pub fn writer(&self) -> &Db {
-        &self.writes
+    /// Runs a write (or a read that must see this connection's own writes)
+    /// on the database worker, in turn with the scanner's and webhooks' work
+    /// (the `Admin` class), never on a Tokio worker: a slow disk or a write
+    /// lock held by the scanner delays this request, not every task sharing
+    /// its worker.
+    pub async fn write<T, E>(
+        &self,
+        f: impl FnOnce(&Store) -> std::result::Result<T, E> + Send + 'static,
+    ) -> std::result::Result<T, E>
+    where
+        T: Send + 'static,
+        E: From<StoreError> + Send + 'static,
+    {
+        self.writes.run(db::Class::Admin, f).await
     }
 
     /// Every [`OrderChange`] committed from now on.

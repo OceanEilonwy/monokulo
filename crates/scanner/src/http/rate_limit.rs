@@ -28,14 +28,13 @@
 //! real request) stays local to this crate.
 
 use std::net::SocketAddr;
+use std::sync::Arc;
 
 use axum::extract::{ConnectInfo, Request, State};
 use axum::http::{header, StatusCode};
 use axum::middleware::Next;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
-
-use super::AppState;
 
 pub use shared::rate_limit::RateLimiter;
 
@@ -50,7 +49,7 @@ pub use shared::rate_limit::RateLimiter;
 /// downstream for an unrelated reason; this middleware only ever answers "is this
 /// key over budget," never "is this key valid."
 pub async fn admin_rate_limit_middleware(
-    State(state): State<AppState>,
+    State(admin_rate_limiter): State<Arc<RateLimiter<String>>>,
     req: Request,
     next: Next,
 ) -> Response {
@@ -70,7 +69,7 @@ pub async fn admin_rate_limit_middleware(
             None => return next.run(req).await,
         },
     };
-    if !state.admin_rate_limiter.check(key, super::now_unix()) {
+    if !admin_rate_limiter.check(key, super::now_unix()) {
         return (
             StatusCode::TOO_MANY_REQUESTS,
             axum::Json(json!({ "error": "rate limit exceeded" })),

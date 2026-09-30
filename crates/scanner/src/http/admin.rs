@@ -2,16 +2,20 @@ use axum::extract::{Path, Query, State};
 use axum::http::StatusCode;
 use axum::response::Json;
 use serde::{Deserialize, Serialize};
+use std::sync::Arc;
 
 use crate::auth::generate_webhook_secret;
 use crate::daemon::MoneroDaemonClient;
+use crate::engine_settings::EngineSettings;
 use crate::key_custody::{KeyCustodyError, SubaddressIndex, WalletMaterial};
 use crate::status::OrderStatus;
-use crate::store::{NewTenant, Order, OrderPaymentRow, Store, TenantConfigPatch, Webhook};
+use crate::store::{
+    Database, NewTenant, Order, OrderPaymentRow, Store, TenantConfigPatch, Webhook,
+};
 
 use super::{
     network_str, now_unix, parse_network, parse_status_query, resolve_wallet_handle, ApiError,
-    AppState, AuthedTenant,
+    AppState, AuthedTenant, Custody,
 };
 
 /// `KeyCustodyError::InvalidKeyMaterial` from `register_wallet`/`derive_subaddress`
@@ -136,7 +140,8 @@ pub async fn create_tenant(
         ),
     };
     let created = state
-        .write_store(move |s| s.create_tenant(new_tenant, now_unix()))
+        .db
+        .write(move |s| s.create_tenant(new_tenant, now_unix()))
         .await;
     // A failed insert leaves a registered wallet nothing holds a handle to - key
     // material live in `KeyCustody` for the rest of the process's life, with no
@@ -307,7 +312,8 @@ pub async fn switch_key_custody(
     };
     let (id, chosen) = (tenant.id.clone(), backend.clone());
     let updated = state
-        .write_store(move |s| s.update_tenant_key_custody(&id, &chosen, &sealed))
+        .db
+        .write(move |s| s.update_tenant_key_custody(&id, &chosen, &sealed))
         .await;
     if let Err(e) = updated {
         let _ = state.custody.backends.remove_wallet(handle).await;
@@ -326,7 +332,8 @@ pub async fn switch_key_custody(
     }
     let id = tenant.id.clone();
     let refetched = state
-        .write_store(move |s| s.get_tenant_by_id(&id))
+        .db
+        .write(move |s| s.get_tenant_by_id(&id))
         .await?
         .ok_or(ApiError::NotFound)?;
     Ok(Json(TenantView::from(refetched)))
@@ -355,10 +362,13 @@ fn backend_description(name: &str) -> &'static str {
 /// `GET /api/v1/admin/key-custody` - the backends a store can choose from
 /// and the default (task 5.4). Not secret: any caller that reaches the
 /// private engine API may ask.
-pub async fn key_custody_options(State(state): State<AppState>) -> Json<KeyCustodyView> {
-    let mut enabled_names = state.custody.backends.enabled_backends();
+pub async fn key_custody_options(
+    State(custody): State<Custody>,
+    State(settings): State<Arc<EngineSettings>>,
+) -> Json<KeyCustodyView> {
+    let mut enabled_names = custody.backends.enabled_backends();
     if enabled_names.is_empty() {
-        enabled_names.push(state.custody.default_backend.clone());
+        enabled_names.push(custody.default_backend.clone());
     }
     let enabled = enabled_names
         .iter()
@@ -374,9 +384,9 @@ pub async fn key_custody_options(State(state): State<AppState>) -> Json<KeyCusto
             _ => None,
         })
         .collect();
-    let default = match state.custody.backends.enabled_backends().is_empty() {
-        true => state.custody.default_backend.clone(),
-        false => state.settings.custody.load().default.as_str().to_string(),
+    let default = match custody.backends.enabled_backends().is_empty() {
+        true => custody.default_backend.clone(),
+        false => settings.custody.load().default.as_str().to_string(),
     };
     Json(KeyCustodyView { enabled, default })
 }
@@ -393,7 +403,7 @@ pub struct PatchTenantRequest {
 
 pub async fn patch_own_tenant(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
+    State(db): State<Database>,
     Json(req): Json<PatchTenantRequest>,
 ) -> Result<Json<TenantView>, ApiError> {
     validate_tenant_settings(req.confirmations_required, req.order_expiry_seconds)?;
@@ -402,8 +412,8 @@ pub async fn patch_own_tenant(
         order_expiry_seconds: req.order_expiry_seconds,
     };
     let id = tenant.id.clone();
-    let refetched = state
-        .write_store(move |s| {
+    let refetched = db
+        .write(move |s| {
             s.update_tenant_config(&id, patch)?;
             s.get_tenant_by_id(&id)
         })
@@ -419,12 +429,10 @@ pub struct RotateSecretResponse {
 
 pub async fn rotate_secret(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
+    State(db): State<Database>,
 ) -> Result<Json<RotateSecretResponse>, ApiError> {
     let id = tenant.id.clone();
-    let new_secret = state
-        .write_store(move |s| s.rotate_tenant_secret(&id))
-        .await?;
+    let new_secret = db.write(move |s| s.rotate_tenant_secret(&id)).await?;
     Ok(Json(RotateSecretResponse {
         secret_token: new_secret.expose().to_string(),
     }))
@@ -432,17 +440,16 @@ pub async fn rotate_secret(
 
 pub async fn delete_own_tenant(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
+    State(custody): State<Custody>,
+    State(db): State<Database>,
 ) -> Result<StatusCode, ApiError> {
-    let removed_handle = state.custody.wallet_handles.write().remove(&tenant.id);
+    let removed_handle = custody.wallet_handles.write().remove(&tenant.id);
     if let Some(handle) = removed_handle {
         // Best-effort: an already-unknown handle is not an error worth surfacing here.
-        let _ = state.custody.backends.remove_wallet(handle).await;
+        let _ = custody.backends.remove_wallet(handle).await;
     }
     let id = tenant.id.clone();
-    state
-        .write_store(move |s| s.disable_tenant(&id, now_unix()))
-        .await?;
+    db.write(move |s| s.disable_tenant(&id, now_unix())).await?;
     Ok(StatusCode::NO_CONTENT)
 }
 
@@ -531,7 +538,8 @@ pub const MAX_LIST_ORDER_IDS: usize = 100;
 
 pub async fn list_orders(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
+    State(db): State<Database>,
+    State(settings): State<Arc<EngineSettings>>,
     Query(q): Query<ListOrdersQuery>,
 ) -> Result<Json<Vec<OrderView>>, ApiError> {
     let status_filter: Option<OrderStatus> =
@@ -572,13 +580,9 @@ pub async fn list_orders(
         q.cursor,
         tenant.id.clone(),
     );
-    let grace = state
-        .settings
-        .scan
-        .load()
-        .expired_order_grace_period_seconds;
-    let views = state
-        .read_store(move |store| {
+    let grace = settings.scan.load().expired_order_grace_period_seconds;
+    let views = db
+        .read(move |store| {
             let orders = match ids {
                 Some(ids) => {
                     let mut orders = Vec::with_capacity(ids.len());
@@ -636,16 +640,13 @@ pub struct OrderDetailResponse {
 pub async fn get_order_detail(
     AuthedTenant(tenant): AuthedTenant,
     Path(order_id): Path<crate::store::OrderId>,
-    State(state): State<AppState>,
+    State(db): State<Database>,
+    State(settings): State<Arc<EngineSettings>>,
 ) -> Result<Json<OrderDetailResponse>, ApiError> {
-    let grace = state
-        .settings
-        .scan
-        .load()
-        .expired_order_grace_period_seconds;
+    let grace = settings.scan.load().expired_order_grace_period_seconds;
     let tenant_id = tenant.id.clone();
-    let found = state
-        .read_store(move |store| {
+    let found = db
+        .read(move |store| {
             let Some(order) = store.get_order(&tenant_id, &order_id)? else {
                 return Ok(None);
             };
@@ -679,12 +680,12 @@ pub struct SetRefundAddressRequest {
 pub async fn set_order_refund_address(
     AuthedTenant(tenant): AuthedTenant,
     Path(order_id): Path<crate::store::OrderId>,
-    State(state): State<AppState>,
+    State(db): State<Database>,
     Json(req): Json<SetRefundAddressRequest>,
 ) -> Result<(), ApiError> {
     let id = tenant.id.clone();
-    let updated = state
-        .write_store(move |s| s.set_refund_address(&id, &order_id, &req.refund_address))
+    let updated = db
+        .write(move |s| s.set_refund_address(&id, &order_id, &req.refund_address))
         .await?;
     if updated {
         Ok(())
@@ -707,7 +708,7 @@ pub struct CreateWebhookResponse {
 
 pub async fn create_webhook(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
+    State(db): State<Database>,
     Json(req): Json<CreateWebhookRequest>,
 ) -> Result<Json<CreateWebhookResponse>, ApiError> {
     let parsed =
@@ -727,8 +728,8 @@ pub async fn create_webhook(
         .map(|v| v.to_string())
         .unwrap_or_else(|| "{}".to_string());
     let (tenant_id, url, signing_secret) = (tenant.id.clone(), req.url.clone(), secret.clone());
-    let webhook = state
-        .write_store(move |store| {
+    let webhook = db
+        .write(move |store| {
             store.create_webhook(
                 &tenant_id,
                 &url,
@@ -765,21 +766,21 @@ impl From<Webhook> for WebhookView {
 
 pub async fn list_webhooks(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
+    State(db): State<Database>,
 ) -> Result<Json<Vec<WebhookView>>, ApiError> {
     let id = tenant.id.clone();
-    let webhooks = state.read_store(move |s| s.list_webhooks(&id)).await?;
+    let webhooks = db.read(move |s| s.list_webhooks(&id)).await?;
     Ok(Json(webhooks.into_iter().map(WebhookView::from).collect()))
 }
 
 pub async fn delete_webhook(
     AuthedTenant(tenant): AuthedTenant,
     Path(webhook_id): Path<crate::store::WebhookId>,
-    State(state): State<AppState>,
+    State(db): State<Database>,
 ) -> Result<StatusCode, ApiError> {
     let id = tenant.id.clone();
-    let deleted = state
-        .write_store(move |s| s.delete_webhook(&id, &webhook_id))
+    let deleted = db
+        .write(move |s| s.delete_webhook(&id, &webhook_id))
         .await?;
     if deleted {
         Ok(StatusCode::NO_CONTENT)
@@ -903,9 +904,8 @@ pub async fn lookup_payment(
     };
     let id = tenant.id.clone();
     let touched = state
-        .write_store(move |store| {
-            crate::scanner::record_scan_match(store, &id, &scan, now, block_height)
-        })
+        .db
+        .write(move |store| crate::scanner::record_scan_match(store, &id, &scan, now, block_height))
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
 
@@ -923,7 +923,8 @@ pub async fn lookup_payment(
         .map_err(|e| ApiError::Internal(e.to_string()))?;
     let orders: Vec<crate::store::OrderId> = touched.iter().cloned().collect();
     state
-        .write_store(move |store| {
+        .db
+        .write(move |store| {
             for order_id in &orders {
                 crate::scanner::recompute_and_notify(store, order_id, current_height, now)?;
             }
@@ -952,14 +953,14 @@ pub async fn lookup_payment(
 /// Carries no order state itself - see [`crate::store::OrderChange`].
 pub async fn order_events(
     AuthedTenant(tenant): AuthedTenant,
-    State(state): State<AppState>,
+    State(db): State<Database>,
 ) -> axum::response::sse::Sse<
     impl futures_util::Stream<Item = Result<axum::response::sse::Event, std::convert::Infallible>>,
 > {
     use axum::response::sse::{Event, KeepAlive, Sse};
     use tokio::sync::broadcast::error::RecvError;
 
-    let receiver = state.db.subscribe_order_changes();
+    let receiver = db.subscribe_order_changes();
     let ready =
         futures_util::stream::once(async { Ok(Event::default().event("ready").data("{}")) });
     let changes = futures_util::stream::unfold(

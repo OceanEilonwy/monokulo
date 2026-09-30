@@ -38,7 +38,7 @@ use parking_lot::RwLock;
 use std::collections::HashMap;
 use std::sync::Arc;
 
-use axum::extract::FromRequestParts;
+use axum::extract::{FromRef, FromRequestParts};
 use axum::http::{header, request::Parts, StatusCode};
 use axum::middleware;
 use axum::response::{IntoResponse, Json, Response};
@@ -50,7 +50,7 @@ use tower_http::limit::RequestBodyLimitLayer;
 use crate::key_custody::{KeyCustody, KeyCustodyError, WalletHandle};
 use crate::scanner_status::ScannerStatusMap;
 use crate::status::OrderStatus;
-use crate::store::{Store, StoreError, Tenant};
+use crate::store::{StoreError, Tenant};
 
 use rate_limit::{admin_rate_limit_middleware, RateLimiter};
 
@@ -83,7 +83,10 @@ pub struct Networks {
     pub scanner_status: ScannerStatusMap,
 }
 
-#[derive(Clone)]
+/// Everything the handlers share. A handler takes just the parts it uses
+/// (`State<Database>`, `State<Custody>`, ...: see the `FromRef` derive), so
+/// its signature says what it can touch.
+#[derive(Clone, FromRef)]
 pub struct AppState {
     /// The database: reads on the read pool, writes on the database worker
     /// (the `Admin` class, in turn with the scanner's and webhooks' work),
@@ -114,9 +117,9 @@ impl AppState {
     /// a rate limit high enough that no test trips it by accident, default
     /// settings and no log store. A test that needs something else
     /// overrides just that field with struct update syntax:
-    /// `AppState { daemons, ..AppState::for_tests() }`.
+    /// `AppState { log_store, ..AppState::for_tests() }`.
     pub fn for_tests() -> Self {
-        Self::for_tests_with_store(Store::open_in_memory().unwrap().into_shared())
+        Self::for_tests_with_store(crate::store::Store::open_in_memory().unwrap().into_shared())
     }
 
     /// [`AppState::for_tests`] around a store the test prepared itself (for
@@ -146,33 +149,6 @@ impl AppState {
                 scanner_status: crate::scanner_status::new_scanner_status_map(),
             },
         }
-    }
-}
-
-impl AppState {
-    /// Runs a write (or a read that must see this connection's own writes)
-    /// on the blocking pool, never on a Tokio worker: a slow disk or a
-    /// write lock held by the scanner delays this request, not every task
-    /// sharing its worker.
-    pub async fn write_store<T, E>(
-        &self,
-        f: impl FnOnce(&Store) -> Result<T, E> + Send + 'static,
-    ) -> Result<T, E>
-    where
-        T: Send + 'static,
-        E: From<StoreError> + Send + 'static,
-    {
-        self.db
-            .writer()
-            .run(crate::store::db::Class::Admin, f)
-            .await
-    }
-
-    pub async fn read_store<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&Store) -> Result<T, StoreError> + Send + 'static,
-    ) -> Result<T, StoreError> {
-        self.db.read(f).await
     }
 }
 
@@ -492,7 +468,8 @@ impl FromRequestParts<AppState> for AuthedTenant {
                 .ok_or(ApiError::Unauthorized)?,
         );
         let tenant = state
-            .read_store(move |store| store.find_tenant_by_secret_token(&token))
+            .db
+            .read(move |store| store.find_tenant_by_secret_token(&token))
             .await?
             .ok_or(ApiError::Unauthorized)?;
         // The request's lines name the store (`telemetry::http::server`).
@@ -517,7 +494,7 @@ pub async fn resolve_wallet_handle(
     // The row as it is now, not as it was when the request was
     // authenticated: the store may have just moved to another backend.
     let id = tenant.id.clone();
-    let current = state.write_store(move |s| s.get_tenant_by_id(&id)).await?;
+    let current = state.db.write(move |s| s.get_tenant_by_id(&id)).await?;
     let tenant = current.as_ref().unwrap_or(tenant);
     // The registration can't happen under the lock (it's `async`, and holding a
     // std `RwLock` across an `.await` would be a deadlock waiting to happen), so two

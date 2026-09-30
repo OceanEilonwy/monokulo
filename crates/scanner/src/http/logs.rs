@@ -21,13 +21,10 @@ use telemetry::store::api::{
 use telemetry::store::{LogStore, StoreError};
 
 use super::instance_admin::AuthedInstanceAdmin;
-use super::{ApiError, AppState};
+use super::ApiError;
 
-fn store(state: &AppState) -> Result<LogStore, ApiError> {
-    state
-        .log_store
-        .clone()
-        .ok_or_else(|| ApiError::Unavailable("this engine has no log store open".into()))
+fn store(log_store: Option<LogStore>) -> Result<LogStore, ApiError> {
+    log_store.ok_or_else(|| ApiError::Unavailable("this engine has no log store open".into()))
 }
 
 /// Runs a store read off the async threads.
@@ -47,14 +44,14 @@ fn bad_query(e: telemetry::query::ParseError) -> Response {
 
 pub async fn list(
     _: AuthedInstanceAdmin,
-    State(state): State<AppState>,
+    State(log_store): State<Option<LogStore>>,
     Query(request): Query<LogsRequest>,
 ) -> Response {
     let query = match request.to_query() {
         Ok(query) => query,
         Err(e) => return bad_query(e),
     };
-    let result = match store(&state) {
+    let result = match store(log_store) {
         Ok(store) => read(store, move |s| s.query(&query)).await,
         Err(e) => Err(e),
     };
@@ -66,14 +63,14 @@ pub async fn list(
 
 pub async fn trace(
     _: AuthedInstanceAdmin,
-    State(state): State<AppState>,
+    State(log_store): State<Option<LogStore>>,
     Path(trace_id): Path<String>,
 ) -> Response {
     if !is_trace_id(&trace_id) {
         return ApiError::BadRequest("a trace id is 32 lowercase hex characters".into())
             .into_response();
     }
-    let result = match store(&state) {
+    let result = match store(log_store) {
         Ok(store) => read(store, move |s| s.trace(&trace_id)).await,
         Err(e) => Err(e),
     };
@@ -85,14 +82,14 @@ pub async fn trace(
 
 pub async fn histogram(
     _: AuthedInstanceAdmin,
-    State(state): State<AppState>,
+    State(log_store): State<Option<LogStore>>,
     Query(request): Query<HistogramRequest>,
 ) -> Response {
     let filter = match telemetry::query::parse(request.q.as_deref().unwrap_or("")) {
         Ok(filter) => filter,
         Err(e) => return bad_query(e),
     };
-    let result = match store(&state) {
+    let result = match store(log_store) {
         Ok(store) => {
             read(store, move |s| {
                 s.histogram(filter.as_ref(), request.from, request.to, request.buckets)
@@ -107,8 +104,11 @@ pub async fn histogram(
     }
 }
 
-pub async fn attributes(_: AuthedInstanceAdmin, State(state): State<AppState>) -> Response {
-    let result = match store(&state) {
+pub async fn attributes(
+    _: AuthedInstanceAdmin,
+    State(log_store): State<Option<LogStore>>,
+) -> Response {
+    let result = match store(log_store) {
         Ok(store) => read(store, |s| s.attribute_names()).await,
         Err(e) => Err(e),
     };

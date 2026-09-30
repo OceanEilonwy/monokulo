@@ -20,11 +20,12 @@ use axum::response::{IntoResponse, Json};
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use std::collections::HashMap;
+use std::sync::Arc;
 
-use crate::engine_settings::NETWORKS;
-use crate::store::Store;
+use crate::engine_settings::{EngineSettings, NETWORKS};
+use crate::store::{Database, Store};
 
-use super::{ApiError, AppState};
+use super::{ApiError, AppState, Networks};
 
 /// The `settings` table key an instance admin token's SHA-256 hash is stored
 /// under, once generated - see [`ensure_admin_token_seeded`].
@@ -127,7 +128,8 @@ impl FromRequestParts<AppState> for AuthedInstanceAdmin {
             .ok_or(ApiError::Unauthorized)?;
         let presented_hash = shared::auth::RawToken::presented(token).hash();
         let effective_hash = state
-            .read_store(|store| Ok(effective_admin_token_hash(store)))
+            .db
+            .read(|store| Ok(effective_admin_token_hash(store)))
             .await?
             .map_err(|_| ApiError::Internal("settings lookup failed".into()))?;
         match effective_hash {
@@ -194,14 +196,15 @@ fn is_node_key(key: &str) -> Option<&'static str> {
 /// can render the whole form from a single call.
 pub async fn get_settings(
     AuthedInstanceAdmin: AuthedInstanceAdmin,
-    State(state): State<AppState>,
+    State(db): State<Database>,
+    State(settings): State<Arc<EngineSettings>>,
 ) -> Result<Json<SettingsView>, ApiError> {
-    let Some(registry) = state.settings.registry.as_ref() else {
+    let Some(registry) = settings.registry.as_ref() else {
         return Err(ApiError::Unavailable(
             "settings are not available on this engine".into(),
         ));
     };
-    let tenant_counts = state.read_store(|s| s.count_tenants_by_network()).await?;
+    let tenant_counts = db.read(|s| s.count_tenants_by_network()).await?;
     let mut scalars = HashMap::new();
     let mut monero_node = HashMap::new();
     let mut networks = HashMap::new();
@@ -371,10 +374,12 @@ pub struct UnservedNetwork {
 /// environment, and networks left without a node that stores use.
 pub async fn update_settings(
     AuthedInstanceAdmin: AuthedInstanceAdmin,
-    State(state): State<AppState>,
+    State(db): State<Database>,
+    State(networks): State<Networks>,
+    State(settings): State<Arc<EngineSettings>>,
     Json(req): Json<UpdateSettingsRequest>,
 ) -> axum::response::Response {
-    let Some(registry) = state.settings.registry.as_ref() else {
+    let Some(registry) = settings.registry.as_ref() else {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             Json(json!({ "error": "settings are not available on this engine" })),
@@ -385,7 +390,7 @@ pub async fn update_settings(
         req.scalars.into_iter().map(|(k, v)| (k, Some(v))).collect();
     // A node that can never work where it's being saved is refused before
     // anything is stored (T9).
-    let current_nodes = state.settings.nodes.load();
+    let current_nodes = settings.nodes.load();
     let cannot_work = nodes_that_cannot_work(&req.monero_node, &current_nodes).await;
     if !cannot_work.is_empty() {
         return refused(&cannot_work);
@@ -410,8 +415,8 @@ pub async fn update_settings(
             // Networks stores use that have no node now, or whose just-saved
             // nodes don't answer (task 2.2, decision D2). Only saved
             // networks are probed, each node briefly, all at once.
-            let counts = state
-                .read_store(|s| s.count_tenants_by_network())
+            let counts = db
+                .read(|s| s.count_tenants_by_network())
                 .await
                 .unwrap_or_default();
             let saved_networks: Vec<&str> = NETWORKS
@@ -427,7 +432,7 @@ pub async fn update_settings(
                 let Ok(parsed) = crate::network::parse_network(&network) else {
                     continue;
                 };
-                let reachable = match state.networks.daemons.get(parsed) {
+                let reachable = match networks.daemons.get(parsed) {
                     None => false,
                     Some(_) if !saved_networks.contains(&network.as_str()) => true,
                     Some(daemon) => {

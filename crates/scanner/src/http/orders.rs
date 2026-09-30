@@ -92,7 +92,8 @@ async fn create_order_for_tenant(
     for _ in 0..8 {
         let id = tenant.id.clone();
         let minor_index = state
-            .write_store(move |s| s.peek_next_minor_index(&id))
+            .db
+            .write(move |s| s.peek_next_minor_index(&id))
             .await?;
         let index = SubaddressIndex {
             major: 0,
@@ -126,7 +127,8 @@ async fn create_order_for_tenant(
             expires_at: now + tenant.order_expiry_seconds,
         };
         let order = state
-            .write_store(move |s| s.create_order_claiming_minor_index(minor_index, new_order))
+            .db
+            .write(move |s| s.create_order_claiming_minor_index(minor_index, new_order))
             .await?;
         if let Some(order) = order {
             created = Some(order);

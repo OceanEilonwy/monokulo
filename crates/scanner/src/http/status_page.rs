@@ -241,7 +241,8 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
         };
 
         let (lagging_tenants, max_blocks_behind) = state
-            .read_store(move |store| {
+            .db
+            .read(move |store| {
                 let high_water = store.max_scanned_height(network)?.unwrap_or(0);
                 let lagging = store.lagging_tenants(network)?;
                 let behind = lagging
@@ -267,7 +268,8 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
         .map(|(name, restarts)| LoopRestarts { name, restarts })
         .collect();
     let (due, oldest) = state
-        .read_store(move |store| store.webhook_backlog(now))
+        .db
+        .read(move |store| store.webhook_backlog(now))
         .await
         .unwrap_or((0, None));
     let key_custody: Vec<CustodyBackendStatus> = state
@@ -280,13 +282,15 @@ pub async fn status_page(State(state): State<AppState>) -> Response {
         .collect();
     let networks_for_read = network_views.clone();
     let mut unserved_tenants = state
-        .read_store(move |store| Ok(unserved_tenants(store, &networks_for_read)))
+        .db
+        .read(move |store| Ok(unserved_tenants(store, &networks_for_read)))
         .await
         .unwrap_or_default();
     let key_custody_for_read = key_custody.clone();
     unserved_tenants.extend(
         state
-            .read_store(move |store| Ok(custody_unserved_tenants(store, &key_custody_for_read)))
+            .db
+            .read(move |store| Ok(custody_unserved_tenants(store, &key_custody_for_read)))
             .await
             .unwrap_or_default(),
     );
