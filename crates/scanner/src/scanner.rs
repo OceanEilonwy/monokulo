@@ -70,6 +70,10 @@ fn key_images_of(tx: &Transaction) -> Vec<String> {
         .collect()
 }
 
+fn key_images_json_of(tx: &Transaction) -> String {
+    serde_json::Value::from(key_images_of(tx)).to_string()
+}
+
 /// The result of scanning one transaction against one wallet - pure `KeyCustody`
 /// output, no `Store` involved. Deliberately separate from persisting it (see
 /// `record_scan_match`): `rusqlite::Connection` is `Send` but not `Sync`, so a
@@ -101,7 +105,7 @@ pub async fn scan_transaction(
     Ok(ScanResult {
         matches,
         txid: tx_id_hex(tx),
-        key_images_json: serde_json::Value::from(key_images_of(tx)).to_string(),
+        key_images_json: key_images_json_of(tx),
     })
 }
 
@@ -119,7 +123,7 @@ pub async fn scan_transaction_in_window(
     Ok(ScanResult {
         matches,
         txid: tx_id_hex(tx),
-        key_images_json: serde_json::Value::from(key_images_of(tx)).to_string(),
+        key_images_json: key_images_json_of(tx),
     })
 }
 
@@ -135,12 +139,19 @@ pub(crate) const SCAN_CONCURRENCY: usize = 32;
 /// Scans one transaction for many tenants at once, each with
 /// `SCAN_CALL_DEADLINE`, so a slow tenant (a slow key-custody backend)
 /// doesn't hold up the others. Results come back in the order given.
+///
+/// `None` is a tenant the transaction pays nothing, which is nearly every
+/// result. The transaction's id and key images are what a payment is recorded
+/// with and cost a hash of the whole transaction, so they are worked out only
+/// once a tenant has a match, and then once for all tenants.
 pub(crate) async fn scan_for_tenants(
     key_custody: &dyn KeyCustody,
     tx: &Transaction,
     tenants: &[&(crate::store::TenantId, WalletHandle, ScanIndices)],
-) -> Vec<(crate::store::TenantId, Result<ScanResult>)> {
+) -> Vec<(crate::store::TenantId, Result<Option<ScanResult>>)> {
     use futures_util::stream::{self, StreamExt};
+    let evidence = std::sync::OnceLock::new();
+    let evidence = &evidence;
     // By index: a closure over borrowed tuples trips a rustc limitation that
     // makes the future not `Send`.
     stream::iter(0..tenants.len())
@@ -151,11 +162,21 @@ pub(crate) async fn scan_for_tenants(
                 async move {
                     let result = match tokio::time::timeout(
                         SCAN_CALL_DEADLINE,
-                        scan_transaction_in_window(key_custody, *handle, tx, window),
+                        key_custody.scan_tx_outputs_for_indices(*handle, tx, window),
                     )
                     .await
                     {
-                        Ok(result) => result,
+                        Ok(Ok(matches)) if matches.is_empty() => Ok(None),
+                        Ok(Ok(matches)) => {
+                            let (txid, key_images_json): &(String, String) =
+                                evidence.get_or_init(|| (tx_id_hex(tx), key_images_json_of(tx)));
+                            Ok(Some(ScanResult {
+                                matches,
+                                txid: txid.clone(),
+                                key_images_json: key_images_json.clone(),
+                            }))
+                        }
+                        Ok(Err(error)) => Err(error.into()),
                         Err(_) => Err(ScannerError::KeyCustody(
                             KeyCustodyError::BackendUnavailable(format!(
                                 "scan took longer than {SCAN_CALL_DEADLINE:?}"
@@ -1921,6 +1942,53 @@ pub(crate) mod tests {
             order.status,
             crate::status::OrderStatus::Expired,
             "must remain untouched"
+        );
+    }
+
+    /// One transaction scanned for two stores. The store it pays gets the
+    /// matches along with the transaction's id and key images; the store it
+    /// doesn't pay gets `None`.
+    #[tokio::test]
+    async fn a_transaction_scanned_for_several_stores_is_described_only_to_the_one_it_pays() {
+        let custody = PlainKeyCustody::default();
+        let paid = custody
+            .register_wallet(WalletMaterial::new(
+                fixture_view_key(),
+                fixture_spend_pubkey(),
+            ))
+            .await
+            .unwrap();
+        let (view, spend) = arbitrary_wallet_material(7);
+        let unpaid = custody
+            .register_wallet(WalletMaterial::new(view, spend))
+            .await
+            .unwrap();
+        let tx = fixture_tx();
+        let tenants = [
+            (
+                crate::store::TenantId::new("unpaid"),
+                unpaid,
+                ScanIndices::new([1]),
+            ),
+            (
+                crate::store::TenantId::new("paid"),
+                paid,
+                ScanIndices::new([1]),
+            ),
+        ];
+
+        let results = scan_for_tenants(&custody, &tx, &tenants.iter().collect::<Vec<_>>()).await;
+
+        assert_eq!(results.len(), 2);
+        assert_eq!(results[0].0.as_str(), "unpaid");
+        assert!(results[0].1.as_ref().unwrap().is_none());
+        assert_eq!(results[1].0.as_str(), "paid");
+        let scan = results[1].1.as_ref().unwrap().as_ref().unwrap();
+        assert_eq!(scan.matches.len(), 1);
+        assert_eq!(scan.txid, tx_id_hex(&tx));
+        assert_eq!(
+            parse_payment_key_images(&scan.key_images_json).unwrap(),
+            key_images_of(&tx)
         );
     }
 

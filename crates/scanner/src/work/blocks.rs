@@ -673,8 +673,8 @@ impl BlockScan {
             .collect()
     }
 
-    fn scanned(&mut self, tenant_id: TenantId, index: usize, found: ScanResult) {
-        if !found.matches.is_empty() {
+    fn scanned(&mut self, tenant_id: TenantId, index: usize, found: Option<ScanResult>) {
+        if let Some(found) = found {
             self.found.entry(tenant_id.clone()).or_default().push(found);
         }
         self.next_tx.insert(tenant_id, index + 1);
