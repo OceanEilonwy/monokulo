@@ -23,6 +23,9 @@ use uuid::Uuid;
 use crate::auth::{generate_public_key, generate_secret_token, hash_secret_token};
 use crate::status::{OrderStatus, PaymentView, StatusInputs, derive_status};
 
+mod work;
+pub use work::{OpenedReorg, Position, ReorgCandidate, ReorgJob, ReorgPhase};
+
 /// Every migration file, applied in order, exactly once each - tracked in
 /// `schema_migrations` rather than assumed from `CREATE TABLE`'s own failure mode.
 /// Re-running the raw DDL against an already-migrated database (e.g. every time the
@@ -49,6 +52,7 @@ const MIGRATIONS: &[(i64, &str)] = &[
     (16, include_str!("../migrations/0016_order_closed_at.sql")),
     (17, include_str!("../migrations/0017_pending_payment_recomputes.sql")),
     (18, include_str!("../migrations/0018_partial_block_scans.sql")),
+    (19, include_str!("../migrations/0019_scanner_work.sql")),
 ];
 
 /// Connection-level settings that are *not* persisted in the database file, so they
@@ -310,6 +314,12 @@ fn status_to_str(s: OrderStatus) -> &'static str {
 /// Paid, overpaid and expired orders are closed: nothing more is expected.
 fn is_terminal(s: OrderStatus) -> bool {
     matches!(s, OrderStatus::Paid | OrderStatus::Overpaid | OrderStatus::Expired)
+}
+
+/// A status that tells a merchant to ship: the one kind of transition that
+/// must not be announced from a chain that may be discarded.
+fn is_settlement(s: OrderStatus) -> bool {
+    matches!(s, OrderStatus::Paid | OrderStatus::Overpaid)
 }
 
 /// The scan window (task 7.3, decision D10) as an SQL condition on an
@@ -1432,22 +1442,56 @@ impl Store {
         let total: u64 = views.iter().map(|v| v.amount_piconero).sum();
         let min_confirmations = views.iter().map(|v| v.confirmations).min().unwrap_or(0);
 
-        let mut new_status = derive_status(
+        let confirmations_required = order.confirmations_required_override.unwrap_or(tenant.confirmations_required);
+        let derived = derive_status(
             &views,
-            StatusInputs {
-                xmr_amount_piconero: order.xmr_amount_piconero,
-                confirmations_required: order.confirmations_required_override.unwrap_or(tenant.confirmations_required),
-                now,
-                expires_at: order.expires_at,
-            },
+            StatusInputs { xmr_amount_piconero: order.xmr_amount_piconero, confirmations_required, now, expires_at: order.expires_at },
         );
+        let mut new_status = derived;
         // While the tenant is behind the network, an order mustn't become
         // expired: its payment may be in a block not yet scanned for it, and an
         // `order.expired` webhook can make a shop cancel an order that turns
         // out to be paid. It expires once the tenant has caught up.
-        if new_status == OrderStatus::Expired && order.status != OrderStatus::Expired && self.is_tenant_lagging(&tenant)? {
+        let expiry_held =
+            new_status == OrderStatus::Expired && order.status != OrderStatus::Expired && self.is_tenant_lagging(&tenant)?;
+        if expiry_held {
             new_status = order.status;
         }
+        // While a reorg on this network is being reconciled, confirmations may
+        // be counted on the losing chain: an order can't newly settle until the
+        // rewind. Everything else (expiry, confirmation counts, walking a
+        // settlement back) still happens. The obligation stays, so it settles
+        // on the first recompute after the rewind.
+        let settlement_deferred = is_settlement(new_status)
+            && !is_settlement(order.status)
+            && self.settlement_frozen(&tenant.network)?;
+        if settlement_deferred {
+            // Where the payment actually stands, short of settled.
+            new_status = if views.iter().all(|v| v.is_zero_conf) { OrderStatus::Unconfirmed } else { OrderStatus::Confirming };
+        }
+
+        // When this order's status can next move without a payment changing
+        // (a payment change leaves a `pending_payment_recomputes` row instead):
+        // - its deadline, while it is still short of the amount;
+        // - the next block, while a mined payment is short of the confirmations
+        //   required (the count customers see moves every block);
+        // - soon, when a transition was held back above;
+        // - never, once terminal.
+        const HELD_RETRY_SECONDS: i64 = 30;
+        let (next_due_at, next_due_height) = if settlement_deferred {
+            (Some(now), None)
+        } else if expiry_held {
+            (Some(now + HELD_RETRY_SECONDS), None)
+        } else if is_terminal(new_status) {
+            (None, None)
+        } else {
+            let short_of_amount = total < order.xmr_amount_piconero;
+            let confirming = views.iter().any(|v| !v.is_zero_conf && v.confirmations < confirmations_required);
+            (
+                short_of_amount.then_some(order.expires_at.saturating_add(1).max(now)),
+                confirming.then_some(current_height.saturating_add(1) as i64),
+            )
+        };
 
         // `closed_at_utc` (migration 0016): set the first time the order is
         // terminal, kept while it stays terminal, cleared if it reopens. An
@@ -1456,7 +1500,8 @@ impl Store {
         let closed_at = if new_status == OrderStatus::Expired { order.expires_at.min(now) } else { now };
         self.conn.execute(
             "UPDATE orders SET status = ?2, confirmations = ?3, amount_received_piconero = ?4, updated_at_utc = ?5,
-                closed_at_utc = CASE WHEN ?6 THEN COALESCE(closed_at_utc, ?7) ELSE NULL END
+                closed_at_utc = CASE WHEN ?6 THEN COALESCE(closed_at_utc, ?7) ELSE NULL END,
+                next_due_at_utc = ?8, next_due_height = ?9
              WHERE id = ?1",
             params![
                 order_id,
@@ -1465,9 +1510,18 @@ impl Store {
                 total as i64,
                 now,
                 is_terminal(new_status),
-                closed_at
+                closed_at,
+                next_due_at,
+                next_due_height,
             ],
         )?;
+        // The payment-change obligation is met by this recompute, unless the
+        // settlement it implies had to wait.
+        if settlement_deferred {
+            self.conn.execute("INSERT OR IGNORE INTO pending_payment_recomputes (order_id) VALUES (?1)", [order_id])?;
+        } else {
+            self.clear_pending_payment_recompute(order_id)?;
+        }
         if order.status != new_status || order.confirmations != min_confirmations || order.amount_received_piconero != total {
             self.publish_order_change(&order.tenant_id, order_id);
         }
@@ -3532,9 +3586,15 @@ mod tests {
             let rows = stmt.query_map([], |row| row.get(0)).unwrap().collect::<rusqlite::Result<Vec<_>>>().unwrap();
             rows
         };
+        // Later migrations add their own indexes (0019's reorg collection
+        // streams); the one that existed before the rebuild must survive it.
         assert_eq!(
             indexes,
-            vec!["order_payments_order_idx".to_string()],
+            vec![
+                "order_payments_confirmed_height_idx".to_string(),
+                "order_payments_order_idx".to_string(),
+                "order_payments_unconfirmed_idx".to_string(),
+            ],
             "every explicitly-declared index that existed on order_payments before the rebuild must exist after it"
         );
         // ...plus the implicit index backing the new constraint, which is what makes

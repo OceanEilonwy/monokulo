@@ -630,7 +630,6 @@ fn recompute_and_notify_in_tx(store: &Store, order_id: &str, current_height: u64
         let payload = serde_json::json!({ "order_id": order_id, "status": new_status.as_str() });
         enqueue_webhook_event(store, order_id, &format!("order.{new_status}"), &payload, now)?;
     }
-    store.clear_pending_payment_recompute(order_id)?;
     Ok(())
 }
 
