@@ -733,7 +733,7 @@ pub async fn lookup_payment(
     let now = now_unix();
 
     // Computed (async, no `&Store` held) then persisted (sync, brief lock) as
-    // two separate steps, same as `run_scan_tick`/`scanner::rescan_order`
+    // two separate steps, same as the scheduler/`scanner::rescan_order`
     // already do everywhere else in this codebase - never a single
     // await-spanning call holding the store's lock.
     let mut retries = 0;

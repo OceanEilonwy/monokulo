@@ -1,6 +1,6 @@
-//! The engine's background loops (tasks 2.1, 7.4, 7.9): one chain scanner
-//! and one double-spend revalidation loop per network with a node
-//! configured, started and stopped as node settings are saved, and the
+//! The engine's background loops (tasks 2.1, 7.4, 7.9): one scheduler loop
+//! and one fast mempool loop per network with a node configured (the
+//! double-spend void recheck is the scheduler's upkeep tier), started and stopped as node settings are saved, and the
 //! webhook delivery loop. `main` supervises them; they live here so they
 //! can be tested.
 
@@ -108,7 +108,7 @@ pub async fn run_fast_mempool_loop(
                 db: &db,
                 custody: key_custody.as_ref(),
                 daemon: &pinned,
-                network: network_str(network),
+                network,
                 tenants: &tenants,
                 reorg_check_depth: scan.reorg_check_depth,
                 grace_period_seconds: scan.expired_order_grace_period_seconds,
@@ -226,7 +226,9 @@ pub async fn manage_network_loops(
 pub const REGISTRATION_RETRY: Duration = Duration::from_secs(60);
 pub const REGISTRATION_RETRY_AFTER_LOSS: Duration = Duration::from_secs(5);
 
-/// Runs `run_scan_tick` for one network, over and over. Re-reads
+/// Runs the scheduler's rounds (`work::run_round`) for one network, over
+/// and over: at once while work is left, otherwise every poll interval.
+/// Re-reads
 /// `wallet_handles`, the network's node client and the scan settings every
 /// round, so new tenants, saved node settings and saved scan settings all
 /// apply from the next tick (tasks 2.1, 2.3). Each network has its own
@@ -300,7 +302,7 @@ pub async fn run_scanner_loop(
             db: &db,
             custody: key_custody.as_ref(),
             daemon: &pinned,
-            network: network_str(network),
+            network,
             tenants: &tenants,
             reorg_check_depth: scan.reorg_check_depth,
             grace_period_seconds: scan.expired_order_grace_period_seconds,

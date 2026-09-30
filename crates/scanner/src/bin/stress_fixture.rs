@@ -263,7 +263,7 @@ impl Engine {
                         db: &db,
                         custody: custody.as_ref(),
                         daemon: daemon.as_ref(),
-                        network: NETWORK,
+                        network: Network::Mainnet,
                         tenants: &tenants,
                         reorg_check_depth: scan.reorg_check_depth,
                         grace_period_seconds: scan.expired_order_grace_period_seconds,

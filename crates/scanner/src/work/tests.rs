@@ -77,7 +77,7 @@ fn inputs<'a>(
         db,
         custody,
         daemon,
-        network: "mainnet",
+        network: monero::Network::Mainnet,
         tenants,
         reorg_check_depth: 20,
         grace_period_seconds: 0,
@@ -128,7 +128,7 @@ async fn with_no_time_at_all_every_tier_with_work_still_advances() {
         let before = cursor_of(&store, &tenant).unwrap();
         let report = run_round(&state, &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants), Duration::ZERO).await;
         for tier in Tier::ALL {
-            assert!(report.steps[tier] >= 1, "{} got no unit", tier.name());
+            assert!(report.steps[tier] >= 1, "{tier} got no unit");
         }
         blocks_moved += cursor_of(&store, &tenant).unwrap() - before;
     }
@@ -150,7 +150,7 @@ async fn reorg_detection_costs_one_lookup_when_the_chain_agrees_and_log_depth_wh
     }
     let daemon = CountingDaemon::new(&fake);
     let db = Db::over_shared(store.clone());
-    let chain = chain::Chain::new(&db, &daemon, "mainnet", 20, 1000);
+    let chain = chain::Chain::new(&db, &daemon, monero::Network::Mainnet, 20, 1000);
     assert_eq!(chain.detect(60).await.unwrap(), None);
     assert_eq!(daemon.take_hash_lookups(), 1);
 
@@ -784,7 +784,7 @@ async fn one_failing_recompute_does_not_hold_up_the_others() {
 /// are forgotten after an hour, so the map can't grow without bound.
 #[tokio::test(start_paused = true)]
 async fn backoff_forgets_keys_that_stopped_failing() {
-    let backoff = Backoff::default();
+    let backoff = Backoff::<TenantKey>::default();
     for _ in 0..4 {
         backoff.failed("gone");
     }
@@ -805,7 +805,7 @@ async fn a_failed_mempool_body_fetch_is_retried_next_round() {
     let fake = FakeDaemonClient::new();
     fake.push_block("a1", vec![]);
     fake.push_block("a2", vec![]);
-    fake.set_mempool((0..100u8).map(|i| unrelated_tx(i)).collect());
+    fake.set_mempool((0..100u8).map(unrelated_tx).collect());
     let daemon = Lookups::new(&fake);
     daemon.fail_bodies.store(true, Ordering::Relaxed);
     let tenants = [(tenant, handle)];

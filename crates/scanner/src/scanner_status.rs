@@ -28,8 +28,8 @@ pub struct NetworkScanStatus {
     /// into an HTTP view model, the same boundary `ApiError` itself draws.
     pub last_error: Option<String>,
     pub tick_count: u64,
-    /// How many tenants `run_scan_tick` was actually asked to scan on the
-    /// most recent tick - lets the status page show "0 tenants" as the
+    /// How many tenants the scheduler was actually asked to scan on the
+    /// most recent round - lets the status page show "0 tenants" as the
     /// (unremarkable) reason a network with real nodes still never
     /// matches anything, rather than that being indistinguishable from a
     /// stuck scanner.
@@ -42,8 +42,8 @@ pub fn new_scanner_status_map() -> ScannerStatusMap {
     Arc::new(RwLock::new(HashMap::new()))
 }
 
-/// Records one network's tick outcome - called by `run_scanner_loop` after
-/// every real `run_scan_tick` call, success or failure alike.
+/// Records one network's round outcome - called by `run_scanner_loop` after
+/// every scheduler round, success or failure alike.
 pub fn record_tick(
     map: &ScannerStatusMap,
     network: Network,

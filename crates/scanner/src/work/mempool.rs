@@ -54,6 +54,9 @@ const WINDOWS_TTL: Duration = Duration::from_secs(1);
 
 type TenantWindow = (String, WalletHandle, ScanIndices);
 
+/// Each store with something in scope and its subaddress window.
+type Windows = Arc<Vec<(String, Vec<u32>)>>;
+
 #[derive(Default)]
 pub(crate) struct MempoolState {
     inner: parking_lot::Mutex<Remembered>,
@@ -61,7 +64,7 @@ pub(crate) struct MempoolState {
     next_tenant_offset: AtomicUsize,
     tenant_page_after: parking_lot::Mutex<String>,
     /// Every store's window as of recently, for the fast path.
-    windows: parking_lot::Mutex<Option<(Instant, Arc<Vec<(String, Vec<u32>)>>)>>,
+    windows: parking_lot::Mutex<Option<(Instant, Windows)>>,
     /// The chain height the last round saw, for the fast path's recomputes.
     pub(crate) last_tip: AtomicU64,
 }
@@ -195,7 +198,7 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
     let tenants = match all_windows(state, inputs).await {
         Ok(tenants) => tenants,
         Err(error) => {
-            tracing::warn!(network = %inputs.network, error = %error, "loading scan windows for the mempool failed (retried)");
+            tracing::warn!(network = ?inputs.network, error = %error, "loading scan windows for the mempool failed (retried)");
             return Some(report);
         }
     };
@@ -257,7 +260,7 @@ async fn scan_and_record(
         let scan = match result {
             Ok(scan) => scan,
             Err(error) => {
-                shared::throttled!(format!("mempool-scan:{tenant_id}"), warn, store.id = %tenant_id, network = %inputs.network,
+                shared::throttled!(format!("mempool-scan:{tenant_id}"), warn, store.id = %tenant_id, network = ?inputs.network,
                     error = %error, "scanning a mempool transaction failed");
                 state.backoff.failed(&tenant_id);
                 outcome.failed.push(tenant_id);
@@ -303,7 +306,7 @@ async fn poll(inputs: &RoundInputs<'_>) -> Option<Vec<String>> {
     match bounded(inputs.daemon.get_mempool_txids()).await {
         Ok(txids) => Some(txids),
         Err(error) => {
-            shared::throttled!(format!("mempool-poll:{}", inputs.network), warn, network = %inputs.network, error = %error,
+            shared::throttled!(format!("mempool-poll:{:?}", inputs.network), warn, network = ?inputs.network, error = %error,
                 "polling the mempool failed - no zero-conf detection until it answers");
             None
         }
@@ -349,7 +352,7 @@ async fn bodies(state: &MempoolState, inputs: &RoundInputs<'_>, txids: &[String]
             }
             Err(error) => {
                 fetch_failed = true;
-                tracing::warn!(network = %inputs.network, transactions = missing.len(), error = %error,
+                tracing::warn!(network = ?inputs.network, transactions = missing.len(), error = %error,
                     "fetching new mempool transactions failed (retried)");
             }
         }
@@ -366,7 +369,7 @@ async fn tenant_page(round: &Round<'_>) -> Result<Vec<TenantWindow>, ScannerErro
     let (grace, now) = (round.inputs.grace_period_seconds, round.now);
     let after = round.state.mempool.tenant_page_after.lock().clone();
     let (page, next_after) = round
-        .db(move |s, network| {
+        .db(move |s, network| -> Result<_, ScannerError> {
             let mut page: Vec<String> = s.active_tenants_page(network, now, grace, &after, TENANT_PAGE)?.into_iter().map(|(id, _)| id).collect();
             let full = page.len() == TENANT_PAGE;
             let next_after = if full { page.last().cloned().unwrap_or_default() } else { String::new() };
@@ -391,14 +394,14 @@ async fn all_windows(state: &ScanState, inputs: &RoundInputs<'_>) -> Result<Vec<
     let windows = match cached {
         Some(windows) => windows,
         None => {
-            let (network, grace, now) = (inputs.network.to_string(), inputs.grace_period_seconds, crate::now_unix());
+            let (network, grace, now) = (crate::network::network_str(inputs.network), inputs.grace_period_seconds, crate::now_unix());
             let loaded = inputs
                 .db
                 .run(Class::Scanner, move |s| -> Result<Vec<(String, Vec<u32>)>, ScannerError> {
                     let mut ids = Vec::new();
                     let mut after = String::new();
                     loop {
-                        let page = s.active_tenants_page(&network, now, grace, &after, TENANT_PAGE)?;
+                        let page = s.active_tenants_page(network, now, grace, &after, TENANT_PAGE)?;
                         let full = page.len() == TENANT_PAGE;
                         after = page.last().map(|(id, _)| id.clone()).unwrap_or_default();
                         ids.extend(page.into_iter().map(|(id, _)| id));

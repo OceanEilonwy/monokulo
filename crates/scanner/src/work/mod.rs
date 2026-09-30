@@ -60,14 +60,17 @@ impl Tier {
         self as usize
     }
 
-    pub fn name(self) -> &'static str {
-        match self {
+}
+
+impl std::fmt::Display for Tier {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str(match self {
             Tier::Chain => "chain",
             Tier::Blocks => "blocks",
             Tier::Mempool => "mempool",
             Tier::Settlement => "settlement",
             Tier::Upkeep => "upkeep",
-        }
+        })
     }
 }
 
@@ -204,7 +207,7 @@ pub struct RoundInputs<'a> {
     pub db: &'a Db,
     pub custody: &'a dyn KeyCustody,
     pub daemon: &'a dyn MoneroDaemonClient,
-    pub network: &'a str,
+    pub network: monero::Network,
     /// Tenants with registered keys. A tenant missing here isn't scanned,
     /// and its cursor stays where it is until it is registered.
     pub tenants: &'a [(String, WalletHandle)],
@@ -234,17 +237,37 @@ where
     }
 }
 
-/// Retry delays for tenants whose scans keep failing (a key-custody backend
-/// that is down). The first failures retry at once, so a blip costs nothing;
-/// after that each retry waits twice as long, up to a minute, so a dead
-/// backend costs one attempt a minute instead of a deadline every round.
-#[derive(Default)]
-pub(crate) struct Backoff {
+/// What a [`Backoff`] is keyed by. The kind is part of the type, so a
+/// tenant's retry state can't be consulted or recorded for an order, or the
+/// other way round.
+pub(crate) trait BackoffKind {}
+
+/// Keys are tenant (store) ids: scans that keep failing.
+pub(crate) enum TenantKey {}
+impl BackoffKind for TenantKey {}
+
+/// Keys are order ids: status recomputes that keep failing.
+pub(crate) enum OrderKey {}
+impl BackoffKind for OrderKey {}
+
+/// Retry delays for keys whose work keeps failing (a key-custody backend
+/// that is down, an order whose recompute fails). The first failures retry
+/// at once, so a blip costs nothing; after that each retry waits twice as
+/// long, up to a minute, so a dead backend costs one attempt a minute
+/// instead of a deadline every round.
+pub(crate) struct Backoff<K: BackoffKind> {
     /// By key: consecutive failures, retry-not-before, last failure.
     failures: parking_lot::Mutex<HashMap<String, (u32, Instant, Instant)>>,
+    kind: std::marker::PhantomData<fn() -> K>,
 }
 
-impl Backoff {
+impl<K: BackoffKind> Default for Backoff<K> {
+    fn default() -> Self {
+        Self { failures: Default::default(), kind: std::marker::PhantomData }
+    }
+}
+
+impl<K: BackoffKind> Backoff<K> {
     const FREE_RETRIES: u32 = 2;
     const MAX_DELAY: Duration = Duration::from_secs(60);
     /// A key that hasn't failed for this long is forgotten: it is no longer
@@ -295,9 +318,9 @@ pub struct ScanState {
     settlement: settlement::SettlementState,
     upkeep: upkeep::UpkeepState,
     /// Tenants whose scans keep failing.
-    backoff: Backoff,
+    backoff: Backoff<TenantKey>,
     /// Orders whose status recompute keeps failing.
-    order_backoff: Backoff,
+    order_backoff: Backoff<OrderKey>,
 }
 
 impl ScanState {
@@ -315,8 +338,6 @@ impl ScanState {
 /// each tier has done so far.
 pub(crate) struct Round<'a> {
     pub inputs: &'a RoundInputs<'a>,
-    /// The network's name, shared by every database job of the round.
-    network_name: std::sync::Arc<str>,
     pub state: &'a ScanState,
     pub now: i64,
     /// The node's chain height. `None` if it couldn't be read: nothing that
@@ -335,26 +356,20 @@ pub(crate) struct Round<'a> {
 }
 
 impl<'a> Round<'a> {
-    pub(crate) fn network(&self) -> &'a str {
-        self.inputs.network
+    pub(crate) fn network(&self) -> &'static str {
+        crate::network::network_str(self.inputs.network)
     }
 
-    /// One store call on the database worker, with this round's network
-    /// name: `round.on_store(|s, network| s.reorg_job(network))`.
-    pub(crate) async fn on_store<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&Store, &str) -> Result<T, crate::store::StoreError> + Send + 'static,
-    ) -> Result<T, ScannerError> {
-        self.db(move |s, network| f(s, network).map_err(ScannerError::from)).await
-    }
-
-    /// Runs `f` on the database worker, with this round's network name.
-    pub(crate) async fn db<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&Store, &str) -> Result<T, ScannerError> + Send + 'static,
-    ) -> Result<T, ScannerError> {
-        let network = self.network_name.clone();
-        self.inputs.db.run(Class::Scanner, move |s| f(s, &network)).await
+    /// Runs `f` on the database worker, with this round's network name:
+    /// `round.db(|s, network| s.reorg_job(network))`. `f` may fail with a
+    /// store error or a scanner error.
+    pub(crate) async fn db<T, E>(&self, f: impl FnOnce(&Store, &str) -> Result<T, E> + Send + 'static) -> Result<T, ScannerError>
+    where
+        T: Send + 'static,
+        E: Into<ScannerError> + Send + 'static,
+    {
+        let network = self.network();
+        self.inputs.db.run(Class::Scanner, move |s| f(s, network).map_err(Into::into)).await
     }
 }
 
@@ -382,9 +397,9 @@ pub async fn run_round(state: &ScanState, inputs: &RoundInputs<'_>, budget: Dura
         Ok(tip) => (Some(tip), None),
         Err(error) => {
             shared::throttled!(
-                format!("round-height:{}", inputs.network),
+                format!("round-height:{:?}", inputs.network),
                 warn,
-                network = %inputs.network,
+                network = ?inputs.network,
                 error = %error,
                 "reading the chain height failed - only the mempool is scanned this round"
             );
@@ -396,7 +411,6 @@ pub async fn run_round(state: &ScanState, inputs: &RoundInputs<'_>, budget: Dura
     }
     let mut round = Round {
         inputs,
-        network_name: inputs.network.into(),
         state,
         now: crate::now_unix(),
         tip,
@@ -431,12 +445,12 @@ pub async fn run_round(state: &ScanState, inputs: &RoundInputs<'_>, budget: Dura
                     Progress::Blocked(reason) => {
                         open[tier] = false;
                         report.outcomes[tier] = TierOutcome::Blocked(reason);
-                        tracing::debug!(network = %inputs.network, tier = tier.name(), %reason, "tier waiting");
+                        tracing::debug!(network = ?inputs.network, %tier, %reason, "tier waiting");
                     }
                     Progress::Failed(error) => {
                         open[tier] = false;
                         report.outcomes[tier] = TierOutcome::Failed;
-                        tracing::warn!(network = %inputs.network, tier = tier.name(), error = %error, "work unit failed (retried next round)");
+                        tracing::warn!(network = ?inputs.network, %tier, error = %error, "work unit failed (retried next round)");
                         report.error.get_or_insert(error);
                     }
                 }

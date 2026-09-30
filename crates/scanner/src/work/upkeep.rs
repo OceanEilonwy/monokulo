@@ -80,7 +80,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: tokio::time::Instant) -> 
 async fn prune(round: &Round<'_>) -> Result<(), ScannerError> {
     let depth = round.inputs.reorg_check_depth;
     round
-        .db(move |s, network| {
+        .db(move |s, network| -> Result<_, ScannerError> {
             if let Some(high_water) = s.max_scanned_height(network)? {
                 s.prune_scanned_blocks_below(network, high_water.saturating_sub(depth.saturating_mul(4)))?;
             }
@@ -95,7 +95,7 @@ async fn checkpoint(round: &Round<'_>) -> Result<(), ScannerError> {
     if !round.state.upkeep.checkpoint_due() {
         return Ok(());
     }
-    let complete = round.on_store(|s, _| s.checkpoint_wal()).await?;
+    let complete = round.db(|s, _| s.checkpoint_wal()).await?;
     tracing::debug!(complete, "checkpointed the write-ahead log");
     Ok(())
 }
@@ -137,7 +137,7 @@ async fn recheck_voids(round: &mut Round<'_>, until: tokio::time::Instant) -> Re
     let now = round.now;
     let cutoff = now - DOUBLE_SPEND_RECHECK_WINDOW_SECS;
     let page = round
-        .db(move |s, network| {
+        .db(move |s, network| -> Result<_, crate::store::StoreError> {
             let started: i64 =
                 s.scheduler_position::<VoidRecheckPassStarted>(network)?.unwrap_or(i64::MIN);
             let after: i64 = s.scheduler_position::<VoidRecheck>(network)?.unwrap_or(0);
@@ -147,7 +147,7 @@ async fn recheck_voids(round: &mut Round<'_>, until: tokio::time::Instant) -> Re
                 }
                 s.set_scheduler_position::<VoidRecheckPassStarted>(network, &now)?;
             }
-            Ok(s.voided_payments_page(network, cutoff, after, VOID_PAGE)?)
+            s.voided_payments_page(network, cutoff, after, VOID_PAGE)
         })
         .await?;
     // Until the time runs out (at least one) or the node fails: a node that
@@ -171,9 +171,9 @@ async fn recheck_voids(round: &mut Round<'_>, until: tokio::time::Instant) -> Re
     // Back to 0 (the pass is over) once nothing follows what was checked.
     if let Some(last) = last {
         round
-            .db(move |s, network| {
+            .db(move |s, network| -> Result<_, crate::store::StoreError> {
                 let next = if s.voided_payments_page(network, cutoff, last, 1)?.is_empty() { 0 } else { last };
-                Ok(s.set_scheduler_position::<VoidRecheck>(network, &next)?)
+                s.set_scheduler_position::<VoidRecheck>(network, &next)
             })
             .await?;
     }

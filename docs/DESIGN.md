@@ -547,7 +547,7 @@ an assumption.
   data a light client cannot derive for itself. **Partially closed when a fallback
   node is configured** - see "Fallback nodes widen this trust boundary" below for
   both the prevention (`is_key_image_spent_corroborated`) and recovery
-  (`revalidate_recent_double_spend_voids`) halves of the fix. A self-hoster running a
+  (the scheduler's void recheck, `work::upkeep`) halves of the fix. A self-hoster running a
   single node still has no corroboration source and is fully exposed to this trust
   boundary as originally described.
 - **Block contents.** A node that omits a transaction from a block hides a payment;
@@ -619,15 +619,16 @@ explicitly, both pinned by tests rather than left as unverified worry:
     without weakening genuine detection when every node honestly agrees - the
     overwhelmingly common case even with a fallback configured
     (`a_fallback_daemon_still_voids_a_real_double_spend_every_node_agrees_on`).
-  - **Recovery**: `scanner::revalidate_recent_double_spend_voids`, a separate,
-    slow (every few minutes, see `main.rs`) background sweep bounded to voids from
-    the last `DOUBLE_SPEND_RECHECK_WINDOW_SECS` (48h) - the *only* other path,
-    alongside `check_for_reorg_and_reconcile`'s reverse check, that can ever reverse
+  - **Recovery**: the scheduler's upkeep tier (`work::upkeep::recheck_voids`), a
+    slow pass (one starts at most every five minutes, a page per round, from a
+    persisted position) bounded to voids from the last
+    `DOUBLE_SPEND_RECHECK_WINDOW_SECS` (48h) - the *only* other path, alongside
+    the chain tier's reorg reconciliation, that can ever reverse
     a void, and the only one that does not require a reorg to also be independently
     detected first. Reversing via this path clears the order's sticky
     `double_spend_detected_at` flag (once every voided payment on the order has
     been cleared, not as a side effect of clearing just one of several -
-    `revalidate_recent_double_spend_voids_keeps_the_flag_set_while_another_voided_payment_still_justifies_it`)
+    `the_void_recheck_keeps_the_flag_set_while_another_voided_payment_still_justifies_it`)
     and fires a distinct `order.double_spend_reversed` webhook, unlike the
     reorg-driven reversal path, which deliberately leaves both alone (a real
     conflicting transaction genuinely existed there for a time in that story, even

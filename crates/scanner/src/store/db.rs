@@ -233,6 +233,7 @@ mod tests {
     /// An inline handle whose store is already locked (by a caller that
     /// shouldn't be holding it) fails the job instead of deadlocking.
     #[tokio::test]
+    #[allow(clippy::await_holding_lock)] // holding it is the point
     async fn an_inline_job_on_a_held_store_fails_instead_of_deadlocking() {
         let shared = Store::open_in_memory().unwrap().into_shared();
         let db = Db::over_shared(shared.clone());

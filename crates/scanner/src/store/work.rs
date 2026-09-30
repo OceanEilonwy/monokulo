@@ -6,6 +6,41 @@ use rusqlite::{params, OptionalExtension};
 
 use super::{OrderPaymentRow, Result, Store, StoreError};
 
+/// An unsigned value (a height, count, index or limit) crossing into or out
+/// of SQLite, which stores only signed 64-bit integers. Both directions are
+/// checked: a value that doesn't fit, or a negative one read back, is an
+/// error rather than a silent wrap.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct Unsigned<T>(pub T);
+
+impl<T: Copy + TryInto<i64>> rusqlite::ToSql for Unsigned<T>
+where
+    <T as TryInto<i64>>::Error: std::error::Error + Send + Sync + 'static,
+{
+    fn to_sql(&self) -> rusqlite::Result<rusqlite::types::ToSqlOutput<'_>> {
+        let value: i64 = self.0.try_into().map_err(|e| rusqlite::Error::ToSqlConversionFailure(Box::new(e)))?;
+        Ok(value.into())
+    }
+}
+
+impl<T: TryFrom<i64>> rusqlite::types::FromSql for Unsigned<T> {
+    fn column_result(value: rusqlite::types::ValueRef<'_>) -> rusqlite::types::FromSqlResult<Self> {
+        let raw = value.as_i64()?;
+        T::try_from(raw).map(Unsigned).map_err(|_| rusqlite::types::FromSqlError::OutOfRange(raw))
+    }
+}
+
+/// A block height as SQLite stores it. Heights never come near `i64::MAX`;
+/// one that did is refused rather than wrapped negative.
+pub fn sql_height(height: u64) -> Result<i64> {
+    i64::try_from(height).map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))
+}
+
+/// Reads an unsigned column.
+fn unsigned<T: TryFrom<i64>>(row: &rusqlite::Row<'_>, index: usize) -> rusqlite::Result<T> {
+    Ok(row.get::<_, Unsigned<T>>(index)?.0)
+}
+
 /// How far a reorg job has got. Stored as `reorg_jobs.phase` plus its
 /// cursor columns; see migration 0019 for the collection order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -107,9 +142,9 @@ pub fn reorg_retry_delay(attempts: u32) -> i64 {
     }
 }
 
-fn phase_from_row(phase: &str, after_height: i64, after_id: i64) -> rusqlite::Result<ReorgPhase> {
+fn phase_from_row(phase: &str, after_height: u64, after_id: i64) -> rusqlite::Result<ReorgPhase> {
     Ok(match phase {
-        "collect_confirmed" => ReorgPhase::CollectConfirmed { after_height: after_height as u64, after_id },
+        "collect_confirmed" => ReorgPhase::CollectConfirmed { after_height, after_id },
         "collect_unconfirmed" => ReorgPhase::CollectUnconfirmed { after_id },
         "process" => ReorgPhase::Process,
         other => {
@@ -133,8 +168,8 @@ impl Store {
                 |row| {
                     Ok(ReorgJob {
                         network: row.get(0)?,
-                        fork_height: row.get::<_, i64>(1)? as u64,
-                        phase: phase_from_row(&row.get::<_, String>(2)?, row.get(4)?, row.get(5)?)?,
+                        fork_height: unsigned(row, 1)?,
+                        phase: phase_from_row(&row.get::<_, String>(2)?, unsigned(row, 4)?, row.get(5)?)?,
                         candidate_max_id: row.get(3)?,
                         created_at: row.get(6)?,
                     })
@@ -156,7 +191,7 @@ impl Store {
                         "INSERT INTO reorg_jobs (network, fork_height, phase, candidate_max_id,
                              collect_after_height, collect_after_id, created_at_utc, updated_at_utc)
                          VALUES (?1, ?2, 'collect_confirmed', ?3, ?2, 0, ?4, ?4)",
-                        params![network, fork_height as i64, max_id, now],
+                        params![network, Unsigned(fork_height), max_id, now],
                     )?;
                     Ok(OpenedReorg::Created)
                 }
@@ -165,7 +200,7 @@ impl Store {
                         "UPDATE reorg_jobs SET fork_height = ?2, phase = 'collect_confirmed', candidate_max_id = ?3,
                              collect_after_height = ?2, collect_after_id = 0, updated_at_utc = ?4
                          WHERE network = ?1",
-                        params![network, fork_height as i64, max_id.max(job.candidate_max_id), now],
+                        params![network, Unsigned(fork_height), max_id.max(job.candidate_max_id), now],
                     )?;
                     Ok(OpenedReorg::Deepened { from: job.fork_height })
                 }
@@ -182,7 +217,7 @@ impl Store {
             let job = s.reorg_job(network)?.ok_or(StoreError::NotFound)?;
             let (ids, next) = match job.phase {
                 ReorgPhase::CollectConfirmed { after_height, after_id } => {
-                    let rows: Vec<(i64, i64)> = s
+                    let rows: Vec<(i64, u64)> = s
                         .conn
                         .prepare(
                             "SELECT op.id, op.block_height FROM order_payments op
@@ -193,14 +228,14 @@ impl Store {
                              ORDER BY op.block_height, op.id LIMIT ?6",
                         )?
                         .query_map(
-                            params![network, job.fork_height as i64, after_height as i64, after_id,
-                                job.candidate_max_id, limit as i64],
-                            |row| Ok((row.get(0)?, row.get(1)?)),
+                            params![network, Unsigned(job.fork_height), Unsigned(after_height), after_id,
+                                job.candidate_max_id, Unsigned(limit)],
+                            |row| Ok((row.get(0)?, unsigned(row, 1)?)),
                         )?
                         .collect::<rusqlite::Result<_>>()?;
                     let next = match rows.last() {
                         Some(&(id, height)) if rows.len() == limit => {
-                            ReorgPhase::CollectConfirmed { after_height: height as u64, after_id: id }
+                            ReorgPhase::CollectConfirmed { after_height: height, after_id: id }
                         }
                         _ => ReorgPhase::CollectUnconfirmed { after_id: 0 },
                     };
@@ -215,7 +250,7 @@ impl Store {
                              WHERE op.block_height IS NULL AND op.id > ?2 AND op.id <= ?3 AND t.network = ?1
                              ORDER BY op.id LIMIT ?4",
                         )?
-                        .query_map(params![network, after_id, job.candidate_max_id, limit as i64], |row| row.get(0))?
+                        .query_map(params![network, after_id, job.candidate_max_id, Unsigned(limit)], |row| row.get(0))?
                         .collect::<rusqlite::Result<_>>()?;
                     let next = match ids.last() {
                         Some(&id) if ids.len() == limit => ReorgPhase::CollectUnconfirmed { after_id: id },
@@ -232,14 +267,14 @@ impl Store {
                 )?;
             }
             let (phase, after_height, after_id) = match next {
-                ReorgPhase::CollectConfirmed { after_height, after_id } => ("collect_confirmed", after_height as i64, after_id),
+                ReorgPhase::CollectConfirmed { after_height, after_id } => ("collect_confirmed", after_height, after_id),
                 ReorgPhase::CollectUnconfirmed { after_id } => ("collect_unconfirmed", 0, after_id),
                 ReorgPhase::Process => ("process", 0, 0),
             };
             s.conn.execute(
                 "UPDATE reorg_jobs SET phase = ?2, collect_after_height = ?3, collect_after_id = ?4, updated_at_utc = ?5
                  WHERE network = ?1",
-                params![network, phase, after_height, after_id, now],
+                params![network, phase, Unsigned(after_height), after_id, now],
             )?;
             Ok(next)
         })
@@ -254,10 +289,10 @@ impl Store {
              ORDER BY w.next_attempt_at_utc, w.payment_id LIMIT ?3",
         )?;
         let rows = stmt
-            .query_map(params![network, now, limit as i64], |row| {
+            .query_map(params![network, now, Unsigned(limit)], |row| {
                 Ok(ReorgCandidate {
                     payment: Self::row_to_payment(row)?,
-                    attempts: row.get::<_, i64>("reorg_attempts")?.max(0) as u32,
+                    attempts: row.get::<_, Unsigned<u32>>("reorg_attempts")?.0,
                 })
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
@@ -270,7 +305,7 @@ impl Store {
             .query_row(
                 "SELECT COUNT(*), MIN(next_attempt_at_utc) FROM reorg_work WHERE network = ?1",
                 [network],
-                |row| Ok((row.get::<_, i64>(0)?.max(0) as u64, row.get(1)?)),
+                |row| Ok((unsigned(row, 0)?, row.get(1)?)),
             )
             .map_err(Into::into)
     }
@@ -284,19 +319,19 @@ impl Store {
 
     /// A candidate whose lookup failed: retried later, after the others.
     pub fn defer_reorg_candidate(&self, network: &str, payment_id: i64, now: i64) -> Result<()> {
-        let attempts: Option<i64> = self
+        let attempts: Option<u32> = self
             .conn
             .query_row(
                 "SELECT attempts FROM reorg_work WHERE network = ?1 AND payment_id = ?2",
                 params![network, payment_id],
-                |row| row.get(0),
+                |row| unsigned(row, 0),
             )
             .optional()?;
         if let Some(attempts) = attempts {
-            let attempts = attempts.max(0) as u32 + 1;
+            let attempts = attempts.saturating_add(1);
             self.conn.execute(
                 "UPDATE reorg_work SET attempts = ?3, next_attempt_at_utc = ?4 WHERE network = ?1 AND payment_id = ?2",
-                params![network, payment_id, attempts as i64, now + reorg_retry_delay(attempts)],
+                params![network, payment_id, attempts, now + reorg_retry_delay(attempts)],
             )?;
         }
         Ok(())
@@ -328,11 +363,11 @@ impl Store {
             s.conn.execute(
                 "DELETE FROM partial_block_matches WHERE network = ?1 AND tenant_id IN
                  (SELECT tenant_id FROM partial_block_progress WHERE network = ?1 AND height >= ?2)",
-                params![network, fork_height as i64],
+                params![network, Unsigned(fork_height)],
             )?;
             s.conn.execute(
                 "DELETE FROM partial_block_progress WHERE network = ?1 AND height >= ?2",
-                params![network, fork_height as i64],
+                params![network, Unsigned(fork_height)],
             )?;
             s.conn.execute("DELETE FROM reorg_jobs WHERE network = ?1", [network])?;
             Ok(())
@@ -354,8 +389,8 @@ impl Store {
             "SELECT height, block_hash FROM scanned_blocks WHERE network = ?1 AND height BETWEEN ?2 AND ?3 ORDER BY height",
         )?;
         let rows = stmt
-            .query_map(params![network, from as i64, to as i64], |row| {
-                Ok((row.get::<_, i64>(0)? as u64, row.get::<_, String>(1)?))
+            .query_map(params![network, Unsigned(from), Unsigned(to)], |row| {
+                Ok((unsigned(row, 0)?, row.get::<_, String>(1)?))
             })?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -383,7 +418,7 @@ impl Store {
         ] {
             let mut stmt = self.conn.prepare_cached(sql)?;
             let rows = stmt
-                .query_map(params![network, due, limit as i64], |row| row.get::<_, String>(0))?
+                .query_map(params![network, due, Unsigned(limit)], |row| row.get::<_, String>(0))?
                 .collect::<rusqlite::Result<Vec<_>>>()?;
             for id in rows {
                 if ids.len() < limit && !ids.contains(&id) {
@@ -443,7 +478,7 @@ impl Store {
              ORDER BY op.id LIMIT ?4",
         )?;
         let rows = stmt
-            .query_map(params![network, cutoff, after, limit as i64], Self::row_to_payment)?
+            .query_map(params![network, cutoff, after, Unsigned(limit)], Self::row_to_payment)?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -477,9 +512,9 @@ impl Store {
                 params![network, tenant_id],
                 |row| {
                     Ok(BlockCheckpoint {
-                        height: row.get::<_, i64>(0)? as u64,
+                        height: unsigned(row, 0)?,
                         hash: row.get(1)?,
-                        next_tx: row.get::<_, i64>(2)?.max(0) as usize,
+                        next_tx: unsigned(row, 2)?,
                     })
                 },
             )
@@ -501,7 +536,7 @@ impl Store {
              VALUES (?1, ?2, ?3, ?4, '', ?5)
              ON CONFLICT (network, tenant_id) DO UPDATE SET
                  height = excluded.height, block_hash = excluded.block_hash, next_tx_index = excluded.next_tx_index",
-            params![network, tenant_id, checkpoint.height as i64, checkpoint.hash, checkpoint.next_tx as i64],
+            params![network, tenant_id, Unsigned(checkpoint.height), checkpoint.hash, Unsigned(checkpoint.next_tx)],
         )?;
         Ok(())
     }
@@ -521,7 +556,7 @@ impl Store {
                         order_id: row.get(0)?,
                         txid: row.get(1)?,
                         output_index: row.get(2)?,
-                        amount_piconero: row.get::<_, i64>(3)?.max(0) as u64,
+                        amount_piconero: unsigned(row, 3)?,
                         key_images_json: row.get(4)?,
                         seen_at: row.get(5)?,
                     })
@@ -542,13 +577,14 @@ impl Store {
         let mut stmt = self.conn.prepare_cached(
             "SELECT DISTINCT scanned_through_height FROM tenants
              WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height IS NOT NULL
-               AND scanned_through_height < ?2 AND scanned_through_height > ?3
+               AND scanned_through_height < ?2 AND scanned_through_height >= ?3
              ORDER BY scanned_through_height LIMIT ?4",
         )?;
         let rows = stmt
-            .query_map(params![network, below as i64, after.map_or(-1, |a| a as i64), limit as i64], |row| {
-                Ok(row.get::<_, i64>(0)? as u64)
-            })?
+            .query_map(
+                params![network, Unsigned(below), Unsigned(after.map_or(0, |a| a.saturating_add(1))), Unsigned(limit)],
+                |row| unsigned(row, 0),
+            )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -566,7 +602,7 @@ impl Store {
              ORDER BY id LIMIT ?4",
         )?;
         let rows = stmt
-            .query_map(params![network, cursor as i64, excluding, limit as i64], |row| row.get::<_, String>(0))?
+            .query_map(params![network, Unsigned(cursor), excluding, Unsigned(limit)], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -586,7 +622,7 @@ impl Store {
         let mut windows: std::collections::HashMap<String, Vec<u32>> = std::collections::HashMap::new();
         let rows = stmt.query_map(
             rusqlite::named_params! { ":ids": ids, ":since_minus_grace": since.saturating_sub(grace_period_seconds) },
-            |row| Ok((row.get::<_, String>(0)?, row.get::<_, i64>(1)? as u32)),
+            |row| Ok((row.get::<_, String>(0)?, unsigned(row, 1)?)),
         )?;
         for row in rows {
             let (tenant_id, minor) = row?;
@@ -611,8 +647,8 @@ impl Store {
             ),
             rusqlite::named_params! {
                 ":network": network,
-                ":from": from as i64,
-                ":to": to as i64,
+                ":from": Unsigned(from),
+                ":to": Unsigned(to),
                 ":since_minus_grace": since.saturating_sub(grace_period_seconds),
             },
         )?;
@@ -639,7 +675,7 @@ impl Store {
              RETURNING id",
         )?;
         let moved = stmt
-            .query_map(params![network, height as i64, ids], |row| row.get::<_, String>(0))?
+            .query_map(params![network, Unsigned(height), ids], |row| row.get::<_, String>(0))?
             .collect::<rusqlite::Result<_>>()?;
         Ok(moved)
     }
@@ -661,10 +697,10 @@ impl Store {
                 rusqlite::named_params! {
                     ":network": network,
                     ":after": after,
-                    ":limit": limit as i64,
+                    ":limit": Unsigned(limit),
                     ":since_minus_grace": now - grace_period_seconds,
                 },
-                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?.map(|h| h as u64))),
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<Unsigned<u64>>>(1)?.map(|h| h.0))),
             )?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
@@ -985,5 +1021,19 @@ mod tests {
     fn reopen(store: (Store, String, String, String), path: &str) -> Store {
         drop(store);
         Store::open_file(path).unwrap()
+    }
+
+    #[test]
+    fn unsigned_values_cross_into_sqlite_checked_both_ways() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        let read = |sql: &str| conn.query_row(sql, [], |row| row.get::<_, Unsigned<u64>>(0));
+        assert_eq!(read("SELECT 42").unwrap(), Unsigned(42));
+        // A negative value read back is an error, not a wrapped huge height.
+        assert!(matches!(read("SELECT -1"), Err(rusqlite::Error::IntegralValueOutOfRange(0, -1))));
+        // A value too big for SQLite's signed integers is refused on the way in.
+        let wrote = conn.query_row("SELECT ?1", [Unsigned(u64::MAX)], |row| row.get::<_, i64>(0));
+        assert!(matches!(wrote, Err(rusqlite::Error::ToSqlConversionFailure(_))));
+        let wrote = conn.query_row("SELECT ?1", [Unsigned(7usize)], |row| row.get::<_, i64>(0));
+        assert_eq!(wrote.unwrap(), 7);
     }
 }

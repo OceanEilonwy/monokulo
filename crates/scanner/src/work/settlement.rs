@@ -69,7 +69,7 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
     let network = round.network().to_string();
     let db = round.inputs.db;
     let page = round
-        .db(|s, network| {
+        .db(|s, network| -> Result<_, ScannerError> {
             let after: i64 = s.scheduler_position::<VanishedPayments>(network)?.unwrap_or(0);
             let mut page = s.unconfirmed_payments_page(network, after, VANISHED_PAGE)?;
             if page.is_empty() && after != 0 {
@@ -116,7 +116,7 @@ async fn vanished(round: &mut Round<'_>, tip: u64, until: Instant) -> Result<(),
     }
     // The position moves past what was checked, once per page.
     if let Some(last) = last {
-        round.on_store(move |s, network| s.set_scheduler_position::<VanishedPayments>(network, &last)).await?;
+        round.db(move |s, network| s.set_scheduler_position::<VanishedPayments>(network, &last)).await?;
     }
     match failure {
         Some(error) => Err(error),
@@ -144,10 +144,13 @@ async fn recompute_page(round: &mut Round<'_>, tip: u64) -> Result<usize, Scanne
     for chunk in ids.chunks(RECOMPUTES_PER_JOB) {
         let chunk = chunk.to_vec();
         let outcomes = round
-            .db(move |s, _| Ok(chunk.into_iter().map(|id| {
-                let outcome = recompute_and_notify(s, &id, tip, now);
-                (id, outcome)
-            }).collect::<Vec<_>>()))
+            .db(move |s, _| {
+                let outcomes = chunk.into_iter().map(|id| {
+                    let outcome = recompute_and_notify(s, &id, tip, now);
+                    (id, outcome)
+                });
+                Ok::<_, ScannerError>(outcomes.collect::<Vec<_>>())
+            })
             .await?;
         for (id, outcome) in outcomes {
             match outcome {

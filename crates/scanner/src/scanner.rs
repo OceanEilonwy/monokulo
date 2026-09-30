@@ -265,6 +265,9 @@ pub struct ReconcileReport {
 /// "reconcile now". The job is durable: a failure partway (an unreachable
 /// node) returns the error and leaves the job, and the losing chain's
 /// hashes, for the next call to finish.
+///
+/// Not called by the engine: its scheduler's chain tier does this work a
+/// bounded unit at a time. For tests and tools.
 pub async fn check_for_reorg_and_reconcile(
     store: &crate::store::SharedStore,
     daemon: &dyn MoneroDaemonClient,
@@ -275,7 +278,8 @@ pub async fn check_for_reorg_and_reconcile(
     use crate::work::chain::{Chain, JobStep};
     let tip = daemon.get_height().await?;
     let db = crate::store::Db::over_shared(store.clone());
-    let chain = Chain::new(&db, daemon, network, reorg_check_depth, now);
+    let parsed = crate::network::parse_network(network).map_err(|e| ScannerError::Internal(e.to_string()))?;
+    let chain = Chain::new(&db, daemon, parsed, reorg_check_depth, now);
     if let Some(fork) = chain.detect(tip).await? {
         chain.open(fork).await?;
     }
@@ -601,67 +605,13 @@ fn unvoid_as_false_positive(
     })
 }
 
-/// How far back [`revalidate_recent_double_spend_voids`] looks for voided payments
-/// to recheck. Bounded deliberately: a void that turns out to have been a false
+/// How far back the upkeep tier's void recheck (`work::upkeep`, `docs/DESIGN.md`
+/// §7.7) looks for voided payments to recheck. Bounded deliberately: a void that turns out to have been a false
 /// accusation is exactly as worth correcting a day later as a minute later - unlike
 /// zero-conf detection, there is no latency requirement to trade away here - and an
 /// old, long-settled void is not worth the cost of rechecking forever: if it were
 /// wrong, the merchant and customer have long since moved on regardless.
 pub const DOUBLE_SPEND_RECHECK_WINDOW_SECS: i64 = 48 * 3600;
-
-/// Re-examines every payment on `network` voided within the last
-/// [`DOUBLE_SPEND_RECHECK_WINDOW_SECS`] and reverses the void
-/// (`unvoid_as_false_positive`) if a fresh call to
-/// [`MoneroDaemonClient::is_key_image_spent_corroborated`] no longer supports the
-/// original accusation.
-///
-/// This is the *only* other path that can ever reverse a void, alongside
-/// `check_for_reorg_and_reconcile`'s own reverse check - and that one only runs when
-/// a reorg (a block-hash mismatch) is *also* independently detected, which a lying
-/// `is_key_image_spent` answer alone would never trigger, since it has nothing to do
-/// with block hashes. Without this sweep, a false accusation from an uncorroborated
-/// single answer would never be revisited by anything ever again (`docs/DESIGN.md`
-/// §7.7).
-///
-/// Deliberately its own, much slower background loop (see `main.rs`), never called
-/// from `run_scan_tick`'s tight per-second loop: double-spend voids are healthily
-/// rare, so the cost of this sweep is proportional to how many voids happened
-/// recently, not to how often it runs - checking every few minutes instead of every
-/// second loses nothing a merchant would notice (see the constant above) and keeps
-/// the extra per-payment RPCs entirely off the hot scanning path.
-///
-/// A failure rechecking one payment's key images is logged and skipped, leaving that
-/// payment voided for the next sweep to retry - the same per-item resilience shape
-/// as every other loop in this file - but a failure to read the chain height at all
-/// (needed for the status recompute a reversal implies) aborts the sweep for this
-/// network this round, since nothing here can proceed without one.
-pub async fn revalidate_recent_double_spend_voids(
-    store: &crate::store::SharedStore,
-    daemon: &dyn MoneroDaemonClient,
-    network: &str,
-    now: i64,
-) -> Result<Vec<String>> {
-    let current_height = daemon.get_height().await?;
-    let db = crate::store::Db::over_shared(store.clone());
-    let cutoff = now - DOUBLE_SPEND_RECHECK_WINDOW_SECS;
-    let mut recovered_orders = Vec::new();
-    let mut after = 0;
-    loop {
-        let page = store.lock().voided_payments_page(network, cutoff, after, 64)?;
-        let Some(last) = page.last().map(|p| p.id) else { break };
-        after = last;
-        for payment in page {
-            match recheck_voided_payment(&db, daemon, network, &payment, current_height, now).await {
-                Ok(true) => recovered_orders.push(payment.order_id.clone()),
-                Ok(false) => {}
-                // Left voided; the next sweep retries it.
-                Err(error) => tracing::warn!(order.id = %payment.order_id, network = %network, error = %error,
-                    "double-spend revalidation: rechecking a voided payment failed - leaving it voided, will retry next sweep"),
-            }
-        }
-    }
-    Ok(recovered_orders)
-}
 
 /// Rechecks one voided payment and restores it if fresh, corroborated
 /// evidence no longer supports the double-spend accusation. Returns whether
@@ -757,6 +707,12 @@ pub(crate) fn update_avg_bytes_per_block(avg_bytes_per_block: f64, chunk_bytes: 
 /// history.
 ///
 /// Returns the first unit failure of the round, after every other tier ran.
+///
+/// Not the engine's own loop: `loops::run_scanner_loop` keeps a
+/// `work::ScanState` across rounds, runs them back to back while work is
+/// left, and shares the state with the fast mempool path. This runs one
+/// round from empty in-memory state, over an inline store, for tests, the
+/// e2e harness and tools that want "scan once now".
 pub async fn run_scan_tick(
     store: &crate::store::SharedStore,
     key_custody: &dyn KeyCustody,
@@ -773,7 +729,7 @@ pub async fn run_scan_tick(
 }
 
 /// `run_scan_tick` with the scheduler's in-memory state kept by the caller
-/// between rounds.
+/// between rounds. For tests and tools, like `run_scan_tick`.
 #[allow(clippy::too_many_arguments)] // one round's genuinely independent inputs
 pub async fn run_scan_tick_with(
     state: &crate::work::ScanState,
@@ -787,6 +743,7 @@ pub async fn run_scan_tick_with(
     scan_chunk_memory_budget_mb: u32,
 ) -> Result<()> {
     let db = crate::store::Db::over_shared(store.clone());
+    let network = crate::network::parse_network(network).map_err(|e| ScannerError::Internal(e.to_string()))?;
     let inputs = crate::work::RoundInputs {
         db: &db,
         custody: key_custody,
@@ -3525,12 +3482,22 @@ pub(crate) mod tests {
         assert!(events.contains(&"order.pending".to_string()), "and the status retraction is its own event: {events:?}");
     }
 
+    /// The chain `setup_with_one_voided_double_spend` builds, on a fresh node: a
+    /// recheck asks a node that agrees about the blocks (so no reorg is
+    /// detected) but whose key-image answers each test chooses.
+    fn chain_replica() -> FakeDaemonClient {
+        let daemon = FakeDaemonClient::new();
+        daemon.push_block("h1", vec![]);
+        daemon.push_block("h2", vec![conflicting_tx(11)]);
+        daemon
+    }
+
     /// Builds a store with one order whose single zero-conf payment has already been
     /// voided as a proven double-spend, via the exact same real path
     /// `a_zero_conf_order_double_spent_out_of_the_mempool_is_voided_with_no_reorg_involved`
-    /// proves is reachable. For `revalidate_recent_double_spend_voids`'s own tests
-    /// below, which start from an already-voided payment and exercise only the
-    /// *recheck*, not how it got voided in the first place.
+    /// proves is reachable. For the void recheck's own tests below, which start
+    /// from an already-voided payment and exercise only the *recheck*, not how
+    /// it got voided in the first place.
     async fn setup_with_one_voided_double_spend() -> (crate::store::SharedStore, String, String) {
         let (store, key_custody, handle, tenant_id, order_id) = setup_with_confirmations_override(Some(0)).await;
         store.create_webhook(&tenant_id, "https://merchant.example/hook", "{}", "whsec_x", 1000).unwrap();
@@ -3556,18 +3523,33 @@ pub(crate) mod tests {
         (store, tenant_id, order_id)
     }
 
+    /// One scheduler round with a void recheck pass due now (a pass starts at
+    /// most every few minutes; the setup's own rounds started one). The
+    /// recheck is the upkeep tier's; nothing else in the round touches a
+    /// void.
+    async fn round_with_void_recheck_due(
+        store: &crate::store::SharedStore, daemon: &dyn MoneroDaemonClient,
+    ) -> Result<()> {
+        {
+            let s = store.lock();
+            s.set_scheduler_position::<crate::store::position::VoidRecheckPassStarted>("mainnet", &i64::MIN).unwrap();
+            s.set_scheduler_position::<crate::store::position::VoidRecheck>("mainnet", &0).unwrap();
+        }
+        run_scan_tick(store, &PlainKeyCustody::default(), daemon, "mainnet", &[], 20, 0).await
+    }
+
+    fn voided(store: &crate::store::SharedStore, order_id: &str) -> Vec<bool> {
+        store.lock().get_all_payments(order_id).unwrap().iter().map(|p| p.voided_at.is_some()).collect()
+    }
+
     #[tokio::test]
-    async fn revalidate_recent_double_spend_voids_reverses_a_void_no_longer_supported_by_fresh_evidence() {
+    async fn the_void_recheck_reverses_a_void_no_longer_supported_by_fresh_evidence() {
         let (store, tenant_id, order_id) = setup_with_one_voided_double_spend().await;
 
-        // A fresh daemon for the recheck - every key image defaults to `Unspent`
-        // unless explicitly told otherwise, so simply not calling
-        // `set_key_image_status` models the original accusation no longer holding up.
-        let recheck_daemon = FakeDaemonClient::new();
-
-        let recovered =
-            revalidate_recent_double_spend_voids(&store, &recheck_daemon, "mainnet", crate::now_unix()).await.unwrap();
-        assert_eq!(recovered, vec![order_id.clone()]);
+        // Every key image defaults to `Unspent` unless explicitly told otherwise, so
+        // simply not calling `set_key_image_status` models the original accusation
+        // no longer holding up.
+        round_with_void_recheck_due(&store, &chain_replica()).await.unwrap();
 
         let s = store.lock();
         let payment = &s.get_all_payments(&order_id).unwrap()[0];
@@ -3590,10 +3572,8 @@ pub(crate) mod tests {
         for raw in ["not json", "[]"] {
             let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
             store.lock().overwrite_payment_key_images_for_test(&order_id, raw);
-            let daemon = FakeDaemonClient::new();
-            let recovered = revalidate_recent_double_spend_voids(&store, &daemon, "mainnet", crate::now_unix()).await.unwrap();
-            assert!(recovered.is_empty());
-            assert!(store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
+            round_with_void_recheck_due(&store, &chain_replica()).await.unwrap();
+            assert_eq!(voided(&store, &order_id), vec![true]);
         }
     }
 
@@ -3602,8 +3582,8 @@ pub(crate) mod tests {
         let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
         let payment = store.lock().get_all_payments(&order_id).unwrap()[0].clone();
         let images: Vec<String> = serde_json::from_str(&payment.key_images_json).unwrap();
-        let spent = FakeDaemonClient::new();
-        let unspent = FakeDaemonClient::new();
+        let spent = chain_replica();
+        let unspent = chain_replica();
         for image in &images {
             spent.set_key_image_status(image, KeyImageStatus::SpentInBlockchain);
             unspent.set_key_image_status(image, KeyImageStatus::Unspent);
@@ -3612,36 +3592,33 @@ pub(crate) mod tests {
             FallbackNode { label: "spent".to_string(), client: std::sync::Arc::new(spent) },
             FallbackNode { label: "unspent".to_string(), client: std::sync::Arc::new(unspent) },
         ]);
-        let recovered = revalidate_recent_double_spend_voids(&store, &daemon, "mainnet", crate::now_unix()).await.unwrap();
-        assert!(recovered.is_empty());
-        assert!(store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
+        round_with_void_recheck_due(&store, &daemon).await.unwrap();
+        assert_eq!(voided(&store, &order_id), vec![true]);
     }
 
     #[tokio::test]
-    async fn revalidate_recent_double_spend_voids_leaves_a_still_supported_void_alone() {
+    async fn the_void_recheck_leaves_a_still_supported_void_alone() {
         let (store, tenant_id, order_id) = setup_with_one_voided_double_spend().await;
         let payment = store.lock().get_all_payments(&order_id).unwrap()[0].clone();
         let key_images: Vec<String> = serde_json::from_str(&payment.key_images_json).unwrap();
 
-        let recheck_daemon = FakeDaemonClient::new();
+        let recheck_daemon = chain_replica();
         for ki in &key_images {
             recheck_daemon.set_key_image_status(ki, KeyImageStatus::SpentInBlockchain);
         }
 
-        let recovered =
-            revalidate_recent_double_spend_voids(&store, &recheck_daemon, "mainnet", crate::now_unix()).await.unwrap();
-        assert!(recovered.is_empty(), "a still-supported void must not be reversed");
-        assert!(store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
+        round_with_void_recheck_due(&store, &recheck_daemon).await.unwrap();
+        assert_eq!(voided(&store, &order_id), vec![true], "a still-supported void must not be reversed");
         assert!(store.lock().get_order(&tenant_id, &order_id).unwrap().unwrap().double_spend_detected_at.is_some());
     }
 
     #[tokio::test]
-    async fn revalidate_recent_double_spend_voids_ignores_a_void_outside_the_recheck_window() {
+    async fn the_void_recheck_ignores_a_void_outside_the_recheck_window() {
         let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
         let payment = store.lock().get_all_payments(&order_id).unwrap()[0].clone();
 
         // Backdate the void to well outside the recheck window - fresh evidence would
-        // clear it if only the sweep looked, but it's aged out.
+        // clear it if only the recheck looked, but it's aged out.
         let old_timestamp = crate::now_unix() - DOUBLE_SPEND_RECHECK_WINDOW_SECS - 3600;
         {
             let s = store.lock();
@@ -3649,15 +3626,12 @@ pub(crate) mod tests {
             assert!(s.void_payment(&order_id, &payment.txid, payment.output_index, old_timestamp).unwrap());
         }
 
-        let recheck_daemon = FakeDaemonClient::new(); // would say Unspent if asked
-        let recovered =
-            revalidate_recent_double_spend_voids(&store, &recheck_daemon, "mainnet", crate::now_unix()).await.unwrap();
-        assert!(recovered.is_empty(), "a void outside the recheck window must not be touched");
-        assert!(store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some());
+        round_with_void_recheck_due(&store, &chain_replica()).await.unwrap(); // would say Unspent if asked
+        assert_eq!(voided(&store, &order_id), vec![true], "a void outside the recheck window must not be touched");
     }
 
     #[tokio::test]
-    async fn revalidate_recent_double_spend_voids_keeps_the_flag_set_while_another_voided_payment_still_justifies_it() {
+    async fn the_void_recheck_keeps_the_flag_set_while_another_voided_payment_still_justifies_it() {
         // Two independent payments on one order, both voided - only one is a false
         // accusation. The order-level sticky flag must survive the correction of the
         // first, since the second remains a genuine, still-supported incident.
@@ -3681,8 +3655,7 @@ pub(crate) mod tests {
         }
         // `first`'s key images default to Unspent - the accusation being corrected.
 
-        let recovered = revalidate_recent_double_spend_voids(&store, &recheck_daemon, "mainnet", now).await.unwrap();
-        assert_eq!(recovered, vec![order_id.clone()]);
+        round_with_void_recheck_due(&store, &recheck_daemon).await.unwrap();
 
         let s = store.lock();
         let payments = s.get_all_payments(&order_id).unwrap();
@@ -3697,28 +3670,21 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn revalidate_recent_double_spend_voids_aborts_the_sweep_cleanly_if_the_chain_height_is_unreachable() {
-        let (store, _tenant_id, _order_id) = setup_with_one_voided_double_spend().await;
-        let payment_before = store.lock().get_all_payments(&_order_id).unwrap();
+    async fn the_void_recheck_does_nothing_while_the_chain_height_is_unreachable() {
+        let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
 
-        let recheck_daemon = FakeDaemonClient::new();
+        let recheck_daemon = chain_replica();
         recheck_daemon.set_online(false); // every call, including get_height, now fails
 
-        let result = revalidate_recent_double_spend_voids(&store, &recheck_daemon, "mainnet", crate::now_unix()).await;
-        assert!(result.is_err(), "an unreachable node must fail the sweep, not silently do nothing");
-        let payment_after = store.lock().get_all_payments(&_order_id).unwrap();
-        assert_eq!(
-            payment_after.iter().map(|p| p.voided_at).collect::<Vec<_>>(),
-            payment_before.iter().map(|p| p.voided_at).collect::<Vec<_>>(),
-            "a failed sweep must not touch anything"
-        );
+        // A node that is down is waited out, not reported as a round failure.
+        let _ = round_with_void_recheck_due(&store, &recheck_daemon).await;
+        assert_eq!(voided(&store, &order_id), vec![true], "a recheck that can't run must not touch anything");
     }
 
     /// Wraps a `FakeDaemonClient`, failing exactly the call index in `fail_on_call`
     /// (0-based, counted across `is_key_image_spent` calls only) and delegating to
-    /// `inner` for every other call - for proving a sweep that hits one payment's
-    /// recheck failure still processes the rest of the batch, rather than aborting
-    /// on the first error.
+    /// `inner` for every other call - for proving a recheck that fails leaves its
+    /// payment voided and is retried on the next pass.
     struct DaemonFailingOneKeyImageCall {
         inner: FakeDaemonClient,
         fail_on_call: u64,
@@ -3764,7 +3730,7 @@ pub(crate) mod tests {
     }
 
     #[tokio::test]
-    async fn revalidate_recent_double_spend_voids_skips_a_failed_recheck_but_still_processes_the_rest_of_the_batch() {
+    async fn a_failed_recheck_leaves_its_payment_voided_and_the_next_pass_retries_it() {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let first = fixture_tx();
         let second = independent_payment_tx(5);
@@ -3778,17 +3744,16 @@ pub(crate) mod tests {
 
         let store = store.into_shared();
         // Both payments' key images default to Unspent (would clear both if asked),
-        // but the very first recheck call fails - it must not stop the second.
+        // but the very first recheck call fails: a node that fails for one payment
+        // would for the next, so the pass stops there, leaving both voided and
+        // nothing half-done.
         let recheck_daemon = DaemonFailingOneKeyImageCall::new(FakeDaemonClient::new(), 0);
+        round_with_void_recheck_due(&store, &recheck_daemon).await.unwrap();
+        assert_eq!(voided(&store, &order_id), vec![true, true], "the failed recheck restored nothing");
 
-        let recovered = revalidate_recent_double_spend_voids(&store, &recheck_daemon, "mainnet", now).await.unwrap();
-        assert_eq!(recovered.len(), 1, "exactly one of the two payments' rechecks succeeded");
-
-        let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
-        let (voided, kept): (Vec<_>, Vec<_>) = payments.iter().partition(|p| p.voided_at.is_some());
-        assert_eq!(voided.len(), 1, "the payment whose recheck failed must be left voided, not lost or corrupted");
-        assert_eq!(kept.len(), 1, "the payment whose recheck succeeded must be reversed");
+        // The next pass retries from the start and reverses both.
+        round_with_void_recheck_due(&store, &recheck_daemon).await.unwrap();
+        assert_eq!(voided(&store, &order_id), vec![false, false]);
     }
 
     #[tokio::test]

@@ -67,31 +67,25 @@ pub(crate) struct Reconciled {
 pub(crate) struct Chain<'a> {
     db: &'a Db,
     daemon: &'a dyn MoneroDaemonClient,
-    network: std::sync::Arc<str>,
+    network: &'static str,
     reorg_check_depth: u64,
     now: i64,
 }
 
 impl<'a> Chain<'a> {
-    pub fn new(db: &'a Db, daemon: &'a dyn MoneroDaemonClient, network: &str, reorg_check_depth: u64, now: i64) -> Self {
-        Self { db, daemon, network: network.into(), reorg_check_depth, now }
+    pub fn new(db: &'a Db, daemon: &'a dyn MoneroDaemonClient, network: monero::Network, reorg_check_depth: u64, now: i64) -> Self {
+        Self { db, daemon, network: crate::network::network_str(network), reorg_check_depth, now }
     }
 
-    /// One store call on the database worker, with this network's name.
-    async fn on_store<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&Store, &str) -> Result<T, crate::store::StoreError> + Send + 'static,
-    ) -> Result<T, ScannerError> {
-        self.db(move |s, network| f(s, network).map_err(ScannerError::from)).await
-    }
-
-    /// Runs `f` on the database worker, with this network's name.
-    async fn db<T: Send + 'static>(
-        &self,
-        f: impl FnOnce(&Store, &str) -> Result<T, ScannerError> + Send + 'static,
-    ) -> Result<T, ScannerError> {
-        let network = self.network.clone();
-        self.db.run(Class::Scanner, move |s| f(s, &network)).await
+    /// Runs `f` on the database worker, with this network's name. `f` may
+    /// fail with a store error or a scanner error.
+    async fn db<T, E>(&self, f: impl FnOnce(&Store, &str) -> Result<T, E> + Send + 'static) -> Result<T, ScannerError>
+    where
+        T: Send + 'static,
+        E: Into<ScannerError> + Send + 'static,
+    {
+        let network = self.network;
+        self.db.run(Class::Scanner, move |s| f(s, network).map_err(Into::into)).await
     }
 
     /// The lowest height where the stored chain and the node's differ, if
@@ -104,10 +98,10 @@ impl<'a> Chain<'a> {
     pub async fn detect(&self, tip: u64) -> Result<Option<u64>, ScannerError> {
         let depth = self.reorg_check_depth;
         let rows = self
-            .db(move |s, network| {
+            .db(move |s, network| -> Result<_, crate::store::StoreError> {
                 let Some(high_water) = s.max_scanned_height(network)? else { return Ok(Vec::new()) };
                 let check = high_water.min(tip);
-                Ok(s.scanned_blocks_between(network, check.saturating_sub(depth), check)?)
+                s.scanned_blocks_between(network, check.saturating_sub(depth), check)
             })
             .await?;
         let (Some(first), Some(last)) = (rows.first(), rows.last()) else { return Ok(None) };
@@ -140,7 +134,7 @@ impl<'a> Chain<'a> {
     /// reorg is rare and worth an operator knowing about.
     pub async fn open(&self, fork: u64) -> Result<(), ScannerError> {
         let now = self.now;
-        match self.on_store(move |s, network| s.open_reorg_job(network, fork, now)).await? {
+        match self.db(move |s, network| s.open_reorg_job(network, fork, now)).await? {
             OpenedReorg::Created => {
                 tracing::warn!(network = %self.network, fork, "chain reorganisation detected - reconciling payments from this height")
             }
@@ -163,7 +157,7 @@ impl<'a> Chain<'a> {
         &self, tip: u64, skip: &mut HashSet<i64>, until: Instant,
     ) -> Result<(usize, Reconciled, Option<ScannerError>), ScannerError> {
         let (now, limit) = (self.now, PROCESS_PAGE + skip.len());
-        let due = self.on_store(move |s, network| s.due_reorg_candidates(network, now, limit)).await?;
+        let due = self.db(move |s, network| s.due_reorg_candidates(network, now, limit)).await?;
         let mut done = Reconciled::default();
         let mut failure = None;
         let mut processed = 0;
@@ -183,12 +177,12 @@ impl<'a> Chain<'a> {
                         "reorg: giving up re-examining a payment the node keeps failing to answer about - leaving it as recorded"
                     );
                     let id = candidate.payment.id;
-                    self.on_store(move |s, network| s.complete_reorg_candidate(network, id)).await?;
+                    self.db(move |s, network| s.complete_reorg_candidate(network, id)).await?;
                 }
                 Err(error) => {
                     tracing::warn!(network = %self.network, payment.id = candidate.payment.id, error = %error, "reorg: re-examining a payment failed (retried)");
                     let (id, now) = (candidate.payment.id, self.now);
-                    self.on_store(move |s, network| s.defer_reorg_candidate(network, id, now)).await?;
+                    self.db(move |s, network| s.defer_reorg_candidate(network, id, now)).await?;
                     let node_failed = matches!(error, ScannerError::Daemon(_));
                     failure.get_or_insert(error);
                     if node_failed {
@@ -208,7 +202,7 @@ impl<'a> Chain<'a> {
         // it was collected.
         let id = candidate.id;
         let current = self
-            .db(move |s, network| {
+            .db(move |s, network| -> Result<_, ScannerError> {
                 let payment = s.payment_by_id(id)?;
                 if payment.is_none() {
                     s.complete_reorg_candidate(network, id)?;
@@ -231,14 +225,14 @@ impl<'a> Chain<'a> {
                     let changed = match decision {
                         Decision::Keep => false,
                         Decision::Move(height) => {
-                            let height = height.map(|h| h as i64);
+                            let height = height.map(crate::store::sql_height).transpose()?;
                             s.update_payment_block_height(&order_id, &txid, output, height)?;
                             height != payment.block_height
                         }
                         Decision::Restore(height) => {
                             let restored = s.unvoid_payment(&order_id, &txid, output)?;
                             if restored {
-                                s.update_payment_block_height(&order_id, &txid, output, Some(height as i64))?;
+                                s.update_payment_block_height(&order_id, &txid, output, Some(crate::store::sql_height(height)?))?;
                             }
                             restored
                         }
@@ -286,7 +280,7 @@ impl<'a> Chain<'a> {
             // there is nothing to anchor to.
             None => None,
         };
-        self.on_store(move |s, network| s.finish_reorg(network, fork, ancestor.as_ref().map(|(h, hash)| (*h, hash.as_str()))))
+        self.db(move |s, network| s.finish_reorg(network, fork, ancestor.as_ref().map(|(h, hash)| (*h, hash.as_str()))))
             .await?;
         tracing::info!(network = %self.network, fork, "reorganisation reconciled - replacement blocks will be scanned");
         Ok(())
@@ -295,11 +289,11 @@ impl<'a> Chain<'a> {
     /// One unit of the open job, if any: collect a page, re-examine a page,
     /// or rewind. `Ok(None)` when there is no job.
     pub async fn advance_job(&self, tip: u64, skip: &mut HashSet<i64>, until: Instant) -> Result<Option<JobStep>, ScannerError> {
-        let Some(job) = self.on_store(|s, network| s.reorg_job(network)).await? else { return Ok(None) };
+        let Some(job) = self.db(|s, network| s.reorg_job(network)).await? else { return Ok(None) };
         match job.phase {
             ReorgPhase::CollectConfirmed { .. } | ReorgPhase::CollectUnconfirmed { .. } => {
                 let now = self.now;
-                self.on_store(move |s, network| s.collect_reorg_candidates(network, COLLECT_PAGE, now)).await?;
+                self.db(move |s, network| s.collect_reorg_candidates(network, COLLECT_PAGE, now)).await?;
                 Ok(Some(JobStep::Collected))
             }
             ReorgPhase::Process => {
@@ -307,7 +301,7 @@ impl<'a> Chain<'a> {
                 if processed > 0 {
                     return Ok(Some(JobStep::Processed { reconciled, failure }));
                 }
-                let (remaining, _) = self.on_store(|s, network| s.reorg_work_remaining(network)).await?;
+                let (remaining, _) = self.db(|s, network| s.reorg_work_remaining(network)).await?;
                 if remaining > 0 {
                     return Ok(Some(JobStep::Waiting));
                 }
@@ -353,11 +347,19 @@ pub(crate) fn decide(voided: bool, location: TxLocation, double_spend_proven: bo
     }
 }
 
+/// What one unit of the reorg job did. Each variant is a different next
+/// move for the caller: after `Collected` there is nothing to apply (the
+/// candidates are only queued); `Processed` carries changes to act on (and
+/// wake webhooks for); `Waiting` means stop for now; `Rewound` means the
+/// job is over and blocks must wait for a fresh chain read.
 pub(crate) enum JobStep {
+    /// A page of candidates was queued.
     Collected,
+    /// A page of candidates was re-examined; a failed one is deferred.
     Processed { reconciled: Reconciled, failure: Option<ScannerError> },
     /// Candidates remain, but each is waiting out a retry.
     Waiting,
+    /// Every candidate was handled and the chain was rewound.
     Rewound,
 }
 
