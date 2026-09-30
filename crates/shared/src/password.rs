@@ -10,9 +10,34 @@
 //! recommended API) is that hash. Do not reuse this module for tokens, and
 //! do not reuse `shared::auth` for passwords.
 
+use std::sync::{Arc, LazyLock};
+
 use argon2::password_hash::rand_core::OsRng;
 use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, SaltString};
 use argon2::Argon2;
+
+/// Password jobs allowed to run at once: one per CPU core. Each Argon2id
+/// hash takes tens of milliseconds of CPU and about 19 MB of memory, so a
+/// burst of sign-ins waits its turn here rather than spreading over the
+/// blocking pool's hundreds of threads at once.
+static SLOTS: LazyLock<Arc<tokio::sync::Semaphore>> = LazyLock::new(|| {
+    let cores = std::thread::available_parallelism().map_or(2, |n| n.get());
+    Arc::new(tokio::sync::Semaphore::new(cores))
+});
+
+/// Runs `f` (password hashing or verifying) on Tokio's blocking pool, at
+/// most one job per CPU core at a time, so it never holds up an async
+/// worker thread. `None` if the job panicked or the runtime is shutting
+/// down.
+pub async fn run<T: Send + 'static>(f: impl FnOnce() -> T + Send + 'static) -> Option<T> {
+    let slot = SLOTS.clone().acquire_owned().await.ok()?;
+    tokio::task::spawn_blocking(move || {
+        let _slot = slot;
+        f()
+    })
+    .await
+    .ok()
+}
 
 /// Hashes `password` with Argon2id, using the crate's current
 /// recommended default parameters and a freshly random salt.
@@ -51,6 +76,59 @@ pub fn verify_password(password: &str, hashed: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Hashing through `run` leaves the async thread free: on a
+    /// single-threaded runtime, another task keeps running meanwhile.
+    #[tokio::test(flavor = "current_thread")]
+    async fn run_hashes_without_holding_up_the_async_thread() {
+        let ticks = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let ticker = {
+            let ticks = ticks.clone();
+            tokio::spawn(async move {
+                loop {
+                    ticks.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    tokio::task::yield_now().await;
+                }
+            })
+        };
+        let hashed = run(|| hash_password("correct horse battery staple"))
+            .await
+            .unwrap()
+            .unwrap();
+        ticker.abort();
+        assert!(ticks.load(std::sync::atomic::Ordering::SeqCst) > 1);
+        let verified = run(move || verify_password("correct horse battery staple", &hashed)).await;
+        assert_eq!(verified, Some(true));
+    }
+
+    /// No more jobs run at once than there are slots.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn run_keeps_to_one_job_per_core() {
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        let slots = SLOTS.available_permits();
+        let (running, most) = (Arc::new(AtomicUsize::new(0)), Arc::new(AtomicUsize::new(0)));
+        let jobs: Vec<_> = (0..slots * 3)
+            .map(|_| {
+                let (running, most) = (running.clone(), most.clone());
+                tokio::spawn(run(move || {
+                    let now = running.fetch_add(1, Ordering::SeqCst) + 1;
+                    most.fetch_max(now, Ordering::SeqCst);
+                    std::thread::sleep(std::time::Duration::from_millis(20));
+                    running.fetch_sub(1, Ordering::SeqCst);
+                }))
+            })
+            .collect();
+        for job in jobs {
+            job.await.unwrap().unwrap();
+        }
+        assert!(most.load(Ordering::SeqCst) <= slots);
+    }
+
+    #[tokio::test]
+    async fn a_panicking_job_answers_none() {
+        let answer: Option<()> = run(|| panic!("injected")).await;
+        assert_eq!(answer, None);
+    }
 
     #[test]
     fn a_hashed_password_verifies_against_the_original() {

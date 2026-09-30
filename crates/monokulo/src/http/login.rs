@@ -75,11 +75,18 @@ pub(super) async fn authenticate(
         .await
         .map_err(|_| LoginError::Internal)?;
 
-    let password_hash = user
-        .as_ref()
-        .map(|u| u.password_hash.as_str())
-        .unwrap_or(&DUMMY_PASSWORD_HASH);
-    let password_ok = shared::password::verify_password(password, password_hash);
+    // Off the async threads (`shared::password::run`), the dummy hash's
+    // one-time computation included.
+    let (password, stored) = (
+        password.to_string(),
+        user.as_ref().map(|u| u.password_hash.clone()),
+    );
+    let password_ok = shared::password::run(move || {
+        let hash = stored.as_deref().unwrap_or(&DUMMY_PASSWORD_HASH);
+        shared::password::verify_password(&password, hash)
+    })
+    .await
+    .ok_or(LoginError::Internal)?;
 
     // Require both a real user *and* a correct password - checking
     // `password_ok` alone would (in the astronomically unlikely case

@@ -78,8 +78,13 @@ pub(super) async fn create_account(
     // Argon2id (`shared::password`, WBS 0.4) — deliberately not
     // `shared::auth`'s SHA-256, which is the wrong tool for a low-entropy,
     // human-chosen password (see that module's own doc comment).
-    let password_hash =
-        shared::password::hash_password(password).map_err(|_| CreateAccountError::Internal)?;
+    // Off the async threads (`shared::password::run`): a hash takes tens of
+    // milliseconds of CPU.
+    let password = password.to_string();
+    let password_hash = shared::password::run(move || shared::password::hash_password(&password))
+        .await
+        .and_then(Result::ok)
+        .ok_or(CreateAccountError::Internal)?;
     let id = Uuid::new_v4().to_string();
     let created_at = now_unix();
 
