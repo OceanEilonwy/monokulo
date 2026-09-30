@@ -72,15 +72,15 @@ pub struct StatusCacheState {
 
 pub type StatusCache = Arc<Mutex<StatusCacheState>>;
 
-pub fn new_status_cache() -> StatusCache {
+pub(crate) fn new_status_cache() -> StatusCache {
     Arc::new(Mutex::new(StatusCacheState::default()))
 }
 
 /// The status cache, emptied first if the engine URL changed since it was
 /// filled.
 pub(crate) fn status_cache(state: &AppState) -> parking_lot::MutexGuard<'_, StatusCacheState> {
-    let base_url = state.engine_client.base_url();
-    let mut cache = state.status_cache.lock();
+    let base_url = state.engine.client.base_url();
+    let mut cache = state.engine.status_cache.lock();
     if cache.base_url != base_url {
         cache.cached = None;
         cache.base_url = base_url;
@@ -251,9 +251,10 @@ pub(crate) async fn get_status_cached(state: &AppState) -> Result<EngineStatusRe
             return cached.result.clone();
         }
     }
-    let asked = state.engine_client.base_url();
+    let asked = state.engine.client.base_url();
     let result = state
-        .engine_client
+        .engine
+        .client
         .get_status()
         .await
         .map_err(|e| describe_engine_error(&e));
@@ -568,7 +569,7 @@ mod tests {
 
         fn state_with_engine(engine_client: EngineClient) -> AppState {
             AppState {
-                engine_client,
+                engine: crate::http::Engine::new(engine_client),
                 ..AppState::for_tests()
             }
         }

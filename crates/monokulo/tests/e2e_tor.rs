@@ -361,9 +361,9 @@ async fn start_monokulo(engine_addr: SocketAddr) -> (AppState, SocketAddr, Store
         ..Default::default()
     };
     let state = AppState {
-        engine_client,
         encryption_key: ENCRYPTION_KEY,
         abuse: Arc::new(AbuseProtection::new(config)),
+        engine: monokulo::http::Engine::new(engine_client),
         ..AppState::for_tests_with_db(db.into_shared())
     };
     let listener = OnionListener::bind("127.0.0.1:0".parse().unwrap())

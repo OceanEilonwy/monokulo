@@ -115,23 +115,40 @@ impl std::ops::Deref for OwnedStore {
 /// can't drift apart on the name.
 pub(crate) const SESSION_COOKIE_NAME: &str = "session";
 
+/// The engine as monokulo talks to it.
 #[derive(Clone)]
-pub struct AppState {
-    /// The database (`db::Database`): `read` and `write` jobs.
-    pub db: Database,
-    pub engine_client: EngineClient,
-    /// AES-256-GCM key (WBS 1.2.3) used to encrypt the engine's `sk_...`
-    /// secret token before it's stored in `store_connections` — see
-    /// `crate::crypto` and `http/connections.rs`. Sourced from an
-    /// environment variable in the real binary (`main.rs`); tests just
-    /// construct a fixed key directly.
-    pub encryption_key: [u8; 32],
+pub struct Engine {
+    pub client: EngineClient,
     /// Short-TTL cache of the engine's own `GET /status` response, shared by
     /// every viewer - see `http::status_page`'s own module doc comment for
     /// why this exists (a real incident: the nav bar's status dot alone
     /// turned "one user browsing the dashboard" into enough engine requests
     /// to trip its own rate limiter).
     pub status_cache: status_page::StatusCache,
+}
+
+impl Engine {
+    /// The engine at `client`, with nothing cached yet.
+    pub fn new(client: EngineClient) -> Self {
+        Engine {
+            client,
+            status_cache: status_page::new_status_cache(),
+        }
+    }
+}
+
+#[derive(Clone)]
+pub struct AppState {
+    /// The database (`db::Database`): `read` and `write` jobs.
+    pub db: Database,
+    /// The engine: its client and the cached `GET /status`.
+    pub engine: Engine,
+    /// AES-256-GCM key (WBS 1.2.3) used to encrypt the engine's `sk_...`
+    /// secret token before it's stored in `store_connections` — see
+    /// `crate::crypto` and `http/connections.rs`. Sourced from an
+    /// environment variable in the real binary (`main.rs`); tests just
+    /// construct a fixed key directly.
+    pub encryption_key: [u8; 32],
     /// Fiat-to-XMR conversion for monokulo's own order-creation
     /// endpoint (`docs/fx_refactor.md` Phase 1.4) - the engine no longer
     /// has any concept of this (per that document's own resolved
@@ -166,7 +183,7 @@ impl AppState {
     /// encryption key, XMR-only exchange rates, default abuse limits and
     /// settings, no DNS and no log store. A test that needs something else
     /// overrides just that field with struct update syntax:
-    /// `AppState { engine_client, ..AppState::for_tests() }`.
+    /// `AppState { log_store, ..AppState::for_tests() }`.
     pub fn for_tests() -> Self {
         let db =
             crate::db::Db::open_in_memory().expect("opening an in-memory db for a test AppState");
@@ -180,9 +197,7 @@ impl AppState {
     pub fn for_tests_with_db(db: crate::db::SharedDb) -> Self {
         AppState {
             db: Database::inline(db),
-            engine_client: EngineClient::new("http://127.0.0.1:1"),
             encryption_key: TEST_ENCRYPTION_KEY,
-            status_cache: status_page::new_status_cache(),
             exchange_rate: Arc::new(crate::exchange_rate_config::ExchangeRateProviders::xmr_only()),
             abuse: Default::default(),
             dns: Arc::new(crate::embed_domains::UnavailableDns(
@@ -190,6 +205,7 @@ impl AppState {
             )),
             settings: crate::settings::MonokuloSettings::defaults(),
             log_store: None,
+            engine: crate::http::Engine::new(EngineClient::new("http://127.0.0.1:1")),
         }
     }
 }

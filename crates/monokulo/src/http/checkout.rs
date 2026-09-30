@@ -141,7 +141,7 @@ async fn load_order(
         Ok(sk) => sk,
         Err(_) => return Err(LoadError::Internal),
     };
-    match state.engine_client.get_order_detail(&sk, order_id).await {
+    match state.engine.client.get_order_detail(&sk, order_id).await {
         Ok(detail) => Ok((row, sk, detail)),
         Err(EngineClientError::EngineError { status, .. })
             if status == reqwest::StatusCode::NOT_FOUND =>
@@ -570,7 +570,8 @@ pub async fn set_refund_address(
     }
 
     match state
-        .engine_client
+        .engine
+        .client
         .set_refund_address(&sk, &order_id, refund_address)
         .await
     {
@@ -676,7 +677,7 @@ pub async fn checkout_events(
         },
         None => None,
     };
-    let subscription = state.engine_client.subscribe_order(&row.id, &sk, &order_id);
+    let subscription = state.engine.client.subscribe_order(&row.id, &sk, &order_id);
     let fragments = options.fragments == Some(true);
     let routed = options.routed == Some(true);
     // What each routed part last looked like on this stream, so only
@@ -941,7 +942,7 @@ mod tests {
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            engine_client,
+            engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
         };
         (state, engine)
@@ -1371,7 +1372,7 @@ mod tests {
     #[tokio::test]
     async fn the_checkout_events_stream_pushes_a_change_made_on_the_engine() {
         let (state, engine) = test_state_with_real_engine().await;
-        let engine_client = state.engine_client.clone();
+        let engine_client = state.engine.client.clone();
         let router = build_router(state);
         let session_token = signed_up_and_logged_in_session_token(
             &router,

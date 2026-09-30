@@ -112,7 +112,7 @@ pub async fn dashboard_home(
             Err(_) => continue,
         };
 
-        let tenant_result = state.engine_client.get_tenant(&sk).await;
+        let tenant_result = state.engine.client.get_tenant(&sk).await;
         let (health, health_label) = health_of_tenant_lookup(&tenant_result);
         let display_name = display_name_for(&row.site_url);
 
@@ -126,7 +126,7 @@ pub async fn dashboard_home(
             health_label,
         });
 
-        if let Ok(orders) = state.engine_client.list_orders(&sk).await {
+        if let Ok(orders) = state.engine.client.list_orders(&sk).await {
             // The engine has no concept of fiat any more (`docs/fx_refactor.md`
             // Phase 3) - fiat display comes entirely from monokulo's own
             // local `order_currency_metadata`.
@@ -232,7 +232,7 @@ mod tests {
                 .await;
             let engine_client = EngineClient::new(format!("http://{}", engine.addr));
             let state = AppState {
-                engine_client,
+                engine: crate::http::Engine::new(engine_client),
                 ..AppState::for_tests()
             };
             (state, engine)

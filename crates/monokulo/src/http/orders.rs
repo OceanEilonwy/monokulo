@@ -87,7 +87,8 @@ async fn build_orders_view_model(
     let term = Some(search.trim()).filter(|term| !term.is_empty());
     // One more than a page, to know whether there is an older page.
     let mut orders = state
-        .engine_client
+        .engine
+        .client
         .list_orders_page(sk, false, term, ORDERS_PER_PAGE + 1, page * ORDERS_PER_PAGE)
         .await
         .map_err(|_| ())?;
@@ -234,7 +235,7 @@ async fn perform_payment_lookup(
     sk: &shared::auth::RawToken,
     txid: &str,
 ) -> Result<(String, Option<String>), ()> {
-    match state.engine_client.lookup_payment(sk, txid).await {
+    match state.engine.client.lookup_payment(sk, txid).await {
         Ok(PaymentLookupView::NotFoundOnChain) => Ok((
             "No transaction with that ID was found on the network.".to_string(),
             None,
@@ -364,7 +365,7 @@ async fn order_detail_data(
     order_id: &crate::db::OrderId,
     payment_link: String,
 ) -> Result<Option<OrderDetailData>, ()> {
-    match state.engine_client.get_order_detail(sk, order_id).await {
+    match state.engine.client.get_order_detail(sk, order_id).await {
         Ok(detail) => {
             // The engine has no concept of fiat any more (`docs/fx_refactor.md`
             // Phase 3) - fiat display comes entirely from monokulo's own
@@ -505,7 +506,7 @@ pub async fn order_detail_events(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let payment_link = payment_link_for(&headers, &row.tenant_public_key, &order_id);
-    let subscription = state.engine_client.subscribe_order(&row.id, &sk, &order_id);
+    let subscription = state.engine.client.subscribe_order(&row.id, &sk, &order_id);
     let row = std::sync::Arc::new(row);
     // Times in the viewer's zone, as the page itself shows them.
     let clock = views::time::Clock::for_user(&user);
@@ -667,7 +668,8 @@ pub async fn webhooks_create(
     };
 
     match state
-        .engine_client
+        .engine
+        .client
         .create_webhook(&sk, url, &extra_headers)
         .await
     {
@@ -731,7 +733,7 @@ pub async fn webhooks_delete(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    match state.engine_client.delete_webhook(&sk, &webhook_id).await {
+    match state.engine.client.delete_webhook(&sk, &webhook_id).await {
         Ok(()) => {
             saved(
                 &state,
@@ -846,7 +848,7 @@ async fn render_store_detail_page(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    let tenant_result = state.engine_client.get_tenant(&sk).await;
+    let tenant_result = state.engine.client.get_tenant(&sk).await;
     let (health, health_label) = health_of_tenant_lookup(&tenant_result);
     let public_url = state
         .db
@@ -859,7 +861,8 @@ async fn render_store_detail_page(
     // just with no order data available, rather than a hard error. The
     // health tag above is what actually communicates the problem.
     let recent_orders = match state
-        .engine_client
+        .engine
+        .client
         .list_orders_page(&sk, false, None, 10, 0)
         .await
     {
@@ -939,7 +942,7 @@ pub(super) async fn render_store_settings_page(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    let tenant_result = state.engine_client.get_tenant(&sk).await;
+    let tenant_result = state.engine.client.get_tenant(&sk).await;
     if tenant_result
         .as_ref()
         .is_ok_and(|t| t.key_custody_backend.is_some())
@@ -1024,7 +1027,7 @@ pub(super) async fn render_store_settings_page(
         .any(|domain| crate::embed_domains::DomainState::of(domain, now).counts());
     let embed_domains = super::embed_domains::domain_views(embed_domain_rows, now);
 
-    let webhooks = match state.engine_client.list_webhooks(&sk).await {
+    let webhooks = match state.engine.client.list_webhooks(&sk).await {
         Ok(webhooks) => webhooks
             .into_iter()
             .map(|w| views::store_settings::WebhookRowViewModel {
@@ -1325,7 +1328,8 @@ pub async fn create_order(
     };
 
     match state
-        .engine_client
+        .engine
+        .client
         .create_order(
             &sk,
             shared::xmr_amount::Piconero(xmr_amount_piconero),
@@ -1470,7 +1474,8 @@ pub async fn update_confirmations_required(
     // changes under the store's policy lock too.
     let _policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
     match state
-        .engine_client
+        .engine
+        .client
         .set_confirmations_required(&sk, confirmations_required)
         .await
     {
@@ -1534,7 +1539,7 @@ pub async fn move_key_storage(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     match state
-        .engine_client
+        .engine.client
         .switch_key_custody(&sk, form.backend.trim(), form.view_key_hex.trim(), form.spend_pubkey_hex.trim())
         .await
     {
@@ -2312,7 +2317,7 @@ mod tests {
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            engine_client,
+            engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
         };
         (state, engine)
@@ -2331,7 +2336,7 @@ mod tests {
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            engine_client,
+            engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
         };
         (state, engine)
@@ -3580,7 +3585,7 @@ mod tests {
             .spawn()
             .await;
         let state = AppState {
-            engine_client: EngineClient::new(format!("http://{}", engine.addr)),
+            engine: crate::http::Engine::new(EngineClient::new(format!("http://{}", engine.addr))),
             ..AppState::for_tests()
         };
         let router = build_router(state);
@@ -4110,7 +4115,7 @@ mod tests {
             .spawn()
             .await;
         let (mut state, _unused_engine) = test_state_with_real_engine().await;
-        state.engine_client = EngineClient::new(format!("http://{}", engine.addr));
+        state.engine.client = EngineClient::new(format!("http://{}", engine.addr));
         crate::http::status_page::get_status_cached(&state)
             .await
             .expect("engine status");
@@ -4153,7 +4158,8 @@ mod tests {
         let sk = crate::crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
             .unwrap();
         state
-            .engine_client
+            .engine
+            .client
             .get_tenant(&shared::auth::RawToken::presented(&sk))
             .await
             .unwrap()
@@ -4865,7 +4871,7 @@ mod tests {
             )
             .unwrap();
         // A custom-tier save must not depend on engine availability.
-        state.engine_client = EngineClient::new("http://127.0.0.1:0");
+        state.engine.client = EngineClient::new("http://127.0.0.1:0");
         let response = build_router(state.clone())
             .oneshot(form_post_request(
                 &format!("/dashboard/stores/{connection_id}/settings/confirmation-thresholds/save"),
@@ -4936,7 +4942,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             state
-                .engine_client
+                .engine
+                .client
                 .get_tenant(&shared::auth::RawToken::presented(&sk))
                 .await
                 .unwrap()
@@ -4986,7 +4993,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             state
-                .engine_client
+                .engine
+                .client
                 .get_tenant(&shared::auth::RawToken::presented(&sk))
                 .await
                 .unwrap()
@@ -5044,7 +5052,8 @@ mod tests {
             .unwrap();
         assert_eq!(
             state
-                .engine_client
+                .engine
+                .client
                 .get_tenant(&shared::auth::RawToken::presented(&sk))
                 .await
                 .unwrap()

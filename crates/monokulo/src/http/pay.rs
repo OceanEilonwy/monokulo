@@ -164,7 +164,8 @@ pub async fn create_order(
     };
 
     match state
-        .engine_client
+        .engine
+        .client
         .create_order(
             &sk,
             shared::xmr_amount::Piconero(xmr_amount_piconero),
@@ -488,8 +489,8 @@ mod tests {
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            engine_client,
             exchange_rate: test_exchange_rate_provider().await,
+            engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
         };
         (state, engine)
@@ -851,7 +852,8 @@ mod tests {
             .unwrap();
         let sk = crate::http::orders::decrypt_sk(&state, &row).unwrap();
         state
-            .engine_client
+            .engine
+            .client
             .set_confirmations_required(&sk, 0)
             .await
             .unwrap();
@@ -1018,7 +1020,8 @@ mod tests {
             .unwrap();
         let sk = crate::http::orders::decrypt_sk(&state, &row).unwrap();
         state
-            .engine_client
+            .engine
+            .client
             .set_confirmations_required(&sk, 0)
             .await
             .unwrap();

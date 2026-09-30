@@ -1099,7 +1099,7 @@ mod tests {
         .await
         .unwrap();
         AppState {
-            engine_client,
+            engine: crate::http::Engine::new(engine_client),
             exchange_rate,
             abuse,
             settings,
@@ -2403,7 +2403,7 @@ mod tests {
         )
         .await;
         let state = test_app_state_connected_to(engine.addr).await;
-        let engine_client = state.engine_client.clone();
+        let engine_client = state.engine.client.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         // A store on stagenet, which needs a stagenet node saved first.
@@ -2885,7 +2885,7 @@ mod tests {
         )
         .await;
         let state = test_app_state_connected_to(engine.addr).await;
-        let engine_client = state.engine_client.clone();
+        let engine_client = state.engine.client.clone();
         let router = build_router(state);
         let cookie = admin_session_cookie(&router).await;
         let node = spawn_node_on("stagenet").await.to_string();

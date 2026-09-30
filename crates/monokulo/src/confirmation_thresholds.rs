@@ -248,7 +248,7 @@ pub async fn resolve_for_order(
     };
     let effective_rate =
         base_currency_piconero_per_unit.unwrap_or(order_currency_piconero_per_unit);
-    let default_confirmations = match state.engine_client.get_tenant(sk).await {
+    let default_confirmations = match state.engine.client.get_tenant(sk).await {
         Ok(tenant) => tenant.confirmations_required,
         Err(e) => {
             tracing::error!(store.id = %row.id, error = %e, "could not fetch the tenant to resolve the confirmation-threshold default");

@@ -137,7 +137,8 @@ pub(super) async fn create_connection_for_user(
         })?;
 
     let created = state
-        .engine_client
+        .engine
+        .client
         .create_tenant(CreateTenantRequest {
             view_key_hex: req.view_key_hex,
             spend_pubkey_hex: req.spend_pubkey_hex,
@@ -167,7 +168,7 @@ pub(super) async fn create_connection_for_user(
         crypto::encrypt(&state.encryption_key, created.secret_token.expose());
     let (connection_id, user_id, public_key) =
         (id.clone(), user.id.clone(), created.public_key.clone());
-    let engine_url = state.engine_client.base_url();
+    let engine_url = state.engine.client.base_url();
     state
         .db
         .write(move |db| {
@@ -267,7 +268,7 @@ mod tests {
                 .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            engine_client,
+            engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
         };
         (state, engine)

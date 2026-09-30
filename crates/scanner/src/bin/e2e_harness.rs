@@ -297,9 +297,7 @@ async fn main() {
     // own in-process-only `oneshot` driving ----
     let cp_state = ControlPlaneAppState {
         db: monokulo::db::Database::inline(Db::open_in_memory().unwrap().into_shared()),
-        engine_client: EngineClient::new(engine_base_url.clone()),
         encryption_key: [7u8; 32],
-        status_cache: monokulo::http::status_page::new_status_cache(),
         exchange_rate: Arc::new(monokulo::exchange_rate_config::ExchangeRateProviders::xmr_only()),
         abuse: Default::default(),
         dns: Arc::new(monokulo::embed_domains::UnavailableDns(
@@ -307,6 +305,7 @@ async fn main() {
         )),
         log_store: None,
         settings: monokulo::settings::MonokuloSettings::defaults(),
+        engine: monokulo::http::Engine::new(EngineClient::new(engine_base_url.clone())),
     };
     let cp_router = build_monokulo_router(cp_state);
     let cp_listener = tokio::net::TcpListener::bind("127.0.0.1:0")

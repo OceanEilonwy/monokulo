@@ -695,7 +695,8 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
     // registration retried separately" instead.
     let webhook_signing_secret = match &req.webhook_url {
         Some(url) => match state
-            .engine_client
+            .engine
+            .client
             .create_webhook(&secret_token, url, &Default::default())
             .await
         {
@@ -742,7 +743,7 @@ mod tests {
                 .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            engine_client,
+            engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
         };
         state

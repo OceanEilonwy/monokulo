@@ -926,7 +926,7 @@ async fn test_state_with_real_engine() -> (AppState, scanner_test_support::TestE
         scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet]).await;
     let engine_client = EngineClient::new(format!("http://{}", engine.addr));
     let state = AppState {
-        engine_client,
+        engine: crate::http::Engine::new(engine_client),
         ..AppState::for_tests()
     };
     (state, engine)
@@ -1702,7 +1702,7 @@ async fn a_status_cached_from_the_old_engine_is_not_shown_after_the_engine_url_c
             .len(),
         1
     );
-    state.engine_client.retarget("http://127.0.0.1:2", 1024);
+    state.engine.client.retarget("http://127.0.0.1:2", 1024);
     assert!(
         crate::http::status_page::known_unserved(&state).is_empty(),
         "the old engine's status is gone"

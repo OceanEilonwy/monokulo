@@ -50,7 +50,7 @@ impl Sources {
             )
         } else {
             EngineSource::Api {
-                client: state.engine_client.clone(),
+                client: state.engine.client.clone(),
                 admin_token,
             }
         };

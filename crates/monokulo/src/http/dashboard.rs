@@ -673,10 +673,10 @@ mod tests {
             scanner_test_support::spawn_test_engine_with_networks(&[monero::Network::Mainnet])
                 .await;
         let state = crate::http::AppState {
-            engine_client: crate::engine_client::EngineClient::new(format!(
+            engine: crate::http::Engine::new(crate::engine_client::EngineClient::new(format!(
                 "http://{}",
                 engine.addr
-            )),
+            ))),
             ..crate::http::AppState::for_tests()
         };
         let router = crate::http::build_router(state);

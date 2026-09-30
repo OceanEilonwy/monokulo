@@ -5,7 +5,6 @@
 
 use monokulo::db::{Database, Db};
 use monokulo::engine_client::EngineClient;
-use monokulo::http::status_page::new_status_cache;
 use monokulo::http::{build_router, AppState};
 use monokulo::settings;
 use std::sync::Arc;
@@ -108,14 +107,13 @@ async fn main() {
     }
     let app_state = AppState {
         db,
-        engine_client,
         encryption_key,
-        status_cache: new_status_cache(),
         exchange_rate,
         abuse,
         dns,
         settings: monokulo_settings,
         log_store,
+        engine: monokulo::http::Engine::new(engine_client),
     };
     let router = build_router(app_state);
     // The onion listener (`monokulo::abuse::proxy_protocol`): same router,

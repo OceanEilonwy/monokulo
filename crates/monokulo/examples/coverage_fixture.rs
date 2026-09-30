@@ -259,7 +259,6 @@ async fn main() {
         .expect("bind fixture");
     let url = format!("http://{}", listener.local_addr().unwrap());
     let state = AppState {
-        engine_client,
         encryption_key: ENCRYPTION_KEY,
         exchange_rate: Arc::new(ExchangeRateProviders::coingecko_only(url.clone())),
         // Every browser test comes from one address, far faster than a real
@@ -274,6 +273,7 @@ async fn main() {
             },
         )),
         dns: Arc::new(UnavailableDns("DNS is unavailable in browser tests".into())),
+        engine: monokulo::http::Engine::new(engine_client),
         ..AppState::for_tests_with_db(db.into_shared())
     };
     let controls = Router::new()
@@ -296,7 +296,7 @@ async fn main() {
         )
         .with_state(Controls {
             engine,
-            client: state.engine_client.clone(),
+            client: state.engine.client.clone(),
             token: tenant.secret_token.expose().to_string(),
             public_key: tenant.public_key.clone(),
             order_id: order.order_id.clone().into_string(),

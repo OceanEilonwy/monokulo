@@ -154,7 +154,7 @@ async fn spawn_test_monokulo(engine_addr: std::net::SocketAddr) -> TestControlPl
     db.set_setting("signup.mode", "public")
         .expect("failed to set signup.mode for test monokulo db");
     let state = AppState {
-        engine_client: EngineClient::new(format!("http://{engine_addr}")),
+        engine: monokulo::http::Engine::new(EngineClient::new(format!("http://{engine_addr}"))),
         ..AppState::for_tests_with_db(db.into_shared())
     };
     let router = build_router(state);

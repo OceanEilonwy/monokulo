@@ -179,7 +179,7 @@ pub async fn create_order(
                     Ok(sk) => sk,
                     Err(()) => return ApiError::Internal.into_response(),
                 };
-                let detail = match state.engine_client.get_order_detail(&sk, &existing).await {
+                let detail = match state.engine.client.get_order_detail(&sk, &existing).await {
                     Ok(detail) => detail,
                     Err(_) => return ApiError::Internal.into_response(),
                 };
@@ -284,7 +284,8 @@ pub async fn create_order(
     };
 
     match state
-        .engine_client
+        .engine
+        .client
         .create_order(
             &sk,
             shared::xmr_amount::Piconero(xmr_amount_piconero),
@@ -440,7 +441,8 @@ async fn pos_order_data(
     row: crate::db::PosOrderRow,
 ) -> Result<PosOrderData, EngineClientError> {
     let detail = state
-        .engine_client
+        .engine
+        .client
         .get_order_detail(sk, &row.order_id)
         .await?;
     let metadata = order_metadata(state, connection_id, vec![row.order_id.clone()])
@@ -532,7 +534,7 @@ async fn engine_orders(
 ) -> Result<HashMap<crate::db::OrderId, OrderView>, EngineClientError> {
     let mut orders = HashMap::with_capacity(order_ids.len());
     for chunk in order_ids.chunks(crate::engine_client::MAX_ORDER_IDS_PER_REQUEST) {
-        for order in state.engine_client.list_orders_by_ids(sk, chunk).await? {
+        for order in state.engine.client.list_orders_by_ids(sk, chunk).await? {
             orders.insert(order.order_id.clone(), order);
         }
     }
@@ -577,7 +579,8 @@ async fn active_pos_orders(
     let mut open = Vec::new();
     loop {
         let page = state
-            .engine_client
+            .engine
+            .client
             .list_orders_page(sk, true, None, OPEN_ORDERS_PAGE, open.len() as u32)
             .await?;
         let short = (page.len() as u32) < OPEN_ORDERS_PAGE;
@@ -755,7 +758,7 @@ pub async fn cancel_order(
         Ok(sk) => sk,
         Err(()) => return ApiError::Internal.into_response(),
     };
-    let detail = match state.engine_client.get_order_detail(&sk, &order_id).await {
+    let detail = match state.engine.client.get_order_detail(&sk, &order_id).await {
         Ok(detail) => detail,
         Err(error) => return engine_failure(&error),
     };
@@ -798,7 +801,8 @@ pub(super) async fn resolve_confirmations_required(
         return applied;
     }
     state
-        .engine_client
+        .engine
+        .client
         .get_tenant(sk)
         .await
         .map(|t| t.confirmations_required)
@@ -848,7 +852,7 @@ pub async fn order_status(
         Err(()) => return ApiError::Internal.into_response(),
     };
 
-    match state.engine_client.get_order_detail(&sk, &order_id).await {
+    match state.engine.client.get_order_detail(&sk, &order_id).await {
         Ok(detail) => Json(pos_status(&state, &row.id, &sk, &detail.order).await).into_response(),
         Err(error) => engine_failure(&error),
     }
@@ -941,7 +945,7 @@ pub async fn order_events(
 
     let subscriptions = order_ids
         .iter()
-        .map(|order_id| state.engine_client.subscribe_order(&row.id, &sk, order_id))
+        .map(|order_id| state.engine.client.subscribe_order(&row.id, &sk, order_id))
         .collect();
     let connection_id = row.id.clone();
     // One engine read per change for every watched order together: the
@@ -1018,7 +1022,7 @@ mod tests {
             .await;
         let engine_client = EngineClient::new(format!("http://{}", engine.addr));
         let state = AppState {
-            engine_client,
+            engine: crate::http::Engine::new(engine_client),
             ..AppState::for_tests()
         };
         (state, engine)
