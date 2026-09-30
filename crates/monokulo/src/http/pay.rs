@@ -73,8 +73,7 @@ pub async fn create_order(
     Json(req): Json<CreateOrderRequest>,
 ) -> Response {
     let created_with_key = key.is_some();
-    let policy_lock = crate::confirmation_thresholds::policy_lock(&pk);
-    let _policy_guard = policy_lock.lock().await;
+    let policy = crate::confirmation_thresholds::lock_policy(&pk).await;
     let (key, currency) = (pk.clone(), req.currency.clone());
     let found = state
         .db
@@ -153,6 +152,7 @@ pub async fn create_order(
     let resolution = match crate::confirmation_thresholds::resolve_for_order(
         &state,
         &row,
+        &policy,
         &sk,
         &req.currency,
         piconero_per_unit,
@@ -977,8 +977,7 @@ mod tests {
         )
         .await;
         let pk = create_connection(&router, &session_token).await;
-        let policy_lock = crate::confirmation_thresholds::policy_lock(&pk);
-        let guard = policy_lock.lock().await;
+        let guard = crate::confirmation_thresholds::lock_policy(&pk).await;
         let request = create_order_request(&pk, "25.00", TEST_CURRENCY);
         let mut task = tokio::spawn(async move { router.oneshot(request).await.unwrap() });
         assert!(

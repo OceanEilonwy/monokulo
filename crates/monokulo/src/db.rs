@@ -1038,6 +1038,7 @@ impl Db {
     /// file.
     pub fn update_store_connection_fx(
         &self,
+        _proof: crate::confirmation_thresholds::PolicyProof,
         id: &str,
         fx_providers: &[String],
         settings: &FxProviderSettings,
@@ -1360,6 +1361,7 @@ impl Db {
     /// untouched - it has no currency dimension to invalidate.
     pub fn update_store_connection_base_currency(
         &self,
+        _proof: crate::confirmation_thresholds::PolicyProof,
         id: &str,
         base_currency: &str,
     ) -> Result<()> {
@@ -1781,6 +1783,7 @@ impl Db {
     /// concurrent requests cannot both claim the last available slot.
     pub fn create_confirmation_threshold_with_limit(
         &self,
+        _proof: crate::confirmation_thresholds::PolicyProof,
         id: &str,
         connection_id: &str,
         unit_amount: &str,
@@ -1800,6 +1803,7 @@ impl Db {
     /// insertion rolls back its deletes as well.
     pub fn replace_confirmation_thresholds(
         &self,
+        _proof: crate::confirmation_thresholds::PolicyProof,
         connection_id: &str,
         deleted_ids: &[String],
         new: Option<(&str, &str, u64, i64)>,
@@ -1833,7 +1837,12 @@ impl Db {
     /// unknown id, or one belonging to a different connection - the caller
     /// treats both identically, same enumeration-defense convention this
     /// crate already applies to every other owned-resource lookup).
-    pub fn delete_confirmation_threshold(&self, connection_id: &str, id: &str) -> Result<bool> {
+    pub fn delete_confirmation_threshold(
+        &self,
+        _proof: crate::confirmation_thresholds::PolicyProof,
+        connection_id: &str,
+        id: &str,
+    ) -> Result<bool> {
         let changed = self.conn.execute(
             "DELETE FROM confirmation_thresholds WHERE id = ?1 AND connection_id = ?2",
             params![id, connection_id],
@@ -2375,8 +2384,13 @@ mod tests {
         .unwrap();
 
         let order = vec!["coinmarketcap".to_string(), "coingecko".to_string()];
-        db.update_store_connection_fx("conn-1", &order, &FxProviderSettings::default())
-            .unwrap();
+        db.update_store_connection_fx(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
+            "conn-1",
+            &order,
+            &FxProviderSettings::default(),
+        )
+        .unwrap();
 
         let row = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
         assert_eq!(
@@ -2424,8 +2438,13 @@ mod tests {
         settings.haveno.max_spread_pct = 2.5;
         settings.haveno.min_offers_per_side = 3;
         settings.haveno.min_depth_xmr_per_side = 1.5;
-        db.update_store_connection_fx("conn-1", &["haveno".to_string()], &settings)
-            .unwrap();
+        db.update_store_connection_fx(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
+            "conn-1",
+            &["haveno".to_string()],
+            &settings,
+        )
+        .unwrap();
 
         let by_id = db.get_store_connection_by_id("conn-1").unwrap().unwrap();
         assert_eq!(by_id.fx_provider_settings, settings);
@@ -2476,6 +2495,7 @@ mod tests {
         settings.haveno.max_spread_pct = 0.5;
         settings.haveno.currencies = vec!["USD".to_string()];
         db.update_store_connection_fx(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             "conn-a",
             &["haveno".to_string(), "coingecko".to_string()],
             &settings,
@@ -3023,6 +3043,7 @@ mod tests {
                 std::thread::spawn(move || {
                     db.lock()
                         .create_confirmation_threshold_with_limit(
+                            crate::confirmation_thresholds::PolicyProof::for_test(),
                             &format!("id-{i}"),
                             &connection_id,
                             &i.to_string(),
@@ -3058,6 +3079,7 @@ mod tests {
         db.create_confirmation_threshold("taken", &connection_id, "100", 20, 1000)
             .unwrap();
         let result = db.replace_confirmation_thresholds(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
             &connection_id,
             &["original".to_string()],
             Some(("taken", "200", 10, 1000)),
@@ -3085,11 +3107,17 @@ mod tests {
             .unwrap();
         }
         assert!(!db
-            .replace_confirmation_thresholds(&connection_id, &[], Some(("sixth", "50", 20, 1000)))
+            .replace_confirmation_thresholds(
+                crate::confirmation_thresholds::PolicyProof::for_test(),
+                &connection_id,
+                &[],
+                Some(("sixth", "50", 20, 1000))
+            )
             .unwrap());
         assert_eq!(db.count_confirmation_thresholds(&connection_id).unwrap(), 5);
         assert!(db
             .replace_confirmation_thresholds(
+                crate::confirmation_thresholds::PolicyProof::for_test(),
                 &connection_id,
                 &["id-0".to_string()],
                 Some(("replacement", "50", 20, 1000))
@@ -3222,7 +3250,11 @@ mod tests {
 
         // conn-b cannot delete connection_id_a's own threshold.
         assert!(!db
-            .delete_confirmation_threshold("conn-b", "thresh-1")
+            .delete_confirmation_threshold(
+                crate::confirmation_thresholds::PolicyProof::for_test(),
+                "conn-b",
+                "thresh-1"
+            )
             .unwrap());
         assert_eq!(
             db.list_confirmation_thresholds(&connection_id_a)
@@ -3232,7 +3264,11 @@ mod tests {
         );
 
         assert!(db
-            .delete_confirmation_threshold(&connection_id_a, "thresh-1")
+            .delete_confirmation_threshold(
+                crate::confirmation_thresholds::PolicyProof::for_test(),
+                &connection_id_a,
+                "thresh-1"
+            )
             .unwrap());
         assert_eq!(
             db.list_confirmation_thresholds(&connection_id_a)
@@ -3243,7 +3279,11 @@ mod tests {
 
         // A second delete of the same (now-gone) row is a clean no-op.
         assert!(!db
-            .delete_confirmation_threshold(&connection_id_a, "thresh-1")
+            .delete_confirmation_threshold(
+                crate::confirmation_thresholds::PolicyProof::for_test(),
+                &connection_id_a,
+                "thresh-1"
+            )
             .unwrap());
     }
 
@@ -3256,8 +3296,12 @@ mod tests {
         db.create_confirmation_threshold("thresh-2", &connection_id, "100.00", 30, 1000)
             .unwrap();
 
-        db.update_store_connection_base_currency(&connection_id, "EUR")
-            .unwrap();
+        db.update_store_connection_base_currency(
+            crate::confirmation_thresholds::PolicyProof::for_test(),
+            &connection_id,
+            "EUR",
+        )
+        .unwrap();
 
         assert_eq!(
             db.get_store_connection_by_id(&connection_id)

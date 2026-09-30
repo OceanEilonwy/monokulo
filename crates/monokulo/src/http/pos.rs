@@ -158,8 +158,7 @@ pub async fn create_order(
         }
     }
 
-    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
-    let _policy_guard = policy_lock.lock().await;
+    let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
     let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
@@ -270,6 +269,7 @@ pub async fn create_order(
     let resolution = match crate::confirmation_thresholds::resolve_for_order(
         &state,
         &row,
+        &policy,
         &sk,
         &currency,
         piconero_per_unit,

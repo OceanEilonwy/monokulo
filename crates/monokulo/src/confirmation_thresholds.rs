@@ -18,9 +18,52 @@ use crate::db::{ConfirmationThresholdRow, StoreConnectionRow};
 use crate::exchange_rate_config::ExchangeRateLookupError;
 use crate::http::AppState;
 
-/// Serializes policy edits with order creation for one tenant in this
-/// control-plane process. Callers hold it through the engine create call.
-pub fn policy_lock(pk: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
+/// Held while one store's confirmation policy is read for a new order or
+/// changed ([`lock_policy`]), so an order can't be priced against a policy
+/// that is half edited. Order creation holds it through the engine's create
+/// call.
+pub struct PolicyGuard {
+    store: String,
+    _held: tokio::sync::OwnedMutexGuard<()>,
+}
+
+impl PolicyGuard {
+    /// Evidence for a database write that changes this store's policy.
+    pub fn proof(&self) -> PolicyProof {
+        PolicyProof(())
+    }
+
+    /// Whether this guard is the one for the store with public key `pk`.
+    pub fn covers(&self, pk: &str) -> bool {
+        self.store == pk
+    }
+}
+
+/// Evidence that the caller holds a store's [`PolicyGuard`], required by
+/// every database write that changes a confirmation policy (thresholds,
+/// base currency, exchange-rate providers). Only a guard makes one; it is
+/// moved into the write job.
+pub struct PolicyProof(());
+
+#[cfg(test)]
+impl PolicyProof {
+    /// For database tests, which write policies with no requests in flight.
+    pub fn for_test() -> Self {
+        PolicyProof(())
+    }
+}
+
+/// Waits for, then holds, the policy lock of the store with public key
+/// `pk`, serializing policy edits with order creation for it in this
+/// process.
+pub async fn lock_policy(pk: &str) -> PolicyGuard {
+    PolicyGuard {
+        store: pk.to_owned(),
+        _held: policy_lock(pk).lock_owned().await,
+    }
+}
+
+fn policy_lock(pk: &str) -> std::sync::Arc<tokio::sync::Mutex<()>> {
     use parking_lot::RwLock;
     use std::collections::HashMap;
     use std::sync::{Arc, LazyLock, Weak};
@@ -160,11 +203,19 @@ pub struct Resolution {
 pub async fn resolve_for_order(
     state: &AppState,
     row: &StoreConnectionRow,
+    policy: &PolicyGuard,
     sk: &str,
     order_currency: &str,
     order_currency_piconero_per_unit: u64,
     xmr_amount_piconero: u64,
 ) -> Result<Resolution, String> {
+    if !policy.covers(&row.tenant_public_key) {
+        tracing::error!(store.id = %row.id, "resolving an order's confirmations under another store's policy lock");
+        return Err(
+            "something went wrong resolving the confirmation threshold. Please try again."
+                .to_string(),
+        );
+    }
     let base_currency = row.base_currency.clone();
     let same_currency = base_currency.eq_ignore_ascii_case(order_currency);
 
@@ -236,6 +287,13 @@ pub async fn resolve_for_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn a_policy_guard_covers_only_its_own_store() {
+        let guard = lock_policy("pk_mine").await;
+        assert!(guard.covers("pk_mine"));
+        assert!(!guard.covers("pk_other"));
+    }
 
     #[test]
     fn policy_lock_serializes_one_tenant_without_blocking_another() {

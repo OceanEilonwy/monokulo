@@ -1186,8 +1186,7 @@ pub async fn create_order(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
-    let _policy_guard = policy_lock.lock().await;
+    let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
     let row = match load_owned_connection(&state, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
@@ -1299,6 +1298,7 @@ pub async fn create_order(
     let resolution = match crate::confirmation_thresholds::resolve_for_order(
         &state,
         &row,
+        &policy,
         &sk,
         currency,
         piconero_per_unit,
@@ -1452,8 +1452,9 @@ pub async fn update_confirmations_required(
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
-    let _policy_guard = policy_lock.lock().await;
+    // The default applies to every order below all thresholds, so it
+    // changes under the store's policy lock too.
+    let _policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
     match state
         .engine_client
         .set_confirmations_required(&sk, confirmations_required)
@@ -1746,11 +1747,15 @@ pub async fn update_fx_providers(
         }
     }
 
-    let store_id = row.id.clone();
+    // The providers price new orders, so they change under the store's
+    // policy lock like its thresholds.
+    let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
+    let (store_id, proof) = (row.id.clone(), policy.proof());
     let update_result = state
         .db
-        .write(move |db| db.update_store_connection_fx(&store_id, &providers, &settings))
+        .write(move |db| db.update_store_connection_fx(proof, &store_id, &providers, &settings))
         .await;
+    drop(policy);
     match update_result {
         Ok(()) => {
             saved(
@@ -1828,12 +1833,11 @@ pub async fn update_base_currency(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
-    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
-    let _policy_guard = policy_lock.lock().await;
-    let store_id = row.id.clone();
+    let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
+    let (store_id, proof) = (row.id.clone(), policy.proof());
     let update_result = state
         .db
-        .write(move |db| db.update_store_connection_base_currency(&store_id, &base_currency))
+        .write(move |db| db.update_store_connection_base_currency(proof, &store_id, &base_currency))
         .await;
     match update_result {
         Ok(()) => {
@@ -1933,8 +1937,7 @@ pub async fn create_confirmation_threshold(
         };
     let canonical_amount = unit_amount.canonical();
 
-    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
-    let _policy_guard = policy_lock.lock().await;
+    let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
     let store_id = row.id.clone();
     let existing = match state
         .db
@@ -1977,11 +1980,12 @@ pub async fn create_confirmation_threshold(
         .await;
     }
     let threshold_id = uuid::Uuid::new_v4().to_string();
-    let (store_id, amount) = (row.id.clone(), canonical_amount.clone());
+    let (store_id, amount, proof) = (row.id.clone(), canonical_amount.clone(), policy.proof());
     let create_result = state
         .db
         .write(move |db| {
             db.create_confirmation_threshold_with_limit(
+                proof,
                 &threshold_id,
                 &store_id,
                 &amount,
@@ -2060,12 +2064,11 @@ pub async fn delete_confirmation_threshold(
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
-    let _policy_guard = policy_lock.lock().await;
-    let store_id = row.id.clone();
+    let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
+    let (store_id, proof) = (row.id.clone(), policy.proof());
     if state
         .db
-        .write(move |db| db.delete_confirmation_threshold(&store_id, &threshold_id))
+        .write(move |db| db.delete_confirmation_threshold(proof, &store_id, &threshold_id))
         .await
         .is_err()
     {
@@ -2143,8 +2146,7 @@ pub async fn save_confirmation_thresholds(
             .unwrap()
             .canonical()
     });
-    let policy_lock = crate::confirmation_thresholds::policy_lock(&row.tenant_public_key);
-    let _policy_guard = policy_lock.lock().await;
+    let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
     let store_id = row.id.clone();
     let existing = match state
         .db
@@ -2210,7 +2212,8 @@ pub async fn save_confirmation_thresholds(
     }
 
     let threshold_id = uuid::Uuid::new_v4().to_string();
-    let (store_id, new_amount) = (row.id.clone(), canonical_new_amount.clone());
+    let (store_id, new_amount, proof) =
+        (row.id.clone(), canonical_new_amount.clone(), policy.proof());
     let update_result = state
         .db
         .write(move |db| {
@@ -2222,7 +2225,7 @@ pub async fn save_confirmation_thresholds(
                     crate::now_unix(),
                 )
             });
-            db.replace_confirmation_thresholds(&store_id, &deleted_ids, new_threshold)
+            db.replace_confirmation_thresholds(proof, &store_id, &deleted_ids, new_threshold)
         })
         .await;
     if !matches!(update_result, Ok(true)) {
@@ -3010,6 +3013,33 @@ mod tests {
             ("haveno_min_offers_per_side", offers),
             ("haveno_min_depth_xmr_per_side", depth),
         ]
+    }
+
+    #[tokio::test]
+    async fn saving_the_providers_waits_for_the_stores_policy_lock() {
+        let (state, _engine) = haveno_state().await;
+        let router = build_router(state);
+        let session = signed_up_and_logged_in_session_token(
+            &router,
+            "fx-policy-lock@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, pk) = create_connection(&router, &session).await;
+        let fx_uri = format!("/dashboard/stores/{connection_id}/settings/fx-provider");
+
+        let guard = crate::confirmation_thresholds::lock_policy(&pk).await;
+        let request = form_post_request(&fx_uri, &session, &haveno_form("eur", "2.5", "3", "1.5"));
+        let mut task = tokio::spawn(async move { router.oneshot(request).await.unwrap() });
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_millis(100), &mut task)
+                .await
+                .is_err(),
+            "the save waits while an order is being priced"
+        );
+        drop(guard);
+        let response = task.await.unwrap();
+        assert!(response.status().is_redirection() || response.status() == StatusCode::OK);
     }
 
     #[tokio::test]
