@@ -34,6 +34,7 @@
 //! exactly what its published side-channel attacks target) and why VM-based
 //! isolation is preferred.
 
+mod outputs;
 mod plain;
 pub mod router;
 pub use router::CustodyRouter;

@@ -7,6 +7,7 @@ use monero::cryptonote::onetime_key::SubKeyChecker;
 use monero::{Address, PrivateKey, PublicKey, Transaction, ViewPair};
 use zeroize::Zeroize;
 
+use super::outputs::ScanInput;
 use super::{
     KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex,
     WalletHandle, WalletMaterial,
@@ -371,10 +372,13 @@ impl KeyCustody for PlainKeyCustody {
             }
         }
         let view_pair = entry.view_pair;
-        let tx = tx.clone();
+        let tx = ScanInput::of(tx);
         let permit = SCAN_SLOTS.clone().acquire_owned().await;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
+            if !tx.pays(&view_pair, &lookup.table) {
+                return Ok(Vec::new());
+            }
             let keys = std::mem::take(&mut lookup.table);
             let cached_range = lookup.range.take();
             lookup.complete = false;
@@ -382,19 +386,7 @@ impl KeyCustody for PlainKeyCustody {
                 table: keys,
                 keys: &view_pair,
             };
-            let result = match tx.check_outputs_with(&checker) {
-                Ok(owned) => Ok(owned
-                    .into_iter()
-                    .map(|o| MatchedOutput {
-                        output_index: o.index(),
-                        subaddress_index: o.sub_index(),
-                        amount_piconero: o.amount().map(|a| a.as_pico()),
-                    })
-                    .collect()),
-                Err(monero::blockdata::transaction::Error::NoTxPublicKey)
-                | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Ok(Vec::new()),
-                Err(e) => Err(KeyCustodyError::ScanFailed(e.to_string())),
-            };
+            let result = tx.owned_outputs(&checker);
             lookup.table = checker.table;
             lookup.range = cached_range;
             lookup.complete = true;
@@ -446,13 +438,16 @@ impl KeyCustody for PlainKeyCustody {
                 tokio::task::yield_now().await;
             }
         }
-        let tx = tx.clone();
+        let tx = ScanInput::of(tx);
         let view_pair = entry.view_pair;
         let generation = indices.generation();
         let permit = SCAN_SLOTS.clone().acquire_owned().await;
         tokio::task::spawn_blocking(move || {
             let _permit = permit;
-            // If `check_outputs_with` panics, the next call must rebuild, not
+            if !tx.pays(&view_pair, &live.table) {
+                return Ok(Vec::new());
+            }
+            // If `owned_outputs` panics, the next call must rebuild, not
             // treat an emptied table as a completed generation.
             let keys = std::mem::take(&mut live.table);
             let cached_indices = std::mem::take(&mut live.indices);
@@ -461,19 +456,7 @@ impl KeyCustody for PlainKeyCustody {
                 table: keys,
                 keys: &view_pair,
             };
-            let result = match tx.check_outputs_with(&checker) {
-                Ok(owned) => Ok(owned
-                    .into_iter()
-                    .map(|o| MatchedOutput {
-                        output_index: o.index(),
-                        subaddress_index: o.sub_index(),
-                        amount_piconero: o.amount().map(|a| a.as_pico()),
-                    })
-                    .collect()),
-                Err(monero::blockdata::transaction::Error::NoTxPublicKey)
-                | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Ok(Vec::new()),
-                Err(e) => Err(KeyCustodyError::ScanFailed(e.to_string())),
-            };
+            let result = tx.owned_outputs(&checker);
             live.table = checker.table;
             live.indices = cached_indices;
             live.generation = Some(generation);
