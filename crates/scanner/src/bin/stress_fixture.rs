@@ -86,7 +86,11 @@ impl MoneroDaemonClient for FixtureDaemon {
             vec![self.tx.clone()]
         })
     }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        self.rpc().await?;
+        Ok(vec![])
+    }
+    async fn get_transactions(&self, _txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
         self.rpc().await?;
         Ok(vec![])
     }

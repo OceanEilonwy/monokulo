@@ -24,6 +24,9 @@
 //! vanished-payment check reads) a payment not yet in a block. Otherwise no
 //! request is made at all, and what was remembered is dropped. And bodies are
 //! only fetched when there is a store to scan them for.
+//!
+//! A round that will look at the pool asks for it with the chain's tip, at
+//! its start ([`watching`], `run_round`): one request for both.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -129,9 +132,42 @@ impl MempoolState {
     }
 }
 
-#[derive(Default)]
 pub(crate) struct MempoolRound {
     done: bool,
+    /// Whether there is anything to look for in the pool ([`watching`]),
+    /// as decided when the round started.
+    watching: Option<Result<bool, ScannerError>>,
+    /// The pool's transaction ids as asked for with the round's tip, when
+    /// they were.
+    polled: Option<crate::daemon::PoolAnswer>,
+}
+
+impl MempoolRound {
+    pub(super) fn starting(
+        watching: Result<bool, ScannerError>,
+        polled: Option<crate::daemon::PoolAnswer>,
+    ) -> Self {
+        Self {
+            done: false,
+            watching: Some(watching),
+            polled,
+        }
+    }
+}
+
+/// Whether there is anything to look for in the pool: a store with an
+/// order in scope, or a payment waiting for a block.
+pub(super) async fn watching(inputs: &RoundInputs<'_>, now: i64) -> Result<bool, ScannerError> {
+    let (network, grace) = (inputs.network, inputs.grace_period_seconds);
+    inputs
+        .db
+        .run(Class::Scanner, move |s| -> Result<bool, ScannerError> {
+            Ok(!s
+                .active_tenants_page(network, now, grace, "", 1)?
+                .is_empty()
+                || !s.unconfirmed_payments_page(network, 0, 1)?.is_empty())
+        })
+        .await
 }
 
 /// The round's mempool tier: one unit per round.
@@ -144,24 +180,20 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     let state = &round.state.mempool;
     // Nothing to look for in the pool: no store has an order in scope and
     // no payment is waiting for a block. The node isn't asked.
-    let (grace, now) = (round.inputs.grace_period_seconds, round.now);
-    let watching = round
-        .db(move |s, network| -> Result<bool, ScannerError> {
-            Ok(!s
-                .active_tenants_page(network, now, grace, "", 1)?
-                .is_empty()
-                || !s.unconfirmed_payments_page(network, 0, 1)?.is_empty())
-        })
-        .await;
-    match watching {
-        Ok(true) => {}
-        Ok(false) => {
+    match round.mempool.watching.take() {
+        Some(Ok(true)) => {}
+        Some(Ok(false)) | None => {
             state.forget();
             return Progress::Idle;
         }
-        Err(error) => return Progress::Failed(error),
+        Some(Err(error)) => return Progress::Failed(error),
     }
-    let Some(pool_txids) = poll(round.inputs).await else {
+    // The pool was asked for with the round's tip.
+    let answer = match round.mempool.polled.take() {
+        Some(answer) => answer.map_err(ScannerError::from),
+        None => bounded(round.inputs.daemon.get_mempool_txids()).await,
+    };
+    let Some(pool_txids) = readable(round.inputs, answer) else {
         return Progress::Blocked(Wait::MempoolUnreadable);
     };
     let in_pool: HashSet<String> = pool_txids.iter().cloned().collect();
@@ -247,7 +279,7 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
     if tenants.is_empty() {
         return Some(report);
     }
-    let pool_txids = poll(inputs).await?;
+    let pool_txids = readable(inputs, bounded(inputs.daemon.get_mempool_txids()).await)?;
     let mempool = &state.mempool;
     let in_pool: HashSet<String> = pool_txids.iter().cloned().collect();
     mempool.retain_pool(&in_pool);
@@ -360,8 +392,11 @@ async fn scan_and_record(
 
 /// The pool's transaction ids, or `None` (logged) if the node couldn't say:
 /// never "we couldn't look" read as "the pool is empty".
-async fn poll(inputs: &RoundInputs<'_>) -> Option<Vec<String>> {
-    match bounded(inputs.daemon.get_mempool_txids()).await {
+fn readable(
+    inputs: &RoundInputs<'_>,
+    answer: Result<Vec<String>, ScannerError>,
+) -> Option<Vec<String>> {
+    match answer {
         Ok(txids) => Some(txids),
         Err(error) => {
             shared::throttled!(format!("mempool-poll:{:?}", inputs.network), warn, network = ?inputs.network, error = %error,

@@ -5,7 +5,9 @@
 //! the engine to configure a network, tick healthily and report it on its
 //! status page. It can't produce payments: that would need a
 //! `get_blocks.bin` encoder and real transactions, so payment flows are
-//! tested in-process with `FakeDaemonClient` instead.
+//! tested in-process with `FakeDaemonClient` instead. (With no
+//! `get_blocks.bin`, the engine reads its pool from the plain list of ids,
+//! as from a monerod too old to describe its pool's changes.)
 //!
 //! Usage: `fake-monerod [--port N] [--height N] [--nettype NAME]`, where
 //! `--nettype` is the network `get_info` reports (default `stagenet`, what
@@ -70,7 +72,21 @@ async fn get_height(State(chain): State<Chain>) -> Response {
     if let Err(r) = chain.check() {
         return *r;
     }
-    Json(json!({ "height": chain.count.load(Ordering::SeqCst), "status": "OK" })).into_response()
+    // The chain's length and, as monerod does, its top block's id.
+    let count = chain.count.load(Ordering::SeqCst);
+    Json(json!({ "height": count, "hash": block_hash(count.saturating_sub(1)), "status": "OK" }))
+        .into_response()
+}
+
+/// A block's header, as `get_block_header_by_height` and
+/// `get_block_headers_range` give it.
+fn block_header(height: u64) -> Value {
+    json!({
+        "hash": block_hash(height),
+        "prev_hash": height.checked_sub(1).map(block_hash).unwrap_or_else(|| "0".repeat(64)),
+        "height": height,
+        "timestamp": 1_700_000_000 + height * 120,
+    })
 }
 
 async fn json_rpc(State(chain): State<Chain>, Json(request): Json<Value>) -> Response {
@@ -87,30 +103,56 @@ async fn json_rpc(State(chain): State<Chain>, Json(request): Json<Value>) -> Res
         "get_info" => {
             Json(json!({ "jsonrpc": "2.0", "id": id, "result": chain.info() })).into_response()
         }
-        "get_block" => {
+        "get_block" | "get_block_header_by_height" => {
             let height = request
                 .pointer("/params/height")
                 .and_then(Value::as_u64)
                 .unwrap_or(top);
             if height > top {
-                return Json(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -2, "message": format!("requested height {height} greater than current top block height {top}") } })).into_response();
+                return too_high(id, height, top);
             }
-            Json(json!({
-                "jsonrpc": "2.0",
-                "id": id,
-                "result": {
-                    "block_header": { "hash": block_hash(height), "height": height, "timestamp": 1_700_000_000 + height * 120 },
-                    "tx_hashes": [],
-                    "status": "OK"
-                }
-            }))
-            .into_response()
+            let mut result = json!({ "block_header": block_header(height), "status": "OK" });
+            if method == "get_block" {
+                result["tx_hashes"] = json!([]);
+            }
+            Json(json!({ "jsonrpc": "2.0", "id": id, "result": result })).into_response()
+        }
+        "on_get_block_hash" => {
+            let height = request
+                .pointer("/params/0")
+                .and_then(Value::as_u64)
+                .unwrap_or(top);
+            if height > top {
+                return too_high(id, height, top);
+            }
+            Json(json!({ "jsonrpc": "2.0", "id": id, "result": block_hash(height) }))
+                .into_response()
+        }
+        // Like monerod, a range that runs past the tip is refused whole.
+        "get_block_headers_range" => {
+            let bound = |name: &str| {
+                request
+                    .pointer(&format!("/params/{name}"))
+                    .and_then(Value::as_u64)
+                    .unwrap_or(top)
+            };
+            let (start, end) = (bound("start_height"), bound("end_height"));
+            if end > top || start > end {
+                return too_high(id, end, top);
+            }
+            let headers: Vec<Value> = (start..=end).map(block_header).collect();
+            Json(json!({ "jsonrpc": "2.0", "id": id, "result": { "headers": headers, "status": "OK" } }))
+                .into_response()
         }
         other => {
             eprintln!("fake-monerod: unsupported json_rpc method {other:?}");
             Json(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": "Method not found" } })).into_response()
         }
     }
+}
+
+fn too_high(id: Value, height: u64, top: u64) -> Response {
+    Json(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -2, "message": format!("requested height {height} greater than current top block height {top}") } })).into_response()
 }
 
 async fn get_info(State(chain): State<Chain>) -> Response {
@@ -125,13 +167,6 @@ async fn empty_pool_hashes(State(chain): State<Chain>) -> Response {
         return *r;
     }
     Json(json!({ "tx_hashes": [], "status": "OK" })).into_response()
-}
-
-async fn empty_pool(State(chain): State<Chain>) -> Response {
-    if let Err(r) = chain.check() {
-        return *r;
-    }
-    Json(json!({ "transactions": [], "status": "OK" })).into_response()
 }
 
 async fn no_transactions(State(chain): State<Chain>) -> Response {
@@ -182,7 +217,6 @@ async fn main() {
         .route("/get_info", post(get_info).get(get_info))
         .route("/json_rpc", post(json_rpc))
         .route("/get_transaction_pool_hashes", post(empty_pool_hashes))
-        .route("/get_transaction_pool", post(empty_pool))
         .route("/get_transactions", post(no_transactions))
         .route("/fake/online", post(set_online))
         .route("/fake/offline", post(set_offline))

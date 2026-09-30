@@ -90,8 +90,10 @@ enum Inner {
         senders: Arc<[tokio::sync::mpsc::Sender<Job>; 3]>,
         wake: std::sync::mpsc::SyncSender<()>,
     },
-    /// Jobs run on the caller, on the store everything else shares.
-    Inline(SharedStore),
+    /// Jobs run on the caller, on the store everything else shares. With
+    /// `yields`, the caller first yields to the executor, as it does when
+    /// it sends a job to the worker.
+    Inline { store: SharedStore, yields: bool },
 }
 
 impl Db {
@@ -109,7 +111,24 @@ impl Db {
     /// opened twice. Production uses [`Db::open`].
     pub fn over_shared(store: SharedStore) -> Self {
         Db {
-            inner: Inner::Inline(store),
+            inner: Inner::Inline {
+                store,
+                yields: false,
+            },
+            counters: Arc::new(Counters::default()),
+        }
+    }
+
+    /// [`Db::over_shared`], with every job an await point, as it is with
+    /// the worker: a test that drops a future part-way can stop it between
+    /// two jobs, where a crash or a cancellation can stop the real thing.
+    #[cfg(test)]
+    pub fn over_shared_yielding(store: SharedStore) -> Self {
+        Db {
+            inner: Inner::Inline {
+                store,
+                yields: true,
+            },
             counters: Arc::new(Counters::default()),
         }
     }
@@ -166,7 +185,10 @@ impl Db {
     {
         use Inner::Inline;
         let (senders, wake) = match &self.inner {
-            Inline(store) => {
+            Inline { store, yields } => {
+                if *yields {
+                    tokio::task::yield_now().await;
+                }
                 let guard = lock_inline(store)?;
                 let started = Instant::now();
                 let result = f(&guard);

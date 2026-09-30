@@ -343,7 +343,8 @@ pub trait MoneroDaemonClient: Send + Sync {
     async fn get_height(&self) -> Result<u64, DaemonError>;
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError>;
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<monero::Transaction>, DaemonError>;
-    async fn get_mempool_transactions(&self) -> Result<Vec<monero::Transaction>, DaemonError>;
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError>;
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<monero::Transaction>, DaemonError>;
     async fn is_key_image_spent(&self, key_images: &[String]) -> Result<Vec<KeyImageStatus>, DaemonError>;
 }
 ```
@@ -368,8 +369,9 @@ adding a fallback actually costs.
 
 ### 7.2 0-conf and confirmed detection
 
-- **Mempool**: poll `get_mempool_transactions` on a fixed interval (config
-  `mempool_poll_interval_ms`, default ~1000ms). Every returned transaction is run
+- **Mempool**: poll `get_mempool_txids` on a fixed interval (config
+  `mempool_poll_interval_ms`, default ~1000ms) and fetch the transactions
+  not seen before. Every one is run
   through `scan_tx_outputs` for every tenant currently on the active watchlist (§7.3).
 - **Blocks**: poll `get_height`; on increase, fetch and scan each new block's
   transactions the same way, and record `(height, block_hash)` into `scanned_blocks`.

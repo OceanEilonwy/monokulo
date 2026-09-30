@@ -251,10 +251,13 @@ where
 {
     match tokio::time::timeout(CALL_DEADLINE, call).await {
         Ok(result) => result.map_err(ScannerError::from),
-        Err(_) => Err(ScannerError::Daemon(crate::daemon::DaemonError::Request(
-            format!("no answer within {CALL_DEADLINE:?}"),
-        ))),
+        Err(_) => Err(ScannerError::Daemon(no_answer())),
     }
+}
+
+/// What a call that outlasted [`CALL_DEADLINE`] failed with.
+fn no_answer() -> crate::daemon::DaemonError {
+    crate::daemon::DaemonError::Request(format!("no answer within {CALL_DEADLINE:?}"))
 }
 
 /// Retry delays for keys whose work keeps failing (a key-custody backend
@@ -428,7 +431,19 @@ pub async fn run_round(
 ) -> RoundReport {
     let started = Instant::now();
     let round_end = started + budget;
-    let (tip, tip_hash, tip_error) = match bounded(inputs.daemon.get_tip()).await {
+    let now = crate::now_unix();
+    // A round that will look at the pool asks for the tip and the pool
+    // together: one request while the chain hasn't moved.
+    let watching = mempool::watching(inputs, now).await;
+    let (tip_answer, polled) = if matches!(watching, Ok(true)) {
+        match tokio::time::timeout(CALL_DEADLINE, inputs.daemon.get_tip_and_mempool()).await {
+            Ok((tip, pool)) => (tip.map_err(ScannerError::from), Some(pool)),
+            Err(_) => (Err(no_answer().into()), Some(Err(no_answer()))),
+        }
+    } else {
+        (bounded(inputs.daemon.get_tip()).await, None)
+    };
+    let (tip, tip_hash, tip_error) = match tip_answer {
         Ok(tip) => (Some(tip.height), tip.hash, None),
         Err(error) => {
             shared::throttled!(
@@ -450,7 +465,7 @@ pub async fn run_round(
     let mut round = Round {
         inputs,
         state,
-        now: crate::now_unix(),
+        now,
         tip,
         tip_hash,
         handles: inputs
@@ -461,7 +476,7 @@ pub async fn run_round(
         pool_txids: None,
         chain: Default::default(),
         blocks: Default::default(),
-        mempool: Default::default(),
+        mempool: mempool::MempoolRound::starting(watching, polled),
         settlement: Default::default(),
         upkeep: Default::default(),
     };

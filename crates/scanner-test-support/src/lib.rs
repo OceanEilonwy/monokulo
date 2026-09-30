@@ -98,7 +98,13 @@ impl MoneroDaemonClient for NoopDaemonClient {
         Ok(vec![])
     }
 
-    async fn get_mempool_transactions(&self) -> Result<Vec<monero::Transaction>, DaemonError> {
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        Ok(vec![])
+    }
+    async fn get_transactions(
+        &self,
+        _txids: &[String],
+    ) -> Result<Vec<monero::Transaction>, DaemonError> {
         Ok(vec![])
     }
 
@@ -159,8 +165,20 @@ impl MoneroDaemonClient for LookupDaemonClient {
         Ok(vec![])
     }
 
-    async fn get_mempool_transactions(&self) -> Result<Vec<monero::Transaction>, DaemonError> {
-        Ok(self.mempool.lock().clone())
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        Ok(self
+            .mempool
+            .lock()
+            .iter()
+            .map(scanner::scanner::tx_id_hex)
+            .collect())
+    }
+
+    async fn get_transactions(
+        &self,
+        txids: &[String],
+    ) -> Result<Vec<monero::Transaction>, DaemonError> {
+        Ok(txids.iter().filter_map(|txid| self.find(txid)).collect())
     }
 
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
@@ -1194,8 +1212,20 @@ mod tests {
             Ok(vec![])
         }
 
-        async fn get_mempool_transactions(&self) -> Result<Vec<monero::Transaction>, DaemonError> {
-            Ok(vec![fixture_tx()])
+        async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+            Ok(vec![scanner::scanner::tx_id_hex(&fixture_tx())])
+        }
+
+        async fn get_transactions(
+            &self,
+            txids: &[String],
+        ) -> Result<Vec<monero::Transaction>, DaemonError> {
+            let tx = fixture_tx();
+            Ok(if txids.contains(&scanner::scanner::tx_id_hex(&tx)) {
+                vec![tx]
+            } else {
+                vec![]
+            })
         }
 
         async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {

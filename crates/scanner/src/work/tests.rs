@@ -47,16 +47,6 @@ impl MoneroDaemonClient for CountingDaemon<'_> {
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
         self.inner.get_block_transactions(height).await
     }
-    async fn get_blocks_range(
-        &self,
-        start: u64,
-        count: u64,
-    ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
-        self.inner.get_blocks_range(start, count).await
-    }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        self.inner.get_mempool_transactions().await
-    }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.inner.get_mempool_txids().await
     }
@@ -658,16 +648,6 @@ impl MoneroDaemonClient for CannotLocate<'_> {
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
         self.inner.get_block_transactions(height).await
     }
-    async fn get_blocks_range(
-        &self,
-        start: u64,
-        count: u64,
-    ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
-        self.inner.get_blocks_range(start, count).await
-    }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        self.inner.get_mempool_transactions().await
-    }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.inner.get_mempool_txids().await
     }
@@ -966,9 +946,6 @@ impl MoneroDaemonClient for ReorgsAfterFetch<'_> {
         }
         Ok(blocks)
     }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        self.inner.get_mempool_transactions().await
-    }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.inner.get_mempool_txids().await
     }
@@ -1238,9 +1215,6 @@ impl MoneroDaemonClient for Lookups<'_> {
     ) -> Result<Vec<crate::daemon::ChainBlock>, DaemonError> {
         self.inner.get_chain_blocks(start, count).await
     }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        self.inner.get_mempool_transactions().await
-    }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.inner.get_mempool_txids().await
     }
@@ -1465,8 +1439,8 @@ impl MoneroDaemonClient for SlowBlocks<'_> {
         tokio::time::sleep(self.delay).await;
         self.inner.get_chain_blocks(start, count).await
     }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        self.inner.get_mempool_transactions().await
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_transactions(txids).await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.inner.get_mempool_txids().await
@@ -1960,8 +1934,11 @@ impl MoneroDaemonClient for HashLookupsFail<'_> {
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
         self.0.get_block_transactions(height).await
     }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        self.0.get_mempool_transactions().await
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        self.0.get_mempool_txids().await
+    }
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
+        self.0.get_transactions(txids).await
     }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
         self.0.locate_transaction(txid).await
@@ -2170,8 +2147,11 @@ impl MoneroDaemonClient for OnLocate<'_> {
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
         self.inner.get_block_transactions(height).await
     }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        self.inner.get_mempool_transactions().await
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        self.inner.get_mempool_txids().await
+    }
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
+        self.inner.get_transactions(txids).await
     }
     async fn locate_transaction(&self, txid: &str) -> Result<TxLocation, DaemonError> {
         (self.hook)(txid);
@@ -2493,8 +2473,8 @@ impl MoneroDaemonClient for Hooked<'_> {
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
         self.inner.get_block_transactions(height).await
     }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        self.inner.get_mempool_transactions().await
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+        self.inner.get_mempool_txids().await
     }
     async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
         if self.no_bodies {
@@ -3022,11 +3002,17 @@ impl MoneroDaemonClient for PoolOnly<'_> {
     async fn get_block_transactions(&self, _: u64) -> Result<Vec<Transaction>, DaemonError> {
         Err(DaemonError::Request("down".into()))
     }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+    async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.0.set_online(true);
-        let pool = self.0.get_mempool_transactions().await;
+        let pool = self.0.get_mempool_txids().await;
         self.0.set_online(false);
         pool
+    }
+    async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
+        self.0.set_online(true);
+        let txs = self.0.get_transactions(txids).await;
+        self.0.set_online(false);
+        txs
     }
     async fn locate_transaction(&self, _: &str) -> Result<TxLocation, DaemonError> {
         Err(DaemonError::Request("down".into()))
@@ -3874,6 +3860,15 @@ impl MoneroDaemonClient for Asked<'_> {
         self.note("get_tip");
         self.inner.get_tip().await
     }
+    async fn get_tip_and_mempool(
+        &self,
+    ) -> (
+        Result<crate::daemon::ChainTip, DaemonError>,
+        crate::daemon::PoolAnswer,
+    ) {
+        self.note("get_tip_and_mempool");
+        self.inner.get_tip_and_mempool().await
+    }
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
         self.note("get_block_hash");
         self.inner.get_block_hash(height).await
@@ -3897,10 +3892,6 @@ impl MoneroDaemonClient for Asked<'_> {
     ) -> Result<Vec<crate::daemon::ChainHeader>, DaemonError> {
         self.note("get_chain_headers");
         self.inner.get_chain_headers(start, count).await
-    }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        self.note("get_mempool_transactions");
-        self.inner.get_mempool_transactions().await
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.note("get_mempool_txids");
@@ -4011,8 +4002,9 @@ async fn a_network_with_nothing_to_watch_costs_one_small_request_a_round() {
 }
 
 /// A store that gets an order after the network sat idle misses nothing: from
-/// the next round the pool is polled and its transactions fetched and
-/// scanned, and the next block is fetched whole and scanned, for that store.
+/// the next round the pool is polled (in the same call as the tip) and its
+/// transactions fetched and scanned, and the next block is fetched whole and
+/// scanned, for that store.
 #[tokio::test]
 #[allow(clippy::await_holding_lock)] // the fixture writes to the store it is given
 async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_round() {
@@ -4049,7 +4041,11 @@ async fn a_store_that_gets_an_order_while_idle_is_scanned_for_from_the_next_roun
     .into_result()
     .unwrap();
     let asked = node.take();
-    assert!(asked.contains(&"get_mempool_txids"), "{asked:?}");
+    // The tip and the pool are asked for together, in one call.
+    assert_eq!(asked[0], "get_tip_and_mempool", "{asked:?}");
+    for apart in ["get_tip", "get_mempool_txids"] {
+        assert!(!asked.contains(&apart), "{asked:?}");
+    }
     assert!(asked.contains(&"get_transactions_with_ids"), "{asked:?}");
     let payments = || store.lock().get_all_payments(&order).unwrap();
     assert_eq!(payments().len(), 1, "seen in the pool");
@@ -4104,7 +4100,7 @@ async fn nothing_is_fetched_for_a_store_whose_keys_are_not_registered() {
         .into_result()
         .unwrap();
     let asked = node.take();
-    assert!(asked.contains(&"get_mempool_txids"), "{asked:?}");
+    assert!(asked.contains(&"get_tip_and_mempool"), "{asked:?}");
     assert!(asked.contains(&"get_chain_headers"), "{asked:?}");
     for fetch in ["get_transactions_with_ids", "get_chain_blocks"] {
         assert!(!asked.contains(&fetch), "{asked:?}");

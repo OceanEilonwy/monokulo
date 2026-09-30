@@ -55,7 +55,9 @@ block-hashing at all.
 block's id (`Block::id`, not a `Hashable` impl). The scanner now reads each
 block's id, parent id and time from the blob `get_blocks.bin` already
 returns with its transactions (`MoneroDaemonClient::get_chain_blocks`), so a
-block costs no hash call at all. See `docs/node_rpc_efficiency.md`.
+block costs no hash call at all. `get_blocks_range`, which this document
+names throughout, had no caller left and was removed. See
+`docs/node_rpc_efficiency.md`.
 
 ---
 

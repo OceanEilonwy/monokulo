@@ -10,7 +10,7 @@
 //! `cargo test -p scanner --test daemon_rpc_replay -- --ignored`.
 
 use parking_lot::Mutex;
-use std::collections::HashMap;
+use std::collections::{HashMap, VecDeque};
 use std::sync::Arc;
 
 use axum::body::Bytes;
@@ -54,37 +54,52 @@ async fn serve(router: Router) -> (u16, tokio::task::JoinHandle<()>) {
     (port, task)
 }
 
-/// Serves each recorded response for the same path and request body.
+/// The recorded responses to one path and request body, in the order they
+/// were given.
+type Recorded = Arc<Mutex<HashMap<(String, String), VecDeque<String>>>>;
+
+/// Serves each recorded response for the same path and request body: in the
+/// order recorded where the same request was made more than once (the tip
+/// may have moved between two of them), the last one from then on.
 async fn replay() -> (RpcDaemonClient, tokio::task::JoinHandle<()>) {
     let exchanges: Vec<Exchange> =
         serde_json::from_str(&std::fs::read_to_string(FIXTURE).unwrap()).unwrap();
-    let table: Arc<HashMap<(String, String), String>> = Arc::new(
-        exchanges
-            .into_iter()
-            .map(|e| ((e.path, e.request_hex), e.response_hex))
-            .collect(),
-    );
-    let router =
-        Router::new()
-            .fallback(
-                |State(table): State<Arc<HashMap<(String, String), String>>>,
-                 uri: Uri,
-                 body: Bytes| async move {
-                    match table.get(&(uri.path().to_string(), hex::encode(&body))) {
-                        Some(response) => (StatusCode::OK, hex::decode(response).unwrap()),
-                        None => (
-                            StatusCode::NOT_FOUND,
-                            format!(
-                                "no recording for {} {}",
-                                uri.path(),
-                                String::from_utf8_lossy(&body)
-                            )
-                            .into_bytes(),
-                        ),
-                    }
-                },
-            )
-            .with_state(table);
+    let mut table: HashMap<(String, String), VecDeque<String>> = HashMap::new();
+    for e in exchanges {
+        table
+            .entry((e.path, e.request_hex))
+            .or_default()
+            .push_back(e.response_hex);
+    }
+    let table: Recorded = Arc::new(Mutex::new(table));
+    let router = Router::new()
+        .fallback(
+            |State(table): State<Recorded>, uri: Uri, body: Bytes| async move {
+                let mut table = table.lock();
+                let response = table
+                    .get_mut(&(uri.path().to_string(), hex::encode(&body)))
+                    .and_then(|responses| {
+                        if responses.len() > 1 {
+                            responses.pop_front()
+                        } else {
+                            responses.front().cloned()
+                        }
+                    });
+                match response {
+                    Some(response) => (StatusCode::OK, hex::decode(response).unwrap()),
+                    None => (
+                        StatusCode::NOT_FOUND,
+                        format!(
+                            "no recording for {} {}",
+                            uri.path(),
+                            String::from_utf8_lossy(&body)
+                        )
+                        .into_bytes(),
+                    ),
+                }
+            },
+        )
+        .with_state(table);
     let (port, task) = serve(router).await;
     (
         RpcDaemonClient::new("127.0.0.1", port, false, false).unwrap(),
@@ -112,21 +127,11 @@ async fn exercise(client: &RpcDaemonClient) {
     assert!(tip.height >= KNOWN_TX_HEIGHT, "tip {}", tip.height);
     assert_eq!(tip.hash.as_ref().map(String::len), Some(64), "{tip:?}");
 
-    // One get_blocks.bin round trip for the chunk matches fetching each block
-    // with get_block + get_transactions, transaction for transaction.
-    let batched = client.get_blocks_range(START, COUNT).await.unwrap();
-    assert_eq!(batched.len(), COUNT as usize);
-    for (offset, block) in batched.iter().enumerate() {
-        let single = client
-            .get_block_transactions(START + offset as u64)
-            .await
-            .unwrap();
-        assert_eq!(
-            block.iter().map(tx_id_hex).collect::<Vec<_>>(),
-            single.iter().map(tx_id_hex).collect::<Vec<_>>(),
-            "block {}",
-            START + offset as u64
-        );
+    // Each block of the chunk fetched whole, with get_block +
+    // get_transactions: what the pruned chunk below is checked against.
+    let mut batched = Vec::new();
+    for height in START..START + COUNT {
+        batched.push(client.get_block_transactions(height).await.unwrap());
     }
     let known_block = &batched[(KNOWN_TX_HEIGHT - START) as usize];
     let known = known_block
@@ -255,8 +260,21 @@ async fn exercise(client: &RpcDaemonClient) {
     // Asked again at once, the last answer stands: no request.
     assert_eq!(client.get_mempool_txids().await.unwrap().len(), pool.len());
     assert_eq!(requests("/get_blocks.bin (pool changes)"), 1);
-    // Whatever is in the pool decodes whole too (possibly nothing).
-    client.get_mempool_transactions().await.unwrap();
+
+    // The tip and the pool's changes in one request: the chain still ends
+    // at the block the client last saw, the node says so with the changes,
+    // and it isn't asked for its height. (When recording, a block arriving
+    // within this fraction of a second fails this: record again.)
+    let tip = client.get_tip().await.unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    let heights_asked = requests("/get_height");
+    let (same_tip, pool_again) = client.get_tip_and_mempool().await;
+    assert_eq!(same_tip.unwrap(), tip);
+    pool_again.unwrap();
+    assert_eq!(requests("/get_blocks.bin (pool changes and tip)"), 1);
+    assert_eq!(requests("/get_height"), heights_asked);
+    assert_eq!(requests("/get_blocks.bin (pool changes)"), 1);
+    assert_eq!(requests("/get_transaction_pool_hashes"), 0);
 }
 
 #[tokio::test]
@@ -279,13 +297,14 @@ async fn scanner_node_client_reports_a_node_that_does_not_answer_as_it_expects()
     assert!(error.contains("invalid JSON response"), "{error}");
     let error = client.get_block_hash(1).await.unwrap_err().to_string();
     assert!(error.contains("invalid JSON response"), "{error}");
-    assert!(client.get_blocks_range(START, COUNT).await.is_err());
     assert!(client.get_chain_blocks(START, COUNT).await.is_err());
     assert!(client.get_chain_headers(START, COUNT).await.is_err());
     assert!(client.get_tip().await.is_err());
     // The pool: neither the request for its changes nor the plain list is
     // answered, and that is an error, never an empty pool.
     assert!(client.get_mempool_txids().await.is_err());
+    let (tip, pool) = client.get_tip_and_mempool().await;
+    assert!(tip.is_err() && pool.is_err());
     assert!(client
         .locate_transactions(&[ABSENT_TX.to_string()])
         .await

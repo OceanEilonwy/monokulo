@@ -538,8 +538,12 @@ mod tests {
         ) -> Result<Vec<monero::Transaction>, crate::daemon::DaemonError> {
             unimplemented!("not probed")
         }
-        async fn get_mempool_transactions(
+        async fn get_mempool_txids(&self) -> Result<Vec<String>, crate::daemon::DaemonError> {
+            unimplemented!("not probed")
+        }
+        async fn get_transactions(
             &self,
+            _txids: &[String],
         ) -> Result<Vec<monero::Transaction>, crate::daemon::DaemonError> {
             unimplemented!("not probed")
         }

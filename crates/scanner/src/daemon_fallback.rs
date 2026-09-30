@@ -28,7 +28,7 @@ use std::time::Duration;
 
 use monero::Transaction;
 
-use crate::daemon::{ChainBlock, ChainHeader, ChainTip, FetchedTx};
+use crate::daemon::{ChainBlock, ChainHeader, ChainTip, FetchedTx, PoolAnswer};
 use parking_lot::Mutex;
 use tokio::time::Instant;
 
@@ -278,13 +278,6 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     async fn get_block_transactions(&self, height: u64) -> Result<Vec<Transaction>, DaemonError> {
         self.one(|c| c.get_block_transactions(height)).await
     }
-    async fn get_blocks_range(
-        &self,
-        start_height: u64,
-        count: u64,
-    ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
-        self.one(|c| c.get_blocks_range(start_height, count)).await
-    }
     async fn get_chain_blocks(
         &self,
         start_height: u64,
@@ -299,8 +292,21 @@ impl MoneroDaemonClient for PinnedDaemon<'_> {
     ) -> Result<Vec<ChainHeader>, DaemonError> {
         self.one(|c| c.get_chain_headers(start_height, count)).await
     }
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        self.one(|c| c.get_mempool_transactions()).await
+    /// The pinned node's two answers. It is judged by the tip's.
+    async fn get_tip_and_mempool(&self) -> (Result<ChainTip, DaemonError>, PoolAnswer) {
+        let both = self
+            .one(|c| async move {
+                let (tip, pool) = c.get_tip_and_mempool().await;
+                tip.map(|tip| (tip, pool))
+            })
+            .await;
+        match both {
+            Ok((tip, pool)) => (Ok(tip), pool),
+            Err(error) => {
+                let pool = Err(DaemonError::Request(error.to_string()));
+                (Err(error), pool)
+            }
+        }
     }
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
         self.one(|c| c.get_mempool_txids()).await
@@ -370,15 +376,6 @@ impl MoneroDaemonClient for FallbackDaemonClient {
         self.failover(|c| c.get_block_transactions(height)).await
     }
 
-    async fn get_blocks_range(
-        &self,
-        start_height: u64,
-        count: u64,
-    ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
-        self.failover(|c| c.get_blocks_range(start_height, count))
-            .await
-    }
-
     /// One node answers for the whole range: a block's contents and id never
     /// come from two nodes.
     async fn get_chain_blocks(
@@ -399,8 +396,21 @@ impl MoneroDaemonClient for FallbackDaemonClient {
             .await
     }
 
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        self.failover(|c| c.get_mempool_transactions()).await
+    /// One node answers both where it can: the first that gives its tip.
+    /// A pool that node couldn't give (or every node's tip failing) is
+    /// asked for on its own, from whichever node answers.
+    async fn get_tip_and_mempool(&self) -> (Result<ChainTip, DaemonError>, PoolAnswer) {
+        let both = self
+            .failover(|c| async move {
+                let (tip, pool) = c.get_tip_and_mempool().await;
+                tip.map(|tip| (tip, pool))
+            })
+            .await;
+        match both {
+            Ok((tip, Ok(pool))) => (Ok(tip), Ok(pool)),
+            Ok((tip, Err(_))) => (Ok(tip), self.get_mempool_txids().await),
+            Err(error) => (Err(error), self.get_mempool_txids().await),
+        }
     }
 
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
@@ -590,7 +600,13 @@ mod tests {
             unimplemented!("not exercised by these tests")
         }
 
-        async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+            unimplemented!("not exercised by these tests")
+        }
+        async fn get_transactions(
+            &self,
+            _txids: &[String],
+        ) -> Result<Vec<Transaction>, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
 
@@ -744,7 +760,13 @@ mod tests {
         ) -> Result<Vec<Transaction>, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
-        async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+            unimplemented!("not exercised by these tests")
+        }
+        async fn get_transactions(
+            &self,
+            _txids: &[String],
+        ) -> Result<Vec<Transaction>, DaemonError> {
             unimplemented!("not exercised by these tests")
         }
         async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {
@@ -967,7 +989,13 @@ mod tests {
         ) -> Result<Vec<Transaction>, DaemonError> {
             std::future::pending().await
         }
-        async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
+        async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
+            std::future::pending().await
+        }
+        async fn get_transactions(
+            &self,
+            _txids: &[String],
+        ) -> Result<Vec<Transaction>, DaemonError> {
             std::future::pending().await
         }
         async fn locate_transaction(&self, _txid: &str) -> Result<TxLocation, DaemonError> {

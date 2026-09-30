@@ -919,7 +919,7 @@ pub(crate) async fn voided_key_image_statuses(
         .collect())
 }
 
-/// Never request fewer than this many blocks in one `get_blocks_range` call,
+/// Never request fewer than this many blocks in one `get_chain_blocks` call,
 /// regardless of how large `avg_bytes_per_block` has drifted - a pathological
 /// (e.g. cold-start-too-low) estimate must not compute a chunk size of `0`
 /// and stall the catch-up walk forever.
@@ -928,8 +928,8 @@ const SCAN_CHUNK_MIN_BLOCKS: u64 = 1;
 /// small `avg_bytes_per_block` has drifted (e.g. a long run of near-empty
 /// blocks) - `payment.scan_chunk_memory_budget_mb` alone would technically
 /// allow an enormous request in that case, and an older monerod ignoring
-/// `get_blocks.bin`'s own `max_block_count` hint (see `get_blocks_range`'s
-/// own doc comment) has no other backstop against that.
+/// `get_blocks.bin`'s own `max_block_count` hint has no other backstop
+/// against that.
 const SCAN_CHUNK_MAX_BLOCKS: u64 = 500;
 /// How fast the running average of bytes-per-block reacts to a real chunk's
 /// own observed size - `0.3` weighs recent chunks heavily (so a genuine shift
@@ -1473,10 +1473,14 @@ pub(crate) mod tests {
         ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_block_transactions(height).await
         }
-        async fn get_mempool_transactions(
+        async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
+            self.inner.get_mempool_txids().await
+        }
+        async fn get_transactions(
             &self,
+            txids: &[String],
         ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.inner.get_mempool_transactions().await
+            self.inner.get_transactions(txids).await
         }
         async fn locate_transaction(
             &self,
@@ -1537,10 +1541,14 @@ pub(crate) mod tests {
         ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_block_transactions(height).await
         }
-        async fn get_mempool_transactions(
+        async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
+            self.inner.get_mempool_txids().await
+        }
+        async fn get_transactions(
             &self,
+            txids: &[String],
         ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.inner.get_mempool_transactions().await
+            self.inner.get_transactions(txids).await
         }
         async fn locate_transaction(
             &self,
@@ -1571,14 +1579,6 @@ pub(crate) mod tests {
     enum DaemonCall {
         Height,
         BlockTransactions,
-        /// Counts calls to `get_blocks_range` itself, distinct from
-        /// `BlockTransactions` - `DaemonFailingFrom` overrides `get_blocks_range`
-        /// to gate/count it directly rather than falling through to the trait's
-        /// own default (which would decompose it into per-height
-        /// `BlockTransactions` calls, making the two indistinguishable). This is
-        /// what lets a test assert "the chunked scan loop issued N real batched
-        /// calls," not just "N blocks were eventually fetched somehow."
-        BlocksRange,
         /// Counts calls to `get_chain_blocks`, the block scan's one fetch for a
         /// run of blocks with their ids.
         ChainBlocks,
@@ -1693,29 +1693,6 @@ pub(crate) mod tests {
             self.gate(DaemonCall::BlockTransactions).await?;
             self.inner.get_block_transactions(height).await
         }
-        async fn get_blocks_range(
-            &self,
-            start_height: u64,
-            count: u64,
-        ) -> std::result::Result<Vec<Vec<Transaction>>, DaemonError> {
-            self.gate(DaemonCall::BlocksRange).await?;
-            // Deliberately *not* `self.inner.get_blocks_range(...)`: that would call
-            // `inner`'s own `get_block_transactions` directly for each height,
-            // bypassing this wrapper's `BlockTransactions` gate entirely (silently
-            // breaking every test that injects a failure at a specific
-            // `BlockTransactions` call number). Looping through `self.
-            // get_block_transactions` instead - the trait's own default body,
-            // copied here rather than inherited, so it stays wrapped - keeps both
-            // gates independently meaningful: a `BlocksRange`-gated test sees one
-            // count per top-level call this wrapper receives, a
-            // `BlockTransactions`-gated test still sees one count per height
-            // regardless of how many blocks one `get_blocks_range` call covers.
-            let mut out = Vec::new();
-            for height in start_height..start_height.saturating_add(count) {
-                out.push(self.get_block_transactions(height).await?);
-            }
-            Ok(out)
-        }
         /// Straight to the inner node (its blocks are one consistent snapshot),
         /// unless a test injects failures into individual transaction fetches:
         /// then composed from this wrapper's own calls, so that gate applies.
@@ -1734,12 +1711,6 @@ pub(crate) mod tests {
                 out.push(crate::daemon::ChainBlock { txs, ..block });
             }
             Ok(out)
-        }
-        async fn get_mempool_transactions(
-            &self,
-        ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.gate(DaemonCall::Mempool).await?;
-            self.inner.get_mempool_transactions().await
         }
         /// The pool poll is what `DaemonCall::Mempool` gates; fetching the
         /// bodies of new txids isn't a second poll, so it passes through.
@@ -5809,10 +5780,14 @@ pub(crate) mod tests {
         ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_block_transactions(height).await
         }
-        async fn get_mempool_transactions(
+        async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
+            self.inner.get_mempool_txids().await
+        }
+        async fn get_transactions(
             &self,
+            txids: &[String],
         ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.inner.get_mempool_transactions().await
+            self.inner.get_transactions(txids).await
         }
         async fn locate_transaction(
             &self,
@@ -6389,9 +6364,8 @@ pub(crate) mod tests {
     async fn a_node_failing_partway_through_a_scan_chunk_retries_the_whole_chunk_next_tick() {
         // A tick is not atomic - it is a sequence of independent RPCs - so "the node
         // went away mid-tick" has as many shapes as there are calls in it. Since the
-        // block-fetching path batches into `get_blocks_range` chunks (`RESCAN_
-        // CHUNK_BLOCKS`'s successor, `docs/txid_lookup_and_scan_chunking_wbs.md`
-        // Part A), a failure *within* a chunk abandons the whole chunk, not just the
+        // block-fetching path batches into `get_chain_blocks` chunks
+        // (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A), a failure *within* a chunk abandons the whole chunk, not just the
         // one block that failed - there is no partial-response concept for a real
         // `get_blocks.bin` HTTP call to recover mid-flight the way the old
         // one-block-at-a-time loop could. This is the accepted, real trade-off of
@@ -6414,7 +6388,7 @@ pub(crate) mod tests {
         // The whole 2..=4 range fits in one chunk (well under `SCAN_CHUNK_MAX_
         // BLOCKS`), so this is really "the daemon fails while fetching the chunk
         // that covers the whole remaining range" - the second `BlockTransactions`
-        // call the default `get_blocks_range` implementation makes internally
+        // call this wrapper's `get_chain_blocks` makes internally
         // (height 2 succeeds as call 0, height 3 fails as call 1), which fails the
         // entire chunk before any of it is recorded.
         let daemon = DaemonFailingFrom::failing_from(fake, DaemonCall::BlockTransactions, 1);
@@ -6478,18 +6452,12 @@ pub(crate) mod tests {
         // (`docs/txid_lookup_and_scan_chunking_wbs.md` Part A): a process that was
         // down for a while faces a scan range spanning many blocks on its very next
         // tick. Before batching, that was one `get_block_transactions` call per
-        // block; now it should be a small number of `get_blocks_range` calls
+        // block; now it should be a small number of `get_chain_blocks` calls
         // regardless of how wide the range is, as long as the blocks are small
         // enough to fit many per chunk under the default memory budget.
         //
-        // Two separate runs, not one nested wrapper counting both call types at
-        // once: `DaemonFailingFrom::get_blocks_range`'s own override always
-        // decomposes into per-height `get_block_transactions` calls on `self`
-        // (needed so a *different* wrapper gating `BlockTransactions` still sees
-        // every sub-call - see that override's own doc comment), which means an
-        // outer wrapper's `get_blocks_range` never actually reaches an inner
-        // wrapper's own `get_blocks_range` counter. Not a limitation that matters
-        // here - each half is a real, independent claim anyway.
+        // Two separate runs, one per call counted: each half is a real,
+        // independent claim.
         // A pre-existing high-water mark (height 1, same idiom the mid-chunk-
         // failure test above uses) is essential, not incidental: without it,
         // `run_scan_tick`'s own first-run bootstrap (`max_scanned_height` is
@@ -9924,19 +9892,16 @@ pub(crate) mod tests {
             tokio::task::yield_now().await;
             self.0.get_block_transactions(height).await
         }
-        async fn get_blocks_range(
-            &self,
-            start: u64,
-            count: u64,
-        ) -> std::result::Result<Vec<Vec<Transaction>>, DaemonError> {
+        async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
             tokio::task::yield_now().await;
-            self.0.get_blocks_range(start, count).await
+            self.0.get_mempool_txids().await
         }
-        async fn get_mempool_transactions(
+        async fn get_transactions(
             &self,
+            txids: &[String],
         ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             tokio::task::yield_now().await;
-            self.0.get_mempool_transactions().await
+            self.0.get_transactions(txids).await
         }
         async fn locate_transaction(
             &self,
@@ -10038,8 +10003,27 @@ pub(crate) mod tests {
             .unwrap();
         daemon.0.push_block("b3", vec![fixture_tx()]);
         {
-            let mut tick = Box::pin(run_scan_tick(
-                &store, &custody, &daemon, "mainnet", &tenants, 20, 3600,
+            // Every database job an await point, as with the worker: the
+            // tick can be cut between writing the payment and settling it.
+            let db = crate::store::Db::over_shared_yielding(store.clone());
+            let state = crate::work::ScanState::default();
+            let inputs = crate::work::RoundInputs {
+                db: &db,
+                custody: &custody,
+                daemon: &daemon,
+                network: monero::Network::Mainnet,
+                tenants: &tenants,
+                reorg_check_depth: 20,
+                grace_period_seconds: 3600,
+                scan_chunk_memory_budget_mb: crate::engine_settings::EngineSettings::defaults()
+                    .scan
+                    .load()
+                    .scan_chunk_memory_budget_mb,
+            };
+            let mut tick = Box::pin(crate::work::run_round(
+                &state,
+                &inputs,
+                crate::work::ROUND_BUDGET,
             ));
             std::future::poll_fn(|cx| {
                 assert!(tick.as_mut().poll(cx).is_pending());
@@ -11262,10 +11246,14 @@ pub(crate) mod tests {
         ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.inner.get_block_transactions(height).await
         }
-        async fn get_mempool_transactions(
+        async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
+            self.inner.get_mempool_txids().await
+        }
+        async fn get_transactions(
             &self,
+            txids: &[String],
         ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.inner.get_mempool_transactions().await
+            self.inner.get_transactions(txids).await
         }
         async fn locate_transaction(
             &self,
@@ -11751,10 +11739,14 @@ pub(crate) mod tests {
         ) -> std::result::Result<Vec<Transaction>, DaemonError> {
             self.0.get_block_transactions(height).await
         }
-        async fn get_mempool_transactions(
+        async fn get_mempool_txids(&self) -> std::result::Result<Vec<String>, DaemonError> {
+            self.0.get_mempool_txids().await
+        }
+        async fn get_transactions(
             &self,
+            txids: &[String],
         ) -> std::result::Result<Vec<Transaction>, DaemonError> {
-            self.0.get_mempool_transactions().await
+            self.0.get_transactions(txids).await
         }
         async fn locate_transaction(
             &self,

@@ -31,7 +31,7 @@ use tokio::time::Instant;
 
 use crate::daemon::{
     ChainBlock, ChainHeader, ChainTip, DaemonError, DaemonInfo, EndpointStats, FetchedTx,
-    KeyImageStatus, MoneroDaemonClient, TxLocation,
+    KeyImageStatus, MoneroDaemonClient, PoolAnswer, TxLocation,
 };
 
 pub struct RpcDaemonClient {
@@ -48,6 +48,10 @@ pub struct RpcDaemonClient {
     /// `POOL_REUSE` and `POOL_RESYNC_INTERVAL`; tests shorten them.
     pool_reuse: Duration,
     pool_resync: Duration,
+    /// The tip as this node last gave it with its id. A poll of the pool
+    /// that names this block learns in the same answer whether the chain
+    /// still ends there (`get_tip_and_mempool`).
+    tip: parking_lot::Mutex<Option<ChainTip>>,
 }
 
 /// Default cap on one response body: comfortably above a full mempool under
@@ -118,6 +122,7 @@ impl RpcDaemonClient {
             pool: Default::default(),
             pool_reuse: POOL_REUSE,
             pool_resync: POOL_RESYNC_INTERVAL,
+            tip: Default::default(),
         })
     }
 
@@ -254,7 +259,7 @@ impl RpcDaemonClient {
 
     /// Posts a raw (non-JSON) body to one of monerod's binary `.bin` endpoints and
     /// returns the raw response bytes, unparsed - the epee wire format
-    /// (`get_blocks_range`'s own request/response, below) has nothing to do with
+    /// (`get_blocks.bin`'s own request/response, below) has nothing to do with
     /// `post_json_rpc`/`post_plain`'s JSON envelopes. Relies on the same
     /// `reqwest::Client` (and its 15s timeout, set once in `new`) every other
     /// call on this client already does, and the same `max_response_bytes`
@@ -286,33 +291,9 @@ impl RpcDaemonClient {
         decode_all_or_fail(hashes, resp)
     }
 
-    /// The real `get_blocks.bin` call, always with `start_height >= 1` (the
-    /// public `get_blocks_range` override handles the height-0 special case
-    /// before ever calling this). Whole transactions: its callers hash them.
-    async fn get_blocks_bin_range(
-        &self,
-        start_height: u64,
-        max_block_count: u64,
-    ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
-        self.get_blocks_bin(start_height, max_block_count, false)
-            .await?
-            .into_iter()
-            .map(|block| {
-                block
-                    .txs
-                    .iter()
-                    .map(|tx| {
-                        deserialize(&tx.blob).map_err(|e| {
-                            DaemonError::Request(format!(
-                                "failed to parse a transaction blob from get_blocks.bin: {e}"
-                            ))
-                        })
-                    })
-                    .collect()
-            })
-            .collect()
-    }
-
+    /// `get_blocks.bin` for blocks, always with `start_height >= 1`: monerod
+    /// only observes the field when it is non-zero (`get_chain_blocks`
+    /// fetches the genesis block the ordinary way).
     async fn get_blocks_bin(
         &self,
         start_height: u64,
@@ -441,40 +422,6 @@ fn classify_located_transaction(
     }
 }
 
-/// Decodes the mempool, skipping (and logging) entries that won't parse rather than
-/// failing the whole poll.
-///
-/// This is deliberately the *opposite* policy to `decode_all_or_fail`, and the
-/// difference is not inconsistency - it's that the two calls have opposite failure
-/// consequences. A block is scanned exactly once and then marked scanned forever, so
-/// silently dropping one of its transactions loses whatever payment it contained; all
-/// or nothing is the only safe reading there. The mempool is re-polled every second,
-/// nothing about it is ever marked done, and a transaction this build cannot
-/// deserialize cannot be matched against a wallet no matter how many times it is
-/// retried. So failing the whole call over one bad entry buys nothing and costs
-/// everything: `run_scan_tick` gets an error instead of a mempool, and zero-conf
-/// detection is off for *every* tenant on this network for as long as that
-/// transaction sits in the pool - which, since anyone can put a transaction in a
-/// public mempool and it lingers for days, is a trivially reachable state, not a
-/// hypothetical one. The payment is still detected the moment it is mined; only its
-/// zero-conf sighting is lost, and only for the one transaction that could not be
-/// read.
-fn decode_pool_best_effort(entries: &[PoolTx]) -> Vec<Transaction> {
-    let mut out = Vec::with_capacity(entries.len());
-    for entry in entries {
-        match decode_tx_hex(&entry.tx_blob) {
-            Ok(tx) => out.push(tx),
-            Err(e) => tracing::warn!(
-                error = %e,
-                "skipping one undecodable mempool transaction - it cannot be matched against any wallet either \
-                 way, and failing the whole poll over it would disable zero-conf detection for every tenant on \
-                 this network"
-            ),
-        }
-    }
-    out
-}
-
 fn decode_tx_hex(hex_str: &str) -> Result<Transaction, DaemonError> {
     if hex_str.is_empty() {
         return Err(DaemonError::Request(
@@ -488,10 +435,12 @@ fn decode_tx_hex(hex_str: &str) -> Result<Transaction, DaemonError> {
 }
 
 /// One field of an epee request object.
-enum EpeeField {
+enum EpeeField<'a> {
     Bool(bool),
     U8(u8),
     U64(u64),
+    /// A byte string of under 64 bytes (one block id).
+    Blob(&'a [u8]),
 }
 
 /// An epee-encoded request: a flat object of `fields`, in order.
@@ -505,7 +454,7 @@ enum EpeeField {
     clippy::expect_used,
     reason = "only called with a few short field-name literals"
 )]
-fn epee_request(fields: &[(&str, EpeeField)]) -> Vec<u8> {
+fn epee_request(fields: &[(&str, EpeeField<'_>)]) -> Vec<u8> {
     let mut request = Vec::with_capacity(96);
     request.extend_from_slice(&monero_epee::HEADER);
     request.push(monero_epee::VERSION);
@@ -531,6 +480,13 @@ fn epee_request(fields: &[(&str, EpeeField)]) -> Vec<u8> {
             EpeeField::U64(value) => {
                 request.push(monero_epee::Type::Uint64 as u8);
                 request.extend_from_slice(&value.to_le_bytes());
+            }
+            EpeeField::Blob(bytes) => {
+                request.push(monero_epee::Type::String as u8);
+                let len = u8::try_from(bytes.len()).expect("a blob longer than 255 bytes");
+                assert!(len < 64, "a blob longer than the 1-byte varint holds");
+                request.push(len << 2);
+                request.extend_from_slice(bytes);
             }
         }
     }
@@ -570,6 +526,30 @@ fn pool_changes_request(since: u64) -> Vec<u8> {
         ("requested_info", EpeeField::U8(REQUESTED_INFO_POOL_ONLY)),
         ("pool_info_since", EpeeField::U64(since)),
         ("prune", EpeeField::Bool(true)),
+    ])
+}
+
+/// `get_blocks.bin`'s `requested_info` for "blocks and the pool".
+const REQUESTED_INFO_BLOCKS_AND_POOL: u8 = 1;
+
+/// [`pool_changes_request`], asking in the same request whether the chain
+/// still ends at the block `tip_id`. monerod answers a `block_ids` that
+/// starts with its own top block with no blocks at all, only the chain's
+/// length and the pool's changes: nothing new. Otherwise it sends blocks
+/// from `start_height`: one, from the start of the chain (a few hundred
+/// bytes, of no interest in itself), which says the tip has moved.
+fn pool_changes_and_tip_request(since: u64, tip_id: &[u8; 32]) -> Vec<u8> {
+    epee_request(&[
+        (
+            "requested_info",
+            EpeeField::U8(REQUESTED_INFO_BLOCKS_AND_POOL),
+        ),
+        ("pool_info_since", EpeeField::U64(since)),
+        ("prune", EpeeField::Bool(true)),
+        ("block_ids", EpeeField::Blob(tip_id)),
+        ("start_height", EpeeField::U64(1)),
+        ("max_block_count", EpeeField::U64(1)),
+        ("no_miner_tx", EpeeField::Bool(true)),
     ])
 }
 
@@ -837,9 +817,14 @@ fn parse_get_blocks_bin_response(bytes: &[u8]) -> Result<Vec<BinBlock>, DaemonEr
 }
 
 /// What a node said changed in its pool (`get_blocks.bin` with
-/// `requested_info` = pool only).
+/// `requested_info` = the pool, with or without blocks).
 #[derive(Debug, Default, PartialEq)]
 struct PoolChanges {
+    /// Blocks that came with the answer, and the chain's length (0 when
+    /// the answer doesn't say): what [`pool_changes_and_tip_request`]
+    /// reads the tip from.
+    blocks: usize,
+    chain_length: u64,
     /// Every pool transaction (`true`), or only what changed since the
     /// request's `pool_info_since`.
     full: bool,
@@ -854,7 +839,7 @@ struct PoolChanges {
     removed: Vec<String>,
 }
 
-/// Parses a pool-only `get_blocks.bin` response. `Ok(None)` when the node
+/// Parses a `get_blocks.bin` response about the pool. `Ok(None)` when the node
 /// answered without describing its pool: one that doesn't know the request
 /// (an older monerod), to be asked the old way instead.
 fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> {
@@ -875,6 +860,14 @@ fn parse_pool_changes(bytes: &[u8]) -> Result<Option<PoolChanges>, DaemonError> 
             b"status" => status = Some(value.to_str().map_err(epee_err)?.consume().to_vec()),
             b"pool_info_extent" => extent = Some(value.to_u8().map_err(epee_err)?),
             b"daemon_time" => daemon_time = Some(value.to_u64().map_err(epee_err)?),
+            b"current_height" => changes.chain_length = value.to_u64().map_err(epee_err)?,
+            b"blocks" => {
+                let mut entries = value.iterate().map_err(epee_err)?;
+                while let Some(entry) = entries.next() {
+                    entry.map_err(epee_err)?;
+                    changes.blocks += 1;
+                }
+            }
             b"remaining_added_pool_txids" => {
                 changes.added_ids = ids(value.to_str().map_err(epee_err)?.consume());
             }
@@ -945,6 +938,10 @@ const POOL_CHANGES_RETRY: Duration = Duration::from_secs(10 * 60);
 /// After this many requests for changes in a row that a node which used to
 /// answer them didn't, it is asked the old way.
 const POOL_CHANGES_GIVE_UP: u32 = 3;
+/// Most blocks a node sends with the pool's changes when the tip has moved
+/// (one is asked for; monerod may round up to three). More, and the node
+/// doesn't read the request as meant: it is asked for the tip apart.
+const TIP_MOVED_BLOCKS_MAX: usize = 3;
 /// Most transaction bodies that arrived with pool changes kept until they
 /// are asked for. Past this (a flood) they are fetched on demand instead.
 const POOL_BODIES_MAX: usize = 5_000;
@@ -959,6 +956,9 @@ struct PoolView {
     retry_changes_at: Option<Instant>,
     /// Requests for changes in a row that got no description of the pool.
     unanswered: u32,
+    /// Until when the tip isn't asked about with the pool's changes: the
+    /// node didn't answer the two together as monerod does.
+    tip_apart_until: Option<Instant>,
     /// The node's clock at its last answer.
     since: u64,
     txids: HashSet<String>,
@@ -1086,45 +1086,14 @@ impl BlockHeader {
 /// non-coinbase transactions (the empty case) has been observed, live, to omit the
 /// key rather than send `[]` despite the plain (non-`_OPT`) declaration - the same
 /// gap between "the C++ struct says always-serialize" and "what actually arrives
-/// on the wire" that `GetTransactionPoolResponse::transactions` below was found to
-/// have too. Trusting the struct declaration alone here would reintroduce exactly
-/// that bug for a block instead of the mempool.
+/// on the wire" that `/get_transaction_pool`'s `transactions` was found to have
+/// too. Trusting the struct declaration alone here would reintroduce exactly that
+/// bug for a block.
 #[derive(Deserialize)]
 struct GetBlockResult {
     block_header: BlockHeader,
     #[serde(default)]
     tx_hashes: Vec<String>,
-}
-
-#[derive(Deserialize)]
-struct GetTransactionPoolResponse {
-    // An empty mempool can come back with this key omitted entirely rather than
-    // present as `[]` (observed live against a real public testnet node - the same
-    // class of quirk `GetBlockResult::tx_hashes` above already works around).
-    // Without `#[serde(default)]`, every poll of a genuinely empty mempool fails to
-    // parse at all, which turns "no pending zero-conf payments" into "zero-conf
-    // detection is silently broken on this node until something changes the
-    // mempool" - a much worse failure mode than the one line this guards against.
-    //
-    // `COMMAND_RPC_GET_TRANSACTION_POOL::response_t` declares this plain
-    // `KV_SERIALIZE(transactions)` in the C++ source too (not `_OPT`) - the struct
-    // declaration alone doesn't predict whether a field can be omitted on the
-    // wire, which is the whole reason every vector-typed field in this file now
-    // gets `#[serde(default)]` rather than trusting each one's declaration
-    // individually.
-    #[serde(default)]
-    transactions: Vec<PoolTx>,
-}
-
-/// Matches `tx_info::tx_blob`: `std::string tx_blob`, plain `KV_SERIALIZE`, always
-/// present *within* an already-present pool entry (unlike the outer `transactions`
-/// array, a `tx_info` element that exists at all reliably carries its own
-/// `tx_blob` - no further defensiveness needed on a scalar field one level in).
-/// The real struct has ~15 more always-present fields (`fee`, `weight`,
-/// `receive_time`, `double_spend_seen`, ...) unused here.
-#[derive(Deserialize)]
-struct PoolTx {
-    tx_blob: String,
 }
 
 #[derive(Deserialize)]
@@ -1216,8 +1185,8 @@ impl TxEntry {
 /// out-of-range value (negative, or >255) would fail deserialization outright
 /// before ever reaching `is_key_image_spent`'s own `_ => Unspent` catch-all, which
 /// exists specifically to degrade unrecognized codes safely rather than error.
-/// `#[serde(default)]` added for consistency with `GetTransactionPoolResponse`
-/// above, even though the only caller never sends an empty request (so an empty,
+/// `#[serde(default)]` added for consistency with every other vector-typed
+/// field in this file, even though the only caller never sends an empty request (so an empty,
 /// possibly-omitted response is not currently reachable) - cheap insurance against
 /// the same class of bug recurring here, since the underlying "an empty vector
 /// field may be omitted from the wire rather than sent as `[]`" behavior has
@@ -1234,9 +1203,11 @@ const TXS_PER_REQUEST: usize = 100;
 /// Most headers asked for in one `get_block_headers_range` request (a
 /// restricted node refuses more than 1000).
 const MAX_HEADERS_PER_REQUEST: u64 = 500;
-/// The name pool-change polls are counted under in [`RpcDaemonClient::stats`]:
-/// the same path as block fetches, a different request.
+/// The names pool-change polls are counted under in
+/// [`RpcDaemonClient::stats`]: the same path as block fetches, different
+/// requests.
 const POOL_CHANGES_ENDPOINT: &str = "/get_blocks.bin (pool changes)";
+const POOL_CHANGES_AND_TIP_ENDPOINT: &str = "/get_blocks.bin (pool changes and tip)";
 
 impl RpcDaemonClient {
     /// The pool's transaction ids, the whole list
@@ -1251,6 +1222,124 @@ impl RpcDaemonClient {
             .post_plain("/get_transaction_pool_hashes", json!({}))
             .await?;
         Ok(resp.tx_hashes)
+    }
+
+    /// One poll of the pool (see `get_mempool_txids`), returning its
+    /// transaction ids. With `known_tip`, a request for the pool's changes
+    /// also asks whether the chain still ends at that block
+    /// ([`pool_changes_and_tip_request`]); the flag returned is `true`
+    /// only when the node said it does.
+    async fn poll_pool(
+        &self,
+        known_tip: Option<&ChainTip>,
+    ) -> Result<(Vec<String>, bool), DaemonError> {
+        let mut pool = self.pool.lock().await;
+        let now = Instant::now();
+        if pool.follows_changes == Some(false) && pool.retry_changes_at.is_some_and(|at| now >= at)
+        {
+            pool.follows_changes = None;
+        }
+        if pool.follows_changes == Some(false) {
+            return Ok((self.pool_hashes().await?, false));
+        }
+        if pool.follows_changes == Some(true) {
+            if pool
+                .polled_at
+                .is_some_and(|at| now.saturating_duration_since(at) < self.pool_reuse)
+            {
+                return Ok((pool.list(), false));
+            }
+            if pool
+                .resynced_at
+                .is_none_or(|at| now.saturating_duration_since(at) >= self.pool_resync)
+            {
+                let txids = self.pool_hashes().await?;
+                pool.resync(txids);
+                pool.resynced_at = Some(Instant::now());
+                pool.polled_at = Some(Instant::now());
+                return Ok((pool.list(), false));
+            }
+        }
+        let mut tip_id = known_tip
+            .and_then(|tip| tip.hash.as_deref())
+            .and_then(|hash| hex::decode(hash).ok())
+            .and_then(|bytes| hash32(&bytes))
+            .filter(|_| pool.tip_apart_until.is_none_or(|until| now >= until));
+        let parsed = loop {
+            let (endpoint, request) = match &tip_id {
+                Some(tip_id) => (
+                    POOL_CHANGES_AND_TIP_ENDPOINT,
+                    pool_changes_and_tip_request(pool.since, tip_id),
+                ),
+                None => (POOL_CHANGES_ENDPOINT, pool_changes_request(pool.since)),
+            };
+            let response = self
+                .post(endpoint, "/get_blocks.bin", request, false)
+                .await?;
+            let parsed = parse_pool_changes(&response);
+            if tip_id.is_some() && !matches!(parsed, Ok(Some(_))) {
+                // Not an answer about the pool. The node may not take the
+                // two questions together: for a while they are asked
+                // apart, starting now.
+                pool.tip_apart_until = Some(now + POOL_CHANGES_RETRY);
+                tip_id = None;
+                continue;
+            }
+            break parsed;
+        };
+        let changes = match parsed {
+            Ok(Some(changes)) => changes,
+            // An answer that isn't a description of the pool (or isn't epee
+            // at all). From a node that has never given one, that is a node
+            // that doesn't know the request: it is asked for the plain list
+            // from now on. From a node that has, it is a failed answer (a
+            // busy node, an error page from something in front of it),
+            // unless it keeps happening.
+            unanswered => {
+                pool.unanswered += 1;
+                if pool.follows_changes == Some(true) && pool.unanswered < POOL_CHANGES_GIVE_UP {
+                    return Err(DaemonError::Request(match unanswered {
+                        Err(error) => error.to_string(),
+                        _ => "the node did not describe its mempool".to_string(),
+                    }));
+                }
+                if pool.follows_changes == Some(true) {
+                    tracing::warn!(
+                        node = %self.base_url,
+                        "the node stopped answering requests for mempool changes - asking for the whole list instead"
+                    );
+                }
+                *pool = PoolView {
+                    follows_changes: Some(false),
+                    retry_changes_at: Some(now + POOL_CHANGES_RETRY),
+                    tip_apart_until: pool.tip_apart_until,
+                    ..PoolView::default()
+                };
+                return Ok((self.pool_hashes().await?, false));
+            }
+        };
+        // No blocks and the same length: the chain still ends at the block
+        // the request named. Blocks: it doesn't.
+        let tip_unchanged = match known_tip.filter(|_| tip_id.is_some()) {
+            Some(known) => {
+                let unchanged = changes.blocks == 0
+                    && changes.chain_length.checked_sub(1) == Some(known.height);
+                if !unchanged && !(1..=TIP_MOVED_BLOCKS_MAX).contains(&changes.blocks) {
+                    pool.tip_apart_until = Some(now + POOL_CHANGES_RETRY);
+                }
+                unchanged
+            }
+            None => false,
+        };
+        if changes.full {
+            // A whole pool is as good as a resync.
+            pool.resynced_at = Some(Instant::now());
+        }
+        pool.apply(changes);
+        pool.follows_changes = Some(true);
+        pool.unanswered = 0;
+        pool.polled_at = Some(Instant::now());
+        Ok((pool.list(), tip_unchanged))
     }
 }
 
@@ -1287,13 +1376,28 @@ impl MoneroDaemonClient for RpcDaemonClient {
     /// the same block. An id of the wrong shape is dropped, not trusted.
     async fn get_tip(&self) -> Result<ChainTip, DaemonError> {
         let resp: GetHeightResponse = self.post_plain("/get_height", json!({})).await?;
-        Ok(ChainTip {
+        let tip = ChainTip {
             height: resp.height.saturating_sub(1),
             hash: resp
                 .hash
                 .map(|hash| hash.to_ascii_lowercase())
                 .filter(|hash| is_txid(hash) && resp.height > 0),
-        })
+        };
+        *self.tip.lock() = Some(tip.clone()).filter(|tip| tip.hash.is_some());
+        Ok(tip)
+    }
+
+    /// One request for both while the chain still ends at the tip this
+    /// node last gave: the poll for the pool's changes names that block,
+    /// and monerod answers "nothing new" with the changes. When the tip
+    /// has moved (or isn't known yet, or the pool was read some other way
+    /// this time), the tip is asked for as usual.
+    async fn get_tip_and_mempool(&self) -> (Result<ChainTip, DaemonError>, PoolAnswer) {
+        let known = self.tip.lock().clone();
+        match (self.poll_pool(known.as_ref()).await, known) {
+            (Ok((txids, true)), Some(tip)) => (Ok(tip), Ok(txids)),
+            (pool, _) => (self.get_tip().await, pool.map(|(txids, _)| txids)),
+        }
     }
 
     /// monerod's JSON-RPC `get_info`, through the same client (and so the
@@ -1328,46 +1432,10 @@ impl MoneroDaemonClient for RpcDaemonClient {
         self.fetch_transactions(&block.tx_hashes).await
     }
 
-    /// Overrides the trait's own one-call-per-block default with monerod's real
-    /// `get_blocks.bin` - one HTTP round trip for the whole chunk, batching what
-    /// would otherwise be `count` separate `get_block`+`get_transactions` round
-    /// trips (`get_block_transactions` above). Written from monerod's own
-    /// `get_blocks.bin` handling and the same real, published request/response
-    /// shape `monero-daemon-rpc`'s `bin_rpc/blocks_bin.rs` already uses for this
-    /// exact endpoint against real nodes (that crate's own client isn't reused
-    /// directly - see this crate's `Cargo.toml` for why - only the wire format
-    /// its code confirms is real) - not independently verified against a live
-    /// node in this change; `live_node_tests::real_node_get_blocks_range_matches_
-    /// get_block_transactions_for_the_same_range` below exists to do exactly that
-    /// (`cargo test --ignored daemon_rpc::`) before this ships to a real node.
-    async fn get_blocks_range(
-        &self,
-        start_height: u64,
-        count: u64,
-    ) -> Result<Vec<Vec<Transaction>>, DaemonError> {
-        if count == 0 {
-            return Ok(Vec::new());
-        }
-        // `get_blocks.bin`'s `start_height` field is only observed by monerod if
-        // non-zero - a request for height 0 is otherwise silently treated as
-        // "unset" and answered from monerod's normal chain-sync starting point
-        // instead. Fetch the genesis block the ordinary way, then batch whatever
-        // is left starting at height 1 - the one real-world case
-        // `rescan_start_height`'s own "saturates at genesis" behavior can produce.
-        if start_height == 0 {
-            let mut out = vec![self.get_block_transactions(0).await?];
-            if count > 1 {
-                out.extend(self.get_blocks_bin_range(1, count - 1).await?);
-            }
-            return Ok(out);
-        }
-        self.get_blocks_bin_range(start_height, count).await
-    }
-
     /// `get_blocks.bin`, decoding each block's own header: one round trip
     /// for the range, and every block's id computed from the same blob its
-    /// transactions came with. Genesis the ordinary way, as for
-    /// `get_blocks_range`.
+    /// transactions came with. Genesis the ordinary way: monerod only
+    /// observes `start_height` when it is non-zero.
     async fn get_chain_blocks(
         &self,
         start_height: u64,
@@ -1463,12 +1531,6 @@ impl MoneroDaemonClient for RpcDaemonClient {
         Ok(self.block_header(height).await?.timestamp)
     }
 
-    async fn get_mempool_transactions(&self) -> Result<Vec<Transaction>, DaemonError> {
-        let resp: GetTransactionPoolResponse =
-            self.post_plain("/get_transaction_pool", json!({})).await?;
-        Ok(decode_pool_best_effort(&resp.transactions))
-    }
-
     /// The pool's transaction ids, followed by its changes where the node
     /// can say them: one small `get_blocks.bin` answer naming what entered
     /// and left since the last poll (with the new transactions' bodies,
@@ -1477,80 +1539,7 @@ impl MoneroDaemonClient for RpcDaemonClient {
     /// followed, so a missed change doesn't last. A node that can't say
     /// changes is asked for the plain list each time, as before.
     async fn get_mempool_txids(&self) -> Result<Vec<String>, DaemonError> {
-        let mut pool = self.pool.lock().await;
-        let now = Instant::now();
-        if pool.follows_changes == Some(false) && pool.retry_changes_at.is_some_and(|at| now >= at)
-        {
-            pool.follows_changes = None;
-        }
-        if pool.follows_changes == Some(false) {
-            return self.pool_hashes().await;
-        }
-        if pool.follows_changes == Some(true) {
-            if pool
-                .polled_at
-                .is_some_and(|at| now.saturating_duration_since(at) < self.pool_reuse)
-            {
-                return Ok(pool.list());
-            }
-            if pool
-                .resynced_at
-                .is_none_or(|at| now.saturating_duration_since(at) >= self.pool_resync)
-            {
-                let txids = self.pool_hashes().await?;
-                pool.resync(txids);
-                pool.resynced_at = Some(Instant::now());
-                pool.polled_at = Some(Instant::now());
-                return Ok(pool.list());
-            }
-        }
-        let response = self
-            .post(
-                POOL_CHANGES_ENDPOINT,
-                "/get_blocks.bin",
-                pool_changes_request(pool.since),
-                false,
-            )
-            .await?;
-        let changes = match parse_pool_changes(&response) {
-            Ok(Some(changes)) => changes,
-            // An answer that isn't a description of the pool (or isn't epee
-            // at all). From a node that has never given one, that is a node
-            // that doesn't know the request: it is asked for the plain list
-            // from now on. From a node that has, it is a failed answer (a
-            // busy node, an error page from something in front of it),
-            // unless it keeps happening.
-            unanswered => {
-                pool.unanswered += 1;
-                if pool.follows_changes == Some(true) && pool.unanswered < POOL_CHANGES_GIVE_UP {
-                    return Err(DaemonError::Request(match unanswered {
-                        Err(error) => error.to_string(),
-                        _ => "the node did not describe its mempool".to_string(),
-                    }));
-                }
-                if pool.follows_changes == Some(true) {
-                    tracing::warn!(
-                        node = %self.base_url,
-                        "the node stopped answering requests for mempool changes - asking for the whole list instead"
-                    );
-                }
-                *pool = PoolView {
-                    follows_changes: Some(false),
-                    retry_changes_at: Some(now + POOL_CHANGES_RETRY),
-                    ..PoolView::default()
-                };
-                return self.pool_hashes().await;
-            }
-        };
-        if changes.full {
-            // A whole pool is as good as a resync.
-            pool.resynced_at = Some(Instant::now());
-        }
-        pool.apply(changes);
-        pool.follows_changes = Some(true);
-        pool.unanswered = 0;
-        pool.polled_at = Some(Instant::now());
-        Ok(pool.list())
+        Ok(self.poll_pool(None).await?.0)
     }
 
     async fn get_transactions(&self, txids: &[String]) -> Result<Vec<Transaction>, DaemonError> {
@@ -1845,33 +1834,6 @@ mod tests {
     }
 
     #[test]
-    fn an_empty_mempool_response_omitting_the_transactions_key_entirely_parses_as_empty_not_an_error(
-    ) {
-        // Reported live against a real public testnet node: an empty pool came back
-        // as `{"status":"OK",...}` with no "transactions" key at all, rather than
-        // `"transactions": []` - and without `#[serde(default)]` that's a hard parse
-        // error on *every* poll of a genuinely empty mempool, not a one-off. This
-        // pins the fix directly against the response shape that broke, without
-        // needing a live node or an HTTP mock.
-        let resp: GetTransactionPoolResponse =
-            serde_json::from_str(r#"{"status":"OK","untrusted":false}"#).unwrap();
-        assert!(resp.transactions.is_empty());
-        assert!(decode_pool_best_effort(&resp.transactions).is_empty());
-
-        // The ordinary shape - an explicit empty array - still works too.
-        let resp: GetTransactionPoolResponse =
-            serde_json::from_str(r#"{"status":"OK","transactions":[]}"#).unwrap();
-        assert!(resp.transactions.is_empty());
-
-        // And a real entry still deserializes correctly alongside the fix.
-        let resp: GetTransactionPoolResponse = serde_json::from_str(&format!(
-            r#"{{"status":"OK","transactions":[{{"tx_blob":"{FIXTURE_TX_HEX}"}}]}}"#
-        ))
-        .unwrap();
-        assert_eq!(decode_pool_best_effort(&resp.transactions).len(), 1);
-    }
-
-    #[test]
     fn a_block_whose_transactions_the_node_cannot_supply_is_an_error_not_a_short_list() {
         // The failure this exists to prevent: the scanner marks the block scanned
         // and moves on, so a payment in the dropped transaction is never seen and
@@ -2049,58 +2011,6 @@ mod tests {
         )
         .unwrap_err();
         assert!(err.to_string().contains("no block_height"), "got {err}");
-    }
-
-    #[test]
-    fn one_undecodable_mempool_entry_is_skipped_rather_than_blinding_the_whole_poll() {
-        // The failure this prevents: `.map(..).collect::<Result<Vec<_>, _>>()` turned
-        // a single unparseable pool entry into an error for the entire call, and
-        // `run_scan_tick` treats a failed mempool poll as "no mempool this tick". So
-        // one transaction this build can't deserialize - a future transaction format,
-        // or anything at all that a stranger chose to broadcast - switches off
-        // zero-conf detection for every tenant on that network for as long as it sits
-        // in the pool. A public mempool holds transactions for days, so this is a
-        // state anyone can put the scanner into, not a hypothetical.
-        //
-        // The opposite policy for blocks (`decode_all_or_fail`) is deliberate and
-        // still right: a block is marked scanned exactly once, so dropping one of its
-        // transactions loses a payment permanently. Nothing about the mempool is ever
-        // marked done, and an undecodable transaction can never be matched anyway.
-        let entries = vec![
-            PoolTx {
-                tx_blob: FIXTURE_TX_HEX.to_string(),
-            },
-            PoolTx {
-                tx_blob: "not hex at all".to_string(),
-            },
-            PoolTx {
-                tx_blob: String::new(),
-            }, // pruned: present, no blob
-            PoolTx {
-                tx_blob: "deadbeef".to_string(),
-            }, // valid hex, not a transaction
-            PoolTx {
-                tx_blob: FIXTURE_TX_HEX.to_string(),
-            },
-        ];
-        let decoded = decode_pool_best_effort(&entries);
-        assert_eq!(
-            decoded.len(),
-            2,
-            "every decodable transaction must survive its undecodable neighbours"
-        );
-        for tx in &decoded {
-            assert!(!tx.prefix.outputs.is_empty());
-        }
-
-        // A pool of nothing but junk is an empty mempool, not an error - there is
-        // genuinely nothing to scan, and reporting that as a failed poll would be
-        // indistinguishable from an unreachable node.
-        assert!(decode_pool_best_effort(&[PoolTx {
-            tx_blob: "zz".into()
-        }])
-        .is_empty());
-        assert!(decode_pool_best_effort(&[]).is_empty());
     }
 
     #[test]
@@ -2296,6 +2206,35 @@ mod wire_tests {
         added_ids: &[&str],
         removed: &[&str],
     ) -> Vec<u8> {
+        epee(&pool_fields(extent, daemon_time, added, added_ids, removed))
+    }
+
+    /// An answer to the pool's changes asked for with the tip: nothing
+    /// changed in the pool, the chain is `chain_length` blocks long, and
+    /// `blocks` blocks came with it (none: the tip named is still the tip).
+    fn pool_and_chain_answer(daemon_time: u64, chain_length: u64, blocks: usize) -> Vec<u8> {
+        let mut fields = pool_fields(POOL_INFO_INCREMENTAL, daemon_time, &[], &[], &[]);
+        fields.push(("current_height", V::U64(chain_length)));
+        if blocks > 0 {
+            fields.push((
+                "blocks",
+                V::Objects(
+                    (0..blocks)
+                        .map(|_| vec![("block", V::Str(vec![1, 2, 3]))])
+                        .collect(),
+                ),
+            ));
+        }
+        epee(&fields)
+    }
+
+    fn pool_fields(
+        extent: u8,
+        daemon_time: u64,
+        added: &[(&str, &[u8])],
+        added_ids: &[&str],
+        removed: &[&str],
+    ) -> Vec<(&'static str, V)> {
         let mut fields = vec![
             ("status", V::Str(b"OK".to_vec())),
             ("pool_info_extent", V::U8(extent)),
@@ -2324,7 +2263,7 @@ mod wire_tests {
         if !removed.is_empty() {
             fields.push(("removed_pool_txids", V::Str(ids_blob(removed))));
         }
-        epee(&fields)
+        fields
     }
 
     // -- A scripted node -----------------------------------------------------
@@ -2410,6 +2349,31 @@ mod wire_tests {
         panic!("no pool_info_since in the request");
     }
 
+    /// The block a request for the pool's changes named as the tip, if it
+    /// named one.
+    fn tip_named(request: &[u8]) -> Option<String> {
+        let mut epee = monero_epee::Epee::new(request).unwrap();
+        let mut fields = epee.entry().unwrap().fields().unwrap();
+        while let Some(entry) = fields.next() {
+            let (key, value) = entry.unwrap();
+            if key.consume() == b"block_ids" {
+                return Some(hex::encode(value.to_str().unwrap().consume()));
+            }
+        }
+        None
+    }
+
+    fn height_answer(chain_length: u64, tip_id: &str) -> String {
+        json!({ "status": "OK", "height": chain_length, "hash": tip_id }).to_string()
+    }
+
+    fn tip(height: u64, id: &str) -> ChainTip {
+        ChainTip {
+            height,
+            hash: Some(id.to_string()),
+        }
+    }
+
     const B: &str = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
     const C: &str = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
     const D: &str = "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
@@ -2426,6 +2390,26 @@ mod wire_tests {
         let whole = get_blocks_bin_request(2_210_330, 4, false);
         assert_eq!(pruned.iter().zip(&whole).filter(|(a, b)| a != b).count(), 1);
         assert_eq!(since_of(&pool_changes_request(77)), 77);
+        // The request for the pool's changes and the tip, as recorded
+        // against real nodes: the tip's id as a 32-byte string.
+        let both = pool_changes_and_tip_request(77, &[0xab; 32]);
+        assert_eq!(since_of(&both), 77);
+        assert_eq!(tip_named(&both), Some("ab".repeat(32)));
+        assert_eq!(
+            hex::encode(&both),
+            [
+                "0111010101010201011c",
+                "0e7265717565737465645f696e666f0801",
+                "0f706f6f6c5f696e666f5f73696e6365054d00000000000000",
+                "057072756e650b01",
+                "09626c6f636b5f6964730a80",
+                &"ab".repeat(32),
+                "0c73746172745f686569676874050100000000000000",
+                "0f6d61785f626c6f636b5f636f756e74050100000000000000",
+                "0b6e6f5f6d696e65725f74780b01",
+            ]
+            .concat()
+        );
     }
 
     /// The first poll gets the whole pool, with bodies; each later one asks
@@ -2626,6 +2610,7 @@ mod wire_tests {
                 added: vec![(a.clone(), blob.clone())],
                 added_ids: vec![B.to_string()],
                 removed: vec![C.to_string()],
+                ..PoolChanges::default()
             }
         );
         // Nothing changed: no lists at all.
@@ -2676,6 +2661,7 @@ mod wire_tests {
             added: vec![(a.clone(), blob.clone())],
             added_ids: vec![B.to_string()],
             removed: vec![],
+            ..PoolChanges::default()
         });
         assert_eq!(view.since, 5);
         assert_eq!(sorted(view.list()), sorted(vec![a.clone(), B.to_string()]));
@@ -2687,6 +2673,7 @@ mod wire_tests {
             added: vec![(C.to_string(), vec![1, 2, 3])],
             added_ids: vec![],
             removed: vec![B.to_string()],
+            ..PoolChanges::default()
         });
         assert_eq!(sorted(view.list()), sorted(vec![a.clone(), C.to_string()]));
         assert!(!view.bodies.contains_key(C));
@@ -2705,6 +2692,7 @@ mod wire_tests {
             added: vec![],
             added_ids: vec![B.to_string()],
             removed: vec![],
+            ..PoolChanges::default()
         });
         assert_eq!(view.list(), vec![B.to_string()]);
     }
@@ -2886,6 +2874,141 @@ mod wire_tests {
         }
     }
 
+    /// A round's two questions in one request. The first time the client
+    /// knows no tip: the pool, then the tip. After that the poll for the
+    /// pool's changes names the tip it last saw, and while the node answers
+    /// with no blocks the tip stands and `/get_height` isn't asked. A block
+    /// in the answer means the tip moved: then it is asked for, once.
+    #[tokio::test]
+    async fn the_tip_and_the_pool_are_one_request_while_the_chain_has_not_moved() {
+        let (client, node) = scripted().await;
+        node.answer("/get_height", height_answer(101, C));
+        node.answer("/get_height", height_answer(102, D));
+        node.answer(
+            "/get_blocks.bin",
+            pool_answer(POOL_INFO_FULL, 100, &[], &[B], &[]),
+        );
+        node.answer("/get_blocks.bin", pool_and_chain_answer(105, 101, 0));
+        node.answer("/get_blocks.bin", pool_and_chain_answer(110, 102, 1));
+        node.answer("/get_blocks.bin", pool_and_chain_answer(115, 102, 0));
+        let ask = || async {
+            let (tip, pool) = client.get_tip_and_mempool().await;
+            (tip.unwrap(), pool.unwrap())
+        };
+        let asked = |path: &str| node.requests_to(path).len();
+
+        // Nothing known: the pool, then the tip.
+        assert_eq!(ask().await, (tip(100, C), vec![B.to_string()]));
+        assert_eq!((asked("/get_blocks.bin"), asked("/get_height")), (1, 1));
+        // The tip hasn't moved: one request, naming it.
+        assert_eq!(ask().await, (tip(100, C), vec![B.to_string()]));
+        assert_eq!((asked("/get_blocks.bin"), asked("/get_height")), (2, 1));
+        // It has: the node sends a block, and is asked for its tip.
+        assert_eq!(ask().await, (tip(101, D), vec![B.to_string()]));
+        assert_eq!((asked("/get_blocks.bin"), asked("/get_height")), (3, 2));
+        // The new tip stands in turn.
+        assert_eq!(ask().await, (tip(101, D), vec![B.to_string()]));
+        assert_eq!((asked("/get_blocks.bin"), asked("/get_height")), (4, 2));
+
+        let polls = node.requests_to("/get_blocks.bin");
+        assert_eq!(
+            polls.iter().map(|r| tip_named(r)).collect::<Vec<_>>(),
+            vec![
+                None,
+                Some(C.to_string()),
+                Some(C.to_string()),
+                Some(D.to_string())
+            ]
+        );
+        assert_eq!(
+            polls.iter().map(|r| since_of(r)).collect::<Vec<_>>(),
+            vec![0, 100, 105, 110],
+            "the pool is followed by its changes all the while"
+        );
+        assert_eq!(asked("/get_transaction_pool_hashes"), 0);
+        let requests = |endpoint: &str| {
+            client
+                .stats()
+                .iter()
+                .find(|s| s.endpoint == endpoint)
+                .map_or(0, |s| s.requests)
+        };
+        assert_eq!(requests(POOL_CHANGES_ENDPOINT), 1);
+        assert_eq!(requests(POOL_CHANGES_AND_TIP_ENDPOINT), 3);
+        // A plain poll of the pool never names a tip.
+        client.get_mempool_txids().await.unwrap();
+        assert_eq!(tip_named(&node.requests_to("/get_blocks.bin")[4]), None);
+    }
+
+    /// A node that doesn't answer the two questions together as monerod
+    /// does (no description of the pool, a run of blocks where one was
+    /// asked for, a length that doesn't match the tip named) is asked them
+    /// apart from then on. Its pool is still followed by its changes.
+    #[tokio::test]
+    async fn a_node_that_cannot_answer_for_tip_and_pool_together_is_asked_apart() {
+        for odd_answer in [
+            epee(&[("status", V::Str(b"Failed".to_vec()))]),
+            b"<html>502 Bad Gateway</html>".to_vec(),
+            pool_and_chain_answer(105, 101, TIP_MOVED_BLOCKS_MAX + 1),
+            pool_and_chain_answer(105, 0, 0),
+            pool_and_chain_answer(105, 250, 0),
+        ] {
+            let (client, node) = scripted().await;
+            node.answer("/get_height", height_answer(101, C));
+            node.answer(
+                "/get_blocks.bin",
+                pool_answer(POOL_INFO_FULL, 100, &[], &[B], &[]),
+            );
+            node.answer("/get_blocks.bin", odd_answer);
+            node.answer(
+                "/get_blocks.bin",
+                pool_answer(POOL_INFO_INCREMENTAL, 110, &[], &[D], &[]),
+            );
+            let ask = || async {
+                let (tip, pool) = client.get_tip_and_mempool().await;
+                (tip.unwrap(), pool.unwrap())
+            };
+            ask().await;
+            // The odd answer: the tip is asked for, and the pool is still
+            // read (from that answer if it described the pool, else from a
+            // second, plain request for its changes).
+            let (tip_now, _) = ask().await;
+            assert_eq!(tip_now, tip(100, C));
+            assert_eq!(node.requests_to("/get_height").len(), 2);
+            // From then on: the pool's changes and the tip, apart.
+            let (_, pool) = ask().await;
+            assert!(pool.contains(&D.to_string()), "{pool:?}");
+            assert_eq!(node.requests_to("/get_height").len(), 3);
+            let polls = node.requests_to("/get_blocks.bin");
+            assert_eq!(tip_named(&polls[1]), Some(C.to_string()));
+            assert!(
+                polls[2..].iter().all(|r| tip_named(r).is_none()),
+                "asked together again"
+            );
+            assert!(node.requests_to("/get_transaction_pool_hashes").is_empty());
+        }
+    }
+
+    /// The tip and the pool are two answers: a node whose pool can't be
+    /// read still gives its tip, and one with no tip still gives its pool.
+    #[tokio::test]
+    async fn a_tip_and_a_pool_asked_for_together_fail_apart() {
+        let (client, node) = scripted().await;
+        node.answer("/get_height", height_answer(101, C));
+        let (tip_now, pool) = client.get_tip_and_mempool().await;
+        assert_eq!(tip_now.unwrap(), tip(100, C));
+        assert!(pool.is_err());
+
+        let (client, node) = scripted().await;
+        node.answer(
+            "/get_blocks.bin",
+            pool_answer(POOL_INFO_FULL, 100, &[], &[B], &[]),
+        );
+        let (tip_now, pool) = client.get_tip_and_mempool().await;
+        assert!(tip_now.is_err());
+        assert_eq!(pool.unwrap(), vec![B.to_string()]);
+    }
+
     fn header(height: u64, hash: &str, prev_hash: &str) -> Value {
         json!({ "height": height, "hash": hash, "prev_hash": prev_hash, "timestamp": 1_000 + height })
     }
@@ -3050,21 +3173,6 @@ mod live_node_tests {
 
     #[tokio::test]
     #[ignore]
-    async fn real_node_find_height_at_or_before_matches_the_known_block() {
-        // The default trait method (`daemon.rs`), exercised here against the
-        // real RPC-backed `get_height`/`get_block_timestamp` rather than the
-        // fake - proves the binary search itself, not just its two
-        // primitives, works against the real node's actual (not perfectly
-        // monotonic) timestamps.
-        let height = client()
-            .find_height_at_or_before(1_788_593_344)
-            .await
-            .unwrap();
-        assert_eq!(height, 3_755_690);
-    }
-
-    #[tokio::test]
-    #[ignore]
     async fn real_node_get_block_transactions_all_parse_as_valid_monero_transactions() {
         // Proves the real deserialization path handles *current* mainnet
         // transaction formats (view tags, CLSAG, bulletproofs+) - the crate's own
@@ -3083,42 +3191,6 @@ mod live_node_tests {
         }
     }
 
-    #[tokio::test]
-    #[ignore]
-    async fn real_node_get_blocks_range_matches_get_block_transactions_for_the_same_range() {
-        // The one test that actually exercises `get_blocks.bin` against a real
-        // node - everything else about this override (`daemon_rpc.rs`) was
-        // written from a real, published reference implementation of the same
-        // endpoint, not verified live; this is that verification. Compares a
-        // real multi-block batched fetch against the same range fetched the
-        // old, already-proven way (`get_block_transactions`, one call per
-        // height) - same node, same blocks, transaction-for-transaction. Starts
-        // one block before the known block both other live tests already use,
-        // so this also covers the ordinary (non-genesis) `start_height` path
-        // without needing its own separately-verified fixture block.
-        let c = client();
-        let start = 3_755_689;
-        let count = 3;
-
-        let batched = c.get_blocks_range(start, count).await.unwrap();
-        assert_eq!(
-            batched.len() as u64,
-            count,
-            "a real node should honor a small max_block_count"
-        );
-
-        use monero::cryptonote::hash::Hashable;
-        for (offset, block_txs) in batched.iter().enumerate() {
-            let height = start + offset as u64;
-            let individually = c.get_block_transactions(height).await.unwrap();
-            assert_eq!(
-                block_txs.iter().map(Hashable::hash).collect::<Vec<_>>(),
-                individually.iter().map(Hashable::hash).collect::<Vec<_>>(),
-                "get_blocks_range's block {height} didn't match get_block_transactions for the same height"
-            );
-        }
-    }
-
     /// What the scanner reads blocks with, against mainnet blocks full of
     /// every current transaction shape: the pruned transactions carry the
     /// ids their whole forms hash to, each block names itself as
@@ -3128,7 +3200,6 @@ mod live_node_tests {
     async fn real_node_pruned_chain_blocks_match_the_whole_ones() {
         let c = client();
         let (start, count) = (3_755_688, 4);
-        let whole = c.get_blocks_range(start, count).await.unwrap();
         let chain = c.get_chain_blocks(start, count).await.unwrap();
         assert_eq!(chain.len() as u64, count);
         let mut transactions = 0;
@@ -3136,8 +3207,11 @@ mod live_node_tests {
             let height = start + offset as u64;
             assert_eq!(block.height, height);
             assert_eq!(block.hash, c.get_block_hash(height).await.unwrap());
-            assert_eq!(block.txs.len(), whole[offset].len());
-            for (index, (pruned, whole)) in block.txs.iter().zip(&whole[offset]).enumerate() {
+            // The same block, fetched whole with `get_block` and
+            // `/get_transactions`.
+            let whole = c.get_block_transactions(height).await.unwrap();
+            assert_eq!(block.txs.len(), whole.len());
+            for (index, (pruned, whole)) in block.txs.iter().zip(&whole).enumerate() {
                 assert_eq!(
                     block.txid(index),
                     Some(hex::encode(whole.hash().to_bytes())),
@@ -3187,6 +3261,50 @@ mod live_node_tests {
         assert_eq!(tip.hash.map(|hash| hash.len()), Some(64));
     }
 
+    /// The tip and the pool's changes in one request, as a real node
+    /// answers it: while the chain ends where it did, the node says so with
+    /// the changes and isn't asked for the tip.
+    #[tokio::test]
+    #[ignore]
+    async fn real_node_says_the_tip_has_not_moved_with_the_pools_changes() {
+        let c = client().with_pool_timing(Duration::ZERO, Duration::from_secs(3600));
+        let requests = |endpoint: &str| {
+            c.stats()
+                .iter()
+                .find(|s| s.endpoint == endpoint)
+                .map_or(0, |s| s.requests)
+        };
+        // Nothing known yet: the pool, then the tip.
+        let (first, pool) = c.get_tip_and_mempool().await;
+        let first = first.unwrap();
+        pool.unwrap();
+        assert_eq!(requests("/get_height"), 1);
+        assert_eq!(requests(POOL_CHANGES_ENDPOINT), 1);
+        // Blocks are minutes apart: of a few polls in a row, at least one
+        // finds the tip where it was, and that one costs one request.
+        let mut unmoved = 0;
+        for _ in 0..3 {
+            let (height_asks, both_asks) = (
+                requests("/get_height"),
+                requests(POOL_CHANGES_AND_TIP_ENDPOINT),
+            );
+            let (tip, pool) = c.get_tip_and_mempool().await;
+            let tip = tip.unwrap();
+            pool.unwrap();
+            assert_eq!(requests(POOL_CHANGES_AND_TIP_ENDPOINT), both_asks + 1);
+            assert!(tip.height >= first.height);
+            assert_eq!(tip.hash.as_ref().map(String::len), Some(64));
+            if requests("/get_height") == height_asks {
+                unmoved += 1;
+                // And it is the tip: the node names the same block.
+                assert_eq!(c.get_block_hash(tip.height).await.ok(), tip.hash);
+            }
+        }
+        assert!(unmoved > 0, "the tip moved on every poll");
+        assert_eq!(requests(POOL_CHANGES_ENDPOINT), 1);
+        assert_eq!(requests("/get_transaction_pool_hashes"), 0);
+    }
+
     /// Pool transactions fetched by id (as for a node that can't say pool
     /// changes, or past the bodies it sends with them) come pruned, with the
     /// hash of the rest, and hash to the ids they were asked for by.
@@ -3211,33 +3329,6 @@ mod live_node_tests {
             let fetched = entry.fetched().unwrap();
             assert!(pool.contains(&fetched.txid));
             assert!(shared::monero_tx::is_pruned(&fetched.tx));
-        }
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn real_node_get_blocks_range_handles_the_start_height_zero_special_case() {
-        // `get_blocks.bin` ignores `start_height: 0` (see `get_blocks_range`'s
-        // own doc comment) - proves the genesis special-case actually reaches
-        // real block 0 and real block 1 correctly, not just heights the bin
-        // endpoint itself handles natively.
-        let c = client();
-        let blocks = c.get_blocks_range(0, 2).await.unwrap();
-        assert_eq!(blocks.len(), 2);
-        // The genesis block has no regular (non-coinbase) transactions on any
-        // real Monero network.
-        assert!(blocks[0].is_empty());
-    }
-
-    #[tokio::test]
-    #[ignore]
-    async fn real_node_get_mempool_transactions_decode_successfully() {
-        // The mempool is constantly changing, so this can't assert exact content -
-        // only that whatever is currently there decodes cleanly, proving the same
-        // path the live scanner would run every ~second in production.
-        let txs = client().get_mempool_transactions().await.unwrap();
-        for tx in &txs {
-            assert!(!tx.prefix.outputs.is_empty());
         }
     }
 
@@ -3352,25 +3443,23 @@ mod live_node_tests {
             )
             .unwrap();
 
-        let txs = client().get_mempool_transactions().await.unwrap();
+        // The pool as the scanner reads it: its ids, then the transactions
+        // under those ids, pruned.
+        let c = client();
+        let pool = c.get_mempool_txids().await.unwrap();
+        let txs = c.get_transactions_with_ids(&pool).await.unwrap();
         assert!(
             !txs.is_empty(),
             "test needs a non-empty live mempool to be meaningful"
         );
 
-        for tx in &txs {
-            let touched = crate::scanner::scan_transaction_for_tenant(
-                &store,
-                &key_custody,
-                handle,
-                &created.tenant.id,
-                tx,
-                0..1,
-                0,
-                None,
-            )
-            .await
-            .unwrap();
+        for FetchedTx { txid, tx } in &txs {
+            let scan = crate::scanner::scan_transaction_as(&key_custody, handle, txid, tx, 0..1)
+                .await
+                .unwrap();
+            let touched =
+                crate::scanner::record_scan_match(&store, &created.tenant.id, &scan, 0, None)
+                    .unwrap();
             assert!(touched.is_empty());
         }
     }

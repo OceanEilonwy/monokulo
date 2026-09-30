@@ -17,9 +17,11 @@ smallest form the node offers, and ask once.
 
 | When | Request | Size |
 |---|---|---|
-| Every round (each second, by default) | `/get_height`: the tip's height and id, in one answer | about 150 B |
+| Every round (each second, by default) with nothing to watch in the pool | `/get_height`: the tip's height and id, in one answer | about 150 B |
+| Every round with something to watch in the pool (a store with an order in scope, or an unconfirmed payment) | one `get_blocks.bin`: what entered and left the pool since the last answer, and whether the chain still ends at the tip last seen | about 150 B when nothing changed; about 0.4 kB per new transaction |
+| Such a round when the tip has moved (a new block, every two minutes or so) | that, plus `/get_height` for the new tip | about 0.6 kB more |
 | Every round, while the recorded chain ends below the node's tip | `on_get_block_hash` for the highest recorded block | 119 B |
-| Every round and every fast pass (4 a second), while a store has an order in scope | `get_blocks.bin`, pool only: what entered and left the pool since the last answer | about 150 B when nothing changed; about 0.4 kB per new transaction |
+| Every fast pass (4 a second), while a store has an order in scope | `get_blocks.bin`, pool only: what entered and left the pool since the last answer | about 150 B when nothing changed; about 0.4 kB per new transaction |
 | Every minute, while the pool is being followed | `/get_transaction_pool_hashes`: the plain list, to correct a missed change | about 70 B per pool transaction |
 | A new block, for a store with an order in scope | `get_blocks.bin` with pruned transactions | about 13 kB a block on mainnet |
 | A new block nobody is scanned for | `get_block_headers_range` | about 1 kB a block |
@@ -31,7 +33,8 @@ smallest form the node offers, and ask once.
 
 While no store has an order in scope and no payment is unconfirmed, a round
 is the first row alone: one request of about 150 bytes. The pool is not
-polled and the fast mempool loop asks nothing.
+polled and the fast mempool loop asks nothing. With something to watch and
+no new block, a round is the second row alone: still one request.
 
 ## How each is kept small
 
@@ -82,6 +85,26 @@ A node that doesn't describe its pool in answer to that request (an older
 monerod) is asked for the plain list each time, as before, and tried
 again after ten minutes.
 
+**The tip with the pool.** A round that looks at the pool needs the tip too.
+`get_blocks.bin` can be asked for blocks and the pool at once
+(`requested_info` = "blocks and pool"), and a wallet's request for blocks
+names the block it has (`block_ids`). monerod answers a request that names
+its own top block with no blocks at all: just the chain's length, and the
+pool's changes. So the round's poll names the tip the node last gave
+(`MoneroDaemonClient::get_tip_and_mempool`), and "no blocks" means that tip
+stands: its height and id are already known, and `/get_height` isn't asked.
+When the tip has moved the node sends a block instead. One is asked for,
+from the start of the chain (`start_height` 1, `max_block_count` 1: a few
+hundred bytes, of no interest in itself), and the new tip is read from
+`/get_height` as usual. That happens once a block.
+
+The two answers stay two answers: a pool that can't be read doesn't hide
+the tip, and the other way round. A node that doesn't answer the two
+together as monerod does (no description of the pool, a run of blocks where
+one was asked for, a length that doesn't fit the tip named) is asked them
+apart for ten minutes, then tried again. The once-a-minute correction by the
+plain list is a round of two requests too.
+
 **Nothing fetched that nobody reads.** Pool bodies are fetched only when
 there is a store to scan them for. A new block with nobody to scan it for
 (no store with an order in scope, or none with its keys registered) is
@@ -118,7 +141,8 @@ Against public mainnet nodes (September 2026):
 engine's `/status` lists them for each node under `rpc` (busiest first), so
 what a deployment costs its node can be read off rather than estimated. Pool
 polls are counted apart from block fetches, as
-`/get_blocks.bin (pool changes)`.
+`/get_blocks.bin (pool changes)` and, when they ask about the tip too,
+`/get_blocks.bin (pool changes and tip)`.
 
 ## Tests
 
@@ -127,10 +151,16 @@ polls are counted apart from block fetches, as
   transaction. Re-record it when a request changes
   (`cargo test -p scanner --test daemon_rpc_replay -- --ignored`).
 - `daemon_rpc::wire_tests` script a node: the pool followed by its changes,
-  the fallback for a node that can't say them, batched lookups, id checks.
+  the fallback for a node that can't say them, the tip asked about with the
+  pool (unmoved, moved, and a node that can't answer both), batched lookups,
+  id checks.
 - `work::tests` hold the scheduler to a budget with a fake node that records
-  every call: one request a round while idle, headers for blocks nobody is
-  scanned for, two round trips for a page of vanished payments.
+  every call: one request a round while idle, one call for the tip and the
+  pool while watching, headers for blocks nobody is scanned for, two round
+  trips for a page of vanished payments.
+- The ignored live tests in `daemon_rpc::live_node_tests` run the same
+  requests against a mainnet node (`SCANNER_LIVE_TEST_NODE=host:port` names
+  another than the default).
 
 ## Not done
 
@@ -138,5 +168,15 @@ polls are counted apart from block fetches, as
   polling against one's own node.
 - Compression: monerod doesn't offer it. A proxy in front of a node might;
   it isn't asked for.
-- One request for the pool and the tip together (`get_blocks.bin` answers
-  both) would need the tip's id, which that answer doesn't carry.
+
+## Removed
+
+Calls nothing in the engine made any more, taken out of
+`MoneroDaemonClient` and its implementations:
+
+- `get_mempool_transactions` (`/get_transaction_pool`, every pool
+  transaction whole): the pool is read by its ids and changes.
+- `get_blocks_range` (`get_blocks.bin` with whole transactions, no block
+  ids): blocks are read with `get_chain_blocks`.
+- `find_height_at_or_before` (a binary search over block timestamps, for
+  the manual rescan that was removed earlier).
