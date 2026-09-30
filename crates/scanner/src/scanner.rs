@@ -419,6 +419,70 @@ pub struct VanishedPoolReport {
     /// The subset of `dirty_orders` where a payment was voided on affirmative
     /// double-spend proof - the `order.double_spend_detected` webhook's trigger.
     pub double_spent_orders: Vec<crate::store::OrderId>,
+    /// Payments (by id) whose transaction is nowhere and isn't proven
+    /// double-spent: dropped, evicted or still propagating. They stay as
+    /// they are and are looked at again; a caller spaces those looks out.
+    pub unresolved: Vec<i64>,
+}
+
+/// What the node said about several vanished payments at once
+/// ([`vanished_hints`]), so checking them one by one needn't ask again.
+#[derive(Default)]
+pub(crate) struct VanishedHints {
+    /// Where each transaction is, by txid.
+    locations: std::collections::HashMap<String, TxLocation>,
+    /// For payments whose transaction is nowhere: whether a double spend is
+    /// proven, by payment id.
+    proven: std::collections::HashMap<i64, bool>,
+}
+
+/// Asks the node about every payment in `unconfirmed` whose transaction isn't
+/// in the pool snapshot, in as few round trips as it can: one for where the
+/// transactions are, and one (corroborated across nodes) for the key images
+/// of those that are nowhere. Whatever isn't answered that way (a node
+/// client that can't batch, a transaction the answer didn't settle) is left
+/// out, and [`check_vanished_candidates`] asks about it payment by payment.
+/// A node that fails is an error: it would fail payment by payment too.
+pub(crate) async fn vanished_hints(
+    daemon: &dyn MoneroDaemonClient,
+    mempool_txids: &HashSet<String>,
+    unconfirmed: &[&crate::store::OrderPaymentRow],
+) -> std::result::Result<VanishedHints, DaemonError> {
+    let mut hints = VanishedHints::default();
+    let mut txids: Vec<String> = unconfirmed
+        .iter()
+        .map(|payment| payment.txid.clone())
+        .filter(|txid| !mempool_txids.contains(txid))
+        .collect();
+    txids.sort_unstable();
+    txids.dedup();
+    if txids.is_empty() {
+        return Ok(hints);
+    }
+    hints.locations = daemon.locate_transactions(&txids).await?;
+    // The key images of every payment that is nowhere, asked about together.
+    let mut images: Vec<String> = Vec::new();
+    let mut spans: Vec<(i64, std::ops::Range<usize>)> = Vec::new();
+    for payment in unconfirmed {
+        if hints.locations.get(&payment.txid) != Some(&TxLocation::NotFound) {
+            continue;
+        }
+        if let Ok(own) = parse_payment_key_images(&payment.key_images_json) {
+            spans.push((payment.id, images.len()..images.len() + own.len()));
+            images.extend(own);
+        }
+    }
+    // One payment gains nothing from being asked about here first.
+    if spans.len() > 1 {
+        let statuses = daemon.is_key_image_spent_corroborated(&images).await?;
+        if statuses.len() == images.len() {
+            for (id, span) in spans {
+                let proven = statuses[span].contains(&KeyImageStatus::SpentInBlockchain);
+                hints.proven.insert(id, proven);
+            }
+        }
+    }
+    Ok(hints)
 }
 
 pub(crate) async fn check_vanished_candidates(
@@ -428,15 +492,21 @@ pub(crate) async fn check_vanished_candidates(
     current_height: u64,
     now: i64,
     unconfirmed: Vec<crate::store::OrderPaymentRow>,
+    hints: &VanishedHints,
 ) -> Result<VanishedPoolReport> {
     let mut dirty_orders = HashSet::new();
     let mut double_spent_orders = HashSet::new();
+    let mut unresolved = Vec::new();
 
     for payment in unconfirmed {
         if mempool_txids.contains(&payment.txid) {
             continue; // still pending in the pool - nothing has been decided about it yet
         }
-        match daemon.locate_transaction(&payment.txid).await? {
+        let location = match hints.locations.get(&payment.txid) {
+            Some(location) => *location,
+            None => daemon.locate_transaction(&payment.txid).await?,
+        };
+        match location {
             // Mined after all: the pool snapshot was taken before the block arrived,
             // or the block scan stopped short of that height this tick. Recording the
             // height here is the same write the block scan would have made, and
@@ -469,9 +539,14 @@ pub(crate) async fn check_vanished_candidates(
                 // same way `check_for_reorg_and_reconcile` resolves the identical
                 // question. Voiding on anything less would write off a payment the
                 // customer really made.
-                if void_if_double_spend_proven(db, daemon, &payment, current_height, now).await? {
+                let proven = hints.proven.get(&payment.id).copied();
+                if void_if_double_spend_proven(db, daemon, &payment, current_height, now, proven)
+                    .await?
+                {
                     dirty_orders.insert(payment.order_id.clone());
                     double_spent_orders.insert(payment.order_id.clone());
+                } else {
+                    unresolved.push(payment.id);
                 }
             }
         }
@@ -480,6 +555,7 @@ pub(crate) async fn check_vanished_candidates(
     Ok(VanishedPoolReport {
         dirty_orders: dirty_orders.into_iter().collect(),
         double_spent_orders: double_spent_orders.into_iter().collect(),
+        unresolved,
     })
 }
 
@@ -603,12 +679,17 @@ pub(crate) fn recompute_and_notify_in_tx(
 /// call *before* acquiring the lock, for the same reason every other lock hold in
 /// this file is kept brief: `is_key_image_spent` is network I/O, and nothing may
 /// `.await` while holding the store mutex.
+///
+/// `proven` is the answer when the node was already asked about this
+/// payment's key images along with others' ([`vanished_hints`]): the same
+/// corroborated evidence, fetched in one round trip instead of one each.
 async fn void_if_double_spend_proven(
     db: &crate::store::Db,
     daemon: &dyn MoneroDaemonClient,
     payment: &crate::store::OrderPaymentRow,
     current_height: u64,
     now: i64,
+    proven: Option<bool>,
 ) -> Result<bool> {
     // Invalid stored evidence is never proof, and never an error that would
     // stop the check for every other payment: log it and leave the payment.
@@ -625,8 +706,14 @@ async fn void_if_double_spend_proven(
     // node (`daemon_fallback::FallbackDaemonClient`) cross-checks them here rather
     // than trusting whichever single one happened to answer - see
     // `MoneroDaemonClient::is_key_image_spent_corroborated`'s doc comment.
-    let statuses = daemon.is_key_image_spent_corroborated(&key_images).await?;
-    if !statuses.contains(&KeyImageStatus::SpentInBlockchain) {
+    let proven = match proven {
+        Some(proven) => proven,
+        None => daemon
+            .is_key_image_spent_corroborated(&key_images)
+            .await?
+            .contains(&KeyImageStatus::SpentInBlockchain),
+    };
+    if !proven {
         // Still ambiguous (still propagating, or a re-check will catch it next tick)
         // - never void on this evidence alone.
         return Ok(false);
@@ -756,6 +843,9 @@ pub const DOUBLE_SPEND_RECHECK_WINDOW_SECS: i64 = 48 * 3600;
 /// it was restored. Invalid evidence or an inconclusive answer leaves the
 /// payment voided (`Ok(false)`); a node or storage failure is an error, so a
 /// caller can stop asking a node that isn't answering.
+///
+/// `statuses` are this payment's key-image statuses when the caller already
+/// asked about them along with other payments' ([`voided_key_image_statuses`]).
 pub(crate) async fn recheck_voided_payment(
     db: &crate::store::Db,
     daemon: &dyn MoneroDaemonClient,
@@ -763,6 +853,7 @@ pub(crate) async fn recheck_voided_payment(
     payment: &crate::store::OrderPaymentRow,
     current_height: u64,
     now: i64,
+    statuses: Option<&[KeyImageStatus]>,
 ) -> Result<bool> {
     let key_images = match parse_payment_key_images(&payment.key_images_json) {
         Ok(images) => images,
@@ -771,8 +862,10 @@ pub(crate) async fn recheck_voided_payment(
             return Ok(false);
         }
     };
-    let statuses =
-        crate::work::bounded(daemon.is_key_image_spent_corroborated(&key_images)).await?;
+    let statuses = match statuses {
+        Some(statuses) => statuses.to_vec(),
+        None => crate::work::bounded(daemon.is_key_image_spent_corroborated(&key_images)).await?,
+    };
     if statuses.len() != key_images.len()
         || !statuses
             .iter()
@@ -795,6 +888,37 @@ pub(crate) async fn recheck_voided_payment(
         tracing::info!(order.id = %payment.order_id, network = crate::network::network_str(network), "double-spend revalidation reversed a void");
     }
     Ok(restored)
+}
+
+/// The corroborated key-image statuses of several voided payments, asked for
+/// in one round trip (per node), by payment id. A payment whose stored
+/// evidence is invalid is left out, as is everything if there is only one
+/// payment to ask about: [`recheck_voided_payment`] then asks for itself. A
+/// node that fails is an error: it would fail for each payment too.
+pub(crate) async fn voided_key_image_statuses(
+    daemon: &dyn MoneroDaemonClient,
+    payments: &[crate::store::OrderPaymentRow],
+) -> Result<std::collections::HashMap<i64, Vec<KeyImageStatus>>> {
+    let mut images: Vec<String> = Vec::new();
+    let mut spans: Vec<(i64, std::ops::Range<usize>)> = Vec::new();
+    for payment in payments {
+        if let Ok(own) = parse_payment_key_images(&payment.key_images_json) {
+            spans.push((payment.id, images.len()..images.len() + own.len()));
+            images.extend(own);
+        }
+    }
+    if spans.len() < 2 {
+        return Ok(Default::default());
+    }
+    let statuses =
+        crate::work::bounded(daemon.is_key_image_spent_corroborated(&images)).await?;
+    if statuses.len() != images.len() {
+        return Ok(Default::default());
+    }
+    Ok(spans
+        .into_iter()
+        .map(|(id, span)| (id, statuses[span].to_vec()))
+        .collect())
 }
 
 /// Never request fewer than this many blocks in one `get_blocks_range` call,
@@ -11170,6 +11294,7 @@ pub(crate) mod tests {
             &payment,
             10,
             crate::now_unix(),
+            None,
         )
         .await
         .unwrap();
@@ -11639,6 +11764,7 @@ pub(crate) mod tests {
             &payment,
             10,
             crate::now_unix(),
+            None,
         )
         .await
         .unwrap();

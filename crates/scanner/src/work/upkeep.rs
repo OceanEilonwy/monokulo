@@ -12,7 +12,10 @@
 //!   evidence, and restored if it no longer supports the accusation
 //!   (`docs/DESIGN.md` §7.7). One page per round, from a persisted position.
 
-use crate::scanner::{recheck_voided_payment, ScannerError, DOUBLE_SPEND_RECHECK_WINDOW_SECS};
+use crate::scanner::{
+    recheck_voided_payment, voided_key_image_statuses, ScannerError,
+    DOUBLE_SPEND_RECHECK_WINDOW_SECS,
+};
 use crate::store::position::{ScanRange, VoidRecheck, VoidRecheckPassStarted};
 
 use super::{Progress, Round};
@@ -165,6 +168,18 @@ async fn recheck_voids(
             s.voided_payments_page(network, cutoff, after, VOID_PAGE)
         })
         .await?;
+    // The whole page's key images in one round trip (per node); a payment
+    // left out of the answer is asked about on its own. A node that fails
+    // here would fail for each payment: the pass waits for the next round.
+    let statuses = match voided_key_image_statuses(round.inputs.daemon, &page).await {
+        Ok(statuses) => statuses,
+        Err(ScannerError::Daemon(error)) => {
+            tracing::warn!(network = crate::network::network_str(round.network()), payments = page.len(), error = %error,
+                "double-spend revalidation: rechecking a voided payment failed - leaving it voided, retried next pass");
+            return Ok(());
+        }
+        Err(error) => return Err(error),
+    };
     // Until the time runs out (at least one) or the node fails: a node that
     // fails for one payment would for the next, so stop asking it.
     let mut last = None;
@@ -180,6 +195,7 @@ async fn recheck_voids(
             payment,
             tip,
             now,
+            statuses.get(&payment.id).map(Vec::as_slice),
         )
         .await
         {

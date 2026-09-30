@@ -230,13 +230,27 @@ impl<'a> Chain<'a> {
             .filter(|c| !skip.contains(&c.payment.id))
             .take(PROCESS_PAGE)
             .collect();
+        // Where the page's transactions are, in one round trip where the
+        // node client can; a transaction left out of the answer (or all of
+        // them, if the call fails) is asked about on its own.
+        let located = {
+            let mut txids: Vec<String> = page.iter().map(|c| c.payment.txid.clone()).collect();
+            txids.sort_unstable();
+            txids.dedup();
+            bounded(self.daemon.locate_transactions(&txids))
+                .await
+                .unwrap_or_default()
+        };
         for candidate in page {
             if processed > 0 && Instant::now() >= until {
                 break;
             }
             skip.insert(candidate.payment.id);
             processed += 1;
-            match self.reexamine(&candidate.payment, tip, &mut done).await {
+            match self
+                .reexamine(&candidate.payment, tip, &mut done, &located)
+                .await
+            {
                 Ok(()) => {}
                 Err(error) if candidate.attempts + 1 >= MAX_CANDIDATE_ATTEMPTS => {
                     tracing::error!(
@@ -272,6 +286,7 @@ impl<'a> Chain<'a> {
         candidate: &OrderPaymentRow,
         tip: u64,
         done: &mut Reconciled,
+        located: &std::collections::HashMap<String, TxLocation>,
     ) -> Result<(), ScannerError> {
         // The row as it is now: something else may have changed it since
         // it was collected.
@@ -289,7 +304,10 @@ impl<'a> Chain<'a> {
             return Ok(());
         };
         let voided = payment.voided_at.is_some();
-        let location = bounded(self.daemon.locate_transaction(&payment.txid)).await?;
+        let location = match located.get(&payment.txid) {
+            Some(location) => *location,
+            None => bounded(self.daemon.locate_transaction(&payment.txid)).await?,
+        };
         // Only a transaction that is nowhere to be found needs the key-image
         // evidence: dropped, evicted and double-spent look the same otherwise.
         let proven = !voided

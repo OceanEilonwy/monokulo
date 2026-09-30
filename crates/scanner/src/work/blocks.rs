@@ -8,6 +8,11 @@
 //! round-robin ([`Rotation`]). While the frontier is behind, turns alternate
 //! between it and catch-up, so neither starves the other.
 //!
+//! A new block nobody can be scanned for (no store has an order in scope, or
+//! none of those has its keys registered) is recorded from its header alone:
+//! its id, its parent's and its time, about a kilobyte, with no transactions
+//! fetched. The stores that were left behind catch up on whole blocks later.
+//!
 //! A block's results stay in memory ([`BlockScan`]) until the whole block
 //! is scanned, then commit in one transaction with the cursor moves, and
 //! only if the block still extends the recorded chain. If a unit runs out of
@@ -21,7 +26,7 @@ use std::sync::Arc;
 
 use tokio::time::Instant;
 
-use crate::daemon::ChainBlock;
+use crate::daemon::{ChainBlock, ChainHeader};
 use crate::key_custody::{ScanIndices, WalletHandle};
 use crate::scanner::{
     record_scan_match, scan_for_tenants, stage_block_match, ScanResult, ScannerError,
@@ -37,6 +42,8 @@ use super::{bounded, Progress, Round, Wait};
 const GROUP_PAGE: usize = 256;
 /// Most blocks one unit scans for its group before yielding the tier.
 const BLOCKS_PER_UNIT: usize = 8;
+/// Most headers fetched at once for blocks recorded without being scanned.
+const HEADERS_PER_FETCH: u64 = 256;
 /// How far ahead of real time consensus lets a block's timestamp run.
 /// Catch-up windows start this much before a block's own timestamp, so a
 /// forward-dated block can't hide an order that was open when it was mined.
@@ -85,6 +92,12 @@ pub(crate) struct BlocksRound {
     frontier_done: bool,
     rotation: Rotation,
     cache: BlockCache,
+    /// Headers fetched this round, for new blocks nobody is scanned for.
+    /// Never a source of transactions: kept apart from `cache`.
+    headers: BTreeMap<u64, ChainHeader>,
+    /// Whether the last new block was recorded from its header alone
+    /// (nobody to scan it for). Not yet known at the start of a round.
+    frontier_header_only: Option<bool>,
 }
 
 /// Which catch-up group is served next. Groups are keyed by cursor height;
@@ -378,8 +391,15 @@ async fn advance_group(
         // (This block is `cursor + 1`; the run after it starts at `cursor + 2`.)
         // This block is fetched first (usually already held) so the fetch
         // ahead can't duplicate it; not for a catch-up group's first block,
-        // where the scan first checks there is anyone to scan it for.
-        if group == Group::Frontier || scanned > 0 {
+        // where the scan first checks there is anyone to scan it for, and
+        // not for a new block unless the one before it was scanned for
+        // somebody: a block nobody is scanned for needs only its header, and
+        // the scan finds that out before it fetches anything.
+        let fetch_first = match group {
+            Group::Frontier => round.blocks.frontier_header_only == Some(false),
+            Group::CatchUp => scanned > 0,
+        };
+        if fetch_first {
             block(round, cursor + 1, end).await?;
         }
         let prefetch = prefetch_range(round, cursor + 2, end);
@@ -548,7 +568,17 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
         return Ok(BlockOutcome::NobodyToScan);
     }
 
-    let block = block(round, height, end).await?;
+    // A new block with nobody to scan it for is recorded from its header:
+    // its transactions would be fetched and then read by no one.
+    let header_only = group == Group::Frontier && frontier && scannable.is_empty();
+    if group == Group::Frontier {
+        round.blocks.frontier_header_only = Some(header_only);
+    }
+    let block = if header_only {
+        header_block(round, height, end).await?
+    } else {
+        block(round, height, end).await?
+    };
     if plan
         .recorded
         .as_ref()
@@ -917,6 +947,43 @@ async fn block(
                 "the node returned no block at height {height}"
             )))
         })
+}
+
+/// Block `height` as its header alone (no transactions), for recording a
+/// block nobody is scanned for. Headers come a run at a time, up to `end`. A
+/// whole block already held this round serves as well and costs nothing.
+///
+/// The result is never put in the block cache, so a scan can't take it for
+/// the block's contents.
+async fn header_block(
+    round: &mut Round<'_>,
+    height: u64,
+    end: u64,
+) -> Result<Arc<ChainBlock>, ScannerError> {
+    if let Some((block, _)) = round.blocks.cache.blocks.get(&height) {
+        return Ok(block.clone());
+    }
+    if !round.blocks.headers.contains_key(&height) {
+        let count = (end.saturating_sub(height) + 1).min(HEADERS_PER_FETCH);
+        let headers = bounded(round.inputs.daemon.get_chain_headers(height, count)).await?;
+        round
+            .blocks
+            .headers
+            .extend(headers.into_iter().map(|header| (header.height, header)));
+    }
+    let header = round.blocks.headers.get(&height).ok_or_else(|| {
+        ScannerError::Daemon(crate::daemon::DaemonError::Request(format!(
+            "the node returned no header at height {height}"
+        )))
+    })?;
+    Ok(Arc::new(ChainBlock {
+        height,
+        hash: header.hash.clone(),
+        prev_hash: header.prev_hash.clone(),
+        timestamp: header.timestamp,
+        txs: Vec::new(),
+        txids: None,
+    }))
 }
 
 #[cfg(test)]

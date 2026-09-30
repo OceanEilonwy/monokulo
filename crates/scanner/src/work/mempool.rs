@@ -18,6 +18,12 @@
 //!   A failed scan isn't remembered, so it is retried.
 //!
 //! Entries go when their transaction leaves the pool.
+//!
+//! The pool is only looked at while there is something to look for: a store
+//! with an order in scope, or (for the round's tier, whose poll the
+//! vanished-payment check reads) a payment not yet in a block. Otherwise no
+//! request is made at all, and what was remembered is dropped. And bodies are
+//! only fetched when there is a store to scan them for.
 
 use std::collections::{HashMap, HashSet};
 use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
@@ -84,6 +90,13 @@ impl MempoolState {
         remembered.scanned.retain(|txid, _| in_pool.contains(txid));
     }
 
+    /// Drops everything remembered: the pool isn't being watched.
+    fn forget(&self) {
+        let mut remembered = self.inner.lock();
+        remembered.bodies = HashMap::new();
+        remembered.scanned = HashMap::new();
+    }
+
     /// Whether any store has been scanned for this transaction yet.
     fn is_new(&self, txid: &str) -> bool {
         !self.inner.lock().scanned.contains_key(txid)
@@ -129,6 +142,25 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     round.mempool.done = true;
     let network = round.network();
     let state = &round.state.mempool;
+    // Nothing to look for in the pool: no store has an order in scope and
+    // no payment is waiting for a block. The node isn't asked.
+    let (grace, now) = (round.inputs.grace_period_seconds, round.now);
+    let watching = round
+        .db(move |s, network| -> Result<bool, ScannerError> {
+            Ok(!s
+                .active_tenants_page(network, now, grace, "", 1)?
+                .is_empty()
+                || !s.unconfirmed_payments_page(network, 0, 1)?.is_empty())
+        })
+        .await;
+    match watching {
+        Ok(true) => {}
+        Ok(false) => {
+            state.forget();
+            return Progress::Idle;
+        }
+        Err(error) => return Progress::Failed(error),
+    }
     let Some(pool_txids) = poll(round.inputs).await else {
         return Progress::Blocked(Wait::MempoolUnreadable);
     };
@@ -138,14 +170,18 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     if pool_txids.is_empty() {
         return Progress::Advanced;
     }
-    let selected = select(state, pool_txids);
-    let (pool, fetch_failed) = bodies(state, round.inputs, &selected).await;
-
     let tenants = match tenant_page(round).await {
         Ok(tenants) => tenants,
         Err(error) => return Progress::Failed(error),
     };
+    // Nobody to scan for (the poll was for the vanished-payment check, or
+    // no store's keys are registered): no bodies are fetched.
+    if tenants.is_empty() {
+        return Progress::Advanced;
+    }
     let state = &round.state.mempool;
+    let selected = select(state, pool_txids);
+    let (pool, fetch_failed) = bodies(state, round.inputs, &selected).await;
     // A tenant that fails is retried next round, not once per transaction:
     // one unresponsive backend mustn't spend the round on deadlines.
     let mut failed: HashSet<crate::store::TenantId> = HashSet::new();
@@ -198,18 +234,9 @@ pub struct FastReport {
 /// scope, and records and settles what they pay, straight away (see the
 /// module doc). Returns `None` if the pool couldn't be read.
 pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<FastReport> {
-    let pool_txids = poll(inputs).await?;
-    let mempool = &state.mempool;
-    let in_pool: HashSet<String> = pool_txids.iter().cloned().collect();
-    mempool.retain_pool(&in_pool);
-    let mut new: Vec<String> = pool_txids
-        .into_iter()
-        .filter(|txid| mempool.is_new(txid))
-        .collect();
     let mut report = FastReport::default();
-    if new.is_empty() {
-        return Some(report);
-    }
+    // Who to scan for comes first: with no store to scan for, the pool
+    // isn't asked about at all (several times a second, otherwise).
     let tenants = match all_windows(state, inputs).await {
         Ok(tenants) => tenants,
         Err(error) => {
@@ -218,6 +245,17 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
         }
     };
     if tenants.is_empty() {
+        return Some(report);
+    }
+    let pool_txids = poll(inputs).await?;
+    let mempool = &state.mempool;
+    let in_pool: HashSet<String> = pool_txids.iter().cloned().collect();
+    mempool.retain_pool(&in_pool);
+    let mut new: Vec<String> = pool_txids
+        .into_iter()
+        .filter(|txid| mempool.is_new(txid))
+        .collect();
+    if new.is_empty() {
         return Some(report);
     }
     // As many new transactions as the scan budget covers for every store.

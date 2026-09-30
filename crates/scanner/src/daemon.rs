@@ -782,6 +782,27 @@ pub mod fake {
                 .unwrap_or(TxLocation::NotFound))
         }
 
+        /// Every transaction asked about, in one answer, as the real
+        /// client's batched lookup gives.
+        async fn locate_transactions(
+            &self,
+            txids: &[String],
+        ) -> Result<HashMap<String, TxLocation>, DaemonError> {
+            self.require_online()?;
+            let state = self.state.lock();
+            Ok(txids
+                .iter()
+                .map(|txid| {
+                    let location = state
+                        .tx_locations
+                        .get(txid)
+                        .copied()
+                        .unwrap_or(TxLocation::NotFound);
+                    (txid.clone(), location)
+                })
+                .collect())
+        }
+
         async fn get_transaction(&self, txid: &str) -> Result<Transaction, DaemonError> {
             self.require_online()?;
             let state = self.state.lock();

@@ -1645,6 +1645,29 @@ async fn the_fast_path_defers_what_its_budget_does_not_cover() {
 /// A pool that can't be read is not an empty pool.
 #[tokio::test]
 async fn the_fast_path_reports_an_unreadable_pool() {
+    let store = Store::open_in_memory().unwrap();
+    let custody = FlakyKeyCustody::default();
+    let (tenant, handle, _order) =
+        fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
+    let store = store.into_shared();
+    let fake = FakeDaemonClient::new();
+    fake.set_online(false);
+    let db = Db::over_shared(store.clone());
+    let tenants = [(tenant, handle)];
+    assert_eq!(
+        fast_pass(
+            &ScanState::default(),
+            &inputs(&db, &custody, &fake, &tenants)
+        )
+        .await,
+        None
+    );
+}
+
+/// With no store to scan for, the fast path doesn't ask the node about its
+/// pool at all: a node that would fail the poll is never reached.
+#[tokio::test]
+async fn the_fast_path_leaves_the_node_alone_while_no_store_has_an_order_in_scope() {
     let store = Store::open_in_memory().unwrap().into_shared();
     let custody = FlakyKeyCustody::default();
     let fake = FakeDaemonClient::new();
@@ -1652,7 +1675,7 @@ async fn the_fast_path_reports_an_unreadable_pool() {
     let db = Db::over_shared(store.clone());
     assert_eq!(
         fast_pass(&ScanState::default(), &inputs(&db, &custody, &fake, &[])).await,
-        None
+        Some(FastReport::default())
     );
 }
 
@@ -3258,6 +3281,7 @@ async fn a_vanished_payment_found_mined_gets_its_height_and_one_back_in_the_pool
         height,
         crate::now_unix(),
         candidates,
+        &Default::default(),
     )
     .await
     .unwrap();
