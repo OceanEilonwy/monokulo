@@ -23,8 +23,8 @@ use scanner::daemon_fallback::{FallbackDaemonClient, FallbackNode};
 use scanner::engine_settings::{Daemons, EngineSettings};
 use scanner::http::{build_router, rate_limit::RateLimiter, AppState};
 use scanner::key_custody::{
-    KeyCustody, KeyCustodyError, MatchedOutput, PlainKeyCustody, ScanIndices, SubaddressIndex,
-    WalletHandle, WalletMaterial,
+    KeyCustody, KeyCustodyError, MatchedOutput, PlainKeyCustody, ScanIndices, ScanInput,
+    SubaddressIndex, TxMatches, WalletHandle, WalletMaterial,
 };
 use scanner::scanner_status::new_scanner_status_map;
 use scanner::store::{Db, NewOrder, NewTenant, ReadStorePool, Store};
@@ -167,7 +167,7 @@ impl KeyCustody for SaturatedCustody {
     async fn scan_tx_outputs(
         &self,
         handle: WalletHandle,
-        tx: &Transaction,
+        tx: &ScanInput,
         major_range: Range<u32>,
         minor_range: Range<u32>,
     ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
@@ -180,18 +180,15 @@ impl KeyCustody for SaturatedCustody {
         self.completed.fetch_add(1, Ordering::Relaxed);
         found
     }
-    async fn scan_tx_outputs_for_indices(
+    async fn scan_txs_for_indices(
         &self,
         handle: WalletHandle,
-        tx: &Transaction,
+        txs: &[ScanInput],
         indices: &ScanIndices,
-    ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
+    ) -> Result<Vec<TxMatches>, KeyCustodyError> {
         let _permit = self.acquire().await?;
         tokio::time::sleep(self.delay).await;
-        let found = self
-            .inner
-            .scan_tx_outputs_for_indices(handle, tx, indices)
-            .await;
+        let found = self.inner.scan_txs_for_indices(handle, txs, indices).await;
         self.completed.fetch_add(1, Ordering::Relaxed);
         found
     }

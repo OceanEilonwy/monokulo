@@ -43,12 +43,11 @@ use key_custody_service::protocol::{
     read_frame, write_frame, KeyCustodyRequest, KeyCustodyResponse,
 };
 use key_custody_service::{
-    AddressWire, KeyCustodyErrorWire, MatchedOutputWire, SealedMaterialWire, WalletHandleWire,
-    WireConversionError,
+    AddressWire, KeyCustodyErrorWire, MatchedOutputWire, SealedMaterialWire, TxMatchesWire,
+    WalletHandleWire, WireConversionError,
 };
-use monero::Transaction;
 use scanner::key_custody::{
-    KeyCustody, Network, PlainKeyCustody, SubaddressIndex, WalletHandle, WalletMaterial,
+    KeyCustody, Network, PlainKeyCustody, ScanInput, SubaddressIndex, WalletHandle, WalletMaterial,
 };
 use tokio::net::{UnixListener, UnixStream};
 
@@ -209,7 +208,7 @@ pub async fn dispatch(
         }
         KeyCustodyRequest::ScanTxOutputs(req) => {
             let handle = WalletHandle::try_from(&req.handle)?;
-            let tx = Transaction::try_from(&req.tx)?;
+            let tx = ScanInput::try_from(&req.tx)?;
             let major_range = std::ops::Range::<u32>::from(req.major_range);
             let minor_range = std::ops::Range::<u32>::from(req.minor_range);
             let result = custody
@@ -219,16 +218,20 @@ pub async fn dispatch(
                 .map_err(KeyCustodyErrorWire::from);
             KeyCustodyResponse::ScanTxOutputs(result)
         }
-        KeyCustodyRequest::ScanTxOutputsForIndices(req) => {
+        KeyCustodyRequest::ScanTxsForIndices(req) => {
             let handle = WalletHandle::try_from(&req.handle)?;
-            let tx = Transaction::try_from(&req.tx)?;
+            let txs = req
+                .txs
+                .iter()
+                .map(ScanInput::try_from)
+                .collect::<Result<Vec<_>, _>>()?;
             let indices = scanner::key_custody::ScanIndices::new(req.minors);
             let result = custody
-                .scan_tx_outputs_for_indices(handle, &tx, &indices)
+                .scan_txs_for_indices(handle, &txs, &indices)
                 .await
-                .map(|matches| matches.into_iter().map(MatchedOutputWire::from).collect())
+                .map(|matches| matches.into_iter().map(TxMatchesWire::from).collect())
                 .map_err(KeyCustodyErrorWire::from);
-            KeyCustodyResponse::ScanTxOutputsForIndices(result)
+            KeyCustodyResponse::ScanTxsForIndices(result)
         }
     })
 }

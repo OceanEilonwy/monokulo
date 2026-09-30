@@ -54,8 +54,8 @@ use key_custody_service::WalletHandleWire;
 use monero::consensus::encode::deserialize;
 use monero::{PrivateKey, PublicKey, Transaction};
 use scanner::key_custody::{
-    KeyCustody, KeyCustodyError, Network, PlainKeyCustody, SubaddressIndex, WalletHandle,
-    WalletMaterial,
+    KeyCustody, KeyCustodyError, Network, PlainKeyCustody, ScanInput, SubaddressIndex, TxMatches,
+    WalletHandle, WalletMaterial,
 };
 use tokio::net::{UnixListener, UnixStream};
 
@@ -216,7 +216,7 @@ async fn scan_tx_outputs_finds_output_paid_to_subaddress() {
 
     let matches = ts
         .client
-        .scan_tx_outputs(handle, &tx, 0..2, 0..3)
+        .scan_tx_outputs(handle, &ScanInput::of(&tx), 0..2, 0..3)
         .await
         .unwrap();
 
@@ -282,7 +282,7 @@ async fn repeated_scans_over_same_range_reuse_the_cached_table() {
     for _ in 0..3 {
         let matches = ts
             .client
-            .scan_tx_outputs(handle, &tx, 0..2, 0..3)
+            .scan_tx_outputs(handle, &ScanInput::of(&tx), 0..2, 0..3)
             .await
             .unwrap();
         assert_eq!(
@@ -294,7 +294,7 @@ async fn repeated_scans_over_same_range_reuse_the_cached_table() {
 
     let widened = ts
         .client
-        .scan_tx_outputs(handle, &tx, 0..2, 0..4)
+        .scan_tx_outputs(handle, &ScanInput::of(&tx), 0..2, 0..4)
         .await
         .unwrap();
     assert_eq!(
@@ -501,7 +501,7 @@ async fn an_absurdly_wide_scan_range_is_refused_rather_than_hanging_forever() {
 
     let err = ts
         .client
-        .scan_tx_outputs(handle, &tx, 0..1, 0..u32::MAX)
+        .scan_tx_outputs(handle, &ScanInput::of(&tx), 0..1, 0..u32::MAX)
         .await
         .unwrap_err();
     assert!(matches!(err, KeyCustodyError::ScanFailed(_)), "got {err:?}");
@@ -509,7 +509,7 @@ async fn an_absurdly_wide_scan_range_is_refused_rather_than_hanging_forever() {
     // A realistic range is still accepted - proves the refusal above is about
     // the range's size, not a general scan-tx-outputs breakage.
     ts.client
-        .scan_tx_outputs(handle, &tx, 0..1, 0..64)
+        .scan_tx_outputs(handle, &ScanInput::of(&tx), 0..1, 0..64)
         .await
         .unwrap();
 }
@@ -559,7 +559,7 @@ async fn removing_a_wallet_scrubs_its_view_key_rather_than_leaving_it_in_freed_m
     let tx = fixture_tx();
     assert!(matches!(
         ts.client
-            .scan_tx_outputs(handle, &tx, 0..1, 0..2)
+            .scan_tx_outputs(handle, &ScanInput::of(&tx), 0..1, 0..2)
             .await
             .unwrap_err(),
         KeyCustodyError::UnknownWallet
@@ -801,7 +801,7 @@ async fn a_real_child_process_running_the_compiled_server_binary_serves_a_full_r
 
     let tx = fixture_tx();
     let matches = client
-        .scan_tx_outputs(handle, &tx, 0..2, 0..3)
+        .scan_tx_outputs(handle, &ScanInput::of(&tx), 0..2, 0..3)
         .await
         .expect("scan_tx_outputs over the real child process");
     assert_eq!(matches.len(), 1);
@@ -1050,7 +1050,7 @@ async fn an_index_set_scan_over_the_socket_finds_the_payment() {
     let with_1 = scanner::key_custody::ScanIndices::new([1, 40, 900]);
     assert_eq!(
         ts.client
-            .scan_tx_outputs_for_indices(handle, &fixture_tx(), &with_1)
+            .scan_txs_for_indices(handle, &[ScanInput::of(&fixture_tx())], &with_1)
             .await
             .unwrap()
             .len(),
@@ -1059,132 +1059,107 @@ async fn an_index_set_scan_over_the_socket_finds_the_payment() {
     let without = scanner::key_custody::ScanIndices::new([40, 900]);
     assert!(ts
         .client
-        .scan_tx_outputs_for_indices(handle, &fixture_tx(), &without)
+        .scan_txs_for_indices(handle, &[ScanInput::of(&fixture_tx())], &without)
         .await
         .unwrap()
         .is_empty());
 }
 
+/// A transaction that pays nobody the fixture wallet knows: the fixture's
+/// outputs in the other order, so each output's key was made for the other
+/// position.
+fn unrelated_tx() -> Transaction {
+    let mut tx = fixture_tx();
+    tx.prefix.outputs.reverse();
+    tx
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn an_older_server_without_index_set_scans_is_served_by_range_scans() {
-    // A server that answers everything except the index-set request, which
-    // it doesn't know: like a server built before it, it closes the
-    // connection.
-    let socket_path = temp_socket_path("old-server");
+async fn a_batch_scanned_over_the_socket_says_which_of_its_transactions_pay() {
+    let ts = spawn_server_and_client("batch").await;
+    let handle = ts.client.register_wallet(fixture_material()).await.unwrap();
+    let window = scanner::key_custody::ScanIndices::new([1, 40]);
+    // Transactions with and without RingCT data, and with and without outputs.
+    let batch = [
+        ScanInput::of(&unrelated_tx()),
+        ScanInput::of(&fixture_tx()),
+        ScanInput::of(&Transaction::default()),
+        ScanInput::of(&fixture_tx()),
+    ];
+
+    let found = ts
+        .client
+        .scan_txs_for_indices(handle, &batch, &window)
+        .await
+        .unwrap();
+
+    let direct = PlainKeyCustody::default();
+    let direct_handle = direct.register_wallet(fixture_material()).await.unwrap();
+    let expected: Vec<TxMatches> = direct
+        .scan_txs_for_indices(direct_handle, &batch, &window)
+        .await
+        .unwrap();
+    assert_eq!(found, expected, "the same answer as without the socket");
+    assert_eq!(found.iter().map(|m| m.tx).collect::<Vec<_>>(), [1, 3]);
+    assert_eq!(found[0].outputs.len(), 1);
+    assert_eq!(found[0].outputs[0].output_index, 1);
+    assert!(found[0].outputs[0].amount_piconero.unwrap() > 0);
+
+    assert!(ts
+        .client
+        .scan_txs_for_indices(handle, &[], &window)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+async fn a_match_for_a_transaction_that_was_not_in_the_batch_is_an_error_not_a_payment() {
+    let socket_path = temp_socket_path("bad-match");
     let _cleanup = CleanupSocket(socket_path.clone());
     let listener = UnixListener::bind(&socket_path).unwrap();
-    let custody = Arc::new(PlainKeyCustody::default());
+    // A server that answers any scan with a match for the batch's eighth
+    // transaction.
     tokio::spawn(async move {
-        loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
+        let Ok((mut stream, _)) = listener.accept().await else {
+            return;
+        };
+        while let Ok(Some(_)) = read_frame::<_, KeyCustodyRequest>(&mut stream).await {
+            let response = KeyCustodyResponse::ScanTxsForIndices(Ok(vec![
+                key_custody_service::TxMatchesWire {
+                    tx: 7,
+                    outputs: vec![key_custody_service::MatchedOutputWire {
+                        output_index: 0,
+                        subaddress_index: SubaddressIndex { major: 0, minor: 1 }.into(),
+                        amount_piconero: Some(1),
+                    }],
+                },
+            ]));
+            if write_frame(&mut stream, &response).await.is_err() {
                 return;
-            };
-            let custody = custody.clone();
-            tokio::spawn(async move {
-                loop {
-                    let request: KeyCustodyRequest = match read_frame(&mut stream).await {
-                        Ok(Some(r)) => r,
-                        _ => return,
-                    };
-                    if matches!(request, KeyCustodyRequest::ScanTxOutputsForIndices(_)) {
-                        return;
-                    }
-                    let Ok(response) =
-                        key_custody_server::server::dispatch(&custody, request).await
-                    else {
-                        return;
-                    };
-                    if write_frame(&mut stream, &response).await.is_err() {
-                        return;
-                    }
-                }
-            });
+            }
         }
     });
     let client = connect_with_retry(&socket_path).await;
-    let handle = client.register_wallet(fixture_material()).await.unwrap();
-    let window = scanner::key_custody::ScanIndices::new([1, 5]);
-    for _ in 0..3 {
-        let matches = client
-            .scan_tx_outputs_for_indices(handle, &fixture_tx(), &window)
-            .await
-            .unwrap();
-        assert_eq!(matches.len(), 1, "found through the covering range instead");
-    }
-}
+    let window = scanner::key_custody::ScanIndices::new([1]);
 
-/// A server that closes the connection on any request `reject` picks, and
-/// serves the rest - standing in for a server of another version.
-fn spawn_server_rejecting(socket_path: &Path, reject: fn(&KeyCustodyRequest) -> bool) {
-    let _ = std::fs::remove_file(socket_path);
-    let listener = UnixListener::bind(socket_path).unwrap();
-    let custody = Arc::new(PlainKeyCustody::default());
-    tokio::spawn(async move {
-        loop {
-            let Ok((mut stream, _)) = listener.accept().await else {
-                return;
-            };
-            let custody = custody.clone();
-            tokio::spawn(async move {
-                loop {
-                    let request: KeyCustodyRequest = match read_frame(&mut stream).await {
-                        Ok(Some(r)) => r,
-                        _ => return,
-                    };
-                    if reject(&request) {
-                        return;
-                    }
-                    let Ok(response) =
-                        key_custody_server::server::dispatch(&custody, request).await
-                    else {
-                        return;
-                    };
-                    if write_frame(&mut stream, &response).await.is_err() {
-                        return;
-                    }
-                }
-            });
-        }
-    });
+    let result = client
+        .scan_txs_for_indices(
+            WalletHandle::generate(),
+            &[ScanInput::of(&fixture_tx()), ScanInput::of(&fixture_tx())],
+            &window,
+        )
+        .await;
+
+    assert!(
+        matches!(result, Err(KeyCustodyError::BackendUnavailable(_))),
+        "got {result:?}"
+    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_server_restart_behind_pooled_connections_is_not_mistaken_for_an_older_server() {
-    let socket_path = temp_socket_path("restart-not-old");
-    let _cleanup = CleanupSocket(socket_path.clone());
-    let server = ServerProcess::start(&socket_path);
-    let client = connect_with_retry(&socket_path).await;
-    let handle = client.register_wallet(fixture_material()).await.unwrap();
-    let window = scanner::key_custody::ScanIndices::new([1, 5]);
-    // Several scans at once, so several connections sit in the pool.
-    let tx = fixture_tx();
-    let scan = || client.scan_tx_outputs_for_indices(handle, &tx, &window);
-    let (a, b, c, d) = tokio::join!(scan(), scan(), scan(), scan());
-    for result in [a, b, c, d] {
-        assert_eq!(result.unwrap().len(), 1);
-    }
-
-    // Restarted while they sit idle, as a server that only takes index-set
-    // scans. The wallet is registered there through another client, so the
-    // first one's next call really does meet a stale connection.
-    server.stop();
-    spawn_server_rejecting(&socket_path, |request| {
-        matches!(request, KeyCustodyRequest::ScanTxOutputs(_))
-    });
-    let other = connect_with_retry(&socket_path).await;
-    let handle = other.register_wallet(fixture_material()).await.unwrap();
-    for _ in 0..3 {
-        let matches = client
-            .scan_tx_outputs_for_indices(handle, &fixture_tx(), &window)
-            .await
-            .expect("still index-set scans");
-        assert_eq!(matches.len(), 1);
-    }
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_server_that_is_down_during_an_index_set_scan_is_not_mistaken_for_an_older_one() {
-    let socket_path = temp_socket_path("down-not-old");
+async fn a_batch_scan_fails_while_the_server_is_down_and_works_once_it_is_back() {
+    let socket_path = temp_socket_path("down");
     let _cleanup = CleanupSocket(socket_path.clone());
     let server = ServerProcess::start(&socket_path);
     let client = connect_with_retry(&socket_path).await;
@@ -1192,7 +1167,7 @@ async fn a_server_that_is_down_during_an_index_set_scan_is_not_mistaken_for_an_o
     let window = scanner::key_custody::ScanIndices::new([1, 5]);
     assert_eq!(
         client
-            .scan_tx_outputs_for_indices(handle, &fixture_tx(), &window)
+            .scan_txs_for_indices(handle, &[ScanInput::of(&fixture_tx())], &window)
             .await
             .unwrap()
             .len(),
@@ -1200,19 +1175,14 @@ async fn a_server_that_is_down_during_an_index_set_scan_is_not_mistaken_for_an_o
     );
 
     server.stop();
-    assert!(
+    assert!(matches!(
         client
-            .scan_tx_outputs_for_indices(handle, &fixture_tx(), &window)
-            .await
-            .is_err(),
-        "an outage is an error, not a quiet switch to range scans"
-    );
+            .scan_txs_for_indices(handle, &[ScanInput::of(&fixture_tx())], &window)
+            .await,
+        Err(KeyCustodyError::BackendUnavailable(_))
+    ));
 
-    // Back, as a server that only takes index-set scans: the client still
-    // uses them.
-    spawn_server_rejecting(&socket_path, |request| {
-        matches!(request, KeyCustodyRequest::ScanTxOutputs(_))
-    });
+    let _server = ServerProcess::start(&socket_path);
     let handle = loop {
         match client.register_wallet(fixture_material()).await {
             Ok(handle) => break handle,
@@ -1221,7 +1191,7 @@ async fn a_server_that_is_down_during_an_index_set_scan_is_not_mistaken_for_an_o
     };
     assert_eq!(
         client
-            .scan_tx_outputs_for_indices(handle, &fixture_tx(), &window)
+            .scan_txs_for_indices(handle, &[ScanInput::of(&fixture_tx())], &window)
             .await
             .unwrap()
             .len(),
@@ -1308,7 +1278,7 @@ async fn concurrent_calls_use_several_connections_and_all_succeed() {
         let window = window.clone();
         tokio::spawn(async move {
             client
-                .scan_tx_outputs_for_indices(handle, &fixture_tx(), &window)
+                .scan_txs_for_indices(handle, &[ScanInput::of(&fixture_tx())], &window)
                 .await
         })
     });

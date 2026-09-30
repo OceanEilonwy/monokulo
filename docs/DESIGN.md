@@ -255,6 +255,8 @@ detail rather than something baked into the scanner or the HTTP layer.
 pub struct WalletHandle(/* opaque */);           // Copy, Eq, Hash — safe to store/log
 pub struct WalletMaterial { /* view key + public spend key, ZeroizeOnDrop */ }
 pub struct MatchedOutput { output_index, subaddress_index, amount_piconero: Option<u64> }
+pub struct ScanInput(/* what a scan reads of a transaction: keys, outputs, encrypted amounts */);
+pub struct TxMatches { tx: usize /* position in the batch */, outputs: Vec<MatchedOutput> }
 pub enum KeyCustodyError { UnknownWallet, InvalidKeyMaterial(String),
                            BackendUnavailable(String), ScanFailed(String) }
 
@@ -266,8 +268,11 @@ pub trait KeyCustody: Send + Sync {
     async fn unseal_and_register(&self, sealed: &[u8]) -> Result<WalletHandle, KeyCustodyError>;
     async fn derive_subaddress(&self, handle: WalletHandle, index: SubaddressIndex, network: Network)
         -> Result<Address, KeyCustodyError>;
-    async fn scan_tx_outputs(&self, handle: WalletHandle, tx: &monero::Transaction,
+    async fn scan_tx_outputs(&self, handle: WalletHandle, tx: &ScanInput,
         major_range: Range<u32>, minor_range: Range<u32>) -> Result<Vec<MatchedOutput>, KeyCustodyError>;
+    // What the scan loop calls: a batch of transactions against one store's open orders.
+    async fn scan_txs_for_indices(&self, handle: WalletHandle, txs: &[ScanInput],
+        indices: &ScanIndices) -> Result<Vec<TxMatches>, KeyCustodyError>;
 }
 ```
 

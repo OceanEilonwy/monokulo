@@ -3256,7 +3256,7 @@ impl KeyCustody for UnansweringKeyCustody {
     async fn scan_tx_outputs(
         &self,
         handle: crate::key_custody::WalletHandle,
-        tx: &monero::Transaction,
+        tx: &crate::key_custody::ScanInput,
         major_range: std::ops::Range<u32>,
         minor_range: std::ops::Range<u32>,
     ) -> Result<Vec<crate::key_custody::MatchedOutput>, crate::key_custody::KeyCustodyError> {
