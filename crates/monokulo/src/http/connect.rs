@@ -75,6 +75,66 @@ struct ConnectRequest<'a> {
     nonce: &'a str,
 }
 
+/// Where a connecting plugin's store credentials may be sent: its
+/// `return_url`, checked against the `site_url` the merchant is shown. Made
+/// only by [`ConnectTarget::parse`], so the redirect carrying the connect
+/// token can only go back to the site being connected - never to a
+/// `return_url` a crafted link pointed somewhere else.
+struct ConnectTarget {
+    return_to: Url,
+}
+
+impl ConnectTarget {
+    /// The return address, where the credentials travel, must be https
+    /// (plain http only for a loopback or `.onion` host) and carry no
+    /// credentials of its own; it must name the same host as the shop's
+    /// address, which may itself be plain http (WordPress can serve its admin
+    /// pages over https while the shop is on http).
+    fn parse(site_url: &str, return_url: &str) -> Result<Self, &'static str> {
+        let site = Url::parse(site_url.trim())
+            .ok()
+            .filter(|site| matches!(site.scheme(), "http" | "https"))
+            .ok_or("The shop's address isn't a valid web address.")?;
+        let return_to = web_url(return_url)
+            .ok_or("The plugin's return address isn't a valid https address.")?;
+        let same_host = match (site.host_str(), return_to.host_str()) {
+            (Some(site), Some(back)) => site.eq_ignore_ascii_case(back),
+            _ => false,
+        };
+        if !same_host {
+            return Err("The plugin asked for this store's credentials to be sent to a different website than the shop's. Start connecting again from the shop's own settings page.");
+        }
+        Ok(ConnectTarget { return_to })
+    }
+}
+
+/// `raw` as a web address a plugin may use, or `None`.
+fn web_url(raw: &str) -> Option<Url> {
+    let url = Url::parse(raw.trim()).ok()?;
+    if url.host().is_none() || !url.username().is_empty() || url.password().is_some() {
+        return None;
+    }
+    match url.scheme() {
+        "https" => Some(url),
+        "http" if plain_http_allowed(&url) => Some(url),
+        _ => None,
+    }
+}
+
+/// Plain http is only for a shop on this machine (development) or a Tor
+/// onion service, whose address already authenticates it.
+fn plain_http_allowed(url: &Url) -> bool {
+    match url.host() {
+        Some(url::Host::Ipv4(ip)) => ip.is_loopback(),
+        Some(url::Host::Ipv6(ip)) => ip.is_loopback(),
+        Some(url::Host::Domain(domain)) => {
+            domain.eq_ignore_ascii_case("localhost")
+                || domain.to_ascii_lowercase().ends_with(".onion")
+        }
+        None => false,
+    }
+}
+
 impl ConnectQuery {
     fn request(&self) -> ConnectRequest<'_> {
         ConnectRequest {
@@ -137,7 +197,11 @@ async fn render_confirm_form(
             platform: row.platform,
         })
         .collect();
-    let unavailable = public_url_for_plugins(state).await.err();
+    // A link whose return address isn't the shop's shows why, and no form.
+    let unavailable = match ConnectTarget::parse(site_url, return_url) {
+        Err(reason) => Some(reason.to_string()),
+        Ok(_) => public_url_for_plugins(state).await.err(),
+    };
     let chrome = super::page_chrome(state, Some(user), format!("/connect/{platform}")).await;
     let data = PlatformConnectViewModel {
         platform: platform.to_string(),
@@ -309,15 +373,19 @@ pub async fn confirm_submit(
     Path(platform): Path<String>,
     Form(form): Form<ConfirmForm>,
 ) -> Response {
-    if public_url_for_plugins(&state).await.is_err() {
+    let target = ConnectTarget::parse(&form.site_url, &form.return_url);
+    let target = match target {
+        Ok(target) if public_url_for_plugins(&state).await.is_ok() => target,
         // `render_confirm_form` shows the reason instead of the form.
-        return render_confirm_form(&state, &platform, form.request(), None, Some(&form), &user)
-            .await;
-    }
+        _ => {
+            return render_confirm_form(&state, &platform, form.request(), None, Some(&form), &user)
+                .await
+        }
+    };
     if form.mode == "existing" {
-        confirm_existing_store(&state, &user, &platform, &form).await
+        confirm_existing_store(&state, &user, &platform, &form, &target).await
     } else {
-        confirm_new_store(&state, &user, &platform, &form).await
+        confirm_new_store(&state, &user, &platform, &form, &target).await
     }
 }
 
@@ -331,6 +399,7 @@ async fn confirm_new_store(
     user: &UserRow,
     platform: &str,
     form: &ConfirmForm,
+    target: &ConnectTarget,
 ) -> Response {
     let fields = CreateConnectionFields {
         platform: platform.to_string(),
@@ -371,7 +440,7 @@ async fn confirm_new_store(
         }
     };
 
-    mint_token_and_redirect(state, &outcome.connection_id, platform, form, user).await
+    mint_token_and_redirect(state, &outcome.connection_id, platform, form, user, target).await
 }
 
 /// `mode == "existing"`: no new tenant is provisioned at all - the plugin is
@@ -389,6 +458,7 @@ async fn confirm_existing_store(
     user: &UserRow,
     platform: &str,
     form: &ConfirmForm,
+    target: &ConnectTarget,
 ) -> Response {
     let connection_id = match form.connection_id.as_deref().filter(|id| !id.is_empty()) {
         Some(id) => id,
@@ -463,7 +533,7 @@ async fn confirm_existing_store(
         }
     }
 
-    mint_token_and_redirect(state, connection_id, platform, form, user).await
+    mint_token_and_redirect(state, connection_id, platform, form, user, target).await
 }
 
 /// The step common to both modes once a connection id is settled on
@@ -478,6 +548,7 @@ async fn mint_token_and_redirect(
     platform: &str,
     form: &ConfirmForm,
     user: &UserRow,
+    target: &ConnectTarget,
 ) -> Response {
     let raw_token = shared::auth::generate_connect_token();
     let token_hash = shared::auth::hash_secret_token(&raw_token);
@@ -498,20 +569,7 @@ async fn mint_token_and_redirect(
         .await;
     }
 
-    let mut redirect_url = match Url::parse(&form.return_url) {
-        Ok(url) => url,
-        Err(_) => {
-            return render_confirm_form(
-                state,
-                platform,
-                form.request(),
-                Some("Invalid return_url."),
-                Some(form),
-                user,
-            )
-            .await;
-        }
-    };
+    let mut redirect_url = target.return_to.clone();
     // `query_pairs_mut` appends to whatever query string `return_url`
     // already has (parsing it properly first, per the `url` crate's own
     // model) rather than string-concatenating a `?`/`&`, which would
@@ -1934,5 +1992,140 @@ mod tests {
             .unwrap()
             .unwrap()
             .id
+    }
+
+    #[test]
+    fn a_connect_target_must_send_credentials_back_to_the_shop_itself() {
+        let ok = |site: &str, back: &str| super::ConnectTarget::parse(site, back).is_ok();
+        assert!(ok(
+            "https://shop.example.com/",
+            "https://shop.example.com/wp-admin/admin-post.php"
+        ));
+        assert!(
+            ok("https://Shop.Example.com", "https://shop.example.com/cb"),
+            "hosts compare case-insensitively"
+        );
+        assert!(
+            ok(
+                "http://shop.example.com/",
+                "https://shop.example.com/wp-admin/"
+            ),
+            "an https admin for an http shop"
+        );
+        assert!(
+            ok("http://127.0.0.1:8080/", "http://127.0.0.1:8080/cb"),
+            "plain http on this machine"
+        );
+        assert!(ok("http://localhost/", "http://localhost/cb"));
+        assert!(
+            ok("http://abc.onion/", "http://abc.onion/cb"),
+            "plain http for an onion service"
+        );
+
+        assert!(
+            !ok("https://shop.example.com/", "https://evil.example.com/cb"),
+            "another host"
+        );
+        assert!(
+            !ok(
+                "https://shop.example.com/",
+                "https://shop.example.com.evil.example/cb"
+            ),
+            "a lookalike host"
+        );
+        assert!(
+            !ok(
+                "https://shop.example.com/",
+                "https://evil.example.com@shop.example.com/cb"
+            ),
+            "credentials in the address"
+        );
+        assert!(
+            !ok("https://shop.example.com/", "http://shop.example.com/cb"),
+            "plain http on the internet"
+        );
+        assert!(
+            !ok("http://shop.example.com/", "http://shop.example.com/cb"),
+            "plain http on the internet"
+        );
+        assert!(!ok("https://shop.example.com/", "javascript:alert(1)"));
+        assert!(!ok("https://shop.example.com/", "/relative/path"));
+        assert!(!ok("not a url", "https://shop.example.com/cb"));
+    }
+
+    /// A crafted link naming the merchant's real shop but a return address
+    /// elsewhere: the confirm screen says why and offers no form.
+    #[tokio::test]
+    async fn a_connect_link_returning_to_another_site_shows_why_and_no_form() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "phished@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let response = router
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/connect/woocommerce?site_url=https%3A%2F%2Fshop.example.com&return_url=https%3A%2F%2Fevil.example.com%2Fsteal&nonce=n")
+                    .header("cookie", &cookie)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        let html = body_text(response).await;
+        assert!(html.contains("a different website than the shop"), "{html}");
+        assert!(
+            !html.contains("name=\"view_key_hex\""),
+            "no form to submit: {html}"
+        );
+    }
+
+    /// Submitting the confirm form anyway (it was never shown, but a forged
+    /// POST could carry it), in either mode, mints no token and redirects
+    /// nowhere - an existing store's credentials included.
+    #[tokio::test]
+    async fn a_forged_confirm_to_another_site_sends_no_credentials_anywhere() {
+        let (state, _engine) = test_state_with_real_engine().await;
+        let router = build_router(state);
+        let cookie = signed_up_and_logged_in_session_cookie(
+            &router,
+            "forged@example.com",
+            "correct horse battery staple",
+        )
+        .await;
+        let (connection_id, _) = create_a_store(&router, &cookie, "https://shop.example.com").await;
+        for fields in [
+            vec![
+                ("mode", "existing"),
+                ("connection_id", connection_id.as_str()),
+            ],
+            vec![
+                ("mode", "new"),
+                ("view_key_hex", TEST_VIEW_KEY_HEX),
+                ("spend_pubkey_hex", TEST_SPEND_PUBKEY_HEX),
+                ("network", "mainnet"),
+                ("base_currency", "XMR"),
+            ],
+        ] {
+            let mut fields = fields;
+            fields.extend([
+                ("site_url", "https://shop.example.com"),
+                ("return_url", "https://evil.example.com/steal"),
+                ("nonce", "n"),
+            ]);
+            let response = router
+                .clone()
+                .oneshot(form_request("/connect/woocommerce", Some(&cookie), &fields))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK, "{fields:?}");
+            assert!(response.headers().get("location").is_none());
+            let html = body_text(response).await;
+            assert!(html.contains("a different website than the shop"), "{html}");
+        }
     }
 }

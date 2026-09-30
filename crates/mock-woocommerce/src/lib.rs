@@ -444,7 +444,6 @@ async fn run_connect_flow_with(
     wallet: ConnectFlowWallet,
 ) -> Result<ConnectedCredentials, ConnectFlowError> {
     let platform = "woocommerce";
-    let site_url = "https://mock-shop.example.com";
     let nonce = format!("nonce-{}", Uuid::new_v4());
     // A fresh, unique email every run so repeated invocations (e.g. this
     // crate's own tests, run back to back) never collide on "duplicate
@@ -468,10 +467,13 @@ async fn run_connect_flow_with(
         webhook_receiver.state.clone(),
     )
     .await?;
+    // The shop is where its callback is, as a real site's admin page is:
+    // monokulo only sends credentials back to the shop being connected.
+    let site_url = format!("http://{}/", callback.addr);
     let result = run_connect_flow_inner(
         monokulo_base_url,
         platform,
-        site_url,
+        &site_url,
         &nonce,
         &email,
         password,
@@ -1077,7 +1079,9 @@ mod tests {
         let monokulo_base_url = format!("http://{}", monokulo.addr);
 
         let platform = "woocommerce";
-        let site_url = "https://mock-shop.example.com";
+        // On the return address's host: monokulo refuses to send credentials
+        // anywhere else.
+        let site_url = "http://127.0.0.1:1/";
         let correct_nonce = format!("nonce-{}", Uuid::new_v4());
         let email = format!("nonce-mismatch-{}@example.com", Uuid::new_v4());
         let password = "correct horse battery staple";
