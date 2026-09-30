@@ -908,6 +908,29 @@ mod tests {
         assert_eq!(get(&db, &EXCHANGE_RATE_CACHE_SECONDS), 9);
     }
 
+    /// With nothing saved and nothing in the environment: Coingecko and
+    /// CoinMarketCap on at their public, keyless addresses, so a fresh
+    /// instance can price fiat orders; Haveno off, since it prices from a
+    /// thin order book and an operator opts in; rates reused for half a
+    /// minute.
+    #[test]
+    fn exchange_rates_default_to_the_keyless_public_providers() {
+        let config = ExchangeRateConfig::from_snapshot(&Snapshot::defaults())
+            .expect("the defaults are valid");
+        assert_eq!(
+            config,
+            ExchangeRateConfig {
+                coingecko_enabled: true,
+                coingecko_base_url: "https://api.coingecko.com".to_string(),
+                coinmarketcap_enabled: true,
+                coinmarketcap_base_url: "https://pro-api.coinmarketcap.com/public-api".to_string(),
+                haveno_enabled: false,
+                haveno_base_url: "https://haveno.markets".to_string(),
+                cache_seconds: 30,
+            }
+        );
+    }
+
     #[test]
     fn every_section_builds_from_the_defaults_and_every_setting_is_in_one() {
         let snapshot = Snapshot::defaults();
