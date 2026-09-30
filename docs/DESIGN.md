@@ -317,10 +317,15 @@ The engine's custody is a `CustodyRouter` over the enabled backends, itself a
 `KeyCustody`, which routes every call on a handle to the backend that issued it.
 
 - **Settings** (applied as soon as they're saved): `key_custody.enabled_backends`,
-  `key_custody.default_backend` (where new stores go unless they ask for another) and
-  `key_custody.socket_path`. Turning a backend off leaves its stores unscanned, and
-  reported as such to their owners, until it's turned on again or they move; nothing
-  is deleted.
+  `key_custody.default_backend` (where new stores go unless they ask for another),
+  `key_custody.socket_path` and `key_custody.socket_connections`. Turning a backend
+  off leaves its stores unscanned, and reported as such to their owners, until it's
+  turned on again or they move; nothing is deleted.
+- **Socket connections**: a connection to the `key-custody-server` carries one call at
+  a time, so the engine scans as many stores on the socket backend at once as it keeps
+  connections: `key_custody.socket_connections`, or one per CPU core when that is left
+  empty. They are opened as calls overlap. A new number is set on the client in use,
+  so the stores registered through it stay registered.
 - **Moving a store** (`PUT /api/v1/admin/tenant/key-custody`, and the store settings
   page): the keys are entered again and must be the store's own wallet (spend key,
   view key and network checked against its primary address). Nothing is ever copied

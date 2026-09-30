@@ -377,9 +377,7 @@ async fn run(action: Action) {
 /// commands (the server applies them through its settings registry).
 async fn apply_custody(router: &Arc<CustodyRouter>, custody: &CustodyConfig) -> Result<(), String> {
     use live_settings::Reloadable;
-    let reloadable = CustodyReloadable {
-        router: router.clone(),
-    };
+    let reloadable = CustodyReloadable::new(router.clone());
     let (prepared, warnings) = reloadable
         .prepare(custody, custody)
         .await
