@@ -754,7 +754,7 @@ async fn apply_engine_secrets(
     admin_token: &str,
     req: &mut RemoteUpdateRequest,
     clears: &[String],
-) -> Result<(), SaveOutcome> {
+) -> Result<(), Box<SaveOutcome>> {
     if clears.is_empty() && !req.scalars.values().any(String::is_empty) {
         return Ok(());
     }
@@ -762,19 +762,19 @@ async fn apply_engine_secrets(
         Ok(Some((fields, _))) => fields,
         Ok(None) => Vec::new(),
         Err(e) => {
-            return Err(SaveOutcome::refused(format!(
+            return Err(Box::new(SaveOutcome::refused(format!(
                 "Could not reach the configured engine: {e}"
-            )))
+            ))))
         }
     };
     for key in clears {
         if req.scalars.get(key).is_some_and(|value| !value.is_empty()) {
-            return Err(SaveOutcome {
+            return Err(Box::new(SaveOutcome {
                 error_key: Some((key.clone(), SettingOwner::Engine)),
                 ..SaveOutcome::refused(format!(
                     "{key}: either type a new value or tick \"Clear it\", not both."
                 ))
-            });
+            }));
         }
     }
     for field in fields.iter().filter(|f| f.kind == SettingKindView::Secret) {
@@ -801,7 +801,7 @@ async fn save_engine(
         return SaveOutcome::refused("No engine connection is configured.".to_string());
     }
     if let Err(refused) = apply_engine_secrets(&engine_url, &admin_token, &mut req, clears).await {
-        return refused;
+        return *refused;
     }
     if req.is_empty() {
         return SaveOutcome::default();

@@ -503,20 +503,18 @@ impl ExchangeRateProviders {
                         extend(known_currencies.iter().map(|c| c.to_uppercase()).collect());
                     }
                 }
-                HAVENO => {
-                    if fiat.haveno.is_some() {
-                        consulted = true;
-                        // The store's own list (validated against the
-                        // `currencies` table when saved), or every known
-                        // currency when it left the list empty. Whether
-                        // Haveno has a live book is decided per quote, not
-                        // here - see `crate::fx_provider_settings`.
-                        let listed = &store.fx_provider_settings.haveno.currencies;
-                        if listed.is_empty() {
-                            extend(known_currencies.iter().map(|c| c.to_uppercase()).collect());
-                        } else {
-                            extend(listed.iter().map(|c| c.to_uppercase()).collect());
-                        }
+                HAVENO if fiat.haveno.is_some() => {
+                    consulted = true;
+                    // The store's own list (validated against the
+                    // `currencies` table when saved), or every known
+                    // currency when it left the list empty. Whether
+                    // Haveno has a live book is decided per quote, not
+                    // here - see `crate::fx_provider_settings`.
+                    let listed = &store.fx_provider_settings.haveno.currencies;
+                    if listed.is_empty() {
+                        extend(known_currencies.iter().map(|c| c.to_uppercase()).collect());
+                    } else {
+                        extend(listed.iter().map(|c| c.to_uppercase()).collect());
                     }
                 }
                 _ => {}

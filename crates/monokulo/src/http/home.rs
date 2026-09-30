@@ -155,7 +155,7 @@ pub async fn dashboard_home(
         }
     }
 
-    all_orders.sort_by(|a, b| b.created_at.cmp(&a.created_at));
+    all_orders.sort_by_key(|order| std::cmp::Reverse(order.created_at));
     all_orders.truncate(10);
 
     let chrome = super::page_chrome(&state, Some(&user), "/dashboard").await;

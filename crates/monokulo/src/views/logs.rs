@@ -170,6 +170,8 @@ const PAGE_STYLE: &str = r#"
 .log-histogram a:hover, .log-histogram a:focus { opacity: 1; }
 .log-histogram-axis { display: flex; justify-content: space-between; font-size: .8em; color: var(--muted); }
 .log-rows { border-top: 1px solid var(--line); }
+/* Live mode adds rows to an empty page: the empty message goes with them. */
+.log-empty:has(+ #log-rows .log-row) { display: none; }
 .log-row { border-bottom: 1px solid var(--line); }
 .log-row > summary { display: grid; grid-template-columns: 13em 4.5em 6em 1fr 3.4em; gap: .5em; align-items: center; padding: .25em .3em; cursor: pointer; list-style: none; font-size: .9em; }
 .log-row > summary::-webkit-details-marker { display: none; }
@@ -494,7 +496,7 @@ pub fn results(vm: &LogsViewModel) -> Markup {
                 p class="log-paging" { a class="btn btn-secondary" href=(newer) { "Newer" } }
             }
             @if vm.rows.is_empty() && vm.query_error.is_none() {
-                p class="muted" { "No lines match." }
+                p class="muted log-empty" { "No lines match." }
             }
             div id="log-rows" class="log-rows" data-tail-url=[vm.tail_url.as_deref()] {
                 @for r in &vm.rows { (row(r)) }

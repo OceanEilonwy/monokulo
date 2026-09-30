@@ -162,9 +162,10 @@ test('find narrows the search to a property of a line', async ({ page }) => {
 test('live adds new lines at the top without a reload, and pauses', async ({ page, request }) => {
   await signInAsAdmin(page);
   // Only this test's request: the stack is shared, and other workers'
-  // tests fetch /status too.
+  // tests fetch /status too. Only monokulo's line: when its status cache
+  // is cold it asks the engine, whose own /status line shares the trace.
   const traceId = [...crypto.getRandomValues(new Uint8Array(16))].map((b) => b.toString(16).padStart(2, '0')).join('');
-  await page.goto(logsUrl(`?q=${encodeURIComponent(`url.path = '/status' and trace_id = '${traceId}'`)}`));
+  await page.goto(logsUrl(`?q=${encodeURIComponent(`service = 'monokulo' and url.path = '/status' and trace_id = '${traceId}'`)}`));
   await page.evaluate(() => { window.__notReloaded = true; });
   const before = await page.locator('#log-rows .log-row').count();
   const live = page.locator('#log-live');
@@ -174,6 +175,7 @@ test('live adds new lines at the top without a reload, and pauses', async ({ pag
   await expect(live).toHaveAttribute('aria-pressed', 'true');
   await request.get(`${fixture().monokulo_url}/status`, { headers: { traceparent: `00-${traceId}-00f067aa0ba902b7-01` } });
   await expect(page.locator('#log-rows .log-row')).toHaveCount(before + 1, { timeout: 15_000 });
+  await expect(page.getByText('No lines match.')).toBeHidden();
   await stage(page, 'logs-live');
   await live.click();
   await expect(live).toHaveText('Live');
