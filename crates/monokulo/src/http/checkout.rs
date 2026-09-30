@@ -24,8 +24,6 @@
 use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
-use qrcode::render::svg;
-use qrcode::QrCode;
 use serde::{Deserialize, Serialize};
 use std::str::FromStr;
 
@@ -72,26 +70,6 @@ fn checkout_payment_message(order: &OrderView) -> Option<String> {
     }
 }
 
-/// Same SVG-trimming/accessibility treatment as the engine's own (soon-
-/// removed) `qr_svg_for_html` - see that function's own doc comment
-/// (`src/http/public.rs` at the repo root) for the full reasoning, ported
-/// verbatim.
-pub(super) fn qr_svg_for_html(data: &str) -> Result<String, ApiError> {
-    let full = QrCode::new(data.as_bytes())
-        .map_err(|e| ApiError::BadRequest(format!("failed to encode QR code: {e}")))?
-        .render::<svg::Color>()
-        .build();
-    let svg = match full.find("<svg") {
-        Some(idx) => &full[idx..],
-        None => &full[..],
-    };
-    Ok(svg.replacen(
-        "<svg",
-        r#"<svg role="presentation" aria-hidden="true" focusable="false""#,
-        1,
-    ))
-}
-
 /// What an order's QR code holds: while the customer still owes something
 /// (`pending`, or the rest after a `partial` payment), a Monero payment URI
 /// with the amount due (`monero:<address>?tx_amount=0.0006`), so a wallet
@@ -115,8 +93,11 @@ pub(super) fn payment_uri(order: &crate::engine_client::OrderView) -> String {
 }
 
 /// The order's QR code ([`payment_uri`]), as page-ready SVG.
-pub(super) fn payment_qr_svg(order: &crate::engine_client::OrderView) -> Result<String, ApiError> {
-    qr_svg_for_html(&payment_uri(order))
+pub(super) fn payment_qr_svg(
+    order: &crate::engine_client::OrderView,
+) -> Result<crate::qr::QrSvg, ApiError> {
+    crate::qr::encode(&payment_uri(order))
+        .map_err(|e| ApiError::BadRequest(format!("failed to encode QR code: {e}")))
 }
 
 enum LoadError {

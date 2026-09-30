@@ -36,9 +36,9 @@ pub struct CheckoutViewModel {
     pub status: String,
     pub status_class: String,
     pub address: String,
-    /// Trusted, pre-rendered SVG markup (`http::checkout::payment_qr_svg`) -
-    /// rendered raw, unescaped. Asks for `amount_due_xmr` while one is due.
-    pub qr_code_svg: String,
+    /// The QR code (`http::checkout::payment_qr_svg`); asks for
+    /// `amount_due_xmr` while one is due.
+    pub qr_code_svg: crate::qr::QrSvg,
     pub xmr_amount: String,
     /// What is still owed: the whole amount, or the rest after a partial
     /// payment; zero once covered.
@@ -591,12 +591,12 @@ fn live_pay(data: &CheckoutViewModel) -> Markup {
                 div class="fiat-amount" { "≈ " (data.amount) " " (data.currency) }
             }
             @if partial {
-                div class="qr-wrap qr-new" { (PreEscaped(&data.qr_code_svg)) }
+                div class="qr-wrap qr-new" { (data.qr_code_svg) }
                 p class="qr-note" { "Wallets that read payment codes fill in " (due) " XMR for you." }
             } @else if awaiting_payment(data) {
-                div class="qr-wrap" { (PreEscaped(&data.qr_code_svg)) }
+                div class="qr-wrap" { (data.qr_code_svg) }
             } @else {
-                div class="qr-wrap is-spent" { (PreEscaped(&data.qr_code_svg)) }
+                div class="qr-wrap is-spent" { (data.qr_code_svg) }
             }
         }
     }
@@ -815,7 +815,7 @@ mod tests {
             status: if is_terminal { "paid".to_string() } else { "pending".to_string() },
             status_class: if is_terminal { "state-paid".to_string() } else { "state-pending".to_string() },
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
-            qr_code_svg: "<svg></svg>".to_string(),
+            qr_code_svg: crate::qr::QrSvg::for_test("<svg></svg>"),
             xmr_amount: "0.500000000000".to_string(),
             amount_due_xmr: "0.500000000000".to_string(),
             amount_received_xmr: "0.000000000000".to_string(),

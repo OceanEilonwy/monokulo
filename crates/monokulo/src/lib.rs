@@ -21,6 +21,7 @@ pub mod fx_provider_settings;
 pub mod http;
 pub mod live;
 pub mod logs;
+pub mod qr;
 pub mod settings;
 pub mod templates;
 pub mod views;

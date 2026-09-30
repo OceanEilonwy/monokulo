@@ -194,16 +194,15 @@ fn urlencoding(value: &str) -> String {
 /// One payment row inside the order detail page's `payments` table - mirrors
 /// the engine's own `PaymentView`, but with every timestamp/optional field
 /// already rendered to a display string (`Option<i64>` -> human-readable UTC
-/// or a muted dash) rather than left for the view to interpret. The display
-/// strings are trusted HTML (a dash fallback carries a real `<span>`), so
-/// they're rendered via `PreEscaped` below, same as every other
-/// already-rendered display string on this page.
+/// or a muted dash) rather than left for the view to interpret. Values that
+/// may be a dash are `Markup` (`templates::display_or_dash`), escaped when
+/// built, so nothing here is rendered unescaped from a string.
 pub struct PaymentRowViewModel {
     pub txid: String,
     pub output_index: i64,
     pub amount_piconero: u64,
     pub first_seen_at: i64,
-    pub block_height_display: String,
+    pub block_height_display: maud::Markup,
     pub voided_at: Option<i64>,
 }
 
@@ -235,7 +234,7 @@ pub struct OrderDetailData {
     pub updated_at: i64,
     pub payments: Vec<PaymentRowViewModel>,
     pub payment_link: String,
-    pub scan_range_display: String,
+    pub scan_range_display: maud::Markup,
 }
 
 pub struct OrderDetailViewModel {
@@ -325,7 +324,7 @@ pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Mar
                 tr { th { "Created at" } td { (clock.time(order.created_at)) } }
                 tr { th { "Expires at" } td { (clock.time(order.expires_at)) } }
                 tr { th { "Updated at" } td { (clock.time(order.updated_at)) } }
-                tr { th { "Scan range" } td { (PreEscaped(&order.scan_range_display)) } }
+                tr { th { "Scan range" } td { (order.scan_range_display) } }
             }
             h2 { "Payments" }
             div class="table-scroll" { table class="payments-table" {
@@ -342,7 +341,7 @@ pub fn live_fragment(order: &OrderDetailData, clock: &super::time::Clock) -> Mar
                             td { (payment.output_index) }
                             td { (payment.amount_piconero) }
                             td { (clock.time(payment.first_seen_at)) }
-                            td { (PreEscaped(&payment.block_height_display)) }
+                            td { (payment.block_height_display) }
                             td { (clock.time_or_dash(payment.voided_at)) }
                         }
                     }
@@ -472,7 +471,7 @@ mod tests {
             updated_at: 1000,
             payments: vec![],
             payment_link: "http://127.0.0.1:8081/pay/pk_abc123/orders/pay_abc123/share".to_string(),
-            scan_range_display: "<span class=\"muted\">-</span>".to_string(),
+            scan_range_display: maud::html! { span class="muted" { "-" } },
         }
     }
 

@@ -398,7 +398,7 @@ pub struct PosStatusResponse {
     /// ([`super::checkout::payment_uri`]); absent otherwise, when the code
     /// the terminal already has is still right.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub qr_svg: Option<String>,
+    pub qr_svg: Option<crate::qr::QrSvg>,
 }
 
 #[derive(Serialize)]
@@ -428,7 +428,7 @@ pub struct PosOrderData {
     /// only on a single order's detail - never in lists, where it would
     /// only add weight.
     #[serde(skip_serializing_if = "Option::is_none")]
-    qr_svg: Option<String>,
+    qr_svg: Option<crate::qr::QrSvg>,
 }
 
 async fn pos_order_data(
