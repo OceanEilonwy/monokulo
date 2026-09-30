@@ -110,8 +110,10 @@ pub async fn scan_transaction(
 }
 
 /// `scan_transaction` for a store's scan window (task 7.3): only the indices
-/// of its open and recently closed orders.
-pub async fn scan_transaction_in_window(
+/// of its open and recently closed orders. For tests; the scan loop goes
+/// through `scan_for_tenants`.
+#[cfg(test)]
+pub(crate) async fn scan_transaction_in_window(
     key_custody: &dyn KeyCustody,
     handle: WalletHandle,
     tx: &Transaction,
