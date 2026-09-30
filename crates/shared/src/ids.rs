@@ -33,6 +33,37 @@ macro_rules! id {
             }
         }
 
+        impl From<String> for $name {
+            fn from(value: String) -> Self {
+                $name(value)
+            }
+        }
+
+        impl From<&str> for $name {
+            fn from(value: &str) -> Self {
+                $name(value.to_string())
+            }
+        }
+
+        /// Comparing with text is exact; it can't mix up two kinds of id.
+        impl PartialEq<str> for $name {
+            fn eq(&self, other: &str) -> bool {
+                self.0 == other
+            }
+        }
+
+        impl PartialEq<&str> for $name {
+            fn eq(&self, other: &&str) -> bool {
+                self.0 == *other
+            }
+        }
+
+        impl PartialEq<String> for $name {
+            fn eq(&self, other: &String) -> bool {
+                &self.0 == other
+            }
+        }
+
         impl AsRef<str> for $name {
             fn as_ref(&self) -> &str {
                 &self.0

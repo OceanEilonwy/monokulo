@@ -897,7 +897,7 @@ mod tests {
         url: &str,
         orders: usize,
         due_at: i64,
-    ) -> (String, Vec<String>) {
+    ) -> (crate::store::WebhookId, Vec<crate::store::OrderId>) {
         use crate::store::{NewOrder, NewTenant};
         let tenant = store
             .create_tenant(
@@ -940,13 +940,13 @@ mod tests {
         (webhook.id, order_ids)
     }
 
-    fn pending_for(store: &SharedStore, webhook_id: &str) -> usize {
+    fn pending_for(store: &SharedStore, webhook_id: &crate::store::WebhookId) -> usize {
         store
             .lock()
             .due_webhook_deliveries(i64::MAX / 2, 10_000)
             .unwrap()
             .iter()
-            .filter(|d| d.webhook_id == webhook_id)
+            .filter(|d| &d.webhook_id == webhook_id)
             .count()
     }
 
@@ -1041,7 +1041,7 @@ mod tests {
     async fn many_stores_are_all_served_within_a_couple_of_ticks() {
         let (url, _) = spawn_endpoint(Duration::ZERO, 200).await;
         let store = Store::open_in_memory().unwrap();
-        let webhooks: Vec<String> = (0..60)
+        let webhooks: Vec<crate::store::WebhookId> = (0..60)
             .map(|i| store_with_deliveries(&store, &url, 1, 100 + i).0)
             .collect();
         let store = store.into_shared();
@@ -1071,7 +1071,10 @@ mod tests {
         .await
         .unwrap();
         for webhook in &webhooks {
-            assert_eq!(pending_for(&store, webhook), 0);
+            assert_eq!(
+                pending_for(&store, &shared::ids::WebhookId::new(webhook.to_string())),
+                0
+            );
         }
     }
 
@@ -1081,7 +1084,13 @@ mod tests {
         let store = Store::open_in_memory().unwrap();
         let (webhook, orders) = store_with_deliveries(&store, &url, 1, 100);
         store
-            .enqueue_webhook_delivery(&webhook, &orders[0], "order.confirming", "{}", 101)
+            .enqueue_webhook_delivery(
+                &shared::ids::WebhookId::new(webhook.to_string()),
+                &shared::ids::OrderId::new(orders[0].to_string()),
+                "order.confirming",
+                "{}",
+                101,
+            )
             .unwrap();
         let store = store.into_shared();
 

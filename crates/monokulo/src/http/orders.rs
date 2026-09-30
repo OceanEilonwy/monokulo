@@ -5662,7 +5662,10 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .id;
-            let stored = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
+            let stored = store
+                .get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 stored.confirmations_required_override,
                 Some(20),
@@ -5779,7 +5782,10 @@ mod tests {
             .unwrap()
             .unwrap()
             .id;
-        let stored = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let stored = store
+            .get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             stored.confirmations_required_override,
             Some(10),

@@ -1420,7 +1420,10 @@ mod tests {
         assert!(engine
             .store()
             .lock()
-            .mark_double_spend_detected(&order_id, crate::now_unix())
+            .mark_double_spend_detected(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                crate::now_unix()
+            )
             .unwrap());
 
         let (event, fragment) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
@@ -1537,7 +1540,10 @@ mod tests {
         assert!(engine
             .store()
             .lock()
-            .mark_double_spend_detected(&order_id, crate::now_unix())
+            .mark_double_spend_detected(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                crate::now_unix()
+            )
             .unwrap());
         let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
             .await

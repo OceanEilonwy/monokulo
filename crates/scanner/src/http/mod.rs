@@ -76,7 +76,7 @@ pub struct AppState {
     /// it via some new downcast/introspection surface this boundary was
     /// deliberately never given.
     pub key_custody_backend: String,
-    pub wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
+    pub wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
     /// Per-`sk_`-token budget for every route (falling back to the caller's
     /// address for a request without a token) - see `http::rate_limit`'s own
     /// module doc comment for why token-keying is the right shape here.
@@ -524,7 +524,7 @@ pub async fn resolve_wallet_handle(
         state.key_custody.unseal_and_register_in_idempotent(
             &tenant.key_custody_backend,
             &tenant.sealed_key_material,
-            &tenant.id,
+            tenant.id.as_str(),
         ),
     )
     .await
@@ -541,7 +541,11 @@ pub async fn resolve_wallet_handle(
 
 /// Drops `handle` as `tenant_id`'s live handle, if it still is, so the next
 /// `resolve_wallet_handle` registers the store's keys again.
-pub fn forget_wallet_handle(state: &AppState, tenant_id: &str, handle: WalletHandle) {
+pub fn forget_wallet_handle(
+    state: &AppState,
+    tenant_id: &crate::store::TenantId,
+    handle: WalletHandle,
+) {
     let mut handles = state.wallet_handles.write();
     if handles.get(tenant_id) == Some(&handle) {
         handles.remove(tenant_id);

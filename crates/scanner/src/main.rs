@@ -393,7 +393,7 @@ async fn apply_custody(router: &Arc<CustodyRouter>, custody: &CustodyConfig) -> 
 async fn register_all_tenants(
     store: &SharedStore,
     key_custody: &Arc<dyn KeyCustody>,
-) -> HashMap<String, WalletHandle> {
+) -> HashMap<scanner::store::TenantId, WalletHandle> {
     let deadline = tokio::time::Instant::now() + Duration::from_secs(20);
     // A database error here must not kill the engine at boot: retry with
     // backoff until the store answers, logging each failure.
@@ -428,7 +428,7 @@ async fn register_all_tenants(
             key_custody.unseal_and_register_in_idempotent(
                 &tenant.key_custody_backend,
                 &tenant.sealed_key_material,
-                &tenant.id,
+                tenant.id.as_str(),
             ),
         )
         .await

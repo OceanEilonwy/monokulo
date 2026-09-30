@@ -177,7 +177,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
         label: format!("{}:{}", e2e_fixture::NODE_HOST, e2e_fixture::NODE_PORT),
         client: daemon.clone(),
     }]));
-    let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> =
+    let wallet_handles: Arc<RwLock<HashMap<scanner::store::TenantId, WalletHandle>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
     let engine_state = EngineAppState {
@@ -384,7 +384,7 @@ async fn real_stagenet_payment_shows_up_in_the_dashboard_with_the_correct_total_
     let expected_total = expected_total_received_display(amount_piconero);
     let mut last_dashboard_html = String::new();
     for attempt in 1..=30 {
-        let tenants: Vec<(String, WalletHandle)> = wallet_handles
+        let tenants: Vec<(scanner::store::TenantId, WalletHandle)> = wallet_handles
             .read()
             .iter()
             .map(|(id, h)| (id.clone(), *h))

@@ -283,7 +283,7 @@ struct Engine {
     db: Db,
     custody: Arc<dyn KeyCustody>,
     daemon: Arc<FixtureDaemon>,
-    handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
+    handles: Arc<RwLock<HashMap<scanner::store::TenantId, WalletHandle>>>,
     memory: Arc<scanner::work::ScanState>,
 }
 
@@ -300,7 +300,7 @@ impl Engine {
                     self.custody.clone(),
                     self.daemon.clone(),
                 );
-                let tenants: Vec<(String, WalletHandle)> = self
+                let tenants: Vec<(scanner::store::TenantId, WalletHandle)> = self
                     .handles
                     .read()
                     .iter()
@@ -425,7 +425,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             },
             now - 10,
         )?;
-        let id = format!("tn_stress_{index:08}");
+        let id = scanner::store::TenantId::new(format!("tn_stress_{index:08}"));
         fixture_sql.execute(
             "UPDATE tenants SET id = ?1 WHERE id = ?2",
             (&id, &created.tenant.id),
@@ -437,7 +437,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
             orders
         };
         for order_index in 0..tenant_orders {
-            let minor = store.allocate_minor_index(&id)?;
+            let minor = store.allocate_minor_index(&shared::ids::TenantId::new(id.to_string()))?;
             let subaddress = custody
                 .derive_subaddress(
                     handle,

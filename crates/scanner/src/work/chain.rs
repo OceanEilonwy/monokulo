@@ -64,8 +64,8 @@ pub(crate) struct ChainRound {
 /// What reconciling some candidates changed, for callers that report it.
 #[derive(Default)]
 pub(crate) struct Reconciled {
-    pub(crate) dirty_orders: HashSet<String>,
-    pub(crate) double_spent_orders: HashSet<String>,
+    pub(crate) dirty_orders: HashSet<crate::store::OrderId>,
+    pub(crate) double_spent_orders: HashSet<crate::store::OrderId>,
 }
 
 /// The chain work for one network, usable from a round or on its own.

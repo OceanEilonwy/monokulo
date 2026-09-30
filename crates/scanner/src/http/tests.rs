@@ -154,7 +154,10 @@ async fn creating_an_order_with_a_confirmations_required_override_persists_it() 
         .unwrap()
         .unwrap()
         .id;
-    let order = guard.get_order(&tenant_id, &order_id).unwrap().unwrap();
+    let order = guard
+        .get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+        .unwrap()
+        .unwrap();
     assert_eq!(order.confirmations_required_override, Some(3));
 }
 
@@ -185,7 +188,10 @@ async fn creating_an_order_with_no_confirmations_required_override_leaves_it_uns
         .unwrap()
         .unwrap()
         .id;
-    let order = guard.get_order(&tenant_id, &order_id).unwrap().unwrap();
+    let order = guard
+        .get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+        .unwrap()
+        .unwrap();
     assert_eq!(order.confirmations_required_override, None);
 }
 
@@ -238,7 +244,10 @@ async fn creating_an_order_with_confirmations_required_zero_is_accepted() {
         .unwrap()
         .unwrap()
         .id;
-    let order = guard.get_order(&tenant_id, &order_id).unwrap().unwrap();
+    let order = guard
+        .get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+        .unwrap()
+        .unwrap();
     assert_eq!(order.confirmations_required_override, Some(0));
 }
 
@@ -2124,7 +2133,10 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
         &[serde_json::Value::String(order_id.clone())]
     );
 
-    let payments = store.lock().get_all_payments(&order_id).unwrap();
+    let payments = store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+        .unwrap();
     assert_eq!(
         payments.len(),
         1,
@@ -2142,7 +2154,10 @@ async fn lookup_payment_matches_and_records_a_real_mempool_payment() {
     assert_eq!(response.status(), StatusCode::OK);
     let body = body_json(response).await;
     assert_eq!(body["outcome"], "matched");
-    let payments = store.lock().get_all_payments(&order_id).unwrap();
+    let payments = store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+        .unwrap();
     assert_eq!(
         payments.len(),
         1,
@@ -2357,7 +2372,7 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
         let store = store.lock();
         store
             .record_payment_match(
-                &ids[1],
+                &shared::ids::OrderId::new(ids[1].to_string()),
                 "tx_paid",
                 0,
                 1_000,
@@ -2366,7 +2381,13 @@ async fn listing_orders_can_page_search_and_keep_to_open_orders() {
                 Some(10),
             )
             .unwrap();
-        crate::scanner::recompute_and_notify(&store, &ids[1], 100, crate::now_unix()).unwrap();
+        crate::scanner::recompute_and_notify(
+            &store,
+            &shared::ids::OrderId::new(ids[1].to_string()),
+            100,
+            crate::now_unix(),
+        )
+        .unwrap();
     }
     let list = |query: &str| {
         let router = router.clone();

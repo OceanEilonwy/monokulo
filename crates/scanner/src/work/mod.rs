@@ -228,7 +228,7 @@ pub struct RoundInputs<'a> {
     pub network: monero::Network,
     /// Tenants with registered keys. A tenant missing here isn't scanned,
     /// and its cursor stays where it is until it is registered.
-    pub tenants: &'a [(String, WalletHandle)],
+    pub tenants: &'a [(crate::store::TenantId, WalletHandle)],
     pub reorg_check_depth: u64,
     pub grace_period_seconds: i64,
     pub scan_chunk_memory_budget_mb: u32,
@@ -257,47 +257,35 @@ where
     }
 }
 
-/// What a [`Backoff`] is keyed by. The kind is part of the type, so a
-/// tenant's retry state can't be consulted or recorded for an order, or the
-/// other way round.
-pub(crate) trait BackoffKind {}
-
-/// Keys are tenant (store) ids: scans that keep failing.
-pub(crate) enum TenantKey {}
-impl BackoffKind for TenantKey {}
-
-/// Keys are order ids: status recomputes that keep failing.
-pub(crate) enum OrderKey {}
-impl BackoffKind for OrderKey {}
-
 /// Retry delays for keys whose work keeps failing (a key-custody backend
 /// that is down, an order whose recompute fails). The first failures retry
 /// at once, so a blip costs nothing; after that each retry waits twice as
 /// long, up to a minute, so a dead backend costs one attempt a minute
-/// instead of a deadline every round.
-pub(crate) struct Backoff<K: BackoffKind> {
+/// instead of a deadline every round. Keyed by an id type
+/// (`Backoff<TenantId>` for scans, `Backoff<OrderId>` for recomputes), so a
+/// tenant's retry state can't be consulted or recorded for an order, or the
+/// other way round.
+pub(crate) struct Backoff<K> {
     /// By key: consecutive failures, retry-not-before, last failure.
-    failures: parking_lot::Mutex<HashMap<String, (u32, Instant, Instant)>>,
-    kind: std::marker::PhantomData<fn() -> K>,
+    failures: parking_lot::Mutex<HashMap<K, (u32, Instant, Instant)>>,
 }
 
-impl<K: BackoffKind> Default for Backoff<K> {
+impl<K> Default for Backoff<K> {
     fn default() -> Self {
         Self {
             failures: Default::default(),
-            kind: std::marker::PhantomData,
         }
     }
 }
 
-impl<K: BackoffKind> Backoff<K> {
+impl<K: Clone + Eq + std::hash::Hash> Backoff<K> {
     const FREE_RETRIES: u32 = 2;
     const MAX_DELAY: Duration = Duration::from_secs(60);
     /// A key that hasn't failed for this long is forgotten: it is no longer
     /// being tried (a store with nothing in scope, an order that settled).
     const FORGET_AFTER: Duration = Duration::from_secs(60 * 60);
 
-    pub(crate) fn failed(&self, key: &str) {
+    pub(crate) fn failed(&self, key: &K) {
         let mut failures = self.failures.lock();
         let count = failures.get(key).map_or(0, |(n, _, _)| *n) + 1;
         let delay = if count <= Self::FREE_RETRIES {
@@ -306,17 +294,17 @@ impl<K: BackoffKind> Backoff<K> {
             Duration::from_secs(1u64 << (count - Self::FREE_RETRIES).min(6)).min(Self::MAX_DELAY)
         };
         let now = Instant::now();
-        failures.insert(key.to_string(), (count, now + delay, now));
+        failures.insert(key.clone(), (count, now + delay, now));
     }
 
-    pub(crate) fn succeeded(&self, key: &str) {
+    pub(crate) fn succeeded(&self, key: &K) {
         self.failures.lock().remove(key);
     }
 
     /// Keys still waiting out their delay. A key stays counted until it
     /// succeeds (or stops failing for `FORGET_AFTER`), so repeated failures
     /// keep lengthening its delay.
-    pub(crate) fn waiting(&self) -> Vec<String> {
+    pub(crate) fn waiting(&self) -> Vec<K> {
         let now = Instant::now();
         let mut failures = self.failures.lock();
         failures
@@ -328,7 +316,7 @@ impl<K: BackoffKind> Backoff<K> {
             .collect()
     }
 
-    pub(crate) fn is_waiting(&self, key: &str) -> bool {
+    pub(crate) fn is_waiting(&self, key: &K) -> bool {
         self.failures
             .lock()
             .get(key)
@@ -349,9 +337,9 @@ pub struct ScanState {
     settlement: settlement::SettlementState,
     upkeep: upkeep::UpkeepState,
     /// Tenants whose scans keep failing.
-    backoff: Backoff<TenantKey>,
+    backoff: Backoff<crate::store::TenantId>,
     /// Orders whose status recompute keeps failing.
-    order_backoff: Backoff<OrderKey>,
+    order_backoff: Backoff<crate::store::OrderId>,
 }
 
 impl ScanState {

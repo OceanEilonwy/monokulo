@@ -1830,7 +1830,10 @@ mod tests {
         assert!(engine
             .store()
             .lock()
-            .mark_double_spend_detected(&order_ids[1], crate::now_unix())
+            .mark_double_spend_detected(
+                &shared::ids::OrderId::new(order_ids[1].to_string()),
+                crate::now_unix()
+            )
             .unwrap());
         let (event, data) = crate::live::next_sse_event(&mut body, &mut pending, &mut parser)
             .await

@@ -71,7 +71,7 @@ fn seed_tenant_and_orders(store: &Store, n: u32) -> String {
             .unwrap();
     }
 
-    created.tenant.id
+    created.tenant.id.into_string()
 }
 
 /// Full drill: seed a live database, keep a writer hammering it, run the real
@@ -111,7 +111,7 @@ fn backup_then_restore_preserves_tenants_and_orders_under_concurrent_writes() {
         while !writer_stop.load(Ordering::Relaxed) {
             let _ = writer_store.create_order(NewOrder {
                 confirmations_required_override: None,
-                tenant_id: writer_tenant_id.clone(),
+                tenant_id: shared::ids::TenantId::new(writer_tenant_id.clone()),
                 merchant_order_id: None,
                 minor_index: i,
                 address: format!("sub_{i}"),

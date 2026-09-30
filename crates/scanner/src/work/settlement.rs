@@ -32,7 +32,7 @@ pub(crate) struct SettlementState {
 #[derive(Default)]
 pub(crate) struct SettlementRound {
     vanished_done: bool,
-    recomputed: HashSet<String>,
+    recomputed: HashSet<crate::store::OrderId>,
 }
 
 /// One unit: the round's vanished-payment page (first unit only), then a
@@ -200,12 +200,12 @@ fn pick(
     s: &crate::store::Store,
     network: &str,
     after: &str,
-    recomputed: &HashSet<String>,
+    recomputed: &HashSet<crate::store::OrderId>,
     now: i64,
     tip: u64,
-) -> Result<(Vec<String>, String), ScannerError> {
-    let mut ids: Vec<String> = Vec::new();
-    let take = |page: Vec<String>, ids: &mut Vec<String>| {
+) -> Result<(Vec<crate::store::OrderId>, String), ScannerError> {
+    let mut ids: Vec<crate::store::OrderId> = Vec::new();
+    let take = |page: Vec<crate::store::OrderId>, ids: &mut Vec<crate::store::OrderId>| {
         for id in page {
             if ids.len() < RECOMPUTE_PAGE && !recomputed.contains(&id) && !ids.contains(&id) {
                 ids.push(id);
@@ -216,7 +216,7 @@ fn pick(
     let full = page.len() == RECOMPUTE_PAGE;
     let wrap = !full && !after.is_empty();
     let next_after = if full {
-        page.last().cloned().unwrap_or_default()
+        page.last().map(|id| id.to_string()).unwrap_or_default()
     } else {
         String::new()
     };

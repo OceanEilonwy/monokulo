@@ -67,10 +67,20 @@ async fn record_payment(
     Path(id): Path<String>,
     Query(query): Query<PaymentQuery>,
 ) -> StatusCode {
-    let Ok(Some(tenant_id)) = control.engine.store().lock().get_order_tenant_id(&id) else {
+    let Ok(Some(tenant_id)) = control
+        .engine
+        .store()
+        .lock()
+        .get_order_tenant_id(&shared::ids::OrderId::new(id.to_string()))
+    else {
         return StatusCode::NOT_FOUND;
     };
-    let Ok(Some(order)) = control.engine.store().lock().get_order(&tenant_id, &id) else {
+    let Ok(Some(order)) = control
+        .engine
+        .store()
+        .lock()
+        .get_order(&tenant_id, &shared::ids::OrderId::new(id.to_string()))
+    else {
         return StatusCode::NOT_FOUND;
     };
     let piconero = (order.xmr_amount_piconero as f64 * query.fraction) as u64;

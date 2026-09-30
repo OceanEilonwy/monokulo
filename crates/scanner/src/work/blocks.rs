@@ -14,6 +14,7 @@
 //! time partway through a block, its progress is written down (a checkpoint
 //! with staged matches), to resume from.
 
+use crate::store::TenantId;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -46,7 +47,7 @@ const BLOCK_TIMESTAMP_DRIFT_SECONDS: i64 = 2 * 60 * 60;
 /// only this module can build one: from a [`BlockScan`] that got through
 /// every transaction of the block for that tenant.
 pub struct ScannedBlock {
-    tenant_id: String,
+    tenant_id: TenantId,
     height: u64,
     scans: Vec<ScanResult>,
 }
@@ -54,15 +55,15 @@ pub struct ScannedBlock {
 impl ScannedBlock {
     /// A proof without a scan, for the store's own tests.
     #[cfg(test)]
-    pub(crate) fn for_test(tenant_id: &str, height: u64) -> Self {
+    pub(crate) fn for_test(tenant_id: &crate::store::TenantId, height: u64) -> Self {
         Self {
-            tenant_id: tenant_id.to_string(),
+            tenant_id: shared::ids::TenantId::new(tenant_id.to_string()),
             height,
             scans: Vec::new(),
         }
     }
 
-    pub(crate) fn tenant_id(&self) -> &str {
+    pub(crate) fn tenant_id(&self) -> &TenantId {
         &self.tenant_id
     }
 
@@ -434,12 +435,12 @@ struct Reached {
 struct Plan {
     /// Tenants at the parent cursor with something in scope, and their
     /// windows.
-    members: Vec<(String, Vec<u32>)>,
+    members: Vec<(crate::store::TenantId, Vec<u32>)>,
     /// The recorded hashes of this block and its parent, if any.
     recorded: Option<String>,
     parent: Option<String>,
     /// Checkpoints of those tenants.
-    checkpoints: HashMap<String, BlockCheckpoint>,
+    checkpoints: HashMap<TenantId, BlockCheckpoint>,
 }
 
 /// One block to scan for one group.
@@ -499,7 +500,7 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
         .db(move |s, network| -> Result<_, ScannerError> {
             let ids = s.tenants_at_cursor(network, parent, &waiting, GROUP_PAGE)?;
             let mut windows = s.scan_windows(&ids, since, grace)?;
-            let members: Vec<(String, Vec<u32>)> = ids
+            let members: Vec<(crate::store::TenantId, Vec<u32>)> = ids
                 .into_iter()
                 .filter_map(|id| windows.remove(&id).map(|w| (id, w)))
                 .collect();
@@ -517,7 +518,7 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
             })
         })
         .await?;
-    let scannable: Vec<(String, WalletHandle, ScanIndices)> = plan
+    let scannable: Vec<(crate::store::TenantId, WalletHandle, ScanIndices)> = plan
         .members
         .into_iter()
         .filter_map(|(id, window)| {
@@ -617,17 +618,17 @@ async fn scan_block(round: &mut Round<'_>, task: BlockTask) -> Result<BlockOutco
 /// One block's scan in progress, for the tenants of one group: where each
 /// tenant is in the block, what it found, and who failed. No I/O.
 struct BlockScan {
-    next_tx: HashMap<String, usize>,
-    found: HashMap<String, Vec<ScanResult>>,
-    failed: HashSet<String>,
+    next_tx: HashMap<TenantId, usize>,
+    found: HashMap<TenantId, Vec<ScanResult>>,
+    failed: HashSet<TenantId>,
 }
 
 impl BlockScan {
     /// Every tenant starts at its checkpoint for this very block, else at
     /// the first transaction.
     fn new(
-        scannable: &[(String, WalletHandle, ScanIndices)],
-        checkpoints: &HashMap<String, BlockCheckpoint>,
+        scannable: &[(crate::store::TenantId, WalletHandle, ScanIndices)],
+        checkpoints: &HashMap<TenantId, BlockCheckpoint>,
         block: &ChainBlock,
     ) -> Self {
         let next_tx = scannable
@@ -652,9 +653,9 @@ impl BlockScan {
     /// The tenants still to be scanned for transaction `index`.
     fn due<'a>(
         &self,
-        scannable: &'a [(String, WalletHandle, ScanIndices)],
+        scannable: &'a [(crate::store::TenantId, WalletHandle, ScanIndices)],
         index: usize,
-    ) -> Vec<&'a (String, WalletHandle, ScanIndices)> {
+    ) -> Vec<&'a (crate::store::TenantId, WalletHandle, ScanIndices)> {
         scannable
             .iter()
             .filter(|(id, _, _)| {
@@ -663,20 +664,20 @@ impl BlockScan {
             .collect()
     }
 
-    fn scanned(&mut self, tenant_id: String, index: usize, found: ScanResult) {
+    fn scanned(&mut self, tenant_id: TenantId, index: usize, found: ScanResult) {
         if !found.matches.is_empty() {
             self.found.entry(tenant_id.clone()).or_default().push(found);
         }
         self.next_tx.insert(tenant_id, index + 1);
     }
 
-    fn failed(&mut self, tenant_id: String) {
+    fn failed(&mut self, tenant_id: TenantId) {
         self.failed.insert(tenant_id);
     }
 
     /// What to write down if the unit stops here: each tenant that got
     /// anywhere, how far, and its matches so far.
-    fn into_checkpoint(mut self) -> Vec<(String, usize, Vec<ScanResult>)> {
+    fn into_checkpoint(mut self) -> Vec<(crate::store::TenantId, usize, Vec<ScanResult>)> {
         self.next_tx
             .into_iter()
             .filter(|(id, next)| !self.failed.contains(id) && *next > 0)
@@ -708,7 +709,7 @@ fn checkpoint(
     network: &str,
     height: u64,
     hash: &str,
-    progress: Vec<(String, usize, Vec<ScanResult>)>,
+    progress: Vec<(crate::store::TenantId, usize, Vec<ScanResult>)>,
     now: i64,
 ) -> Result<(), ScannerError> {
     s.in_transaction(|s| -> Result<(), ScannerError> {
@@ -735,7 +736,7 @@ struct CommitBlock {
     height: u64,
     /// Tenants with a checkpoint (for any block): theirs is taken, promoted
     /// or dropped.
-    checkpointed: HashSet<String>,
+    checkpointed: HashSet<TenantId>,
     hash: String,
     prev_hash: String,
     parent: u64,

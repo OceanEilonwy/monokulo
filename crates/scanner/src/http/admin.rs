@@ -74,7 +74,7 @@ fn chosen_backend(state: &AppState, requested: Option<&str>) -> Result<String, A
 
 #[derive(Serialize)]
 pub struct CreateTenantResponse {
-    tenant_id: String,
+    tenant_id: crate::store::TenantId,
     public_key: String,
     secret_token: String,
 }
@@ -215,7 +215,7 @@ fn validate_tenant_settings(
 
 #[derive(Serialize)]
 pub struct TenantView {
-    tenant_id: String,
+    tenant_id: crate::store::TenantId,
     public_key: String,
     primary_address: String,
     network: String,
@@ -443,7 +443,7 @@ pub async fn delete_own_tenant(
 
 #[derive(Serialize)]
 pub struct OrderView {
-    order_id: String,
+    order_id: crate::store::OrderId,
     merchant_order_id: Option<String>,
     address: String,
     xmr_amount_piconero: u64,
@@ -533,11 +533,11 @@ pub async fn list_orders(
         q.status.as_deref().map(parse_status_query).transpose()?;
     let limit = q.limit.unwrap_or(50).min(200);
     let now = now_unix();
-    let ids: Option<Vec<String>> = q.ids.as_deref().map(|ids| {
+    let ids: Option<Vec<crate::store::OrderId>> = q.ids.as_deref().map(|ids| {
         ids.split(',')
             .map(str::trim)
             .filter(|id| !id.is_empty())
-            .map(str::to_owned)
+            .map(crate::store::OrderId::new)
             .collect()
     });
     if ids
@@ -630,7 +630,7 @@ pub struct OrderDetailResponse {
 
 pub async fn get_order_detail(
     AuthedTenant(tenant): AuthedTenant,
-    Path(order_id): Path<String>,
+    Path(order_id): Path<crate::store::OrderId>,
     State(state): State<AppState>,
 ) -> Result<Json<OrderDetailResponse>, ApiError> {
     let grace = state
@@ -673,7 +673,7 @@ pub struct SetRefundAddressRequest {
 /// tenant is simply not found.
 pub async fn set_order_refund_address(
     AuthedTenant(tenant): AuthedTenant,
-    Path(order_id): Path<String>,
+    Path(order_id): Path<crate::store::OrderId>,
     State(state): State<AppState>,
     Json(req): Json<SetRefundAddressRequest>,
 ) -> Result<(), ApiError> {
@@ -696,7 +696,7 @@ pub struct CreateWebhookRequest {
 
 #[derive(Serialize)]
 pub struct CreateWebhookResponse {
-    webhook_id: String,
+    webhook_id: crate::store::WebhookId,
     signing_secret: String,
 }
 
@@ -741,7 +741,7 @@ pub async fn create_webhook(
 
 #[derive(Serialize)]
 pub struct WebhookView {
-    webhook_id: String,
+    webhook_id: crate::store::WebhookId,
     url: String,
     enabled: bool,
     created_at: i64,
@@ -769,7 +769,7 @@ pub async fn list_webhooks(
 
 pub async fn delete_webhook(
     AuthedTenant(tenant): AuthedTenant,
-    Path(webhook_id): Path<String>,
+    Path(webhook_id): Path<crate::store::WebhookId>,
     State(state): State<AppState>,
 ) -> Result<StatusCode, ApiError> {
     let id = tenant.id.clone();
@@ -809,7 +809,9 @@ pub enum PaymentLookupView {
     /// time is a safe no-op that still reports the same match). A list, not a
     /// single id: a transaction can in principle pay more than one of a
     /// tenant's subaddresses in one output set.
-    Matched { order_ids: Vec<String> },
+    Matched {
+        order_ids: Vec<crate::store::OrderId>,
+    },
 }
 
 /// `POST /api/v1/admin/tenant/payments/lookup` - `docs/txid_lookup_and_scan_
@@ -914,7 +916,7 @@ pub async fn lookup_payment(
         .get_height()
         .await
         .map_err(|e| ApiError::Internal(e.to_string()))?;
-    let orders: Vec<String> = touched.iter().cloned().collect();
+    let orders: Vec<crate::store::OrderId> = touched.iter().cloned().collect();
     state
         .write_store(move |store| {
             for order_id in &orders {

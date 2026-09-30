@@ -52,10 +52,10 @@ const FAST_TXS_PER_PASS: usize = 256;
 /// transaction for a store whose window changed.
 const WINDOWS_TTL: Duration = Duration::from_secs(1);
 
-type TenantWindow = (String, WalletHandle, ScanIndices);
+type TenantWindow = (crate::store::TenantId, WalletHandle, ScanIndices);
 
 /// Each store with something in scope and its subaddress window.
-type Windows = Arc<Vec<(String, Vec<u32>)>>;
+type Windows = Arc<Vec<(crate::store::TenantId, Vec<u32>)>>;
 
 #[derive(Default)]
 pub(crate) struct MempoolState {
@@ -73,7 +73,7 @@ pub(crate) struct MempoolState {
 struct Remembered {
     bodies: HashMap<String, Arc<Transaction>>,
     /// txid -> store -> the window generation it was scanned with.
-    scanned: HashMap<String, HashMap<String, u64>>,
+    scanned: HashMap<String, HashMap<crate::store::TenantId, u64>>,
 }
 
 impl MempoolState {
@@ -89,13 +89,13 @@ impl MempoolState {
         !self.inner.lock().scanned.contains_key(txid)
     }
 
-    fn mark_scanned(&self, txid: &str, tenant_id: &str, generation: u64) {
+    fn mark_scanned(&self, txid: &str, tenant_id: &crate::store::TenantId, generation: u64) {
         self.inner
             .lock()
             .scanned
             .entry(txid.to_string())
             .or_default()
-            .insert(tenant_id.to_string(), generation);
+            .insert(tenant_id.clone(), generation);
     }
 
     /// The stores in `tenants` not yet scanned for `txid` with their current
@@ -104,7 +104,7 @@ impl MempoolState {
         &self,
         txid: &str,
         tenants: &'a [TenantWindow],
-        failed: &HashSet<String>,
+        failed: &HashSet<crate::store::TenantId>,
     ) -> Vec<&'a TenantWindow> {
         let remembered = self.inner.lock();
         let done = remembered.scanned.get(txid);
@@ -148,7 +148,7 @@ pub(super) async fn step(round: &mut Round<'_>, until: Instant) -> Progress {
     let state = &round.state.mempool;
     // A tenant that fails is retried next round, not once per transaction:
     // one unresponsive backend mustn't spend the round on deadlines.
-    let mut failed: HashSet<String> = HashSet::new();
+    let mut failed: HashSet<crate::store::TenantId> = HashSet::new();
     let mut attempted = 0;
     for tx in &pool {
         if attempted > 0 && Instant::now() >= until {
@@ -250,7 +250,7 @@ pub async fn fast_pass(state: &ScanState, inputs: &RoundInputs<'_>) -> Option<Fa
 #[derive(Default)]
 struct ScanOutcome {
     touched: usize,
-    failed: Vec<String>,
+    failed: Vec<crate::store::TenantId>,
     store_error: Option<ScannerError>,
 }
 
@@ -422,14 +422,14 @@ async fn tenant_page(round: &Round<'_>) -> Result<Vec<TenantWindow>, ScannerErro
     let after = round.state.mempool.tenant_page_after.lock().clone();
     let (page, next_after) = round
         .db(move |s, network| -> Result<_, ScannerError> {
-            let mut page: Vec<String> = s
+            let mut page: Vec<crate::store::TenantId> = s
                 .active_tenants_page(network, now, grace, &after, TENANT_PAGE)?
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect();
             let full = page.len() == TENANT_PAGE;
             let next_after = if full {
-                page.last().cloned().unwrap_or_default()
+                page.last().map(|id| id.to_string()).unwrap_or_default()
             } else {
                 String::new()
             };
@@ -481,14 +481,17 @@ async fn all_windows(
                 .db
                 .run(
                     Class::Scanner,
-                    move |s| -> Result<Vec<(String, Vec<u32>)>, ScannerError> {
+                    move |s| -> Result<Vec<(crate::store::TenantId, Vec<u32>)>, ScannerError> {
                         let mut ids = Vec::new();
                         let mut after = String::new();
                         loop {
                             let page =
                                 s.active_tenants_page(network, now, grace, &after, TENANT_PAGE)?;
                             let full = page.len() == TENANT_PAGE;
-                            after = page.last().map(|(id, _)| id.clone()).unwrap_or_default();
+                            after = page
+                                .last()
+                                .map(|(id, _)| id.to_string())
+                                .unwrap_or_default();
                             ids.extend(page.into_iter().map(|(id, _)| id));
                             if !full {
                                 break;
@@ -520,7 +523,7 @@ async fn all_windows(
 fn with_handles(
     state: &ScanState,
     handles: &HashMap<&str, WalletHandle>,
-    windows: &[(String, Vec<u32>)],
+    windows: &[(crate::store::TenantId, Vec<u32>)],
 ) -> Vec<TenantWindow> {
     windows
         .iter()
@@ -556,8 +559,8 @@ mod tests {
     #[test]
     fn new_transactions_come_first_then_the_rotation() {
         let state = MempoolState::default();
-        state.mark_scanned("b", "t", 1);
-        state.mark_scanned("c", "t", 1);
+        state.mark_scanned("b", &shared::ids::TenantId::new("t"), 1);
+        state.mark_scanned("c", &shared::ids::TenantId::new("t"), 1);
         state.next_tx_offset.store(1, Ordering::Relaxed);
         let selected = select(&state, vec!["c".into(), "b".into(), "z".into(), "a".into()]);
         assert_eq!(selected, vec!["a", "z", "c", "b"]);

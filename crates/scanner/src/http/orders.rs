@@ -39,7 +39,7 @@ pub struct CreateOrderRequest {
 
 #[derive(Serialize)]
 pub struct CreateOrderResponse {
-    order_id: String,
+    order_id: crate::store::OrderId,
     address: String,
     xmr_amount_piconero: u64,
     expires_at: i64,

@@ -101,14 +101,14 @@ pub async fn run_fast_mempool_loop(
     key_custody: Arc<dyn KeyCustody>,
     network: Network,
     daemons: Daemons,
-    wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
+    wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
     settings: Arc<EngineSettings>,
 ) {
     loop {
         let scan = settings.scan.load();
         let interval = fast_mempool_interval(scan.poll_interval);
         if let Some(daemon) = daemons.get(network) {
-            let tenants: Vec<(String, WalletHandle)> = wallet_handles
+            let tenants: Vec<(crate::store::TenantId, WalletHandle)> = wallet_handles
                 .read()
                 .iter()
                 .map(|(id, h)| (id.clone(), *h))
@@ -164,7 +164,7 @@ pub async fn manage_network_loops(
     webhooks: Arc<tokio::sync::Notify>,
     key_custody: Arc<dyn KeyCustody>,
     daemons: Daemons,
-    wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
+    wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
     scanner_status: ScannerStatusMap,
     settings: Arc<EngineSettings>,
 ) {
@@ -261,7 +261,7 @@ pub async fn run_scanner_loop(
     key_custody: Arc<dyn KeyCustody>,
     network: Network,
     daemons: Daemons,
-    wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
+    wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>>,
     scanner_status: ScannerStatusMap,
     settings: Arc<EngineSettings>,
 ) {
@@ -320,7 +320,7 @@ pub async fn run_scanner_loop(
                 tracing::info!(network = ?network, stores = registered, "registered the keys of stores that had none");
             }
         }
-        let tenants: Vec<(String, WalletHandle)> = wallet_handles
+        let tenants: Vec<(crate::store::TenantId, WalletHandle)> = wallet_handles
             .read()
             .iter()
             .map(|(id, h)| (id.clone(), *h))
@@ -497,7 +497,8 @@ mod tests {
         .await
         .unwrap();
         let key_custody: Arc<dyn KeyCustody> = Arc::new(PlainKeyCustody::default());
-        let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> = Arc::default();
+        let wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>> =
+            Arc::default();
         let status = scanner_status::new_scanner_status_map();
         let state = crate::http::AppState {
             db: crate::store::Database::inline(store.clone()),
@@ -607,7 +608,8 @@ mod tests {
                 client: Arc::new(node),
             }])),
         )]));
-        let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> = Arc::default();
+        let wallet_handles: Arc<RwLock<HashMap<crate::store::TenantId, WalletHandle>>> =
+            Arc::default();
         let key_custody: Arc<dyn KeyCustody> = router.clone();
         let scan_loop = tokio::spawn(run_scanner_loop(
             Arc::default(),

@@ -2,6 +2,7 @@
 //! the reorg job, the recompute schedule, and rotation positions. Every
 //! read here is a bounded page; every multi-row write is one transaction.
 
+use super::{OrderId, TenantId};
 use rusqlite::{params, OptionalExtension};
 
 use super::{OrderPaymentRow, Result, Store, StoreError};
@@ -451,8 +452,8 @@ impl Store {
         now: i64,
         tip: u64,
         limit: usize,
-    ) -> Result<Vec<String>> {
-        let mut ids: Vec<String> = Vec::new();
+    ) -> Result<Vec<OrderId>> {
+        let mut ids: Vec<OrderId> = Vec::new();
         let tip = i64::try_from(tip).unwrap_or(i64::MAX);
         for (sql, due) in [
             (
@@ -469,7 +470,7 @@ impl Store {
             ),
         ] {
             for id in self.rows(sql, params![network, due, Unsigned(limit)], |row| {
-                row.get::<_, String>(0)
+                row.get::<_, OrderId>(0)
             })? {
                 if ids.len() < limit && !ids.contains(&id) {
                     ids.push(id);
@@ -558,7 +559,7 @@ pub struct BlockCheckpoint {
 /// A match from an unfinished block, held until the block commits.
 #[derive(Clone, Debug)]
 pub struct StagedPayment {
-    pub order_id: String,
+    pub order_id: OrderId,
     pub txid: String,
     pub output_index: i64,
     pub amount_piconero: u64,
@@ -570,7 +571,7 @@ impl Store {
     pub fn block_checkpoint(
         &self,
         network: &str,
-        tenant_id: &str,
+        tenant_id: &TenantId,
     ) -> Result<Option<BlockCheckpoint>> {
         self.conn
             .query_row(
@@ -595,7 +596,7 @@ impl Store {
     pub fn save_block_checkpoint(
         &self,
         network: &str,
-        tenant_id: &str,
+        tenant_id: &TenantId,
         checkpoint: &BlockCheckpoint,
     ) -> Result<()> {
         if self
@@ -619,7 +620,7 @@ impl Store {
     pub fn take_staged_payments(
         &self,
         network: &str,
-        tenant_id: &str,
+        tenant_id: &TenantId,
         hash: &str,
     ) -> Result<Vec<StagedPayment>> {
         let current = self
@@ -680,9 +681,9 @@ impl Store {
         &self,
         network: &str,
         cursor: u64,
-        excluding: &[String],
+        excluding: &[TenantId],
         limit: usize,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<TenantId>> {
         let excluding = json_array(excluding);
         self.rows(
             "SELECT id FROM tenants
@@ -690,7 +691,7 @@ impl Store {
                AND id NOT IN (SELECT value FROM json_each(?3))
              ORDER BY id LIMIT ?4",
             params![network, Unsigned(cursor), excluding, Unsigned(limit)],
-            |row| row.get::<_, String>(0),
+            |row| row.get::<_, TenantId>(0),
         )
     }
 
@@ -699,10 +700,10 @@ impl Store {
     /// empty. A tenant with nothing in scope is absent.
     pub fn scan_windows(
         &self,
-        tenant_ids: &[String],
+        tenant_ids: &[TenantId],
         since: i64,
         grace_period_seconds: i64,
-    ) -> Result<std::collections::HashMap<String, Vec<u32>>> {
+    ) -> Result<std::collections::HashMap<TenantId, Vec<u32>>> {
         let ids = json_array(tenant_ids);
         let rows = self.rows(
             &format!(
@@ -710,9 +711,9 @@ impl Store {
                 super::scan_window_orders("o.tenant_id IN (SELECT value FROM json_each(:ids))")
             ),
             rusqlite::named_params! { ":ids": ids, ":since_minus_grace": since.saturating_sub(grace_period_seconds) },
-            |row| Ok((row.get::<_, String>(0)?, unsigned::<u32>(row, 1)?)),
+            |row| Ok((row.get::<_, TenantId>(0)?, unsigned::<u32>(row, 1)?)),
         )?;
-        let mut windows: std::collections::HashMap<String, Vec<u32>> =
+        let mut windows: std::collections::HashMap<TenantId, Vec<u32>> =
             std::collections::HashMap::new();
         for (tenant_id, minor) in rows {
             windows.entry(tenant_id).or_default().push(minor);
@@ -761,8 +762,8 @@ impl Store {
         network: &str,
         height: u64,
         scanned: &[crate::work::ScannedBlock],
-    ) -> Result<std::collections::HashSet<String>> {
-        let ids: Vec<&str> = scanned
+    ) -> Result<std::collections::HashSet<TenantId>> {
+        let ids: Vec<&TenantId> = scanned
             .iter()
             .filter(|b| b.height() == height)
             .map(|b| b.tenant_id())
@@ -776,7 +777,7 @@ impl Store {
              WHERE network = ?1 AND scanned_through_height = ?2 - 1 AND id IN (SELECT value FROM json_each(?3))
              RETURNING id",
             params![network, Unsigned(height), ids],
-            |row| row.get::<_, String>(0),
+            |row| row.get::<_, TenantId>(0),
         )?;
         Ok(moved.into_iter().collect())
     }
@@ -791,7 +792,7 @@ impl Store {
         grace_period_seconds: i64,
         after: &str,
         limit: usize,
-    ) -> Result<Vec<(String, Option<u64>)>> {
+    ) -> Result<Vec<(TenantId, Option<u64>)>> {
         self.rows(
             &format!(
                 "SELECT t.id, t.scanned_through_height FROM tenants t
@@ -807,7 +808,7 @@ impl Store {
             },
             |row| {
                 Ok((
-                    row.get::<_, String>(0)?,
+                    row.get::<_, TenantId>(0)?,
                     row.get::<_, Option<Unsigned<u64>>>(1)?.map(|h| h.0),
                 ))
             },
@@ -849,10 +850,13 @@ mod tests {
             .unwrap()
             .tenant
             .id
+            .into_string()
     }
 
     fn order(store: &Store, tenant_id: &str, expires_at: i64) -> String {
-        let index = store.allocate_minor_index(tenant_id).unwrap();
+        let index = store
+            .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.to_string()))
+            .unwrap();
         store
             .create_order(NewOrder {
                 confirmations_required_override: None,
@@ -867,14 +871,23 @@ mod tests {
             })
             .unwrap()
             .id
+            .into_string()
     }
 
     fn pay(store: &Store, order_id: &str, txid: &str, height: Option<i64>) -> i64 {
         store
-            .record_payment_match(order_id, txid, 0, 10, "[\"ki\"]", 100, height)
+            .record_payment_match(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                txid,
+                0,
+                10,
+                "[\"ki\"]",
+                100,
+                height,
+            )
             .unwrap();
         store
-            .get_all_payments(order_id)
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
             .unwrap()
             .into_iter()
             .find(|p| p.txid == txid)
@@ -1072,9 +1085,18 @@ mod tests {
 
         // Fully paid at height 50 with ten confirmations needed: due again
         // each block until it settles, then never.
-        s.record_payment_match(&expiring, "tx", 0, 100, "[\"ki\"]", 1_000, Some(50))
+        s.record_payment_match(
+            &shared::ids::OrderId::new(expiring.to_string()),
+            "tx",
+            0,
+            100,
+            "[\"ki\"]",
+            1_000,
+            Some(50),
+        )
+        .unwrap();
+        s.recompute_order_status(&shared::ids::OrderId::new(expiring.to_string()), 52, 1_000)
             .unwrap();
-        s.recompute_order_status(&expiring, 52, 1_000).unwrap();
         assert!(s
             .due_order_ids("mainnet", 1_000, 52, 10)
             .unwrap()
@@ -1089,11 +1111,12 @@ mod tests {
                 .is_empty(),
             "no deadline once fully paid"
         );
-        s.recompute_order_status(&expiring, 59, 1_000).unwrap();
+        s.recompute_order_status(&shared::ids::OrderId::new(expiring.to_string()), 59, 1_000)
+            .unwrap();
         assert!(
             !s.due_order_ids("mainnet", i64::MAX, u64::MAX, 10)
                 .unwrap()
-                .contains(&expiring),
+                .contains(&shared::ids::OrderId::new(expiring.to_string())),
             "settled"
         );
         drop(store);
@@ -1107,10 +1130,20 @@ mod tests {
         let (store, path) = fixture();
         let s = &store.0;
         let o = order(s, &store.3, 5_000);
-        s.record_payment_match(&o, "tx", 0, 100, "[\"ki\"]", 1_000, Some(50))
-            .unwrap();
+        s.record_payment_match(
+            &shared::ids::OrderId::new(o.to_string()),
+            "tx",
+            0,
+            100,
+            "[\"ki\"]",
+            1_000,
+            Some(50),
+        )
+        .unwrap();
         s.open_reorg_job("mainnet", 70, 1_000).unwrap();
-        let (_, frozen) = s.recompute_order_status(&o, 59, 1_000).unwrap();
+        let (_, frozen) = s
+            .recompute_order_status(&shared::ids::OrderId::new(o.to_string()), 59, 1_000)
+            .unwrap();
         assert_eq!(frozen, crate::status::OrderStatus::Confirming);
         assert_eq!(
             s.pending_payment_recomputes("mainnet").unwrap(),
@@ -1124,7 +1157,9 @@ mod tests {
 
         while s.collect_reorg_candidates("mainnet", 10, 1000).unwrap() != ReorgPhase::Process {}
         s.finish_reorg("mainnet", 70, Some((69, "h69"))).unwrap();
-        let (_, settled) = s.recompute_order_status(&o, 59, 1_000).unwrap();
+        let (_, settled) = s
+            .recompute_order_status(&shared::ids::OrderId::new(o.to_string()), 59, 1_000)
+            .unwrap();
         assert_eq!(settled, crate::status::OrderStatus::Paid);
         assert!(s.pending_payment_recomputes("mainnet").unwrap().is_empty());
         drop(store);
@@ -1285,17 +1320,48 @@ mod tests {
             .execute_raw_for_test("UPDATE tenants SET scanned_through_height = 12")
             .unwrap();
         store
-            .record_payment_match(&order_id, "tx_confirmed", 0, 50, "[\"ki1\"]", 150, Some(11))
+            .record_payment_match(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                "tx_confirmed",
+                0,
+                50,
+                "[\"ki1\"]",
+                150,
+                Some(11),
+            )
             .unwrap();
         store
-            .record_payment_match(&order_id, "tx_pool", 0, 50, "[\"ki2\"]", 150, None)
+            .record_payment_match(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                "tx_pool",
+                0,
+                50,
+                "[\"ki2\"]",
+                150,
+                None,
+            )
             .unwrap();
         store
-            .record_payment_match(&order_id, "tx_voided", 0, 50, "[\"ki3\"]", 150, Some(10))
+            .record_payment_match(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                "tx_voided",
+                0,
+                50,
+                "[\"ki3\"]",
+                150,
+                Some(10),
+            )
             .unwrap();
-        store.void_payment(&order_id, "tx_voided", 0, 160).unwrap();
+        store
+            .void_payment(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                "tx_voided",
+                0,
+                160,
+            )
+            .unwrap();
         let voided_id = store
-            .get_all_payments(&order_id)
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
             .unwrap()
             .iter()
             .find(|p| p.txid == "tx_voided")
@@ -1362,7 +1428,10 @@ mod tests {
         );
         assert_eq!(
             sweep(&store, |s| s.scan_windows(
-                &[tenant_id.clone(), other.clone()],
+                &[
+                    shared::ids::TenantId::new(tenant_id.clone()),
+                    shared::ids::TenantId::new(other.clone())
+                ],
                 150,
                 0
             ))
@@ -1381,13 +1450,19 @@ mod tests {
             next_tx: 3,
         };
         sweep(&store, |s| {
-            s.in_transaction(|s| s.save_block_checkpoint("mainnet", &tenant_id, &checkpoint))
+            s.in_transaction(|s| {
+                s.save_block_checkpoint(
+                    "mainnet",
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &checkpoint,
+                )
+            })
         });
         sweep(&store, |s| {
             s.stage_partial_match(crate::store::StagedMatch {
                 network: "mainnet",
-                tenant_id: &tenant_id,
-                order_id: &order_id,
+                tenant_id: &shared::ids::TenantId::new(tenant_id.to_string()),
+                order_id: &shared::ids::OrderId::new(order_id.to_string()),
                 txid: "tx_staged",
                 output_index: 0,
                 amount: 70,
@@ -1401,20 +1476,34 @@ mod tests {
             next_tx: 1,
         };
         sweep(&store, |s| {
-            s.in_transaction(|s| s.save_block_checkpoint("mainnet", &tenant_id, &replaced))
+            s.in_transaction(|s| {
+                s.save_block_checkpoint(
+                    "mainnet",
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &replaced,
+                )
+            })
         });
         assert!(
-            sweep(&store, |s| s.in_transaction(
-                |s| s.take_staged_payments("mainnet", &tenant_id, "c11")
-            ))
+            sweep(&store, |s| s.in_transaction(|s| s.take_staged_payments(
+                "mainnet",
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "c11"
+            )))
             .is_empty(),
             "the staged match went with the old block"
         );
         assert_eq!(
-            sweep(&store, |s| s.block_checkpoint("mainnet", &tenant_id)),
+            sweep(&store, |s| s.block_checkpoint(
+                "mainnet",
+                &shared::ids::TenantId::new(tenant_id.to_string())
+            )),
             None
         );
-        let scanned = [crate::work::ScannedBlock::for_test(&tenant_id, 11)];
+        let scanned = [crate::work::ScannedBlock::for_test(
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            11,
+        )];
         assert_eq!(
             sweep(&store, |s| s
                 .advance_scanned_cursors("mainnet", 11, &scanned))
@@ -1448,7 +1537,15 @@ mod tests {
         ));
         let order_id = order(&store, &tenant_id, 10_000);
         store
-            .record_payment_match(&order_id, "tx", 0, 1, "[]", 100, Some(7))
+            .record_payment_match(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                "tx",
+                0,
+                1,
+                "[]",
+                100,
+                Some(7),
+            )
             .unwrap();
         store.open_reorg_job("mainnet", 5, 100).unwrap();
         while store.collect_reorg_candidates("mainnet", 10, 100).unwrap() != ReorgPhase::Process {}
@@ -1502,7 +1599,9 @@ mod tests {
             .unwrap();
         let due = store.due_order_ids("mainnet", 100, 10, 10).unwrap();
         assert_eq!(due.len(), 3, "each once: {due:?}");
-        assert!(orders.iter().all(|o| due.contains(o)));
+        assert!(orders
+            .iter()
+            .all(|o| due.contains(&shared::ids::OrderId::new(o.to_string()))));
         assert_eq!(store.due_order_ids("mainnet", 100, 10, 2).unwrap().len(), 2);
     }
 

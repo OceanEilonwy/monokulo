@@ -256,7 +256,7 @@ async fn main() {
         });
     }
     let fallback_daemon = Arc::new(FallbackDaemonClient::new(nodes));
-    let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> =
+    let wallet_handles: Arc<RwLock<HashMap<scanner::store::TenantId, WalletHandle>>> =
         Arc::new(RwLock::new(HashMap::new()));
 
     let engine_state = EngineAppState {
@@ -377,7 +377,7 @@ async fn main() {
         let network_lock = network_lock.clone();
         tokio::spawn(async move {
             loop {
-                let tenants: Vec<(String, WalletHandle)> = wallet_handles
+                let tenants: Vec<(scanner::store::TenantId, WalletHandle)> = wallet_handles
                     .read()
                     .iter()
                     .map(|(id, h)| (id.clone(), *h))

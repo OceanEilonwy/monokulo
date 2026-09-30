@@ -138,8 +138,8 @@ pub(crate) const SCAN_CONCURRENCY: usize = 32;
 pub(crate) async fn scan_for_tenants(
     key_custody: &dyn KeyCustody,
     tx: &Transaction,
-    tenants: &[&(String, WalletHandle, ScanIndices)],
-) -> Vec<(String, Result<ScanResult>)> {
+    tenants: &[&(crate::store::TenantId, WalletHandle, ScanIndices)],
+) -> Vec<(crate::store::TenantId, Result<ScanResult>)> {
     use futures_util::stream::{self, StreamExt};
     // By index: a closure over borrowed tuples trips a rustc limitation that
     // makes the future not `Send`.
@@ -178,11 +178,11 @@ pub(crate) async fn scan_for_tenants(
 /// `Store::recompute_order_status`.
 pub fn record_scan_match(
     store: &Store,
-    tenant_id: &str,
+    tenant_id: &crate::store::TenantId,
     scan: &ScanResult,
     seen_at: i64,
     block_height: Option<u64>,
-) -> Result<HashSet<String>> {
+) -> Result<HashSet<crate::store::OrderId>> {
     let mut touched = HashSet::new();
     for m in &scan.matches {
         let Some(order) = store.find_order_by_minor_index(tenant_id, m.subaddress_index.minor)?
@@ -226,7 +226,7 @@ pub fn record_scan_match(
 pub(crate) fn stage_block_match(
     store: &Store,
     network: &str,
-    tenant_id: &str,
+    tenant_id: &crate::store::TenantId,
     scan: &ScanResult,
     seen_at: i64,
 ) -> Result<()> {
@@ -278,12 +278,12 @@ pub async fn scan_transaction_for_tenant(
     store: &Store,
     key_custody: &dyn KeyCustody,
     handle: WalletHandle,
-    tenant_id: &str,
+    tenant_id: &crate::store::TenantId,
     tx: &Transaction,
     minor_range: Range<u32>,
     seen_at: i64,
     block_height: Option<u64>,
-) -> Result<HashSet<String>> {
+) -> Result<HashSet<crate::store::OrderId>> {
     let scan = scan_transaction(key_custody, handle, tx, minor_range).await?;
     record_scan_match(store, tenant_id, &scan, seen_at, block_height)
 }
@@ -293,13 +293,13 @@ pub struct ReconcileReport {
     /// previously scanned, if any reorg was detected this call.
     pub reorg_detected_at: Option<u64>,
     /// Orders whose payments changed in a way that warrants a status recompute.
-    pub dirty_orders: Vec<String>,
+    pub dirty_orders: Vec<crate::store::OrderId>,
     /// The subset of `dirty_orders` where the change was specifically a proven
     /// double-spend (a payment voided because its key image was confirmed spent by
     /// a different transaction) - callers use this to enqueue the independent
     /// `order.double_spend_detected` webhook event (see `docs/DESIGN.md` §11),
     /// separate from whatever `order.<status>` event the recompute may also imply.
-    pub double_spent_orders: Vec<String>,
+    pub double_spent_orders: Vec<crate::store::OrderId>,
 }
 
 /// Checks for a reorg within the last `reorg_check_depth` blocks and, if one is
@@ -390,10 +390,10 @@ pub async fn check_for_reorg_and_reconcile(
 /// changing shape).
 pub struct VanishedPoolReport {
     /// Orders whose payments changed and therefore need a status recompute.
-    pub dirty_orders: Vec<String>,
+    pub dirty_orders: Vec<crate::store::OrderId>,
     /// The subset of `dirty_orders` where a payment was voided on affirmative
     /// double-spend proof - the `order.double_spend_detected` webhook's trigger.
-    pub double_spent_orders: Vec<String>,
+    pub double_spent_orders: Vec<crate::store::OrderId>,
 }
 
 pub(crate) async fn check_vanished_candidates(
@@ -475,7 +475,7 @@ pub(crate) async fn check_vanished_candidates(
 /// indefinitely.
 fn enqueue_webhook_event(
     store: &Store,
-    order_id: &str,
+    order_id: &crate::store::OrderId,
     event_type: &str,
     fields: &[(&str, &str)],
     now: i64,
@@ -531,7 +531,7 @@ fn new_event_id() -> String {
 /// scan does (`TestEngineHandle::mark_order_paid`).
 pub fn recompute_and_notify(
     store: &Store,
-    order_id: &str,
+    order_id: &crate::store::OrderId,
     current_height: u64,
     now: i64,
 ) -> Result<()> {
@@ -544,7 +544,7 @@ pub fn recompute_and_notify(
 /// transaction" rather than composing.
 pub(crate) fn recompute_and_notify_in_tx(
     store: &Store,
-    order_id: &str,
+    order_id: &crate::store::OrderId,
     current_height: u64,
     now: i64,
 ) -> Result<()> {
@@ -554,7 +554,10 @@ pub(crate) fn recompute_and_notify_in_tx(
             store,
             order_id,
             &format!("order.{new_status}"),
-            &[("order_id", order_id), ("status", new_status.as_str())],
+            &[
+                ("order_id", order_id.as_str()),
+                ("status", new_status.as_str()),
+            ],
             now,
         )?;
     }
@@ -631,7 +634,7 @@ async fn void_if_double_spend_proven(
 /// double-spent, with no event ever sent.
 fn void_and_notify(
     store: &Store,
-    order_id: &str,
+    order_id: &crate::store::OrderId,
     txid: &str,
     output_index: i64,
     current_height: u64,
@@ -646,7 +649,7 @@ fn void_and_notify(
 /// (the reorg job commits the void and the removal of its candidate together).
 pub(crate) fn void_and_notify_in_tx(
     store: &Store,
-    order_id: &str,
+    order_id: &crate::store::OrderId,
     txid: &str,
     output_index: i64,
     current_height: u64,
@@ -661,7 +664,7 @@ pub(crate) fn void_and_notify_in_tx(
         store,
         order_id,
         "order.double_spend_detected",
-        &[("order_id", order_id)],
+        &[("order_id", order_id.as_str())],
         now,
     )
 }
@@ -686,7 +689,7 @@ pub(crate) fn void_and_notify_in_tx(
 /// the whole point of the correction is transparency, not a quiet undo.
 fn unvoid_as_false_positive(
     store: &Store,
-    order_id: &str,
+    order_id: &crate::store::OrderId,
     txid: &str,
     output_index: i64,
     current_height: u64,
@@ -708,7 +711,7 @@ fn unvoid_as_false_positive(
             store,
             order_id,
             "order.double_spend_reversed",
-            &[("order_id", order_id), ("txid", txid)],
+            &[("order_id", order_id.as_str()), ("txid", txid)],
             now,
         )?;
         Ok(true)
@@ -849,7 +852,7 @@ pub async fn run_scan_tick(
     key_custody: &dyn KeyCustody,
     daemon: &dyn MoneroDaemonClient,
     network: &str,
-    tenants: &[(String, WalletHandle)],
+    tenants: &[(crate::store::TenantId, WalletHandle)],
     reorg_check_depth: u64,
     expired_order_grace_period_seconds: i64,
 ) -> Result<()> {
@@ -881,7 +884,7 @@ pub async fn run_scan_tick_with(
     key_custody: &dyn KeyCustody,
     daemon: &dyn MoneroDaemonClient,
     network: &str,
-    tenants: &[(String, WalletHandle)],
+    tenants: &[(crate::store::TenantId, WalletHandle)],
     reorg_check_depth: u64,
     expired_order_grace_period_seconds: i64,
     scan_chunk_memory_budget_mb: u32,
@@ -918,7 +921,7 @@ pub async fn run_scan_tick_with(
 pub async fn register_missing_wallets(
     store: &crate::store::SharedStore,
     key_custody: &dyn KeyCustody,
-    wallet_handles: &parking_lot::RwLock<HashMap<String, WalletHandle>>,
+    wallet_handles: &parking_lot::RwLock<HashMap<crate::store::TenantId, WalletHandle>>,
     network: &str,
 ) -> usize {
     register_missing_wallets_checking_state(store, key_custody, wallet_handles, None, network).await
@@ -934,7 +937,7 @@ pub async fn register_missing_wallets(
 pub async fn register_missing_wallets_checking_state(
     store: &crate::store::SharedStore,
     key_custody: &dyn KeyCustody,
-    wallet_handles: &parking_lot::RwLock<HashMap<String, WalletHandle>>,
+    wallet_handles: &parking_lot::RwLock<HashMap<crate::store::TenantId, WalletHandle>>,
     handled_epoch: Option<&std::sync::atomic::AtomicU64>,
     network: &str,
 ) -> usize {
@@ -949,7 +952,7 @@ pub async fn register_missing_wallets_checking_state(
 pub async fn register_missing_wallets_reporting(
     db: &crate::store::Db,
     key_custody: &dyn KeyCustody,
-    wallet_handles: &parking_lot::RwLock<HashMap<String, WalletHandle>>,
+    wallet_handles: &parking_lot::RwLock<HashMap<crate::store::TenantId, WalletHandle>>,
     handled_epoch: Option<&std::sync::atomic::AtomicU64>,
     network: &str,
 ) -> Registration {
@@ -1057,7 +1060,7 @@ pub async fn register_missing_wallets_reporting(
             key_custody.unseal_and_register_in_idempotent(
                 &tenant.key_custody_backend,
                 &tenant.sealed_key_material,
-                &tenant.id,
+                tenant.id.as_str(),
             ),
         )
         .await
@@ -1075,13 +1078,13 @@ pub async fn register_missing_wallets_reporting(
             }
             Ok(Err(e)) => {
                 failed += 1;
-                first_error.get_or_insert_with(|| (tenant.id.clone(), e.to_string()));
+                first_error.get_or_insert_with(|| (tenant.id.to_string(), e.to_string()));
             }
             Err(_) => {
                 failed += 1;
                 first_error.get_or_insert_with(|| {
                     (
-                        tenant.id.clone(),
+                        tenant.id.to_string(),
                         format!("registration exceeded {REGISTRATION_CALL_DEADLINE:?}"),
                     )
                 });
@@ -1724,7 +1727,13 @@ pub(crate) mod tests {
             })
             .unwrap();
 
-        (store, key_custody, handle, tenant_id, order.id)
+        (
+            store,
+            key_custody,
+            handle,
+            tenant_id.into_string(),
+            order.id.into_string(),
+        )
     }
 
     /// `setup()` with a caller-controlled `expires_at`, for the grace-period tests
@@ -1790,7 +1799,13 @@ pub(crate) mod tests {
             })
             .unwrap();
 
-        (store, key_custody, handle, tenant_id, order.id)
+        (
+            store,
+            key_custody,
+            handle,
+            tenant_id.into_string(),
+            order.id.into_string(),
+        )
     }
 
     /// `docs/order_rescan_wbs.md` Phase 4 - the default grace period for
@@ -1803,7 +1818,9 @@ pub(crate) mod tests {
         // A prior tick already flipped this order to `Expired` - the exact state
         // the grace-period widening needs to matter at all (a still-`pending`
         // order is already covered by the base four-status clause regardless).
-        let (_, status) = store.recompute_order_status(&order_id, 0, now).unwrap();
+        let (_, status) = store
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 0, now)
+            .unwrap();
         assert_eq!(
             status,
             crate::status::OrderStatus::Expired,
@@ -1820,7 +1837,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             3600,
         )
@@ -1829,11 +1846,17 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.get_all_payments(&order_id).unwrap().len(),
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap().len(),
             1,
             "a late payment within the grace period must still be matched by ordinary live scanning"
         );
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         // No native 0-conf threshold configured (`setup_with_expiry`), so a mempool-only
         // sighting correctly settles at `Unconfirmed`, not `Paid` - the real point
         // here is that the order came alive again at all (it must not still read
@@ -1851,7 +1874,9 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) =
             setup_with_expiry(now - 10_000).await;
 
-        let (_, status) = store.recompute_order_status(&order_id, 0, now).unwrap();
+        let (_, status) = store
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 0, now)
+            .unwrap();
         assert_eq!(
             status,
             crate::status::OrderStatus::Expired,
@@ -1870,7 +1895,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             60,
         )
@@ -1879,11 +1904,17 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.get_all_payments(&order_id).unwrap().len(),
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap().len(),
             0,
             "a payment arriving after the grace period has elapsed must not be matched by ordinary live scanning"
         );
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(
             order.status,
             crate::status::OrderStatus::Expired,
@@ -1913,34 +1944,68 @@ pub(crate) mod tests {
         let stage = |hash: &str| {
             store
                 .in_transaction(|s| -> Result<()> {
-                    s.save_block_checkpoint("mainnet", &tenant_id, &checkpoint(hash))?;
-                    stage_block_match(s, "mainnet", &tenant_id, &scan, 1500)
+                    s.save_block_checkpoint(
+                        "mainnet",
+                        &shared::ids::TenantId::new(tenant_id.to_string()),
+                        &checkpoint(hash),
+                    )?;
+                    stage_block_match(
+                        s,
+                        "mainnet",
+                        &shared::ids::TenantId::new(tenant_id.to_string()),
+                        &scan,
+                        1500,
+                    )
                 })
                 .unwrap()
         };
 
         stage("old_hash");
         assert_eq!(
-            store.block_checkpoint("mainnet", &tenant_id).unwrap(),
+            store
+                .block_checkpoint(
+                    "mainnet",
+                    &shared::ids::TenantId::new(tenant_id.to_string())
+                )
+                .unwrap(),
             Some(checkpoint("old_hash"))
         );
         assert!(
-            store.get_all_payments(&order_id).unwrap().is_empty(),
+            store
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .is_empty(),
             "an unfinished block must not announce payment"
         );
         assert!(
             store
-                .take_staged_payments("mainnet", &tenant_id, "new_hash")
+                .take_staged_payments(
+                    "mainnet",
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    "new_hash"
+                )
                 .unwrap()
                 .is_empty(),
             "the old fork's matches are dropped"
         );
-        assert_eq!(store.block_checkpoint("mainnet", &tenant_id).unwrap(), None);
+        assert_eq!(
+            store
+                .block_checkpoint(
+                    "mainnet",
+                    &shared::ids::TenantId::new(tenant_id.to_string())
+                )
+                .unwrap(),
+            None
+        );
 
         stage("old_hash");
         stage("new_hash");
         let staged = store
-            .take_staged_payments("mainnet", &tenant_id, "new_hash")
+            .take_staged_payments(
+                "mainnet",
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "new_hash",
+            )
             .unwrap();
         assert_eq!(
             staged
@@ -1951,7 +2016,11 @@ pub(crate) mod tests {
         );
         assert!(
             store
-                .take_staged_payments("mainnet", &tenant_id, "new_hash")
+                .take_staged_payments(
+                    "mainnet",
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    "new_hash"
+                )
                 .unwrap()
                 .is_empty(),
             "taken once"
@@ -1973,7 +2042,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -1982,7 +2051,10 @@ pub(crate) mod tests {
 
         let order = store
             .lock()
-            .get_order(&tenant_id, &order_id)
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
             .unwrap()
             .unwrap();
         assert_ne!(
@@ -2011,7 +2083,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -2020,7 +2092,10 @@ pub(crate) mod tests {
         assert_eq!(
             store
                 .lock()
-                .get_order(&tenant_id, &order_id)
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string())
+                )
                 .unwrap()
                 .unwrap()
                 .last_scanned_height,
@@ -2036,7 +2111,7 @@ pub(crate) mod tests {
                 &key_custody,
                 &daemon,
                 "mainnet",
-                &[(tenant_id.clone(), handle)],
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
                 20,
                 0,
             )
@@ -2046,7 +2121,10 @@ pub(crate) mod tests {
         assert_eq!(
             store
                 .lock()
-                .get_order(&tenant_id, &order_id)
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string())
+                )
                 .unwrap()
                 .unwrap()
                 .last_scanned_height,
@@ -2068,7 +2146,7 @@ pub(crate) mod tests {
                 &key_custody,
                 &daemon,
                 "mainnet",
-                &[(tenant_id.clone(), handle)],
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
                 20,
                 0,
             )
@@ -2077,7 +2155,10 @@ pub(crate) mod tests {
         }
         let settled = store
             .lock()
-            .get_order(&tenant_id, &order_id)
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
             .unwrap()
             .unwrap();
         assert!(
@@ -2106,7 +2187,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -2114,7 +2195,10 @@ pub(crate) mod tests {
         .unwrap();
         let frozen = store
             .lock()
-            .get_order(&tenant_id, &order_id)
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
             .unwrap()
             .unwrap();
         assert_eq!(
@@ -2133,7 +2217,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -2142,8 +2226,13 @@ pub(crate) mod tests {
         .await
         .unwrap();
 
-        assert_eq!(touched, HashSet::from([order_id.clone()]));
-        let payments = store.get_all_payments(&order_id).unwrap();
+        assert_eq!(
+            touched,
+            HashSet::from([crate::store::OrderId::new(order_id.clone())])
+        );
+        let payments = store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
         assert!(payments[0].amount_piconero > 0);
         assert_eq!(payments[0].block_height, None); // mempool-only
@@ -2159,7 +2248,7 @@ pub(crate) mod tests {
                 &store,
                 &key_custody,
                 handle,
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 &tx,
                 0..3,
                 1500,
@@ -2168,7 +2257,13 @@ pub(crate) mod tests {
             .await
             .unwrap();
         }
-        assert_eq!(store.get_all_payments(&order_id).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -2180,7 +2275,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -2209,10 +2304,15 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(report.reorg_detected_at, Some(50));
-        assert!(report.dirty_orders.contains(&order_id));
+        assert!(report
+            .dirty_orders
+            .contains(&shared::ids::OrderId::new(order_id.to_string())));
         assert!(report.double_spent_orders.is_empty());
 
-        let payments = store.lock().get_all_payments(&order_id).unwrap();
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments[0].block_height, Some(51));
         assert!(payments[0].voided_at.is_none());
     }
@@ -2233,7 +2333,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -2266,9 +2366,17 @@ pub(crate) mod tests {
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
 
         let store = store.lock();
-        let payments = store.get_all_payments(&order_id).unwrap();
+        let payments = store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert!(payments[0].voided_at.is_some());
-        let order = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = store
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert!(order.double_spend_detected_at.is_some());
         let _ = txid; // kept for readability of the scenario, not asserted on directly
     }
@@ -2285,7 +2393,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -2311,7 +2419,10 @@ pub(crate) mod tests {
             .unwrap();
         assert!(report.double_spent_orders.is_empty());
 
-        let payments = store.lock().get_all_payments(&order_id).unwrap();
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert!(
             payments[0].voided_at.is_none(),
             "must not void on ambiguous (unspent) evidence"
@@ -2351,7 +2462,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let webhook = store
             .create_webhook(
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -2369,7 +2480,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -2377,7 +2488,13 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(order.status, crate::status::OrderStatus::Unconfirmed);
         assert!(order.amount_received_piconero > 0);
 
@@ -2396,7 +2513,7 @@ pub(crate) mod tests {
         key_custody: &dyn KeyCustody,
         view_key: [u8; 32],
         spend_pubkey: [u8; 32],
-    ) -> (String, WalletHandle, String) {
+    ) -> (crate::store::TenantId, WalletHandle, crate::store::OrderId) {
         let handle = key_custody
             .register_wallet(WalletMaterial::new(view_key, spend_pubkey))
             .await
@@ -2442,7 +2559,11 @@ pub(crate) mod tests {
                 expires_at: crate::now_unix() + 3600,
             })
             .unwrap();
-        (tenant.tenant.id, handle, order.id)
+        (
+            shared::ids::TenantId::new(tenant.tenant.id.into_string()),
+            handle,
+            shared::ids::OrderId::new(order.id.into_string()),
+        )
     }
 
     fn arbitrary_wallet_material(seed: u8) -> ([u8; 32], [u8; 32]) {
@@ -2662,9 +2783,16 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             let txid = tx_id_hex(&fixture_tx());
-            s.update_payment_block_height(&order_id, &txid, 1, Some(1))
-                .unwrap(); // output_index 1, per the fixture's known match (see key_custody::plain's tests)
-            let (_, new_status) = s.recompute_order_status(&order_id, 100, 1600).unwrap(); // 100 confirmations
+            s.update_payment_block_height(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                &txid,
+                1,
+                Some(1),
+            )
+            .unwrap(); // output_index 1, per the fixture's known match (see key_custody::plain's tests)
+            let (_, new_status) = s
+                .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 100, 1600)
+                .unwrap(); // 100 confirmations
             assert!(matches!(
                 new_status,
                 crate::status::OrderStatus::Paid | crate::status::OrderStatus::Overpaid
@@ -2710,7 +2838,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id, handle)],
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
             20,
             0,
         )
@@ -2745,7 +2873,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -2769,7 +2897,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id, handle)],
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
             20,
             0,
         )
@@ -2804,19 +2932,35 @@ pub(crate) mod tests {
             key_images_json: "[]".into(),
         };
 
-        let touched = record_scan_match(&store, &tenant_id, &scan, 1500, Some(50)).unwrap();
+        let touched = record_scan_match(
+            &store,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &scan,
+            1500,
+            Some(50),
+        )
+        .unwrap();
         assert!(
             touched.is_empty(),
             "an unmeasurable output must not even mark the order as needing a recompute"
         );
         assert!(
-            store.get_all_payments(&order_id).unwrap().is_empty(),
+            store
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .is_empty(),
             "nothing may be persisted for an output whose amount could not be recovered"
         );
 
         // The order is untouched, so a later tick that *can* decrypt the amount is
         // still free to record it properly.
-        let order = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = store
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(order.status, crate::status::OrderStatus::Pending);
         assert_eq!(order.amount_received_piconero, 0);
     }
@@ -2853,7 +2997,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -2867,7 +3011,11 @@ pub(crate) mod tests {
             Some(1),
             "block 2's match failed to record - marking it scanned would lose that payment permanently"
         );
-        assert!(store.lock().get_all_payments(&order_id).unwrap().is_empty());
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .is_empty());
 
         // Once the store is healthy again, the very next tick re-covers the block it
         // deliberately left behind.
@@ -2880,7 +3028,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id, handle)],
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
             20,
             0,
         )
@@ -2888,7 +3036,10 @@ pub(crate) mod tests {
         .unwrap();
 
         assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(2));
-        let payments = store.lock().get_all_payments(&order_id).unwrap();
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
         assert_eq!(payments[0].block_height, Some(2));
     }
@@ -2905,7 +3056,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await; // confirmations_required = 10
         let webhook = store
             .create_webhook(
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -2923,7 +3074,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -2931,7 +3082,13 @@ pub(crate) mod tests {
         .unwrap();
         {
             let s = store.lock();
-            let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+            let order = s
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                )
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 order.status,
                 crate::status::OrderStatus::Confirming,
@@ -2948,7 +3105,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -2956,7 +3113,13 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(
             order.status,
             crate::status::OrderStatus::Overpaid, // the fixture tx pays more than this order's trivially-small expected amount
@@ -2988,7 +3151,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, _order_id) = setup().await;
         let webhook = store
             .create_webhook(
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -3000,9 +3163,11 @@ pub(crate) mod tests {
         let stale = store
             .create_order(NewOrder {
                 confirmations_required_override: None,
-                tenant_id: tenant_id.clone(),
+                tenant_id: shared::ids::TenantId::new(tenant_id.clone()),
                 merchant_order_id: None,
-                minor_index: store.allocate_minor_index(&tenant_id).unwrap(),
+                minor_index: store
+                    .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.to_string()))
+                    .unwrap(),
                 address: "sub_expired".into(),
                 xmr_amount_piconero: 1_000_000,
                 description: None,
@@ -3021,7 +3186,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -3030,7 +3195,13 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.get_order(&tenant_id, &stale.id).unwrap().unwrap().status,
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &stale.id
+            )
+            .unwrap()
+            .unwrap()
+            .status,
             crate::status::OrderStatus::Expired
         );
         let expired_events = s
@@ -3055,7 +3226,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let webhook = store
             .create_webhook(
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -3068,7 +3239,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -3079,7 +3250,9 @@ pub(crate) mod tests {
         store
             .set_scanned_block("mainnet", 50, "hash_50_v1")
             .unwrap();
-        let (_, status) = store.recompute_order_status(&order_id, 100, 1600).unwrap();
+        let (_, status) = store
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 100, 1600)
+            .unwrap();
         assert_eq!(
             status,
             crate::status::OrderStatus::Overpaid,
@@ -3110,7 +3283,13 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.get_order(&tenant_id, &order_id).unwrap().unwrap().status,
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .status,
             crate::status::OrderStatus::Confirming
         );
         let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
@@ -3137,7 +3316,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -3173,7 +3352,11 @@ pub(crate) mod tests {
             "the stored hash must still describe the old chain, or nothing will ever notice the reorg again"
         );
         assert_eq!(
-            store.lock().get_all_payments(&order_id).unwrap()[0].block_height,
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
             Some(50),
             "and the payment is still unreconciled, as the failed pass left it"
         );
@@ -3185,7 +3368,11 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(report.reorg_detected_at, Some(50));
         assert_eq!(
-            store.lock().get_all_payments(&order_id).unwrap()[0].block_height,
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
             Some(51)
         );
     }
@@ -3221,7 +3408,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -3235,7 +3422,9 @@ pub(crate) mod tests {
                 "the high-water mark must fall back below the reorg point"
             );
             assert!(
-                s.get_all_payments(&order_id).unwrap().is_empty(),
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                    .unwrap()
+                    .is_empty(),
                 "nothing found yet - this tick only rewound"
             );
         }
@@ -3245,7 +3434,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -3258,7 +3447,9 @@ pub(crate) mod tests {
             Some(51),
             "and forward scanning caught back up"
         );
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(
             payments.len(),
             1,
@@ -3283,7 +3474,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -3310,7 +3501,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
-        assert!(store.lock().get_all_payments(&order_id).unwrap()[0]
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
             .voided_at
             .is_some());
 
@@ -3327,10 +3521,15 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(report.reorg_detected_at, Some(50));
-        assert!(report.dirty_orders.contains(&order_id));
+        assert!(report
+            .dirty_orders
+            .contains(&shared::ids::OrderId::new(order_id.to_string())));
 
         let s = store.lock();
-        let payment = s.get_all_payments(&order_id).unwrap().remove(0);
+        let payment = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .remove(0);
         assert!(
             payment.voided_at.is_none(),
             "the payment is canonical again and must count towards the order"
@@ -3339,7 +3538,10 @@ pub(crate) mod tests {
         // Sticky by design: a double-spend attempt was genuinely observed on this
         // order, and that remains true regardless of how the chain settled.
         assert!(s
-            .get_order(&tenant_id, &order_id)
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
             .unwrap()
             .unwrap()
             .double_spend_detected_at
@@ -3356,7 +3558,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         store
             .create_webhook(
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -3373,7 +3575,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -3431,7 +3633,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id, handle)],
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
             20,
             0,
         )
@@ -3480,7 +3682,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -3512,7 +3714,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id, handle)],
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
             20,
             0,
         )
@@ -3571,7 +3773,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -3600,7 +3802,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -3619,7 +3821,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id, handle)],
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
             20,
             0,
         )
@@ -3627,7 +3829,9 @@ pub(crate) mod tests {
         .unwrap();
         let s = store.lock();
         assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(51));
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(
             payments.len(),
             1,
@@ -3657,7 +3861,7 @@ pub(crate) mod tests {
         let webhook = store
             .lock()
             .create_webhook(
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -3683,7 +3887,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -3703,10 +3907,18 @@ pub(crate) mod tests {
             // The mempool half of the tick must have survived intact: the payment is
             // recorded, the status was recomputed off it, and the transition was
             // announced.
-            let payments = s.get_all_payments(&order_id).unwrap();
+            let payments = s
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap();
             assert_eq!(payments.len(), 1);
             assert_eq!(payments[0].block_height, None, "still mempool-only");
-            let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+            let order = s
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                )
+                .unwrap()
+                .unwrap();
             assert_ne!(
                 order.status,
                 crate::status::OrderStatus::Pending,
@@ -3731,7 +3943,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id, handle)],
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
             20,
             0,
         )
@@ -3773,7 +3985,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -3790,7 +4002,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id, handle)],
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
             20,
             0,
         )
@@ -3799,7 +4011,9 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(51));
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(
             payments.len(),
             1,
@@ -3821,7 +4035,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await; // confirmations_required = 10
         store
             .create_webhook(
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -3835,7 +4049,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -3846,7 +4060,9 @@ pub(crate) mod tests {
         store
             .set_scanned_block("mainnet", 50, "hash_50_v1")
             .unwrap();
-        let (_, status) = store.recompute_order_status(&order_id, 50, 1600).unwrap();
+        let (_, status) = store
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 50, 1600)
+            .unwrap();
         assert_eq!(
             status,
             crate::status::OrderStatus::Confirming,
@@ -3880,7 +4096,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -3888,7 +4104,13 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(
             order.amount_received_piconero, 0,
             "the voided payment must not count towards the order"
@@ -3925,7 +4147,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -3951,7 +4173,11 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(
-            store.lock().get_all_payments(&order_id).unwrap()[0].block_height,
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
             None,
             "reconciliation itself is what puts the row into the state that used to hide it"
         );
@@ -3974,10 +4200,18 @@ pub(crate) mod tests {
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
 
         let s = store.lock();
-        assert!(s.get_all_payments(&order_id).unwrap()[0]
+        assert!(s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
             .voided_at
             .is_some());
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(order.amount_received_piconero, 0);
         assert!(order.double_spend_detected_at.is_some());
     }
@@ -3993,7 +4227,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         store
             .create_webhook(
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -4019,7 +4253,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -4031,7 +4265,10 @@ pub(crate) mod tests {
         assert_eq!(
             store
                 .lock()
-                .get_order(&tenant_id, &order_id)
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string())
+                )
                 .unwrap()
                 .unwrap()
                 .status,
@@ -4054,7 +4291,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -4063,7 +4300,13 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(
-            s.get_order(&tenant_id, &order_id).unwrap().unwrap().status,
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .status,
             crate::status::OrderStatus::Confirming
         );
         let due = s.due_webhook_deliveries(crate::now_unix() + 1, 10).unwrap();
@@ -4222,7 +4465,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &fixture_tx(),
             0..3,
             1500,
@@ -4237,7 +4480,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(report.reorg_detected_at, Some(80));
-        let payments = store.lock().get_all_payments(&order_id).unwrap();
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(
             payments[0].block_height,
             Some(79),
@@ -4259,7 +4505,7 @@ pub(crate) mod tests {
         let (store, key_custody, handle, tenant_id, order_id) = setup().await; // confirmations_required = 10
         store
             .create_webhook(
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -4273,7 +4519,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -4281,7 +4527,9 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        let (_, status) = store.recompute_order_status(&order_id, 100, 1600).unwrap();
+        let (_, status) = store
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 100, 1600)
+            .unwrap();
         assert_eq!(
             status,
             crate::status::OrderStatus::Overpaid,
@@ -4303,7 +4551,13 @@ pub(crate) mod tests {
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
 
         let s = store.lock();
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(
             order.amount_received_piconero, 0,
             "the orphaned payment must stop counting"
@@ -4354,7 +4608,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -4371,7 +4625,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id, handle)],
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
             20,
             0,
         )
@@ -4379,7 +4633,9 @@ pub(crate) mod tests {
         .unwrap();
         let s = store.lock();
         assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(52));
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(
             payments.len(),
             1,
@@ -4504,7 +4760,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -4529,7 +4785,7 @@ pub(crate) mod tests {
                     &key_custody,
                     &daemon,
                     "mainnet",
-                    &[(tenant_id.clone(), handle)],
+                    &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
                     20,
                     0,
                 )
@@ -4549,7 +4805,7 @@ pub(crate) mod tests {
                     &key_custody,
                     &daemon,
                     "mainnet",
-                    &[(tenant_id.clone(), handle)],
+                    &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
                     20,
                     0,
                 )
@@ -4558,7 +4814,9 @@ pub(crate) mod tests {
             }
 
             let s = store.lock();
-            let payments = s.get_all_payments(&order_id).unwrap();
+            let payments = s
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap();
             assert_eq!(
                 payments.len(),
                 1,
@@ -4573,7 +4831,13 @@ pub(crate) mod tests {
                 Some((51 + round) as i64),
                 "round {round}: at the height the chain last agreed on"
             );
-            let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+            let order = s
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                )
+                .unwrap()
+                .unwrap();
             assert!(
                 order.double_spend_detected_at.is_none(),
                 "round {round}: nothing here was ever double-spent"
@@ -4602,7 +4866,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -4624,7 +4888,9 @@ pub(crate) mod tests {
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(
             payments.len(),
             1,
@@ -4632,10 +4898,13 @@ pub(crate) mod tests {
         );
         assert!(payments[0].voided_at.is_some());
         assert_eq!(
-            s.get_order(&tenant_id, &order_id)
-                .unwrap()
-                .unwrap()
-                .amount_received_piconero,
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .amount_received_piconero,
             0
         );
     }
@@ -4656,7 +4925,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &first,
             0..3,
             1500,
@@ -4668,7 +4937,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &second,
             0..3,
             1500,
@@ -4676,7 +4945,13 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        let total_before = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let total_before = store
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         let _ = total_before;
 
         // Only the first transaction is double-spent; the second is remined at 51.
@@ -4692,7 +4967,9 @@ pub(crate) mod tests {
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 2);
         let (voided, kept): (Vec<_>, Vec<_>) = payments.iter().partition(|p| p.voided_at.is_some());
         assert_eq!(
@@ -4707,7 +4984,13 @@ pub(crate) mod tests {
             Some(51),
             "the survivor follows the chain to its new height"
         );
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(
             order.amount_received_piconero, kept[0].amount_piconero,
             "only the survivor's amount counts"
@@ -4737,7 +5020,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -4755,7 +5038,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
-        assert!(store.lock().get_all_payments(&order_id).unwrap()[0]
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
             .voided_at
             .is_some());
 
@@ -4773,16 +5059,22 @@ pub(crate) mod tests {
         assert_eq!(report.reorg_detected_at, Some(50));
 
         let s = store.lock();
-        let payment = s.get_all_payments(&order_id).unwrap().remove(0);
+        let payment = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .remove(0);
         assert!(
             payment.voided_at.is_some(),
             "the original never returned to the chain - its replacement being replaced changes nothing"
         );
         assert_eq!(
-            s.get_order(&tenant_id, &order_id)
-                .unwrap()
-                .unwrap()
-                .amount_received_piconero,
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .amount_received_piconero,
             0
         );
     }
@@ -4804,7 +5096,7 @@ pub(crate) mod tests {
             setup_with_confirmations_override(Some(0)).await;
         store
             .create_webhook(
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -4822,7 +5114,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -4830,7 +5122,13 @@ pub(crate) mod tests {
         .unwrap();
         {
             let s = store.lock();
-            let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+            let order = s
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                )
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 order.status,
                 crate::status::OrderStatus::Overpaid,
@@ -4851,7 +5149,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -4859,13 +5157,21 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
         assert!(
             payments[0].voided_at.is_some(),
             "a proven double-spend must be written off with or without a reorg"
         );
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(order.amount_received_piconero, 0);
         assert_eq!(order.status, crate::status::OrderStatus::Pending);
         assert!(order.double_spend_detected_at.is_some());
@@ -4906,7 +5212,7 @@ pub(crate) mod tests {
             setup_with_confirmations_override(Some(0)).await;
         store
             .create_webhook(
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -4924,7 +5230,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -4941,7 +5247,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -4949,7 +5255,7 @@ pub(crate) mod tests {
         .unwrap();
 
         assert!(
-            store.lock().get_all_payments(&order_id).unwrap()[0].voided_at.is_some(),
+            store.lock().get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap()[0].voided_at.is_some(),
             "test setup sanity check: the payment must actually be voided before these tests exercise the recheck"
         );
         (store, tenant_id, order_id)
@@ -4988,7 +5294,7 @@ pub(crate) mod tests {
     fn voided(store: &crate::store::SharedStore, order_id: &str) -> Vec<bool> {
         store
             .lock()
-            .get_all_payments(order_id)
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
             .unwrap()
             .iter()
             .map(|p| p.voided_at.is_some())
@@ -5007,9 +5313,17 @@ pub(crate) mod tests {
             .unwrap();
 
         let s = store.lock();
-        let payment = &s.get_all_payments(&order_id).unwrap()[0];
+        let payment = &s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0];
         assert!(payment.voided_at.is_none(), "the void should be reversed");
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert!(
             order.double_spend_detected_at.is_none(),
             "the only voided payment on the order was cleared - the sticky flag should clear too"
@@ -5030,9 +5344,10 @@ pub(crate) mod tests {
     async fn malformed_or_empty_stored_key_images_never_restore_a_void() {
         for raw in ["not json", "[]"] {
             let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-            store
-                .lock()
-                .overwrite_payment_key_images_for_test(&order_id, raw);
+            store.lock().overwrite_payment_key_images_for_test(
+                &shared::ids::OrderId::new(order_id.to_string()),
+                raw,
+            );
             round_with_void_recheck_due(&store, &chain_replica())
                 .await
                 .unwrap();
@@ -5043,7 +5358,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn node_disagreement_never_restores_a_void() {
         let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-        let payment = store.lock().get_all_payments(&order_id).unwrap()[0].clone();
+        let payment = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .clone();
         let images: Vec<String> = serde_json::from_str(&payment.key_images_json).unwrap();
         let spent = chain_replica();
         let unspent = chain_replica();
@@ -5068,7 +5387,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn the_void_recheck_leaves_a_still_supported_void_alone() {
         let (store, tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-        let payment = store.lock().get_all_payments(&order_id).unwrap()[0].clone();
+        let payment = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .clone();
         let key_images: Vec<String> = serde_json::from_str(&payment.key_images_json).unwrap();
 
         let recheck_daemon = chain_replica();
@@ -5086,7 +5409,10 @@ pub(crate) mod tests {
         );
         assert!(store
             .lock()
-            .get_order(&tenant_id, &order_id)
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
             .unwrap()
             .unwrap()
             .double_spend_detected_at
@@ -5096,7 +5422,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn the_void_recheck_ignores_a_void_outside_the_recheck_window() {
         let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-        let payment = store.lock().get_all_payments(&order_id).unwrap()[0].clone();
+        let payment = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .clone();
 
         // Backdate the void to well outside the recheck window - fresh evidence would
         // clear it if only the recheck looked, but it's aged out.
@@ -5104,11 +5434,15 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert!(s
-                .unvoid_payment(&order_id, &payment.txid, payment.output_index)
+                .unvoid_payment(
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &payment.txid,
+                    payment.output_index
+                )
                 .unwrap());
             assert!(s
                 .void_payment(
-                    &order_id,
+                    &shared::ids::OrderId::new(order_id.to_string()),
                     &payment.txid,
                     payment.output_index,
                     old_timestamp
@@ -5139,7 +5473,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &first,
             0..3,
             now,
@@ -5151,7 +5485,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &second,
             0..3,
             now,
@@ -5161,12 +5495,22 @@ pub(crate) mod tests {
         .unwrap();
         // Void both by their *actual* recorded output_index - not assumed to be 0,
         // since that depends on which output of each fixture transaction matched.
-        for payment in store.get_all_payments(&order_id).unwrap() {
+        for payment in store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+        {
             store
-                .void_payment(&order_id, &payment.txid, payment.output_index, now)
+                .void_payment(
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &payment.txid,
+                    payment.output_index,
+                    now,
+                )
                 .unwrap();
         }
-        store.mark_double_spend_detected(&order_id, now).unwrap();
+        store
+            .mark_double_spend_detected(&shared::ids::OrderId::new(order_id.to_string()), now)
+            .unwrap();
 
         let store = store.into_shared();
         let recheck_daemon = FakeDaemonClient::new();
@@ -5181,7 +5525,9 @@ pub(crate) mod tests {
             .unwrap();
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         let (voided, kept): (Vec<_>, Vec<_>) = payments.iter().partition(|p| p.voided_at.is_some());
         assert_eq!(voided.len(), 1, "the still-justified void must remain");
         assert_eq!(voided[0].txid, tx_id_hex(&second));
@@ -5191,7 +5537,7 @@ pub(crate) mod tests {
             "the false accusation is reversed"
         );
         assert!(
-            s.get_order(&tenant_id, &order_id).unwrap().unwrap().double_spend_detected_at.is_some(),
+            s.get_order(&shared::ids::TenantId::new(tenant_id.to_string()), &shared::ids::OrderId::new(order_id.to_string())).unwrap().unwrap().double_spend_detected_at.is_some(),
             "the other voided payment still genuinely justifies the flag - it must not be cleared as a side effect"
         );
     }
@@ -5291,7 +5637,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &first,
             0..3,
             now,
@@ -5303,7 +5649,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &second,
             0..3,
             now,
@@ -5311,12 +5657,22 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        for payment in store.get_all_payments(&order_id).unwrap() {
+        for payment in store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+        {
             store
-                .void_payment(&order_id, &payment.txid, payment.output_index, now)
+                .void_payment(
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                    &payment.txid,
+                    payment.output_index,
+                    now,
+                )
                 .unwrap();
         }
-        store.mark_double_spend_detected(&order_id, now).unwrap();
+        store
+            .mark_double_spend_detected(&shared::ids::OrderId::new(order_id.to_string()), now)
+            .unwrap();
 
         let store = store.into_shared();
         // Both payments' key images default to Unspent (would clear both if asked),
@@ -5361,7 +5717,7 @@ pub(crate) mod tests {
             setup_with_confirmations_override(Some(0)).await;
         store
             .create_webhook(
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -5396,14 +5752,14 @@ pub(crate) mod tests {
             &key_custody,
             &client,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
         .await
         .unwrap();
         assert_eq!(
-            store.lock().get_order(&tenant_id, &order_id).unwrap().unwrap().status,
+            store.lock().get_order(&shared::ids::TenantId::new(tenant_id.to_string()), &shared::ids::OrderId::new(order_id.to_string())).unwrap().unwrap().status,
             crate::status::OrderStatus::Overpaid,
             "settled off the mempool sighting alone, same as the bare-daemon version of this scenario"
         );
@@ -5439,7 +5795,7 @@ pub(crate) mod tests {
             &key_custody,
             &client,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -5447,13 +5803,21 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
         assert!(
             payments[0].voided_at.is_none(),
             "one node's false accusation must not void the payment once a second, disagreeing node is configured"
         );
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert!(
             order.double_spend_detected_at.is_none(),
             "no incident occurred - nothing should be stamped"
@@ -5502,7 +5866,7 @@ pub(crate) mod tests {
             &key_custody,
             &client,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -5533,7 +5897,7 @@ pub(crate) mod tests {
             &key_custody,
             &client,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -5542,7 +5906,8 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert!(
-            s.get_all_payments(&order_id).unwrap()[0]
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
                 .voided_at
                 .is_some(),
             "a genuine, unanimously-corroborated double-spend must still be voided"
@@ -5572,7 +5937,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -5586,7 +5951,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -5595,7 +5960,9 @@ pub(crate) mod tests {
 
         {
             let s = store.lock();
-            let payments = s.get_all_payments(&order_id).unwrap();
+            let payments = s
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap();
             assert!(
                 payments[0].voided_at.is_none(),
                 "an evicted or still-propagating transaction is not a double-spend"
@@ -5605,7 +5972,10 @@ pub(crate) mod tests {
                 "and it is left exactly as it was, re-checkable next tick"
             );
             assert!(s
-                .get_order(&tenant_id, &order_id)
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string())
+                )
                 .unwrap()
                 .unwrap()
                 .double_spend_detected_at
@@ -5619,7 +5989,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -5627,7 +5997,9 @@ pub(crate) mod tests {
         .unwrap();
         let s = store.lock();
         assert_eq!(
-            s.get_all_payments(&order_id).unwrap()[0].block_height,
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
             Some(3)
         );
     }
@@ -5654,7 +6026,7 @@ pub(crate) mod tests {
                 &key_custody,
                 &daemon,
                 "mainnet",
-                &[(tenant_id.clone(), handle)],
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
                 20,
                 0,
             )
@@ -5675,14 +6047,18 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
         .await
         .unwrap();
         assert_eq!(
-            store.lock().get_all_payments(&order_id).unwrap()[0].block_height,
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
             Some(2)
         );
         assert_eq!(
@@ -5698,7 +6074,7 @@ pub(crate) mod tests {
                 &key_custody,
                 &daemon,
                 "mainnet",
-                &[(tenant_id.clone(), handle)],
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
                 20,
                 0,
             )
@@ -5737,20 +6113,27 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
         .await
         .unwrap();
-        assert_eq!(store.lock().get_all_payments(&_order_id).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(_order_id.to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
 
         let result = run_scan_tick(
             &store,
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -5775,7 +6158,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -5825,7 +6208,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -5838,7 +6221,10 @@ pub(crate) mod tests {
                 Some(1),
                 "the whole chunk failed, so the high-water mark stays exactly where it was before this tick"
             );
-            assert!(s.get_all_payments(&order_id).unwrap().is_empty());
+            assert!(s
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .is_empty());
         }
 
         daemon.stop_failing();
@@ -5847,7 +6233,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id, handle)],
+            &[(shared::ids::TenantId::new(tenant_id), handle)],
             20,
             0,
         )
@@ -5856,7 +6242,9 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert_eq!(s.max_scanned_height("mainnet").unwrap(), Some(4));
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(
             payments.len(),
             1,
@@ -5911,7 +6299,7 @@ pub(crate) mod tests {
                     &key_custody,
                     &daemon,
                     "mainnet",
-                    &[(tenant_id.clone(), handle)],
+                    &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
                     20,
                     0,
                 )
@@ -5966,7 +6354,7 @@ pub(crate) mod tests {
                     &key_custody,
                     &daemon,
                     "mainnet",
-                    &[(tenant_id.clone(), handle)],
+                    &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
                     0,
                     0,
                 )
@@ -6074,7 +6462,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6091,7 +6479,13 @@ pub(crate) mod tests {
                 "nothing may be recorded as scanned"
             );
             assert_eq!(
-                s.get_order(&tenant_id, &order_id).unwrap().unwrap().status,
+                s.get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string())
+                )
+                .unwrap()
+                .unwrap()
+                .status,
                 crate::status::OrderStatus::Pending,
                 "and no order may have advanced on evidence the tick never got"
             );
@@ -6103,7 +6497,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6111,12 +6505,20 @@ pub(crate) mod tests {
         .unwrap();
         let s = store.lock();
         assert_eq!(
-            s.get_all_payments(&order_id).unwrap().len(),
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .len(),
             1,
             "the next tick recovers the payment exactly once"
         );
         assert_eq!(
-            s.get_order(&tenant_id, &order_id).unwrap().unwrap().status,
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .status,
             crate::status::OrderStatus::Confirming
         );
     }
@@ -6136,7 +6538,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -6164,7 +6566,8 @@ pub(crate) mod tests {
                 Some("old_50")
             );
             assert!(
-                s.get_all_payments(&order_id).unwrap()[0]
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                    .unwrap()[0]
                     .voided_at
                     .is_none(),
                 "nothing may be voided on no evidence"
@@ -6177,7 +6580,10 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(report.reorg_detected_at, Some(50));
         assert_eq!(report.double_spent_orders, vec![order_id.clone()]);
-        assert!(store.lock().get_all_payments(&order_id).unwrap()[0]
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
             .voided_at
             .is_some());
     }
@@ -6217,14 +6623,18 @@ pub(crate) mod tests {
             &key_custody,
             &honest,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
         .await
         .unwrap();
         assert_eq!(
-            store.lock().get_all_payments(&order_id).unwrap()[0].block_height,
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
             Some(50)
         );
 
@@ -6243,7 +6653,7 @@ pub(crate) mod tests {
             &key_custody,
             &other,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6258,7 +6668,9 @@ pub(crate) mod tests {
                  48 because 48 is a height this scanner never recorded a hash for, and detection can only ever be \
                  as fine-grained as the window it kept"
             );
-            let payment = &s.get_all_payments(&order_id).unwrap()[0];
+            let payment = &s
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0];
             assert!(
                 payment.voided_at.is_none(),
                 "the new node not having the transaction proves nothing about it - never void on that"
@@ -6271,7 +6683,7 @@ pub(crate) mod tests {
             &key_custody,
             &other,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6289,7 +6701,7 @@ pub(crate) mod tests {
             &key_custody,
             &honest,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6352,14 +6764,18 @@ pub(crate) mod tests {
             &key_custody,
             &client,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
         .await
         .unwrap();
         assert_eq!(
-            store.lock().get_all_payments(&order_id).unwrap()[0].block_height,
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .block_height,
             Some(50),
             "the primary is healthy and used first, exactly like a bare RpcDaemonClient would be"
         );
@@ -6373,7 +6789,7 @@ pub(crate) mod tests {
             &key_custody,
             &client,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6387,7 +6803,7 @@ pub(crate) mod tests {
                 "failover to a genuinely diverging fallback reconciles exactly like the raw-swap test above"
             );
             assert!(
-                s.get_all_payments(&order_id).unwrap()[0].voided_at.is_none(),
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap()[0].voided_at.is_none(),
                 "the fallback not having the transaction proves nothing about it - never void on that"
             );
         }
@@ -6397,7 +6813,7 @@ pub(crate) mod tests {
             &key_custody,
             &client,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6439,7 +6855,7 @@ pub(crate) mod tests {
             &key_custody,
             primary.as_ref(),
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6473,7 +6889,7 @@ pub(crate) mod tests {
             &key_custody,
             &client,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6487,7 +6903,7 @@ pub(crate) mod tests {
                 "a lagging fallback must not rewind the window back to where it currently is"
             );
             assert!(
-                s.get_all_payments(&order_id).unwrap()[0].voided_at.is_none(),
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap()[0].voided_at.is_none(),
                 "a lagging fallback not yet having the transaction proves nothing - never void on that"
             );
         }
@@ -6550,7 +6966,7 @@ pub(crate) mod tests {
             &key_custody,
             &client,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6564,7 +6980,7 @@ pub(crate) mod tests {
             "the recorded hash for height 51 came from the fallback, whose get_block_hash call is what failed over"
         );
         assert!(
-            s.get_all_payments(&order_id).unwrap().is_empty(),
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string())).unwrap().is_empty(),
             "and so did the block's contents: the fallback's block 51 pays nobody, and the primary's block 51 (which \
              it can no longer vouch for) was never paired with the fallback's hash"
         );
@@ -6590,7 +7006,7 @@ pub(crate) mod tests {
             &key_custody,
             primary.as_ref(),
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6598,7 +7014,7 @@ pub(crate) mod tests {
         .unwrap();
         let payments_before: Vec<(String, Option<i64>)> = store
             .lock()
-            .get_all_payments(&order_id)
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
             .unwrap()
             .into_iter()
             .map(|p| (p.txid, p.block_height))
@@ -6624,7 +7040,7 @@ pub(crate) mod tests {
             &key_custody,
             &client,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6635,7 +7051,7 @@ pub(crate) mod tests {
         );
         let payments_after: Vec<(String, Option<i64>)> = store
             .lock()
-            .get_all_payments(&order_id)
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
             .unwrap()
             .into_iter()
             .map(|p| (p.txid, p.block_height))
@@ -6671,7 +7087,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6680,11 +7096,19 @@ pub(crate) mod tests {
         {
             let s = store.lock();
             assert!(
-                s.get_all_payments(&order_id).unwrap().is_empty(),
+                s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                    .unwrap()
+                    .is_empty(),
                 "nothing to see - only zero-conf is lost"
             );
             assert_eq!(
-                s.get_order(&tenant_id, &order_id).unwrap().unwrap().status,
+                s.get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string())
+                )
+                .unwrap()
+                .unwrap()
+                .status,
                 crate::status::OrderStatus::Pending
             );
         }
@@ -6695,7 +7119,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6703,7 +7127,9 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(
             payments.len(),
             1,
@@ -6711,7 +7137,13 @@ pub(crate) mod tests {
         );
         assert_eq!(payments[0].block_height, Some(2));
         assert_eq!(
-            s.get_order(&tenant_id, &order_id).unwrap().unwrap().status,
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .status,
             crate::status::OrderStatus::Confirming
         );
     }
@@ -6751,18 +7183,29 @@ pub(crate) mod tests {
 
         let s = store.lock();
         assert!(
-            s.get_all_payments(&order_id).unwrap().is_empty(),
+            s.get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .is_empty(),
             "no wallet matched, so no payment exists"
         );
         assert_eq!(
-            s.get_order(&tenant_id, &order_id).unwrap().unwrap().status,
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .status,
             crate::status::OrderStatus::Pending
         );
         assert_eq!(
-            s.get_order(&tenant_id, &order_id)
-                .unwrap()
-                .unwrap()
-                .amount_received_piconero,
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .amount_received_piconero,
             0
         );
     }
@@ -6795,7 +7238,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6803,7 +7246,13 @@ pub(crate) mod tests {
         .unwrap();
         {
             let s = store.lock();
-            let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+            let order = s
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                )
+                .unwrap()
+                .unwrap();
             assert_eq!(order.status, crate::status::OrderStatus::Confirming);
             assert_eq!(order.confirmations, 1, "one real block, one confirmation");
         }
@@ -6814,7 +7263,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6822,7 +7271,13 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(
             order.confirmations, 999,
             "taken at face value - the documented trust boundary"
@@ -6850,7 +7305,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle,
-            &tenant_id,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
             &tx,
             0..3,
             1500,
@@ -6863,7 +7318,9 @@ pub(crate) mod tests {
                 .set_scanned_block("mainnet", h, &format!("old_{h}"))
                 .unwrap();
         }
-        let (_, status) = store.recompute_order_status(&order_id, 100, 1600).unwrap();
+        let (_, status) = store
+            .recompute_order_status(&shared::ids::OrderId::new(order_id.to_string()), 100, 1600)
+            .unwrap();
         assert_eq!(
             status,
             crate::status::OrderStatus::Confirming,
@@ -6882,7 +7339,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6899,7 +7356,9 @@ pub(crate) mod tests {
             s.get_scanned_block_hash("mainnet", 95).unwrap().as_deref(),
             Some("old_95")
         );
-        let payment = &s.get_all_payments(&order_id).unwrap()[0];
+        let payment = &s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0];
         assert!(
             payment.voided_at.is_none(),
             "a node that hasn't got there yet proves nothing about a payment"
@@ -6937,7 +7396,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -6945,14 +7404,22 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(
             payments.len(),
             3,
             "three distinct transactions are three payments, not one deduplicated row"
         );
         assert!(payments.iter().all(|p| p.block_height == Some(2)));
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(order.amount_received_piconero, per_tx_amount * 3);
         assert_eq!(
             order.status,
@@ -6976,12 +7443,14 @@ pub(crate) mod tests {
         // (which is what the stagenet end-to-end test exists for). The routing logic
         // being tested is entirely on this side of the crypto.
         let (store, _key_custody, _handle, tenant_id, first_order) = setup().await;
-        let second_index = store.allocate_minor_index(&tenant_id).unwrap();
+        let second_index = store
+            .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.to_string()))
+            .unwrap();
         assert_eq!(second_index, 2);
         let second_order = store
             .create_order(NewOrder {
                 confirmations_required_override: None,
-                tenant_id: tenant_id.clone(),
+                tenant_id: shared::ids::TenantId::new(tenant_id.clone()),
                 merchant_order_id: None,
                 minor_index: second_index,
                 address: "sub_2".into(),
@@ -7016,13 +7485,25 @@ pub(crate) mod tests {
             key_images_json: "[]".into(),
         };
 
-        let touched = record_scan_match(&store, &tenant_id, &scan, 1500, Some(50)).unwrap();
+        let touched = record_scan_match(
+            &store,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &scan,
+            1500,
+            Some(50),
+        )
+        .unwrap();
         assert_eq!(
             touched,
-            HashSet::from([first_order.clone(), second_order.id.clone()])
+            HashSet::from([
+                crate::store::OrderId::new(first_order.clone()),
+                second_order.id.clone()
+            ])
         );
 
-        let first = store.get_all_payments(&first_order).unwrap();
+        let first = store
+            .get_all_payments(&shared::ids::OrderId::new(first_order.to_string()))
+            .unwrap();
         assert_eq!(first.len(), 1);
         assert_eq!(
             first[0].amount_piconero, 700,
@@ -7068,7 +7549,7 @@ pub(crate) mod tests {
             &store,
             &key_custody,
             handle_a,
-            &tenant_a,
+            &shared::ids::TenantId::new(tenant_a.to_string()),
             &doomed,
             0..3,
             1500,
@@ -7091,7 +7572,9 @@ pub(crate) mod tests {
             .unwrap(); // rescans the replacement chain
 
         let s = store.lock();
-        let a_payments = s.get_all_payments(&order_a).unwrap();
+        let a_payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_a.to_string()))
+            .unwrap();
         assert_eq!(
             a_payments.len(),
             2,
@@ -7103,7 +7586,13 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(voided.len(), 1);
         assert_eq!(voided[0].txid, tx_id_hex(&doomed));
-        let order_a_row = s.get_order(&tenant_a, &order_a).unwrap().unwrap();
+        let order_a_row = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_a.to_string()),
+                &shared::ids::OrderId::new(order_a.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert!(
             order_a_row.double_spend_detected_at.is_some(),
             "the incident stays recorded even though a later payment covered the order"
@@ -7117,7 +7606,9 @@ pub(crate) mod tests {
                 .amount_piconero
         );
 
-        let b_payments = s.get_all_payments(&order_b).unwrap();
+        let b_payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_b.to_string()))
+            .unwrap();
         assert_eq!(
             b_payments.len(),
             1,
@@ -7126,11 +7617,14 @@ pub(crate) mod tests {
         assert_eq!(b_payments[0].txid, tx_id_hex(&fresh));
         assert!(b_payments[0].voided_at.is_none());
         assert!(
-            s.get_order(&tenant_b, &order_b)
-                .unwrap()
-                .unwrap()
-                .double_spend_detected_at
-                .is_none(),
+            s.get_order(
+                &shared::ids::TenantId::new(tenant_b.to_string()),
+                &shared::ids::OrderId::new(order_b.to_string())
+            )
+            .unwrap()
+            .unwrap()
+            .double_spend_detected_at
+            .is_none(),
             "another order's double-spend is not B's problem"
         );
     }
@@ -7164,22 +7658,51 @@ pub(crate) mod tests {
             key_images_json: "[]".into(),
         };
 
-        record_scan_match(&store, &tenant_id, &undecryptable, 1500, Some(50)).unwrap();
-        assert!(store.get_all_payments(&order_id).unwrap().is_empty());
+        record_scan_match(
+            &store,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &undecryptable,
+            1500,
+            Some(50),
+        )
+        .unwrap();
+        assert!(store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .is_empty());
 
-        let touched = record_scan_match(&store, &tenant_id, &decrypted, 1600, Some(50)).unwrap();
+        let touched = record_scan_match(
+            &store,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &decrypted,
+            1600,
+            Some(50),
+        )
+        .unwrap();
         assert_eq!(
             touched,
-            HashSet::from([order_id.clone()]),
+            HashSet::from([crate::store::OrderId::new(order_id.clone())]),
             "the later success records it in full"
         );
         assert_eq!(
-            store.get_all_payments(&order_id).unwrap()[0].amount_piconero,
+            store
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()[0]
+                .amount_piconero,
             4_242
         );
 
-        record_scan_match(&store, &tenant_id, &undecryptable, 1700, Some(50)).unwrap();
-        let payments = store.get_all_payments(&order_id).unwrap();
+        record_scan_match(
+            &store,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &undecryptable,
+            1700,
+            Some(50),
+        )
+        .unwrap();
+        let payments = store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
         assert_eq!(
             payments[0].amount_piconero, 4_242,
@@ -7216,7 +7739,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -7224,7 +7747,13 @@ pub(crate) mod tests {
         .unwrap();
 
         let s = store.lock();
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(
             order.status,
             crate::status::OrderStatus::Unconfirmed,
@@ -7238,9 +7767,11 @@ pub(crate) mod tests {
         let partial = s
             .create_order(NewOrder {
                 confirmations_required_override: None,
-                tenant_id: tenant_id.clone(),
+                tenant_id: shared::ids::TenantId::new(tenant_id.clone()),
                 merchant_order_id: None,
-                minor_index: s.allocate_minor_index(&tenant_id).unwrap(),
+                minor_index: s
+                    .allocate_minor_index(&shared::ids::TenantId::new(tenant_id.to_string()))
+                    .unwrap(),
                 address: "sub_partial".into(),
                 xmr_amount_piconero: 10_000_000,
                 description: None,
@@ -7274,7 +7805,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -7287,7 +7818,10 @@ pub(crate) mod tests {
                 None,
                 "nothing to seed from, so nothing recorded"
             );
-            assert!(s.get_all_payments(&order_id).unwrap().is_empty());
+            assert!(s
+                .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                .unwrap()
+                .is_empty());
         }
 
         // One block exists: the whole chain is height 1, and the tick must still
@@ -7299,7 +7833,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -7366,7 +7900,7 @@ pub(crate) mod tests {
                 &key_custody,
                 &daemon,
                 "mainnet",
-                &[(tenant_id.clone(), handle)],
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
                 depth,
                 0,
             )
@@ -7428,7 +7962,7 @@ pub(crate) mod tests {
             setup_with_confirmations_override(Some(0)).await;
         store
             .create_webhook(
-                &tenant_id,
+                &shared::ids::TenantId::new(tenant_id.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -7462,7 +7996,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -7470,7 +8004,13 @@ pub(crate) mod tests {
         .unwrap();
         {
             let s = store.lock();
-            let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+            let order = s
+                .get_order(
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &shared::ids::OrderId::new(order_id.to_string()),
+                )
+                .unwrap()
+                .unwrap();
             assert_eq!(
                 order.status,
                 crate::status::OrderStatus::Paid,
@@ -7499,7 +8039,7 @@ pub(crate) mod tests {
             &key_custody,
             &daemon,
             "mainnet",
-            &[(tenant_id.clone(), handle)],
+            &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
             20,
             0,
         )
@@ -7512,14 +8052,22 @@ pub(crate) mod tests {
         );
 
         let s = store.lock();
-        let payments = s.get_all_payments(&order_id).unwrap();
+        let payments = s
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap();
         let voided: Vec<_> = payments.iter().filter(|p| p.voided_at.is_some()).collect();
         assert_eq!(
             voided.len(),
             1,
             "exactly one payment was resolved before the node failed"
         );
-        let order = s.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let order = s
+            .get_order(
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &shared::ids::OrderId::new(order_id.to_string()),
+            )
+            .unwrap()
+            .unwrap();
         assert_eq!(
             order.amount_received_piconero, per_tx,
             "the order's total must reflect the void that actually committed"
@@ -7563,7 +8111,7 @@ pub(crate) mod tests {
         let store = Store::open_in_memory().unwrap().into_shared();
         let key_custody = PlainKeyCustody::default();
         let daemon = FakeDaemonClient::new();
-        let tenants: Vec<(String, WalletHandle)> = vec![];
+        let tenants: Vec<(crate::store::TenantId, WalletHandle)> = vec![];
         assert_send(run_scan_tick(
             &store,
             &key_custody,
@@ -7699,7 +8247,7 @@ pub(crate) mod tests {
         store: &Store,
         key_custody: &dyn KeyCustody,
         expires_at: i64,
-    ) -> (String, WalletHandle, String) {
+    ) -> (crate::store::TenantId, WalletHandle, crate::store::OrderId) {
         let handle = key_custody
             .register_wallet(WalletMaterial::new(
                 fixture_view_key(),
@@ -7735,22 +8283,35 @@ pub(crate) mod tests {
                 expires_at,
             })
             .unwrap();
-        (tenant.tenant.id, handle, order.id)
+        (
+            shared::ids::TenantId::new(tenant.tenant.id.into_string()),
+            handle,
+            shared::ids::OrderId::new(order.id.into_string()),
+        )
     }
 
     pub(crate) fn cursor_of(store: &crate::store::SharedStore, tenant_id: &str) -> Option<u64> {
         store
             .lock()
-            .get_tenant_by_id(tenant_id)
+            .get_tenant_by_id(&shared::ids::TenantId::new(tenant_id.to_string()))
             .unwrap()
             .unwrap()
             .scanned_through_height
     }
 
-    pub(crate) fn order_status(store: &crate::store::SharedStore, order_id: &str) -> OrderStatus {
+    pub(crate) fn order_status(
+        store: &crate::store::SharedStore,
+        order_id: &crate::store::OrderId,
+    ) -> OrderStatus {
         let s = store.lock();
-        let tenant_id = s.get_order_tenant_id(order_id).unwrap().unwrap();
-        s.get_order(&tenant_id, order_id).unwrap().unwrap().status
+        let tenant_id = s
+            .get_order_tenant_id(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .unwrap();
+        s.get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .unwrap()
+            .status
     }
 
     #[tokio::test]
@@ -7780,18 +8341,26 @@ pub(crate) mod tests {
             Some(2),
             "the network moved on"
         );
-        assert_eq!(cursor_of(&store, &b), Some(2));
+        assert_eq!(cursor_of(&store, b.as_str()), Some(2));
         assert_eq!(
-            store.lock().get_all_payments(&b_order).unwrap().len(),
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(b_order.to_string()))
+                .unwrap()
+                .len(),
             1,
             "B was paid on time"
         );
         assert_eq!(
-            cursor_of(&store, &a),
+            cursor_of(&store, a.as_str()),
             Some(1),
             "A stays where its last good scan left it"
         );
-        assert!(store.lock().get_all_payments(&a_order).unwrap().is_empty());
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+            .unwrap()
+            .is_empty());
         assert_eq!(
             store.lock().lagging_tenants("mainnet").unwrap(),
             vec![(a.clone(), 1)]
@@ -7802,16 +8371,19 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
-        assert_eq!(cursor_of(&store, &b), Some(3));
-        assert_eq!(cursor_of(&store, &a), Some(1));
+        assert_eq!(cursor_of(&store, b.as_str()), Some(3));
+        assert_eq!(cursor_of(&store, a.as_str()), Some(1));
 
         custody.recover(a_handle);
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
 
-        assert_eq!(cursor_of(&store, &a), Some(3), "caught up");
-        let a_payments = store.lock().get_all_payments(&a_order).unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(3), "caught up");
+        let a_payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+            .unwrap();
         assert_eq!(
             a_payments.len(),
             1,
@@ -7819,7 +8391,11 @@ pub(crate) mod tests {
         );
         assert_eq!(a_payments[0].block_height, Some(2));
         assert_eq!(
-            store.lock().get_all_payments(&b_order).unwrap().len(),
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(b_order.to_string()))
+                .unwrap()
+                .len(),
             1,
             "B's payment wasn't recorded twice"
         );
@@ -7842,7 +8418,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(
-            order_status(&store, &a_order),
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(a_order.as_str().to_string())
+            ),
             OrderStatus::Expired,
             "sanity: a caught-up tenant's order expires"
         );
@@ -7887,13 +8466,19 @@ pub(crate) mod tests {
                 .unwrap();
             (tenant.tenant.id, handle, order.id)
         };
-        let tenants = [(a.clone(), a_handle), (c.clone(), c_handle)];
+        let tenants = [
+            (a.clone(), a_handle),
+            (
+                shared::ids::TenantId::new(c.clone().into_string()),
+                c_handle,
+            ),
+        ];
         custody.fail(c_handle);
         daemon.push_block("h2", vec![fixture_tx()]);
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
-        assert_eq!(cursor_of(&store, &c), Some(1));
+        assert_eq!(cursor_of(&store, c.as_str()), Some(1));
 
         // Its deadline passes while it is still behind.
         store
@@ -7906,7 +8491,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(
-            order_status(&store, &c_order),
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(c_order.as_str().to_string())
+            ),
             OrderStatus::Pending,
             "no expiry while its blocks are unchecked"
         );
@@ -7924,9 +8512,15 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
-        assert_eq!(cursor_of(&store, &c), Some(2));
+        assert_eq!(cursor_of(&store, c.as_str()), Some(2));
         assert_eq!(store.lock().get_all_payments(&c_order).unwrap().len(), 1);
-        assert_ne!(order_status(&store, &c_order), OrderStatus::Expired);
+        assert_ne!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(c_order.as_str().to_string())
+            ),
+            OrderStatus::Expired
+        );
     }
 
     #[tokio::test]
@@ -7954,15 +8548,24 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
-        assert_eq!(order_status(&store, &a_order), OrderStatus::Pending);
+        assert_eq!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(a_order.as_str().to_string())
+            ),
+            OrderStatus::Pending
+        );
 
         custody.recover(a_handle);
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
         assert_eq!(
-            order_status(&store, &a_order),
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(a_order.as_str().to_string())
+            ),
             OrderStatus::Expired,
             "nothing was paid, so it expires as normal"
         );
@@ -7988,7 +8591,7 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(2));
         assert_eq!(
-            cursor_of(&store, &a),
+            cursor_of(&store, a.as_str()),
             Some(1),
             "not moved past blocks nobody checked for it"
         );
@@ -8004,8 +8607,15 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
-        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1);
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
     }
 
     #[tokio::test]
@@ -8045,7 +8655,7 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            cursor_of(&store, &tenant.id),
+            cursor_of(&store, tenant.id.as_str()),
             Some(2),
             "anchored when the network was seeded"
         );
@@ -8070,7 +8680,7 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(cursor_of(&store, &tenant.id), Some(3));
+        assert_eq!(cursor_of(&store, tenant.id.as_str()), Some(3));
         assert!(store.lock().lagging_tenants("mainnet").unwrap().is_empty());
     }
 
@@ -8125,7 +8735,7 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(5));
+        assert_eq!(cursor_of(&store, a.as_str()), Some(5));
 
         // B falls behind at 5 before the reorg.
         custody.fail(b_handle);
@@ -8134,7 +8744,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(
-            (cursor_of(&store, &a), cursor_of(&store, &b)),
+            (cursor_of(&store, a.as_str()), cursor_of(&store, b.as_str())),
             (Some(6), Some(5))
         );
 
@@ -8151,19 +8761,22 @@ pub(crate) mod tests {
             .unwrap();
         assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(4));
         assert_eq!(
-            cursor_of(&store, &a),
+            cursor_of(&store, a.as_str()),
             Some(4),
             "clamped to reorg_point - 1, not reorg_point"
         );
-        assert_eq!(cursor_of(&store, &b), Some(4));
+        assert_eq!(cursor_of(&store, b.as_str()), Some(4));
 
         custody.recover(b_handle);
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
         for (tenant, order) in [(&a, &a_order), (&b, &b_order)] {
-            assert_eq!(cursor_of(&store, tenant), Some(6));
-            let payments = store.lock().get_all_payments(order).unwrap();
+            assert_eq!(cursor_of(&store, tenant.as_str()), Some(6));
+            let payments = store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+                .unwrap();
             assert_eq!(
                 payments.len(),
                 1,
@@ -8188,7 +8801,7 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
 
         custody.fail(a_handle);
         daemon.push_block("h3", vec![unrelated_tx(105)]);
@@ -8196,7 +8809,7 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
 
         // The chain from 3 up changes before A catches up, and the payment is
         // now at 3. Catch-up for A must not record from blocks that differ from
@@ -8215,15 +8828,18 @@ pub(crate) mod tests {
             .unwrap();
         // Catch-up saw block 3's hash differ from the stored one and stopped
         // without moving A; the reorg check then rewound everyone to 2.
-        assert_eq!(cursor_of(&store, &a), Some(2));
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
         assert_eq!(store.lock().max_scanned_height("mainnet").unwrap(), Some(2));
         for _ in 0..3 {
             run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
                 .await
                 .unwrap();
         }
-        assert_eq!(cursor_of(&store, &a), Some(4));
-        let payments = store.lock().get_all_payments(&a_order).unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(4));
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
         assert_eq!(payments[0].block_height, Some(3));
     }
@@ -8266,7 +8882,7 @@ pub(crate) mod tests {
             "five tenants behind at the same block, one fetch"
         );
         for (id, _) in &tenants {
-            assert_eq!(cursor_of(&store, id), Some(2));
+            assert_eq!(cursor_of(&store, id.as_str()), Some(2));
         }
     }
 
@@ -8288,7 +8904,7 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(1));
+        assert_eq!(cursor_of(&store, a.as_str()), Some(1));
 
         // Put A a long way behind so one tick can't finish catching up, then
         // let its keys work again with a payment waiting in the pool.
@@ -8303,7 +8919,10 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
-        let payments = store.lock().get_all_payments(&a_order).unwrap();
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1);
         assert_eq!(payments[0].block_height, None, "seen in the pool, 0-conf");
     }
@@ -8411,13 +9030,13 @@ pub(crate) mod tests {
             let high_water = store.lock().max_scanned_height("mainnet").unwrap();
             for ((tenant_id, _), order_id) in tenants.iter().zip(&orders) {
                 assert_eq!(
-                    cursor_of(&store, tenant_id),
+                    cursor_of(&store, tenant_id.as_str()),
                     high_water,
                     "seed {seed}: tenant caught up"
                 );
                 let payments: Vec<_> = store
                     .lock()
-                    .get_all_payments(order_id)
+                    .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
                     .unwrap()
                     .into_iter()
                     .filter(|p| p.voided_at.is_none())
@@ -8434,7 +9053,10 @@ pub(crate) mod tests {
                     None => assert!(payments.is_empty(), "seed {seed}"),
                 }
                 assert_ne!(
-                    order_status(&store, order_id),
+                    order_status(
+                        &store,
+                        &shared::ids::OrderId::new(order_id.as_str().to_string())
+                    ),
                     OrderStatus::Expired,
                     "seed {seed}"
                 );
@@ -8557,18 +9179,26 @@ pub(crate) mod tests {
             started.elapsed()
         );
         assert_eq!(
-            store.lock().get_all_payments(&b_order).unwrap().len(),
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(b_order.to_string()))
+                .unwrap()
+                .len(),
             1,
             "B was paid on time"
         );
-        assert_eq!(cursor_of(&store, &a), Some(2), "A left behind");
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2), "A left behind");
 
         custody.delays.lock().clear();
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
         assert_eq!(
-            store.lock().get_all_payments(&a_order).unwrap().len(),
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .len(),
             1,
             "and caught up once it answers normally"
         );
@@ -8622,7 +9252,11 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.lock().get_all_payments(&order).unwrap().len(),
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+                .unwrap()
+                .len(),
             1,
             "the tenant is retried after recovery"
         );
@@ -8662,7 +9296,7 @@ pub(crate) mod tests {
             started.elapsed()
         );
         for (id, _) in &tenants {
-            assert_eq!(cursor_of(&store, id), Some(3));
+            assert_eq!(cursor_of(&store, id.as_str()), Some(3));
         }
     }
 
@@ -8685,7 +9319,13 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600)
             .await
             .unwrap();
-        assert_eq!(order_status(&store, &a_order), OrderStatus::Expired);
+        assert_eq!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(a_order.as_str().to_string())
+            ),
+            OrderStatus::Expired
+        );
 
         // Backend down while the late payment is mined.
         custody.fail(a_handle);
@@ -8694,7 +9334,7 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 3600)
             .await
             .unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
 
         // The grace period is over by now (modelled by a grace of 0), so the
         // order is no longer in scope today. It was in scope during the gap,
@@ -8703,7 +9343,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(
-            cursor_of(&store, &a),
+            cursor_of(&store, a.as_str()),
             Some(2),
             "not moved past the block with the payment"
         );
@@ -8711,8 +9351,11 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0)
             .await
             .unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(3));
-        let payments = store.lock().get_all_payments(&a_order).unwrap();
+        assert_eq!(cursor_of(&store, a.as_str()), Some(3));
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1, "the late payment was recorded");
         assert_eq!(payments[0].block_height, Some(3));
     }
@@ -8731,7 +9374,13 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-        store.lock().disable_tenant(&a, crate::now_unix()).unwrap();
+        store
+            .lock()
+            .disable_tenant(
+                &shared::ids::TenantId::new(a.to_string()),
+                crate::now_unix(),
+            )
+            .unwrap();
         store
             .lock()
             .execute_raw_for_test(&format!(
@@ -8745,8 +9394,14 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &[], 20, 0)
             .await
             .unwrap();
-        assert_eq!(order_status(&store, &a_order), OrderStatus::Expired);
-        assert_eq!(cursor_of(&store, &a), Some(3));
+        assert_eq!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(a_order.as_str().to_string())
+            ),
+            OrderStatus::Expired
+        );
+        assert_eq!(cursor_of(&store, a.as_str()), Some(3));
         assert!(store.lock().lagging_tenants("mainnet").unwrap().is_empty());
     }
 
@@ -8810,19 +9465,19 @@ pub(crate) mod tests {
         );
         let cursor = |id: &str| {
             store
-                .get_tenant_by_id(id)
+                .get_tenant_by_id(&shared::ids::TenantId::new(id.to_string()))
                 .unwrap()
                 .unwrap()
                 .scanned_through_height
         };
-        assert_eq!(cursor(&idle), Some(11));
+        assert_eq!(cursor(idle.as_str()), Some(11));
         assert_eq!(
-            cursor(&active),
+            cursor(active.as_str()),
             Some(10),
             "block 11 was never checked against its order"
         );
-        assert_eq!(cursor(&elsewhere), Some(9));
-        assert_eq!(cursor(&other_network), Some(10));
+        assert_eq!(cursor(elsewhere.as_str()), Some(9));
+        assert_eq!(cursor(other_network.as_str()), Some(10));
     }
 
     #[tokio::test]
@@ -8905,7 +9560,7 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 1, 0)
             .await
             .unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
 
         // Block 3 now answers with another hash and a payment, below a
         // reorg-check window of 1 block, so only catch-up can notice.
@@ -8915,12 +9570,16 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(
-            cursor_of(&store, &a),
+            cursor_of(&store, a.as_str()),
             Some(2),
             "stopped at the block that differs"
         );
         assert!(
-            store.lock().get_all_payments(&a_order).unwrap().is_empty(),
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .is_empty(),
             "nothing recorded from it"
         );
     }
@@ -9023,14 +9682,40 @@ pub(crate) mod tests {
             ))
             .unwrap();
         store
-            .create_webhook(&tenant, "https://shop.example/hook", "{}", "whsec", now)
+            .create_webhook(
+                &shared::ids::TenantId::new(tenant.to_string()),
+                "https://shop.example/hook",
+                "{}",
+                "whsec",
+                now,
+            )
             .unwrap();
         store
-            .record_payment_match(&order, "original", 0, 1, "[]", now, Some(1))
+            .record_payment_match(
+                &shared::ids::OrderId::new(order.to_string()),
+                "original",
+                0,
+                1,
+                "[]",
+                now,
+                Some(1),
+            )
             .unwrap();
-        recompute_and_notify(&store, &order, 2, now).unwrap();
+        recompute_and_notify(
+            &store,
+            &shared::ids::OrderId::new(order.to_string()),
+            2,
+            now,
+        )
+        .unwrap();
         let store = store.into_shared();
-        assert_eq!(order_status(&store, &order), OrderStatus::Paid);
+        assert_eq!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(order.as_str().to_string())
+            ),
+            OrderStatus::Paid
+        );
         let tenants = [(tenant, handle)];
         let daemon = YieldingDaemon(FakeDaemonClient::new());
         daemon.0.push_block("b1", vec![]);
@@ -9045,7 +9730,13 @@ pub(crate) mod tests {
             ));
             std::future::poll_fn(|cx| {
                 assert!(tick.as_mut().poll(cx).is_pending());
-                if store.lock().get_all_payments(&order).unwrap().len() == 2 {
+                if store
+                    .lock()
+                    .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+                    .unwrap()
+                    .len()
+                    == 2
+                {
                     std::task::Poll::Ready(())
                 } else {
                     std::task::Poll::Pending
@@ -9067,7 +9758,13 @@ pub(crate) mod tests {
                 .await
                 .unwrap();
         }
-        assert_eq!(order_status(&store, &order), OrderStatus::Overpaid);
+        assert_eq!(
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(order.as_str().to_string())
+            ),
+            OrderStatus::Overpaid
+        );
         let events = store
             .lock()
             .due_webhook_deliveries(i64::MAX / 2, 100)
@@ -9100,7 +9797,13 @@ pub(crate) mod tests {
                 let (id, handle, order) =
                     fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
                 store
-                    .create_webhook(&id, "https://shop.example/hook", "{}", "whsec", 1)
+                    .create_webhook(
+                        &shared::ids::TenantId::new(id.to_string()),
+                        "https://shop.example/hook",
+                        "{}",
+                        "whsec",
+                        1,
+                    )
                     .unwrap();
                 tenants.push((id, handle));
                 orders.push(order);
@@ -9146,13 +9849,23 @@ pub(crate) mod tests {
                 .due_webhook_deliveries(i64::MAX / 2, 10_000)
                 .unwrap();
             for ((tenant_id, _), order_id) in tenants.iter().zip(&orders) {
-                assert_eq!(cursor_of(&store, tenant_id), high_water, "seed {seed}");
-                let payments = store.lock().get_all_payments(order_id).unwrap();
+                assert_eq!(
+                    cursor_of(&store, tenant_id.as_str()),
+                    high_water,
+                    "seed {seed}"
+                );
+                let payments = store
+                    .lock()
+                    .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                    .unwrap();
                 match paid_at {
                     Some(h) => {
                         assert_eq!(payments.len(), 1, "seed {seed}: exactly one payment");
                         assert_eq!(payments[0].block_height, Some(h as i64), "seed {seed}");
-                        let status = order_status(&store, order_id);
+                        let status = order_status(
+                            &store,
+                            &shared::ids::OrderId::new(order_id.as_str().to_string()),
+                        );
                         assert!(
                             events.iter().any(|d| &d.order_id == order_id && d.event_type == format!("order.{status}")),
                             "seed {seed}: the webhook for the order's current status ({status}) was enqueued"
@@ -9182,7 +9895,9 @@ pub(crate) mod tests {
                 ))
                 .unwrap();
             // Another open order keeps the store active either way.
-            let index = store.allocate_minor_index(&a).unwrap();
+            let index = store
+                .allocate_minor_index(&shared::ids::TenantId::new(a.to_string()))
+                .unwrap();
             store
                 .create_order(NewOrder {
                     confirmations_required_override: None,
@@ -9224,7 +9939,10 @@ pub(crate) mod tests {
             .await
             .unwrap();
 
-            let payments = store.lock().get_all_payments(&a_order).unwrap();
+            let payments = store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap();
             assert_eq!(
                 payments.len() == 1,
                 expect_scanned,
@@ -9235,15 +9953,29 @@ pub(crate) mod tests {
                 // ever issued, and records it.
                 let next = store
                     .lock()
-                    .get_tenant_by_id(&a)
+                    .get_tenant_by_id(&shared::ids::TenantId::new(a.to_string()))
                     .unwrap()
                     .unwrap()
                     .next_minor_index;
                 let scan = scan_transaction(&custody, a_handle, &fixture_tx(), 0..next)
                     .await
                     .unwrap();
-                record_scan_match(&store.lock(), &a, &scan, crate::now_unix(), Some(3)).unwrap();
-                assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1);
+                record_scan_match(
+                    &store.lock(),
+                    &shared::ids::TenantId::new(a.to_string()),
+                    &scan,
+                    crate::now_unix(),
+                    Some(3),
+                )
+                .unwrap();
+                assert_eq!(
+                    store
+                        .lock()
+                        .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                        .unwrap()
+                        .len(),
+                    1
+                );
             }
         }
     }
@@ -9270,7 +10002,7 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60)
             .await
             .unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(2));
+        assert_eq!(cursor_of(&store, a.as_str()), Some(2));
         // While it was behind, the order closed (say it was cancelled and
         // expired) 500s ago, well past a 60s grace period by now.
         store
@@ -9285,9 +10017,13 @@ pub(crate) mod tests {
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 60)
             .await
             .unwrap();
-        assert_eq!(cursor_of(&store, &a), Some(3));
+        assert_eq!(cursor_of(&store, a.as_str()), Some(3));
         assert_eq!(
-            store.lock().get_all_payments(&a_order).unwrap().len(),
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .len(),
             1,
             "it was open when the gap began"
         );
@@ -9333,13 +10069,27 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            cursor_of(&store, &a),
+            cursor_of(&store, a.as_str()),
             Some(3),
             "not left behind by a scan failure"
         );
-        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1);
         assert_eq!(
-            store.lock().scan_window(&a, crate::now_unix(), 0).unwrap(),
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
+        assert_eq!(
+            store
+                .lock()
+                .scan_window(
+                    &shared::ids::TenantId::new(a.to_string()),
+                    crate::now_unix(),
+                    0
+                )
+                .unwrap(),
             vec![1],
             "the window is the open orders"
         );
@@ -9369,7 +10119,14 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert_eq!(store.lock().get_all_payments(&a_order).unwrap().len(), 1);
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
         let after_first = custody.scan_calls.load(Ordering::SeqCst);
         assert_eq!(after_first, 3);
 
@@ -9419,7 +10176,11 @@ pub(crate) mod tests {
         )
         .await
         .unwrap();
-        assert!(store.lock().get_all_payments(&a_order).unwrap().is_empty());
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+            .unwrap()
+            .is_empty());
 
         custody.recover(a_handle);
         run_scan_tick_with(
@@ -9428,7 +10189,11 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert_eq!(
-            store.lock().get_all_payments(&a_order).unwrap().len(),
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(a_order.to_string()))
+                .unwrap()
+                .len(),
             1,
             "not remembered as scanned after failing"
         );
@@ -9459,7 +10224,9 @@ pub(crate) mod tests {
         // A new order: the window changes, so the pool is checked for it.
         {
             let s = store.lock();
-            let index = s.allocate_minor_index(&a).unwrap();
+            let index = s
+                .allocate_minor_index(&shared::ids::TenantId::new(a.to_string()))
+                .unwrap();
             s.create_order(NewOrder {
                 confirmations_required_override: None,
                 tenant_id: a.clone(),
@@ -10004,13 +10771,33 @@ pub(crate) mod tests {
             txid: "ab".repeat(32),
             key_images_json: "[]".into(),
         };
-        assert!(record_scan_match(&store, &tenant_id, &scan, 100, Some(5))
+        assert!(record_scan_match(
+            &store,
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &scan,
+            100,
+            Some(5)
+        )
+        .unwrap()
+        .is_empty());
+        stage_block_match(
+            &store,
+            "mainnet",
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &scan,
+            100,
+        )
+        .unwrap();
+        assert!(store
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
             .unwrap()
             .is_empty());
-        stage_block_match(&store, "mainnet", &tenant_id, &scan, 100).unwrap();
-        assert!(store.get_all_payments(&order_id).unwrap().is_empty());
         assert!(store
-            .take_staged_payments("mainnet", &tenant_id, "any")
+            .take_staged_payments(
+                "mainnet",
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "any"
+            )
             .unwrap()
             .is_empty());
         assert_eq!(
@@ -10037,7 +10824,7 @@ pub(crate) mod tests {
                 &key_custody,
                 &daemon,
                 "mainnet",
-                &[(tenant_id.clone(), handle)],
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
                 20,
                 0,
             )
@@ -10048,7 +10835,7 @@ pub(crate) mod tests {
                 &key_custody,
                 &daemon,
                 "mainnet",
-                &[(tenant_id.clone(), handle)],
+                &[(shared::ids::TenantId::new(tenant_id.clone()), handle)],
                 20,
                 0,
             )
@@ -10075,7 +10862,11 @@ pub(crate) mod tests {
                 "fault {fault}"
             );
             assert_eq!(
-                store.lock().get_all_payments(&order_id).unwrap()[0].block_height,
+                store
+                    .lock()
+                    .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+                    .unwrap()[0]
+                    .block_height,
                 Some(3),
                 "fault {fault}"
             );
@@ -10129,9 +10920,16 @@ pub(crate) mod tests {
         ) -> std::result::Result<Vec<KeyImageStatus>, DaemonError> {
             {
                 let s = self.store.lock();
-                for payment in s.get_all_payments(&self.order_id).unwrap() {
-                    s.unvoid_payment(&self.order_id, &payment.txid, payment.output_index)
-                        .unwrap();
+                for payment in s
+                    .get_all_payments(&shared::ids::OrderId::new(self.order_id.to_string()))
+                    .unwrap()
+                {
+                    s.unvoid_payment(
+                        &shared::ids::OrderId::new(self.order_id.to_string()),
+                        &payment.txid,
+                        payment.output_index,
+                    )
+                    .unwrap();
                 }
             }
             self.inner.is_key_image_spent(key_images).await
@@ -10144,7 +10942,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn a_void_restored_while_rechecked_is_not_restored_twice() {
         let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-        let payment = store.lock().get_all_payments(&order_id).unwrap()[0].clone();
+        let payment = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .clone();
         let daemon = UnvoidsWhileAsked {
             inner: chain_replica(),
             store: store.clone(),
@@ -10274,7 +11076,7 @@ pub(crate) mod tests {
     async fn stores_with_keys(
         custody: &dyn KeyCustody,
         count: usize,
-    ) -> (crate::store::SharedStore, Vec<String>) {
+    ) -> (crate::store::SharedStore, Vec<crate::store::TenantId>) {
         let store = Store::open_in_memory().unwrap();
         let sealed = custody
             .seal(&WalletMaterial::new(
@@ -10422,14 +11224,16 @@ pub(crate) mod tests {
         let handles = std::sync::Arc::new(parking_lot::RwLock::new(HashMap::new()));
         let sealed = store
             .lock()
-            .get_tenant_by_id(&ids[0])
+            .get_tenant_by_id(&shared::ids::TenantId::new(ids[0].to_string()))
             .unwrap()
             .unwrap()
             .sealed_key_material;
         let earlier = custody.inner.unseal_and_register(&sealed).await.unwrap();
         let racing = handles.clone();
         custody.on_register = Box::new(move |id| {
-            racing.write().insert(id.to_string(), earlier);
+            racing
+                .write()
+                .insert(crate::store::TenantId::new(id), earlier);
         });
         let db = crate::store::Db::over_shared(store.clone());
         let pass =
@@ -10458,18 +11262,33 @@ pub(crate) mod tests {
             txid: "cd".repeat(32),
             key_images_json: "[]".into(),
         };
-        stage_block_match(&store, "mainnet", &tenant_id, &matched(99), 100).unwrap();
+        stage_block_match(
+            &store,
+            "mainnet",
+            &shared::ids::TenantId::new(tenant_id.to_string()),
+            &matched(99),
+            100,
+        )
+        .unwrap();
         let checkpoint = crate::store::BlockCheckpoint {
             height: 7,
             hash: "h7".into(),
             next_tx: 1,
         };
         store
-            .save_block_checkpoint("mainnet", &tenant_id, &checkpoint)
+            .save_block_checkpoint(
+                "mainnet",
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                &checkpoint,
+            )
             .unwrap();
         assert!(
             store
-                .take_staged_payments("mainnet", &tenant_id, "h7")
+                .take_staged_payments(
+                    "mainnet",
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    "h7"
+                )
                 .unwrap()
                 .is_empty(),
             "nothing staged for index 99"
@@ -10477,11 +11296,22 @@ pub(crate) mod tests {
         let mut failed = 0;
         for fault in 0.. {
             store
-                .save_block_checkpoint("mainnet", &tenant_id, &checkpoint)
+                .save_block_checkpoint(
+                    "mainnet",
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &checkpoint,
+                )
                 .unwrap();
             let seen = store.fail_nth_access(Some(fault));
-            let result = store
-                .in_transaction(|s| stage_block_match(s, "mainnet", &tenant_id, &matched(1), 100));
+            let result = store.in_transaction(|s| {
+                stage_block_match(
+                    s,
+                    "mainnet",
+                    &shared::ids::TenantId::new(tenant_id.to_string()),
+                    &matched(1),
+                    100,
+                )
+            });
             store.fail_nth_access(None);
             if seen.load(Ordering::Relaxed) <= fault {
                 result.unwrap();
@@ -10491,7 +11321,11 @@ pub(crate) mod tests {
             failed += 1;
             assert!(
                 store
-                    .take_staged_payments("mainnet", &tenant_id, "h7")
+                    .take_staged_payments(
+                        "mainnet",
+                        &shared::ids::TenantId::new(tenant_id.to_string()),
+                        "h7"
+                    )
                     .unwrap()
                     .is_empty(),
                 "fault {fault}: rolled back"
@@ -10499,10 +11333,14 @@ pub(crate) mod tests {
         }
         assert!(failed >= 2);
         let staged = store
-            .take_staged_payments("mainnet", &tenant_id, "h7")
+            .take_staged_payments(
+                "mainnet",
+                &shared::ids::TenantId::new(tenant_id.to_string()),
+                "h7",
+            )
             .unwrap();
         assert_eq!(staged.len(), 1);
-        assert_eq!(staged[0].order_id, order_id);
+        assert_eq!(staged[0].order_id, shared::ids::OrderId::new(order_id));
     }
 
     /// A node that answers for fewer key images than it was asked about has
@@ -10554,7 +11392,11 @@ pub(crate) mod tests {
     #[tokio::test]
     async fn short_key_image_answers_leave_a_void_alone() {
         let (store, _tenant_id, order_id) = setup_with_one_voided_double_spend().await;
-        let payment = store.lock().get_all_payments(&order_id).unwrap()[0].clone();
+        let payment = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
+            .clone();
         let db = crate::store::Db::over_shared(store.clone());
         let restored = recheck_voided_payment(
             &db,
@@ -10567,7 +11409,10 @@ pub(crate) mod tests {
         .await
         .unwrap();
         assert!(!restored);
-        assert!(store.lock().get_all_payments(&order_id).unwrap()[0]
+        assert!(store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()[0]
             .voided_at
             .is_some());
     }

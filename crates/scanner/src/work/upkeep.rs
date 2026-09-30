@@ -124,7 +124,9 @@ async fn scanned_ranges(round: &mut Round<'_>) -> Result<(), ScannerError> {
                 let next = if finished {
                     String::new()
                 } else {
-                    page.last().map(|(id, _)| id.clone()).unwrap_or_default()
+                    page.last()
+                        .map(|(id, _)| id.to_string())
+                        .unwrap_or_default()
                 };
                 s.set_scheduler_position::<ScanRange>(network, &next)?;
                 Ok(finished)

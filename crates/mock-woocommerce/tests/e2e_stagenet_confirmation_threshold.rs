@@ -400,7 +400,10 @@ async fn real_stagenet_order_resolves_and_enforces_a_non_default_confirmation_th
             .unwrap()
             .unwrap()
             .id;
-        let stored = store.get_order(&tenant_id, &order_id).unwrap().unwrap();
+        let stored = store
+            .get_order(&tenant_id, &shared::ids::OrderId::new(order_id.to_string()))
+            .unwrap()
+            .unwrap();
         assert_eq!(
             stored.confirmations_required_override,
             Some(THRESHOLD_CONFIRMATIONS_REQUIRED),

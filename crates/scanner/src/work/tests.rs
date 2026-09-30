@@ -84,7 +84,7 @@ fn inputs<'a>(
     db: &'a Db,
     custody: &'a dyn KeyCustody,
     daemon: &'a dyn MoneroDaemonClient,
-    tenants: &'a [(String, WalletHandle)],
+    tenants: &'a [(crate::store::TenantId, WalletHandle)],
 ) -> RoundInputs<'a> {
     RoundInputs {
         db,
@@ -137,7 +137,7 @@ async fn with_no_time_at_all_every_tier_with_work_still_advances() {
     .await
     .into_result()
     .unwrap();
-    let seeded = cursor_of(&store, &tenant).unwrap();
+    let seeded = cursor_of(&store, tenant.as_str()).unwrap();
 
     for i in 0..3 {
         daemon.push_block(&format!("n{i}"), vec![unrelated_tx(40 + i)]);
@@ -145,7 +145,7 @@ async fn with_no_time_at_all_every_tier_with_work_still_advances() {
     daemon.set_mempool(vec![fixture_tx()]);
     let mut blocks_moved = 0;
     for _ in 0..3 {
-        let before = cursor_of(&store, &tenant).unwrap();
+        let before = cursor_of(&store, tenant.as_str()).unwrap();
         let report = run_round(
             &state,
             &inputs(&Db::over_shared(store.clone()), &custody, &daemon, &tenants),
@@ -155,20 +155,27 @@ async fn with_no_time_at_all_every_tier_with_work_still_advances() {
         for tier in Tier::ALL {
             assert!(report.steps[tier] >= 1, "{tier} got no unit");
         }
-        blocks_moved += cursor_of(&store, &tenant).unwrap() - before;
+        blocks_moved += cursor_of(&store, tenant.as_str()).unwrap() - before;
     }
     assert_eq!(
         blocks_moved, 3,
         "one block per round at least, all three scanned"
     );
-    assert!(cursor_of(&store, &tenant).unwrap() >= seeded + 3);
+    assert!(cursor_of(&store, tenant.as_str()).unwrap() >= seeded + 3);
     assert_eq!(
-        store.lock().get_all_payments(&order).unwrap().len(),
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+            .unwrap()
+            .len(),
         1,
         "the mempool was scanned"
     );
     assert_eq!(
-        order_status(&store, &order),
+        order_status(
+            &store,
+            &shared::ids::OrderId::new(order.as_str().to_string())
+        ),
         OrderStatus::Unconfirmed,
         "and its status recomputed"
     );
@@ -238,7 +245,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
     store
         .create_webhook(
-            &tenant,
+            &shared::ids::TenantId::new(tenant.to_string()),
             "https://merchant.example/hook",
             "{}",
             "secret",
@@ -259,7 +266,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
     // The order's payment, 31 blocks deep: settled as soon as it's recomputed.
     store
         .record_payment_match(
-            &order,
+            &shared::ids::OrderId::new(order.to_string()),
             &crate::scanner::tx_id_hex(&fixture_tx()),
             0,
             1,
@@ -276,7 +283,7 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
                 .2;
         store
             .record_payment_match(
-                &other,
+                &shared::ids::OrderId::new(other.to_string()),
                 &format!("{i:064x}"),
                 0,
                 1,
@@ -305,7 +312,10 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
         "one unit doesn't finish a 41-payment job"
     );
     assert_ne!(
-        order_status(&store, &order),
+        order_status(
+            &store,
+            &shared::ids::OrderId::new(order.as_str().to_string())
+        ),
         OrderStatus::Paid,
         "no settlement while a reorg is open"
     );
@@ -336,7 +346,10 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
         .into_result()
         .unwrap();
         if store.lock().reorg_job("mainnet").unwrap().is_none()
-            && order_status(&store, &order) == OrderStatus::Paid
+            && order_status(
+                &store,
+                &shared::ids::OrderId::new(order.as_str().to_string()),
+            ) == OrderStatus::Paid
         {
             break;
         }
@@ -345,7 +358,13 @@ async fn a_reorg_job_resumes_after_a_restart_and_settlement_waits_for_it() {
         store.lock().reorg_job("mainnet").unwrap().is_none(),
         "the job finished"
     );
-    assert_eq!(order_status(&store, &order), OrderStatus::Paid);
+    assert_eq!(
+        order_status(
+            &store,
+            &shared::ids::OrderId::new(order.as_str().to_string())
+        ),
+        OrderStatus::Paid
+    );
     assert_eq!(paid_events(&store), 1, "announced once, after the rewind");
     drop(db);
     drop(store);
@@ -380,7 +399,7 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
     .await
     .into_result()
     .unwrap();
-    let start = cursor_of(&store, &healthy).unwrap();
+    let start = cursor_of(&store, healthy.as_str()).unwrap();
 
     custody.fail(failing_handle);
     for i in 0..6u8 {
@@ -394,7 +413,7 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
         .into_result()
         .unwrap();
         assert_eq!(
-            cursor_of(&store, &healthy).unwrap(),
+            cursor_of(&store, healthy.as_str()).unwrap(),
             start + 1 + i as u64,
             "the healthy tenant never waits"
         );
@@ -410,7 +429,7 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
         "backed off after its free retries, but was tried {attempts} times in 6 rounds"
     );
     assert_eq!(
-        cursor_of(&store, &failing),
+        cursor_of(&store, failing.as_str()),
         Some(start),
         "never moved past a block it wasn't scanned for"
     );
@@ -428,8 +447,8 @@ async fn a_failing_tenant_backs_off_without_holding_up_the_others() {
         .unwrap();
     }
     assert_eq!(
-        cursor_of(&store, &failing),
-        cursor_of(&store, &healthy),
+        cursor_of(&store, failing.as_str()),
+        cursor_of(&store, healthy.as_str()),
         "caught up once its backend recovered"
     );
 }
@@ -455,7 +474,7 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
     .await
     .into_result()
     .unwrap();
-    let before = cursor_of(&store, &tenant).unwrap();
+    let before = cursor_of(&store, tenant.as_str()).unwrap();
 
     // The payment first, then plenty of unrelated transactions.
     let mut txs = vec![fixture_tx()];
@@ -464,7 +483,7 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
     let mut store = store;
     let mut rounds = 0;
     let mut last_checkpoint = 0;
-    while cursor_of(&store, &tenant).unwrap() == before {
+    while cursor_of(&store, tenant.as_str()).unwrap() == before {
         rounds += 1;
         assert!(rounds < 100, "never finished the block");
         let state = ScanState::default();
@@ -478,14 +497,18 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
         .into_result()
         .unwrap();
         drop(db);
-        if cursor_of(&store, &tenant).unwrap() == before {
+        if cursor_of(&store, tenant.as_str()).unwrap() == before {
             assert!(
-                store.lock().get_all_payments(&order).unwrap().is_empty(),
+                store
+                    .lock()
+                    .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+                    .unwrap()
+                    .is_empty(),
                 "no payment before the block commits"
             );
             let checkpoint = store
                 .lock()
-                .block_checkpoint("mainnet", &tenant)
+                .block_checkpoint("mainnet", &shared::ids::TenantId::new(tenant.to_string()))
                 .unwrap()
                 .expect("progress is checkpointed");
             assert!(
@@ -501,12 +524,18 @@ async fn a_block_too_big_for_one_unit_resumes_from_its_checkpoint_across_restart
         }
     }
     assert!(rounds > 1, "the block really was split across rounds");
-    assert_eq!(cursor_of(&store, &tenant), Some(height));
-    let payments = store.lock().get_all_payments(&order).unwrap();
+    assert_eq!(cursor_of(&store, tenant.as_str()), Some(height));
+    let payments = store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+        .unwrap();
     assert_eq!(payments.len(), 1);
     assert_eq!(payments[0].block_height, Some(height as i64));
     assert_eq!(
-        store.lock().block_checkpoint("mainnet", &tenant).unwrap(),
+        store
+            .lock()
+            .block_checkpoint("mainnet", &shared::ids::TenantId::new(tenant.to_string()))
+            .unwrap(),
         None,
         "checkpoint cleared at commit"
     );
@@ -553,8 +582,8 @@ async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
     .await
     .into_result()
     .unwrap();
-    let behind = cursor_of(&store, &lagging).unwrap();
-    assert!(behind < cursor_of(&store, &live).unwrap());
+    let behind = cursor_of(&store, lagging.as_str()).unwrap();
+    assert!(behind < cursor_of(&store, live.as_str()).unwrap());
     custody.recover(lagging_handle);
     tokio::time::advance(Duration::from_secs(120)).await; // past its retry delay
 
@@ -575,7 +604,7 @@ async fn catch_up_gets_turns_while_the_frontier_is_far_behind() {
         .unwrap();
     }
     assert!(
-        cursor_of(&store, &lagging).unwrap() > behind,
+        cursor_of(&store, lagging.as_str()).unwrap() > behind,
         "catch-up got a turn"
     );
     assert!(
@@ -665,7 +694,15 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
     // A reorg is open, with a candidate the node can't answer about.
     let stuck = "ab".repeat(32);
     store
-        .record_payment_match(&candidate_order, &stuck, 0, 1, "[\"ki\"]", now, Some(9))
+        .record_payment_match(
+            &shared::ids::OrderId::new(candidate_order.to_string()),
+            &stuck,
+            0,
+            1,
+            "[\"ki\"]",
+            now,
+            Some(9),
+        )
         .unwrap();
     store.open_reorg_job("mainnet", 9, now).unwrap();
     let store = store.into_shared();
@@ -697,13 +734,26 @@ async fn an_open_reorg_pauses_blocks_and_settlement_but_not_the_mempool_or_expir
         "no block scanned on a chain being reconciled"
     );
     assert_eq!(
-        store.lock().get_all_payments(&open_order).unwrap().len(),
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(open_order.to_string()))
+            .unwrap()
+            .len(),
         1,
         "the mempool was still scanned"
     );
-    assert_eq!(order_status(&store, &open_order), OrderStatus::Unconfirmed);
     assert_eq!(
-        order_status(&store, &overdue_order),
+        order_status(
+            &store,
+            &shared::ids::OrderId::new(open_order.as_str().to_string())
+        ),
+        OrderStatus::Unconfirmed
+    );
+    assert_eq!(
+        order_status(
+            &store,
+            &shared::ids::OrderId::new(overdue_order.as_str().to_string())
+        ),
         OrderStatus::Expired,
         "and orders still expire"
     );
@@ -760,7 +810,11 @@ async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
     round(ROUND_BUDGET).await;
     round(ROUND_BUDGET).await;
     assert_eq!(
-        store.lock().get_all_payments(&order).unwrap()[0].block_height,
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+            .unwrap()[0]
+            .block_height,
         Some(35)
     );
 
@@ -803,7 +857,10 @@ async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
         round(ROUND_BUDGET).await;
     }
     assert!(store.lock().reorg_job("mainnet").unwrap().is_none());
-    let payments = store.lock().get_all_payments(&order).unwrap();
+    let payments = store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+        .unwrap();
     assert_eq!(payments.len(), 1, "recorded once");
     assert_eq!(
         payments[0].block_height,
@@ -820,7 +877,7 @@ async fn a_second_deeper_fork_during_a_reorg_job_ends_on_the_final_chain() {
         Some("c41"),
         "rescanned to the new tip"
     );
-    assert_eq!(cursor_of(&store, &tenant), Some(41));
+    assert_eq!(cursor_of(&store, tenant.as_str()), Some(41));
 }
 
 /// A node that replaces its tip right after serving a run of blocks: the
@@ -910,7 +967,11 @@ async fn a_reorged_payment_the_node_cannot_find_never_settles_its_order() {
     fake.push_block("a3", vec![fixture_tx()]);
     round().await;
     assert_eq!(
-        store.lock().get_all_payments(&order).unwrap()[0].block_height,
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+            .unwrap()[0]
+            .block_height,
         Some(3)
     );
 
@@ -923,11 +984,17 @@ async fn a_reorged_payment_the_node_cannot_find_never_settles_its_order() {
     for _ in 0..6 {
         round().await;
     }
-    let payment = &store.lock().get_all_payments(&order).unwrap()[0];
+    let payment = &store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+        .unwrap()[0];
     assert_eq!(payment.block_height, None, "not in any block any more");
     assert_eq!(payment.voided_at, None, "and not voided without proof");
     assert_ne!(
-        order_status(&store, &order),
+        order_status(
+            &store,
+            &shared::ids::OrderId::new(order.as_str().to_string())
+        ),
         OrderStatus::Paid,
         "no confirmations on a discarded block"
     );
@@ -972,11 +1039,11 @@ async fn a_store_far_behind_does_not_hold_every_catch_up_turn() {
         .unwrap();
     }
     assert!(
-        cursor_of(&store, &far).unwrap() > 100,
+        cursor_of(&store, far.as_str()).unwrap() > 100,
         "the far group had its turn"
     );
     assert!(
-        cursor_of(&store, &near).unwrap() > 300,
+        cursor_of(&store, near.as_str()).unwrap() > 300,
         "and so did the other, on the very next turn"
     );
 }
@@ -1020,12 +1087,21 @@ async fn a_tip_replaced_after_it_was_fetched_leaves_no_phantom_payment() {
         Some("new11"),
         "reconciled to the new tip"
     );
-    let payments = store.lock().get_all_payments(&order).unwrap();
+    let payments = store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+        .unwrap();
     assert!(
         payments.iter().all(|p| p.block_height.is_none()),
         "nothing counted in a discarded block: {payments:?}"
     );
-    assert_ne!(order_status(&store, &order), OrderStatus::Paid);
+    assert_ne!(
+        order_status(
+            &store,
+            &shared::ids::OrderId::new(order.as_str().to_string())
+        ),
+        OrderStatus::Paid
+    );
 }
 
 /// A catch-up group whose stores can't be scanned (keys not registered)
@@ -1057,7 +1133,7 @@ async fn a_group_with_nobody_to_scan_fetches_nothing() {
     run_round_on(&store, &custody, &daemon, &[]).await;
     assert_eq!(daemon.chain_fetches.load(Ordering::Relaxed), 0);
     assert_eq!(
-        cursor_of(&store, &unregistered),
+        cursor_of(&store, unregistered.as_str()),
         Some(5),
         "still where it was, to be caught up once registered"
     );
@@ -1068,7 +1144,7 @@ async fn run_round_on(
     store: &SharedStore,
     custody: &dyn KeyCustody,
     daemon: &dyn MoneroDaemonClient,
-    tenants: &[(String, WalletHandle)],
+    tenants: &[(crate::store::TenantId, WalletHandle)],
 ) {
     run_round(
         &ScanState::default(),
@@ -1172,7 +1248,15 @@ async fn a_failing_node_is_asked_once_a_round_about_reorg_candidates() {
             .await
             .2;
         store
-            .record_payment_match(&order, &format!("{i:064x}"), 0, 1, "[]", 1000, Some(9))
+            .record_payment_match(
+                &shared::ids::OrderId::new(order.to_string()),
+                &format!("{i:064x}"),
+                0,
+                1,
+                "[]",
+                1000,
+                Some(9),
+            )
             .unwrap();
     }
     store
@@ -1234,24 +1318,38 @@ async fn one_failing_recompute_does_not_hold_up_the_others() {
         "the other order went through: {:?}",
         first.error
     );
-    assert_eq!(order_status(&store, &healthy), OrderStatus::Expired);
+    assert_eq!(
+        order_status(
+            &store,
+            &shared::ids::OrderId::new(healthy.as_str().to_string())
+        ),
+        OrderStatus::Expired
+    );
     // Alone in its page it is reported (a real storage failure), until its
     // free retries are spent; then it waits, and the round is clean.
     round().await;
     round().await;
-    assert!(state.order_backoff.is_waiting(&poisoned));
+    assert!(state
+        .order_backoff
+        .is_waiting(&shared::ids::OrderId::new(poisoned.to_string())));
     let later = round().await;
     assert!(later.error.is_none(), "{:?}", later.error);
-    assert_eq!(order_status(&store, &poisoned), OrderStatus::Pending);
+    assert_eq!(
+        order_status(
+            &store,
+            &shared::ids::OrderId::new(poisoned.as_str().to_string())
+        ),
+        OrderStatus::Pending
+    );
 }
 
 /// Backoff entries for keys that stopped failing (and stopped being tried)
 /// are forgotten after an hour, so the map can't grow without bound.
 #[tokio::test(start_paused = true)]
 async fn backoff_forgets_keys_that_stopped_failing() {
-    let backoff = Backoff::<TenantKey>::default();
+    let backoff = Backoff::<crate::store::TenantId>::default();
     for _ in 0..4 {
-        backoff.failed("gone");
+        backoff.failed(&shared::ids::TenantId::new("gone"));
     }
     assert_eq!(backoff.waiting(), vec!["gone".to_string()]);
     tokio::time::advance(Duration::from_secs(61 * 60)).await;
@@ -1361,7 +1459,7 @@ async fn the_next_block_is_fetched_while_this_one_is_scanned_and_used() {
     fake.push_block("a2", vec![]);
     let tenants = [(tenant.clone(), handle)];
     run_round_on(&store, &custody, &fake, &tenants).await;
-    let start = cursor_of(&store, &tenant).unwrap();
+    let start = cursor_of(&store, tenant.as_str()).unwrap();
     for h in 3..=7 {
         fake.push_block(&format!("a{h}"), vec![fixture_tx()]);
     }
@@ -1385,7 +1483,7 @@ async fn the_next_block_is_fetched_while_this_one_is_scanned_and_used() {
         .into_result()
         .unwrap();
     let took = started.elapsed();
-    assert_eq!(cursor_of(&store, &tenant), Some(start + 5));
+    assert_eq!(cursor_of(&store, tenant.as_str()), Some(start + 5));
     assert_eq!(
         daemon.chain_fetches.load(Ordering::Relaxed),
         5,
@@ -1407,7 +1505,7 @@ async fn the_fast_path_settles_a_new_pool_payment_at_once() {
     let (tenant, handle, order) = fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
     store
         .create_webhook(
-            &tenant,
+            &shared::ids::TenantId::new(tenant.to_string()),
             "https://merchant.example/hook",
             "{}",
             "secret",
@@ -1433,7 +1531,13 @@ async fn the_fast_path_settles_a_new_pool_payment_at_once() {
             deferred: 0
         }
     );
-    assert_eq!(order_status(&store, &order), OrderStatus::Unconfirmed);
+    assert_eq!(
+        order_status(
+            &store,
+            &shared::ids::OrderId::new(order.as_str().to_string())
+        ),
+        OrderStatus::Unconfirmed
+    );
     assert!(store
         .lock()
         .due_webhook_deliveries(i64::MAX / 2, 10)
@@ -1523,8 +1627,8 @@ struct Story {
     store: SharedStore,
     custody: FlakyKeyCustody,
     daemon: FakeDaemonClient,
-    tenants: Vec<(String, WalletHandle)>,
-    order: String,
+    tenants: Vec<(crate::store::TenantId, WalletHandle)>,
+    order: crate::store::OrderId,
     state: ScanState,
 }
 
@@ -1536,7 +1640,7 @@ impl Story {
             fixture_tenant(&store, &custody, crate::now_unix() + 3600).await;
         store
             .create_webhook(
-                &tenant,
+                &shared::ids::TenantId::new(tenant.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -1668,7 +1772,11 @@ const DOUBLE_SPENT: &Steps = &[
         story
             .daemon
             .push_block("b3", vec![crate::scanner::tests::conflicting_tx(11)]);
-        let payments = story.store.lock().get_all_payments(&story.order).unwrap();
+        let payments = story
+            .store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(story.order.to_string()))
+            .unwrap();
         for payment in payments {
             for image in serde_json::from_str::<Vec<String>>(&payment.key_images_json).unwrap() {
                 story
@@ -2014,7 +2122,9 @@ impl MoneroDaemonClient for OnLocate<'_> {
 
 /// Blocks a1..a10 on the node and recorded, one order per payment, each
 /// payment `(txid, height)` recorded, and a reorg job open at 9.
-async fn open_reorg_with(payments: &[(&str, u64)]) -> (SharedStore, FakeDaemonClient, Vec<String>) {
+async fn open_reorg_with(
+    payments: &[(&str, u64)],
+) -> (SharedStore, FakeDaemonClient, Vec<crate::store::OrderId>) {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
     let now = crate::now_unix();
@@ -2114,7 +2224,10 @@ async fn a_candidate_the_node_never_answers_about_is_given_up_on() {
         "{}",
         logs.text()
     );
-    let payment = &store.lock().get_all_payments(&orders[0]).unwrap()[0];
+    let payment = &store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .unwrap()[0];
     assert_eq!(
         (payment.block_height, payment.voided_at),
         (Some(9), None),
@@ -2156,7 +2269,11 @@ async fn a_candidate_deleted_mid_page_is_skipped() {
         "both handled in one page, neither failed"
     );
     assert_eq!(
-        store.lock().get_all_payments(&orders[0]).unwrap()[0].block_height,
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .unwrap()[0]
+            .block_height,
         Some(9)
     );
 }
@@ -2171,7 +2288,12 @@ async fn a_void_restored_meanwhile_still_gets_its_new_height() {
     let (store, fake, orders) = open_reorg_with(&[(&txid, 9)]).await;
     store
         .lock()
-        .void_payment(&orders[0], &txid, 0, crate::now_unix())
+        .void_payment(
+            &shared::ids::OrderId::new(orders[0].to_string()),
+            &txid,
+            0,
+            crate::now_unix(),
+        )
         .unwrap();
     // Mined again, one block later, on the new chain.
     fake.reorg_from(9, vec![("b9", vec![]), ("b10", vec![tx])]);
@@ -2179,7 +2301,10 @@ async fn a_void_restored_meanwhile_still_gets_its_new_height() {
     let daemon = OnLocate {
         inner: &fake,
         hook: Box::new(|txid| {
-            store.lock().unvoid_payment(&order, txid, 0).unwrap();
+            store
+                .lock()
+                .unvoid_payment(&shared::ids::OrderId::new(order.to_string()), txid, 0)
+                .unwrap();
         }),
     };
     let db = Db::over_shared(store.clone());
@@ -2191,7 +2316,10 @@ async fn a_void_restored_meanwhile_still_gets_its_new_height() {
         crate::now_unix(),
     );
     run_job(&chain).await;
-    let payment = &store.lock().get_all_payments(&orders[0]).unwrap()[0];
+    let payment = &store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .unwrap()[0];
     assert_eq!((payment.block_height, payment.voided_at), (Some(10), None));
 }
 
@@ -2323,8 +2451,8 @@ async fn seeded_network(
     SharedStore,
     FlakyKeyCustody,
     FakeDaemonClient,
-    Vec<(String, WalletHandle)>,
-    Vec<String>,
+    Vec<(crate::store::TenantId, WalletHandle)>,
+    Vec<crate::store::OrderId>,
 ) {
     let store = Store::open_in_memory().unwrap();
     let custody = FlakyKeyCustody::default();
@@ -2386,7 +2514,7 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
     .unwrap();
     let stale = store
         .lock()
-        .block_checkpoint("mainnet", &tenant)
+        .block_checkpoint("mainnet", &shared::ids::TenantId::new(tenant.to_string()))
         .unwrap()
         .expect("checkpointed partway");
     assert_eq!(stale.hash, "big");
@@ -2405,8 +2533,11 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
         .into_result()
         .unwrap();
     }
-    assert_eq!(cursor_of(&store, &tenant), Some(21));
-    let payments = store.lock().get_all_payments(&orders[0]).unwrap();
+    assert_eq!(cursor_of(&store, tenant.as_str()), Some(21));
+    let payments = store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .unwrap();
     assert_eq!(payments.len(), 1, "once, not once per version of the block");
     assert_eq!(payments[0].block_height, Some(21));
     assert_eq!(
@@ -2418,7 +2549,10 @@ async fn a_checkpoint_for_a_replaced_block_is_dropped_and_the_replacement_scanne
         Some("big2")
     );
     assert_eq!(
-        store.lock().block_checkpoint("mainnet", &tenant).unwrap(),
+        store
+            .lock()
+            .block_checkpoint("mainnet", &shared::ids::TenantId::new(tenant.to_string()))
+            .unwrap(),
         None
     );
 }
@@ -2452,7 +2586,7 @@ async fn a_big_group_resumes_each_store_from_its_own_place() {
         .filter(|(id, _)| {
             store
                 .lock()
-                .block_checkpoint("mainnet", id)
+                .block_checkpoint("mainnet", &shared::ids::TenantId::new(id.to_string()))
                 .unwrap()
                 .is_some()
         })
@@ -2464,7 +2598,10 @@ async fn a_big_group_resumes_each_store_from_its_own_place() {
     assert_eq!(
         store
             .lock()
-            .block_checkpoint("mainnet", &tenants[0].0)
+            .block_checkpoint(
+                "mainnet",
+                &shared::ids::TenantId::new(tenants[0].0.to_string())
+            )
             .unwrap(),
         None,
         "the failed store has no checkpoint"
@@ -2487,8 +2624,15 @@ async fn a_big_group_resumes_each_store_from_its_own_place() {
         .unwrap();
     }
     for ((tenant, _), order) in tenants.iter().zip(&orders) {
-        assert_eq!(cursor_of(&store, tenant), Some(21));
-        assert_eq!(store.lock().get_all_payments(order).unwrap().len(), 1);
+        assert_eq!(cursor_of(&store, tenant.as_str()), Some(21));
+        assert_eq!(
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+                .unwrap()
+                .len(),
+            1
+        );
     }
 }
 
@@ -2509,7 +2653,7 @@ async fn catching_up_onto_a_replaced_recorded_block_waits() {
     .await;
     assert!(report.error.is_none(), "{:?}", report.error);
     assert_eq!(
-        cursor_of(&store, &tenants[0].0),
+        cursor_of(&store, tenants[0].0.as_str()),
         Some(18),
         "no block recorded against the old chain"
     );
@@ -2560,7 +2704,7 @@ async fn a_recorded_chain_changed_mid_scan_stops_the_commit() {
             "the hook ran"
         );
         assert_eq!(
-            cursor_of(&store, &tenants[0].0),
+            cursor_of(&store, tenants[0].0.as_str()),
             Some(cursor),
             "cursor {cursor}: nothing committed"
         );
@@ -2585,9 +2729,13 @@ async fn catching_up_below_the_recorded_history_records_nothing_for_the_network(
         .into_result()
         .unwrap();
     }
-    assert_eq!(cursor_of(&store, &tenants[0].0), Some(20));
+    assert_eq!(cursor_of(&store, tenants[0].0.as_str()), Some(20));
     assert_eq!(
-        store.lock().get_all_payments(&orders[0]).unwrap()[0].block_height,
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .unwrap()[0]
+            .block_height,
         Some(12)
     );
     assert_eq!(
@@ -2618,7 +2766,7 @@ async fn a_node_that_returns_no_block_is_waited_out() {
         TierOutcome::Blocked(Wait::NodeFailed)
     );
     assert!(report.error.is_none());
-    assert_eq!(cursor_of(&store, &tenants[0].0), Some(20));
+    assert_eq!(cursor_of(&store, tenants[0].0.as_str()), Some(20));
     assert_eq!(
         logs.count("block scanning stopped: the node failed"),
         1,
@@ -2649,7 +2797,7 @@ async fn a_store_whose_orders_all_closed_before_the_gap_moves_straight_on() {
     .await
     .into_result()
     .unwrap();
-    assert_eq!(cursor_of(&store, &tenants[0].0), Some(20));
+    assert_eq!(cursor_of(&store, tenants[0].0.as_str()), Some(20));
 }
 
 // -- Mempool tier edge cases --------------------------------------------------
@@ -2673,7 +2821,7 @@ async fn pool_transactions_gone_before_their_bodies_came_are_moved_past() {
     assert!(report.error.is_none(), "{:?}", report.error);
     assert!(store
         .lock()
-        .get_all_payments(&orders[0])
+        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
         .unwrap()
         .is_empty());
 }
@@ -2703,7 +2851,14 @@ async fn a_fast_pass_that_cannot_load_windows_tries_again_next_pass() {
         .await
         .unwrap();
     assert_eq!(report.paid_orders, 1);
-    assert_eq!(store.lock().get_all_payments(&orders[0]).unwrap().len(), 1);
+    assert_eq!(
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .unwrap()
+            .len(),
+        1
+    );
 }
 
 /// With no store to scan for, a fast pass does nothing (and costs no scan).
@@ -2814,8 +2969,12 @@ async fn a_failing_store_is_tried_once_per_pass_then_waits() {
 
     // Past its free retries, the store waits: the rotation doesn't scan the
     // pool for it.
-    state.backoff.failed(&tenants[0].0);
-    state.backoff.failed(&tenants[0].0);
+    state
+        .backoff
+        .failed(&shared::ids::TenantId::new(tenants[0].0.to_string()));
+    state
+        .backoff
+        .failed(&shared::ids::TenantId::new(tenants[0].0.to_string()));
     let before = custody.attempts.lock().get(&handle).copied();
     run_round(
         &state,
@@ -2864,7 +3023,11 @@ async fn every_store_is_scanned_when_there_are_more_than_a_page() {
     }
     for order in &orders {
         assert_eq!(
-            store.lock().get_all_payments(order).unwrap().len(),
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(order.to_string()))
+                .unwrap()
+                .len(),
             1,
             "order {order}"
         );
@@ -2884,7 +3047,7 @@ async fn every_sql_failure_while_a_double_spend_is_found_is_recovered_from() {
 // -- Settlement tier edge cases -----------------------------------------------
 
 /// Records an unconfirmed payment with this txid on the order.
-fn unconfirmed(store: &SharedStore, order: &str, txid: &str) {
+fn unconfirmed(store: &SharedStore, order: &crate::store::OrderId, txid: &str) {
     store
         .lock()
         .record_payment_match(order, txid, 0, 1, "[\"ki\"]", crate::now_unix(), None)
@@ -2927,7 +3090,10 @@ async fn a_vanished_check_the_node_fails_or_stalls_is_retried() {
             "checking a vanished mempool payment failed"
         };
         assert_eq!(logs.count(message), 1, "{}", logs.text());
-        let payment = &store.lock().get_all_payments(&orders[0]).unwrap()[0];
+        let payment = &store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .unwrap()[0];
         assert_eq!((payment.block_height, payment.voided_at), (None, None));
         assert_eq!(position(), before, "the rotation waits at it");
     }
@@ -3013,11 +3179,19 @@ async fn a_vanished_payment_found_mined_gets_its_height_and_one_back_in_the_pool
     assert_eq!(report.dirty_orders, vec![orders[0].clone()]);
     assert!(report.double_spent_orders.is_empty());
     assert_eq!(
-        store.lock().get_all_payments(&orders[0]).unwrap()[0].block_height,
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .unwrap()[0]
+            .block_height,
         Some(height as i64)
     );
     assert_eq!(
-        store.lock().get_all_payments(&orders[1]).unwrap()[0].block_height,
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[1].to_string()))
+            .unwrap()[0]
+            .block_height,
         None
     );
 }
@@ -3027,17 +3201,27 @@ async fn a_vanished_payment_found_mined_gets_its_height_and_one_back_in_the_pool
 /// `count` voided payments on `order`, each with a well-formed key image the
 /// fake node calls unspent: every one a false accusation the recheck
 /// restores.
-fn voided_payments(store: &SharedStore, order: &str, count: u8) {
+fn voided_payments(store: &SharedStore, order: &crate::store::OrderId, count: u8) {
     let s = store.lock();
     let now = crate::now_unix();
     for i in 0..count {
         let txid = format!("{i:02x}").repeat(32);
         let image = format!("{:02x}", 0x80 + i).repeat(32);
-        s.record_payment_match(order, &txid, 0, 1, &format!("[\"{image}\"]"), now, Some(15))
+        s.record_payment_match(
+            &shared::ids::OrderId::new(order.to_string()),
+            &txid,
+            0,
+            1,
+            &format!("[\"{image}\"]"),
+            now,
+            Some(15),
+        )
+        .unwrap();
+        s.void_payment(&shared::ids::OrderId::new(order.to_string()), &txid, 0, now)
             .unwrap();
-        s.void_payment(order, &txid, 0, now).unwrap();
     }
-    s.mark_double_spend_detected(order, now).unwrap();
+    s.mark_double_spend_detected(&shared::ids::OrderId::new(order.to_string()), now)
+        .unwrap();
 }
 
 /// Makes a void recheck pass due now.
@@ -3065,7 +3249,7 @@ async fn a_void_recheck_pass_longer_than_a_page_carries_on_across_rounds() {
     let voided = || {
         store
             .lock()
-            .get_all_payments(&orders[0])
+            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
             .unwrap()
             .iter()
             .filter(|p| p.voided_at.is_some())
@@ -3112,7 +3296,7 @@ async fn every_sql_failure_in_a_void_recheck_is_recovered_from() {
         store
             .lock()
             .create_webhook(
-                &tenants[0].0,
+                &shared::ids::TenantId::new(tenants[0].0.to_string()),
                 "https://merchant.example/hook",
                 "{}",
                 "whsec_x",
@@ -3144,7 +3328,10 @@ async fn every_sql_failure_in_a_void_recheck_is_recovered_from() {
         .await
         .into_result()
         .unwrap();
-        let payment = &store.lock().get_all_payments(&orders[0]).unwrap()[0];
+        let payment = &store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .unwrap()[0];
         assert_eq!(payment.voided_at, None, "fault {fault}");
         let reversed = store
             .lock()
@@ -3171,7 +3358,9 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
     {
         let s = store.lock();
         for i in 0..70 {
-            let index = s.allocate_minor_index(&tenant).unwrap();
+            let index = s
+                .allocate_minor_index(&shared::ids::TenantId::new(tenant.to_string()))
+                .unwrap();
             let order = s
                 .create_order(crate::store::NewOrder {
                     confirmations_required_override: None,
@@ -3204,7 +3393,10 @@ async fn more_recomputes_owed_than_a_page_are_all_done() {
     }
     for order in &orders {
         assert_eq!(
-            order_status(&store, order),
+            order_status(
+                &store,
+                &shared::ids::OrderId::new(order.as_str().to_string())
+            ),
             OrderStatus::Unconfirmed,
             "{order}"
         );
@@ -3230,9 +3422,20 @@ async fn a_store_failing_partway_through_a_block_is_left_behind_and_not_asked_ag
     .await
     .into_result()
     .unwrap();
-    assert_eq!(cursor_of(&store, &tenants[0].0), Some(21));
-    assert_eq!(store.lock().get_all_payments(&orders[0]).unwrap().len(), 1);
-    assert_eq!(cursor_of(&store, &tenants[1].0), Some(20), "left behind");
+    assert_eq!(cursor_of(&store, tenants[0].0.as_str()), Some(21));
+    assert_eq!(
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(
+        cursor_of(&store, tenants[1].0.as_str()),
+        Some(20),
+        "left behind"
+    );
     // Once by the frontier, once more when catch-up retries it: never once
     // per transaction (three).
     assert_eq!(
@@ -3252,9 +3455,13 @@ async fn a_store_failing_partway_through_a_block_is_left_behind_and_not_asked_ag
         .into_result()
         .unwrap();
     }
-    assert_eq!(cursor_of(&store, &tenants[1].0), Some(21));
+    assert_eq!(cursor_of(&store, tenants[1].0.as_str()), Some(21));
     assert_eq!(
-        store.lock().get_all_payments(&orders[1]).unwrap().len(),
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[1].to_string()))
+            .unwrap()
+            .len(),
         1,
         "and caught up"
     );
@@ -3288,8 +3495,15 @@ async fn a_cursor_moved_mid_scan_keeps_what_moved_it() {
     .unwrap();
     // The moved cursor was caught up again from 19, and the payment found
     // then, once.
-    assert_eq!(store.lock().get_all_payments(&orders[0]).unwrap().len(), 1);
-    assert_eq!(cursor_of(&store, &tenants[0].0), Some(21));
+    assert_eq!(
+        store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .unwrap()
+            .len(),
+        1
+    );
+    assert_eq!(cursor_of(&store, tenants[0].0.as_str()), Some(21));
 }
 
 /// Every SQL statement of the round that commits a checkpointed block,
@@ -3315,7 +3529,10 @@ async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from() {
         .unwrap();
         assert!(store
             .lock()
-            .block_checkpoint("mainnet", &tenants[0].0)
+            .block_checkpoint(
+                "mainnet",
+                &shared::ids::TenantId::new(tenants[0].0.to_string())
+            )
             .unwrap()
             .is_some());
         let seen = store.lock().fail_nth_access(Some(fault));
@@ -3340,10 +3557,17 @@ async fn every_sql_failure_committing_a_checkpointed_block_is_recovered_from() {
             .into_result()
             .unwrap();
         }
-        let payments = store.lock().get_all_payments(&orders[0]).unwrap();
+        let payments = store
+            .lock()
+            .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+            .unwrap();
         assert_eq!(payments.len(), 1, "fault {fault}");
         assert_eq!(payments[0].block_height, Some(21), "fault {fault}");
-        assert_eq!(cursor_of(&store, &tenants[0].0), Some(21), "fault {fault}");
+        assert_eq!(
+            cursor_of(&store, tenants[0].0.as_str()),
+            Some(21),
+            "fault {fault}"
+        );
     }
     assert!(faults > 10, "reached {faults}");
 }
@@ -3377,7 +3601,11 @@ async fn every_sql_failure_working_a_reorg_job_is_recovered_from() {
             "fault {fault}: the job finished"
         );
         assert_eq!(
-            store.lock().get_all_payments(&orders[0]).unwrap()[0].block_height,
+            store
+                .lock()
+                .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+                .unwrap()[0]
+                .block_height,
             Some(10),
             "fault {fault}"
         );
@@ -3399,7 +3627,11 @@ async fn a_reorg_job_with_every_candidate_waiting_waits() {
         != crate::store::ReorgPhase::Process
     {}
     // Now in its processing phase: put the candidate well into the future.
-    let id = store.lock().get_all_payments(&orders[0]).unwrap()[0].id;
+    let id = store
+        .lock()
+        .get_all_payments(&shared::ids::OrderId::new(orders[0].to_string()))
+        .unwrap()[0]
+        .id;
     for _ in 0..6 {
         store
             .lock()
@@ -3431,7 +3663,9 @@ async fn a_recompute_page_fills_with_due_orders_up_to_its_size() {
     {
         let s = store.lock();
         for i in 0..200 {
-            let index = s.allocate_minor_index(&tenant).unwrap();
+            let index = s
+                .allocate_minor_index(&shared::ids::TenantId::new(tenant.to_string()))
+                .unwrap();
             let order = s
                 .create_order(crate::store::NewOrder {
                     confirmations_required_override: None,

@@ -208,7 +208,7 @@ pub struct TestEngineHandle {
     /// interval.
     store: scanner::store::SharedStore,
     key_custody: Arc<dyn KeyCustody>,
-    wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
+    wallet_handles: Arc<RwLock<HashMap<scanner::store::TenantId, WalletHandle>>>,
     /// How many tenant admin API requests (`/api/v1/admin/tenant/...`) this
     /// engine has received - the requests its per-token rate limit counts.
     tenant_requests: Arc<std::sync::atomic::AtomicUsize>,
@@ -242,7 +242,7 @@ impl TestEngineHandle {
         network: Network,
         reorg_check_depth: u64,
     ) -> Result<(), scanner::scanner::ScannerError> {
-        let tenants: Vec<(String, WalletHandle)> = self
+        let tenants: Vec<(scanner::store::TenantId, WalletHandle)> = self
             .wallet_handles
             .read()
             .iter()
@@ -316,10 +316,13 @@ impl TestEngineHandle {
         let amount = {
             let store = self.store.lock();
             let tenant_id = store
-                .get_order_tenant_id(order_id)?
+                .get_order_tenant_id(&scanner::store::OrderId::new(order_id.to_string()))?
                 .ok_or(scanner::store::StoreError::NotFound)?;
             store
-                .get_order(&tenant_id, order_id)?
+                .get_order(
+                    &tenant_id,
+                    &scanner::store::OrderId::new(order_id.to_string()),
+                )?
                 .ok_or(scanner::store::StoreError::NotFound)?
                 .xmr_amount_piconero
         };
@@ -334,12 +337,12 @@ impl TestEngineHandle {
         let store = self.store.lock();
         let now = scanner::now_unix();
         for payment in store
-            .get_all_payments(order_id)?
+            .get_all_payments(&scanner::store::OrderId::new(order_id.to_string()))?
             .into_iter()
             .filter(|p| p.block_height.is_none())
         {
             store.record_payment_match(
-                order_id,
+                &scanner::store::OrderId::new(order_id.to_string()),
                 &payment.txid,
                 payment.output_index,
                 payment.amount_piconero,
@@ -348,11 +351,16 @@ impl TestEngineHandle {
                 Some(PAYMENT_HEIGHT),
             )?;
         }
-        scanner::scanner::recompute_and_notify(&store, order_id, PAYMENT_HEIGHT as u64 + 100, now)
-            .map_err(|e| match e {
-                scanner::scanner::ScannerError::Store(e) => e,
-                other => panic!("recomputing a test order's status failed: {other}"),
-            })
+        scanner::scanner::recompute_and_notify(
+            &store,
+            &scanner::store::OrderId::new(order_id.to_string()),
+            PAYMENT_HEIGHT as u64 + 100,
+            now,
+        )
+        .map_err(|e| match e {
+            scanner::scanner::ScannerError::Store(e) => e,
+            other => panic!("recomputing a test order's status failed: {other}"),
+        })
     }
 
     /// Records a payment of `piconero` to `order_id` the way a scan would,
@@ -371,11 +379,11 @@ impl TestEngineHandle {
         let store = self.store.lock();
         let now = scanner::now_unix();
         let existing = store
-            .get_all_payments(order_id)
+            .get_all_payments(&scanner::store::OrderId::new(order_id.to_string()))
             .map(|p| p.len())
             .unwrap_or(0);
         store.record_payment_match(
-            order_id,
+            &scanner::store::OrderId::new(order_id.to_string()),
             &format!("test-payment-{order_id}-{existing}"),
             0,
             piconero,
@@ -384,7 +392,13 @@ impl TestEngineHandle {
             confirmations.map(|_| PAYMENT_HEIGHT),
         )?;
         let tip = PAYMENT_HEIGHT as u64 + confirmations.unwrap_or(1).max(1) - 1;
-        scanner::scanner::recompute_and_notify(&store, order_id, tip, now).map_err(|e| match e {
+        scanner::scanner::recompute_and_notify(
+            &store,
+            &scanner::store::OrderId::new(order_id.to_string()),
+            tip,
+            now,
+        )
+        .map_err(|e| match e {
             scanner::scanner::ScannerError::Store(e) => e,
             other => panic!("recomputing a test order's status failed: {other}"),
         })
@@ -399,7 +413,10 @@ impl TestEngineHandle {
         order_id: &str,
     ) -> Result<(), scanner::store::StoreError> {
         let store = self.store.lock();
-        store.mark_double_spend_detected(order_id, scanner::now_unix())?;
+        store.mark_double_spend_detected(
+            &scanner::store::OrderId::new(order_id.to_string()),
+            scanner::now_unix(),
+        )?;
         Ok(())
     }
 
@@ -410,16 +427,24 @@ impl TestEngineHandle {
     pub fn mark_order_expired(&self, order_id: &str) -> Result<(), scanner::store::StoreError> {
         let store = self.store.lock();
         let tenant_id = store
-            .get_order_tenant_id(order_id)?
+            .get_order_tenant_id(&scanner::store::OrderId::new(order_id.to_string()))?
             .ok_or(scanner::store::StoreError::NotFound)?;
         let order = store
-            .get_order(&tenant_id, order_id)?
+            .get_order(
+                &tenant_id,
+                &scanner::store::OrderId::new(order_id.to_string()),
+            )?
             .ok_or(scanner::store::StoreError::NotFound)?;
-        scanner::scanner::recompute_and_notify(&store, order_id, 1000, order.expires_at + 1)
-            .map_err(|e| match e {
-                scanner::scanner::ScannerError::Store(e) => e,
-                other => panic!("recomputing a test order's status failed: {other}"),
-            })
+        scanner::scanner::recompute_and_notify(
+            &store,
+            &scanner::store::OrderId::new(order_id.to_string()),
+            1000,
+            order.expires_at + 1,
+        )
+        .map_err(|e| match e {
+            scanner::scanner::ScannerError::Store(e) => e,
+            other => panic!("recomputing a test order's status failed: {other}"),
+        })
     }
 }
 
@@ -716,7 +741,7 @@ impl TestEngineConfig {
         // below can clone the same `Arc` and re-read it fresh every tick, exactly like
         // `main.rs`'s own `run_scanner_loop` does against the real production
         // `AppState::wallet_handles` - see `with_real_daemon`'s doc comment.
-        let wallet_handles: Arc<RwLock<HashMap<String, WalletHandle>>> =
+        let wallet_handles: Arc<RwLock<HashMap<scanner::store::TenantId, WalletHandle>>> =
             Arc::new(RwLock::new(HashMap::new()));
 
         let lookup_mempool: Arc<parking_lot::Mutex<Vec<monero::Transaction>>> = Arc::default();
@@ -840,11 +865,12 @@ impl TestEngineConfig {
                         // tenant list - but this keeps the loop's own watchlist-building
                         // logic faithful to production, for a caller that later swaps in a
                         // real daemon via `run_scan_tick_now` instead.
-                        let tenants: Vec<(String, WalletHandle)> = scan_wallet_handles
-                            .read()
-                            .iter()
-                            .map(|(id, h)| (id.clone(), *h))
-                            .collect();
+                        let tenants: Vec<(scanner::store::TenantId, WalletHandle)> =
+                            scan_wallet_handles
+                                .read()
+                                .iter()
+                                .map(|(id, h)| (id.clone(), *h))
+                                .collect();
                         for network in &networks {
                             // Errors are deliberately swallowed here, exactly like
                             // `main.rs`'s own supervised loop logs and continues rather
