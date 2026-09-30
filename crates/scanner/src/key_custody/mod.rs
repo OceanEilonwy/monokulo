@@ -60,6 +60,6 @@ pub fn wallet_matches_address(
 pub use plain::PlainKeyCustody;
 
 pub use shared::key_custody::{
-    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, SubaddressIndex,
-    WalletHandle, WalletMaterial,
+    KeyCustody, KeyCustodyError, MatchedOutput, Network, ScanIndices, ScanInput, SubaddressIndex,
+    TxMatches, WalletHandle, WalletMaterial,
 };

@@ -13,7 +13,9 @@ use monero::cryptonote::hash::Hashable;
 use monero::Transaction;
 
 use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
-use crate::key_custody::{KeyCustody, KeyCustodyError, ScanIndices, WalletHandle};
+use crate::key_custody::{
+    KeyCustody, KeyCustodyError, MatchedOutput, ScanIndices, ScanInput, WalletHandle,
+};
 use crate::store::{Store, StoreError};
 
 #[derive(Debug, thiserror::Error)]
@@ -88,9 +90,19 @@ fn key_images_json_of(tx: &Transaction) -> String {
 /// time this code was actually wired into a spawned task rather than awaited
 /// directly in a test.
 pub struct ScanResult {
-    pub matches: Vec<crate::key_custody::MatchedOutput>,
+    pub matches: Vec<MatchedOutput>,
     pub txid: String,
     pub key_images_json: String,
+}
+
+impl ScanResult {
+    fn of(tx: &Transaction, matches: Vec<MatchedOutput>) -> Self {
+        ScanResult {
+            matches,
+            txid: tx_id_hex(tx),
+            key_images_json: key_images_json_of(tx),
+        }
+    }
 }
 
 pub async fn scan_transaction(
@@ -100,18 +112,14 @@ pub async fn scan_transaction(
     minor_range: Range<u32>,
 ) -> Result<ScanResult> {
     let matches = key_custody
-        .scan_tx_outputs(handle, tx, 0..1, minor_range)
+        .scan_tx_outputs(handle, &ScanInput::of(tx), 0..1, minor_range)
         .await?;
-    Ok(ScanResult {
-        matches,
-        txid: tx_id_hex(tx),
-        key_images_json: key_images_json_of(tx),
-    })
+    Ok(ScanResult::of(tx, matches))
 }
 
 /// `scan_transaction` for a store's scan window (task 7.3): only the indices
 /// of its open and recently closed orders. For tests; the scan loop goes
-/// through `scan_for_tenants`.
+/// through `scan_txs_for_tenants`.
 #[cfg(test)]
 pub(crate) async fn scan_transaction_in_window(
     key_custody: &dyn KeyCustody,
@@ -119,65 +127,65 @@ pub(crate) async fn scan_transaction_in_window(
     tx: &Transaction,
     window: &ScanIndices,
 ) -> Result<ScanResult> {
-    let matches = key_custody
-        .scan_tx_outputs_for_indices(handle, tx, window)
+    let found = key_custody
+        .scan_txs_for_indices(handle, &[ScanInput::of(tx)], window)
         .await?;
-    Ok(ScanResult {
-        matches,
-        txid: tx_id_hex(tx),
-        key_images_json: key_images_json_of(tx),
-    })
+    let matches = found.into_iter().flat_map(|found| found.outputs).collect();
+    Ok(ScanResult::of(tx, matches))
 }
 
-/// Longest one tenant's scan of one transaction may take before it counts as
-/// a failure for that tenant (task 7.4). A key-custody backend that answers,
-/// but slowly, is then treated like one that is down: that tenant is left
-/// behind and caught up later, and nobody else waits on it.
+/// Longest one tenant's scan of one batch of transactions may take before it
+/// counts as a failure for that tenant (task 7.4). A key-custody backend that
+/// answers, but slowly, is then treated like one that is down: that tenant is
+/// left behind and caught up later, and nobody else waits on it.
 pub const SCAN_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
-/// Most tenants scanned for one transaction at the same time.
+/// Most tenants scanned at the same time.
 pub(crate) const SCAN_CONCURRENCY: usize = 32;
 
-/// Scans one transaction for many tenants at once, each with
-/// `SCAN_CALL_DEADLINE`, so a slow tenant (a slow key-custody backend)
-/// doesn't hold up the others. Results come back in the order given.
+/// Scans a run of transactions for many tenants at once: one key-custody
+/// call per tenant for the whole run, each with `SCAN_CALL_DEADLINE`, so a
+/// slow tenant (a slow key-custody backend) doesn't hold up the others.
+/// `inputs` are the scan inputs of `txs`, in the same order. Each tenant
+/// comes with how many of the transactions, from the front, it has already
+/// been scanned for. Results come back in the order given: for each tenant,
+/// the transactions that pay it.
 ///
-/// `None` is a tenant the transaction pays nothing, which is nearly every
-/// result. The transaction's id and key images are what a payment is recorded
-/// with and cost a hash of the whole transaction, so they are worked out only
-/// once a tenant has a match, and then once for all tenants.
-pub(crate) async fn scan_for_tenants(
+/// Nearly every transaction pays a tenant nothing. A transaction's id and key
+/// images are what a payment is recorded with and cost a hash of the whole
+/// transaction, so they are worked out only for a match.
+pub(crate) async fn scan_txs_for_tenants(
     key_custody: &dyn KeyCustody,
-    tx: &Transaction,
-    tenants: &[&(crate::store::TenantId, WalletHandle, ScanIndices)],
-) -> Vec<(crate::store::TenantId, Result<Option<ScanResult>>)> {
+    txs: &[Transaction],
+    inputs: &[ScanInput],
+    tenants: &[(&(crate::store::TenantId, WalletHandle, ScanIndices), usize)],
+) -> Vec<(crate::store::TenantId, Result<Vec<ScanResult>>)> {
     use futures_util::stream::{self, StreamExt};
-    let evidence = std::sync::OnceLock::new();
-    let evidence = &evidence;
     // By index: a closure over borrowed tuples trips a rustc limitation that
     // makes the future not `Send`.
     stream::iter(0..tenants.len())
         .map(|i| {
-            let (tenant_id, handle, window) = tenants[i];
+            let ((tenant_id, handle, window), done) = tenants[i];
+            let done = done.min(inputs.len());
             let span = tracing::debug_span!("scan for store", store.id = %tenant_id);
             tracing::Instrument::instrument(
                 async move {
                     let result = match tokio::time::timeout(
                         SCAN_CALL_DEADLINE,
-                        key_custody.scan_tx_outputs_for_indices(*handle, tx, window),
+                        key_custody.scan_txs_for_indices(*handle, &inputs[done..], window),
                     )
                     .await
                     {
-                        Ok(Ok(matches)) if matches.is_empty() => Ok(None),
-                        Ok(Ok(matches)) => {
-                            let (txid, key_images_json): &(String, String) =
-                                evidence.get_or_init(|| (tx_id_hex(tx), key_images_json_of(tx)));
-                            Ok(Some(ScanResult {
-                                matches,
-                                txid: txid.clone(),
-                                key_images_json: key_images_json.clone(),
-                            }))
-                        }
+                        Ok(Ok(found)) => found
+                            .into_iter()
+                            .filter(|found| !found.outputs.is_empty())
+                            .map(|found| match txs.get(done + found.tx) {
+                                Some(tx) => Ok(ScanResult::of(tx, found.outputs)),
+                                None => Err(ScannerError::KeyCustody(KeyCustodyError::ScanFailed(
+                                    "a match for a transaction that wasn't in the batch".into(),
+                                ))),
+                            })
+                            .collect(),
                         Ok(Err(error)) => Err(error.into()),
                         Err(_) => Err(ScannerError::KeyCustody(
                             KeyCustodyError::BackendUnavailable(format!(
@@ -193,6 +201,22 @@ pub(crate) async fn scan_for_tenants(
         .buffered(SCAN_CONCURRENCY)
         .collect()
         .await
+}
+
+/// `scan_txs_for_tenants` for one transaction: `None` is a tenant it pays
+/// nothing.
+pub(crate) async fn scan_for_tenants(
+    key_custody: &dyn KeyCustody,
+    tx: &Transaction,
+    tenants: &[&(crate::store::TenantId, WalletHandle, ScanIndices)],
+) -> Vec<(crate::store::TenantId, Result<Option<ScanResult>>)> {
+    let inputs = [ScanInput::of(tx)];
+    let tenants: Vec<_> = tenants.iter().map(|tenant| (*tenant, 0)).collect();
+    scan_txs_for_tenants(key_custody, std::slice::from_ref(tx), &inputs, &tenants)
+        .await
+        .into_iter()
+        .map(|(tenant_id, result)| (tenant_id, result.map(|mut found| found.pop())))
+        .collect()
 }
 
 /// Persists a `ScanResult` against one tenant. Purely synchronous - no `.await`
@@ -1313,7 +1337,7 @@ pub(crate) mod tests {
         async fn scan_tx_outputs(
             &self,
             handle: WalletHandle,
-            tx: &Transaction,
+            tx: &ScanInput,
             major_range: Range<u32>,
             minor_range: Range<u32>,
         ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
@@ -1991,6 +2015,59 @@ pub(crate) mod tests {
         assert_eq!(
             parse_payment_key_images(&scan.key_images_json).unwrap(),
             key_images_of(&tx)
+        );
+    }
+
+    /// A run of transactions scanned for stores that are at different points
+    /// in it. Each store is told only about the transactions it hadn't been
+    /// scanned for, each under its own id.
+    #[tokio::test]
+    async fn a_run_of_transactions_is_scanned_for_each_store_from_where_it_had_got_to() {
+        let custody = PlainKeyCustody::default();
+        let wallet = custody
+            .register_wallet(WalletMaterial::new(
+                fixture_view_key(),
+                fixture_spend_pubkey(),
+            ))
+            .await
+            .unwrap();
+        // Two payments with an unrelated transaction between them.
+        let txs = [fixture_tx(), unrelated_tx(1), fixture_tx_variant(5)];
+        let inputs: Vec<ScanInput> = txs.iter().map(ScanInput::of).collect();
+        let store = |name: &str| {
+            (
+                crate::store::TenantId::new(name),
+                wallet,
+                ScanIndices::new([1]),
+            )
+        };
+        let (fresh, resumed, finished) = (store("fresh"), store("resumed"), store("finished"));
+
+        let results = scan_txs_for_tenants(
+            &custody,
+            &txs,
+            &inputs,
+            &[(&fresh, 0), (&resumed, 1), (&finished, 3)],
+        )
+        .await;
+
+        let found: Vec<(String, Vec<String>)> = results
+            .into_iter()
+            .map(|(id, result)| {
+                let txids = result.unwrap().into_iter().map(|scan| scan.txid).collect();
+                (id.to_string(), txids)
+            })
+            .collect();
+        assert_eq!(
+            found,
+            [
+                (
+                    "fresh".to_string(),
+                    vec![tx_id_hex(&txs[0]), tx_id_hex(&txs[2])]
+                ),
+                ("resumed".to_string(), vec![tx_id_hex(&txs[2])]),
+                ("finished".to_string(), vec![]),
+            ]
         );
     }
 
@@ -8404,7 +8481,7 @@ pub(crate) mod tests {
         async fn scan_tx_outputs(
             &self,
             handle: WalletHandle,
-            tx: &Transaction,
+            tx: &ScanInput,
             major_range: Range<u32>,
             minor_range: Range<u32>,
         ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
@@ -9306,7 +9383,7 @@ pub(crate) mod tests {
             let handle = self.inner.register_wallet(material).await?;
             let matches = self
                 .inner
-                .scan_tx_outputs(handle, &fixture_tx(), 0..1, 1..2)
+                .scan_tx_outputs(handle, &ScanInput::of(&fixture_tx()), 0..1, 1..2)
                 .await?;
             self.matches.lock().insert(handle, matches);
             Ok(handle)
@@ -9340,7 +9417,7 @@ pub(crate) mod tests {
         async fn scan_tx_outputs(
             &self,
             handle: WalletHandle,
-            tx: &Transaction,
+            tx: &ScanInput,
             major_range: Range<u32>,
             minor_range: Range<u32>,
         ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
@@ -9349,8 +9426,8 @@ pub(crate) mod tests {
                 tokio::time::sleep(delay).await;
             }
             assert_eq!(
-                tx_id_hex(tx),
-                tx_id_hex(&fixture_tx()),
+                *tx,
+                ScanInput::of(&fixture_tx()),
                 "this backend only scans the fixture transaction"
             );
             let matches = self.matches.lock();
@@ -9723,7 +9800,7 @@ pub(crate) mod tests {
             .await
             .unwrap();
         let matches = custody
-            .scan_tx_outputs(handle, &tx, 0..1, 0..10)
+            .scan_tx_outputs(handle, &ScanInput::of(&tx), 0..1, 0..10)
             .await
             .unwrap();
         assert!(matches.is_empty());
@@ -10526,7 +10603,7 @@ pub(crate) mod tests {
         async fn scan_tx_outputs(
             &self,
             handle: WalletHandle,
-            tx: &Transaction,
+            tx: &ScanInput,
             major_range: Range<u32>,
             minor_range: Range<u32>,
         ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {
@@ -11313,7 +11390,7 @@ pub(crate) mod tests {
         async fn scan_tx_outputs(
             &self,
             handle: WalletHandle,
-            tx: &Transaction,
+            tx: &ScanInput,
             major_range: Range<u32>,
             minor_range: Range<u32>,
         ) -> std::result::Result<Vec<MatchedOutput>, KeyCustodyError> {

@@ -2,7 +2,7 @@
 //!
 //! Nearly every transaction scanned pays somebody else, so what a scan costs
 //! is what it costs to find that out. monero-rs's `check_outputs_with` does
-//! that slowly, in two ways [`ScanInput::pays`] avoids:
+//! that slowly, in two ways [`pays`] avoids:
 //!
 //! - The shared secret `8vR` depends on the transaction key, not on the
 //!   output, yet monero-rs derives it again for every output. That scalar
@@ -13,84 +13,59 @@
 //!   255 outputs in 256, so here it goes first.
 //!
 //! `pays` only answers yes or no. A transaction that does pay the wallet is
-//! rare, and is handed to monero-rs as before ([`ScanInput::owned_outputs`]),
-//! so which outputs match and what amounts they carry is still decided by the
-//! same code. The tests below check that the two never disagree.
+//! rare, and is handed to monero-rs as before ([`owned_outputs`]), so which
+//! outputs match and what amounts they carry is still decided by the same
+//! code. The tests below check that the two never disagree.
 
 use std::collections::HashMap;
 
-use monero::blockdata::transaction::{TransactionPrefix, TxOut};
+use monero::blockdata::transaction::TxOut;
 use monero::cryptonote::onetime_key::{KeyGenerator, SubKeyChecker};
-use monero::util::ringct::RctSigBase;
-use monero::{PublicKey, Transaction, ViewPair};
+use monero::{PublicKey, ViewPair};
 
-use super::{KeyCustodyError, MatchedOutput, SubaddressIndex};
+use super::{KeyCustodyError, MatchedOutput, ScanInput, SubaddressIndex};
 
-/// What a scan reads of a transaction: its keys, its outputs and its
-/// encrypted amounts. A scan runs on the blocking pool and so needs its own
-/// copy; this leaves out the inputs, ring signatures and range proofs, which
-/// are most of a transaction and which a scan never looks at.
-pub(super) struct ScanInput {
-    prefix: TransactionPrefix,
-    rct: Option<RctSigBase>,
+/// Whether any output of `tx` pays one of the subaddresses in `table`: true
+/// exactly when [`owned_outputs`] would find something.
+pub(super) fn pays(
+    view_pair: &ViewPair,
+    table: &HashMap<PublicKey, SubaddressIndex>,
+    tx: &ScanInput,
+) -> bool {
+    let extra = tx.prefix().extra.try_parse();
+    let Some(tx_pubkey) = extra.tx_pubkey() else {
+        return false;
+    };
+    // A transaction paying several subaddresses carries one more key per
+    // output. Each output is tried with the main key, then with its own.
+    let additional = extra.tx_additional_pubkeys().unwrap_or_default();
+    let main = KeyGenerator::from_key(view_pair, tx_pubkey);
+    tx.prefix().outputs.iter().enumerate().any(|(index, out)| {
+        is_paid_to(table, &main, index, out)
+            || additional.get(index).is_some_and(|key| {
+                is_paid_to(table, &KeyGenerator::from_key(view_pair, *key), index, out)
+            })
+    })
 }
 
-impl ScanInput {
-    pub(super) fn of(tx: &Transaction) -> Self {
-        ScanInput {
-            prefix: TransactionPrefix {
-                version: tx.prefix.version.clone(),
-                unlock_time: tx.prefix.unlock_time.clone(),
-                inputs: Vec::new(),
-                outputs: tx.prefix.outputs.clone(),
-                extra: tx.prefix.extra.clone(),
-            },
-            rct: tx.rct_signatures.sig.clone(),
-        }
-    }
-
-    /// Whether any output pays one of the subaddresses in `table`: true
-    /// exactly when [`Self::owned_outputs`] would find something.
-    pub(super) fn pays(
-        &self,
-        view_pair: &ViewPair,
-        table: &HashMap<PublicKey, SubaddressIndex>,
-    ) -> bool {
-        let extra = self.prefix.extra.try_parse();
-        let Some(tx_pubkey) = extra.tx_pubkey() else {
-            return false;
-        };
-        // A transaction paying several subaddresses carries one more key per
-        // output. Each output is tried with the main key, then with its own.
-        let additional = extra.tx_additional_pubkeys().unwrap_or_default();
-        let main = KeyGenerator::from_key(view_pair, tx_pubkey);
-        self.prefix.outputs.iter().enumerate().any(|(index, out)| {
-            is_paid_to(table, &main, index, out)
-                || additional.get(index).is_some_and(|key| {
-                    is_paid_to(table, &KeyGenerator::from_key(view_pair, *key), index, out)
-                })
-        })
-    }
-
-    /// The outputs that pay one of the subaddresses in `checker`, with their
-    /// amounts.
-    pub(super) fn owned_outputs(
-        &self,
-        checker: &SubKeyChecker,
-    ) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
-        match self.prefix.check_outputs_with(checker, self.rct.as_ref()) {
-            Ok(owned) => Ok(owned
-                .into_iter()
-                .map(|o| MatchedOutput {
-                    output_index: o.index(),
-                    subaddress_index: o.sub_index(),
-                    amount_piconero: o.amount().map(|a| a.as_pico()),
-                })
-                .collect()),
-            Err(monero::blockdata::transaction::Error::NoTxPublicKey)
-            | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Ok(Vec::new()),
-            Err(e) => Err(KeyCustodyError::ScanFailed(e.to_string())),
-        }
+/// The outputs of `tx` that pay one of the subaddresses in `checker`, with
+/// their amounts.
+pub(super) fn owned_outputs(
+    checker: &SubKeyChecker,
+    tx: &ScanInput,
+) -> Result<Vec<MatchedOutput>, KeyCustodyError> {
+    match tx.prefix().check_outputs_with(checker, tx.rct()) {
+        Ok(owned) => Ok(owned
+            .into_iter()
+            .map(|o| MatchedOutput {
+                output_index: o.index(),
+                subaddress_index: o.sub_index(),
+                amount_piconero: o.amount().map(|a| a.as_pico()),
+            })
+            .collect()),
+        Err(monero::blockdata::transaction::Error::NoTxPublicKey)
+        | Err(monero::blockdata::transaction::Error::ScriptNotSupported) => Ok(Vec::new()),
+        Err(e) => Err(KeyCustodyError::ScanFailed(e.to_string())),
     }
 }
 
@@ -119,7 +94,7 @@ mod tests {
     use monero::blockdata::transaction::{ExtraField, SubField, TxOutTarget};
     use monero::consensus::encode::{deserialize, VarInt};
     use monero::cryptonote::subaddress;
-    use monero::PrivateKey;
+    use monero::{PrivateKey, Transaction};
 
     fn scalar(seed: u8) -> PrivateKey {
         // Not cryptographically random - deterministic per-test fixture data only.
@@ -195,11 +170,11 @@ mod tests {
             .map_or(0, |owned| owned.len());
         let input = ScanInput::of(tx);
         assert_eq!(
-            input.pays(wallet, &checker.table),
+            pays(wallet, &checker.table, &input),
             reference > 0,
             "the fast check disagrees with monero-rs, which found {reference} outputs"
         );
-        let found = input.owned_outputs(&checker).unwrap();
+        let found = owned_outputs(&checker, &input).unwrap();
         assert_eq!(found.len(), reference);
         found
     }
@@ -359,19 +334,5 @@ mod tests {
             &transaction(vec![SubField::TxPublicKey(tx_key)], vec![])
         )
         .is_empty());
-    }
-
-    #[test]
-    fn the_copy_a_scan_works_on_leaves_out_what_a_scan_does_not_read() {
-        let tx: Transaction = deserialize(
-            &hex::decode(include_str!("../../tests/fixtures/subaddress_tx.hex")).unwrap(),
-        )
-        .unwrap();
-        let input = ScanInput::of(&tx);
-
-        assert!(input.prefix.inputs.is_empty());
-        assert_eq!(input.prefix.outputs, tx.prefix.outputs);
-        assert_eq!(input.prefix.extra, tx.prefix.extra);
-        assert_eq!(input.rct, tx.rct_signatures.sig);
     }
 }

@@ -30,7 +30,7 @@
 //! `src/key_custody/plain.rs` already documents, not by serialization), so a
 //! faster binary format would add a second encoding convention to this codebase
 //! for no measurable benefit. A length prefix (rather than e.g. newline-
-//! delimited JSON) is needed because a `TransactionWire`'s hex string is
+//! delimited JSON) is needed because a `ScanInputWire`'s hex string is
 //! arbitrary-length binary-derived text with no character `serde_json` promises
 //! never to emit, so scanning for a delimiter byte in the payload itself isn't
 //! actually safe the way it would be for a strictly-controlled request format.
@@ -50,10 +50,9 @@ use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
 
 use crate::{
     DeriveSubaddressRequest, DeriveSubaddressResponse, RegisterWalletRequest,
-    RegisterWalletResponse, RemoveWalletRequest, RemoveWalletResponse,
-    ScanTxOutputsForIndicesRequest, ScanTxOutputsForIndicesResponse, ScanTxOutputsRequest,
-    ScanTxOutputsResponse, SealRequest, SealResponse, UnsealAndRegisterRequest,
-    UnsealAndRegisterResponse,
+    RegisterWalletResponse, RemoveWalletRequest, RemoveWalletResponse, ScanTxOutputsRequest,
+    ScanTxOutputsResponse, ScanTxsForIndicesRequest, ScanTxsForIndicesResponse, SealRequest,
+    SealResponse, UnsealAndRegisterRequest, UnsealAndRegisterResponse,
 };
 
 /// One request per `KeyCustody` trait method, in the same order the trait
@@ -66,8 +65,7 @@ pub enum KeyCustodyRequest {
     UnsealAndRegister(UnsealAndRegisterRequest),
     DeriveSubaddress(DeriveSubaddressRequest),
     ScanTxOutputs(ScanTxOutputsRequest),
-    /// Newer than the rest: see `ScanTxOutputsForIndicesRequest`.
-    ScanTxOutputsForIndices(ScanTxOutputsForIndicesRequest),
+    ScanTxsForIndices(ScanTxsForIndicesRequest),
 }
 
 impl KeyCustodyRequest {
@@ -80,7 +78,7 @@ impl KeyCustodyRequest {
             KeyCustodyRequest::UnsealAndRegister(_) => "unseal_and_register",
             KeyCustodyRequest::DeriveSubaddress(_) => "derive_subaddress",
             KeyCustodyRequest::ScanTxOutputs(_) => "scan_tx_outputs",
-            KeyCustodyRequest::ScanTxOutputsForIndices(_) => "scan_tx_outputs_for_indices",
+            KeyCustodyRequest::ScanTxsForIndices(_) => "scan_txs_for_indices",
         }
     }
 }
@@ -99,13 +97,13 @@ pub enum KeyCustodyResponse {
     UnsealAndRegister(UnsealAndRegisterResponse),
     DeriveSubaddress(DeriveSubaddressResponse),
     ScanTxOutputs(ScanTxOutputsResponse),
-    ScanTxOutputsForIndices(ScanTxOutputsForIndicesResponse),
+    ScanTxsForIndices(ScanTxsForIndicesResponse),
 }
 
 /// Ceiling on one frame's declared payload length. Generous relative to
-/// anything this protocol legitimately sends - a `ScanTxOutputsRequest` carries
-/// one transaction's consensus-encoded bytes as hex, and even a large,
-/// many-output transaction is a few hundred KB at most - while still ruling out
+/// anything this protocol legitimately sends - a `ScanTxsForIndicesRequest`
+/// carries a batch of transactions' outputs as hex and a store's open order
+/// indices, a few hundred KB at most - while still ruling out
 /// a multi-gigabyte allocation from a single 4-byte length prefix. See the
 /// module doc comment for the full reasoning.
 pub const MAX_FRAME_BYTES: u32 = 16 * 1024 * 1024;
