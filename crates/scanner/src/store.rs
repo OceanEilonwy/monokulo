@@ -449,7 +449,13 @@ impl Store {
         F: FnOnce(&Store) -> std::result::Result<T, E>,
         E: From<StoreError>,
     {
-        let tx = self.conn.unchecked_transaction().map_err(StoreError::from)?;
+        // IMMEDIATE takes SQLite's write lock at BEGIN. A deferred
+        // transaction that reads first and writes later fails that write with
+        // SQLITE_BUSY_SNAPSHOT (which no busy timeout retries) whenever another
+        // connection committed in between; this waits for the lock up front
+        // instead, so the decision reads and the writes see one snapshot.
+        let tx = rusqlite::Transaction::new_unchecked(&self.conn, rusqlite::TransactionBehavior::Immediate)
+            .map_err(StoreError::from)?;
         let out = f(self)?;
         tx.commit().map_err(StoreError::from)?;
         Ok(out)
@@ -1679,26 +1685,45 @@ impl Store {
         Ok(())
     }
 
-    /// Moves every tenant on `network` that was caught up to `height - 1` on to
-    /// `height`, except those in `left_behind` (tenants whose scan failed on
-    /// this block). Called in the same transaction as `set_scanned_block`, so
-    /// the network and its caught-up tenants always move together.
+    /// Moves tenants on `network` that were caught up to `height - 1` on to
+    /// `height`: those in `scanned` (this block was scanned for them), and
+    /// those with nothing that could be paid (no order in their scan window).
+    /// Called in the same transaction as `set_scanned_block`, so the network
+    /// and its caught-up tenants always move together.
+    ///
+    /// An allowlist, not "everyone except the failures": a tenant this tick
+    /// never scanned for any reason (its keys aren't registered, its scan
+    /// window couldn't be read, it was created mid-tick) keeps its cursor and
+    /// is caught up later, instead of silently skipping a block it was never
+    /// checked against. "Nothing in scope" is evaluated here, inside the
+    /// transaction, so an order committed before it counts.
     ///
     /// Also held back: any tenant created, or given a new order, at or after
     /// `tick_started` (the time the tick read which tenants to scan). The
     /// tick didn't scan for it with that order's address, so it catches up
     /// next tick with its current range instead of being moved past blocks.
-    pub fn advance_caught_up_cursors(&self, network: &str, height: u64, left_behind: &[String], tick_started: i64) -> Result<()> {
-        let left_behind = serde_json::to_string(left_behind).map_err(|e| {
+    pub fn advance_caught_up_cursors(
+        &self, network: &str, height: u64, scanned: &[String], tick_started: i64, grace_period_seconds: i64,
+    ) -> Result<()> {
+        let scanned = serde_json::to_string(scanned).map_err(|e| {
             StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
         })?;
         self.conn.execute(
-            "UPDATE tenants SET scanned_through_height = ?2
-             WHERE network = ?1 AND scanned_through_height = ?2 - 1
-               AND id NOT IN (SELECT value FROM json_each(?3))
-               AND created_at_utc < ?4
-               AND id NOT IN (SELECT tenant_id FROM orders WHERE created_at_utc >= ?4)",
-            params![network, height as i64, left_behind, tick_started],
+            &format!(
+                "UPDATE tenants SET scanned_through_height = :height
+                 WHERE network = :network AND scanned_through_height = :height - 1
+                   AND (id IN (SELECT value FROM json_each(:scanned))
+                        OR NOT EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = tenants.id AND {IN_SCAN_WINDOW}))
+                   AND created_at_utc < :tick_started
+                   AND id NOT IN (SELECT tenant_id FROM orders WHERE created_at_utc >= :tick_started)"
+            ),
+            rusqlite::named_params! {
+                ":network": network,
+                ":height": height as i64,
+                ":scanned": scanned,
+                ":tick_started": tick_started,
+                ":since_minus_grace": tick_started - grace_period_seconds,
+            },
         )?;
         Ok(())
     }
@@ -2291,6 +2316,40 @@ mod tests {
         assert_eq!(active[0].id, a.tenant.id);
         // Disabling doesn't delete the row - count_tenants includes it still.
         assert_eq!(store.count_tenants().unwrap(), 2);
+    }
+
+    /// A transaction that reads, then writes, must not lose its write to a
+    /// commit another connection made in between: with a deferred BEGIN that
+    /// write fails with SQLITE_BUSY_SNAPSHOT, which no busy timeout retries.
+    /// `in_transaction` holds the write lock from its first statement, so the
+    /// other writer waits instead and both writes land.
+    #[test]
+    fn a_transaction_holds_the_write_lock_before_its_first_read() {
+        let path = std::env::temp_dir().join(format!("immediate_tx_{}.db", Uuid::new_v4()));
+        let path = path.to_str().unwrap().to_owned();
+        let store = Store::open_file(&path).unwrap();
+        let other = Connection::open(&path).unwrap();
+        other.busy_timeout(std::time::Duration::ZERO).unwrap();
+
+        store
+            .in_transaction(|s| -> Result<()> {
+                let _ = s.get_setting("a")?;
+                let competing = other.execute("INSERT INTO settings (key, value) VALUES ('b', '1')", []);
+                assert!(
+                    matches!(competing, Err(rusqlite::Error::SqliteFailure(ref e, _)) if e.code == rusqlite::ErrorCode::DatabaseBusy),
+                    "another writer must wait for this transaction, got {competing:?}"
+                );
+                s.set_setting("a", "1")
+            })
+            .unwrap();
+        other.execute("INSERT INTO settings (key, value) VALUES ('b', '1')", []).unwrap();
+        assert_eq!(store.get_setting("a").unwrap().as_deref(), Some("1"));
+        assert_eq!(store.get_setting("b").unwrap().as_deref(), Some("1"));
+        drop(other);
+        drop(store);
+        for suffix in ["", "-wal", "-shm"] {
+            let _ = std::fs::remove_file(format!("{path}{suffix}"));
+        }
     }
 
     #[test]

@@ -1362,16 +1362,18 @@ pub async fn run_scan_tick_with(
                     Ok(_) => { tracing::warn!("block {height} changed during scanning on {network}; retrying it"); break 'heights; }
                     Err(e) => { tracing::warn!("rechecking block {height} on {network} failed: {e}"); break 'heights; }
                 }
-                let left_behind_ids: Vec<String> = left_behind.iter().cloned().collect();
+                let scanned: Vec<String> = still_live
+                    .iter()
+                    .map(|(tenant_id, _, _)| tenant_id.clone())
+                    .filter(|tenant_id| !left_behind.contains(tenant_id))
+                    .collect();
                 let written = store.lock().in_transaction(|s| -> Result<Vec<String>> {
                     let mut block_touched = Vec::new();
-                    for (tenant_id, _, _) in &still_live {
-                        if !left_behind.contains(tenant_id) {
-                            block_touched.extend(s.promote_partial_block(network, tenant_id, height, &hash, block_txs.len())?);
-                        }
+                    for tenant_id in &scanned {
+                        block_touched.extend(s.promote_partial_block(network, tenant_id, height, &hash, block_txs.len())?);
                     }
                     s.set_scanned_block(network, height, &hash)?;
-                    s.advance_caught_up_cursors(network, height, &left_behind_ids, now)?;
+                    s.advance_caught_up_cursors(network, height, &scanned, now, expired_order_grace_period_seconds)?;
                     Ok(block_touched)
                 });
                 match written {
@@ -7006,11 +7008,61 @@ mod tests {
             })
             .unwrap();
 
-        store.advance_caught_up_cursors("mainnet", 11, &[], 500).unwrap();
+        store.advance_caught_up_cursors("mainnet", 11, &[], 500, 0).unwrap();
         let cursor = |id: &str| store.get_tenant_by_id(id).unwrap().unwrap().scanned_through_height;
         assert_eq!(cursor(&old), Some(11));
         assert_eq!(cursor(&with_new_order), Some(10), "its new address wasn't in this tick's scan");
         assert_eq!(cursor(&created_mid_tick), Some(10));
+    }
+
+    /// The cursor only moves for tenants the block was actually scanned for.
+    /// A tenant with an order in scope that the tick never scanned (its keys
+    /// weren't registered, or its scan window couldn't be read) keeps its
+    /// cursor, and catch-up covers the block later.
+    #[test]
+    fn a_tenant_with_orders_in_scope_moves_only_when_the_block_was_scanned_for_it() {
+        let store = Store::open_in_memory().unwrap();
+        store.set_scanned_block("mainnet", 10, "h10").unwrap();
+        let tenant_with_order = |minor_seed: &str| {
+            let id = store
+                .create_tenant(
+                    NewTenant {
+                        key_custody_backend: "plain".into(),
+                        sealed_key_material: vec![],
+                        primary_address: format!("4{minor_seed}"),
+                        network: "mainnet".into(),
+                        confirmations_required: None,
+                        order_expiry_seconds: None,
+                    },
+                    100,
+                )
+                .unwrap()
+                .tenant
+                .id;
+            store.execute_raw_for_test(&format!("UPDATE tenants SET scanned_through_height = 10 WHERE id = '{id}'")).unwrap();
+            let index = store.allocate_minor_index(&id).unwrap();
+            store
+                .create_order(NewOrder {
+                    confirmations_required_override: None,
+                    tenant_id: id.clone(),
+                    merchant_order_id: None,
+                    minor_index: index,
+                    address: format!("addr-{minor_seed}"),
+                    xmr_amount_piconero: 1,
+                    description: None,
+                    created_at: 100,
+                    expires_at: 10_000,
+                })
+                .unwrap();
+            id
+        };
+        let scanned = tenant_with_order("a");
+        let never_scanned = tenant_with_order("b");
+
+        store.advance_caught_up_cursors("mainnet", 11, std::slice::from_ref(&scanned), 500, 0).unwrap();
+        let cursor = |id: &str| store.get_tenant_by_id(id).unwrap().unwrap().scanned_through_height;
+        assert_eq!(cursor(&scanned), Some(11));
+        assert_eq!(cursor(&never_scanned), Some(10), "block 11 was never checked against its orders");
     }
 
     #[tokio::test]
