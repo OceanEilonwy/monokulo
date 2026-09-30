@@ -82,6 +82,7 @@ pub async fn pos_page(
         .read(move |db| db.client_logging(&store_id))
         .await
         .unwrap_or(false);
+    let row = row.into_row();
     let view = PosViewModel {
         connection_id: id,
         public_key: row.tenant_public_key,

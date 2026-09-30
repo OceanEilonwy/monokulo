@@ -1495,6 +1495,23 @@ async fn public_embed_routes_allow_any_origin_and_the_dashboard_does_not() {
 
 // -- Alerts for stores that can't be scanned (admin_settings_v2.md task 3.7) --
 
+/// A store row becomes an `OwnedStore` only for its own owner.
+#[test]
+fn a_store_is_owned_only_by_the_user_it_belongs_to() {
+    let (state, owner, other) = state_with_owner_and_store("pk_owned");
+    let row = || {
+        state
+            .db
+            .lock()
+            .get_store_connection_by_id(&shared::ids::ConnectionId::new("c1"))
+            .unwrap()
+            .unwrap()
+    };
+    let owned = super::OwnedStore::check(row(), &owner.id).expect("the owner owns it");
+    assert_eq!(owned.id, "c1");
+    assert!(super::OwnedStore::check(row(), &other.id).is_none());
+}
+
 fn state_with_owner_and_store(
     tenant_public_key: &str,
 ) -> (AppState, crate::db::UserRow, crate::db::UserRow) {

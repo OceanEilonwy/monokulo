@@ -85,6 +85,31 @@ use crate::db::{Database, UserRow};
 use crate::engine_client::EngineClient;
 use shared::auth::{RawToken, TokenHash};
 
+/// A store connection the signed-in user owns: made only by checking the
+/// row's owner ([`OwnedStore::check`], which `orders::load_owned_connection`
+/// uses), so a dashboard handler can't render or change a store it merely
+/// looked up by id. Reads as the row it wraps.
+pub struct OwnedStore(crate::db::StoreConnectionRow);
+
+impl OwnedStore {
+    /// `row`, if `user_id` owns it. A row that isn't theirs and one that
+    /// doesn't exist must look the same to the caller (`None` for both).
+    pub fn check(row: crate::db::StoreConnectionRow, user_id: &crate::db::UserId) -> Option<Self> {
+        (&row.user_id == user_id).then_some(OwnedStore(row))
+    }
+
+    pub fn into_row(self) -> crate::db::StoreConnectionRow {
+        self.0
+    }
+}
+
+impl std::ops::Deref for OwnedStore {
+    type Target = crate::db::StoreConnectionRow;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+
 /// Name of the cookie the browser-facing login flow (`dashboard::login_submit`)
 /// sets and [`AuthedUser`] reads back — a plain constant so the two sides
 /// can't drift apart on the name.

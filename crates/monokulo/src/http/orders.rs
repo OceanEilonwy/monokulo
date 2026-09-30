@@ -50,14 +50,14 @@ pub(super) async fn load_owned_connection(
     state: &AppState,
     user: &UserRow,
     id: &crate::db::ConnectionId,
-) -> Result<Option<StoreConnectionRow>, ()> {
+) -> Result<Option<super::OwnedStore>, ()> {
     let id = id.clone();
     let row = state
         .db
         .read(move |db| db.get_store_connection_by_id(&id))
         .await
         .map_err(|_| ())?;
-    Ok(row.filter(|row| row.user_id == user.id))
+    Ok(row.and_then(|row| super::OwnedStore::check(row, &user.id)))
 }
 
 /// Decrypts the connection's stored `sk_...` token under `state`'s
@@ -78,7 +78,7 @@ pub(super) fn decrypt_sk(
 /// model for the plain orders list page.
 async fn build_orders_view_model(
     state: &AppState,
-    row: &StoreConnectionRow,
+    row: &super::OwnedStore,
     sk: &shared::auth::RawToken,
     search: &str,
     page: u32,
@@ -108,7 +108,7 @@ async fn build_orders_view_model(
 /// POS cancelled it.
 pub(super) async fn order_rows(
     state: &AppState,
-    row: &StoreConnectionRow,
+    row: &super::OwnedStore,
     orders: Vec<crate::engine_client::OrderView>,
 ) -> Vec<OrderRowViewModel> {
     let ids: Vec<crate::db::OrderId> = orders.iter().map(|o| o.order_id.clone()).collect();
@@ -359,7 +359,7 @@ pub async fn order_detail(
 /// the engine has no such order.
 async fn order_detail_data(
     state: &AppState,
-    row: &StoreConnectionRow,
+    row: &super::OwnedStore,
     sk: &shared::auth::RawToken,
     order_id: &crate::db::OrderId,
     payment_link: String,
@@ -833,7 +833,7 @@ pub async fn store_detail(
 /// caller has already done that.
 async fn render_store_detail_page(
     state: &AppState,
-    row: StoreConnectionRow,
+    row: super::OwnedStore,
     user: &UserRow,
     lookup_txid_value: String,
     lookup_message: Option<String>,
@@ -870,6 +870,7 @@ async fn render_store_detail_page(
     let is_woocommerce = row.platform == "woocommerce";
     let embed_warnings =
         super::embed_domains::store_page_warnings(state, &row.id, crate::now_unix()).await;
+    let row = row.into_row();
     let view_model = views::store_detail::StoreDetailViewModel {
         store: Some(views::store_detail::StoreDetailData {
             connection_id: row.id,
@@ -921,7 +922,7 @@ pub async fn store_settings(
 /// any section the save changed too, out of band), `422` when refused.
 pub(super) async fn render_store_settings_page(
     state: &AppState,
-    row: StoreConnectionRow,
+    row: super::OwnedStore,
     user: &UserRow,
     settings_error: Option<String>,
     created_webhook_signing_secret: Option<String>,
@@ -1036,6 +1037,7 @@ pub(super) async fn render_store_settings_page(
         Err(_) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
+    let row = row.into_row();
     let view_model = views::store_settings::StoreSettingsViewModel {
         store: Some(views::store_settings::StoreSettingsData {
             clock: chrome.clock.clone(),
@@ -1079,7 +1081,7 @@ pub(super) async fn render_store_settings_page(
 /// otherwise the usual redirect back to the page.
 pub(super) async fn saved(
     state: &AppState,
-    row: StoreConnectionRow,
+    row: super::OwnedStore,
     user: &UserRow,
     section: StoreSection,
     fx: FxRequest,
@@ -1144,7 +1146,7 @@ pub async fn create_order_page(
 /// branches - both end by showing a fresh copy of this same page.
 async fn render_create_order_page(
     state: &AppState,
-    row: StoreConnectionRow,
+    row: super::OwnedStore,
     user: &UserRow,
     order_creation_error: Option<String>,
 ) -> Response {

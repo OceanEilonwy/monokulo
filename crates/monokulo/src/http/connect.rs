@@ -489,12 +489,14 @@ async fn confirm_existing_store(
     let attached = state
         .db
         .write(move |db| {
-            match db.get_store_connection_by_id(&id)? {
-                Some(row) if row.user_id == user_id => {}
-                // Same enumeration-defense convention `orders.rs` documents
-                // for its own ownership check: a nonexistent id and someone
-                // else's id must be indistinguishable to the caller.
-                _ => return Ok(Attach::NotFound),
+            // Same enumeration-defense convention `orders.rs` documents for
+            // its own ownership check: a nonexistent id and someone else's id
+            // must be indistinguishable to the caller.
+            let owned = db
+                .get_store_connection_by_id(&id)?
+                .and_then(|row| super::OwnedStore::check(row, &user_id));
+            if owned.is_none() {
+                return Ok(Attach::NotFound);
             }
             // Attaching this WordPress site to an already-existing store: its
             // domain joins the store's domains, waiting for the merchant to
