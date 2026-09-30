@@ -17,7 +17,7 @@ use monero::Transaction;
 use serde::Deserialize;
 use serde_json::{json, Value};
 
-use crate::daemon::{DaemonError, KeyImageStatus, MoneroDaemonClient, TxLocation};
+use crate::daemon::{DaemonError, DaemonInfo, KeyImageStatus, MoneroDaemonClient, TxLocation};
 
 pub struct RpcDaemonClient {
     client: reqwest::Client,
@@ -485,6 +485,33 @@ struct GetHeightResponse {
     height: u64,
 }
 
+/// `get_info`'s network fields. Newer monerod says `nettype` outright;
+/// older ones only set one of the `mainnet`/`stagenet`/`testnet` flags.
+/// Every field is optional: a node that sends none of them is "unknown".
+#[derive(Deserialize)]
+struct GetInfoResult {
+    #[serde(default)]
+    nettype: Option<String>,
+    #[serde(default)]
+    mainnet: bool,
+    #[serde(default)]
+    stagenet: bool,
+    #[serde(default)]
+    testnet: bool,
+}
+
+impl GetInfoResult {
+    fn nettype(&self) -> String {
+        match &self.nettype {
+            Some(nettype) if !nettype.trim().is_empty() => nettype.trim().to_ascii_lowercase(),
+            _ if self.mainnet => "mainnet".to_string(),
+            _ if self.stagenet => "stagenet".to_string(),
+            _ if self.testnet => "testnet".to_string(),
+            _ => DaemonInfo::UNKNOWN.to_string(),
+        }
+    }
+}
+
 /// Matches `block_header_response`'s `hash`/`timestamp` fields: `std::string hash`,
 /// `uint64_t timestamp`, both plain `KV_SERIALIZE` (always present). The real
 /// struct carries ~18 more always-present fields (`height`, `difficulty`, `reward`,
@@ -616,6 +643,13 @@ impl MoneroDaemonClient for RpcDaemonClient {
         Ok(resp.height.saturating_sub(1))
     }
 
+    /// monerod's JSON-RPC `get_info`, through the same client (and so the
+    /// same 15s timeout and response cap) as every other call.
+    async fn get_info(&self) -> Result<DaemonInfo, DaemonError> {
+        let result: GetInfoResult = self.post_json_rpc("get_info", json!({})).await?;
+        Ok(DaemonInfo { nettype: result.nettype() })
+    }
+
     async fn get_block_hash(&self, height: u64) -> Result<String, DaemonError> {
         let resp: GetBlockResult = self.post_json_rpc("get_block", json!({ "height": height })).await?;
         Ok(resp.block_header.hash)
@@ -743,6 +777,23 @@ mod tests {
 
     fn entry(as_hex: &str) -> TxEntry {
         TxEntry { as_hex: as_hex.to_string(), in_pool: false, block_height: Some(1) }
+    }
+
+    /// `get_info` from a current monerod (`nettype`), from an older one
+    /// (only the flags), from a regtest node, and from one that says
+    /// nothing about its network.
+    #[test]
+    fn get_info_says_which_network_a_node_is_on() {
+        let nettype = |value: Value| serde_json::from_value::<GetInfoResult>(value).unwrap().nettype();
+        assert_eq!(nettype(json!({ "nettype": "stagenet", "height": 5, "status": "OK" })), "stagenet");
+        assert_eq!(nettype(json!({ "nettype": "Mainnet" })), "mainnet");
+        assert_eq!(nettype(json!({ "mainnet": false, "stagenet": false, "testnet": true })), "testnet");
+        assert_eq!(nettype(json!({ "nettype": "fakechain" })), "fakechain");
+        assert_eq!(nettype(json!({ "height": 5 })), "unknown");
+        let info = |nettype: &str| DaemonInfo { nettype: nettype.to_string() };
+        assert_eq!(info("testnet").network(), Some(monero::Network::Testnet));
+        assert_eq!(info("fakechain").network(), None, "a regtest node is never on the wrong network");
+        assert_eq!(DaemonInfo::unknown().network(), None);
     }
 
     #[test]

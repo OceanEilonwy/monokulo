@@ -5,14 +5,12 @@
 // can then be connected, and the warnings for restart-only settings and
 // for clearing a network stores use work.
 const { test, expect } = require('@playwright/test');
-const { useRealStack, fixture, reloadUntil, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
+const { useRealStack, fixture, reloadUntil, saveEngineSettings, saveNodes, VIEW_KEY, SPEND_PUBKEY } = require('./real-helpers');
 
 useRealStack(test);
 
 test('a node saved on a fresh instance applies straight away, and the warnings work', async ({ page }) => {
-  const { monokulo_url: base, fake_monerod: fakeAddress } = fixture();
-  const [fakeHost, fakePort] = fakeAddress.split(':');
-  const node = JSON.stringify({ host: fakeHost, port: Number(fakePort), ssl: false, accept_self_signed_certs: true, fallbacks: [] });
+  const { monokulo_url: base, fake_monerod: node } = fixture();
 
   // 1. Fresh instance: the first-run wizard creates the admin account.
   await page.goto(base + '/');
@@ -23,10 +21,8 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
   await page.getByRole('button', { name: 'Create admin account' }).click();
 
   // 2. Save a stagenet node on the admin page.
-  await page.goto(base + '/dashboard/admin/settings');
-  await page.locator('textarea[name="monero_node_stagenet"]').fill(node);
-  await page.getByRole('button', { name: 'Save engine settings' }).click();
-  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await saveNodes(page, { stagenet: [node] });
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
 
   // 3. The status page shows stagenet, reachable, with no restart.
   await reloadUntil(page, base + '/status', (html) => html.includes('<h2>stagenet</h2>') && html.includes('reachable'));
@@ -43,28 +39,22 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
   const storeId = storeLink.split('/').pop();
 
   // 5. A saved poll interval shows on the status page.
-  await page.goto(base + '/dashboard/admin/settings');
-  await page.locator('input[name="payment.mempool_poll_interval_ms"]').fill('2000');
-  await page.getByRole('button', { name: 'Save engine settings' }).click();
-  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await saveEngineSettings(page, { 'payment.mempool_poll_interval_ms': '2000' });
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   await reloadUntil(page, base + '/status', (html) => html.includes('polls every 2s'));
 
   // 6. A restart-only setting says so.
-  await page.goto(base + '/dashboard/admin/settings');
-  await page.locator('input[name="server.worker_threads"]').fill('3');
-  await page.getByRole('button', { name: 'Save engine settings' }).click();
+  await saveEngineSettings(page, { 'server.worker_threads': '3' });
   await expect(page.getByText(/take effect after the engine restarts/)).toBeVisible();
 
   // 7. Clearing stagenet asks first, then says 1 store is affected, and
   //    the merchant sees an alert everywhere but the POS terminal.
-  await page.goto(base + '/dashboard/admin/settings');
   let dialogText = '';
   page.once('dialog', async (dialog) => {
     dialogText = dialog.message();
     await dialog.accept();
   });
-  await page.locator('textarea[name="monero_node_stagenet"]').fill('');
-  await page.getByRole('button', { name: 'Save engine settings' }).click();
+  await saveNodes(page, { stagenet: [] });
   expect(dialogText).toContain('1 store uses the stagenet network');
   await expect(page.getByText(/the stagenet network, which no longer has any reachable nodes/)).toBeVisible();
   await reloadUntil(page, base + '/dashboard', (html) => html.includes('shop.example.com: payments aren'));
@@ -72,9 +62,7 @@ test('a node saved on a fresh instance applies straight away, and the warnings w
   expect(await page.content()).not.toContain('payments aren');
 
   // 8. Restoring the node clears the alert.
-  await page.goto(base + '/dashboard/admin/settings');
-  await page.locator('textarea[name="monero_node_stagenet"]').fill(node);
-  await page.getByRole('button', { name: 'Save engine settings' }).click();
-  await expect(page.getByText('Engine settings saved and applied.')).toBeVisible();
+  await saveNodes(page, { stagenet: [node] });
+  await expect(page.getByText('Settings saved and applied.')).toBeVisible();
   await reloadUntil(page, base + '/dashboard', (html) => !html.includes('payments aren'));
 });

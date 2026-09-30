@@ -573,8 +573,8 @@ mod tests {
             let network = |name: &str, scanner| NetworkStatus {
                 network: name.to_string(),
                 nodes: vec![
-                    NodeStatus { label: "node-a:18081".into(), is_active: true, height: Some(3_700_000), error: None },
-                    NodeStatus { label: "node-b:18081".into(), is_active: false, height: None, error: Some("connection refused".into()) },
+                    NodeStatus { label: "node-a:18081".into(), is_active: true, in_cooldown: false, height: Some(3_700_000), error: None, network: None },
+                    NodeStatus { label: "node-b:18081".into(), is_active: false, in_cooldown: false, height: None, error: Some("connection refused".into()), network: None },
                 ],
                 scanner,
             };

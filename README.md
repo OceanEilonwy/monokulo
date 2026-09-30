@@ -6,9 +6,10 @@ dashboard and checkout-facing HTTP surface) run as two separate processes,
 `monokulo` talking to `scanner` over its own admin API. There is no config
 file - every runtime setting lives in the engine's `settings` table, read/
 written over its instance-admin HTTP API (`/api/v1/admin/settings`) or the
-admin settings page in monokulo, and applies to the running engine as soon
-as it's saved (only the listen address and worker threads need a
-restart). Key custody is chosen per store: the admin enables backends and a
+admin settings page in monokulo (one tab per job: General, Monero nodes,
+Payments, Key custody, Abuse protection, Server, Logging), and applies to
+the running engine as soon as it's saved (only the listen address and
+worker threads need a restart). Key custody is chosen per store: the admin enables backends and a
 default, and each store can move by entering its keys again.
 
 ## Running in production
@@ -60,8 +61,10 @@ step 1.
    On first boot with no admin token yet configured, it prints a generated
    instance-admin token once - save it (or set `SCANNER_ADMIN_TOKEN`
    explicitly to control it yourself). Use that token to configure the
-   Monero node(s) and payment thresholds via `POST /api/v1/admin/settings`,
-   and to provision each merchant tenant.
+   Monero node(s) and payment thresholds via `POST /api/v1/admin/settings`
+   (a network's nodes as JSON: a primary with its `fallbacks`), or later on
+   monokulo's admin settings page, whose Monero nodes tab is a form with a
+   row per node; and to provision each merchant tenant.
 
 3. Start the control plane, pointed at the engine:
 

@@ -7,7 +7,10 @@
 //! `get_blocks.bin` encoder and real transactions, so payment flows are
 //! tested in-process with `FakeDaemonClient` instead.
 //!
-//! Usage: `fake-monerod [--port N] [--height N]`. Prints
+//! Usage: `fake-monerod [--port N] [--height N] [--nettype NAME]`, where
+//! `--nettype` is the network `get_info` reports (default `stagenet`, what
+//! the Playwright suite uses; a test starts one with `mainnet` to see a
+//! node on the wrong network refused). Prints
 //! `FAKE_MONEROD_READY <address>` once listening. `POST /fake/offline` and
 //! `POST /fake/online` make it refuse or serve every other request, so a
 //! test can take "the node" down and bring it back.
@@ -27,6 +30,23 @@ struct Chain {
     /// Block count, as monerod's `/get_height` reports it.
     count: Arc<AtomicU64>,
     online: Arc<AtomicBool>,
+    /// The network `get_info` reports.
+    nettype: Arc<str>,
+}
+
+impl Chain {
+    /// `get_info`'s result: the fields the engine reads, and the flags an
+    /// older monerod sends instead of `nettype`.
+    fn info(&self) -> Value {
+        json!({
+            "height": self.count.load(Ordering::SeqCst),
+            "nettype": &*self.nettype,
+            "mainnet": &*self.nettype == "mainnet",
+            "stagenet": &*self.nettype == "stagenet",
+            "testnet": &*self.nettype == "testnet",
+            "status": "OK",
+        })
+    }
 }
 
 /// A deterministic 64-hex-character hash per height.
@@ -59,6 +79,7 @@ async fn json_rpc(State(chain): State<Chain>, Json(request): Json<Value>) -> Res
     let method = request.get("method").and_then(Value::as_str).unwrap_or_default();
     let top = chain.count.load(Ordering::SeqCst).saturating_sub(1);
     match method {
+        "get_info" => Json(json!({ "jsonrpc": "2.0", "id": id, "result": chain.info() })).into_response(),
         "get_block" => {
             let height = request.pointer("/params/height").and_then(Value::as_u64).unwrap_or(top);
             if height > top {
@@ -80,6 +101,13 @@ async fn json_rpc(State(chain): State<Chain>, Json(request): Json<Value>) -> Res
             Json(json!({ "jsonrpc": "2.0", "id": id, "error": { "code": -32601, "message": "Method not found" } })).into_response()
         }
     }
+}
+
+async fn get_info(State(chain): State<Chain>) -> Response {
+    if let Err(r) = chain.check() {
+        return *r;
+    }
+    Json(chain.info()).into_response()
 }
 
 async fn empty_pool_hashes(State(chain): State<Chain>) -> Response {
@@ -124,9 +152,11 @@ async fn main() {
     let arg = |name: &str| args.iter().position(|a| a == name).and_then(|i| args.get(i + 1)).and_then(|v| v.parse::<u64>().ok());
     let port = arg("--port").unwrap_or(0);
     let height = arg("--height").unwrap_or(1000);
-    let chain = Chain { count: Arc::new(AtomicU64::new(height + 1)), online: Arc::new(AtomicBool::new(true)) };
+    let nettype = args.iter().position(|a| a == "--nettype").and_then(|i| args.get(i + 1)).map_or("stagenet", String::as_str);
+    let chain = Chain { count: Arc::new(AtomicU64::new(height + 1)), online: Arc::new(AtomicBool::new(true)), nettype: Arc::from(nettype) };
     let app = Router::new()
         .route("/get_height", post(get_height))
+        .route("/get_info", post(get_info).get(get_info))
         .route("/json_rpc", post(json_rpc))
         .route("/get_transaction_pool_hashes", post(empty_pool_hashes))
         .route("/get_transaction_pool", post(empty_pool))

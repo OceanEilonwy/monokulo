@@ -41,8 +41,8 @@ A JSON line looks like this:
 
 ## Levels and development logging
 
-Both are on the admin settings page, under **Logging**, and apply on save
-without a restart.
+Both are on the admin settings page's **Logging** tab (monokulo's and the
+engine's, each under its own heading), and apply on save without a restart.
 
 - `logging.level`: `info` by default. A `tracing` filter, so parts of a
   process can be louder: `info,scanner::loops=debug`. The environment
@@ -136,8 +136,8 @@ merchant or customer data.
 ## Sending to an OpenTelemetry collector
 
 Set `logging.otlp_endpoint` (and, if the collector needs an API key,
-`logging.otlp_headers`) on the admin settings page, in both the monokulo and
-the engine halves, or with the environment variables
+`logging.otlp_headers`) on the admin settings page's Logging tab, under both
+Monokulo and Engine, or with the environment variables
 `MONOKULO_LOGGING_OTLP_ENDPOINT`, `SCANNER_LOGGING_OTLP_ENDPOINT`,
 `MONOKULO_LOGGING_OTLP_HEADERS` and `SCANNER_LOGGING_OTLP_HEADERS`.
 
