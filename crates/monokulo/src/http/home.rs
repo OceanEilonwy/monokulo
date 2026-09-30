@@ -148,7 +148,7 @@ pub async fn dashboard_home(
                     connection_id: row.id.clone(),
                     display_name: display_name.clone(),
                     order_id: o.order_id,
-                    status: o.status,
+                    status: o.status.into(),
                     amount,
                     currency,
                     created_at: o.created_at,

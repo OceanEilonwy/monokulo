@@ -130,11 +130,14 @@ pub(super) async fn order_rows(
             // A POS cancellation only matters while nothing was paid: a
             // payment that arrived anyway keeps the engine's status.
             let status = if detail.pos_cancelled_at.is_some()
-                && matches!(o.status.as_str(), "pending" | "expired")
-            {
-                "cancelled".to_string()
+                && matches!(
+                    o.status,
+                    shared::order_status::OrderStatus::Pending
+                        | shared::order_status::OrderStatus::Expired
+                ) {
+                crate::views::DisplayStatus::Cancelled
             } else {
-                o.status
+                o.status.into()
             };
             OrderRowViewModel {
                 order_id: o.order_id,
@@ -435,7 +438,7 @@ async fn order_detail_data(
                 rate_provider,
                 xmr_amount_piconero: detail.order.xmr_amount_piconero,
                 amount_received_piconero: detail.order.amount_received_piconero,
-                status: detail.order.status,
+                status: detail.order.status.into(),
                 confirmations: detail.order.confirmations,
                 confirmations_required_display,
                 base_currency_display,
@@ -6426,7 +6429,7 @@ mod tests {
             rate_provider: "xmr".to_string(),
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 500_000_000_000,
-            status: "paid".to_string(),
+            status: shared::order_status::OrderStatus::Paid.into(),
             confirmations: 10,
             confirmations_required_display: "10".to_string(),
             base_currency_display: "XMR".to_string(),

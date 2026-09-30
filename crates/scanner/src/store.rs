@@ -589,21 +589,12 @@ fn scan_window_orders(tenants: &str) -> String {
 /// conversion error rather than a panic, so one bad row fails the query that
 /// read it, not the whole scan loop.
 fn status_from_str(s: &str) -> rusqlite::Result<OrderStatus> {
-    Ok(match s {
-        "pending" => OrderStatus::Pending,
-        "unconfirmed" => OrderStatus::Unconfirmed,
-        "confirming" => OrderStatus::Confirming,
-        "paid" => OrderStatus::Paid,
-        "partial" => OrderStatus::Partial,
-        "overpaid" => OrderStatus::Overpaid,
-        "expired" => OrderStatus::Expired,
-        other => {
-            return Err(rusqlite::Error::FromSqlConversionFailure(
-                0,
-                rusqlite::types::Type::Text,
-                format!("unknown order status in database: {other:?}").into(),
-            ))
-        }
+    s.parse().map_err(|e: shared::order_status::UnknownStatus| {
+        rusqlite::Error::FromSqlConversionFailure(
+            0,
+            rusqlite::types::Type::Text,
+            format!("{e} in database").into(),
+        )
     })
 }
 

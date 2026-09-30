@@ -19,6 +19,7 @@ pub mod key_custody;
 pub mod log;
 pub mod migrations;
 pub mod network;
+pub mod order_status;
 pub mod password;
 pub mod rate_limit;
 pub mod settings;

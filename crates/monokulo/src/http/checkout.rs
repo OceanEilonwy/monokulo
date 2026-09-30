@@ -25,6 +25,7 @@ use axum::extract::{Form, Path, Query, State};
 use axum::http::{HeaderMap, StatusCode};
 use axum::response::{IntoResponse, Json, Response};
 use serde::{Deserialize, Serialize};
+use shared::order_status::OrderStatus;
 use std::str::FromStr;
 
 use crate::db::StoreConnectionRow;
@@ -53,14 +54,14 @@ fn checkout_payment_message(order: &OrderView) -> Option<String> {
     };
     let requested = xmr(order.xmr_amount_piconero);
     let received = xmr(order.amount_received_piconero);
-    match order.status.as_str() {
-        "partial" => {
+    match order.status {
+        OrderStatus::Partial => {
             let remaining = xmr(order
                 .xmr_amount_piconero
                 .saturating_sub(order.amount_received_piconero));
             Some(format!("{received} XMR received of {requested} XMR. Send the remaining {remaining} XMR to the address below."))
         }
-        "overpaid" => {
+        OrderStatus::Overpaid => {
             let extra = xmr(order
                 .amount_received_piconero
                 .saturating_sub(order.xmr_amount_piconero));
@@ -80,7 +81,7 @@ pub(super) fn payment_uri(order: &crate::engine_client::OrderView) -> String {
     let due = order
         .xmr_amount_piconero
         .saturating_sub(order.amount_received_piconero);
-    if matches!(order.status.as_str(), "pending" | "partial") && due > 0 {
+    if matches!(order.status, OrderStatus::Pending | OrderStatus::Partial) && due > 0 {
         let amount = shared::exchange_rate::format_piconero_as_xmr(due);
         format!(
             "monero:{}?tx_amount={}",
@@ -420,7 +421,10 @@ async fn build_checkout_view(
     // HTML and after a status refresh. `confirmations_required ==
     // 0` (zero-conf trusted) means any receipt already counts as done.
     let progress_percent: u8 = if confirmations_required == 0 {
-        if matches!(detail.order.status.as_str(), "paid" | "overpaid") {
+        if matches!(
+            detail.order.status,
+            OrderStatus::Paid | OrderStatus::Overpaid
+        ) {
             100
         } else {
             0
@@ -433,7 +437,7 @@ async fn build_checkout_view(
     CheckoutViewModel {
         order_id: detail.order.order_id.clone(),
         status_label: status_text.to_string(),
-        status: detail.order.status.clone(),
+        status: detail.order.status.into(),
         status_class: status_class.to_string(),
         address: detail.order.address.clone(),
         qr_code_svg: payment_qr_svg(&detail.order).unwrap_or_default(),
@@ -587,7 +591,7 @@ pub async fn set_refund_address(
 
 #[derive(Serialize)]
 pub struct CheckoutStatusResponse {
-    pub status: String,
+    pub status: crate::views::DisplayStatus,
     pub confirmations: u64,
     pub confirmations_required: u64,
     pub is_terminal: bool,
@@ -614,7 +618,7 @@ pub async fn checkout_status(
             let error = checkout_payment_message(&detail.order);
             let (_, _, is_terminal) = crate::views::order_state(&detail.order.status);
             Json(CheckoutStatusResponse {
-                status: detail.order.status,
+                status: detail.order.status.into(),
                 confirmations: detail.order.confirmations,
                 confirmations_required,
                 is_terminal,
@@ -687,7 +691,7 @@ pub async fn checkout_events(
                 let view =
                     build_checkout_view(&state, &pk, &row, &sk, detail, None, &options).await;
                 let status = CheckoutStatusResponse {
-                    status: view.status.clone(),
+                    status: view.status,
                     confirmations: view.confirmations,
                     confirmations_required: view.confirmations_required,
                     is_terminal: view.is_terminal,
@@ -888,7 +892,7 @@ mod tests {
             address: "address".to_string(),
             xmr_amount_piconero: 500_000_000_000,
             amount_received_piconero: 200_000_000_000,
-            status: "partial".to_string(),
+            status: shared::order_status::OrderStatus::Partial.into(),
             confirmations: 0,
             double_spend_detected_at: None,
             refund_address: None,
@@ -904,7 +908,7 @@ mod tests {
             Some("0.2 XMR received of 0.5 XMR. Send the remaining 0.3 XMR to the address below.")
         );
 
-        order.status = "overpaid".to_string();
+        order.status = shared::order_status::OrderStatus::Overpaid.into();
         order.amount_received_piconero = 600_000_000_000;
         assert_eq!(checkout_payment_message(&order).as_deref(), Some("0.6 XMR received for a 0.5 XMR order (0.1 XMR extra). Do not send more. Contact the merchant about the extra amount."));
 

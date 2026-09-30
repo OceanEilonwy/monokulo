@@ -37,6 +37,7 @@
 //! client already has to handle "the connection failed" separately from
 //! "the status says there's a problem".
 
+use shared::order_status::OrderStatus;
 use std::collections::HashMap;
 
 use axum::extract::{Path, Query, State};
@@ -379,7 +380,7 @@ pub async fn create_order(
 
 #[derive(Debug, Serialize)]
 pub struct PosStatusResponse {
-    pub status: String,
+    pub status: crate::views::DisplayStatus,
     pub updated_at: i64,
     pub confirmations: u64,
     pub confirmations_required: u64,
@@ -409,7 +410,7 @@ pub struct PosOrderData {
     xmr_amount: String,
     amount: String,
     currency: String,
-    status: String,
+    status: crate::views::DisplayStatus,
     updated_at: i64,
     confirmations: u64,
     confirmations_required: u64,
@@ -500,7 +501,7 @@ fn pos_order_view(
             .as_ref()
             .map(|m| m.currency.clone())
             .unwrap_or_else(|| "XMR".to_string()),
-        status: order.status.clone(),
+        status: order.status.into(),
         updated_at: order.updated_at,
         confirmations: order.confirmations,
         confirmations_required,
@@ -757,7 +758,7 @@ pub async fn cancel_order(
         Ok(detail) => detail,
         Err(error) => return engine_failure(&error),
     };
-    if detail.order.amount_received_piconero > 0 || detail.order.status != "pending" {
+    if detail.order.amount_received_piconero > 0 || detail.order.status != OrderStatus::Pending {
         return ApiError::BadRequest("This order has payment activity and cannot be cancelled. Background it for review instead.".to_string()).into_response();
     }
     match state
@@ -813,15 +814,18 @@ pub(super) fn derive_payment_error(order: &OrderView) -> Option<String> {
     if order.double_spend_detected_at.is_some() {
         return Some("Double-spend detected on this payment. Do not treat it as paid.".to_string());
     }
-    match order.status.as_str() {
-        "partial" => {
+    match order.status {
+        OrderStatus::Partial => {
             Some("Underpaid - the customer sent less than the requested amount.".to_string())
         }
-        "overpaid" => {
+        OrderStatus::Overpaid => {
             Some("Overpaid - the customer sent more than the requested amount.".to_string())
         }
-        "expired" => Some("This payment expired before it was completed.".to_string()),
-        _ => None,
+        OrderStatus::Expired => Some("This payment expired before it was completed.".to_string()),
+        OrderStatus::Pending
+        | OrderStatus::Unconfirmed
+        | OrderStatus::Confirming
+        | OrderStatus::Paid => None,
     }
 }
 
@@ -864,7 +868,7 @@ async fn pos_status(
     // met, so there's no separate threshold check to fold in here.
     let (_, _, is_terminal) = crate::views::order_state(&order.status);
     PosStatusResponse {
-        status: order.status.clone(),
+        status: order.status.into(),
         updated_at: order.updated_at,
         confirmations: order.confirmations,
         confirmations_required,
@@ -876,7 +880,7 @@ async fn pos_status(
                 .xmr_amount_piconero
                 .saturating_sub(order.amount_received_piconero),
         ),
-        qr_svg: if order.status == "partial" {
+        qr_svg: if order.status == OrderStatus::Partial {
             super::checkout::payment_qr_svg(order).ok()
         } else {
             None
@@ -2220,7 +2224,7 @@ mod pure_logic_tests {
             address: "addr".to_string(),
             xmr_amount_piconero: 1_000_000_000_000,
             amount_received_piconero: 0,
-            status: status.to_string(),
+            status: status.parse().expect("a known status"),
             confirmations: 0,
             double_spend_detected_at: None,
             refund_address: None,

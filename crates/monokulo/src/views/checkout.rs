@@ -18,6 +18,8 @@
 
 use maud::{html, Markup, PreEscaped};
 
+use super::{DisplayStatus, OrderStatus};
+
 use super::{layout_bare, layout_bare_with_head, layout_with_head, PageChrome};
 
 /// One payment row on the checkout page's payments table - mirrors the
@@ -33,7 +35,7 @@ pub struct CheckoutPaymentViewModel {
 pub struct CheckoutViewModel {
     pub order_id: String,
     pub status_label: String,
-    pub status: String,
+    pub status: super::DisplayStatus,
     pub status_class: String,
     pub address: String,
     /// The QR code (`http::checkout::payment_qr_svg`); asks for
@@ -400,7 +402,10 @@ pub fn live_parts(data: &CheckoutViewModel) -> [(&'static str, Markup); 5] {
 /// Whether the customer still owes something: the whole amount, or the rest
 /// after a partial payment. Only then is the code live; otherwise it fades.
 fn awaiting_payment(data: &CheckoutViewModel) -> bool {
-    matches!(data.status.as_str(), "pending" | "partial")
+    matches!(
+        data.status,
+        DisplayStatus::Order(OrderStatus::Pending | OrderStatus::Partial)
+    )
 }
 
 /// One step on the stage's track.
@@ -438,18 +443,23 @@ impl Step {
 /// The track: Send, Confirm, Paid - without Confirm when the store counts a
 /// payment as soon as it's seen (`confirmations_required == 0`).
 fn stage_steps(data: &CheckoutViewModel) -> Vec<(&'static str, Step)> {
-    let [send, confirm, paid] =
-        if data.double_spend_detected_at.is_some() && !awaiting_payment(data) {
-            [Step::Fail, Step::Todo, Step::Todo]
-        } else {
-            match data.status.as_str() {
-                "pending" => [Step::Now, Step::Todo, Step::Todo],
-                "partial" => [Step::Part, Step::Todo, Step::Todo],
-                "unconfirmed" | "confirming" => [Step::Done, Step::Now, Step::Todo],
-                "paid" | "overpaid" => [Step::Done, Step::Done, Step::Done],
-                _ => [Step::Fail, Step::Todo, Step::Todo],
+    let [send, confirm, paid] = if data.double_spend_detected_at.is_some()
+        && !awaiting_payment(data)
+    {
+        [Step::Fail, Step::Todo, Step::Todo]
+    } else {
+        match data.status {
+            DisplayStatus::Order(OrderStatus::Pending) => [Step::Now, Step::Todo, Step::Todo],
+            DisplayStatus::Order(OrderStatus::Partial) => [Step::Part, Step::Todo, Step::Todo],
+            DisplayStatus::Order(OrderStatus::Unconfirmed)
+            | DisplayStatus::Order(OrderStatus::Confirming) => [Step::Done, Step::Now, Step::Todo],
+            DisplayStatus::Order(OrderStatus::Paid)
+            | DisplayStatus::Order(OrderStatus::Overpaid) => [Step::Done, Step::Done, Step::Done],
+            DisplayStatus::Order(OrderStatus::Expired) | DisplayStatus::Cancelled => {
+                [Step::Fail, Step::Todo, Step::Todo]
             }
-        };
+        }
+    };
     if data.confirmations_required == 0 {
         vec![
             ("Send", send),
@@ -487,47 +497,43 @@ fn stage_message(data: &CheckoutViewModel) -> (String, Markup) {
             )
         };
     }
-    match data.status.as_str() {
-        "pending" => (
+    match data.status {
+        DisplayStatus::Order(OrderStatus::Pending) => (
             format!("Send {total} XMR"),
             html! { "Scan the code or copy the address. " (left) },
         ),
-        "partial" => (
+        DisplayStatus::Order(OrderStatus::Partial) => (
             format!("Send the remaining {due} XMR"),
             html! { (received) " of " (total) " XMR received. This new code asks for the rest. " (left) },
         ),
-        "unconfirmed" => (
+        DisplayStatus::Order(OrderStatus::Unconfirmed) => (
             "Waiting for confirmation".to_string(),
             html! { (received) " XMR seen on the network. Don't send it again; this page updates by itself." },
         ),
-        "confirming" => (
+        DisplayStatus::Order(OrderStatus::Confirming) => (
             "Confirming".to_string(),
             html! { (data.confirmations) " of " (data.confirmations_required) " confirmations. Don't send it again; this page updates by itself." },
         ),
-        "paid" => (
+        DisplayStatus::Order(OrderStatus::Paid) => (
             "Paid".to_string(),
             html! { (received) " XMR received" @if data.confirmations_required > 0 { " and confirmed" } ". Nothing more to send." },
         ),
-        "overpaid" => (
+        DisplayStatus::Order(OrderStatus::Overpaid) => (
             "Paid, with extra".to_string(),
             html! {
                 @if let Some(message) = &data.payment_error { (message) } @else { "Don't send more. Contact the merchant about the extra amount." }
             },
         ),
-        "expired" => (
+        DisplayStatus::Order(OrderStatus::Expired) => (
             "This payment expired".to_string(),
             html! {
                 @if received == "0" { "Nothing arrived in time. Don't send to this address; go back to the shop to start again." }
                 @else { (received) " XMR arrived before it expired. Don't send more; contact the merchant about it." }
             },
         ),
-        "cancelled" => (
+        DisplayStatus::Cancelled => (
             "Cancelled".to_string(),
             html! { "This order was cancelled. Don't send to this address." },
-        ),
-        _ => (
-            data.status_label.clone(),
-            html! { "Contact the merchant before sending anything." },
         ),
     }
 }
@@ -570,7 +576,7 @@ fn live_status(data: &CheckoutViewModel) -> Markup {
 fn live_pay(data: &CheckoutViewModel) -> Markup {
     let due = super::trim_xmr(&data.amount_due_xmr);
     let total = super::trim_xmr(&data.xmr_amount);
-    let partial = data.status == "partial";
+    let partial = data.status == DisplayStatus::Order(OrderStatus::Partial);
     let (label, amount) = if partial {
         ("Still to pay", due)
     } else if awaiting_payment(data) {
@@ -621,8 +627,8 @@ fn cross_icon() -> Markup {
 fn address_label(data: &CheckoutViewModel) -> Markup {
     html! {
         label class="address-label" id="address-label" for="address" data-live {
-            @if data.status == "partial" { "Send the remaining amount to" }
-            @else if data.status == "pending" { "Send exactly this amount to" }
+            @if data.status == DisplayStatus::Order(OrderStatus::Partial) { "Send the remaining amount to" }
+            @else if data.status == DisplayStatus::Order(OrderStatus::Pending) { "Send exactly this amount to" }
             @else { "Payment address" }
         }
     }
@@ -812,7 +818,7 @@ mod tests {
         CheckoutViewModel {
             order_id: "pay_abc123".to_string(),
             status_label: if is_terminal { "Paid".to_string() } else { "Waiting for payment".to_string() },
-            status: if is_terminal { "paid".to_string() } else { "pending".to_string() },
+            status: if is_terminal { shared::order_status::OrderStatus::Paid.into() } else { shared::order_status::OrderStatus::Pending.into() },
             status_class: if is_terminal { "state-paid".to_string() } else { "state-pending".to_string() },
             address: "86hiL7n5RcVJJKBztLP1UFjCSXJZTSa276LaNaXcQuw1ZcauZJShLbB61YabbizKYVB3jHh7K3s1GCLwLVs6AwMX9FGCnfC".to_string(),
             qr_code_svg: crate::qr::QrSvg::for_test("<svg></svg>"),
@@ -920,7 +926,7 @@ mod tests {
     #[test]
     fn live_fragment_carries_every_changing_region_and_nothing_else() {
         let mut data = test_checkout_view_model(false);
-        data.status = "partial".to_string();
+        data.status = shared::order_status::OrderStatus::Partial.into();
         data.payments = vec![CheckoutPaymentViewModel {
             txid_short: "abcd1234…ef5678".to_string(),
             amount_xmr: "0.200000000000".to_string(),
@@ -981,7 +987,7 @@ mod tests {
     #[test]
     fn partial_payment_shows_remaining_amount_and_deadline() {
         let mut data = test_checkout_view_model(false);
-        data.status = "partial".to_string();
+        data.status = shared::order_status::OrderStatus::Partial.into();
         data.status_label = "Partial payment received".to_string();
         data.status_class = "state-partial".to_string();
         data.amount_received_xmr = "0.200000000000".to_string();
@@ -1028,7 +1034,7 @@ mod tests {
                 status,
                 "pending" | "partial" | "unconfirmed" | "confirming"
             ));
-            data.status = status.to_string();
+            data.status = super::DisplayStatus::named(status);
             let html = checkout_page(&chrome(), &data).into_string();
             let stage = html
                 .find(r#"class="stage-slot""#)
@@ -1062,7 +1068,7 @@ mod tests {
             ("cancelled", true),
         ] {
             let mut data = test_checkout_view_model(false);
-            data.status = status.to_string();
+            data.status = super::DisplayStatus::named(status);
             let html = checkout_page(&chrome(), &data).into_string();
             assert_eq!(html.contains("qr-wrap is-spent"), faded, "{status}: {html}");
         }
@@ -1079,7 +1085,7 @@ mod tests {
         assert!(html.contains("Confirm<span"));
 
         data.confirmations_required = 0;
-        data.status = "unconfirmed".to_string();
+        data.status = shared::order_status::OrderStatus::Unconfirmed.into();
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(
             html.contains(r#"<ol class="track track-2" aria-label="Payment progress">"#),
@@ -1089,7 +1095,7 @@ mod tests {
         // Seen is the last step before Paid, so Paid is where the order is.
         assert!(html.contains(r#"<li class="step-now"><span class="track-dot" aria-hidden="true"></span><span class="track-name">Paid<span class="sr-only">, now</span>"#), "{html}");
 
-        data.status = "paid".to_string();
+        data.status = shared::order_status::OrderStatus::Paid.into();
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(
             html.contains("XMR received. Nothing more to send."),
@@ -1100,14 +1106,14 @@ mod tests {
     #[test]
     fn full_payment_hides_deadline_and_overpayment_explains_excess() {
         let mut data = test_checkout_view_model(false);
-        data.status = "confirming".to_string();
+        data.status = shared::order_status::OrderStatus::Confirming.into();
         data.status_label = "Confirming".to_string();
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(!html.contains(" left</span>"));
         assert!(!html.contains("Expires in"));
         assert!(html.contains("Payment address"));
 
-        data.status = "overpaid".to_string();
+        data.status = shared::order_status::OrderStatus::Overpaid.into();
         data.status_label = "Overpaid".to_string();
         data.status_class = "state-overpaid".to_string();
         data.is_terminal = true;
@@ -1166,7 +1172,7 @@ mod tests {
             "{html}"
         );
         assert!(!html.contains(r#"<div class="qr-wrap is-spent">"#));
-        data.status = "unconfirmed".to_string();
+        data.status = shared::order_status::OrderStatus::Unconfirmed.into();
         let html = checkout_page(&chrome(), &data).into_string();
         assert!(
             html.contains("Payment reversed")
@@ -1175,7 +1181,7 @@ mod tests {
             "{html}"
         );
         assert!(html.contains(r#"<li class="step-fail">"#));
-        data.status = "pending".to_string();
+        data.status = shared::order_status::OrderStatus::Pending.into();
         // UTC, marked for the script to show in the customer's own zone.
         assert!(html.contains(r#"<time class="when" datetime="2023-11-14T22:13:20Z" title="Tuesday 14 November 2023, 22:13:20 (UTC)" data-local>14 Nov 2023, 22:13</time>"#), "{html}");
         // With `?timezone=`, that zone, and nothing for the script to change.

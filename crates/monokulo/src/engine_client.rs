@@ -730,7 +730,7 @@ pub struct OrderView {
     pub address: String,
     pub xmr_amount_piconero: u64,
     pub amount_received_piconero: u64,
-    pub status: String,
+    pub status: shared::order_status::OrderStatus,
     pub confirmations: u64,
     pub double_spend_detected_at: Option<i64>,
     pub refund_address: Option<String>,
