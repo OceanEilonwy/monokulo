@@ -42,7 +42,7 @@ use serde_json::json;
 use crate::engine_client::{EngineClientError, EngineStatusResponse, NetworkStatus};
 use crate::views;
 
-use super::AppState;
+use super::{AppState, Engine};
 
 /// How long a fetched status is trusted before the next request triggers a
 /// fresh one. Short enough that the page (which also has its own 30s meta
@@ -78,9 +78,9 @@ pub(crate) fn new_status_cache() -> StatusCache {
 
 /// The status cache, emptied first if the engine URL changed since it was
 /// filled.
-pub(crate) fn status_cache(state: &AppState) -> parking_lot::MutexGuard<'_, StatusCacheState> {
-    let base_url = state.engine.client.base_url();
-    let mut cache = state.engine.status_cache.lock();
+pub(crate) fn status_cache(engine: &Engine) -> parking_lot::MutexGuard<'_, StatusCacheState> {
+    let base_url = engine.client.base_url();
+    let mut cache = engine.status_cache.lock();
     if cache.base_url != base_url {
         cache.cached = None;
         cache.base_url = base_url;
@@ -97,8 +97,8 @@ const KNOWN_STATUS_MAX_AGE: Duration = Duration::from_secs(300);
 /// it stale starts a background refresh, so the next page (or the
 /// indicator's own poll) sees a fresh answer - which keeps it current for
 /// visitors without JavaScript too.
-pub fn known_health(state: &AppState) -> Option<bool> {
-    let mut cache = status_cache(state);
+pub fn known_health(engine: &Engine) -> Option<bool> {
+    let mut cache = status_cache(engine);
     let age = cache
         .cached
         .as_ref()
@@ -106,10 +106,10 @@ pub fn known_health(state: &AppState) -> Option<bool> {
     if age.is_none_or(|age| age >= CACHE_TTL) && !cache.refreshing {
         if let Ok(runtime) = tokio::runtime::Handle::try_current() {
             cache.refreshing = true;
-            let state = state.clone();
+            let engine = engine.clone();
             runtime.spawn(async move {
-                let _ = get_status_cached(&state).await;
-                status_cache(&state).refreshing = false;
+                let _ = get_status_cached(&engine).await;
+                status_cache(&engine).refreshing = false;
             });
         }
     }
@@ -124,8 +124,8 @@ pub fn known_health(state: &AppState) -> Option<bool> {
 /// first, from the same cache as [`known_health`] (part 5). Empty unless
 /// the engine offers more than one, so forms only show the choice when
 /// there is one to make.
-pub fn known_custody_choices(state: &AppState) -> Vec<String> {
-    let choices = known_enabled_custody_backends(state);
+pub fn known_custody_choices(engine: &Engine) -> Vec<String> {
+    let choices = known_enabled_custody_backends(engine);
     if choices.len() < 2 {
         return Vec::new();
     }
@@ -134,8 +134,8 @@ pub fn known_custody_choices(state: &AppState) -> Vec<String> {
 
 /// Every key custody backend the engine has enabled, the default first.
 /// Empty when the engine offers no choice or its status isn't known.
-pub fn known_enabled_custody_backends(state: &AppState) -> Vec<String> {
-    let cache = status_cache(state);
+pub fn known_enabled_custody_backends(engine: &Engine) -> Vec<String> {
+    let cache = status_cache(engine);
     let Some(status) = cache
         .cached
         .as_ref()
@@ -161,10 +161,10 @@ pub fn known_enabled_custody_backends(state: &AppState) -> Vec<String> {
 /// [`known_custody_choices`] as form options, `selected` (or the default)
 /// selected.
 pub fn custody_choice_views(
-    state: &AppState,
+    engine: &Engine,
     selected: Option<&str>,
 ) -> Vec<crate::views::connect::CustodyChoice> {
-    let choices = known_custody_choices(state);
+    let choices = known_custody_choices(engine);
     let selected = selected
         .filter(|s| choices.iter().any(|c| c == s))
         .or(choices.first().map(String::as_str))
@@ -193,15 +193,15 @@ pub fn custody_backend_label(backend: &str) -> String {
 /// Forgets the cached status, so the next page reads the engine's again:
 /// after a change that the status reflects (a store moving its keys, the
 /// engine address changing).
-pub fn invalidate_status_cache(state: &AppState) {
-    status_cache(state).cached = None;
+pub fn invalidate_status_cache(engine: &Engine) {
+    status_cache(engine).cached = None;
 }
 
 /// Puts `status` in the cache as if just fetched, for tests of pages that
 /// read it without waiting on an engine.
 #[cfg(test)]
-pub(crate) fn seed_status_for_tests(state: &AppState, status: EngineStatusResponse) {
-    status_cache(state).cached = Some(CachedStatus {
+pub(crate) fn seed_status_for_tests(engine: &Engine, status: EngineStatusResponse) {
+    status_cache(engine).cached = Some(CachedStatus {
         fetched_at: Instant::now(),
         result: Ok(status),
     });
@@ -210,8 +210,8 @@ pub(crate) fn seed_status_for_tests(state: &AppState, status: EngineStatusRespon
 /// The stores the engine last said it can't scan (task 3.7), from the same
 /// cache as [`known_health`], without waiting on the engine. Empty when
 /// nothing is known yet.
-pub fn known_unserved(state: &AppState) -> Vec<crate::engine_client::UnservedTenant> {
-    let cache = status_cache(state);
+pub fn known_unserved(engine: &Engine) -> Vec<crate::engine_client::UnservedTenant> {
+    let cache = status_cache(engine);
     cache
         .cached
         .as_ref()
@@ -245,20 +245,19 @@ fn is_healthy(result: &Result<EngineStatusResponse, String>) -> bool {
 /// simpler than a mutex-held-across-await or a dedicated refresh task, and
 /// "occasionally two real fetches instead of one" is a fine outcome for what
 /// this exists to bound (typical page-view volume, not a flood).
-pub(crate) async fn get_status_cached(state: &AppState) -> Result<EngineStatusResponse, String> {
-    if let Some(cached) = status_cache(state).cached.as_ref() {
+pub(crate) async fn get_status_cached(engine: &Engine) -> Result<EngineStatusResponse, String> {
+    if let Some(cached) = status_cache(engine).cached.as_ref() {
         if cached.fetched_at.elapsed() < CACHE_TTL {
             return cached.result.clone();
         }
     }
-    let asked = state.engine.client.base_url();
-    let result = state
-        .engine
+    let asked = engine.client.base_url();
+    let result = engine
         .client
         .get_status()
         .await
         .map_err(|e| describe_engine_error(&e));
-    let mut cache = status_cache(state);
+    let mut cache = status_cache(engine);
     // Not cached if the engine URL changed while this was being fetched.
     if cache.base_url == asked {
         cache.cached = Some(CachedStatus {
@@ -344,7 +343,7 @@ pub async fn status_events(
 
 /// The status page's content; abuse figures only for an admin.
 async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPageViewModel {
-    let mut view_model = match get_status_cached(state).await {
+    let mut view_model = match get_status_cached(&state.engine).await {
         Ok(status) => build_view_model(status),
         Err(message) => views::status::StatusPageViewModel {
             abuse: None,
@@ -372,8 +371,8 @@ async fn status_view(state: &AppState, admin: bool) -> views::status::StatusPage
 /// indicator polls to update its color/glow after the page has loaded (the
 /// page itself is rendered with [`known_health`]), without pulling in the
 /// full status page's own engine round trip. See [`is_healthy`].
-pub async fn status_summary(State(state): State<AppState>) -> Response {
-    let healthy = is_healthy(&get_status_cached(&state).await);
+pub async fn status_summary(State(engine): State<Engine>) -> Response {
+    let healthy = is_healthy(&get_status_cached(&engine).await);
     Json(json!({ "healthy": healthy })).into_response()
 }
 
@@ -493,9 +492,9 @@ mod tests {
     async fn known_health_renders_the_last_known_state_and_refreshes_it_in_the_background() {
         let state = crate::http::AppState::for_tests();
         // Nothing learned yet: unknown, and a background refresh starts.
-        assert_eq!(known_health(&state), None);
+        assert_eq!(known_health(&state.engine), None);
         let deadline = Instant::now() + Duration::from_secs(5);
-        while status_cache(&state).refreshing {
+        while status_cache(&state.engine).refreshing {
             assert!(
                 Instant::now() < deadline,
                 "the background refresh never finished"
@@ -503,15 +502,15 @@ mod tests {
             tokio::time::sleep(Duration::from_millis(10)).await;
         }
         // The test engine is unreachable, which is a known problem.
-        assert_eq!(known_health(&state), Some(false));
+        assert_eq!(known_health(&state.engine), Some(false));
 
         // Too old to show as known.
-        status_cache(&state).cached = Some(CachedStatus {
+        status_cache(&state.engine).cached = Some(CachedStatus {
             fetched_at: Instant::now() - KNOWN_STATUS_MAX_AGE,
             result: Err("stale".to_string()),
         });
-        status_cache(&state).refreshing = true;
-        assert_eq!(known_health(&state), None);
+        status_cache(&state.engine).refreshing = true;
+        assert_eq!(known_health(&state.engine), None);
     }
 
     mod http_tests {
@@ -539,19 +538,19 @@ mod tests {
                     .await;
             let state = state_with_engine(EngineClient::new(format!("http://{}", engine.addr)));
 
-            let first = get_status_cached(&state)
+            let first = get_status_cached(&state.engine)
                 .await
                 .expect("first fetch should succeed");
-            let fetched_at_after_first = super::super::status_cache(&state)
+            let fetched_at_after_first = super::super::status_cache(&state.engine)
                 .cached
                 .as_ref()
                 .unwrap()
                 .fetched_at;
 
-            let second = get_status_cached(&state)
+            let second = get_status_cached(&state.engine)
                 .await
                 .expect("second fetch should succeed");
-            let fetched_at_after_second = super::super::status_cache(&state)
+            let fetched_at_after_second = super::super::status_cache(&state.engine)
                 .cached
                 .as_ref()
                 .unwrap()

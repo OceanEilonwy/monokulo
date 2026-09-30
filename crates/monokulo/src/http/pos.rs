@@ -51,6 +51,9 @@ use crate::views::pos::PosViewModel;
 
 use super::orders::{decrypt_sk, display_name_for, load_owned_connection};
 use super::{ApiError, AppState, AuthedUser};
+use crate::crypto::AtRestKey;
+use crate::db::Database;
+use crate::http::Engine;
 
 /// `GET /dashboard/stores/{id}/pos` - the terminal screen itself.
 pub async fn pos_page(
@@ -58,7 +61,7 @@ pub async fn pos_page(
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<crate::db::ConnectionId>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -148,7 +151,7 @@ pub async fn create_order(
     Path(id): Path<crate::db::ConnectionId>,
     Json(req): Json<PosCreateOrderRequest>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),
@@ -161,7 +164,7 @@ pub async fn create_order(
     }
 
     let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),
@@ -175,7 +178,7 @@ pub async fn create_order(
             .await;
         match existing {
             Ok(Some(existing)) => {
-                let sk = match decrypt_sk(&state, &row) {
+                let sk = match decrypt_sk(&state.encryption_key, &row) {
                     Ok(sk) => sk,
                     Err(()) => return ApiError::Internal.into_response(),
                 };
@@ -264,7 +267,7 @@ pub async fn create_order(
             Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
         };
 
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return ApiError::Internal.into_response(),
     };
@@ -622,12 +625,12 @@ pub async fn list_orders(
     Path(id): Path<crate::db::ConnectionId>,
     Query(query): Query<PosListQuery>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return ApiError::Internal.into_response(),
     };
@@ -687,7 +690,7 @@ pub async fn order_detail(
     AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),
@@ -702,7 +705,7 @@ pub async fn order_detail(
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(_) => return ApiError::Internal.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return ApiError::Internal.into_response(),
     };
@@ -713,15 +716,14 @@ pub async fn order_detail(
 }
 
 pub async fn background_order(
-    State(state): State<AppState>,
+    State(db): State<Database>,
     AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
 ) -> Response {
-    if !matches!(load_owned_connection(&state, &user, &id).await, Ok(Some(_))) {
+    if !matches!(load_owned_connection(&db, &user, &id).await, Ok(Some(_))) {
         return ApiError::NotFound.into_response();
     }
-    match state
-        .db
+    match db
         .write(move |db| db.background_pos_order(&id, &order_id))
         .await
     {
@@ -732,21 +734,19 @@ pub async fn background_order(
 }
 
 pub async fn cancel_order(
-    State(state): State<AppState>,
+    State(db): State<Database>,
+    State(encryption_key): State<AtRestKey>,
+    State(engine): State<Engine>,
     AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),
     };
     let (store_id, order) = (id.clone(), order_id.clone());
-    let pos_row = match state
-        .db
-        .read(move |db| db.get_pos_order(&store_id, &order))
-        .await
-    {
+    let pos_row = match db.read(move |db| db.get_pos_order(&store_id, &order)).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(_) => return ApiError::Internal.into_response(),
@@ -754,19 +754,18 @@ pub async fn cancel_order(
     if pos_row.cancelled_at.is_some() {
         return StatusCode::NO_CONTENT.into_response();
     }
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return ApiError::Internal.into_response(),
     };
-    let detail = match state.engine.client.get_order_detail(&sk, &order_id).await {
+    let detail = match engine.client.get_order_detail(&sk, &order_id).await {
         Ok(detail) => detail,
         Err(error) => return engine_failure(&error),
     };
     if detail.order.amount_received_piconero > 0 || detail.order.status != OrderStatus::Pending {
         return ApiError::BadRequest("This order has payment activity and cannot be cancelled. Background it for review instead.".to_string()).into_response();
     }
-    match state
-        .db
+    match db
         .write(move |db| db.cancel_pos_order(&id, &order_id, crate::now_unix()))
         .await
     {
@@ -842,12 +841,12 @@ pub async fn order_status(
     AuthedUser(user, _): AuthedUser,
     Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return ApiError::Internal.into_response(),
     };
@@ -916,12 +915,12 @@ pub async fn order_events(
     Path(id): Path<crate::db::ConnectionId>,
     Query(query): Query<PosEventsQuery>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return ApiError::NotFound.into_response(),
         Err(()) => return ApiError::Internal.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return ApiError::Internal.into_response(),
     };

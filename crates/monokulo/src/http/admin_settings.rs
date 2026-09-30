@@ -370,7 +370,7 @@ async fn build_view_model(
         // tab bar with whatever is already known, rather than wait on node
         // probes to show, say, the Logging tab (decision D10).
         let unserved = if tab == SettingsTab::Nodes {
-            match super::status_page::get_status_cached(state).await {
+            match super::status_page::get_status_cached(&state.engine).await {
                 Ok(status) => {
                     attach_node_status(&mut view.scanner_networks, &status);
                     status.unserved_tenants
@@ -378,7 +378,7 @@ async fn build_view_model(
                 Err(_) => Vec::new(),
             }
         } else {
-            super::status_page::known_unserved(state)
+            super::status_page::known_unserved(&state.engine)
         };
         view.unreachable_networks = unreachable_networks(unserved);
     }
@@ -822,7 +822,7 @@ async fn save_engine(
                 .iter()
                 .any(|key| key.starts_with("monero_node."))
             {
-                super::status_page::invalidate_status_cache(state);
+                super::status_page::invalidate_status_cache(&state.engine);
             }
             SaveOutcome {
                 notices: scanner_save_notices(

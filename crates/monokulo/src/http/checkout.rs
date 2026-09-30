@@ -137,7 +137,7 @@ async fn load_order(
         Ok(None) => return Err(LoadError::NotFound),
         Err(_) => return Err(LoadError::Internal),
     };
-    let sk = match super::orders::decrypt_sk(state, &row) {
+    let sk = match super::orders::decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(_) => return Err(LoadError::Internal),
     };

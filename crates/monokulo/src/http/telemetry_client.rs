@@ -20,8 +20,8 @@ use axum::extract::State;
 use axum::http::StatusCode;
 use serde::Deserialize;
 
+use crate::db::Database;
 use crate::db::Db;
-use crate::http::AppState;
 
 /// Most bytes a report may have; the route's body limit.
 pub const MAX_BODY_BYTES: usize = 8 * 1024;
@@ -59,15 +59,14 @@ pub fn page_may_report(db: &Db, page: &str) -> bool {
     true
 }
 
-pub async fn client_report(State(state): State<AppState>, body: Bytes) -> StatusCode {
+pub async fn client_report(State(db): State<Database>, body: Bytes) -> StatusCode {
     // Parsed from the bytes, not with the `Json` extractor, so the content
     // type doesn't matter (a beacon's can vary).
     let Ok(report) = serde_json::from_slice::<ClientReport>(&body) else {
         return StatusCode::BAD_REQUEST;
     };
     let page = report.page.clone().unwrap_or_default();
-    let may_report = state
-        .db
+    let may_report = db
         .read(move |db| Ok::<_, crate::db::DbError>(page_may_report(db, &page)))
         .await
         .unwrap_or(false);

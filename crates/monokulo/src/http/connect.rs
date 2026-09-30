@@ -219,7 +219,7 @@ async fn render_confirm_form(
         network_testnet_selected,
         currency_options,
         custody_choices: super::status_page::custody_choice_views(
-            state,
+            &state.engine,
             resubmit.and_then(|f| f.key_custody_backend.as_deref()),
         ),
         existing_stores,
@@ -670,7 +670,7 @@ pub async fn finish(State(state): State<AppState>, Json(req): Json<FinishRequest
         Ok(None) | Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };
 
-    let secret_token = match super::orders::decrypt_sk(&state, &row) {
+    let secret_token = match super::orders::decrypt_sk(&state.encryption_key, &row) {
         Ok(v) => v,
         Err(_) => return StatusCode::UNAUTHORIZED.into_response(),
     };

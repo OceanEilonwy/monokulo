@@ -1580,7 +1580,7 @@ async fn the_owner_of_a_store_on_a_network_without_a_node_is_alerted_on_every_pa
 ) {
     let (state, owner, other) = state_with_owner_and_store("pk_shop");
     crate::http::status_page::seed_status_for_tests(
-        &state,
+        &state.engine,
         status_with(vec![crate::engine_client::UnservedTenant {
             public_key: "pk_shop".into(),
             network: "stagenet".into(),
@@ -1636,7 +1636,7 @@ async fn the_owner_of_a_store_on_a_network_without_a_node_is_alerted_on_every_pa
 async fn a_store_catching_up_gets_a_gentler_alert_and_it_goes_away_once_it_has() {
     let (state, owner, _) = state_with_owner_and_store("pk_shop");
     crate::http::status_page::seed_status_for_tests(
-        &state,
+        &state.engine,
         status_with(vec![crate::engine_client::UnservedTenant {
             public_key: "pk_shop".into(),
             network: "mainnet".into(),
@@ -1649,7 +1649,7 @@ async fn a_store_catching_up_gets_a_gentler_alert_and_it_goes_away_once_it_has()
         .alerts;
     assert!(alerts[0].contains("catching up 12 block"), "{alerts:?}");
 
-    crate::http::status_page::seed_status_for_tests(&state, status_with(vec![]));
+    crate::http::status_page::seed_status_for_tests(&state.engine, status_with(vec![]));
     assert!(super::page_chrome(&state, Some(&owner), "/dashboard")
         .await
         .alerts
@@ -1664,7 +1664,7 @@ async fn a_store_whose_key_storage_is_off_or_down_gets_an_alert_saying_so() {
         ("custody_unavailable", "isn't answering"),
     ] {
         crate::http::status_page::seed_status_for_tests(
-            &state,
+            &state.engine,
             status_with(vec![crate::engine_client::UnservedTenant {
                 public_key: "pk_shop".into(),
                 network: "mainnet".into(),
@@ -1687,7 +1687,7 @@ async fn a_store_whose_key_storage_is_off_or_down_gets_an_alert_saying_so() {
 async fn a_status_cached_from_the_old_engine_is_not_shown_after_the_engine_url_changes() {
     let (state, owner, _) = state_with_owner_and_store("pk_shop");
     crate::http::status_page::seed_status_for_tests(
-        &state,
+        &state.engine,
         status_with(vec![crate::engine_client::UnservedTenant {
             public_key: "pk_shop".into(),
             network: "stagenet".into(),
@@ -1704,7 +1704,7 @@ async fn a_status_cached_from_the_old_engine_is_not_shown_after_the_engine_url_c
     );
     state.engine.client.retarget("http://127.0.0.1:2", 1024);
     assert!(
-        crate::http::status_page::known_unserved(&state).is_empty(),
+        crate::http::status_page::known_unserved(&state.engine).is_empty(),
         "the old engine's status is gone"
     );
 }

@@ -144,7 +144,7 @@ pub async fn create_order(
         Err(e) => return ApiError::BadRequest(e.to_string()).into_response(),
     };
 
-    let sk = match crate::http::orders::decrypt_sk(&state, &row) {
+    let sk = match crate::http::orders::decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(_) => return ApiError::Internal.into_response(),
     };
@@ -850,7 +850,7 @@ mod tests {
             .get_store_connection_by_public_key(&pk)
             .unwrap()
             .unwrap();
-        let sk = crate::http::orders::decrypt_sk(&state, &row).unwrap();
+        let sk = crate::http::orders::decrypt_sk(&state.encryption_key, &row).unwrap();
         state
             .engine
             .client
@@ -898,7 +898,7 @@ mod tests {
             .get_store_connection_by_public_key(&pk)
             .unwrap()
             .unwrap();
-        let sk = crate::http::orders::decrypt_sk(&state, &row).unwrap();
+        let sk = crate::http::orders::decrypt_sk(&state.encryption_key, &row).unwrap();
         let forward = |key: Option<&str>, entries: usize| {
             let entries: Vec<_> = (0..entries)
                 .map(|n| serde_json::json!({ "level": "error", "message": format!("failure {n}"), "trace_id": "4bf92f3577b34da6a3ce929d0e0e4736" }))
@@ -1018,7 +1018,7 @@ mod tests {
             .get_store_connection_by_public_key(&pk)
             .unwrap()
             .unwrap();
-        let sk = crate::http::orders::decrypt_sk(&state, &row).unwrap();
+        let sk = crate::http::orders::decrypt_sk(&state.encryption_key, &row).unwrap();
         state
             .engine
             .client

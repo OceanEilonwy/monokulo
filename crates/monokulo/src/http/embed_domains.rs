@@ -20,6 +20,7 @@ use crate::views::store_settings::EmbedDomainView;
 use super::fx::FxRequest;
 use super::orders::{load_owned_connection, render_store_settings_page, saved};
 use super::{AppState, AuthedUser};
+use crate::db::Database;
 use crate::views::store_settings::StoreSection;
 
 /// `{pk}` from a public `/pay/{pk}/...` path.
@@ -45,12 +46,12 @@ pub(super) fn public_key_of_pay_path(path: &str) -> Option<&str> {
 ///
 /// An unrestricted store's requests pass through untouched.
 pub async fn embed_policy_middleware(
-    State(state): State<AppState>,
+    State(db): State<Database>,
     request: Request,
     next: Next,
 ) -> Response {
     let policy = match public_key_of_pay_path(request.uri().path()) {
-        Some(public_key) => embed_domains::policy_for_public_key(&state.db, public_key).await,
+        Some(public_key) => embed_domains::policy_for_public_key(&db, public_key).await,
         None => None,
     }
     .filter(|policy| policy.restricted);
@@ -215,7 +216,7 @@ pub async fn set_embed_restriction(
     Form(form): Form<EmbedRestrictionForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -275,7 +276,7 @@ pub async fn add_domain(
     Form(form): Form<AddDomainForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -332,7 +333,7 @@ pub async fn check_domain(
     Path((id, domain_id)): Path<(crate::db::ConnectionId, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -390,7 +391,7 @@ pub async fn delete_domain(
     Path((id, domain_id)): Path<(crate::db::ConnectionId, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Domains;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -445,19 +446,18 @@ pub async fn delete_domain(
 /// `POST /dashboard/stores/{id}/embed-warning/dismiss` - shrinks the store
 /// page's "any website can show this checkout" warning to one line.
 pub async fn dismiss_embed_warning(
-    State(state): State<AppState>,
+    State(db): State<Database>,
     AuthedUser(user, _): AuthedUser,
     fx: FxRequest,
     Path(id): Path<crate::db::ConnectionId>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
     let store_id = row.id.clone();
-    let dismissed = state
-        .db
+    let dismissed = db
         .write(move |db| db.dismiss_embed_warning(&store_id))
         .await;
     match dismissed {

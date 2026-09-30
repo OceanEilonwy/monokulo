@@ -21,15 +21,14 @@
 use axum::extract::State;
 use axum::http::StatusCode;
 
-use super::{ApiError, AppState, AuthedUser};
+use super::{ApiError, AuthedUser};
+use crate::db::Database;
 
 pub async fn logout(
-    State(state): State<AppState>,
+    State(db): State<Database>,
     AuthedUser(_user, token_hash): AuthedUser,
 ) -> Result<StatusCode, ApiError> {
-    state
-        .db
-        .write(move |db| db.delete_session(&token_hash))
+    db.write(move |db| db.delete_session(&token_hash))
         .await
         .map_err(|_| ApiError::Internal)?;
     Ok(StatusCode::NO_CONTENT)

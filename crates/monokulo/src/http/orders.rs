@@ -47,13 +47,12 @@ use crate::views::store_settings::StoreSection;
 /// doc comment), never distinguishing the two. `Err(())` is a real database
 /// failure - the caller's problem, not the requester's.
 pub(super) async fn load_owned_connection(
-    state: &AppState,
+    db: &crate::db::Database,
     user: &UserRow,
     id: &crate::db::ConnectionId,
 ) -> Result<Option<super::OwnedStore>, ()> {
     let id = id.clone();
-    let row = state
-        .db
+    let row = db
         .read(move |db| db.get_store_connection_by_id(&id))
         .await
         .map_err(|_| ())?;
@@ -66,10 +65,10 @@ pub(super) async fn load_owned_connection(
 /// handled as a plain internal error rather than unwrapped/panicked on (see
 /// the task's own note on this).
 pub(super) fn decrypt_sk(
-    state: &AppState,
+    encryption_key: &crate::crypto::AtRestKey,
     row: &StoreConnectionRow,
 ) -> Result<shared::auth::RawToken, ()> {
-    crypto::decrypt(&state.encryption_key, &row.tenant_secret_token_encrypted)
+    crypto::decrypt(encryption_key, &row.tenant_secret_token_encrypted)
         .map(|sk| shared::auth::RawToken::presented(&sk))
         .map_err(|_| ())
 }
@@ -183,12 +182,12 @@ pub async fn orders_list(
     Path(id): Path<crate::db::ConnectionId>,
     Query(query): Query<OrdersListQuery>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -270,12 +269,12 @@ pub async fn lookup_payment(
     Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<LookupPaymentForm>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -314,12 +313,12 @@ pub async fn order_detail(
     Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
     headers: HeaderMap,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -496,12 +495,12 @@ pub async fn order_detail_events(
     Path((id, order_id)): Path<(crate::db::ConnectionId, crate::db::OrderId)>,
     headers: HeaderMap,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -630,12 +629,12 @@ pub async fn webhooks_create(
     Form(form): Form<CreateWebhookForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Webhooks;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -723,12 +722,12 @@ pub async fn webhooks_delete(
     Path((id, webhook_id)): Path<(crate::db::ConnectionId, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Webhooks;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -811,7 +810,7 @@ pub async fn store_detail(
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<crate::db::ConnectionId>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => {
             let chrome =
@@ -843,7 +842,7 @@ async fn render_store_detail_page(
 ) -> Response {
     let chrome =
         super::page_chrome(state, Some(user), format!("/dashboard/stores/{}", row.id)).await;
-    let sk = match decrypt_sk(state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -905,7 +904,7 @@ pub async fn store_settings(
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<crate::db::ConnectionId>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -937,7 +936,7 @@ pub(super) async fn render_store_settings_page(
         format!("/dashboard/stores/{}/settings", row.id),
     )
     .await;
-    let sk = match decrypt_sk(state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -952,7 +951,7 @@ pub(super) async fn render_store_settings_page(
         // never holding the page up for long.
         let _ = tokio::time::timeout(
             std::time::Duration::from_millis(1500),
-            super::status_page::get_status_cached(state),
+            super::status_page::get_status_cached(&state.engine),
         )
         .await;
     }
@@ -961,7 +960,7 @@ pub(super) async fn render_store_settings_page(
         .ok()
         .and_then(|t| t.key_custody_backend.clone())
         .and_then(|current| {
-            let enabled = super::status_page::known_enabled_custody_backends(state);
+            let enabled = super::status_page::known_enabled_custody_backends(&state.engine);
             let move_to: Vec<views::connect::CustodyChoice> = enabled
                 .iter()
                 .filter(|b| **b != current)
@@ -1092,7 +1091,7 @@ pub(super) async fn saved(
 ) -> Response {
     if fx.0 {
         // Read again: `row` is from before the save.
-        let row = match load_owned_connection(state, user, &row.id).await {
+        let row = match load_owned_connection(&state.db, user, &row.id).await {
             Ok(Some(fresh)) => fresh,
             _ => row,
         };
@@ -1137,7 +1136,7 @@ pub async fn create_order_page(
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<crate::db::ConnectionId>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1197,14 +1196,14 @@ pub async fn create_order(
     Path(id): Path<crate::db::ConnectionId>,
     Form(form): Form<CreateOrderForm>,
 ) -> Response {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
 
     let policy = crate::confirmation_thresholds::lock_policy(&row.tenant_public_key).await;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1308,7 +1307,7 @@ pub async fn create_order(
         }
     };
 
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -1427,7 +1426,7 @@ pub async fn update_confirmations_required(
     Form(form): Form<UpdateConfirmationsForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Confirmations;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1465,7 +1464,7 @@ pub async fn update_confirmations_required(
         }
     };
 
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -1529,12 +1528,12 @@ pub async fn move_key_storage(
     Form(form): Form<MoveKeyStorageForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::KeyStorage;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
-    let sk = match decrypt_sk(&state, &row) {
+    let sk = match decrypt_sk(&state.encryption_key, &row) {
         Ok(sk) => sk,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
     };
@@ -1546,7 +1545,7 @@ pub async fn move_key_storage(
         Ok(_) => {
             // The engine's status (and so any "keys unavailable" alert) is
             // re-read on the next page rather than waiting out the cache.
-            super::status_page::invalidate_status_cache(&state);
+            super::status_page::invalidate_status_cache(&state.engine);
             saved(&state, row, &user, SECTION, fx, &format!("/dashboard/stores/{id}/settings#key-storage")).await
         }
         Err(EngineClientError::EngineError { status, message }) if status == reqwest::StatusCode::BAD_REQUEST => {
@@ -1575,7 +1574,7 @@ pub async fn update_diagnostics(
     Form(form): Form<DiagnosticsForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Diagnostics;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1708,7 +1707,7 @@ pub async fn update_fx_providers(
     Form(form): Form<HashMap<String, String>>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::FxProvider;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1825,7 +1824,7 @@ pub async fn update_base_currency(
     Form(form): Form<UpdateBaseCurrencyForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::BaseCurrency;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -1907,7 +1906,7 @@ pub async fn create_confirmation_threshold(
     Form(form): Form<CreateConfirmationThresholdForm>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Confirmations;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -2078,7 +2077,7 @@ pub async fn delete_confirmation_threshold(
     Path((id, threshold_id)): Path<(crate::db::ConnectionId, String)>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Confirmations;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -2116,7 +2115,7 @@ pub async fn save_confirmation_thresholds(
     Form(raw): Form<HashMap<String, String>>,
 ) -> Response {
     const SECTION: StoreSection = StoreSection::Confirmations;
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&state.db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND.into_response(),
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR.into_response(),
@@ -4116,7 +4115,7 @@ mod tests {
             .await;
         let (mut state, _unused_engine) = test_state_with_real_engine().await;
         state.engine.client = EngineClient::new(format!("http://{}", engine.addr));
-        crate::http::status_page::get_status_cached(&state)
+        crate::http::status_page::get_status_cached(&state.engine)
             .await
             .expect("engine status");
         (state, engine)
@@ -4331,7 +4330,7 @@ mod tests {
     #[tokio::test]
     async fn with_a_single_key_storage_backend_no_choice_is_shown() {
         let (state, _engine) = test_state_with_real_engine().await;
-        crate::http::status_page::get_status_cached(&state)
+        crate::http::status_page::get_status_cached(&state.engine)
             .await
             .unwrap();
         let router = build_router(state);

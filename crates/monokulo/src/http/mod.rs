@@ -137,7 +137,10 @@ impl Engine {
     }
 }
 
-#[derive(Clone)]
+/// Everything the handlers share. A handler takes just the parts it uses
+/// (`State<Database>`, `State<Engine>`, ...: see the `FromRef` derive), so
+/// its signature says what it can touch.
+#[derive(Clone, axum::extract::FromRef)]
 pub struct AppState {
     /// The database (`db::Database`): `read` and `write` jobs.
     pub db: Database,
@@ -704,7 +707,7 @@ pub(crate) async fn page_chrome(
     current_path: impl Into<String>,
 ) -> crate::views::PageChrome {
     let current_path = current_path.into();
-    let unserved = status_page::known_unserved(state);
+    let unserved = status_page::known_unserved(&state.engine);
     // One read for both: the user's stores (only when some store can't be
     // scanned) and whether this page's store reports browser logs.
     let user_id = user
@@ -729,7 +732,7 @@ pub(crate) async fn page_chrome(
         .await
         .unwrap_or_default();
     let mut chrome = crate::views::PageChrome::from_user(user, current_path)
-        .with_health(status_page::known_health(state))
+        .with_health(status_page::known_health(&state.engine))
         .with_alerts(store_alerts(&unserved, &stores));
     // Only a store's own pages depend on its opt-in; every other page keeps
     // `from_user`'s choice.

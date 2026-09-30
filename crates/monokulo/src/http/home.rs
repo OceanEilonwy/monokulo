@@ -103,7 +103,7 @@ pub async fn dashboard_home(
     let mut total_received_piconero: u128 = 0;
 
     for row in rows {
-        let sk = match crate::http::orders::decrypt_sk(&state, &row) {
+        let sk = match crate::http::orders::decrypt_sk(&state.encryption_key, &row) {
             Ok(sk) => sk,
             // A row this service itself encrypted failing to decrypt with
             // its own key is an internal-consistency problem, not this
@@ -348,7 +348,7 @@ mod tests {
                 .get_store_connection_by_public_key(public_key)
                 .unwrap()
                 .expect("connection exists");
-            let sk = crate::http::orders::decrypt_sk(state, &row).unwrap();
+            let sk = crate::http::orders::decrypt_sk(&state.encryption_key, &row).unwrap();
             let response = reqwest::Client::new()
                 .post(format!("http://{engine_addr}/api/v1/admin/tenant/orders"))
                 .bearer_auth(sk.expose())

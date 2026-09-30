@@ -25,7 +25,8 @@ use serde::Deserialize;
 use serde_json::{Map, Value};
 
 use super::orders::load_owned_connection;
-use super::{AppState, AuthedUser};
+use super::AuthedUser;
+use crate::db::Database;
 
 /// Most events one batch may carry.
 pub const MAX_EVENTS: usize = 100;
@@ -130,19 +131,18 @@ pub fn detail_text(detail: &Map<String, Value>) -> String {
 }
 
 pub async fn receive(
-    State(state): State<AppState>,
+    State(db): State<Database>,
     AuthedUser(user, _): AuthedUser,
     Path(id): Path<crate::db::ConnectionId>,
     body: Bytes,
 ) -> StatusCode {
-    let row = match load_owned_connection(&state, &user, &id).await {
+    let row = match load_owned_connection(&db, &user, &id).await {
         Ok(Some(row)) => row,
         Ok(None) => return StatusCode::NOT_FOUND,
         Err(()) => return StatusCode::INTERNAL_SERVER_ERROR,
     };
     let id = row.id.clone();
-    if !state
-        .db
+    if !db
         .read(move |db| db.client_logging(&id))
         .await
         .unwrap_or(false)

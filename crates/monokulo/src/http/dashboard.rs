@@ -32,6 +32,7 @@ use super::login::{self, LoginError};
 use super::signup::{self, CreateAccountError};
 use super::AppState;
 use super::AuthedUser;
+use crate::db::Database;
 
 #[derive(Deserialize)]
 pub struct SignupForm {
@@ -232,7 +233,7 @@ async fn render_connect_form(
         network_testnet_selected,
         currency_options,
         custody_choices: super::status_page::custody_choice_views(
-            state,
+            &state.engine,
             resubmit.and_then(|f| f.key_custody_backend.as_deref()),
         ),
     };
@@ -355,12 +356,10 @@ pub async fn login_form(
 /// a real page back, not `logout::logout`'s bare `204` (which is correct
 /// for the JSON API, wrong for a browser form submission).
 pub async fn logout_submit(
-    State(state): State<AppState>,
+    State(db): State<Database>,
     AuthedUser(_user, token_hash): AuthedUser,
 ) -> Response {
-    state
-        .db
-        .write(move |db| db.delete_session(&token_hash))
+    db.write(move |db| db.delete_session(&token_hash))
         .await
         .ok();
     let cookie = Cookie::build((super::SESSION_COOKIE_NAME, ""))
@@ -393,7 +392,7 @@ pub struct TimezoneForm {
 /// `POST /dashboard/timezone`: the zone dates and times are shown in. An
 /// unknown name is ignored rather than saved.
 pub async fn timezone_submit(
-    State(state): State<AppState>,
+    State(db): State<Database>,
     AuthedUser(user, _): AuthedUser,
     Form(form): Form<TimezoneForm>,
 ) -> Response {
@@ -406,9 +405,7 @@ pub async fn timezone_submit(
         None
     };
     if let Some(zone) = zone {
-        state
-            .db
-            .write(move |db| db.update_user_timezone(&user.id, zone.as_deref()))
+        db.write(move |db| db.update_user_timezone(&user.id, zone.as_deref()))
             .await
             .ok();
     }
@@ -431,15 +428,13 @@ fn selected_theme(current: Theme, submitted: Option<&str>) -> Theme {
 }
 
 pub async fn theme_submit(
-    State(state): State<AppState>,
+    State(db): State<Database>,
     AuthedUser(user, _): AuthedUser,
     Form(form): Form<ThemeForm>,
 ) -> Response {
     let next_theme = selected_theme(user.theme, form.theme.as_deref());
     let user_id = user.id.clone();
-    state
-        .db
-        .write(move |db| db.update_user_theme(&user_id, next_theme))
+    db.write(move |db| db.update_user_theme(&user_id, next_theme))
         .await
         .ok();
     match form.next.as_deref().and_then(SafePath::parse) {
