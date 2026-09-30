@@ -2637,7 +2637,14 @@ async fn a_big_group_resumes_each_store_from_its_own_place() {
     let (_guard, logs) = crate::test_log::capture();
     let count = crate::scanner::SCAN_CONCURRENCY + 1;
     let (store, custody, fake, tenants, orders) = seeded_network(count, 20).await;
-    let failing = tenants[0].1;
+    // The first store in id order: a group is scanned in that order, so it
+    // is always started, even in a round with no time to spare. (Ids are
+    // random, so `tenants[0]` could be last and never reached.)
+    let (failing_id, failing) = tenants
+        .iter()
+        .min_by(|a, b| a.0.cmp(&b.0))
+        .cloned()
+        .unwrap();
     custody.fail(failing);
     let mut txs = vec![fixture_tx()];
     txs.extend((0..4u8).map(|i| unrelated_tx(100 + i)));
@@ -2672,10 +2679,7 @@ async fn a_big_group_resumes_each_store_from_its_own_place() {
     assert_eq!(
         store
             .lock()
-            .block_checkpoint(
-                monero::Network::Mainnet,
-                &shared::ids::TenantId::new(tenants[0].0.to_string())
-            )
+            .block_checkpoint(monero::Network::Mainnet, &failing_id)
             .unwrap(),
         None,
         "the failed store has no checkpoint"
