@@ -17,7 +17,6 @@ use crate::engine_settings::{Daemons, EngineSettings};
 use crate::http::now_unix;
 use crate::key_custody::{KeyCustody, WalletHandle};
 use crate::network::network_str;
-use crate::scanner::revalidate_recent_double_spend_voids;
 use crate::scanner_status::{self, ScannerStatusMap};
 use crate::store::SharedStore;
 use crate::webhook_delivery::run_delivery_tick;
@@ -87,8 +86,7 @@ pub fn tick_deadline(poll_interval: Duration) -> Duration {
     (poll_interval * 20).max(Duration::from_secs(120))
 }
 
-/// Starts a scanner loop and a revalidation loop for each network that has
-/// a node configured, and stops them for a network whose node setting is
+/// Starts a scanner loop for each network that has a node configured, and stops them for a network whose node setting is
 /// cleared, whenever node settings are saved (task 2.1). Runs for the life of
 /// the process.
 pub async fn manage_network_loops(
@@ -117,10 +115,6 @@ pub async fn manage_network_loops(
                 continue;
             }
             let (stop, stopped) = tokio::sync::watch::channel(false);
-            let (revalidation_store, revalidation_daemons) = (store.clone(), daemons.clone());
-            supervise_until(loop_name("double-spend revalidation", network), stopped.clone(), move || {
-                run_double_spend_revalidation_loop(revalidation_store.clone(), network, revalidation_daemons.clone())
-            });
             let (store, key_custody, daemons, wallet_handles, scanner_status, settings) = (
                 store.clone(),
                 key_custody.clone(),
@@ -175,10 +169,11 @@ pub async fn run_scanner_loop(
     // The last pass left stores unregistered (their backend was down, say):
     // try again soon rather than in a minute.
     let mut registrations_failed = false;
-    // Kept across ticks so the mempool is fetched and scanned incrementally
-    // (task 7.3). A panic restarts this loop with a fresh one, which only
-    // means one full rescan of the pool.
-    let mempool_memory = crate::scanner::MempoolMemory::default();
+    // The scheduler's in-memory state, kept across rounds (the mempool is
+    // fetched and scanned incrementally, retry delays are remembered). A
+    // panic restarts this loop with a fresh one, which only costs repeated
+    // work: everything that matters is in the database.
+    let scan_state = crate::work::ScanState::default();
     // Shared by every network's loop, so the handle map is cleared once per
     // lost-state epoch of the key-custody backend, not once per network.
     static HANDLED_CUSTODY_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -221,28 +216,35 @@ pub async fn run_scanner_loop(
         // One node for the whole tick (task 7.6), so answers from nodes at
         // different heights or on different forks are never mixed.
         let pinned = daemon.pin();
-        let result = match tokio::time::timeout(
+        let inputs = crate::work::RoundInputs {
+            store: &store,
+            custody: key_custody.as_ref(),
+            daemon: &pinned,
+            network: network_str(network),
+            tenants: &tenants,
+            reorg_check_depth: scan.reorg_check_depth,
+            grace_period_seconds: scan.expired_order_grace_period_seconds,
+            scan_chunk_memory_budget_mb: scan.scan_chunk_memory_budget_mb,
+        };
+        // The round keeps to its own budget; this outer deadline only catches
+        // a unit stuck somewhere no inner deadline reaches.
+        let (result, backlogged) = match tokio::time::timeout(
             tick_deadline(scan.poll_interval),
-            crate::scanner::run_scan_tick_with(
-                &mempool_memory,
-                &store,
-                key_custody.as_ref(),
-                &pinned,
-                network_str(network),
-                &tenants,
-                scan.reorg_check_depth,
-                scan.expired_order_grace_period_seconds,
-                scan.scan_chunk_memory_budget_mb,
-            )
-            .instrument(tick.clone()),
+            crate::work::run_round(&scan_state, &inputs, crate::work::ROUND_BUDGET).instrument(tick.clone()),
         )
         .await
         {
-            Ok(result) => result,
-            Err(_) => Err(crate::scanner::ScannerError::Internal(format!(
-                "scan tick did not finish within {:?} and was abandoned",
-                tick_deadline(scan.poll_interval)
-            ))),
+            Ok(report) => {
+                let backlogged = report.backlogged();
+                (report.into_result(), backlogged)
+            }
+            Err(_) => (
+                Err(crate::scanner::ScannerError::Internal(format!(
+                    "scan round did not finish within {:?} and was abandoned",
+                    tick_deadline(scan.poll_interval)
+                ))),
+                false,
+            ),
         };
         let finished_at = now_unix();
         if let Err(e) = &result {
@@ -253,35 +255,13 @@ pub async fn run_scanner_loop(
         if daemons.get(network).is_some() {
             scanner_status::record_tick(&scanner_status, network, started_at, finished_at, tenants.len(), &result);
         }
-        tokio::time::sleep(scan.poll_interval).await;
-    }
-}
-
-/// How often [`revalidate_recent_double_spend_voids`] sweeps each network - much
-/// slower than the scan-tick/webhook-delivery loops above, since it exists to catch
-/// a rare event (a wrongly-voided payment) within a wide, forgiving window
-/// (`scanner::DOUBLE_SPEND_RECHECK_WINDOW_SECS`), not to react quickly. See that
-/// function's own doc comment for why this is deliberately not folded into
-/// `run_scanner_loop`'s tight per-second cadence.
-pub const DOUBLE_SPEND_REVALIDATION_INTERVAL: Duration = Duration::from_secs(5 * 60);
-
-pub async fn run_double_spend_revalidation_loop(store: SharedStore, network: Network, daemons: Daemons) {
-    loop {
-        if let Some(daemon) = daemons.get(network) {
-            match revalidate_recent_double_spend_voids(&store, daemon.as_ref(), network_str(network), now_unix()).await {
-                Ok(recovered) if !recovered.is_empty() => {
-                    tracing::info!(
-                        network = ?network,
-                        payments = recovered.len(),
-                        orders = ?recovered,
-                        "double-spend revalidation reversed previously-voided payments"
-                    );
-                }
-                Ok(_) => {}
-                Err(e) => tracing::warn!(network = ?network, error = %e, "double-spend revalidation failed"),
-            }
+        // Work left over (a catch-up after downtime, a backlog of recomputes):
+        // go again at once, yielding so other tasks run first.
+        if backlogged {
+            tokio::task::yield_now().await;
+        } else {
+            tokio::time::sleep(scan.poll_interval).await;
         }
-        tokio::time::sleep(DOUBLE_SPEND_REVALIDATION_INTERVAL).await;
     }
 }
 

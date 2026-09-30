@@ -24,7 +24,7 @@ use crate::auth::{generate_public_key, generate_secret_token, hash_secret_token}
 use crate::status::{OrderStatus, PaymentView, StatusInputs, derive_status};
 
 mod work;
-pub use work::{OpenedReorg, Position, ReorgCandidate, ReorgJob, ReorgPhase};
+pub use work::{BlockCheckpoint, OpenedReorg, Position, ReorgCandidate, ReorgJob, ReorgPhase, StagedPayment};
 
 /// Every migration file, applied in order, exactly once each - tracked in
 /// `schema_migrations` rather than assumed from `CREATE TABLE`'s own failure mode.
@@ -808,21 +808,6 @@ impl Store {
         Ok(rows)
     }
 
-    /// Whether `tenant_id` has an order that could have been paid at any time
-    /// since `since` (a unix time): one still open, or one that expired no
-    /// earlier than `since` minus the grace period. Catch-up uses this with
-    /// the time of a lagging tenant's cursor block, so an order that was in
-    /// scope during the gap is still looked for even if it isn't any more.
-    pub fn tenant_has_orders_in_scope_since(&self, tenant_id: &str, since: i64, grace_period_seconds: i64) -> Result<bool> {
-        self.conn
-            .query_row(
-                &format!("SELECT EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = :tenant AND {IN_SCAN_WINDOW})"),
-                rusqlite::named_params! { ":tenant": tenant_id, ":since_minus_grace": since.saturating_sub(grace_period_seconds) },
-                |row| row.get(0),
-            )
-            .map_err(Into::into)
-    }
-
     /// Every order on `network` still in a non-terminal status - the same four
     /// statuses `active_tenant_ids` treats as active, one level down (orders rather
     /// than their tenants), served by the same `orders_status_tenant_idx (status,
@@ -883,20 +868,6 @@ impl Store {
              WHERE t.network = ?1 AND p.order_id > ?2 ORDER BY p.order_id LIMIT ?3",
         )?;
         let rows = stmt.query_map(params![network, after, limit as i64], |row| row.get(0))?
-            .collect::<rusqlite::Result<Vec<_>>>()?;
-        Ok(rows)
-    }
-
-    pub fn non_terminal_order_ids_page(
-        &self, network: &str, now: i64, grace_period_seconds: i64, after: &str, limit: usize,
-    ) -> Result<Vec<String>> {
-        let mut stmt = self.conn.prepare(
-            "SELECT o.id FROM orders o JOIN tenants t ON t.id = o.tenant_id
-             WHERE (o.status IN ('pending', 'unconfirmed', 'confirming', 'partial')
-                    OR (o.status = 'expired' AND o.expires_at_utc >= ?1))
-               AND t.network = ?2 AND o.id > ?3 ORDER BY o.id LIMIT ?4",
-        )?;
-        let rows = stmt.query_map(params![now - grace_period_seconds, network, after, limit as i64], |row| row.get(0))?
             .collect::<rusqlite::Result<Vec<_>>>()?;
         Ok(rows)
     }
@@ -1475,13 +1446,11 @@ impl Store {
         // - its deadline, while it is still short of the amount;
         // - the next block, while a mined payment is short of the confirmations
         //   required (the count customers see moves every block);
-        // - soon, when a transition was held back above;
+        // - again next round, when a transition was held back above (it is
+        //   rescheduled at `now`, so it queues behind anything due earlier);
         // - never, once terminal.
-        const HELD_RETRY_SECONDS: i64 = 30;
-        let (next_due_at, next_due_height) = if settlement_deferred {
+        let (next_due_at, next_due_height) = if settlement_deferred || expiry_held {
             (Some(now), None)
-        } else if expiry_held {
-            (Some(now + HELD_RETRY_SECONDS), None)
         } else if is_terminal(new_status) {
             (None, None)
         } else {
@@ -1612,36 +1581,6 @@ impl Store {
         Ok(())
     }
 
-    /// Returns the next transaction needing a scan for this tenant. A changed
-    /// hash or scan window invalidates the old checkpoint and its staged
-    /// matches before any work on the replacement block begins.
-    pub fn start_partial_block(
-        &self, network: &str, tenant_id: &str, height: u64, hash: &str, generation: u64,
-    ) -> Result<usize> {
-        let generation = generation.to_string();
-        let old: Option<(i64, String, String, i64)> = self.conn.query_row(
-            "SELECT height, block_hash, window_generation, next_tx_index FROM partial_block_progress
-             WHERE network = ?1 AND tenant_id = ?2",
-            params![network, tenant_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
-        ).optional()?;
-        if let Some((old_height, old_hash, old_generation, next)) = old {
-            if old_height == height as i64 && old_hash == hash && old_generation == generation {
-                return Ok(next as usize);
-            }
-        }
-        self.in_transaction(|s| {
-            s.clear_partial_block(network, tenant_id)?;
-            s.conn.execute(
-                "INSERT INTO partial_block_progress
-                 (network, tenant_id, height, block_hash, window_generation, next_tx_index)
-                 VALUES (?1, ?2, ?3, ?4, ?5, 0)",
-                params![network, tenant_id, height as i64, hash, generation],
-            )?;
-            Ok(0)
-        })
-    }
-
     pub fn stage_partial_match(&self, matched: StagedMatch<'_>) -> Result<()> {
         self.conn.execute(
             "INSERT OR IGNORE INTO partial_block_matches
@@ -1651,43 +1590,6 @@ impl Store {
                 matched.amount as i64, matched.key_images_json, matched.seen_at],
         )?;
         Ok(())
-    }
-
-    pub fn advance_partial_block(&self, network: &str, tenant_id: &str, next_tx_index: usize) -> Result<()> {
-        let changed = self.conn.execute(
-            "UPDATE partial_block_progress SET next_tx_index = ?3 WHERE network = ?1 AND tenant_id = ?2",
-            params![network, tenant_id, next_tx_index as i64],
-        )?;
-        if changed == 0 { return Err(StoreError::NotFound); }
-        Ok(())
-    }
-
-    /// Called inside the same transaction that commits the block hash and
-    /// tenant cursor. Partial results cannot affect order status before then.
-    pub fn promote_partial_block(&self, network: &str, tenant_id: &str, height: u64, hash: &str, tx_count: usize) -> Result<Vec<String>> {
-        let progress: Option<(i64, String, i64)> = self.conn.query_row(
-            "SELECT height, block_hash, next_tx_index FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
-            params![network, tenant_id],
-            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-        ).optional()?;
-        if !matches!(progress, Some((h, ref block_hash, next)) if h == height as i64 && block_hash == hash && next == tx_count as i64) {
-            return Err(StoreError::NotFound);
-        }
-        let mut stmt = self.conn.prepare(
-            "SELECT order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc
-             FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
-        )?;
-        let rows = stmt.query_map(params![network, tenant_id], |row| {
-            Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?, row.get::<_, i64>(2)?,
-                row.get::<_, i64>(3)?, row.get::<_, String>(4)?, row.get::<_, i64>(5)?))
-        })?.collect::<rusqlite::Result<Vec<_>>>()?;
-        let mut touched = Vec::new();
-        for (order_id, txid, output_index, amount, key_images, seen_at) in rows {
-            self.record_payment_match(&order_id, &txid, output_index, amount as u64, &key_images, seen_at, Some(height as i64))?;
-            touched.push(order_id);
-        }
-        self.clear_partial_block(network, tenant_id)?;
-        Ok(touched)
     }
 
     pub fn clear_partial_block(&self, network: &str, tenant_id: &str) -> Result<()> {
@@ -1739,67 +1641,6 @@ impl Store {
         Ok(())
     }
 
-    /// Moves tenants on `network` that were caught up to `height - 1` on to
-    /// `height`: those in `scanned` (this block was scanned for them), and
-    /// those with nothing that could be paid (no order in their scan window).
-    /// Called in the same transaction as `set_scanned_block`, so the network
-    /// and its caught-up tenants always move together.
-    ///
-    /// An allowlist, not "everyone except the failures": a tenant this tick
-    /// never scanned for any reason (its keys aren't registered, its scan
-    /// window couldn't be read, it was created mid-tick) keeps its cursor and
-    /// is caught up later, instead of silently skipping a block it was never
-    /// checked against. "Nothing in scope" is evaluated here, inside the
-    /// transaction, so an order committed before it counts.
-    ///
-    /// Also held back: any tenant created, or given a new order, at or after
-    /// `tick_started` (the time the tick read which tenants to scan). The
-    /// tick didn't scan for it with that order's address, so it catches up
-    /// next tick with its current range instead of being moved past blocks.
-    pub fn advance_caught_up_cursors(
-        &self, network: &str, height: u64, scanned: &[String], tick_started: i64, grace_period_seconds: i64,
-    ) -> Result<()> {
-        let scanned = serde_json::to_string(scanned).map_err(|e| {
-            StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e)))
-        })?;
-        self.conn.execute(
-            &format!(
-                "UPDATE tenants SET scanned_through_height = :height
-                 WHERE network = :network AND scanned_through_height = :height - 1
-                   AND (id IN (SELECT value FROM json_each(:scanned))
-                        OR NOT EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = tenants.id AND {IN_SCAN_WINDOW}))
-                   AND created_at_utc < :tick_started
-                   AND id NOT IN (SELECT tenant_id FROM orders WHERE created_at_utc >= :tick_started)"
-            ),
-            rusqlite::named_params! {
-                ":network": network,
-                ":height": height as i64,
-                ":scanned": scanned,
-                ":tick_started": tick_started,
-                ":since_minus_grace": tick_started - grace_period_seconds,
-            },
-        )?;
-        Ok(())
-    }
-
-    /// Sets one tenant's cursor, for catch-up. Never moves it backwards: a
-    /// catch-up step that raced a reorg clamp mustn't undo the clamp's work
-    /// by writing an older value, and mustn't push a clamped cursor forward
-    /// past blocks the reorg made it rescan either, so the caller only calls
-    /// this for the block it just scanned, and the `= ?3` guard makes it a
-    /// no-op if the cursor moved in between.
-    pub fn advance_tenant_cursor(&self, tenant_id: &str, from: u64, to: u64) -> Result<bool> {
-        let changed = self.conn.execute(
-            "UPDATE tenants SET scanned_through_height = ?2 WHERE id = ?1 AND scanned_through_height = ?3",
-            params![tenant_id, to as i64, from as i64],
-        )?;
-        if changed > 0 {
-            self.conn.execute("DELETE FROM partial_block_matches WHERE tenant_id = ?1", [tenant_id])?;
-            self.conn.execute("DELETE FROM partial_block_progress WHERE tenant_id = ?1", [tenant_id])?;
-        }
-        Ok(changed > 0)
-    }
-
     /// After a reorg rewinds `network` to `height`, no tenant can be ahead of
     /// it. `None` (the reorg reached genesis) un-anchors every cursor.
     pub fn clamp_cursors(&self, network: &str, height: Option<u64>) -> Result<()> {
@@ -1813,19 +1654,6 @@ impl Store {
                 params![network],
             )?,
         };
-        Ok(())
-    }
-
-    /// Moves a lagging tenant straight to `height`: for one with nothing that
-    /// could have been paid during its gap (see
-    /// `tenant_has_orders_in_scope_since`), or a disabled one.
-    pub fn snap_cursor(&self, tenant_id: &str, height: u64) -> Result<()> {
-        self.conn.execute(
-            "UPDATE tenants SET scanned_through_height = ?2 WHERE id = ?1 AND scanned_through_height < ?2",
-            params![tenant_id, height as i64],
-        )?;
-        self.conn.execute("DELETE FROM partial_block_matches WHERE tenant_id = ?1", [tenant_id])?;
-        self.conn.execute("DELETE FROM partial_block_progress WHERE tenant_id = ?1", [tenant_id])?;
         Ok(())
     }
 

@@ -21,6 +21,7 @@ pub mod status;
 pub mod store;
 pub mod webhook_delivery;
 pub mod webhook_sign;
+pub mod work;
 
 pub fn now_unix() -> i64 {
     // A clock set before 1970 reads as 0 rather than panicking in every loop.

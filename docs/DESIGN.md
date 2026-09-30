@@ -592,24 +592,15 @@ explicitly, both pinned by tests rather than left as unverified worry:
   Total loss of every configured node for a network fails that tick cleanly - an
   ordinary retryable error, no partial writes -
   (`every_fallback_node_being_down_fails_the_tick_cleanly_without_corrupting_stored_state`).
-- **A narrower, genuinely new gap**: `run_scan_tick` fetches a block's transactions
-  and its hash as two separate daemon calls (see the comment above
-  `daemon.get_block_hash(height)` in `run_scan_tick`). Failover is per-call, so those
-  two calls for the same height are not guaranteed to land on the same node - if the
-  first succeeds against the primary and the primary dies before the second, the
-  height gets recorded with one node's transactions paired with a *different* node's
-  hash, a pairing that does not correspond to any single node's real block. This is a
-  sharper version of a risk already accepted for one node (the "replication lag
-  across a pool of backend nodes behind a public endpoint" case in `run_scan_tick`'s
-  bootstrap branch), now bounded only by how different two independently operated
-  nodes are allowed to be rather than how out-of-sync one endpoint's own backends
-  are. Confirmed to actually happen, not just theorized, by
-  `a_node_that_dies_between_fetching_a_blocks_transactions_and_its_hash_can_pair_them_with_a_different_nodes_hash`.
-  Not fixed here: the per-call failover granularity that causes it is also what lets
-  a tick survive a node dying *partway through*, which is a real resilience win
-  worth keeping; pinning it to one node per tick would trade this narrow, low-
-  probability inconsistency for aborting the whole tick's remaining work on any
-  mid-tick blip.
+- **Closed: a block's contents paired with another node's hash.** A block's hash
+  and its transactions are two daemon calls, and failover is per call. The legacy
+  tick read the transactions first, so a primary that died between the two calls
+  paired its own block contents with the fallback's hash for the same height. The
+  block scan (`work::blocks`, docs/scanner_microtasks.md) now reads the hash first
+  and rechecks it after scanning; once a call fails over, the client stays on the
+  node that answered, so the contents come from the node whose hash is recorded
+  (`a_node_that_dies_as_a_block_is_read_has_its_hash_and_contents_come_from_the_same_fallback`).
+  Per-call failover still lets a round survive a node dying partway through.
 - **`is_key_image_spent` is fixed, not just documented, once a fallback is
   configured** - the one item on this list where "widens the trust boundary" turned
   out to have a real answer rather than only a tradeoff to accept. Two parts,

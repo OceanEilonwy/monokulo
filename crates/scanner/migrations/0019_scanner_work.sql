@@ -57,6 +57,14 @@ BEGIN
     UPDATE orders SET next_due_at_utc = NEW.expires_at_utc WHERE id = NEW.id;
 END;
 
+-- A changed deadline (a manual fix, or any future way to extend an order)
+-- makes an open order due at once, so its schedule can't go stale.
+CREATE TRIGGER order_deadline_change_reschedules AFTER UPDATE OF expires_at_utc ON orders
+WHEN NEW.status IN ('pending', 'unconfirmed', 'confirming', 'partial')
+BEGIN
+    UPDATE orders SET next_due_at_utc = 0 WHERE id = NEW.id;
+END;
+
 -- Existing open orders are due now: the first recompute schedules them
 -- exactly. Terminal ones stay unscheduled.
 UPDATE orders SET next_due_at_utc = 0

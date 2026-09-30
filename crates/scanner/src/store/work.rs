@@ -74,10 +74,15 @@ impl Position {
     }
 }
 
-/// How long a failed reorg lookup waits before it is retried: doubling
-/// from one second, capped at five minutes.
+/// How long a failed reorg lookup waits before it is retried. The first two
+/// retries are due at once (the scheduler still tries a candidate at most
+/// once a round), so a blip costs nothing; after that the wait doubles from
+/// one second, up to about four minutes.
 pub fn reorg_retry_delay(attempts: u32) -> i64 {
-    1i64 << attempts.min(8)
+    match attempts {
+        0..=2 => 0,
+        n => 1i64 << (n - 3).min(8),
+    }
 }
 
 fn phase_from_row(phase: &str, after_height: i64, after_id: i64) -> rusqlite::Result<ReorgPhase> {
@@ -412,6 +417,194 @@ impl Store {
     }
 }
 
+/// A block a tenant's scan stopped partway through (its step ran out of
+/// time). Resumed only for the same block hash.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct BlockCheckpoint {
+    pub height: u64,
+    pub hash: String,
+    pub next_tx: usize,
+}
+
+/// A match from an unfinished block, held until the block commits.
+#[derive(Clone, Debug)]
+pub struct StagedPayment {
+    pub order_id: String,
+    pub txid: String,
+    pub output_index: i64,
+    pub amount_piconero: u64,
+    pub key_images_json: String,
+    pub seen_at: i64,
+}
+
+impl Store {
+    pub fn block_checkpoint(&self, network: &str, tenant_id: &str) -> Result<Option<BlockCheckpoint>> {
+        self.conn
+            .query_row(
+                "SELECT height, block_hash, next_tx_index FROM partial_block_progress WHERE network = ?1 AND tenant_id = ?2",
+                params![network, tenant_id],
+                |row| {
+                    Ok(BlockCheckpoint {
+                        height: row.get::<_, i64>(0)? as u64,
+                        hash: row.get(1)?,
+                        next_tx: row.get::<_, i64>(2)?.max(0) as usize,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
+    /// Records how far a tenant's scan of a block got. A checkpoint for any
+    /// other block (a different height or hash) is replaced, with its staged
+    /// matches. Call in the transaction that stages this block's matches.
+    pub fn save_block_checkpoint(&self, network: &str, tenant_id: &str, checkpoint: &BlockCheckpoint) -> Result<()> {
+        if let Some(old) = self.block_checkpoint(network, tenant_id)? {
+            if old.height != checkpoint.height || old.hash != checkpoint.hash {
+                self.clear_partial_block(network, tenant_id)?;
+            }
+        }
+        self.conn.execute(
+            "INSERT INTO partial_block_progress (network, tenant_id, height, block_hash, window_generation, next_tx_index)
+             VALUES (?1, ?2, ?3, ?4, '', ?5)
+             ON CONFLICT (network, tenant_id) DO UPDATE SET
+                 height = excluded.height, block_hash = excluded.block_hash, next_tx_index = excluded.next_tx_index",
+            params![network, tenant_id, checkpoint.height as i64, checkpoint.hash, checkpoint.next_tx as i64],
+        )?;
+        Ok(())
+    }
+
+    /// Removes a tenant's checkpoint and returns its staged matches if it was
+    /// for this block (height and hash); a stale one is dropped.
+    pub fn take_staged_payments(&self, network: &str, tenant_id: &str, height: u64, hash: &str) -> Result<Vec<StagedPayment>> {
+        let current = self.block_checkpoint(network, tenant_id)?.is_some_and(|c| c.height == height && c.hash == hash);
+        let staged = if current {
+            let mut stmt = self.conn.prepare(
+                "SELECT order_id, txid, output_index, amount_piconero, key_images_json, seen_at_utc
+                 FROM partial_block_matches WHERE network = ?1 AND tenant_id = ?2",
+            )?;
+            let rows = stmt
+                .query_map(params![network, tenant_id], |row| {
+                    Ok(StagedPayment {
+                        order_id: row.get(0)?,
+                        txid: row.get(1)?,
+                        output_index: row.get(2)?,
+                        amount_piconero: row.get::<_, i64>(3)?.max(0) as u64,
+                        key_images_json: row.get(4)?,
+                        seen_at: row.get(5)?,
+                    })
+                })?
+                .collect::<rusqlite::Result<Vec<_>>>()?;
+            rows
+        } else {
+            Vec::new()
+        };
+        self.clear_partial_block(network, tenant_id)?;
+        Ok(staged)
+    }
+
+    /// Up to `limit` distinct cursor heights below `below` held by enabled
+    /// tenants on `network`, after `after` (all, from the lowest, for
+    /// `None`): the catch-up groups, in rotation order.
+    pub fn scan_group_cursors(&self, network: &str, below: u64, after: Option<u64>, limit: usize) -> Result<Vec<u64>> {
+        let mut stmt = self.conn.prepare(
+            "SELECT DISTINCT scanned_through_height FROM tenants
+             WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height IS NOT NULL
+               AND scanned_through_height < ?2 AND scanned_through_height > ?3
+             ORDER BY scanned_through_height LIMIT ?4",
+        )?;
+        let rows = stmt
+            .query_map(params![network, below as i64, after.map_or(-1, |a| a as i64), limit as i64], |row| {
+                Ok(row.get::<_, i64>(0)? as u64)
+            })?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Up to `limit` enabled tenants on `network` whose cursor is `cursor`,
+    /// leaving out `excluding` (tenants waiting out a retry delay), in id
+    /// order.
+    pub fn tenants_at_cursor(&self, network: &str, cursor: u64, excluding: &[String], limit: usize) -> Result<Vec<String>> {
+        let excluding = serde_json::to_string(excluding)
+            .map_err(|e| StoreError::Sqlite(rusqlite::Error::ToSqlConversionFailure(Box::new(e))))?;
+        let mut stmt = self.conn.prepare(
+            "SELECT id FROM tenants
+             WHERE network = ?1 AND disabled_at_utc IS NULL AND scanned_through_height = ?2
+               AND id NOT IN (SELECT value FROM json_each(?3))
+             ORDER BY id LIMIT ?4",
+        )?;
+        let rows = stmt
+            .query_map(params![network, cursor as i64, excluding, limit as i64], |row| row.get::<_, String>(0))?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+
+    /// Moves every enabled tenant on `network` at cursor `from` that has
+    /// nothing that could have been paid since `since` (no order in its scan
+    /// window as of then) straight to `to`: there is nothing in those blocks
+    /// for it to find. The predicate is evaluated here, inside the caller's
+    /// transaction, so an order committed before it counts. Returns how many
+    /// moved.
+    pub fn advance_idle_cursors(&self, network: &str, from: u64, to: u64, since: i64, grace_period_seconds: i64) -> Result<usize> {
+        let moved = self.conn.execute(
+            &format!(
+                "UPDATE tenants SET scanned_through_height = :to
+                 WHERE network = :network AND disabled_at_utc IS NULL AND scanned_through_height = :from
+                   AND NOT EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = tenants.id AND {})",
+                super::IN_SCAN_WINDOW
+            ),
+            rusqlite::named_params! {
+                ":network": network,
+                ":from": from as i64,
+                ":to": to as i64,
+                ":since_minus_grace": since.saturating_sub(grace_period_seconds),
+            },
+        )?;
+        Ok(moved)
+    }
+
+    /// Moves a tenant's cursor past a block that was scanned for it. Only a
+    /// [`ScannedBlock`](crate::work::ScannedBlock) can do this, and only the
+    /// block scan builds one. Conditional on the cursor still being at the
+    /// block's parent, so a reorg rewind in between wins; returns whether it
+    /// moved.
+    pub fn advance_scanned_cursor(&self, network: &str, scanned: &crate::work::ScannedBlock) -> Result<bool> {
+        let moved = self.conn.execute(
+            "UPDATE tenants SET scanned_through_height = ?3
+             WHERE id = ?1 AND network = ?2 AND scanned_through_height = ?4",
+            params![scanned.tenant_id(), network, scanned.height() as i64, scanned.height() as i64 - 1],
+        )?;
+        Ok(moved > 0)
+    }
+
+    /// Up to `limit` enabled tenants on `network` with an order in scope,
+    /// after `after` in id order, with their cursors: one page of the
+    /// scanned-range bookkeeping.
+    pub fn active_tenants_page(
+        &self, network: &str, now: i64, grace_period_seconds: i64, after: &str, limit: usize,
+    ) -> Result<Vec<(String, Option<u64>)>> {
+        let mut stmt = self.conn.prepare(&format!(
+            "SELECT t.id, t.scanned_through_height FROM tenants t
+             WHERE t.network = :network AND t.disabled_at_utc IS NULL AND t.id > :after
+               AND EXISTS (SELECT 1 FROM orders o WHERE o.tenant_id = t.id AND {})
+             ORDER BY t.id LIMIT :limit",
+            super::IN_SCAN_WINDOW
+        ))?;
+        let rows = stmt
+            .query_map(
+                rusqlite::named_params! {
+                    ":network": network,
+                    ":after": after,
+                    ":limit": limit as i64,
+                    ":since_minus_grace": now - grace_period_seconds,
+                },
+                |row| Ok((row.get::<_, String>(0)?, row.get::<_, Option<i64>>(1)?.map(|h| h as u64))),
+            )?
+            .collect::<rusqlite::Result<Vec<_>>>()?;
+        Ok(rows)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -546,14 +739,18 @@ mod tests {
         assert!(s.settlement_frozen("mainnet").unwrap());
         assert!(!s.settlement_frozen("stagenet").unwrap());
 
-        s.defer_reorg_candidate("mainnet", first, 1000).unwrap();
+        // The first retries are due at once; the third failure waits.
+        for _ in 0..3 {
+            s.defer_reorg_candidate("mainnet", first, 1000).unwrap();
+        }
+        assert_eq!((reorg_retry_delay(1), reorg_retry_delay(2), reorg_retry_delay(3)), (0, 0, 1));
         let due: Vec<i64> = s.due_reorg_candidates("mainnet", 1000, 10).unwrap().iter().map(|c| c.payment.id).collect();
         assert_eq!(due, vec![second], "the failed one waits");
         assert!(matches!(s.finish_reorg("mainnet", 10, Some((9, "old9"))), Err(StoreError::NotFound)));
         s.complete_reorg_candidate("mainnet", second).unwrap();
-        let later = s.due_reorg_candidates("mainnet", 1000 + reorg_retry_delay(1), 10).unwrap();
+        let later = s.due_reorg_candidates("mainnet", 1000 + reorg_retry_delay(3), 10).unwrap();
         assert_eq!(later.len(), 1);
-        assert_eq!((later[0].payment.id, later[0].attempts), (first, 1));
+        assert_eq!((later[0].payment.id, later[0].attempts), (first, 3));
         s.complete_reorg_candidate("mainnet", first).unwrap();
 
         assert!(matches!(s.finish_reorg("mainnet", 9, Some((8, "old8"))), Err(StoreError::NotFound)), "wrong fork");

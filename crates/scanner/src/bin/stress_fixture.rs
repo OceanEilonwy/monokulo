@@ -242,7 +242,7 @@ struct Engine {
     custody: Arc<dyn KeyCustody>,
     daemon: Arc<FixtureDaemon>,
     handles: Arc<RwLock<HashMap<String, WalletHandle>>>,
-    memory: Arc<scanner::scanner::MempoolMemory>,
+    memory: Arc<scanner::work::ScanState>,
 }
 
 impl Engine {
@@ -500,7 +500,7 @@ async fn fixture() -> Result<(), Box<dyn Error>> {
         custody: custody.clone(),
         daemon: daemon.clone(),
         handles,
-        memory: Arc::new(scanner::scanner::MempoolMemory::default()),
+        memory: Arc::new(scanner::work::ScanState::default()),
     };
     let observer = rusqlite::Connection::open_with_flags(&db_path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)?;
     observer.busy_timeout(Duration::from_secs(5))?;

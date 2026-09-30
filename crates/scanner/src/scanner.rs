@@ -34,7 +34,7 @@ pub enum ScannerError {
 
 type Result<T> = std::result::Result<T, ScannerError>;
 
-fn parse_payment_key_images(raw: &str) -> Result<Vec<String>> {
+pub(crate) fn parse_payment_key_images(raw: &str) -> Result<Vec<String>> {
     let images: Vec<String> = serde_json::from_str(raw).map_err(|e| ScannerError::InvalidPaymentEvidence(e.to_string()))?;
     if images.is_empty() {
         return Err(ScannerError::InvalidPaymentEvidence("empty key-image list".to_string()));
@@ -118,12 +118,12 @@ pub async fn scan_transaction_in_window(
 pub const SCAN_CALL_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// Most tenants scanned for one transaction at the same time.
-const SCAN_CONCURRENCY: usize = 32;
+pub(crate) const SCAN_CONCURRENCY: usize = 32;
 
 /// Scans one transaction for many tenants at once, each with
 /// `SCAN_CALL_DEADLINE`, so a slow tenant (a slow key-custody backend)
 /// doesn't hold up the others. Results come back in the order given.
-async fn scan_for_tenants(
+pub(crate) async fn scan_for_tenants(
     key_custody: &dyn KeyCustody,
     tx: &Transaction,
     tenants: &[&(String, WalletHandle, ScanIndices)],
@@ -201,7 +201,7 @@ pub fn record_scan_match(
 
 /// Store a match from an unfinished block without making it visible as a
 /// payment. The caller commits this and the transaction checkpoint together.
-fn stage_block_match(store: &Store, network: &str, tenant_id: &str, scan: &ScanResult, seen_at: i64) -> Result<()> {
+pub(crate) fn stage_block_match(store: &Store, network: &str, tenant_id: &str, scan: &ScanResult, seen_at: i64) -> Result<()> {
     for m in &scan.matches {
         let Some(order) = store.find_order_by_minor_index(tenant_id, m.subaddress_index.minor)? else { continue };
         let Some(amount) = m.amount_piconero else {
@@ -252,19 +252,17 @@ pub struct ReconcileReport {
 }
 
 /// Checks for a reorg within the last `reorg_check_depth` blocks and, if one is
-/// found, re-evaluates every payment whose recorded `block_height` falls in the
-/// affected range. Never voids a payment on ambiguous evidence (§DESIGN.md 7.5) -
-/// only when `is_key_image_spent` affirmatively proves a different transaction
-/// consumed the same inputs. Safe to call unconditionally on every scan tick: with
-/// no reorg, this is just a handful of hash comparisons against the stored window.
+/// found (or one is already being reconciled), runs its reconciliation as far
+/// as it can go now: every affected payment re-examined, then the rewind to
+/// the common ancestor. Never voids a payment on ambiguous evidence
+/// (§DESIGN.md 7.5) - only when `is_key_image_spent` affirmatively proves a
+/// different transaction consumed the same inputs.
 ///
-/// Takes `&SharedStore`, locking only around each brief synchronous call and never
-/// across a daemon RPC `.await` - this function can make many sequential network
-/// calls (a hash check per block in the window, then a `locate_transaction` and
-/// possibly an `is_key_image_spent` per affected payment), so holding the store
-/// lock for its whole duration would block every other request touching the store
-/// for as long as all of that network I/O takes. Same reasoning as
-/// `webhook_delivery::run_delivery_tick`.
+/// The scheduler runs the same work in bounded units (`work::chain`); this
+/// drives it to completion in one call, for callers and tests that want
+/// "reconcile now". The job is durable: a failure partway (an unreachable
+/// node) returns the error and leaves the job, and the losing chain's
+/// hashes, for the next call to finish.
 pub async fn check_for_reorg_and_reconcile(
     store: &crate::store::SharedStore,
     daemon: &dyn MoneroDaemonClient,
@@ -272,178 +270,49 @@ pub async fn check_for_reorg_and_reconcile(
     reorg_check_depth: u64,
     now: i64,
 ) -> Result<ReconcileReport> {
-    let height = daemon.get_height().await?;
-    let window_start = height.saturating_sub(reorg_check_depth);
-
-    // Detection is read-only against the store: the corrected hashes are *not*
-    // written back here. Writing them mid-detection (as this loop used to) makes the
-    // reorg undetectable to any later attempt - stored and actual hashes now agree -
-    // while the payments it affects have not been reconciled yet. A crash, or any
-    // `?` further down (a `locate_transaction` against a briefly-unreachable node is
-    // enough), then left those payments permanently stranded on the old chain with
-    // nothing to tell the next tick anything had happened.
-    let mut reorg_point: Option<u64> = None;
-    for h in window_start..=height {
-        let stored_hash = store.lock().get_scanned_block_hash(network, h)?;
-        if let Some(stored_hash) = stored_hash {
-            let actual_hash = daemon.get_block_hash(h).await?;
-            if actual_hash != stored_hash {
-                reorg_point = Some(h);
-                break; // the first divergence is the reorg point; everything above it is re-scanned wholesale
-            }
-        }
+    use crate::work::chain::{Chain, JobStep};
+    let tip = daemon.get_height().await?;
+    let chain = Chain { store, daemon, network, reorg_check_depth, now };
+    if let Some(fork) = chain.detect(tip).await? {
+        chain.open(fork)?;
     }
-
+    let reorg_detected_at = store.lock().reorg_job(network)?.map(|job| job.fork_height);
     let mut dirty_orders = HashSet::new();
     let mut double_spent_orders = HashSet::new();
-
-    if let Some(reorg_point) = reorg_point {
-        let affected = store.lock().find_payments_at_or_after_height(network, reorg_point)?;
-        for payment in affected {
-            match daemon.locate_transaction(&payment.txid).await? {
-                TxLocation::InBlock(new_height) => {
-                    store.lock().update_payment_block_height(
-                        &payment.order_id,
-                        &payment.txid,
-                        payment.output_index,
-                        Some(new_height as i64),
-                    )?;
-                    dirty_orders.insert(payment.order_id.clone());
-                }
-                TxLocation::InPool => {
-                    store.lock().update_payment_block_height(
-                        &payment.order_id,
-                        &payment.txid,
-                        payment.output_index,
-                        None,
-                    )?;
-                    dirty_orders.insert(payment.order_id.clone());
-                }
-                TxLocation::NotFound => {
-                    if void_if_double_spend_proven(store, daemon, &payment, height, now).await? {
-                        dirty_orders.insert(payment.order_id.clone());
-                        double_spent_orders.insert(payment.order_id.clone());
-                    }
+    let mut attempted = HashSet::new();
+    let mut failure = None;
+    loop {
+        match chain.advance_job(tip, &mut attempted).await {
+            Ok(Some(JobStep::Collected)) => {}
+            Ok(Some(JobStep::Processed(reconciled))) => {
+                dirty_orders.extend(reconciled.dirty_orders);
+                double_spent_orders.extend(reconciled.double_spent_orders);
+                if let Some(error) = reconciled.failure {
+                    failure.get_or_insert(error);
                 }
             }
-        }
-
-        // The reverse direction: a payment an earlier pass voided as a proven
-        // double-spend, whose transaction has since come back to the canonical chain
-        // because the *replacement* was itself reorged out. Voiding is a conclusion
-        // drawn from a chain state that can change, so it can't be treated as final;
-        // without this, a merchant's genuinely-paid order stays permanently short by
-        // the voided amount. `double_spend_detected_at` stays set regardless - it
-        // records that an incident occurred, not that it is currently in effect.
-        let previously_voided = store.lock().find_voided_payments_at_or_after_height(network, reorg_point)?;
-        for payment in previously_voided {
-            if let TxLocation::InBlock(new_height) = daemon.locate_transaction(&payment.txid).await? {
-                let s = store.lock();
-                if s.unvoid_payment(&payment.order_id, &payment.txid, payment.output_index)? {
-                    s.update_payment_block_height(
-                        &payment.order_id,
-                        &payment.txid,
-                        payment.output_index,
-                        Some(new_height as i64),
-                    )?;
-                    dirty_orders.insert(payment.order_id.clone());
-                }
+            Ok(None | Some(JobStep::Waiting) | Some(JobStep::Rewound)) => break,
+            Err(error) => {
+                failure.get_or_insert(error);
+                break;
             }
         }
     }
-
+    // The notifying recompute: a reorg-driven transition (`paid` ->
+    // `confirming` when a tx falls back to the mempool, say) is as
+    // webhook-worthy as a forward-scan-driven one. While the job is still
+    // open, the store holds back any new settlement.
     {
         let s = store.lock();
-        // The notifying recompute, not the bare one: a reorg-driven transition
-        // (`paid` -> `confirming` when a tx falls back to the mempool, say) is
-        // exactly as webhook-worthy as a forward-scan-driven one, and a merchant
-        // discovering by polling that an order silently stopped being paid is the
-        // worst possible way to learn about it.
         for order_id in &dirty_orders {
-            recompute_and_notify(&s, order_id, height, now)?;
+            recompute_and_notify(&s, order_id, tip, now)?;
         }
     }
-
-    // Only now that every affected payment has been re-evaluated is it safe to let
-    // the stored view of the chain catch up. Dropping the rows at and above the
-    // reorg point (rather than overwriting them with the new hashes) does double
-    // duty: the next detection pass sees nothing to re-reconcile, *and*
-    // `max_scanned_height` falls back to `reorg_point - 1` so the next tick's
-    // forward scan re-covers `reorg_point..tip` against the replacement chain,
-    // picking up any payment that exists only there. Should this tick die before
-    // reaching this line, nothing has been written, and the next tick simply detects
-    // the same reorg again and redoes the work - reconciliation is idempotent.
-    if let Some(reorg_point) = reorg_point {
-        // ...with one thing to be careful about: "walks back to `reorg_point - 1`"
-        // is only true while a row still exists at or below that height. When the
-        // reorg point is the *lowest* block this network has a row for - routine on a
-        // recently-started scanner, whose window begins at the tip it bootstrapped
-        // from - the delete empties the table outright, and an empty table is exactly
-        // what `run_scan_tick` reads as "this network has never been scanned", which
-        // makes it re-seed at the current tip. Every replacement block between the
-        // reorg point and the tip would then be skipped forever, taking any payment
-        // that exists only in the winning chain with it - the precise failure
-        // dropping these rows was introduced to prevent.
-        //
-        // Re-anchoring the common ancestor fixes the high-water mark in place. Its
-        // hash is fetched before the lock is taken, since nothing may `.await` while
-        // holding the store mutex; one extra RPC per detected reorg is not worth
-        // conditionalising.
-        //
-        // The anchor is fetched *before* anything is deleted, and a failure to fetch
-        // it abandons the delete entirely rather than proceeding without it. Treating
-        // a failed lookup as "no anchor" (which an `.ok()` here quietly did) reaches
-        // precisely the outcome the paragraph above exists to prevent, just via a
-        // transient RPC error instead of a missing row: the rows are gone, the table
-        // can now be empty, and the next tick reads that as "never scanned" and
-        // re-seeds at the tip - skipping every replacement block between the reorg
-        // point and the tip, permanently and silently. Leaving the stored hashes
-        // untouched instead costs nothing: they still describe the losing chain, so
-        // the next tick detects the same reorg and redoes this whole step, exactly
-        // as it does when reconciliation itself fails partway.
-        let anchor = reorg_point.checked_sub(1);
-        let anchor_hash = match anchor {
-            Some(h) => match daemon.get_block_hash(h).await {
-                Ok(hash) => Some(hash),
-                Err(e) => {
-                    tracing::warn!(
-                        network = %network,
-                        reorg_at = reorg_point,
-                        height = h,
-                        error = %e,
-                        "reorg: could not read the hash of the common ancestor - leaving the scanned-block window \
-                         untouched so the next tick re-detects this reorg, rather than dropping rows this tick can no \
-                         longer re-anchor"
-                    );
-                    return Ok(ReconcileReport {
-                        reorg_detected_at: Some(reorg_point),
-                        dirty_orders: dirty_orders.into_iter().collect(),
-                        double_spent_orders: double_spent_orders.into_iter().collect(),
-                    });
-                }
-            },
-            // A divergence at height 0 means the genesis block changed, which cannot
-            // happen on any real chain. There is no ancestor to anchor to and nothing
-            // to preserve, so the delete goes ahead and the next tick re-seeds.
-            None => None,
-        };
-        // The rewind, the re-anchor and the tenant cursor clamp happen
-        // together: every tenant at or above the reorg point goes back to
-        // `reorg_point - 1`, so the replacement block at `reorg_point` itself
-        // is scanned for it too.
-        store.lock().in_transaction(|s| -> std::result::Result<(), StoreError> {
-            s.forget_scanned_blocks_at_or_above(network, reorg_point)?;
-            if s.max_scanned_height(network)?.is_none() {
-                if let (Some(h), Some(hash)) = (anchor, anchor_hash.as_deref()) {
-                    s.set_scanned_block(network, h, hash)?;
-                }
-            }
-            s.clamp_cursors(network, anchor)
-        })?;
+    if let Some(error) = failure {
+        return Err(error);
     }
-
     Ok(ReconcileReport {
-        reorg_detected_at: reorg_point,
+        reorg_detected_at,
         dirty_orders: dirty_orders.into_iter().collect(),
         double_spent_orders: double_spent_orders.into_iter().collect(),
     })
@@ -460,51 +329,7 @@ pub struct VanishedPoolReport {
     pub double_spent_orders: Vec<String>,
 }
 
-/// Re-examines every payment that is still mempool-only (`block_height IS NULL`)
-/// and whose transaction is no longer in the mempool snapshot this tick polled.
-///
-/// This exists because reorg reconciliation cannot cover the most ordinary
-/// double-spend there is. `check_for_reorg_and_reconcile` only re-examines existing
-/// payments when a *stored block hash stops matching*, which is a reorg and nothing
-/// else. But the textbook attack on a merchant watching the mempool involves no
-/// reorg at all: broadcast transaction A to the merchant's node (the order is
-/// matched at zero confirmations, and on a tier whose own `confirmations_required`
-/// is 0 immediately reads as `paid`), then get transaction B, spending the same inputs,
-/// mined instead. A is never mined, so no block the scanner recorded ever changes,
-/// so nothing ever looked at that payment again: it sat at `block_height IS NULL`
-/// forever, counting in full towards an order the customer never actually paid, with
-/// no `order.double_spend_detected` webhook ever fired. The same blind spot swallows
-/// the honest version of the story - a transaction that is dropped or evicted from
-/// the pool (Monero has no replace-by-fee, but a transaction can still expire out of
-/// the pool after `CRYPTONOTE_MEMPOOL_TX_LIVETIME`, or simply never propagate) -
-/// which is why the "gone but not proven double-spent" case is deliberately left
-/// re-checkable rather than resolved.
-///
-/// Cheap by construction: a payment whose transaction is still in the pool costs
-/// nothing (the snapshot the tick already fetched answers it), and one that has just
-/// been mined normally has its height set by this same tick's block scan before this
-/// runs, so it isn't in the query's result set either. Only a genuinely vanished
-/// transaction costs an RPC, and the evidence rule is identical to
-/// `check_for_reorg_and_reconcile`'s: never void on absence, only on an affirmative
-/// `SpentInBlockchain` for one of the payment's own key images.
-///
-/// `mempool_txids` must be a snapshot of an *actually successful* poll. A failed
-/// poll must skip this sweep entirely rather than pass an empty set, which would
-/// read as "every unconfirmed payment has vanished" and burn one RPC per payment
-/// re-establishing that they hadn't.
-pub async fn check_vanished_mempool_payments(
-    store: &crate::store::SharedStore,
-    daemon: &dyn MoneroDaemonClient,
-    network: &str,
-    mempool_txids: &HashSet<String>,
-    current_height: u64,
-    now: i64,
-) -> Result<VanishedPoolReport> {
-    let unconfirmed = store.lock().find_unconfirmed_payments(network)?;
-    check_vanished_candidates(store, daemon, mempool_txids, current_height, now, unconfirmed).await
-}
-
-async fn check_vanished_candidates(
+pub(crate) async fn check_vanished_candidates(
     store: &crate::store::SharedStore,
     daemon: &dyn MoneroDaemonClient,
     mempool_txids: &HashSet<String>,
@@ -693,20 +518,31 @@ fn void_and_notify(
     current_height: u64,
     now: i64,
 ) -> Result<()> {
-    store.in_transaction(|store| {
-        store.void_payment(order_id, txid, output_index, now)?;
-        store.mark_double_spend_detected(order_id, now)?;
-        recompute_and_notify_in_tx(store, order_id, current_height, now)?;
-        // One event per voided payment row (docs/DESIGN.md §11), independent of
-        // whatever status transition the recompute above may also have announced.
-        enqueue_webhook_event(
-            store,
-            order_id,
-            "order.double_spend_detected",
-            &serde_json::json!({ "order_id": order_id }),
-            now,
-        )
-    })
+    store.in_transaction(|store| void_and_notify_in_tx(store, order_id, txid, output_index, current_height, now))
+}
+
+/// The body of `void_and_notify`, for callers already inside a transaction
+/// (the reorg job commits the void and the removal of its candidate together).
+pub(crate) fn void_and_notify_in_tx(
+    store: &Store,
+    order_id: &str,
+    txid: &str,
+    output_index: i64,
+    current_height: u64,
+    now: i64,
+) -> Result<()> {
+    store.void_payment(order_id, txid, output_index, now)?;
+    store.mark_double_spend_detected(order_id, now)?;
+    recompute_and_notify_in_tx(store, order_id, current_height, now)?;
+    // One event per voided payment row (docs/DESIGN.md §11), independent of
+    // whatever status transition the recompute above may also have announced.
+    enqueue_webhook_event(
+        store,
+        order_id,
+        "order.double_spend_detected",
+        &serde_json::json!({ "order_id": order_id }),
+        now,
+    )
 }
 
 /// Reverses a payment void that a later, corroborated re-check no longer supports -
@@ -795,39 +631,70 @@ pub async fn revalidate_recent_double_spend_voids(
     now: i64,
 ) -> Result<Vec<String>> {
     let current_height = daemon.get_height().await?;
-    let candidates = store.lock().find_payments_voided_since(network, now - DOUBLE_SPEND_RECHECK_WINDOW_SECS)?;
-
+    let cutoff = now - DOUBLE_SPEND_RECHECK_WINDOW_SECS;
     let mut recovered_orders = Vec::new();
-    for payment in candidates {
-        let key_images = match parse_payment_key_images(&payment.key_images_json) {
-            Ok(images) => images,
-            Err(e) => {
-                tracing::warn!(order.id = %payment.order_id, error = %e, "double-spend revalidation: leaving the order voided because its stored evidence is invalid");
-                continue;
+    let mut after = 0;
+    loop {
+        let page = store.lock().voided_payments_page(network, cutoff, after, 64)?;
+        let Some(last) = page.last().map(|p| p.id) else { break };
+        after = last;
+        for payment in page {
+            if recheck_voided_payment(store, daemon, network, &payment, current_height, now).await {
+                recovered_orders.push(payment.order_id.clone());
             }
-        };
-        let statuses = match daemon.is_key_image_spent_corroborated(&key_images).await {
-            Ok(statuses) => statuses,
-            Err(e) => {
-                tracing::warn!(
-                    order.id = %payment.order_id,
-                    network = %network,
-                    error = %e,
-                    "double-spend revalidation: rechecking a voided payment failed - leaving it voided, will retry next sweep"
-                );
-                continue;
-            }
-        };
-        if statuses.len() != key_images.len() || !statuses.iter().all(|status| *status == KeyImageStatus::Unspent) {
-            tracing::info!(order.id = %payment.order_id, "double-spend revalidation: inconclusive key-image statuses; leaving the order voided");
-            continue;
-        }
-        let s = store.lock();
-        if unvoid_as_false_positive(&s, &payment.order_id, &payment.txid, payment.output_index, current_height, now)? {
-            recovered_orders.push(payment.order_id.clone());
         }
     }
     Ok(recovered_orders)
+}
+
+/// Rechecks one voided payment and restores it if fresh, corroborated
+/// evidence no longer supports the double-spend accusation. Returns whether
+/// it was restored. A failed or inconclusive recheck is logged and leaves
+/// the payment voided, for a later pass to retry.
+pub(crate) async fn recheck_voided_payment(
+    store: &crate::store::SharedStore,
+    daemon: &dyn MoneroDaemonClient,
+    network: &str,
+    payment: &crate::store::OrderPaymentRow,
+    current_height: u64,
+    now: i64,
+) -> bool {
+    let key_images = match parse_payment_key_images(&payment.key_images_json) {
+        Ok(images) => images,
+        Err(e) => {
+            tracing::warn!(order.id = %payment.order_id, error = %e, "double-spend revalidation: leaving the order voided because its stored evidence is invalid");
+            return false;
+        }
+    };
+    let statuses = match crate::work::bounded(daemon.is_key_image_spent_corroborated(&key_images)).await {
+        Ok(statuses) => statuses,
+        Err(e) => {
+            tracing::warn!(
+                order.id = %payment.order_id,
+                network = %network,
+                error = %e,
+                "double-spend revalidation: rechecking a voided payment failed - leaving it voided, will retry next sweep"
+            );
+            return false;
+        }
+    };
+    if statuses.len() != key_images.len() || !statuses.iter().all(|status| *status == KeyImageStatus::Unspent) {
+        tracing::info!(order.id = %payment.order_id, "double-spend revalidation: inconclusive key-image statuses; leaving the order voided");
+        return false;
+    }
+    let s = store.lock();
+    match unvoid_as_false_positive(&s, &payment.order_id, &payment.txid, payment.output_index, current_height, now) {
+        Ok(restored) => {
+            if restored {
+                tracing::info!(order.id = %payment.order_id, network = %network, "double-spend revalidation reversed a void");
+            }
+            restored
+        }
+        Err(e) => {
+            tracing::warn!(order.id = %payment.order_id, error = %e, "double-spend revalidation: restoring a payment failed (retried next sweep)");
+            false
+        }
+    }
 }
 
 /// Never request fewer than this many blocks in one `get_blocks_range` call,
@@ -855,14 +722,14 @@ const SCAN_CHUNK_EWMA_ALPHA: f64 = 0.3;
 /// first chunk of a catch-up walk undershoots `scan_chunk_memory_budget_mb`
 /// rather than overshoots it. Self-correcting from the second chunk onward
 /// regardless.
-const SCAN_CHUNK_INITIAL_AVG_BYTES: f64 = 50_000.0;
+pub(crate) const SCAN_CHUNK_INITIAL_AVG_BYTES: f64 = 50_000.0;
 
 /// Pure sizing decision, extracted from `run_scan_tick`'s own loop specifically
 /// so it's directly, cheaply unit-testable - the real behavior lives entirely
 /// in arithmetic over three numbers, and proving "a larger average yields a
 /// smaller chunk" shouldn't require driving real transactions through real
 /// crypto to observe.
-fn next_scan_chunk_size(budget_bytes: u64, avg_bytes_per_block: f64, remaining: u64) -> u64 {
+pub(crate) fn next_scan_chunk_size(budget_bytes: u64, avg_bytes_per_block: f64, remaining: u64) -> u64 {
     let by_budget = ((budget_bytes as f64) / avg_bytes_per_block).floor() as u64;
     by_budget.clamp(SCAN_CHUNK_MIN_BLOCKS, SCAN_CHUNK_MAX_BLOCKS).min(remaining)
 }
@@ -871,28 +738,24 @@ fn next_scan_chunk_size(budget_bytes: u64, avg_bytes_per_block: f64, remaining: 
 /// bytes`/`block_count` are already known before this is called, so this is
 /// just the averaging formula on its own, testable without any daemon or
 /// store at all.
-fn update_avg_bytes_per_block(avg_bytes_per_block: f64, chunk_bytes: usize, block_count: usize) -> f64 {
+pub(crate) fn update_avg_bytes_per_block(avg_bytes_per_block: f64, chunk_bytes: usize, block_count: usize) -> f64 {
     let observed_avg = chunk_bytes as f64 / block_count as f64;
     SCAN_CHUNK_EWMA_ALPHA * observed_avg + (1.0 - SCAN_CHUNK_EWMA_ALPHA) * avg_bytes_per_block
 }
 
-/// One full scan tick for one network: mempool, any new confirmed blocks, then a
-/// reorg check - composing the primitives above into what a production scanner
-/// loop actually runs on an interval. `network` scopes everything to one chain: the
-/// `daemon` passed in must be the client for that same network, `tenants` should be
-/// pre-filtered (or filters itself further, see below) to that network's tenants,
-/// and every `scanned_blocks`/reorg call is keyed by it. A multi-network instance
-/// (§DESIGN.md §7) calls this once per configured network per round, each with its
-/// own daemon and its own independent block-height bookkeeping - mixing them under
-/// one call would compare block hashes across unrelated chains.
-///
-/// Takes `&SharedStore` and holds the lock only for synchronous persistence;
-/// key-custody scans and daemon calls run without it.
+/// One scan round for one network (docs/scanner_microtasks.md): reorg
+/// detection and reconciliation, new and lagging blocks, the mempool, status
+/// recomputes and upkeep, each a bounded unit with a share of the round's
+/// time. `network` scopes everything to one chain: the `daemon` passed in must
+/// be the client for that same network, and `tenants` are the tenants whose
+/// keys are registered (only those on `network` are ever scanned).
 ///
 /// On first run (no `scanned_blocks` history at all), seeds at the current chain
 /// tip rather than replaying the entire chain from genesis - this is a payment
 /// gateway watching for new incoming payments, not a block explorer backfilling
 /// history.
+///
+/// Returns the first unit failure of the round, after every other tier ran.
 pub async fn run_scan_tick(
     store: &crate::store::SharedStore,
     key_custody: &dyn KeyCustody,
@@ -902,52 +765,17 @@ pub async fn run_scan_tick(
     reorg_check_depth: u64,
     expired_order_grace_period_seconds: i64,
 ) -> Result<()> {
-    let memory = MempoolMemory::default();
+    let state = crate::work::ScanState::default();
     let budget = crate::engine_settings::EngineSettings::defaults().scan.load().scan_chunk_memory_budget_mb;
-    run_scan_tick_with(&memory, store, key_custody, daemon, network, tenants, reorg_check_depth, expired_order_grace_period_seconds, budget)
+    run_scan_tick_with(&state, store, key_custody, daemon, network, tenants, reorg_check_depth, expired_order_grace_period_seconds, budget)
         .await
 }
 
-/// What one network's scan loop remembers about the mempool between ticks
-/// (task 7.3), so a transaction sitting in the pool is fetched once and
-/// scanned once per store, not every second:
-/// - the bodies of transactions still in the pool;
-/// - which (transaction, store, scan window) have been scanned
-///   *successfully*. A failed scan isn't remembered, so it's retried next
-///   tick; a store whose window changed is scanned again.
-///
-/// Entries go when their transaction leaves the pool.
-#[derive(Default)]
-pub struct MempoolMemory {
-    inner: parking_lot::Mutex<MempoolMemoryInner>,
-    next_tx_offset: std::sync::atomic::AtomicUsize,
-    next_tenant_offset: std::sync::atomic::AtomicUsize,
-    pending_order_cursor: parking_lot::Mutex<String>,
-    active_order_cursor: parking_lot::Mutex<String>,
-    unconfirmed_payment_cursor: parking_lot::Mutex<i64>,
-}
-
-#[derive(Default)]
-struct MempoolMemoryInner {
-    bodies: HashMap<String, std::sync::Arc<Transaction>>,
-    scanned: HashMap<String, HashMap<String, u64>>,
-}
-
-/// Most mempool transaction bodies remembered; beyond this (a spam wave) new
-/// ones are scanned but not kept.
-const MEMPOOL_MEMORY_MAX_BODIES: usize = 20_000;
-const MEMPOOL_TXS_PER_TICK: usize = 64;
-const MEMPOOL_TENANTS_PER_TX: usize = 32;
-const MEMPOOL_PHASE_TIME: std::time::Duration = std::time::Duration::from_secs(15);
-/// A cancellation may replay this many no-match transactions. Batching the
-/// checkpoint avoids one SQLite commit per tenant and transaction in a large
-/// block, while every actual match still commits atomically with its position.
-const PARTIAL_CHECKPOINT_EVERY_TXS: usize = 16;
-
-/// `run_scan_tick` with mempool memory kept by the caller between ticks.
-#[allow(clippy::too_many_arguments)] // one tick's genuinely independent inputs
+/// `run_scan_tick` with the scheduler's in-memory state kept by the caller
+/// between rounds.
+#[allow(clippy::too_many_arguments)] // one round's genuinely independent inputs
 pub async fn run_scan_tick_with(
-    memory: &MempoolMemory,
+    state: &crate::work::ScanState,
     store: &crate::store::SharedStore,
     key_custody: &dyn KeyCustody,
     daemon: &dyn MoneroDaemonClient,
@@ -957,654 +785,17 @@ pub async fn run_scan_tick_with(
     expired_order_grace_period_seconds: i64,
     scan_chunk_memory_budget_mb: u32,
 ) -> Result<()> {
-    let now = crate::now_unix();
-
-    // The active watchlist (docs/DESIGN.md §7.3): only tenants with at least one
-    // order still capable of receiving a *new* detected payment are worth the
-    // scalar-multiplication cost of scanning. `active_tenant_ids` is a fresh query
-    // against the one mutex-serialized Store, not a separately-maintained cache -
-    // see its doc comment in `store.rs` for why that's a deliberate choice, not a
-    // missed optimization: an incrementally add/removed cache has a real TOCTOU
-    // race (a tenant's last order can settle and a brand-new order can arrive for
-    // the same tenant in the wrong order relative to an out-of-band "remove"
-    // decision, wrongly dropping a tenant with a genuinely pending order), and
-    // paying for a fresh indexed query every tick is negligible next to the EC
-    // math it avoids. Taking both queries (`active_tenant_ids` and each
-    // `get_tenant_by_id`) under one lock hold keeps them mutually consistent -
-    // no writer can slip in between deciding a tenant is active and reading its
-    // current `next_minor_index`.
-    //
-    // Also filters by `t.network == network` even though `active_tenant_ids`
-    // already scopes by network at the query level - a defensive second check
-    // against whatever `tenants` the caller happened to pass in (e.g. a boot-time
-    // snapshot spanning every configured network), so a mismatched daemon can never
-    // be handed a tenant that belongs to a different chain.
-    //
-    // Each tenant's own scan cursor (task 5.0) is read in the same lock hold.
-    // Before that, two cheap repairs keep cursors consistent with the
-    // network's high-water mark whatever happened last time (a crash between
-    // a reorg's rewind and its cursor clamp, or a tenant created before the
-    // network was seeded): no cursor may be ahead of the network, and an
-    // unset one is anchored to it.
-    let (ranges, cursors, active_ids): (Vec<(String, WalletHandle, ScanIndices)>, HashMap<String, Option<u64>>, Vec<String>) = {
-        let s = store.lock();
-        if let Some(high_water) = s.max_scanned_height(network)? {
-            s.clamp_cursors(network, Some(high_water))?;
-            s.anchor_unset_cursors(network, high_water)?;
-        }
-        let active_ids: Vec<String> = s.active_tenant_ids(network, now, expired_order_grace_period_seconds)?;
-        let active: HashSet<&String> = active_ids.iter().collect();
-        let mut cursors = HashMap::new();
-        let ranges = tenants
-            .iter()
-            .filter(|(tenant_id, _)| active.contains(tenant_id))
-            .filter_map(|(tenant_id, handle)| {
-                let t = s.get_tenant_by_id(tenant_id).ok().flatten()?;
-                if t.network != network {
-                    return None;
-                }
-                cursors.insert(tenant_id.clone(), t.scanned_through_height);
-                // Only the store's open and recently closed orders (D10).
-                let window = s.scan_window(tenant_id, now, expired_order_grace_period_seconds).ok()?;
-                Some((tenant_id.clone(), *handle, ScanIndices::new(window)))
-            })
-            .collect();
-        (ranges, cursors, active_ids)
-    };
-
-    let mut touched: HashSet<String> = HashSet::new();
-
-    // A failed mempool poll is survivable (the next tick re-polls a second later) but
-    // must not be *silent*: if it keeps failing, zero-conf detection is simply off for
-    // this network, and an operator whose orders never leave `pending` before a block
-    // arrives has nothing anywhere to tell them why.
-    let pool_txids = match daemon.get_mempool_txids().await {
-        Ok(txids) => Some(txids),
-        Err(e) => {
-            shared::throttled!(
-                format!("mempool-poll:{network}"),
-                warn,
-                network = %network,
-                error = %e,
-                "polling the mempool failed - no zero-conf detection this tick"
-            );
-            None
-        }
-    };
-    // The txids of an *actually successful* poll, kept for the vanished-payment
-    // sweep below - `None` (a failed poll) makes that sweep skip entirely rather
-    // than mistake "we didn't look" for "the pool is empty".
-    let mut mempool_txids: Option<HashSet<String>> = None;
-    if let Some(pool_txids) = pool_txids {
-        let in_pool: HashSet<String> = pool_txids.iter().cloned().collect();
-        // Rotate a bounded slice of the pool. Both the fetch and the EC work
-        // must leave room for blocks even if the pool is very large.
-        let mut selected = pool_txids;
-        selected.sort_unstable();
-        if !selected.is_empty() {
-            let offset = memory.next_tx_offset.load(std::sync::atomic::Ordering::Relaxed) % selected.len();
-            selected.rotate_left(offset);
-            selected.truncate(MEMPOOL_TXS_PER_TICK);
-        }
-        // Forget what left the pool; fetch only selected bodies not already held.
-        let missing: Vec<String> = {
-            let mut memory = memory.inner.lock();
-            memory.bodies.retain(|txid, _| in_pool.contains(txid));
-            memory.scanned.retain(|txid, _| in_pool.contains(txid));
-            selected.iter().filter(|txid| !memory.bodies.contains_key(*txid)).cloned().collect()
-        };
-        let mut fresh: Vec<std::sync::Arc<Transaction>> = Vec::new();
-        if !missing.is_empty() {
-            match daemon.get_transactions(&missing).await {
-                Ok(txs) => fresh = txs.into_iter().map(std::sync::Arc::new).collect(),
-                Err(e) => tracing::warn!(
-                    network = %network,
-                    transactions = missing.len(),
-                    error = %e,
-                    "fetching new mempool transactions failed (retried next tick)"
-                ),
-            }
-        }
-        let pool: Vec<std::sync::Arc<Transaction>> = {
-            let mut memory = memory.inner.lock();
-            let mut fetched = HashMap::new();
-            for tx in &fresh {
-                let txid = tx_id_hex(tx);
-                fetched.insert(txid.clone(), tx.clone());
-                if memory.bodies.len() < MEMPOOL_MEMORY_MAX_BODIES {
-                    memory.bodies.insert(txid, tx.clone());
-                }
-            }
-            selected.iter().filter_map(|txid| memory.bodies.get(txid).or_else(|| fetched.get(txid)).cloned()).collect()
-        };
-        mempool_txids = Some(in_pool);
-
-        // Retry a failed tenant next tick, not once per pool transaction. A
-        // single unresponsive backend must not spend the entire tick budget
-        // on repeated deadlines before block scanning even gets a turn.
-        let mut failed_in_pool = HashSet::new();
-        let phase_end = tokio::time::Instant::now() + MEMPOOL_PHASE_TIME;
-        let mut attempted_txs = 0;
-        for tx in &pool {
-            if tokio::time::Instant::now() >= phase_end {
-                break;
-            }
-            attempted_txs += 1;
-            let txid = tx_id_hex(tx);
-            // Only the stores this transaction hasn't been scanned for, with
-            // the store's current window, yet.
-            let mut due: Vec<&(String, WalletHandle, ScanIndices)> = {
-                let memory = memory.inner.lock();
-                let done = memory.scanned.get(&txid);
-                ranges
-                    .iter()
-                    .filter(|(tenant_id, _, _)| !failed_in_pool.contains(tenant_id))
-                    .filter(|(tenant_id, _, window)| done.and_then(|d| d.get(tenant_id)) != Some(&window.generation()))
-                    .collect()
-            };
-            due.sort_unstable_by(|a, b| a.0.cmp(&b.0));
-            if !due.is_empty() {
-                let offset = memory.next_tenant_offset.fetch_add(MEMPOOL_TENANTS_PER_TX, std::sync::atomic::Ordering::Relaxed) % due.len();
-                due.rotate_left(offset);
-                due.truncate(MEMPOOL_TENANTS_PER_TX);
-            }
-            if due.is_empty() {
-                continue;
-            }
-            // Compute (async, no Store - see ScanResult's doc comment) then
-            // persist (sync, no .await) as two separate steps, never a single
-            // await-spanning call holding a &Store.
-            //
-            // A failure here is genuinely recoverable by doing nothing: the
-            // transaction isn't marked as scanned for that store, so the next
-            // tick tries again. It still gets logged rather than silently
-            // swallowed - a persistently failing scan or store call that never
-            // surfaces anywhere is indistinguishable from "no payments are
-            // arriving".
-            let generations: HashMap<&String, u64> = due.iter().map(|(id, _, w)| (id, w.generation())).collect();
-            for (tenant_id, result) in scan_for_tenants(key_custody, tx, &due).await {
-                let tenant_id = &tenant_id;
-                match result {
-                    Ok(scan) => {
-                        let recorded = record_scan_match(&store.lock(), tenant_id, &scan, now, None);
-                        match recorded {
-                            Ok(order_ids) => {
-                                touched.extend(order_ids);
-                                if let Some(generation) = generations.get(tenant_id) {
-                                    memory.inner.lock().scanned.entry(txid.clone()).or_default().insert(tenant_id.clone(), *generation);
-                                }
-                            }
-                            Err(e) => tracing::warn!(
-                                store.id = %tenant_id,
-                                network = %network,
-                                error = %e,
-                                "recording a mempool match failed (will retry next tick)"
-                            ),
-                        }
-                    }
-                    Err(e) => {
-                        failed_in_pool.insert(tenant_id.clone());
-                        shared::throttled!(
-                            format!("mempool-scan:{tenant_id}"),
-                            warn,
-                            store.id = %tenant_id,
-                            network = %network,
-                            error = %e,
-                            "scanning a mempool transaction failed"
-                        );
-                    }
-                }
-            }
-        }
-        // Advance by work actually attempted. Advancing by the whole selected
-        // slice would revisit its slow first member forever when the pool size
-        // exactly equals the slice size and the time allowance stops us early.
-        memory.next_tx_offset.fetch_add(
-            if attempted_txs == 0 { selected.len() } else { attempted_txs },
-            std::sync::atomic::Ordering::Relaxed,
-        );
-    }
-
-    // A failure anywhere in here means "skip block scanning this tick, try again
-    // next time" - it must never discard the mempool-scan results already
-    // gathered above by short-circuiting the whole function. An earlier version of
-    // this function did exactly that (`return Ok(())` from inside this block),
-    // which silently dropped a real mempool match's status recompute + webhook
-    // whenever the tip-seeding bootstrap below hit the lagging-backend condition
-    // it exists to handle - caught only by a test asserting the mempool match's
-    // *end-to-end* effect (status + webhook), not just that scanning didn't error.
-    let current_height = daemon.get_height().await?;
-    let last_scanned = store.lock().max_scanned_height(network)?;
-    let scan_range = match last_scanned {
-        Some(h) => Some((h + 1, current_height)),
-        None => {
-            // Seeds one block behind the reported tip as a small safety margin
-            // against a daemon momentarily reporting a height it can't yet serve a
-            // block for (e.g. genuine replication lag across a pool of backend
-            // nodes behind a public endpoint). This margin was originally added to
-            // work around what turned out to be a different, deterministic bug -
-            // `RpcDaemonClient::get_height` misreading monerod's block-count
-            // convention as the tip height itself, now fixed at its source in
-            // `daemon_rpc.rs`. Kept anyway as cheap, genuine defense for the
-            // scenario it actually describes, now that a real bug isn't hiding
-            // behind it.
-            let seed_height = current_height.saturating_sub(1);
-            match daemon.get_block_hash(seed_height).await {
-                Ok(hash) => {
-                    let s = store.lock();
-                    s.set_scanned_block(network, seed_height, &hash)?;
-                    s.anchor_unset_cursors(network, seed_height)?;
-                    Some((seed_height + 1, current_height))
-                }
-                Err(_) => None,
-            }
-        }
-    };
-
-    // Unlike the mempool loop above, a failure here is *not* self-healing: a block is
-    // scanned exactly once, and `set_scanned_block` moves the high-water mark past it
-    // whether or not anything in it was successfully recorded. So a single transient
-    // store error while recording a match used to lose that payment permanently and
-    // without a trace - the block was marked scanned regardless, and nothing ever
-    // looked at it again. Any failure at a height therefore abandons the rest of the
-    // block range *without* marking that height scanned, leaving the next tick to
-    // retry it from the same place; re-recording an already-recorded match is a no-op
-    // thanks to `UNIQUE(order_id, txid, output_index)`.
-    //
-    // Deliberately a `break` rather than an early `return Err(..)`: the mempool
-    // matches already gathered above still need their status recompute and webhooks,
-    // which returning here would discard (a bug this function has had once before -
-    // see the comment above `current_height`).
-    // A tenant with an order in scope but no usable keys this tick (not in
-    // `tenants`: its wallet isn't registered) starts out left behind, so its
-    // cursor doesn't move past blocks nobody checked for it.
-    let in_ranges: HashSet<&String> = ranges.iter().map(|(tenant_id, _, _)| tenant_id).collect();
-    let mut left_behind: HashSet<String> =
-        active_ids.iter().filter(|tenant_id| !in_ranges.contains(tenant_id)).cloned().collect();
-    if let Some((scan_from, scan_to)) = scan_range {
-        let block_phase_end = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-        // Fetches transactions in `get_blocks_range` chunks sized against
-        // `payment.scan_chunk_memory_budget_mb` (passed in each tick from the
-        // live scan settings, so a saved change applies to the next) rather than
-        // one `get_block_transactions` call per height - the catch-up walk after
-        // real downtime can span thousands of blocks, and each one used to cost
-        // its own daemon round trip. `avg_bytes_per_block` is a per-tick-local
-        // EWMA seeded from `SCAN_CHUNK_INITIAL_AVG_BYTES`, updated from each
-        // chunk's own real transaction sizes as it goes - see the constants'
-        // own doc comments above for the reasoning. Deliberately *not*
-        // batching `get_block_hash` below - see `docs/txid_lookup_and_scan_
-        // chunking_wbs.md`'s "scope limit" for why real block-hash computation
-        // stays out of this change entirely.
-        let budget_bytes = (scan_chunk_memory_budget_mb as u64).saturating_mul(1024 * 1024);
-        let mut avg_bytes_per_block = SCAN_CHUNK_INITIAL_AVG_BYTES;
-
-        // Only tenants caught up to the network take part in the live scan.
-        // One whose scan fails is left behind for the rest of this pass (its
-        // cursor stays where it was) instead of stopping the network for
-        // everyone; catch-up below brings it back. Failures that affect every
-        // tenant (fetching blocks, reading a hash, a store write) still stop
-        // the pass, as before.
-        let live: Vec<&(String, WalletHandle, ScanIndices)> = ranges
-            .iter()
-            .filter(|(tenant_id, _, _)| cursors.get(tenant_id).copied().flatten().is_none_or(|c| c + 1 >= scan_from))
-            .collect();
-
-        let mut height = scan_from;
-        'heights: while height <= scan_to {
-            if tokio::time::Instant::now() >= block_phase_end { break; }
-            let remaining = scan_to - height + 1;
-            let chunk_size = next_scan_chunk_size(budget_bytes, avg_bytes_per_block, remaining);
-
-            // Same danger as the old per-block `get_block_transactions` failure
-            // this replaces: silence here is not necessarily transient (a
-            // pruned node with no blob for this range, or an undecodable
-            // transaction, fails identically forever), so it's logged loudly,
-            // and the range is abandoned here rather than marking anything
-            // scanned - the next tick retries from the same place.
-            let chunk = match daemon.get_blocks_range(height, chunk_size).await {
-                Ok(c) => c,
-                Err(e) => {
-                    tracing::warn!(
-                        network = %network,
-                        height,
-                        chunk_size,
-                        error = %e,
-                        "fetching blocks failed - leaving the block unscanned so the next tick retries it. If this \
-                         repeats at the same height, the scanner is stuck there and no payment on this network is \
-                         being detected"
-                    );
-                    break 'heights;
-                }
-            };
-            if chunk.is_empty() {
-                tracing::warn!(
-                    network = %network,
-                    height,
-                    chunk_size,
-                    "get_blocks_range returned zero blocks - leaving the chunk unscanned so the next tick retries it"
-                );
-                break 'heights;
-            }
-
-            // `get_blocks_range` may return fewer than `chunk_size` (an older
-            // node ignoring monerod's own `max_block_count` hint, or simply
-            // running short of the requested range) - update the running
-            // average and advance by however many blocks actually came back,
-            // never by `chunk_size` itself, so an under-delivering node can't
-            // desync progress from what was truly recorded.
-            let chunk_bytes: usize =
-                chunk.iter().flatten().map(|tx| monero::consensus::encode::serialize(tx).len()).sum();
-            avg_bytes_per_block = update_avg_bytes_per_block(avg_bytes_per_block, chunk_bytes, chunk.len());
-
-            for (offset, block_txs) in chunk.iter().enumerate() {
-                if tokio::time::Instant::now() >= block_phase_end { break 'heights; }
-                let height = height + offset as u64;
-                let hash = match daemon.get_block_hash(height).await {
-                    Ok(hash) => hash,
-                    Err(e) => {
-                        tracing::warn!("reading the hash of block {height} on {network} failed: {e}");
-                        break 'heights;
-                    }
-                };
-                let still_live: Vec<&(String, WalletHandle, ScanIndices)> =
-                    live.iter().copied().filter(|(tenant_id, _, _)| !left_behind.contains(tenant_id)).collect();
-                let mut next_tx = HashMap::new();
-                for (tenant_id, _, window) in &still_live {
-                    match store.lock().start_partial_block(network, tenant_id, height, &hash, window.generation()) {
-                        Ok(next) if next <= block_txs.len() => { next_tx.insert(tenant_id.clone(), next); }
-                        Ok(_) => {
-                            tracing::warn!("invalid partial-block checkpoint for tenant {tenant_id} at {height}");
-                            break 'heights;
-                        }
-                        Err(e) => {
-                            tracing::warn!("starting partial-block checkpoint for tenant {tenant_id} at {height} failed: {e}");
-                            break 'heights;
-                        }
-                    }
-                }
-                for (tx_index, tx) in block_txs.iter().enumerate() {
-                    let due: Vec<_> = still_live.iter().copied()
-                        .filter(|(id, _, _)| !left_behind.contains(id) && next_tx.get(id).is_some_and(|next| *next <= tx_index))
-                        .collect();
-                    for batch in due.chunks(SCAN_CONCURRENCY) {
-                        if tokio::time::Instant::now() >= block_phase_end { break 'heights; }
-                        for (tenant_id, result) in scan_for_tenants(key_custody, tx, batch).await {
-                            match result {
-                                Ok(scan) => {
-                                    if scan.matches.is_empty()
-                                        && (tx_index + 1) % PARTIAL_CHECKPOINT_EVERY_TXS != 0
-                                        && tx_index + 1 != block_txs.len() {
-                                        continue;
-                                    }
-                                    let written = store.lock().in_transaction(|s| -> Result<()> {
-                                        stage_block_match(s, network, &tenant_id, &scan, now)?;
-                                        s.advance_partial_block(network, &tenant_id, tx_index + 1)?;
-                                        Ok(())
-                                    });
-                                    if let Err(e) = written {
-                                        tracing::warn!("staging a match in block {height} for tenant {tenant_id} failed: {e}");
-                                        break 'heights;
-                                    }
-                                }
-                                Err(e) => {
-                                    shared::throttled!(format!("block-scan:{tenant_id}"), warn, "scanning block {height} on {network} for tenant {tenant_id} failed; tenant left behind: {e}");
-                                    left_behind.insert(tenant_id);
-                                }
-                            }
-                        }
-                    }
-                }
-                // The block may have changed while its transactions were
-                // scanned. Staged matches are promoted only for the same hash.
-                match daemon.get_block_hash(height).await {
-                    Ok(current_hash) if current_hash == hash => {}
-                    Ok(_) => { tracing::warn!("block {height} changed during scanning on {network}; retrying it"); break 'heights; }
-                    Err(e) => { tracing::warn!("rechecking block {height} on {network} failed: {e}"); break 'heights; }
-                }
-                let scanned: Vec<String> = still_live
-                    .iter()
-                    .map(|(tenant_id, _, _)| tenant_id.clone())
-                    .filter(|tenant_id| !left_behind.contains(tenant_id))
-                    .collect();
-                let written = store.lock().in_transaction(|s| -> Result<Vec<String>> {
-                    let mut block_touched = Vec::new();
-                    for tenant_id in &scanned {
-                        block_touched.extend(s.promote_partial_block(network, tenant_id, height, &hash, block_txs.len())?);
-                    }
-                    s.set_scanned_block(network, height, &hash)?;
-                    s.advance_caught_up_cursors(network, height, &scanned, now, expired_order_grace_period_seconds)?;
-                    Ok(block_touched)
-                });
-                match written {
-                    Ok(block_touched) => touched.extend(block_touched),
-                    Err(e) => {
-                        tracing::warn!("committing block {height} on {network} failed; retrying: {e}");
-                        break 'heights;
-                    }
-                }
-            }
-
-            height += chunk.len() as u64;
-        }
-    }
-
-    // `docs/order_rescan_wbs.md` Phase 5.1: bumps every currently-in-scope order's
-    // scanned-range bookkeeping to whatever height is now confirmed-scanned on this
-    // network - once per active tenant, not a per-order loop. Runs unconditionally
-    // every tick, not only when this tick's own block-scanning pass made progress:
-    // `max_scanned_height` still reflects genuine prior coverage on a tick where no
-    // new block happened to arrive, which is exactly what lets a brand-new order
-    // get its `first_scanned_height` set on its own very first eligible tick
-    // (`ranges` is a fresh query every tick) rather than only on a tick that
-    // happens to also process a new block. `None` (nothing has ever been scanned on
-    // this network at all yet) is skipped entirely, correctly leaving every order's
-    // range still `NULL`.
-    if let Err(e) = catch_up_lagging_tenants(
+    let inputs = crate::work::RoundInputs {
         store,
-        key_custody,
+        custody: key_custody,
         daemon,
         network,
         tenants,
-        &left_behind,
-        expired_order_grace_period_seconds,
-        now,
-        &mut touched,
-    )
-    .await
-    {
-        tracing::warn!(network = %network, error = %e, "catching up lagging stores failed (retried next tick)");
-    }
-
-    // Each tenant's orders show the range scanned *for that tenant*, which is
-    // its own cursor, not the network's height: a tenant that is behind hasn't
-    // been checked against the blocks above its cursor.
-    for (tenant_id, _, _) in &ranges {
-        let cursor = store.lock().get_tenant_by_id(tenant_id).ok().flatten().and_then(|t| t.scanned_through_height);
-        if let Some(scanned_through) = cursor {
-            if let Err(e) = store.lock().bump_scanned_heights_for_tenant(
-                tenant_id,
-                scanned_through,
-                now,
-                expired_order_grace_period_seconds,
-            ) {
-                tracing::warn!(
-                    store.id = %tenant_id,
-                    network = %network,
-                    error = %e,
-                    "failed to bump scanned-range bookkeeping - the store's orders' displayed scan range may lag until \
-                     a later tick succeeds"
-                );
-            }
-        }
-    }
-
-    // Reconciliation runs *before* the recompute sweep below, not after it. Both
-    // orderings recompute the same orders; only this one recomputes them from payment
-    // rows the chain still agrees with. Sweeping first means that on the one tick
-    // where a reorg is detected, every non-terminal order is evaluated against
-    // heights reconciliation is about to invalidate - so an order whose payment was
-    // just orphaned can cross its confirmation threshold and fire `order.paid`
-    // moments before the same tick voids that payment and fires the retraction. A
-    // merchant acting on `order.paid` ships goods; "we sent it, then took it back a
-    // second later" is not a recoverable webhook. Reconciling first costs nothing:
-    // with no reorg this is a handful of hash comparisons, and the orders it marks
-    // dirty simply recompute to the same value again in the sweep, which enqueues
-    // nothing when nothing changed.
-    let report = check_for_reorg_and_reconcile(store, daemon, network, reorg_check_depth, now).await;
-
-    // The blind spot reorg detection structurally cannot cover: a zero-conf payment
-    // whose transaction quietly leaves the pool without ever being mined, because a
-    // conflicting transaction won instead. No stored block hash changes in that
-    // story, so nothing above would ever look at that payment again. Runs after the
-    // block scan deliberately - a transaction mined this tick already has its height
-    // recorded by then and is not a candidate at all - and, like reconciliation,
-    // before the recompute sweep, so a voided payment can never be announced as a
-    // settlement moments before it is retracted.
-    let mut vanished_failure: Option<ScannerError> = None;
-    let vanished: Result<VanishedPoolReport> = match &mempool_txids {
-        Some(txids) => {
-            let previous_cursor = *memory.unconfirmed_payment_cursor.lock();
-            let page: std::result::Result<_, crate::store::StoreError> = {
-                let s = store.lock();
-                s.unconfirmed_payments_page(network, previous_cursor, 64).and_then(|page| {
-                    if page.is_empty() && previous_cursor != 0 {
-                        s.unconfirmed_payments_page(network, 0, 64)
-                    } else {
-                        Ok(page)
-                    }
-                })
-            };
-            match page {
-                Ok(page) => {
-                    if page.is_empty() {
-                        *memory.unconfirmed_payment_cursor.lock() = 0;
-                    }
-                    let mut report = VanishedPoolReport { dirty_orders: Vec::new(), double_spent_orders: Vec::new() };
-                    let phase_end = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
-                    for (id, payment) in page {
-                        if tokio::time::Instant::now() >= phase_end {
-                            break;
-                        }
-                        match tokio::time::timeout_at(
-                            phase_end.min(tokio::time::Instant::now() + std::time::Duration::from_secs(2)),
-                            check_vanished_candidates(store, daemon, txids, current_height, now, vec![payment]),
-                        ).await {
-                            Ok(Ok(one)) => {
-                                report.dirty_orders.extend(one.dirty_orders);
-                                report.double_spent_orders.extend(one.double_spent_orders);
-                            }
-                            Ok(Err(error)) => {
-                                tracing::warn!("checking vanished mempool payments on {network} failed (retried next tick): {error}");
-                                if vanished_failure.is_none() { vanished_failure = Some(error); }
-                            }
-                            Err(_) => {
-                                tracing::warn!("checking a vanished mempool payment on {network} exceeded its deadline");
-                                if vanished_failure.is_none() {
-                                    vanished_failure = Some(ScannerError::Internal("vanished mempool lookup exceeded its deadline".into()));
-                                }
-                            }
-                        }
-                        // A failed row remains eligible on the next circuit;
-                        // moving past it lets other payments make progress.
-                        *memory.unconfirmed_payment_cursor.lock() = id;
-                    }
-                    Ok(report)
-                }
-                Err(error) => Err(error.into()),
-            }
-        }
-        None => Ok(VanishedPoolReport { dirty_orders: vec![], double_spent_orders: vec![] }),
+        reorg_check_depth,
+        grace_period_seconds: expired_order_grace_period_seconds,
+        scan_chunk_memory_budget_mb,
     };
-    if let Ok(report) = &vanished {
-        // Unioned into `touched` rather than recomputed here: an order whose only
-        // payment was just voided may well be terminal (`paid` off the zero-conf
-        // native 0-conf threshold is exactly the case this sweep exists for), so it is absent from
-        // the non-terminal set the sweep below iterates and would otherwise never be
-        // recomputed at all.
-        touched.extend(report.dirty_orders.iter().cloned());
-    }
-
-    // A rotating page of non-terminal orders on this network is recomputed, along
-    // with pending payment obligations and orders touched this tick. An order's status depends on the
-    // current chain height (confirmations are derived, never stored per payment) and
-    // on wall-clock time (expiry), so an order with entirely unchanged payments still
-    // changes status as the chain grows. Recomputing only the `touched` set meant an
-    // order was recomputed exactly once - at one confirmation - and then stayed
-    // `confirming` forever no matter how deeply buried its payment became, and an
-    // unpaid order never became `expired` at all. `touched` is unioned in rather than
-    // replaced because a just-matched order may already be terminal (and so absent
-    // from the non-terminal set) yet still need its amounts refreshed. The set union
-    // is also what keeps this from double-firing webhooks: each order is recomputed
-    // at most once per tick, and `recompute_and_notify` only enqueues on an actual
-    // status change.
-    //
-    // The page cursor resumes on the next tick; a large order population may
-    // therefore take multiple ticks to reflect a new height or expiry.
-    // Deliberately still runs when reconciliation above failed (its result is only
-    // unwrapped afterwards): a node that went unreachable partway through
-    // reconciliation leaves a pure retry for the next tick, and holding every order's
-    // expiry and confirmation growth hostage to it would turn a transient node blip
-    // into orders that silently stop advancing.
-    const PENDING_STATUS_BATCH: usize = 128;
-    const ACTIVE_STATUS_BATCH: usize = 256;
-    let pending_cursor = memory.pending_order_cursor.lock().clone();
-    let active_cursor = memory.active_order_cursor.lock().clone();
-    let (pending, active): (Vec<String>, Vec<String>) = {
-        let s = store.lock();
-        let mut pending = s.pending_payment_recomputes_page(network, &pending_cursor, PENDING_STATUS_BATCH)?;
-        if pending.is_empty() && !pending_cursor.is_empty() {
-            pending = s.pending_payment_recomputes_page(network, "", PENDING_STATUS_BATCH)?;
-        }
-        let mut active = s.non_terminal_order_ids_page(
-            network, now, expired_order_grace_period_seconds, &active_cursor, ACTIVE_STATUS_BATCH,
-        )?;
-        if active.is_empty() && !active_cursor.is_empty() {
-            active = s.non_terminal_order_ids_page(network, now, expired_order_grace_period_seconds, "", ACTIVE_STATUS_BATCH)?;
-        }
-        (pending, active)
-    };
-    *memory.pending_order_cursor.lock() = pending.last().cloned().unwrap_or_default();
-    *memory.active_order_cursor.lock() = active.last().cloned().unwrap_or_default();
-    let to_recompute: HashSet<String> = pending.into_iter().chain(active).chain(touched).collect();
-    for order_id in &to_recompute {
-        let s = store.lock();
-        recompute_and_notify(&s, order_id, current_height, now)?;
-    }
-
-    // Both reports' `double_spent_orders` are informational here: the
-    // `order.double_spend_detected` event for each voided payment was already
-    // enqueued by `void_and_notify`, in the same transaction as the void itself, so
-    // that a failure later in the same pass can neither lose the event nor leave the
-    // order's status describing money that has been written off. Unwrapped only now,
-    // after the recompute sweep above, so a node that died mid-reconciliation still
-    // leaves every other order's confirmations and expiry advancing.
-    let _ = report?;
-    let _ = vanished?;
-    if let Some(error) = vanished_failure { return Err(error); }
-
-    // Nothing reads a scanned-block row from further back than the reorg window, so
-    // keeping every row this service has ever written is pure growth - a block every
-    // two minutes, forever, on hardware whose storage is often an SD card. The
-    // retention is measured from *this scanner's own* high-water mark rather than the
-    // daemon's reported height, so a node briefly claiming an absurd tip cannot talk
-    // the scanner into deleting the window it needs, and it is deliberately several
-    // times `reorg_check_depth`: the only thing that has to survive is enough history
-    // for the deepest reorg the window claims to handle, plus room for a rewind to
-    // find its common ancestor below that.
-    //
-    // Last in the tick, and non-fatal: this is housekeeping, and a tick that detected
-    // a payment must not be reported as failed because a delete didn't land.
-    {
-        let s = store.lock();
-        if let Ok(Some(high_water)) = s.max_scanned_height(network) {
-            let keep_from = high_water.saturating_sub(reorg_check_depth.saturating_mul(4));
-            if let Err(e) = s.prune_scanned_blocks_below(network, keep_from) {
-                tracing::info!(network = %network, keep_from, error = %e, "pruning scanned blocks failed (harmless, retried next tick)");
-            }
-        }
-    }
-
-    Ok(())
+    crate::work::run_round(state, &inputs, crate::work::ROUND_BUDGET).await.into_result()
 }
 
 /// Registers the keys of every enabled tenant on `network` that has none
@@ -1782,225 +973,6 @@ pub async fn register_missing_wallets_reporting(
 pub struct Registration {
     pub registered: usize,
     pub failed: usize,
-}
-
-/// Most blocks caught up per tick across all lagging tenants, shared between
-/// the groups, so a long gap (or many groups) is closed over several ticks
-/// without holding up the live scan.
-const CATCH_UP_BLOCKS_PER_TICK: u64 = 200;
-/// Floor for each group's share of `CATCH_UP_BLOCKS_PER_TICK`, so every
-/// group still makes progress when there are many.
-const CATCH_UP_MIN_BLOCKS_PER_GROUP: u64 = 10;
-/// Most blocks fetched in one `get_blocks_range` call during catch-up.
-const CATCH_UP_FETCH_BLOCKS: u64 = 50;
-
-/// Brings tenants whose cursor is behind the network back up to it
-/// (task 5.0). A tenant falls behind when its scan failed during the live
-/// scan (its key custody backend was down, say) or its keys weren't
-/// registered for a while.
-///
-/// - Disabled tenants are moved straight along: nothing is scanned for them.
-/// - A lagging tenant with no order that could have been paid since its
-///   cursor's block (by the time of that block, not now: an order that was
-///   in scope during the gap still counts) has nothing to find, so it is
-///   moved straight to the network's height.
-/// - The rest, if their keys are registered (they are in `tenants`), are
-///   grouped by cursor so tenants that fell behind together share one block
-///   fetch. The groups share a per-tick block budget.
-/// - Each block is checked against the hash the live scan stored for that
-///   height, where one is still stored. A mismatch means the node answering
-///   now is on another fork, so this group stops for this tick; the reorg
-///   check sorts it out.
-/// - A tenant whose scan fails again stays where it is. Nothing here stops
-///   the live scan or other groups.
-///
-/// Tenants left behind during this tick's live scan are skipped until next
-/// tick: whatever just failed for them almost certainly still does. Orders
-/// touched are added to `touched` as they are found, so they're kept even
-/// if a later step fails.
-#[allow(clippy::too_many_arguments)] // one tick's genuinely independent inputs, as for `run_scan_tick`
-async fn catch_up_lagging_tenants(
-    store: &crate::store::SharedStore,
-    key_custody: &dyn KeyCustody,
-    daemon: &dyn MoneroDaemonClient,
-    network: &str,
-    tenants: &[(String, WalletHandle)],
-    left_behind: &HashSet<String>,
-    expired_order_grace_period_seconds: i64,
-    now: i64,
-    touched: &mut HashSet<String>,
-) -> Result<()> {
-    let (high_water, lagging) = {
-        let s = store.lock();
-        let Some(high_water) = s.max_scanned_height(network)? else { return Ok(()) };
-        s.snap_disabled_cursors(network, high_water)?;
-        (high_water, s.lagging_tenants(network)?)
-    };
-    if lagging.is_empty() {
-        return Ok(());
-    }
-
-    let handles: HashMap<&String, &WalletHandle> = tenants.iter().map(|(id, handle)| (id, handle)).collect();
-    let mut cursor_times: HashMap<u64, i64> = HashMap::new();
-    let mut groups: std::collections::BTreeMap<u64, Vec<(String, WalletHandle, ScanIndices)>> = Default::default();
-    for (tenant_id, cursor) in &lagging {
-        // A tenant with no order that could be paid at any time at all needs
-        // no block time to decide: it has nothing to find.
-        if !store.lock().tenant_has_orders_in_scope_since(tenant_id, i64::MIN / 2, expired_order_grace_period_seconds)? {
-            store.lock().snap_cursor(tenant_id, high_water)?;
-            continue;
-        }
-        // When the gap began, as the chain tells it. If that can't be read,
-        // this tenant is left for next tick rather than guessed about.
-        let cursor_time = match cursor_times.get(cursor) {
-            Some(t) => *t,
-            None => match daemon.get_block_timestamp(*cursor).await {
-                Ok(t) => {
-                    cursor_times.insert(*cursor, t as i64);
-                    t as i64
-                }
-                Err(e) => {
-                    tracing::warn!(network = %network, height = cursor, error = %e, "catch-up: reading a block's time failed (retried next tick)");
-                    continue;
-                }
-            },
-        };
-        // The window as it was since the gap began: orders that closed
-        // during the gap are still looked for (D10).
-        let window = store.lock().scan_window(tenant_id, cursor_time.min(now), expired_order_grace_period_seconds)?;
-        if window.is_empty() {
-            store.lock().snap_cursor(tenant_id, high_water)?;
-            continue;
-        }
-        if left_behind.contains(tenant_id) {
-            continue;
-        }
-        if let Some(handle) = handles.get(tenant_id) {
-            groups.entry(*cursor).or_default().push((tenant_id.clone(), **handle, ScanIndices::new(window)));
-        }
-    }
-    if groups.is_empty() {
-        return Ok(());
-    }
-
-    let per_group = (CATCH_UP_BLOCKS_PER_TICK / groups.len() as u64).max(CATCH_UP_MIN_BLOCKS_PER_GROUP);
-    static NEXT_CATCHUP_GROUP: std::sync::LazyLock<parking_lot::Mutex<HashMap<String, usize>>> =
-        std::sync::LazyLock::new(|| parking_lot::Mutex::new(HashMap::new()));
-    let mut groups: Vec<_> = groups.into_iter().collect();
-    let start = {
-        let mut offsets = NEXT_CATCHUP_GROUP.lock();
-        let next = offsets.entry(network.to_string()).or_default();
-        let start = *next % groups.len();
-        *next = next.wrapping_add(1);
-        start
-    };
-    groups.rotate_left(start);
-    let phase_end = tokio::time::Instant::now() + std::time::Duration::from_secs(30);
-    for (cursor, mut group) in groups {
-        let end = high_water.min(cursor + per_group);
-        let mut height = cursor + 1;
-        'group: while height <= end && !group.is_empty() {
-            if tokio::time::Instant::now() >= phase_end { return Ok(()); }
-            let count = (end - height + 1).min(CATCH_UP_FETCH_BLOCKS);
-            let chunk = match daemon.get_blocks_range(height, count).await {
-                Ok(chunk) if !chunk.is_empty() => chunk,
-                Ok(_) => break 'group,
-                Err(e) => {
-                    shared::throttled!(
-                        format!("catch-up-fetch:{network}"),
-                        warn,
-                        network = %network,
-                        height,
-                        error = %e,
-                        "catch-up: fetching blocks failed (retried next tick)"
-                    );
-                    break 'group;
-                }
-            };
-            for block_txs in &chunk {
-                // Bound first: a guard in the `if let` scrutinee would be held
-                // across the `.await` below.
-                let stored_hash = store.lock().get_scanned_block_hash(network, height)?;
-                let hash = match daemon.get_block_hash(height).await {
-                    Ok(actual) if stored_hash.as_ref().is_none_or(|stored| *stored == actual) => actual,
-                    Ok(_) => {
-                        tracing::warn!("catch-up on {network}: block {height} differs from the stored hash; waiting for reorg reconciliation");
-                        break 'group;
-                    }
-                    Err(e) => {
-                        tracing::warn!("catch-up on {network}: reading the hash of block {height} failed: {e}");
-                        break 'group;
-                    }
-                };
-                let mut next_tx = HashMap::new();
-                for (tenant_id, _, window) in &group {
-                    let next = store.lock().start_partial_block(network, tenant_id, height, &hash, window.generation())?;
-                    if next > block_txs.len() { return Err(ScannerError::Internal(format!("invalid partial-block checkpoint for tenant {tenant_id} at {height}"))); }
-                    next_tx.insert(tenant_id.clone(), next);
-                }
-                let mut failed: HashSet<String> = HashSet::new();
-                for (tx_index, tx) in block_txs.iter().enumerate() {
-                    let refs: Vec<&(String, WalletHandle, ScanIndices)> =
-                        group.iter().filter(|(tenant_id, _, _)| !failed.contains(tenant_id) && next_tx.get(tenant_id).is_some_and(|next| *next <= tx_index)).collect();
-                    for batch in refs.chunks(SCAN_CONCURRENCY) {
-                        if tokio::time::Instant::now() >= phase_end { return Ok(()); }
-                        for (tenant_id, result) in scan_for_tenants(key_custody, tx, batch).await {
-                            match result {
-                                Ok(scan) => {
-                                    if scan.matches.is_empty()
-                                        && (tx_index + 1) % PARTIAL_CHECKPOINT_EVERY_TXS != 0
-                                        && tx_index + 1 != block_txs.len() {
-                                        continue;
-                                    }
-                                    let written = store.lock().in_transaction(|s| -> Result<()> {
-                                        stage_block_match(s, network, &tenant_id, &scan, now)?;
-                                        s.advance_partial_block(network, &tenant_id, tx_index + 1)?;
-                                        Ok(())
-                                    });
-                                    if let Err(e) = written {
-                                        tracing::warn!("catch-up on {network}: staging a match in block {height} failed: {e}");
-                                        return Ok(());
-                                    }
-                                }
-                                Err(e) => {
-                                    shared::throttled!(format!("catch-up-scan:{tenant_id}"), warn, "catch-up on {network}: scanning block {height} for tenant {tenant_id} failed: {e}");
-                                    failed.insert(tenant_id);
-                                }
-                            }
-                        }
-                    }
-                }
-                match daemon.get_block_hash(height).await {
-                    Ok(current) if current == hash => {}
-                    Ok(_) => { tracing::warn!("catch-up on {network}: block {height} changed while scanning"); break 'group; }
-                    Err(e) => { tracing::warn!("catch-up on {network}: rechecking block {height} failed: {e}"); break 'group; }
-                }
-                group.retain(|(tenant_id, _, _)| {
-                    if failed.contains(tenant_id) {
-                        return false;
-                    }
-                    let committed = store.lock().in_transaction(|s| -> Result<Option<Vec<String>>> {
-                        // The cursor guard also protects promotion: a reorg
-                        // clamp cannot commit results for the wrong height.
-                        let promoted = s.promote_partial_block(network, tenant_id, height, &hash, block_txs.len())?;
-                        if !s.advance_tenant_cursor(tenant_id, height - 1, height)? {
-                            return Err(ScannerError::Internal("tenant cursor moved during catch-up".into()));
-                        }
-                        Ok(Some(promoted))
-                    });
-                    match committed {
-                        Ok(Some(orders)) => { touched.extend(orders); true }
-                        _ => false,
-                    }
-                });
-                height += 1;
-                if group.is_empty() {
-                    break 'group;
-                }
-            }
-        }
-    }
-    Ok(())
 }
 
 #[cfg(test)]
@@ -2602,39 +1574,40 @@ mod tests {
 
     // -- Scanned block range (`docs/order_rescan_wbs.md` Phase 5.1) ---------
 
+    /// A block interrupted partway keeps its matches staged, never as
+    /// payments; they come back only for the same block (height and hash),
+    /// once, at commit. A checkpoint for a changed block is dropped with its
+    /// matches.
     #[tokio::test]
-    async fn partial_block_checkpoint_stages_matches_and_discards_a_changed_hash() {
+    async fn a_block_checkpoint_stages_matches_until_commit_and_a_changed_hash_drops_them() {
         let (store, custody, handle, tenant_id, order_id) = setup().await;
         let window = ScanIndices::new([1]);
         let scan = scan_transaction_in_window(&custody, handle, &fixture_tx(), &window).await.unwrap();
         assert!(!scan.matches.is_empty());
+        let checkpoint = |hash: &str| crate::store::BlockCheckpoint { height: 10, hash: hash.into(), next_tx: 1 };
+        let stage = |hash: &str| {
+            store
+                .in_transaction(|s| -> Result<()> {
+                    s.save_block_checkpoint("mainnet", &tenant_id, &checkpoint(hash))?;
+                    stage_block_match(s, "mainnet", &tenant_id, &scan, 1500)
+                })
+                .unwrap()
+        };
 
-        assert_eq!(store.start_partial_block("mainnet", &tenant_id, 10, "old_hash", window.generation()).unwrap(), 0);
-        store.in_transaction(|s| -> Result<()> {
-            stage_block_match(s, "mainnet", &tenant_id, &scan, 1500)?;
-            s.advance_partial_block("mainnet", &tenant_id, 1)?;
-            Ok(())
-        }).unwrap();
-        assert_eq!(store.start_partial_block("mainnet", &tenant_id, 10, "old_hash", window.generation()).unwrap(), 1);
+        stage("old_hash");
+        assert_eq!(store.block_checkpoint("mainnet", &tenant_id).unwrap(), Some(checkpoint("old_hash")));
         assert!(store.get_all_payments(&order_id).unwrap().is_empty(), "an unfinished block must not announce payment");
+        assert!(
+            store.take_staged_payments("mainnet", &tenant_id, 10, "new_hash").unwrap().is_empty(),
+            "the old fork's matches are dropped"
+        );
+        assert_eq!(store.block_checkpoint("mainnet", &tenant_id).unwrap(), None);
 
-        assert_eq!(store.start_partial_block("mainnet", &tenant_id, 10, "new_hash", window.generation()).unwrap(), 0);
-        assert!(store.promote_partial_block("mainnet", &tenant_id, 10, "new_hash", 1).is_err(), "an incomplete block cannot be promoted");
-        store.advance_partial_block("mainnet", &tenant_id, 1).unwrap();
-        assert!(store.promote_partial_block("mainnet", &tenant_id, 10, "new_hash", 1).unwrap().is_empty(), "the old fork's matches were discarded");
-        assert_eq!(store.start_partial_block("mainnet", &tenant_id, 10, "new_hash", window.generation()).unwrap(), 0);
-        store.in_transaction(|s| -> Result<()> {
-            stage_block_match(s, "mainnet", &tenant_id, &scan, 1500)?;
-            s.advance_partial_block("mainnet", &tenant_id, 1)?;
-            Ok(())
-        }).unwrap();
-        let promoted = store.in_transaction(|s| -> Result<Vec<String>> {
-            let promoted = s.promote_partial_block("mainnet", &tenant_id, 10, "new_hash", 1)?;
-            s.set_scanned_block("mainnet", 10, "new_hash")?;
-            Ok(promoted)
-        }).unwrap();
-        assert_eq!(promoted, vec![order_id.clone()]);
-        assert_eq!(store.get_all_payments(&order_id).unwrap().len(), 1);
+        stage("old_hash");
+        stage("new_hash");
+        let staged = store.take_staged_payments("mainnet", &tenant_id, 10, "new_hash").unwrap();
+        assert_eq!(staged.iter().map(|p| p.order_id.clone()).collect::<Vec<_>>(), vec![order_id.clone()]);
+        assert!(store.take_staged_payments("mainnet", &tenant_id, 10, "new_hash").unwrap().is_empty(), "taken once");
     }
 
     #[tokio::test]
@@ -3233,7 +2206,8 @@ mod tests {
             )
             .unwrap();
 
-        run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await.unwrap();
+        let result = run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await;
+        assert!(result.is_err(), "a storage failure is reported, not swallowed");
         assert_eq!(
             store.lock().max_scanned_height("mainnet").unwrap(),
             Some(1),
@@ -3749,8 +2723,10 @@ mod tests {
             )
             .unwrap();
 
+        // The storage failure is reported, but it stops only block scanning:
+        // every other kind of work in the round still runs.
         let result = run_scan_tick(&store, &key_custody, &daemon, "mainnet", &[(tenant_id.clone(), handle)], 20, 0).await;
-        assert!(result.is_ok(), "a failure marking a block scanned must abandon the range, not the whole tick");
+        assert!(result.is_err(), "a storage failure is reported, not swallowed");
 
         {
             let s = store.lock();
@@ -5491,30 +4467,15 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn a_node_that_dies_between_fetching_a_blocks_transactions_and_its_hash_can_pair_them_with_a_different_nodes_hash(
-    ) {
-        // A real, narrow correctness gap `FallbackDaemonClient` introduces rather
-        // than merely inherits: `run_scan_tick` fetches a block's transactions and
-        // its hash as two *separate* daemon calls (see the long comment above
-        // `daemon.get_block_hash(height)` in `run_scan_tick` on why - a hole would
-        // otherwise be left in the reorg window). Per-call failover means those two
-        // calls for the *same height* are not guaranteed to come from the same node:
-        // if the first call succeeds against the primary and the primary dies before
-        // the second, the second is transparently served by the fallback instead -
-        // pairing one node's transactions with a different node's hash for what is
-        // recorded as a single scanned block.
-        //
-        // This is a sharper version of a risk already accepted for a single node
-        // (see the "genuine replication lag across a pool of backend nodes behind a
-        // public endpoint" comment on `run_scan_tick`'s bootstrap branch, and
-        // `docs/DESIGN.md` §7.7's now-updated note on fallback nodes): there,
-        // inconsistency is bounded by how out-of-sync one public endpoint's own
-        // backends are. Here, it is bounded only by how different two *independently
-        // operated* nodes' chains are allowed to be, which for a fallback added
-        // specifically to survive a primary that has gone badly wrong (not just
-        // "slightly behind") could be a lot. This test exists to pin the actual
-        // behavior down precisely rather than leave it as an unverified worry - see
-        // `docs/DESIGN.md` §7.7 for the accepted-tradeoff writeup this backs.
+    async fn a_node_that_dies_as_a_block_is_read_has_its_hash_and_contents_come_from_the_same_fallback() {
+        // A block's hash and its transactions are two daemon calls, and
+        // `FallbackDaemonClient` fails over per call. The legacy tick read the
+        // transactions first: a primary that died between the two calls paired
+        // its own block contents with the fallback's hash for the same height,
+        // recorded as one scanned block (the gap `docs/DESIGN.md` §7.7 used to
+        // accept). The block scan now reads the hash first; once a call fails
+        // over, the client stays on the node that answered, so the contents come
+        // from the node whose hash was recorded.
         let (store, key_custody, handle, tenant_id, order_id) = setup().await;
         let tx = fixture_tx();
 
@@ -5550,12 +4511,10 @@ mod tests {
             Some("b_51".to_string()),
             "the recorded hash for height 51 came from the fallback, whose get_block_hash call is what failed over"
         );
-        assert_eq!(
-            s.get_all_payments(&order_id).unwrap()[0].block_height,
-            Some(51),
-            "but the payment recorded at height 51 came from the primary's block content, fetched moments earlier - \
-             this is the actual inconsistency: the stored (height, hash) pair for 51 does not correspond to any \
-             single node's real block 51, and there is no detection for this today"
+        assert!(
+            s.get_all_payments(&order_id).unwrap().is_empty(),
+            "and so did the block's contents: the fallback's block 51 pays nobody, and the primary's block 51 (which \
+             it can no longer vouch for) was never paired with the fallback's hash"
         );
     }
 
@@ -6857,7 +5816,7 @@ mod tests {
         let store = store.into_shared();
         let tenants = [(tenant, handle)];
         let daemon = FakeDaemonClient::new();
-        let memory = MempoolMemory::default();
+        let memory = crate::work::ScanState::default();
         daemon.push_block("b1", vec![]);
         daemon.push_block("b2", vec![]);
         run_scan_tick(&store, &custody, &daemon, "mainnet", &tenants, 20, 0).await.unwrap();
@@ -6968,68 +5927,22 @@ mod tests {
         assert!(store.lock().lagging_tenants("mainnet").unwrap().is_empty());
     }
 
+    /// Only a tenant with nothing that could have been paid moves without a
+    /// scan, and "nothing in scope" is decided inside the transaction: a tenant
+    /// with an open order stays at its cursor (the block scan moves it, with a
+    /// `ScannedBlock`), as does one on another cursor or network.
     #[test]
-    fn a_tenant_or_order_created_after_the_tick_started_is_not_moved_past_the_block() {
+    fn only_tenants_with_nothing_in_scope_move_without_a_scan() {
         let store = Store::open_in_memory().unwrap();
         store.set_scanned_block("mainnet", 10, "h10").unwrap();
-        let new_tenant = |created_at: i64| {
-            store
-                .create_tenant(
-                    NewTenant {
-                        key_custody_backend: "plain".into(),
-                        sealed_key_material: vec![],
-                        primary_address: "4x".into(),
-                        network: "mainnet".into(),
-                        confirmations_required: None,
-                        order_expiry_seconds: None,
-                    },
-                    created_at,
-                )
-                .unwrap()
-                .tenant
-                .id
-        };
-        let old = new_tenant(100);
-        let with_new_order = new_tenant(100);
-        let created_mid_tick = new_tenant(500);
-        let index = store.allocate_minor_index(&with_new_order).unwrap();
-        store
-            .create_order(NewOrder {
-                confirmations_required_override: None,
-                tenant_id: with_new_order.clone(),
-                merchant_order_id: None,
-                minor_index: index,
-                address: "x".into(),
-                xmr_amount_piconero: 1,
-                description: None,
-                created_at: 500,
-                expires_at: 10_000,
-            })
-            .unwrap();
-
-        store.advance_caught_up_cursors("mainnet", 11, &[], 500, 0).unwrap();
-        let cursor = |id: &str| store.get_tenant_by_id(id).unwrap().unwrap().scanned_through_height;
-        assert_eq!(cursor(&old), Some(11));
-        assert_eq!(cursor(&with_new_order), Some(10), "its new address wasn't in this tick's scan");
-        assert_eq!(cursor(&created_mid_tick), Some(10));
-    }
-
-    /// The cursor only moves for tenants the block was actually scanned for.
-    /// A tenant with an order in scope that the tick never scanned (its keys
-    /// weren't registered, or its scan window couldn't be read) keeps its
-    /// cursor, and catch-up covers the block later.
-    #[test]
-    fn a_tenant_with_orders_in_scope_moves_only_when_the_block_was_scanned_for_it() {
-        let store = Store::open_in_memory().unwrap();
-        store.set_scanned_block("mainnet", 10, "h10").unwrap();
-        let tenant_with_order = |minor_seed: &str| {
+        let tenant = |network: &str, cursor: i64, with_order: bool| {
             let id = store
                 .create_tenant(
                     NewTenant {
                         key_custody_backend: "plain".into(),
                         sealed_key_material: vec![],
-                        primary_address: format!("4{minor_seed}"),
-                        network: "mainnet".into(),
+                        primary_address: format!("4{}", uuid::Uuid::new_v4().simple()),
+                        network: network.into(),
                         confirmations_required: None,
                         order_expiry_seconds: None,
                     },
@@ -7038,30 +5951,36 @@ mod tests {
                 .unwrap()
                 .tenant
                 .id;
-            store.execute_raw_for_test(&format!("UPDATE tenants SET scanned_through_height = 10 WHERE id = '{id}'")).unwrap();
-            let index = store.allocate_minor_index(&id).unwrap();
-            store
-                .create_order(NewOrder {
-                    confirmations_required_override: None,
-                    tenant_id: id.clone(),
-                    merchant_order_id: None,
-                    minor_index: index,
-                    address: format!("addr-{minor_seed}"),
-                    xmr_amount_piconero: 1,
-                    description: None,
-                    created_at: 100,
-                    expires_at: 10_000,
-                })
-                .unwrap();
+            store.execute_raw_for_test(&format!("UPDATE tenants SET scanned_through_height = {cursor} WHERE id = '{id}'")).unwrap();
+            if with_order {
+                let index = store.allocate_minor_index(&id).unwrap();
+                store
+                    .create_order(NewOrder {
+                        confirmations_required_override: None,
+                        tenant_id: id.clone(),
+                        merchant_order_id: None,
+                        minor_index: index,
+                        address: format!("addr-{}", uuid::Uuid::new_v4().simple()),
+                        xmr_amount_piconero: 1,
+                        description: None,
+                        created_at: 100,
+                        expires_at: 10_000,
+                    })
+                    .unwrap();
+            }
             id
         };
-        let scanned = tenant_with_order("a");
-        let never_scanned = tenant_with_order("b");
+        let idle = tenant("mainnet", 10, false);
+        let active = tenant("mainnet", 10, true);
+        let elsewhere = tenant("mainnet", 9, false);
+        let other_network = tenant("stagenet", 10, false);
 
-        store.advance_caught_up_cursors("mainnet", 11, std::slice::from_ref(&scanned), 500, 0).unwrap();
+        assert_eq!(store.advance_idle_cursors("mainnet", 10, 11, 500, 0).unwrap(), 1);
         let cursor = |id: &str| store.get_tenant_by_id(id).unwrap().unwrap().scanned_through_height;
-        assert_eq!(cursor(&scanned), Some(11));
-        assert_eq!(cursor(&never_scanned), Some(10), "block 11 was never checked against its orders");
+        assert_eq!(cursor(&idle), Some(11));
+        assert_eq!(cursor(&active), Some(10), "block 11 was never checked against its order");
+        assert_eq!(cursor(&elsewhere), Some(9));
+        assert_eq!(cursor(&other_network), Some(10));
     }
 
     #[tokio::test]
@@ -7415,7 +6334,7 @@ mod tests {
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
         daemon.set_mempool(vec![fixture_tx(), unrelated_tx(1), unrelated_tx(2)]);
-        let memory = MempoolMemory::default();
+        let memory = crate::work::ScanState::default();
         let tenants = [(a.clone(), a_handle)];
 
         run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
@@ -7442,7 +6361,7 @@ mod tests {
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
         daemon.set_mempool(vec![fixture_tx()]);
-        let memory = MempoolMemory::default();
+        let memory = crate::work::ScanState::default();
         let tenants = [(a.clone(), a_handle)];
 
         custody.fail(a_handle);
@@ -7464,7 +6383,7 @@ mod tests {
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
         daemon.set_mempool(vec![unrelated_tx(1)]);
-        let memory = MempoolMemory::default();
+        let memory = crate::work::ScanState::default();
         let tenants = [(a.clone(), a_handle)];
         run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
         let before = custody.scan_calls.load(Ordering::SeqCst);
@@ -7744,7 +6663,7 @@ mod tests {
         daemon.push_block("h1", vec![]);
         daemon.push_block("h2", vec![]);
         daemon.set_mempool((0..pool_size).map(unrelated_tx).collect());
-        let memory = MempoolMemory::default();
+        let memory = crate::work::ScanState::default();
 
         let started = std::time::Instant::now();
         run_scan_tick_with(&memory, &store, &custody, &daemon, "mainnet", &tenants, 20, 0, 8).await.unwrap();
